@@ -10,17 +10,17 @@ Kimün's terminal UI is built around a single editor screen with an activity rai
 ## Layout
 
 ```
-┌──┬───────────────┬──────────────────────────────┐
-│  │               │                              │
-│R │    DRAWER     │           EDITOR             │
-│A │ (one of:      │                              │
-│I │  FILES FIND   │                              │
-│L │  TAGS LINKS   │                              │
-│  │  OUTL CFG)    │                              │
-├──┴───────────────┴──────────────────────────────┤
-│ ⌨ EDITOR  hints…                    global hints │
-│ path · ln/col · ✓ saved · backlinks · git        │
-└──────────────────────────────────────────────────┘
+┌──┬────────────────┬───────────────────────────────┐
+│  │                │                               │
+│R │     DRAWER     │            EDITOR             │
+│A │  (one of:      │                               │
+│I │   FILES FIND   │                               │
+│L │   TAGS LINKS   │                               │
+│  │   OUTL CFG)    │                               │
+├──┴────────────────┴───────────────────────────────┤
+│ ⌨ EDITOR  hints…                     global hints │
+│ path · ln/col · ✓ saved · backlinks · git         │
+└───────────────────────────────────────────────────┘
 ```
 
 - **Activity rail** — the icon strip on the far left. Each cell names a drawer view; the active one is marked with a green border segment. Click a cell (or focus the rail and press Enter) to switch the drawer to that view. CFG is pinned at the bottom.
@@ -180,29 +180,6 @@ Full parity with the keyboard:
 
 ## Key Bindings
 
-Defaults (all configurable — see [Configuration Reference](@/getting-started/configuration.md)):
-
-| Action | Default |
-| ------ | ------- |
-| Quit | `Ctrl+Q` |
-| **Leader** (command sequences) | `Ctrl+G` |
-| Command palette | `Ctrl+P` |
-| Settings | `Ctrl+,` |
-| Query search (telescope) | `Ctrl+K` |
-| Open note (fuzzy finder) | `Ctrl+O` |
-| Toggle drawer | `Ctrl+T` |
-| Open FIND view | `Ctrl+E` |
-| Find in buffer | `Ctrl+F` |
-| Follow link | `Ctrl+Enter` (modern terminals) / `Ctrl+N` |
-| New journal entry | `Ctrl+J` |
-| Quick note | `Ctrl+W` |
-| Save current query | `Ctrl+D` |
-| Saved searches | `F3` |
-| Sort dialog | `Ctrl+R` |
-| File operations | `F2` |
-| Switch workspace | `F4` |
-| Focus right / left | `Ctrl+L` / `Ctrl+H` |
-| Bold / Italic / Strikethrough | `Ctrl+B` / `Ctrl+I` / `Ctrl+S` |
-| Help | `F1` (cheatsheet: `Ctrl+G ?`) |
+The full default table lives on the [Keybindings cheat-sheet](@/using-kimun/keybindings.md) — one screen, everything on it. All bindings are remappable in [Configuration](@/getting-started/configuration.md#key-bindings).
 
 Everything else lives behind the leader (`Ctrl+G`) — press it and pause: the which-key panel pops up and shows you everything available.

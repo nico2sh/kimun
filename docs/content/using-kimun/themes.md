@@ -1,43 +1,34 @@
 +++
 title = "Themes"
-weight = 12
+weight = 14
 +++
 
 # Themes
 
-Kimün ships with several built-in themes and supports fully custom themes defined as TOML files.
+Kimün ships with 21 built-in themes — all the classics — and lets you write your own as a small TOML file.
 
-## Built-in Themes
-
-The following themes are included out of the box:
-
-- **Gruvbox Dark** *(default)*
-- **Gruvbox Light**
-- **Catppuccin Mocha**
-- **Catppuccin Latte**
-- **Tokyo Night**
-- **Tokyo Night Storm**
-- **Solarized Dark**
-- **Solarized Light**
-- **Nord**
-- **Dracula**
-- **Alucard** — Dracula's official light variant
-- **One Dark**
-- **One Light**
-- **Monokai**
-- **Everforest Dark**
-- **Everforest Light**
-- **Rosé Pine**
-- **Rosé Pine Dawn** — Rosé Pine's light variant
-- **Kanagawa Wave**
-- **Kanagawa Lotus** — Kanagawa's light variant
-- **ANSI** — adapts to your terminal's configured 16-color palette (works for both light and dark terminal themes)
-
-Switch with the **live theme picker** — `Ctrl+G v t` (or the CFG drawer's `t`): moving the selection restyles the whole app instantly, Enter persists, Esc reverts. You can also set the `theme` field at the top level of your config file:
+The fastest way to pick one is the **live theme picker** — `Ctrl+G v t` (or the CFG drawer's `t`): moving the selection restyles the whole app instantly, Enter persists, Esc reverts. Or set it in your config:
 
 ```toml
 theme = "Nord"
 ```
+
+## Built-in Themes
+
+| Family | Dark | Light |
+|---|---|---|
+| Gruvbox | **Gruvbox Dark** *(default)* | Gruvbox Light |
+| Catppuccin | Catppuccin Mocha | Catppuccin Latte |
+| Tokyo Night | Tokyo Night, Tokyo Night Storm | — |
+| Solarized | Solarized Dark | Solarized Light |
+| Dracula | Dracula | Alucard *(Dracula's official light variant)* |
+| One | One Dark | One Light |
+| Everforest | Everforest Dark | Everforest Light |
+| Rosé Pine | Rosé Pine | Rosé Pine Dawn |
+| Kanagawa | Kanagawa Wave | Kanagawa Lotus |
+| Nord | Nord | — |
+| Monokai | Monokai | — |
+| ANSI | *adapts to your terminal's 16-color palette — works light or dark* | |
 
 ### Color depth
 
@@ -151,3 +142,7 @@ orange = "#ff8f40"
 ```
 
 Save this as `~/.config/kimun/themes/ayu-dark.toml` and set `theme = "Ayu Dark"` in your config.
+
+---
+
+Made a theme you like? Themes are just TOML — easy to share. And if you're now in the mood to customize everything else too, head to [Configuration](@/getting-started/configuration.md).

@@ -1,11 +1,11 @@
 +++
 title = "CLI"
-weight = 11
+weight = 12
 +++
 
 # CLI
 
-Kimün provides a powerful command-line interface for quick operations, multi-workspace management, and scripting. All CLI commands support both the TUI and background use.
+Everything Kimün does, scriptable from your shell — quick captures, searches, workspace juggling, and note surgery. Pipe in, pipe out, put it in a cron job.
 
 ## Global Configuration
 
@@ -74,24 +74,20 @@ kimun search "rust" --format json                # JSON output
 
 ### Query Syntax
 
-Searches support free text, filters, and operators:
+The same query language as the TUI. Quick reminder:
 
-- **Free text:** Case-insensitive, diacritics ignored, `*` wildcard supported
-- **Filter by note name:** `=tasks` or `name:tasks`
-- **Filter by section:** `@personal` or `in:personal` (Markdown headers)
-- **Filter by path:** `/journal` or `pt:journal` (directory prefix)
-- **Filter by label (hashtag):** `#important` or `lb:important` — matches notes carrying that `#tag` in their body
-- **Filter by backlink:** `<projects` or `lk:projects` — notes that link to the note "projects" (its backlinks); name match, `.md` optional, `*` wildcards, `<dir/note` to disambiguate
-- **Filter by forward link:** `>projects` or `fwd:projects` — notes that the note "projects" links to (its forward links); same matching rules
-- **Exclusion:** `-` prefix leads, then the operator follows
-  - Content: `meeting -cancelled`
-  - Section: `-@draft` or `-in:draft`
-  - Note name: `-=temp` or `-name:temp`
-  - Label: `-#draft` or `-lb:draft`
-  - Backlink: `-<draft` or `-lk:draft`
-  - Forward link: `->draft` or `-fwd:draft`
+| Want | Operator | Example |
+|---|---|---|
+| Free text | *(just type)* | `meeting notes` |
+| By note name | `=` / `name:` | `=tasks` |
+| By section | `@` / `in:` | `@personal` |
+| By path | `/` / `pt:` | `/journal` |
+| By label | `#` / `lb:` | `#important` |
+| Backlinks | `<` / `lk:` | `<projects` |
+| Forward links | `>` / `fwd:` | `>projects` |
+| Exclude | `-` prefix | `-#draft`, `-@temp` |
 
-For comprehensive search documentation, see the [Search](@/using-kimun/search.md) page.
+Space = AND, `*` = wildcard, case and accents ignored. The full grammar — wildcards per operator, link matching rules, query variables — lives on the [Search](@/using-kimun/search.md) page.
 
 ### Examples
 

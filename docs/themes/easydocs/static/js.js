@@ -221,9 +221,6 @@ function debounce(func, wait) {
         if (!results[i].doc.body) {
           continue;
         }
-        // var item = document.createElement("li");
-        // item.innerHTML = formatSearchResultItem(results[i], term.split(" "));
-        console.log(results[i]);
         $searchResultsItems.appendChild(formatSearchResultItem(results[i], term.split(" ")));
       }
     }, 150));
