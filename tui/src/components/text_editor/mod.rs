@@ -2019,8 +2019,8 @@ impl Component for TextEditorComponent {
             let mut hints = vec![(String::new(), label)];
             hints.extend(
                 [
-                    (ActionShortcuts::FocusSidebar, "\u{2190} sidebar"),
-                    (ActionShortcuts::FocusEditor, "backlinks \u{2192}"),
+                    (ActionShortcuts::FocusSidebar, "\u{2190} focus left"),
+                    (ActionShortcuts::FocusEditor, "focus right \u{2192}"),
                     (ActionShortcuts::FileOperations, "file ops"),
                 ]
                 .iter()
@@ -2034,8 +2034,8 @@ impl Component for TextEditorComponent {
         }
 
         [
-            (ActionShortcuts::FocusSidebar, "\u{2190} sidebar"),
-            (ActionShortcuts::FocusEditor, "backlinks \u{2192}"),
+            (ActionShortcuts::FocusSidebar, "\u{2190} focus left"),
+            (ActionShortcuts::FocusEditor, "focus right \u{2192}"),
             (ActionShortcuts::FileOperations, "file ops"),
             (ActionShortcuts::FindInBuffer, "find"),
         ]

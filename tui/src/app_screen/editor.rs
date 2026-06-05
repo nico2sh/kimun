@@ -7,7 +7,7 @@ use kimun_core::error::{FSError, VaultError};
 use kimun_core::nfs::VaultPath;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::Style;
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::Paragraph;
 
 use crate::app_screen::overlay_host::OverlayHost;
 use crate::app_screen::panel_set::PanelSet;
@@ -15,6 +15,7 @@ use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::autosave_timer::AutosaveTimer;
 use crate::components::backlinks_panel::QueryPanel;
 use crate::components::dialogs::ActiveDialog;
+use crate::components::drawer::DrawerView;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, SaveSource, ScreenEvent, SortTarget};
 use crate::components::footer_bar::FooterBar;
@@ -73,20 +74,7 @@ impl EditorScreen {
         let s = settings.read().unwrap();
         let kb = s.key_bindings.clone();
         let theme = s.get_theme();
-        let kb_map = kb.to_hashmap();
-        let first_key = |action: &ActionShortcuts| {
-            kb_map
-                .get(action)
-                .and_then(|v| v.first().cloned())
-                .map(|c| c.to_string())
-                .unwrap_or_default()
-        };
-        let footer = FooterBar::new(
-            first_key(&ActionShortcuts::OpenSettings),
-            first_key(&ActionShortcuts::Quit),
-            first_key(&ActionShortcuts::ToggleSidebar),
-            first_key(&ActionShortcuts::ToggleQueryPanel),
-        );
+        let footer = FooterBar::new();
         let icons = s.icons();
         let sidebar = SidebarComponent::from_settings(vault.clone(), &s);
         let backlinks_panel = QueryPanel::new(vault.clone(), kb.clone());
@@ -291,7 +279,7 @@ impl EditorScreen {
                 self.panels.editor_mut().set_text(content);
                 self.panels.editor_mut().set_redraw_tx(tx);
                 tx.send(AppEvent::Redraw).ok();
-                if self.panels.is_visible(PanelKind::Query) {
+                if self.find_drawer_open() {
                     self.panels.query_mut().set_note(path.clone(), tx.clone());
                 }
             }
@@ -462,44 +450,64 @@ impl EditorScreen {
         self.panels.focus(PanelKind::Editor);
     }
 
-    pub fn focus_sidebar(&mut self) {
-        self.panels.show(PanelKind::Sidebar);
-        self.panels.focus(PanelKind::Sidebar);
+    /// Whether the drawer is open showing the FIND view (the Query panel).
+    fn find_drawer_open(&self) -> bool {
+        self.panels.is_visible(PanelKind::Drawer)
+            && self.panels.active_drawer_view() == DrawerView::Find
     }
 
-    /// Move focus to `kind`, revealing it first. Revealing the Query panel
-    /// loads it for the current note (the heavy side effect that keeps the
-    /// reveal in the host rather than in `PanelSet`).
-    fn move_focus_to(&mut self, kind: PanelKind, tx: &AppTx) {
-        let newly_shown = !self.panels.is_visible(kind);
-        self.panels.show(kind);
-        if kind == PanelKind::Query && newly_shown {
+    /// Focus the drawer, revealing it on FILES if hidden — but never clobber
+    /// the view the user already has open (e.g. a FIND query in progress).
+    /// Sent by the nvim backend's leave-editor motions.
+    pub fn focus_sidebar(&mut self) {
+        if !self.panels.is_visible(PanelKind::Drawer) {
+            self.panels.open_drawer_view(DrawerView::Files);
+        }
+        self.panels.focus(PanelKind::Drawer);
+    }
+
+    /// Switch the drawer to `view`, reveal it, and focus it. The FIND view,
+    /// when it becomes visible, loads the Query panel for the current note
+    /// (the heavy side effect that keeps the reveal in the host rather than
+    /// in `PanelSet`).
+    fn open_drawer_view(&mut self, view: DrawerView, tx: &AppTx) {
+        let find_newly_shown = view == DrawerView::Find && !self.find_drawer_open();
+        self.panels.open_drawer_view(view);
+        if find_newly_shown {
             self.panels
                 .query_mut()
                 .set_note(self.path.clone(), tx.clone());
         }
-        self.panels.focus(kind);
+        self.panels.focus(PanelKind::Drawer);
     }
 
-    /// Move focus one panel left in the current order (revealing it).
-    fn focus_left(&mut self, tx: &AppTx) {
+    /// Move focus one visible panel left, wrapping at the end.
+    fn focus_left(&mut self, _tx: &AppTx) {
         if let Some(kind) = self.panels.prev_kind() {
-            self.move_focus_to(kind, tx);
+            self.panels.focus(kind);
         }
     }
 
-    /// Move focus one panel right in the current order (revealing it).
-    fn focus_right(&mut self, tx: &AppTx) {
+    /// Move focus one visible panel right, wrapping at the end.
+    fn focus_right(&mut self, _tx: &AppTx) {
         if let Some(kind) = self.panels.next_kind() {
-            self.move_focus_to(kind, tx);
+            self.panels.focus(kind);
         }
     }
 
-    fn toggle_sidebar(&mut self) {
-        if self.panels.is_visible(PanelKind::Sidebar) {
-            self.panels.hide(PanelKind::Sidebar);
+    /// Toggle the drawer (Ctrl-B): hiding it gives the full remaining width
+    /// to the editor; showing it restores the last view. A restored FIND
+    /// view re-targets the current note — it may have changed while hidden.
+    fn toggle_drawer(&mut self, tx: &AppTx) {
+        if self.panels.is_visible(PanelKind::Drawer) {
+            self.panels.hide(PanelKind::Drawer);
         } else {
-            self.panels.show(PanelKind::Sidebar);
+            self.panels.show(PanelKind::Drawer);
+            if self.panels.active_drawer_view() == DrawerView::Find {
+                self.panels
+                    .query_mut()
+                    .set_note(self.path.clone(), tx.clone());
+            }
         }
     }
 
@@ -532,7 +540,7 @@ impl EditorScreen {
     }
 
     fn apply_saved_search(&mut self, query: String, name: String, tx: &AppTx) {
-        self.panels.show(PanelKind::Query);
+        self.panels.open_drawer_view(DrawerView::Find);
         // The virtual backlinks entry's name should not override the
         // default "Backlinks" title — but the panel's title logic already
         // shows "Backlinks" whenever the active query is `<{note}`, so it's
@@ -540,18 +548,14 @@ impl EditorScreen {
         self.panels
             .query_mut()
             .apply_query(query, Some(name), tx.clone());
-        self.panels.focus(PanelKind::Query);
+        self.panels.focus(PanelKind::Drawer);
     }
 
     fn toggle_backlinks(&mut self, tx: &AppTx) {
-        if self.panels.is_visible(PanelKind::Query) {
-            self.panels.hide(PanelKind::Query);
+        if self.find_drawer_open() {
+            self.panels.hide(PanelKind::Drawer);
         } else {
-            self.panels.show(PanelKind::Query);
-            self.panels
-                .query_mut()
-                .set_note(self.path.clone(), tx.clone());
-            self.panels.focus(PanelKind::Query);
+            self.open_drawer_view(DrawerView::Find, tx);
         }
     }
 }
@@ -620,7 +624,7 @@ impl AppScreen for EditorScreen {
             };
             match action {
                 Some(ActionShortcuts::ToggleSidebar) => {
-                    self.toggle_sidebar();
+                    self.toggle_drawer(tx);
                     return EventState::Consumed;
                 }
                 Some(ActionShortcuts::FocusSidebar) => {
@@ -723,9 +727,14 @@ impl AppScreen for EditorScreen {
                 Some(ActionShortcuts::OpenSortDialog) => {
                     if !self.overlays.is_open() {
                         let target = match self.panels.focused() {
-                            PanelKind::Query => Some(SortTarget::Query),
-                            PanelKind::Sidebar => Some(SortTarget::Sidebar),
-                            _ if self.panels.is_visible(PanelKind::Sidebar) => {
+                            PanelKind::Drawer => match self.panels.active_drawer_view() {
+                                DrawerView::Find => Some(SortTarget::Query),
+                                DrawerView::Files => Some(SortTarget::Sidebar),
+                                _ => None,
+                            },
+                            _ if self.panels.is_visible(PanelKind::Drawer)
+                                && self.panels.active_drawer_view() == DrawerView::Files =>
+                            {
                                 Some(SortTarget::Sidebar)
                             }
                             _ => None,
@@ -825,10 +834,32 @@ impl AppScreen for EditorScreen {
             return self.panels.handle_mouse(event, tx);
         }
 
-        // Keyboard → the focused panel. The Query panel gets first crack (its
-        // autocomplete popup may consume Esc); on an unhandled Esc it yields
-        // focus back to the editor.
-        if self.panels.focused() == PanelKind::Query
+        // Tab / Shift-Tab cycle panel focus (spec §2). The focused panel gets
+        // first crack — the Query panel's autocomplete accepts on Tab — and
+        // the editor keeps Tab for indentation (it is a text field, the same
+        // rule that keeps Space typing a space there).
+        if self.panels.focused() != PanelKind::Editor
+            && let InputEvent::Key(key) = event
+        {
+            use ratatui::crossterm::event::KeyCode;
+            if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
+                let state = self.panels.handle_input(event, tx);
+                if state == EventState::NotConsumed {
+                    if key.code == KeyCode::Tab {
+                        self.focus_right(tx);
+                    } else {
+                        self.focus_left(tx);
+                    }
+                }
+                return EventState::Consumed;
+            }
+        }
+
+        // Keyboard → the focused panel. The drawer's FIND view gets first
+        // crack (its autocomplete popup may consume Esc); on an unhandled Esc
+        // it yields focus back to the editor.
+        if self.panels.focused() == PanelKind::Drawer
+            && self.panels.active_drawer_view() == DrawerView::Find
             && let InputEvent::Key(key) = event
         {
             let state = self.panels.handle_input(event, tx);
@@ -854,12 +885,13 @@ impl AppScreen for EditorScreen {
         let rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3),
+                Constraint::Length(1),
                 Constraint::Min(0),
-                Constraint::Length(3),
+                Constraint::Length(crate::components::footer_bar::STATUS_BAR_HEIGHT),
             ])
             .split(f.area());
 
+        // ── Title bar (1 line): Kimün · note breadcrumb · workspace badge ──
         let workspace_label = {
             let s = self.settings.read().unwrap();
             s.workspace_config
@@ -867,48 +899,79 @@ impl AppScreen for EditorScreen {
                 .map(|wc| format!("{} {}", self.icons.workspace, wc.global.current_workspace))
                 .unwrap_or_default()
         };
-        let header = Block::default()
-            .title("Kimün")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border_dim.to_ratatui()))
-            .style(theme.base_style())
-            .title_style(Style::default().fg(theme.accent.to_ratatui()));
-        let header_inner = header.inner(rows[0]);
-        f.render_widget(header, rows[0]);
-
-        // Split header inner: note path on left, workspace label on right.
-        let header_cols = Layout::default()
+        let breadcrumb = self
+            .path
+            .to_string()
+            .trim_start_matches('/')
+            .replace('/', " / ");
+        let title_cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
                 Constraint::Min(0),
-                Constraint::Length(workspace_label.len() as u16 + 1),
+                Constraint::Length(
+                    unicode_width::UnicodeWidthStr::width(workspace_label.as_str()) as u16 + 2,
+                ),
             ])
-            .split(header_inner);
+            .split(rows[0]);
         f.render_widget(
-            Paragraph::new(self.path.to_string())
-                .style(Style::default().fg(theme.fg_secondary.to_ratatui())),
-            header_cols[0],
+            Paragraph::new(ratatui::text::Line::from(vec![
+                ratatui::text::Span::styled(
+                    " Kimün ",
+                    Style::default()
+                        .fg(theme.accent.to_ratatui())
+                        .add_modifier(ratatui::style::Modifier::BOLD),
+                ),
+                ratatui::text::Span::styled(
+                    format!("─  {breadcrumb}"),
+                    Style::default().fg(theme.fg_secondary.to_ratatui()),
+                ),
+            ])),
+            title_cols[0],
         );
         f.render_widget(
             Paragraph::new(workspace_label)
                 .alignment(ratatui::layout::Alignment::Right)
                 .style(Style::default().fg(theme.gray.to_ratatui())),
-            header_cols[1],
+            title_cols[1],
         );
 
-        // The panels lay themselves out (in config order) and render. No panel
-        // shows its focused highlight while an overlay sits over them.
+        // The panels lay themselves out and render. No panel shows its
+        // focused highlight while an overlay sits over them.
         self.panels
             .render(f, rows[1], theme, !self.overlays.is_open());
 
-        // Footer reflects the overlay if one is open, otherwise the focused panel.
+        // Status bar reflects the overlay if one is open, otherwise the
+        // focused panel. `editing` drives the ⌨/≣ focus-context indicator —
+        // true when a text field holds the cursor.
         let (focus_label, hints) = if let Some(kind) = self.overlays.active_kind() {
             (kind.label(), self.overlays.hint_shortcuts())
         } else {
             (self.panels.focused_label(), self.panels.focused_hints())
         };
-        self.footer
-            .render(f, rows[2], theme, focus_label, &hints, &self.icons);
+        let editing = if let Some(kind) = self.overlays.active_kind() {
+            // Browsers and the saved-searches modal host a query input;
+            // dialogs are button/list selections.
+            !matches!(kind, OverlayKind::Dialog)
+        } else {
+            match self.panels.focused() {
+                PanelKind::Editor => true,
+                // The FIND view is a query input; FILES is a list (its
+                // filter field will refine this in Phase 03).
+                PanelKind::Drawer => self.panels.active_drawer_view() == DrawerView::Find,
+                PanelKind::Rail => false,
+            }
+        };
+        let path_str = self.path.to_string();
+        let ctx = crate::components::footer_bar::StatusContext {
+            focus_label,
+            editing,
+            hints: &hints,
+            doc: crate::components::footer_bar::DocState {
+                path: &path_str,
+                dirty: self.panels.editor().is_dirty(),
+            },
+        };
+        self.footer.render(f, rows[2], theme, &ctx);
 
         // Overlay — rendered last so it appears on top of everything.
         self.overlays.render(f, f.area(), &self.theme);
@@ -939,6 +1002,9 @@ impl AppScreen for EditorScreen {
                     self.vault.clone(),
                     tx,
                 )));
+            }
+            AppEvent::OpenDrawerView(view) => {
+                self.open_drawer_view(view, tx);
             }
             AppEvent::CloseOverlay => {
                 // Dismiss-to-opener. Guarded by is_open() on purpose: a
@@ -1159,8 +1225,9 @@ mod tests {
     #[test]
     fn panel_kind_labels_and_overlay_kind_compile() {
         assert_eq!(PanelKind::Editor.label(), "EDITOR");
-        assert_eq!(PanelKind::Sidebar.label(), "SIDEBAR");
-        assert_eq!(PanelKind::Query.label(), "BACKLINKS");
+        assert_eq!(PanelKind::Rail.label(), "RAIL");
+        assert_eq!(DrawerView::Files.label(), "FILES");
+        assert_eq!(DrawerView::Find.label(), "FIND");
         let _kind = OverlayKind::Dialog;
     }
 
@@ -1203,9 +1270,10 @@ mod tests {
             "Backlinks (current note)".to_string(),
             &tx,
         );
-        assert!(screen.panels.is_visible(PanelKind::Query));
+        assert!(screen.panels.is_visible(PanelKind::Drawer));
+        assert_eq!(screen.panels.active_drawer_view(), DrawerView::Find);
         assert_eq!(screen.panels.query().active_query(), "<{note}");
-        assert_eq!(screen.panels.focused(), PanelKind::Query);
+        assert_eq!(screen.panels.focused(), PanelKind::Drawer);
     }
 
     #[tokio::test]
@@ -1384,8 +1452,9 @@ mod tests {
         screen.handle_app_message(AppEvent::CloseOverlay, &tx).await;
 
         assert!(
-            screen.panels.focused() == PanelKind::Query,
-            "focus should remain on the Query panel after select + close"
+            screen.panels.focused() == PanelKind::Drawer
+                && screen.panels.active_drawer_view() == DrawerView::Find,
+            "focus should remain on the FIND drawer after select + close"
         );
         assert!(!screen.overlays.is_open(), "overlay should be closed");
     }
@@ -1481,7 +1550,8 @@ mod tests {
             drop(s);
             screen.overlays.open(Box::new(modal), screen.opener_focus());
         }
-        assert!(!screen.panels.is_visible(PanelKind::Query));
+        assert_ne!(screen.panels.active_drawer_view(), DrawerView::Find);
+        let focused_before = screen.panels.focused();
 
         // Ctrl+L (FocusEditor / focus right) must be consumed but do nothing.
         let focus_right = KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL);
@@ -1496,9 +1566,15 @@ mod tests {
         }
         screen.handle_input(&InputEvent::Key(focus_right), &tx);
 
-        assert!(
-            !screen.panels.is_visible(PanelKind::Query),
-            "focus action must not reveal a panel while an overlay is open"
+        assert_eq!(
+            screen.panels.focused(),
+            focused_before,
+            "focus action must not move focus while an overlay is open"
+        );
+        assert_ne!(
+            screen.panels.active_drawer_view(),
+            DrawerView::Find,
+            "focus action must not switch the drawer view while an overlay is open"
         );
         assert_eq!(
             screen.overlays.active_kind(),

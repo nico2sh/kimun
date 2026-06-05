@@ -89,11 +89,22 @@ _Avoid_: backlinks panel (now only the default state), search panel / search sid
 ### TUI surfaces
 
 **Panel**:
-A persistent surface in the editor screen's column layout — the **sidebar**, the editor, or the **Query panel** — exactly one focused at a time. Each panel self-declares its column width, so the **PanelSet** can lay panels out in any order. Distinct from an **Overlay**, which is transient and modal.
+A persistent surface in the editor screen's column layout — the **Activity rail**, the **Drawer**, or the editor — exactly one focused at a time. Distinct from an **Overlay**, which is transient and modal.
 _Avoid_: pane, view, widget, component (too generic).
 
+**Activity rail**:
+The fixed-width icon strip on the far left of the editor screen. Each cell names a **drawer view**; selecting a cell (click, ↑/↓ + Enter, or later a leader path) switches the **Drawer** to that view. The active cell shows a green edge bar; CFG is pinned to the bottom.
+_Avoid_: sidebar (the pre-rail name for the file browser), icon bar, toolbar.
+
+**Drawer**:
+The single panel between the **Activity rail** and the editor; renders whichever **drawer view** is active. Toggleable (Ctrl-B) — hiding it gives its width to the editor — and divider-drag resizable. Exactly one drawer renders at a time.
+_Avoid_: sidebar / Query panel as panel names (they are now drawer views), side panel.
+
+**Drawer view**:
+What the **Drawer** can show: FILES (the file browser, formerly the sidebar), FIND (the **Query panel**), TAGS, LINKS, OUTLINE, CFG. The rail and the drawer stay in step through the view, not through panel identities.
+
 **PanelSet**:
-The config-ordered collection of the editor screen's **Panels**; owns the panel order (reorderable by config; default sidebar→editor→Query panel), which panel is focused, panel visibility, and focus cycling, and routes input and render to the focused panel. Focus cycles prev/next over the visible panels in their current order, so reordering needs no routing changes. The persistent-surface counterpart to the **OverlayHost**.
+The fixed left→right collection of the editor screen's **Panels** (rail → drawer → editor); owns which panel is focused, drawer visibility and width, and focus cycling, and routes input and render to the focused panel. Focus cycles over the visible panels, wrapping at both ends. The persistent-surface counterpart to the **OverlayHost**.
 _Avoid_: panel manager, layout, panel stack.
 
 **Overlay**:

@@ -1,7 +1,9 @@
+pub mod activity_rail;
 pub mod autocomplete;
 pub mod autosave_timer;
 pub mod backlinks_panel;
 pub mod dialogs;
+pub mod drawer;
 pub mod event_state;
 pub mod events;
 pub mod file_list;

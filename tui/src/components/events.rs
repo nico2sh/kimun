@@ -51,6 +51,9 @@ pub enum AppEvent {
     },
     OpenPath(VaultPath),
     FocusSidebar,
+    /// Switch the drawer to the given view and reveal it (sent by the
+    /// activity rail and, later, by leader paths / mouse clicks).
+    OpenDrawerView(crate::components::drawer::DrawerView),
     /// Sent by SettingsScreen when user confirms Save. The shared settings
     /// reference already contains the updated values.
     SettingsSaved,
