@@ -59,7 +59,7 @@ impl AppScreen for StartScreen {
         } else {
             let paths = self.settings.read().unwrap().current_last_paths();
             let path = paths.first().map_or_else(VaultPath::root, |p| p.to_owned());
-            tx.send(AppEvent::OpenPath(path)).ok();
+            tx.send(AppEvent::open(path)).ok();
         }
     }
 
@@ -79,7 +79,7 @@ impl AppScreen for StartScreen {
             self.overlay = None;
             let paths = self.settings.read().unwrap().current_last_paths();
             let path = paths.first().map_or_else(VaultPath::root, |p| p.to_owned());
-            tx.send(AppEvent::OpenPath(path)).ok();
+            tx.send(AppEvent::open(path)).ok();
         }
     }
 
@@ -128,7 +128,7 @@ mod tests {
         screen.on_enter(&tx).await;
         let msg = rx.try_recv().expect("expected a message");
         assert!(
-            matches!(msg, AppEvent::OpenPath(_)),
+            matches!(msg, AppEvent::OpenPath { .. }),
             "expected OpenPath, got {:?}",
             msg
         );
@@ -150,7 +150,9 @@ mod tests {
         );
         // Drain all messages and ensure none are OpenPath
         let messages: Vec<AppEvent> = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
-        let has_open_path = messages.iter().any(|m| matches!(m, AppEvent::OpenPath(_)));
+        let has_open_path = messages
+            .iter()
+            .any(|m| matches!(m, AppEvent::OpenPath { .. }));
         assert!(
             !has_open_path,
             "OpenPath should not be sent immediately when vault is Some"
@@ -171,7 +173,7 @@ mod tests {
         assert!(screen.overlay.is_none(), "overlay should be cleared");
         let msg = rx.try_recv().expect("expected OpenPath message");
         assert!(
-            matches!(msg, AppEvent::OpenPath(_)),
+            matches!(msg, AppEvent::OpenPath { .. }),
             "expected OpenPath after indexing done"
         );
     }
@@ -193,7 +195,7 @@ mod tests {
         );
         let msg = rx.try_recv().expect("expected OpenPath message");
         assert!(
-            matches!(msg, AppEvent::OpenPath(_)),
+            matches!(msg, AppEvent::OpenPath { .. }),
             "expected OpenPath even after failed indexing"
         );
     }

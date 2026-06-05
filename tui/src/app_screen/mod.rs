@@ -43,7 +43,15 @@ pub trait AppScreen: Send {
     /// buffer, or navigate a sidebar). Return `Some(path)` if the screen
     /// does not handle it, in which case the main loop switches to an
     /// appropriate screen. Default: not handled.
-    async fn try_open_path(&mut self, path: VaultPath, _tx: &AppTx) -> Option<VaultPath> {
+    /// `emphasis` carries the originating query's needles when the open came
+    /// from a query result; only the editor screen uses it (spec §5.1) — it
+    /// is dropped when the open reroutes to a screen switch.
+    async fn try_open_path(
+        &mut self,
+        path: VaultPath,
+        _emphasis: Option<Vec<String>>,
+        _tx: &AppTx,
+    ) -> Option<VaultPath> {
         Some(path)
     }
 

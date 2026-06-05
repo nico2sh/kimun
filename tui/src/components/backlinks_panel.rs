@@ -363,15 +363,13 @@ impl QueryPanel {
         self.list.query()
     }
 
-    /// Arriving at a note from a query result carries the query's needles to
-    /// the editor so the matched spans light up (spec §5.1). The resolved
-    /// query (not the template) supplies them, so `{note}` never leaks.
-    fn send_emphasis(&self, tx: &AppTx) {
+    /// The emphasis payload an open from this panel carries: the resolved
+    /// query's needles (spec §5.1) — resolved, not the template, so `{note}`
+    /// never leaks.
+    fn emphasis(&self) -> Option<Vec<String>> {
         let resolved = resolve_query(self.list.query(), Some(&self.current_note()));
         let needles = crate::components::query_highlight::emphasis_needles(&resolved);
-        if !needles.is_empty() {
-            tx.send(AppEvent::SetEditorSearchNeedles(needles)).ok();
-        }
+        (!needles.is_empty()).then_some(needles)
     }
 
     /// Number of results currently listed — the status bar's match count.
@@ -577,8 +575,11 @@ impl QueryPanel {
                 .contains(ratatui::crossterm::event::KeyModifiers::CONTROL)
         {
             if let Some(path) = self.selected_path().cloned() {
-                self.send_emphasis(tx);
-                tx.send(AppEvent::OpenPath(path)).ok();
+                tx.send(AppEvent::OpenPath {
+                    path,
+                    emphasis: self.emphasis(),
+                })
+                .ok();
             }
             return EventState::Consumed;
         }
@@ -590,8 +591,11 @@ impl QueryPanel {
         match self.list.handle_key(key) {
             KeyReaction::Intercepted(c) if self.follow_link_combos.contains(&c) => {
                 if let Some(path) = self.selected_path().cloned() {
-                    self.send_emphasis(tx);
-                    tx.send(AppEvent::OpenPath(path)).ok();
+                    tx.send(AppEvent::OpenPath {
+                        path,
+                        emphasis: self.emphasis(),
+                    })
+                    .ok();
                 }
                 EventState::Consumed
             }
@@ -1379,7 +1383,7 @@ mod tests {
 
         let mut opened = None;
         while let Ok(ev) = rx.try_recv() {
-            if let AppEvent::OpenPath(path) = ev {
+            if let AppEvent::OpenPath { path, .. } = ev {
                 opened = Some(path);
             }
         }

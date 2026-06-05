@@ -401,7 +401,7 @@ impl LinksPanel {
 
     fn open_selected(&self, tx: &AppTx) {
         if let Some(entry) = self.list.as_ref().and_then(|l| l.selected_row()) {
-            tx.send(AppEvent::OpenPath(entry.path.clone())).ok();
+            tx.send(AppEvent::open(entry.path.clone())).ok();
         }
     }
 
