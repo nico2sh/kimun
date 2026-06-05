@@ -21,6 +21,4 @@ Kimün offers two ways to let an AI assistant work with your vault: the **[CLI s
 
 **Use the [MCP server](@/using-kimun/ai-mcp-server.md)** if you use a desktop AI client such as Claude Desktop, or an editor with MCP support. The server exposes the same operations as structured tool calls and also provides prompt templates for journal reviews, connection finding, and brainstorming.
 
-Both expose the same destructive operations — overwrite, replace, and delete — and back up a note's previous content before changing it, so AI-driven edits stay recoverable.
-
-Both approaches can run simultaneously — the TUI, the CLI, and the MCP server all share the same SQLite index with safe concurrent reads.
+Both expose the same destructive operations — overwrite, replace, delete — and both [back up the old content first](@/using-kimun/cli.md#backups), so AI-driven edits stay recoverable. And both can run alongside the TUI: everything shares the same SQLite index with safe concurrent reads.

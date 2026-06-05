@@ -5,6 +5,8 @@ weight = 10
 
 # Troubleshooting
 
+Something acting weird? The log file usually knows why.
+
 ## Log Files
 
 Kimün writes a log file on every run. In release builds only warnings and errors are recorded, keeping the file small. Debug builds log everything.
@@ -48,3 +50,7 @@ If Kimün cannot write to the platform directory (for example, because the home 
 |----------|---------|
 | macOS / Linux | `/tmp/kimun.log` (or wherever `$TMPDIR` points) |
 | Windows | `%TEMP%\kimun.log` |
+
+## Still Stuck?
+
+[Open an issue](https://github.com/nico2sh/kimun/issues) with the relevant section of `kimun.log` — especially any `[PANIC]` lines. If search is misbehaving, `kimun workspace reindex <name>` rebuilds the index from scratch and fixes most weirdness (see [Workspaces](@/getting-started/workspaces.md#reindex-rebuild-the-search-index)).

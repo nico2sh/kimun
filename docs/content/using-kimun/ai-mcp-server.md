@@ -31,15 +31,13 @@ The MCP client spawns and manages the `kimun mcp` process automatically — you 
 
 ### Destructive tools and backups
 
-`overwrite_note`, `replace_in_note`, and `delete_note` are marked with the MCP
+`overwrite_note`, `replace_in_note`, and `delete_note` carry the MCP
 `destructive` annotation, so a client that supports confirmation can prompt
 before they run.
 
-Every edit that overwrites or removes a note's content is backed up first: the
-old content is copied into a hidden, dated directory inside the vault (excluded
-from indexing and search) and kept for 30 days before automatic purge. This also
-covers the backlink rewrites performed by `rename_note` and `move_note`. If a
-backup cannot be written, the operation is aborted and the note is left untouched.
+Like every Kimün edit, destructive operations (including the backlink rewrites
+from `rename_note` / `move_note`) back up the old content first — see
+[Backups](@/using-kimun/cli.md#backups) for how that works.
 
 ## Prompts
 

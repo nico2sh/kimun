@@ -5,15 +5,17 @@ sort_by = "weight"
 
 # Introduction
 
-Kimün is a terminal-based notes app that helps you organize and search your thoughts with speed and simplicity. Your notes are plain Markdown files stored in a directory you own, indexed into a local SQLite database for fast full-text and structured search. There's no lock-in — your data is always yours, and you can access it with any text editor.
+**Kimün is a notes app that lives in your terminal.** Fast to open, fast to search, impossible to outgrow.
 
 ![Kimün TUI screenshot](img/screenshot-tui.png)
 
+- **Plain Markdown files** — your notes are just `.md` files in a directory you own. Open them with any editor, sync them with anything.
+- **Search that actually finds things** — a local SQLite index powers full-text and structured queries (by name, section, path, label, links).
+- **No lock-in, ever** — no cloud, no subscriptions, no tracking. Delete Kimün tomorrow and your notes won't notice.
+
 ## Quick Start
 
-See the [Installation](@/getting-started/installation.md) page for setup instructions.
-
-Then run the terminal UI:
+[Install Kimün](@/getting-started/installation.md), then run the terminal UI:
 
 ```sh
 kimun

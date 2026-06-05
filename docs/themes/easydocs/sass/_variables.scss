@@ -5,7 +5,7 @@ $background: #1A1816;
 $color: #E8E4DC;
 $links: #82BAD5;
 $hover-links: #F9C844;
-$visited-links: #6B8FA3;
+$visited-links: #7BA0B5; // dimmer than $links but ≥6:1 on $background (AA with headroom)
 
 // Typography
 $font-size: 1.0625rem;

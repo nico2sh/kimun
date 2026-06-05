@@ -60,3 +60,7 @@ your-workspace/                 ← Your workspace directory
 ```
 
 The cache and history locations are configurable — see [Configuration → Files Kimün Stores on Disk](@/getting-started/configuration.md#files-kimun-stores-on-disk).
+
+## What's Next
+
+You're installed. Now learn your way around the [Terminal UI](@/using-kimun/tui.md), or set up separate [Workspaces](@/getting-started/workspaces.md) for work and personal notes.
