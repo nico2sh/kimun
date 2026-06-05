@@ -363,6 +363,11 @@ impl LinksPanel {
         self.tab
     }
 
+    /// Switch to `tab`, used by leader paths (`l b/o/u`).
+    pub fn show_tab(&mut self, tab: LinksTab, tx: &AppTx) {
+        self.set_tab(tab, tx);
+    }
+
     fn set_tab(&mut self, tab: LinksTab, tx: &AppTx) {
         if tab != self.tab {
             self.tab = tab;

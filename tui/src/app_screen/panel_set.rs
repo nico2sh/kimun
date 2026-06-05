@@ -287,6 +287,20 @@ impl PanelSet {
         self.drawer.is_text_input()
     }
 
+    /// Grow/shrink the drawer by `delta` columns (leader window commands),
+    /// clamped to the same bounds the divider drag enforces.
+    pub fn adjust_drawer_width(&mut self, delta: i16) {
+        let new = self.drawer_width.saturating_add_signed(delta);
+        let max_width = self
+            .column_rects
+            .iter()
+            .map(|(_, r)| r.right())
+            .max()
+            .map(|right| right.saturating_sub(RAIL_WIDTH + MIN_EDITOR_WIDTH))
+            .unwrap_or(u16::MAX);
+        self.drawer_width = new.clamp(MIN_DRAWER_WIDTH, max_width.max(MIN_DRAWER_WIDTH));
+    }
+
     /// Switch the drawer to `view` and reveal it. Keeps the rail cursor in
     /// step so keyboard navigation continues from the active item.
     pub fn open_drawer_view(&mut self, view: DrawerView) {

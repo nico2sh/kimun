@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize, de::Visitor, ser::SerializeMap};
 pub mod action_shortcuts;
 pub mod key_combo;
 pub mod key_strike;
+pub mod leader;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyBindings {

@@ -53,12 +53,16 @@ pub enum ActionShortcuts {
     // In-buffer find (Ctrl+F by default; reopens / advances to next match if
     // already open).
     FindInBuffer,
+    /// The leader gateway (Ctrl+G by default): starts a key sequence against
+    /// the leader tree in every context, including mid-typing.
+    Leader,
 }
 
 impl ActionShortcuts {
     pub fn category(&self) -> ShortcutCategory {
         match self {
-            ActionShortcuts::ToggleSidebar
+            ActionShortcuts::Leader
+            | ActionShortcuts::ToggleSidebar
             | ActionShortcuts::FocusSidebar
             | ActionShortcuts::FocusEditor
             | ActionShortcuts::OpenSortDialog
@@ -103,6 +107,7 @@ impl ActionShortcuts {
             ActionShortcuts::SaveCurrentQuery => "Save current query".into(),
             ActionShortcuts::SwitchWorkspace => "Switch workspace".into(),
             ActionShortcuts::FindInBuffer => "Find in note".into(),
+            ActionShortcuts::Leader => "Leader menu".into(),
             ActionShortcuts::Text(ta) => match ta {
                 TextAction::Bold => "Bold".into(),
                 TextAction::Italic => "Italic".into(),
@@ -139,6 +144,7 @@ impl Display for ActionShortcuts {
             ActionShortcuts::SaveCurrentQuery => "SaveCurrentQuery".to_string(),
             ActionShortcuts::SwitchWorkspace => "SwitchWorkspace".to_string(),
             ActionShortcuts::FindInBuffer => "FindInBuffer".to_string(),
+            ActionShortcuts::Leader => "Leader".to_string(),
         };
         write!(f, "{}", action)
     }
@@ -170,6 +176,7 @@ impl TryFrom<String> for ActionShortcuts {
             "SaveCurrentQuery" => ActionShortcuts::SaveCurrentQuery,
             "SwitchWorkspace" => ActionShortcuts::SwitchWorkspace,
             "FindInBuffer" => ActionShortcuts::FindInBuffer,
+            "Leader" => ActionShortcuts::Leader,
             _ => {
                 if let Some(text_action) = value.strip_prefix("TextEditor-") {
                     match TextAction::try_from(text_action.to_string()) {

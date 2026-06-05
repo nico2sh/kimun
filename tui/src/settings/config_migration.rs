@@ -10,7 +10,7 @@ use super::AppSettings;
 use super::workspace_config::{WorkspaceConfig, WorkspaceEntry};
 
 /// Current config version. Bump this when adding a new migration step.
-pub const CURRENT_CONFIG_VERSION: u32 = 3;
+pub const CURRENT_CONFIG_VERSION: u32 = 4;
 
 /// Runs all necessary migrations on `settings`, mutating it in place.
 /// Returns `true` if any migration was applied (caller should persist).
@@ -49,14 +49,50 @@ impl ConfigMigration {
             migrated = true;
         }
 
+        // v3 → v4: the leader gateway takes Ctrl-G; FollowLink moves to
+        // Ctrl-N (plus the hardcoded Ctrl+Enter on kitty-protocol terminals).
+        if settings.config_version < 4 {
+            Self::migrate_to_v4(settings);
+            migrated = true;
+        }
+
         // Future migrations go here, gated on config_version:
-        // if settings.config_version < 4 { ... migrated = true; }
+        // if settings.config_version < 5 { ... migrated = true; }
 
         if migrated {
             settings.config_version = CURRENT_CONFIG_VERSION;
         }
 
         Ok(migrated)
+    }
+
+    /// v3 → v4: move Ctrl-G from FollowLink to the new Leader gateway —
+    /// but only when the user still had the old default (FollowLink bound
+    /// to exactly Ctrl-G); customised bindings are left untouched, and the
+    /// leader is then inserted only if Ctrl-G is free.
+    fn migrate_to_v4(settings: &mut AppSettings) {
+        use crate::keys::KeyBindings;
+        use crate::keys::action_shortcuts::ActionShortcuts;
+        use crate::keys::key_combo::KeyCombo;
+        use crate::keys::key_strike::KeyStrike;
+
+        let ctrl = crate::keys::key_combo::KeyModifiers::new().and_ctrl();
+        let ctrl_g = KeyCombo::new(ctrl, KeyStrike::KeyG);
+        let ctrl_n = KeyCombo::new(ctrl, KeyStrike::KeyN);
+
+        let mut map = settings.key_bindings.to_hashmap();
+        let follow_is_old_default = map
+            .get(&ActionShortcuts::FollowLink)
+            .is_some_and(|v| v.as_slice() == [ctrl_g]);
+        if follow_is_old_default {
+            // Old default: hand Ctrl-G to the leader, FollowLink → Ctrl-N.
+            map.insert(ActionShortcuts::FollowLink, vec![ctrl_n]);
+            map.entry(ActionShortcuts::Leader).or_default().push(ctrl_g);
+        }
+        settings.key_bindings = KeyBindings::from_hashmap(map);
+        // (If the user had customised FollowLink, the leader simply stays
+        // unbound until `merge_missing_default_bindings` finds Ctrl-G free
+        // or the user binds it explicitly.)
     }
 
     /// v2 → v3: move `<workspace>/kimun.sqlite` to
@@ -356,5 +392,56 @@ mod tests {
 
         let migrated = ConfigMigration::run(&mut settings).unwrap();
         assert!(!migrated);
+    }
+
+    #[test]
+    fn v4_moves_ctrl_g_from_followlink_to_leader() {
+        use crate::keys::KeyBindings;
+        use crate::keys::action_shortcuts::ActionShortcuts;
+        use crate::keys::key_combo::{KeyCombo, KeyModifiers};
+        use crate::keys::key_strike::KeyStrike;
+
+        let ctrl = KeyModifiers::new().and_ctrl();
+        let ctrl_g = KeyCombo::new(ctrl, KeyStrike::KeyG);
+        let ctrl_n = KeyCombo::new(ctrl, KeyStrike::KeyN);
+
+        // Old default: FollowLink bound to exactly Ctrl-G.
+        let mut settings = AppSettings::default();
+        let mut map = std::collections::HashMap::new();
+        map.insert(ActionShortcuts::FollowLink, vec![ctrl_g]);
+        settings.key_bindings = KeyBindings::from_hashmap(map);
+        settings.config_version = 3;
+
+        assert!(ConfigMigration::run(&mut settings).unwrap());
+        let map = settings.key_bindings.to_hashmap();
+        assert_eq!(map.get(&ActionShortcuts::Leader), Some(&vec![ctrl_g]));
+        assert_eq!(map.get(&ActionShortcuts::FollowLink), Some(&vec![ctrl_n]));
+        assert_eq!(settings.config_version, CURRENT_CONFIG_VERSION);
+    }
+
+    #[test]
+    fn v4_leaves_customised_followlink_alone() {
+        use crate::keys::KeyBindings;
+        use crate::keys::action_shortcuts::ActionShortcuts;
+        use crate::keys::key_combo::{KeyCombo, KeyModifiers};
+        use crate::keys::key_strike::KeyStrike;
+
+        let ctrl = KeyModifiers::new().and_ctrl();
+        let ctrl_x = KeyCombo::new(ctrl, KeyStrike::KeyX);
+
+        let mut settings = AppSettings::default();
+        let mut map = std::collections::HashMap::new();
+        map.insert(ActionShortcuts::FollowLink, vec![ctrl_x]);
+        settings.key_bindings = KeyBindings::from_hashmap(map);
+        settings.config_version = 3;
+
+        ConfigMigration::run(&mut settings).unwrap();
+        let map = settings.key_bindings.to_hashmap();
+        // Customised binding untouched; the leader is not force-bound.
+        assert_eq!(map.get(&ActionShortcuts::FollowLink), Some(&vec![ctrl_x]));
+        assert!(
+            map.get(&ActionShortcuts::Leader)
+                .is_none_or(|v| v.is_empty())
+        );
     }
 }
