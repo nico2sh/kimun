@@ -5,248 +5,204 @@ weight = 10
 
 # TUI Reference
 
-Kimün's terminal UI provides an intuitive interface for managing and editing your notes. This page describes the available screens, navigation patterns, and key bindings.
+Kimün's terminal UI is built around a single editor screen with an activity rail, one collapsible drawer, and a two-line status bar. There are no editing modes: **focus is the only state**, and everything reachable by keyboard is also reachable by mouse.
 
-## Screens
+## Layout
 
-### Browse
+```
+┌──┬───────────────┬──────────────────────────────┐
+│  │               │                              │
+│R │    DRAWER     │           EDITOR             │
+│A │ (one of:      │                              │
+│I │  FILES FIND   │                              │
+│L │  TAGS LINKS   │                              │
+│  │  OUTL CFG)    │                              │
+├──┴───────────────┴──────────────────────────────┤
+│ ⌨ EDITOR  hints…                    global hints │
+│ path · ln/col · ✓ saved · backlinks · git        │
+└──────────────────────────────────────────────────┘
+```
 
-The Browse screen displays a file tree navigator for your workspace directory. You can traverse through folders and files using arrow keys, open notes to edit them, and perform file operations like rename, move, and delete.
+- **Activity rail** — the icon strip on the far left. Each cell names a drawer view; the active one is marked with a green border segment. Click a cell (or focus the rail and press Enter) to switch the drawer to that view. CFG is pinned at the bottom.
+- **Drawer** — a single panel that shows one view at a time: **FILES** (file tree), **FIND** (query search), **TAGS**, **LINKS**, **OUTLINE**, or **CFG** (configuration overview). Toggle it with `Ctrl+T`; drag the divider between drawer and editor to resize it.
+- **Editor** — always visible, takes the remaining width.
+- **Status bar** — line 1 shows the focused surface (`⌨` when a text field holds the cursor, `≣` for lists) and its key hints; line 2 shows document state: path, line/column, saved/modified, backlink count, git summary.
 
-**Key features:**
+`Tab` / `Shift+Tab` cycle focus across the visible panels (when focus is not inside the editor text — there Tab indents). `Ctrl+L` / `Ctrl+H` move focus right / left from anywhere.
 
-- Navigate the note hierarchy with arrow keys
-- Press Enter to open a note in the Editor
-- Sort notes by name, title, or reverse the sort order
-- Perform file operations (rename, move, delete)
+## The Leader Key
 
-### Editor
+Press **`Ctrl+G`** (the *leader*) and then a short key sequence to reach any command. Sequences are grouped mnemonically:
 
-The Editor screen is a Markdown editor for writing and editing notes. It features:
+| Group | Keys | Examples |
+| ----- | ---- | -------- |
+| `f` +find | `f f` files · `f g` grep/query · `f t` tags · `f b` backlinks · `f r` recent · `f s` saved searches · `f h` headings |
+| `n` +note | `n n` new · `n d` daily · `n t` from template · `n r` rename · `n m` move · `n D` delete |
+| `l` +links | `l b` backlinks · `l o` outgoing · `l u` unlinked mentions |
+| `o` +open | `o f/q/t/k/l/c` open a drawer view directly (files/find/tags/links/outline/config) |
+| `g` +git | `g s` status · log/diff/sync are display-only stubs |
+| `v` +vault | `v s` switch vault · `v r` reindex · `v c` config panel · `v t` theme picker · `v S` settings screen |
+| `w` +window | `w z` zen · `w l`/`w h` grow/shrink drawer |
+| `m` +this note | `m t` toggle todo · `m p` preview · `m c` copy wikilink · `m y` yank path · `m r` rename |
+| `p` | command palette |
+| `?` | help / cheatsheet |
 
-- **Sidebar (file browser pane):** A collapsible pane on the left showing the file tree of your workspace
-- **Main editor area:** Your note content with Markdown formatting support
-- **Preview pane:** A toggleable preview showing how your Markdown renders
+Hesitate mid-sequence and a **which-key** panel pops up above the status bar showing what each next key does (the delay is configurable — `leader_timeout_ms`). In **lists** (not text fields), a bare `Space` also starts a leader sequence.
 
-The preview pane is toggled with `Ctrl+Y` and shows a live preview of your note as you type.
+The full tree, with your custom bindings applied, is in the cheatsheet: `Ctrl+G ?`.
 
-**Key features:**
+### Command Palette
 
-- Full Markdown syntax support
-- Text formatting shortcuts (bold, italic, strikethrough, headers)
-- Autosave functionality
-- Navigate between the editor and sidebar using focus commands
+**`Ctrl+P`** opens the command palette: every leader command as a fuzzy list, searchable by label *or* key sequence. Enter runs the selected command. It is the same action set as the leader tree — never a second implementation.
 
-### Settings
+### Customizing the leader tree
 
-The Settings screen lets you configure Kimün's behavior and appearance:
+Sequences, additions, removals, and group captions are configurable in `config.toml` — see [Leader tree overrides](@/getting-started/configuration.md#leader-tree-overrides).
 
-- **Notes directory:** Set or change the location of your workspace
-- **Active workspace:** Switch between multiple note workspaces
-- **Theme:** Choose from available color themes
-- **Key bindings:** Customize keyboard shortcuts for any action
-- **Other preferences:** Autosave interval, font settings, and more
+## Drawer Views
 
-All settings are stored in your config file (see [Configuration Reference](@/getting-started/configuration.md) for details).
+### FILES
 
-## Workspace Switcher
+The workspace file tree with a breadcrumb header (click a segment to jump up), type-to-filter, and sorting (`Ctrl+R` opens the sort dialog: field, order, group-directories). Enter opens a note; typing a name that matches nothing offers a *Create* row. Right-click a row for the file-operations menu (rename / move / delete), also on `F2`.
 
-Press `F4` to open the workspace switcher. It lists all configured workspaces with the current one marked. Use Up/Down to navigate and Enter to switch — the app transitions to the new workspace, validating and indexing it as needed.
+### FIND
 
-Workspace management (create, rename, delete) is available in the Settings screen (`Ctrl+P`) under the **Workspaces** section:
+A live [query search](@/using-kimun/search.md) over the vault. It opens **empty**, showing a short syntax primer; type to search. Queries are syntax-highlighted as you type (tags aqua, note targets blue, field keys yellow, negation red, an unterminated quote underlined with a `⚠` reason in the header).
 
-- **n** — create a new workspace (enter a name, then browse for a directory)
-- **r** — rename the selected workspace
-- **d** — delete the selected workspace (cannot delete the current one)
-- **b** — browse to change the selected workspace's directory path
+- **Type** — results update live; `#` autocompletes tags, `?` (first char) autocompletes [saved searches](#saved-searches)
+- **Up/Down** — move through results · **Enter** — expand the selected note to show match context, again for more, a third time to collapse
+- **Ctrl+Enter** (or **Ctrl+N**) — open the selected note in the editor; the matched text lights up there
+- **Ctrl+R** — sort dialog (written into the query as an `or:` directive) · **Ctrl+D** — save the query under a name
+- Bare `<`, `>` or `=` are shorthand for `<{note}`, `>{note}`, `={note}` (current note's backlinks / forward links / name). The panel titles itself "Backlinks" when the query is any spelling of the backlinks query.
 
-The file browser supports type-ahead: press any letter to jump to the first directory starting with that character. Press the same letter again to cycle through matches.
+`Ctrl+E` toggles straight to FIND from anywhere.
 
-## Navigation Patterns
+### TAGS
 
-### Basic Movement
+Every `#tag` in the vault with its note count, filterable. Enter (or click) runs that tag's query in FIND.
 
-- **Arrow keys** — Move up/down/left/right through the file tree
-- **Enter** — Open the selected note in the Editor
+### LINKS
 
-### Focus Management
+Link context for the open note, in three sub-tabs — **backlinks · outgoing · unlinked** (mentions of the note's name that don't link to it). Switch tabs with `b` / `o` / `u`, `←`/`→`, or by clicking the tab name. Enter opens the selected note; right-click opens its file-operations menu.
 
-- **`Ctrl+L`** — Move focus right (Sidebar → Editor → Query panel)
-- **`Ctrl+H`** — Move focus left (Query panel → Editor → Sidebar)
+### OUTLINE
 
-Focus moves directionally through the visible panels. If the target panel is hidden, it is opened automatically (e.g., pressing `Ctrl+L` from the editor opens the query panel if it's not visible).
+The open note's headings as an indented tree, filterable. Enter jumps the editor to that heading.
 
-### Panels and Views
+### CFG
 
-- **`Ctrl+F`** — Toggle the note browser panel visibility
-- **`Ctrl+Y`** — Toggle the preview pane (Editor only)
-- **`Ctrl+E`** — Toggle the query panel (right side); see [Query Panel](#query-panel)
-- **`Ctrl+T`** — Toggle the sidebar
+A configuration overview: active theme, leader key, settings key, which-key timeout, and config file path. `t` (or Enter) opens the **theme picker** — a live-preview list of every theme; moving the selection restyles the app instantly, Enter persists, Esc reverts. `s` opens the full Settings screen.
 
-### Sorting
+## Telescope Search
 
-- **`Ctrl+R`** — Open the sort dialog for the focused panel
+Two modal pickers float over the editor, list on the left, preview on the right:
 
-The sort dialog presents the options as a small menu: move between rows with **↑/↓**, change a value with **Space** (or **←/→**), and press **Enter** or **Esc** to close. Changes apply live as you toggle them.
+- **`Ctrl+K`** — query search (same grammar as FIND); the preview shows the note with matches emphasized and a `filename · N matches` header.
+- **`Ctrl+O`** — fuzzy file finder by name; typing a new name offers a *Create* row.
 
-- **Sort by** — Name or Title
-- **Order** — Ascending or Descending
-- **Group directories** (sidebar only) — when On, directories cluster at the top of the list, above the notes
-- Press **`s`** (sidebar only) to save the current selection as the default for the active view (the journal view keeps its own default)
+Enter opens the selection (query matches stay highlighted in the editor until your first edit). `Ctrl+D` saves the current query.
 
-### Quick Note
+## Editor
 
-Press `Ctrl+W` to open the quick note dialog. Type a thought and press Enter to save it — the note is created in your inbox directory with a timestamp filename, and you stay on the current note without interruption. Use Shift+Enter to save and immediately open the new note instead.
+The editor renders Markdown styled in place — still plain editable source, no separate mode:
 
-### Query Panel
+- Headings bright/bold (H3 yellow), bold/italic styled, bullets dimmed, blockquotes get a `▏` bar, inline and fenced code get a code background
+- `[[wikilinks]]` blue and underlined, `#tags` colored — both **clickable** (click follows / runs the tag query; click again on the same spot to place the cursor for editing)
+- Task lists: `- [ ]` checkboxes accented, `- [x]` rows dimmed and struck through
+- The cursor line reveals raw markup for editing
+- An empty note shows a ghost tip (`Type to start · [[ to link · # to tag · Ctrl+G for commands`) that vanishes on the first keystroke
 
-Press `Ctrl+E` to toggle the query panel on the right side of the editor. It runs a [search query](@/using-kimun/search.md) and lists the matching notes beside your work. By default it shows the current note's **backlinks** — the notes that link to it — because its starting query is `<{note}` (see [Query variables](@/using-kimun/search.md#query-variables)). Edit the query and the panel becomes an always-available search next to the editor.
+When the cursor enters a link or tag, status line 2 shows where it goes: `→ people/maria · 3 backlinks` or `→ #tag · tag query`.
 
-- **Type** — edit the query; results update as you type. A bare `<`, `>` or `=` is shorthand for `<{note}`, `>{note}` or `={note}` (backlinks, forward links, or name of the current note).
-- **Up/Down** — navigate the result list
-- **Enter** — expand the selected note to show the paragraph around the match. Press Enter again for the full note, a third time to collapse.
-- **Ctrl+G** — open the selected note in the editor
-- **Ctrl+R** — open the sort dialog (sort by name/title, ascending/descending); the choice is written into the panel's query as an `or:` directive
-- **Ctrl+D** — save the current query as a named [saved search](#saved-searches)
-- **Esc** — return focus to the editor
+### Following links
 
-The panel title reflects the active query (it reads "Backlinks" when the query is `<{note}`). It loads when toggled on and re-runs automatically when you switch notes if the query references the current note. Panel visibility is remembered for the session.
+With the cursor on a link, **`Ctrl+Enter`** follows it (**`Ctrl+N`** does the same on terminals that can't distinguish Ctrl+Enter from Enter):
 
-### Saved Searches
+- **Wikilink** — opens the note (picker if several match); relative paths and `#fragment` suffixes resolve correctly
+- **Markdown link** — same; **URL** — opens in your browser; **image** — opens in your image viewer
+- **`#tag`** — opens the query search pre-filled with that tag
 
-Saved searches store a query under a name so you can re-run it any time — common filters, project views, or backlink queries, one keystroke away.
+### Find in buffer
 
-**Saving a query.** Press `Ctrl+D` to save the current query:
+`Ctrl+F` opens a one-line find bar; matches highlight in the buffer; press `Ctrl+F` / Enter to advance. Esc closes.
 
-- From the **query panel** — saves the panel's active query.
-- From the **search modal** (`Ctrl+K`) — saves whatever you have typed in the search box.
+### Text formatting
 
-A small dialog asks for a name; press Enter to store it. The query is saved as a *template*, so a saved `<{note}` resolves against whichever note is open when you later run it (see [Query variables](@/using-kimun/search.md#query-variables)).
+| Action | Binding | Effect |
+| ------ | ------- | ------ |
+| Bold | `Ctrl+B` | `**…**` around the selection |
+| Italic | `Ctrl+I` | `*…*` |
+| Strikethrough | `Ctrl+S` | `~~…~~` |
 
-**Running and managing.** Press `F3` to open the Saved Searches picker:
+### Autocomplete
 
-| Key             | Action                                     |
-| --------------- | ------------------------------------------ |
-| Type            | filter the list by name                    |
-| `1`–`9`    | quick-select the n-th saved search         |
-| `↑` / `↓` | move the selection                         |
-| `Enter`       | run the selected search in the query panel |
-| `Delete`      | remove the selected saved search           |
-| `Esc`         | close the picker                           |
+Typing `[[` pops up a note list; `#` (not at line start) pops up tags — filter by typing, accept with Tab/Enter, dismiss with Esc. Works in the editor and in every query field. (Textarea backend only; the Neovim backend uses your own completion setup.)
 
-Running a saved search opens the query panel (if hidden) and loads its results there.
+### Pasting
 
-**Running by name from the search box.** Without opening the picker, type `?` as the first character in the query panel or `Ctrl+K` search box to autocomplete saved-search names (e.g. `?todo`; a bare `?` lists all). Accepting expands the stored query into the field — editable like any query — and shows the name on the search-box border as a breadcrumb (`‹ todo ›`, gaining `• edited` once you change the query, cleared when the field is emptied). See [Running by name](@/using-kimun/search.md#running-by-name).
+`Ctrl+V` (or the terminal's native paste) adapts to the clipboard: plain text inserts; a URL over a selection wraps it as `[selection](url)`; an image saves to `/assets/` and inserts a relative image link.
 
-### Following Links
+## Mouse
 
-When the cursor is inside a link in the editor, **`Ctrl+G`** follows it:
+Full parity with the keyboard:
 
-- **Wikilink (`[[note name]]`)** — opens the matching note directly, or shows a picker if multiple notes match
-- **Markdown link (`[text](path)`)** — opens the linked note; fragment suffixes (e.g. `#section`) are ignored during lookup
-- **URL (`https://...`)** — opens the URL in your default browser
-- **Image link (`![alt](path)`)** — opens the image file with the OS default image viewer. Relative paths resolve against the current note's directory; absolute vault paths (e.g. `/assets/foo.png`) resolve from the workspace root
-- **Hashtag label (`#tag`)** — hashtag tokens are highlighted in the editor. Pressing `Ctrl+G` while the cursor is on a hashtag opens the search modal pre-filled with that label filter (equivalent to typing `#tag` in search).
+| Gesture | Effect |
+| ------- | ------ |
+| Click | focus the panel / select the row |
+| Click the selected row again | open it |
+| Click a `[[link]]` / `#tag` in the editor | follow it / run the tag query |
+| Right-click a file or note row | file-operations menu |
+| Right-click in the editor (no selection) | context menu for the open note |
+| Right-click in the editor (with selection) | copy the selection |
+| Drag the drawer∕editor divider | resize |
+| Click a breadcrumb segment | jump up the tree |
+| Click a rail cell / LINKS tab | switch view |
+| Scroll | scroll the pane under the cursor |
 
-### Wikilink and Hashtag Autocomplete
+## Saved Searches
 
-The editor and the search modal both pop up a floating suggestion list when you start a wikilink or a hashtag.
+`Ctrl+D` saves the active query (from FIND, the query modal, or the panel) under a name; queries are stored as *templates*, so `{note}` re-resolves against whichever note is open when run. Open the picker with **`F3`** or **`Ctrl+G f s`**: type to filter, `1`–`9` quick-select, Enter runs it in FIND, Delete removes it. Or type `?name` directly in any query field.
 
-**Triggers:**
+## Quick Note & Journal
 
-- Typing `[[` in the editor opens a popup listing every note in the vault, ordered alphabetically by name. As you keep typing, the list filters by prefix against the note name (the wikilink target — the filename without extension, not the full path). The note's path is shown right-aligned and dimmed so you can disambiguate notes that share a name.
-- Typing `#` mid-line in the editor or anywhere in the search box opens a popup listing existing tags, ordered by usage. Filtering works the same way.
+- **`Ctrl+W`** — quick note dialog: type a thought, Enter saves it to your inbox with a timestamp name (Shift+Enter saves *and* opens it).
+- **`Ctrl+J`** — open (or create) today's journal entry.
 
-**Header disambiguation:**
+## Workspaces
 
-A `#` at the start of a line is *not* an autocomplete trigger by default — it might be the beginning of a Markdown heading (`# Heading`). The popup opens only after you type the next character, and only if that next character is **not** a space:
+**`F4`** opens the workspace switcher. Manage workspaces (create/rename/delete/re-path) in the Settings screen under **Workspaces**.
 
-- `# Heading` — no popup (heading syntax)
-- `#project` — popup opens with prefix `p`
+## Settings Screen
 
-**Key bindings (while the popup is open):**
+**`Ctrl+,`** opens Settings: workspace paths, theme, keybindings, autosave, indexing. Also reachable via the palette, `Ctrl+G v S`, or the CFG drawer's `s`.
 
-| Key                       | Action                                       |
-| ------------------------- | -------------------------------------------- |
-| `↑` / `↓`           | Move the highlighted suggestion              |
-| `PageUp` / `PageDown` | Jump by a page                               |
-| `Home` / `End`        | Jump to first / last suggestion              |
-| `Tab` or `Enter`      | Accept the highlighted suggestion            |
-| `Esc`                   | Dismiss the popup without changing your text |
-
-For wikilinks, accepting a suggestion inserts the note name and automatically closes the `]]` brackets (or preserves them if they already exist), placing the cursor right after the closing brackets.
-
-The popup is non-blocking: you can ignore it and keep typing — it disappears as soon as the trigger context is broken (whitespace, newline, or cursor movement out of range). It also stays out of code spans, fenced blocks, frontmatter, and Markdown link bodies, so `#section` inside `https://example.com#section` does not pop up suggestions.
-
-The popup caps its visible rows (default 8). If more suggestions match, a directional `▲ N more` / `▼ N more` indicator shows that scrolling will reveal them; the popup never grows past its cap regardless of available screen space.
-
-In the search box, the same hashtag autocomplete works after the exclusion prefix `-`: typing `-#proj` and accepting a suggestion preserves the leading `-` so the search still excludes that tag.
-
-> **Note**: Autocomplete is available in the **textarea** editor backend. Users on the embedded Neovim backend should rely on their existing Neovim completion plugins.
-
-### Text Formatting
-
-While the cursor is in the editor, format shortcuts wrap the current selection (or insert empty markers at the cursor when no selection is active):
-
-| Action        | Default Binding | Effect                        |
-| ------------- | --------------- | ----------------------------- |
-| Bold          | `Ctrl+B`      | wraps selection in `**…**` |
-| Italic        | `Ctrl+I`      | wraps selection in `*…*`   |
-| Strikethrough | `Ctrl+S`      | wraps selection in `~~…~~` |
-
-Examples:
-
-- Selecting `important` and pressing `Ctrl+B` produces `**important**`.
-- Pressing `Ctrl+I` on an empty cursor inserts `**` and places the cursor between the markers.
-
-### Pasting Content
-
-The editor adapts paste behaviour to the clipboard contents. Both **`Ctrl+V`** and the terminal's native paste shortcut are supported (on macOS this is `Cmd+V`; the TUI receives it through bracketed paste).
-
-**Plain text** — inserted at the cursor, replacing any active selection.
-
-**URL over selection** — if the clipboard holds an `http`, `https`, `ftp`, `ftps`, or `mailto` URL **and** there is an active selection, the selection is wrapped as a markdown link instead of being replaced:
-
-- Select `Nico`, copy `https://nico.red` to the clipboard, paste → produces `[Nico](https://nico.red)`.
-
-**Image** — if the clipboard contains image bytes (e.g. a screenshot), the image is saved as a PNG under the workspace's `/assets/` directory and a markdown image link is inserted at the cursor, relative to the current note. Generated filenames are time-stamped (e.g. `image_<unix_nanos>.png`) so multiple pastes do not collide.
-
-The inserted image link renders as a placeholder (`[image_<…>.png]`) in the editor for readability — press `Ctrl+G` over the placeholder to open the image with your OS default viewer.
+> Settings was previously on `Ctrl+Shift+P`; it moved because that combination is a chord prefix in kitty's default configuration, which swallows the next key.
 
 ## Key Bindings
 
-Default bindings (all configurable via the [Configuration Reference](@/getting-started/configuration.md)):
+Defaults (all configurable — see [Configuration Reference](@/getting-started/configuration.md)):
 
-| Action                                            | Default Binding |
-| ------------------------------------------------- | --------------- |
-| Quit                                              | `Ctrl+Q`      |
-| Settings                                          | `Ctrl+P`      |
-| Search notes                                      | `Ctrl+K`      |
-| Open note (fuzzy finder)                          | `Ctrl+O`      |
-| Toggle note browser                               | `Ctrl+F`      |
-| Toggle preview                                    | `Ctrl+Y`      |
-| New journal entry                                 | `Ctrl+J`      |
-| Quick note                                        | `Ctrl+W`      |
-| Toggle query panel                                | `Ctrl+E`      |
-| Save current query                                | `Ctrl+D`      |
-| Open saved searches                               | `F3`          |
-| Switch workspace                                  | `F4`          |
-| Toggle sidebar                                    | `Ctrl+T`      |
-| Bold                                              | `Ctrl+B`      |
-| Italic                                            | `Ctrl+I`      |
-| Strikethrough                                     | `Ctrl+S`      |
-| Focus right (Sidebar → Editor → Query panel)    | `Ctrl+L`      |
-| Focus left (Query panel → Editor → Sidebar)     | `Ctrl+H`      |
-| Open sort dialog (field/order, group directories) | `Ctrl+N`      |
-| Follow link under cursor                          | `Ctrl+G`      |
-| File operations (rename/move/delete)              | `F2`          |
+| Action | Default |
+| ------ | ------- |
+| Quit | `Ctrl+Q` |
+| **Leader** (command sequences) | `Ctrl+G` |
+| Command palette | `Ctrl+P` |
+| Settings | `Ctrl+,` |
+| Query search (telescope) | `Ctrl+K` |
+| Open note (fuzzy finder) | `Ctrl+O` |
+| Toggle drawer | `Ctrl+T` |
+| Open FIND view | `Ctrl+E` |
+| Find in buffer | `Ctrl+F` |
+| Follow link | `Ctrl+Enter` (modern terminals) / `Ctrl+N` |
+| New journal entry | `Ctrl+J` |
+| Quick note | `Ctrl+W` |
+| Save current query | `Ctrl+D` |
+| Saved searches | `F3` |
+| Sort dialog | `Ctrl+R` |
+| File operations | `F2` |
+| Switch workspace | `F4` |
+| Focus right / left | `Ctrl+L` / `Ctrl+H` |
+| Bold / Italic / Strikethrough | `Ctrl+B` / `Ctrl+I` / `Ctrl+S` |
+| Help | `F1` (cheatsheet: `Ctrl+G ?`) |
 
-### Context-Sensitive Bindings
-
-**`Ctrl+G` — Follow link (editor only):**
-
-`Ctrl+G` is only active when the editor pane has focus and the cursor is positioned inside a link. If the cursor is not on a link, the key press is ignored.
-
-## Customizing Key Bindings
-
-All key bindings are fully customizable through your config file. See the [Configuration Reference](@/getting-started/configuration.md) for instructions on how to rebind actions and create custom keyboard shortcuts.
+Everything else lives behind the leader (`Ctrl+G`) — press it and pause: the which-key panel pops up and shows you everything available.

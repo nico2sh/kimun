@@ -216,6 +216,6 @@ kimun workspace use work
 
 ### From the TUI
 
-Open the Settings screen (default: `Ctrl+P`) and change the active workspace. The TUI displays a list of configured workspaces to choose from.
+Open the Settings screen (default: `Ctrl+,`) and change the active workspace. The TUI displays a list of configured workspaces to choose from.
 
 Both methods update the same config file (`config.toml`), so changes made in the TUI are immediately reflected in CLI commands and vice versa.

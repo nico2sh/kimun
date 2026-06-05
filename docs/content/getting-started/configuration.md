@@ -7,12 +7,13 @@ weight = 3
 
 Kimün stores its configuration in `config.toml`. By default it lives in your OS config directory (`~/.config/kimun/` on Linux/macOS, `%USERPROFILE%\kimun\` on Windows), and can be overridden with `kimun --config /path/to/config.toml`.
 
-The file has three kinds of contents:
+The file has these kinds of contents:
 
 1. **Top-level fields** — app-wide settings that apply everywhere.
 2. **`[global]`** — which workspace is currently active.
 3. **`[workspaces.<name>]`** — one block per workspace, mapping a name to a notes directory.
 4. **`[key_bindings]`** — keyboard shortcuts for the TUI.
+5. **`[leader.bind]` / `[leader.labels]`** — leader-key sequence overrides and group captions.
 
 You don't need to write this file by hand. Kimün creates it on first run and updates it when you change settings from the TUI's Settings screen. This page is the reference for when you *do* want to edit it.
 
@@ -31,11 +32,12 @@ Why separate files instead of keeping everything inside the workspace directory?
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `config_version` | integer | `3` | Schema version. Managed by the config migration system — do not edit. |
+| `config_version` | integer | `6` | Schema version. Managed by the config migration system — do not edit. |
 | `cache_dir` | string | `"."` | Directory where per-workspace SQLite caches (`<workspace>.kimuncache`) are stored. Resolved relative to the config file's directory. Accepts `~`, relative paths, or absolute paths. |
 | `history_dir` | string | `"history"` | Directory where per-workspace history files (`<workspace>.txt`) are stored. Same path resolution as `cache_dir`. |
 | `theme` | string | `""` | Active TUI theme name (e.g. `"Nord"`). An empty string uses the built-in default. See [Themes](@/using-kimun/themes.md). |
 | `autosave_interval_secs` | integer | `5` | How often unsaved changes are written to disk (seconds). |
+| `leader_timeout_ms` | integer | `400` | Hesitation (milliseconds) before the which-key panel reveals itself during a pending leader sequence. Sequences typed faster never wait. |
 | `use_nerd_fonts` | boolean | `false` | Enable Nerd Font glyphs in the TUI. Leave `false` if your terminal's font doesn't include Nerd Font patches. |
 | `editor_backend` | string | `"textarea"` | Editor engine. `"textarea"` = built-in editor. `"nvim"` = embedded Neovim. |
 | `nvim_path` | string | *(unset)* | Absolute path to the `nvim` binary. Only needed when Neovim is not on `PATH`. |
@@ -155,6 +157,8 @@ The ampersand (`&`) separates the modifier chain from the key. Combine multiple 
 ### Supported keys
 
 - Letters `a`–`z` (case-insensitive)
+- Digits `0`–`9`
+- Punctuation: `, . / ; ' [ ] \ \` - =` (e.g. `["ctrl&,"]` for Ctrl+,)
 - Function keys `F1`–`F12`, used bare with no modifier (e.g. `["F2"]`)
 
 ### Unrecognised combinations
@@ -168,21 +172,24 @@ Use these action names exactly as shown.
 **Navigation & UI**
 
 - `Quit` — Exit Kimün
-- `OpenSettings` — Open the settings dialog
-- `ToggleSidebar` — Show/hide the sidebar
-- `ToggleBacklinks` — Show/hide the backlinks panel
+- `Leader` — The leader gateway (default `Ctrl+G`) — starts a key sequence; see the [leader key](@/using-kimun/tui.md#the-leader-key)
+- `OpenCommandPalette` — The command palette (default `Ctrl+P`)
+- `OpenSettings` — Open the settings screen (default `Ctrl+,`)
+- `ToggleSidebar` — Show/hide the drawer (default `Ctrl+T`)
+- `ToggleBacklinks` — Open the FIND drawer view (default `Ctrl+E`)
 - `TogglePreview` — Show/hide the preview pane
-- `FocusEditor` — Move focus right (Sidebar → Editor → Backlinks)
-- `FocusSidebar` — Move focus left (Backlinks → Editor → Sidebar)
+- `FocusEditor` / `FocusSidebar` — Move focus right / left across the visible panels
 - `SwitchWorkspace` — Open the workspace switcher
+- `OpenSavedSearches` — Open the saved-searches picker (default `F3`)
 
 **Notes**
 
-- `SearchNotes` — Open the search / fuzzy finder
-- `OpenNote` — Open a note (fuzzy file picker)
+- `SearchNotes` — Open the query search modal (default `Ctrl+K`)
+- `OpenNote` — Open a note (fuzzy file picker, default `Ctrl+O`)
 - `NewJournal` — Create a new journal entry
 - `QuickNote` — Open the quick capture dialog
-- `FollowLink` — Follow the wiki link under the cursor
+- `FollowLink` — Follow the link under the cursor (default `Ctrl+N`; `Ctrl+Enter` also follows, built-in, on terminals that can distinguish it from Enter)
+- `SaveCurrentQuery` — Save the active query under a name (default `Ctrl+D`)
 - `FileOperations` — Open the file operations menu (delete, rename, move)
 - `FindInBuffer` — Open the in-note find bar; press again to advance to the next match (Textarea backend only — the Nvim backend uses its own `/` search)
 
@@ -206,30 +213,46 @@ Use these action names exactly as shown.
 ```toml
 [key_bindings]
 Quit = ["ctrl&Q"]
-OpenSettings = ["ctrl&P"]
+Leader = ["ctrl&G"]
+OpenCommandPalette = ["ctrl&P"]
+OpenSettings = ["ctrl&,"]
 SearchNotes = ["ctrl&K"]
 OpenNote = ["ctrl&O"]
 NewJournal = ["ctrl&J"]
 QuickNote = ["ctrl&W"]
 ToggleSidebar = ["ctrl&T"]
 ToggleBacklinks = ["ctrl&E"]
-TogglePreview = ["ctrl&Y"]
 FileOperations = ["F2"]
+OpenSavedSearches = ["F3"]
 SwitchWorkspace = ["F4"]
-FollowLink = ["ctrl&G"]
+FollowLink = ["ctrl&N"]
 FindInBuffer = ["ctrl&F"]
 TextEditor-Bold = ["ctrl&B"]
 TextEditor-Italic = ["ctrl&I"]
-TextEditor-Link = ["ctrl&L"]
-TextEditor-Image = ["ctrl+shift&L"]
 ```
+
+## Leader Tree Overrides
+
+The leader key's sequence tree is fully remappable. `[leader.bind]` maps a key sequence (the keys *after* the gateway, space-separated) to an action id — or `"none"` to remove a binding. `[leader.labels]` renames group captions shown in the which-key panel and cheatsheet.
+
+```toml
+[leader.bind]
+"o f" = "find.files"     # remap: leader o f now opens the file picker
+"x"   = "note.daily"     # add:   leader x opens today's journal
+"g p" = "none"           # remove a binding
+
+[leader.labels]
+"f" = "+search"          # rename the +find group caption
+```
+
+Action ids follow a `group.action` scheme (`find.files`, `note.new`, `vault.theme`, `drawer.links`, …). The cheatsheet (`Ctrl+G ?`) and the command palette always reflect your overrides. Unknown ids and malformed sequences are skipped with a log warning — they never break startup. Assigning a single key that currently names a whole group replaces that group (a warning is logged), so prefer two-key sequences unless that is what you want.
 
 ## Minimal Example
 
 A complete, minimal config file:
 
 ```toml
-config_version = 3
+config_version = 6
 cache_dir = "."
 history_dir = "history"
 autosave_interval_secs = 5
