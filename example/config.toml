@@ -29,7 +29,7 @@
 #
 # ─────────────────────────────────────────────────────────────────────────────
 config_version = 5
-theme = "ANSI"
+theme = "Monokai"
 cache_dir = "."
 history_dir = "history"
 autosave_interval_secs = 5
