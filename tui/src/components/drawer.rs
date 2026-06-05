@@ -49,7 +49,7 @@ impl DrawerView {
 pub struct ConfigInfo {
     pub theme_name: String,
     pub leader_key: String,
-    pub settings_key: String,
+    pub preferences_key: String,
     pub leader_timeout_ms: u64,
     pub config_path: String,
 }
@@ -141,7 +141,7 @@ impl DrawerHost {
             DrawerView::Outline => self.outline.hint_shortcuts(),
             DrawerView::Config => vec![
                 ("t/⏎".into(), "Theme picker".into()),
-                ("s".into(), "Settings".into()),
+                ("p".into(), "Preferences".into()),
             ],
         }
     }
@@ -172,9 +172,9 @@ impl DrawerHost {
                             .ok();
                             return EventState::Consumed;
                         }
-                        KeyCode::Char('s') => {
+                        KeyCode::Char('p') => {
                             tx.send(crate::components::events::AppEvent::OpenScreen(
-                                crate::components::events::ScreenEvent::OpenSettings,
+                                crate::components::events::ScreenEvent::OpenPreferences,
                             ))
                             .ok();
                             return EventState::Consumed;
@@ -228,8 +228,8 @@ impl DrawerHost {
                         ratatui::text::Span::styled(info.leader_key.clone(), value),
                     ]),
                     ratatui::text::Line::from(vec![
-                        ratatui::text::Span::styled(" settings ", label),
-                        ratatui::text::Span::styled(info.settings_key.clone(), value),
+                        ratatui::text::Span::styled(" prefs    ", label),
+                        ratatui::text::Span::styled(info.preferences_key.clone(), value),
                     ]),
                     ratatui::text::Line::from(vec![
                         ratatui::text::Span::styled(" timeout  ", label),
@@ -248,8 +248,8 @@ impl DrawerHost {
                         ratatui::text::Span::styled("theme picker", label),
                     ]),
                     ratatui::text::Line::from(vec![
-                        ratatui::text::Span::styled(" s ", keycap),
-                        ratatui::text::Span::styled("settings screen", label),
+                        ratatui::text::Span::styled(" p ", keycap),
+                        ratatui::text::Span::styled("preferences", label),
                     ]),
                 ];
                 f.render_widget(Paragraph::new(lines), inner);

@@ -527,7 +527,7 @@ impl EditorScreen {
                     crate::components::drawer::ConfigInfo {
                         theme_name: s.get_theme().name,
                         leader_key: key_of(&ActionShortcuts::Leader),
-                        settings_key: key_of(&ActionShortcuts::OpenSettings),
+                        preferences_key: key_of(&ActionShortcuts::OpenPreferences),
                         leader_timeout_ms: s.leader_timeout_ms,
                         config_path: s
                             .config_file
@@ -917,8 +917,8 @@ impl EditorScreen {
             // theme picker directly (also reachable inside CFG via `t`).
             LeaderAction::VaultConfig => self.open_drawer_view(DrawerView::Config, tx),
             LeaderAction::VaultTheme => self.open_theme_picker(),
-            LeaderAction::VaultSettings => {
-                tx.send(AppEvent::OpenScreen(ScreenEvent::OpenSettings))
+            LeaderAction::VaultPreferences => {
+                tx.send(AppEvent::OpenScreen(ScreenEvent::OpenPreferences))
                     .ok();
             }
 

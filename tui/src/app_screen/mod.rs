@@ -3,7 +3,7 @@ pub mod doc_meta;
 pub mod editor;
 pub mod overlay_host;
 pub mod panel_set;
-pub mod settings;
+pub mod preferences;
 pub mod start;
 
 use async_trait::async_trait;
@@ -19,7 +19,7 @@ pub enum ScreenKind {
     Start,
     Browse,
     Editor,
-    Settings,
+    Preferences,
 }
 
 #[async_trait]
@@ -69,7 +69,7 @@ mod tests {
     use std::sync::{Arc, RwLock};
 
     use super::*;
-    use crate::app_screen::settings::SettingsScreen;
+    use crate::app_screen::preferences::PreferencesScreen;
     use crate::settings::AppSettings;
 
     fn shared_defaults() -> crate::settings::SharedSettings {
@@ -79,7 +79,7 @@ mod tests {
     #[tokio::test]
     async fn on_exit_default_is_noop() {
         let (tx, _rx) = unbounded_channel::<AppEvent>();
-        let mut screen = SettingsScreen::new(shared_defaults());
+        let mut screen = PreferencesScreen::new(shared_defaults());
         screen.on_exit(&tx).await; // must compile and not panic
     }
 }

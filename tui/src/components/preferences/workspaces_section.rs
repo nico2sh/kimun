@@ -177,7 +177,7 @@ impl WorkspacesSection {
                 self.reset_mode();
                 EventState::Consumed
             }
-            // Caller (SettingsScreen) handles Enter via mode + input().
+            // Caller (PreferencesScreen) handles Enter via mode + input().
             InputOutcome::Submit | InputOutcome::Consumed => EventState::Consumed,
             InputOutcome::Changed => {
                 self.error = None;
@@ -190,7 +190,7 @@ impl WorkspacesSection {
     fn handle_confirm_delete(&mut self, code: KeyCode) -> EventState {
         match code {
             KeyCode::Char('y') => {
-                // Stays in ConfirmDelete; SettingsScreen reads mode + selected_name
+                // Stays in ConfirmDelete; PreferencesScreen reads mode + selected_name
                 EventState::Consumed
             }
             KeyCode::Char('n') | KeyCode::Esc => {
@@ -211,7 +211,7 @@ impl Component for WorkspacesSection {
             Mode::Normal => self.handle_normal(key.code, tx),
             Mode::Creating | Mode::Renaming => {
                 if key.code == KeyCode::Enter {
-                    // For Creating: signal OpenFileBrowser so SettingsScreen can pick up
+                    // For Creating: signal OpenFileBrowser so PreferencesScreen can pick up
                     if self.mode == Mode::Creating && !self.input.value().trim().is_empty() {
                         tx.send(AppEvent::OpenFileBrowser).ok();
                     }

@@ -22,7 +22,7 @@ cargo install kimun-notes
 
 ## First Run
 
-When you launch Kimün for the first time, it opens the Settings screen. Here you can set your notes directory — this becomes your **workspace** where all your notes will be stored.
+When you launch Kimün for the first time, it opens the Preferences screen. Here you can set your notes directory — this becomes your **workspace** where all your notes will be stored.
 
 ```sh
 kimun

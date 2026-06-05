@@ -96,11 +96,11 @@ impl ConfigMigration {
 
         let mut map = settings.key_bindings.to_hashmap();
         let at_old_default = map
-            .get(&ActionShortcuts::OpenSettings)
+            .get(&ActionShortcuts::OpenPreferences)
             .is_some_and(|v| v.as_slice() == [ctrl_shift_p]);
         let comma_free = !map.values().flatten().any(|c| *c == ctrl_comma);
         if at_old_default && comma_free {
-            map.insert(ActionShortcuts::OpenSettings, vec![ctrl_comma]);
+            map.insert(ActionShortcuts::OpenPreferences, vec![ctrl_comma]);
         }
         settings.key_bindings = KeyBindings::from_hashmap(map);
     }
@@ -121,13 +121,13 @@ impl ConfigMigration {
 
         let mut map = settings.key_bindings.to_hashmap();
         let settings_is_old_default = map
-            .get(&ActionShortcuts::OpenSettings)
+            .get(&ActionShortcuts::OpenPreferences)
             .is_some_and(|v| v.as_slice() == [ctrl_p]);
         let palette_unset_or_old_default = map
             .get(&ActionShortcuts::OpenCommandPalette)
             .is_none_or(|v| v.is_empty() || v.as_slice() == [ctrl_shift_p]);
         if settings_is_old_default && palette_unset_or_old_default {
-            map.insert(ActionShortcuts::OpenSettings, vec![ctrl_shift_p]);
+            map.insert(ActionShortcuts::OpenPreferences, vec![ctrl_shift_p]);
             map.insert(ActionShortcuts::OpenCommandPalette, vec![ctrl_p]);
         }
         settings.key_bindings = KeyBindings::from_hashmap(map);
@@ -499,14 +499,14 @@ mod tests {
 
         let mut settings = AppSettings::default();
         let mut map = std::collections::HashMap::new();
-        map.insert(ActionShortcuts::OpenSettings, vec![ctrl_shift_p]);
+        map.insert(ActionShortcuts::OpenPreferences, vec![ctrl_shift_p]);
         settings.key_bindings = KeyBindings::from_hashmap(map);
         settings.config_version = 5;
 
         assert!(ConfigMigration::run(&mut settings).unwrap());
         let map = settings.key_bindings.to_hashmap();
         assert_eq!(
-            map.get(&ActionShortcuts::OpenSettings),
+            map.get(&ActionShortcuts::OpenPreferences),
             Some(&vec![ctrl_comma])
         );
     }
@@ -524,7 +524,7 @@ mod tests {
 
         let mut settings = AppSettings::default();
         let mut map = std::collections::HashMap::new();
-        map.insert(ActionShortcuts::OpenSettings, vec![ctrl_p]);
+        map.insert(ActionShortcuts::OpenPreferences, vec![ctrl_p]);
         settings.key_bindings = KeyBindings::from_hashmap(map);
         settings.config_version = 4;
 
@@ -537,7 +537,7 @@ mod tests {
         // v6 chains after v5: settings end on Ctrl+, (kitty collision).
         let ctrl_comma = KeyCombo::new(ctrl, KeyStrike::Comma);
         assert_eq!(
-            map.get(&ActionShortcuts::OpenSettings),
+            map.get(&ActionShortcuts::OpenPreferences),
             Some(&vec![ctrl_comma])
         );
         let _ = ctrl_shift_p;
@@ -555,13 +555,13 @@ mod tests {
 
         let mut settings = AppSettings::default();
         let mut map = std::collections::HashMap::new();
-        map.insert(ActionShortcuts::OpenSettings, vec![ctrl_x]);
+        map.insert(ActionShortcuts::OpenPreferences, vec![ctrl_x]);
         settings.key_bindings = KeyBindings::from_hashmap(map);
         settings.config_version = 4;
 
         ConfigMigration::run(&mut settings).unwrap();
         let map = settings.key_bindings.to_hashmap();
-        assert_eq!(map.get(&ActionShortcuts::OpenSettings), Some(&vec![ctrl_x]));
+        assert_eq!(map.get(&ActionShortcuts::OpenPreferences), Some(&vec![ctrl_x]));
     }
 
     #[test]

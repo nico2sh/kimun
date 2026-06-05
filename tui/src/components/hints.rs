@@ -30,7 +30,7 @@ pub fn global_hints(kb: &KeyBindings) -> Vec<Hint> {
         kb,
         &[
             (ActionShortcuts::SearchNotes, "search"),
-            (ActionShortcuts::OpenSettings, "prefs"),
+            (ActionShortcuts::OpenPreferences, "prefs"),
             (ActionShortcuts::Quit, "quit"),
         ],
     )

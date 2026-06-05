@@ -16,7 +16,7 @@ Everything on one screen. Looking for how to *change* a binding? That's in [Conf
 | Quit | `Ctrl+Q` |
 | **Leader** (command sequences) | `Ctrl+G` |
 | Command palette | `Ctrl+P` |
-| Settings | `Ctrl+,` |
+| Preferences | `Ctrl+,` |
 | Query search (telescope) | `Ctrl+K` |
 | Open note (fuzzy finder) | `Ctrl+O` |
 | Toggle drawer | `Ctrl+T` |
@@ -45,7 +45,7 @@ Everything else lives behind the leader: press `Ctrl+G`, then a short sequence. 
 | `l` +links | `l b` backlinks · `l o` outgoing · `l u` unlinked mentions |
 | `o` +open | `o f/q/t/k/l/c` open a drawer view directly (files/find/tags/links/outline/config) |
 | `g` +git | `g s` status · log/diff/sync are display-only stubs |
-| `v` +vault | `v s` switch vault · `v r` reindex · `v c` config panel · `v t` theme picker · `v S` settings screen |
+| `v` +vault | `v s` switch vault · `v r` reindex · `v c` config panel · `v t` theme picker · `v p` preferences |
 | `w` +window | `w z` zen · `w l`/`w h` grow/shrink drawer |
 | `m` +this note | `m t` toggle todo · `m p` preview · `m c` copy wikilink · `m y` yank path · `m r` rename |
 | `p` | command palette |

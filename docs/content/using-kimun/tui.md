@@ -86,7 +86,7 @@ The open note's headings as an indented tree, filterable. Enter jumps the editor
 
 ### CFG
 
-A configuration overview: active theme, leader key, settings key, which-key timeout, and config file path. `t` (or Enter) opens the **theme picker** — a live-preview list of every theme; moving the selection restyles the app instantly, Enter persists, Esc reverts. `s` opens the full Settings screen.
+A configuration overview: active theme, leader key, preferences key, which-key timeout, and config file path. `t` (or Enter) opens the **theme picker** — a live-preview list of every theme; moving the selection restyles the app instantly, Enter persists, Esc reverts. `p` opens the full Preferences screen.
 
 ## Telescope Search
 
@@ -165,13 +165,13 @@ Full parity with the keyboard:
 
 ## Workspaces
 
-**`F4`** opens the workspace switcher. Manage workspaces (create/rename/delete/re-path) in the Settings screen under **Workspaces**.
+**`F4`** opens the workspace switcher. Manage workspaces (create/rename/delete/re-path) in the Preferences screen under **Workspaces**.
 
-## Settings Screen
+## Preferences Screen
 
-**`Ctrl+,`** opens Settings: workspace paths, theme, keybindings, autosave, indexing. Also reachable via the palette, `Ctrl+G v S`, or the CFG drawer's `s`.
+**`Ctrl+,`** opens Preferences: workspace paths, theme, keybindings, autosave, indexing. Also reachable via the palette, `Ctrl+G v p`, or the CFG drawer's `p`.
 
-> Settings was previously on `Ctrl+Shift+P`; it moved because that combination is a chord prefix in kitty's default configuration, which swallows the next key.
+> Preferences was previously on `Ctrl+Shift+P`; it moved because that combination is a chord prefix in kitty's default configuration, which swallows the next key.
 
 ## Key Bindings
 
