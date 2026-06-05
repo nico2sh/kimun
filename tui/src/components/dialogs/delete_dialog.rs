@@ -6,11 +6,12 @@ use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::Paragraph;
 
 use crate::components::Component;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx};
+use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::settings::themes::Theme;
 
 pub struct DeleteConfirmDialog {
@@ -72,15 +73,16 @@ impl Component for DeleteConfirmDialog {
         let height = if self.error.is_some() { 10 } else { 9 };
         let popup_area = super::fixed_centered_rect(46, height, rect);
 
-        f.render_widget(Clear, popup_area);
-
-        let outer_block = Block::default()
-            .title(" Delete ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.red.to_ratatui()))
-            .style(theme.panel_style());
-        let inner = outer_block.inner(popup_area);
-        f.render_widget(outer_block, popup_area);
+        let inner = modal_chrome(
+            f,
+            popup_area,
+            theme,
+            ModalSpec {
+                title: Some(" Delete "),
+                border: Some(Style::default().fg(theme.red.to_ratatui())),
+                ..Default::default()
+            },
+        );
 
         // ── Layout ────────────────────────────────────────────────────────────
         // Row 0: spacer

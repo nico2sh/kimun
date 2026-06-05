@@ -11,8 +11,9 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::Paragraph;
 
+use crate::components::panel::{ModalBg, ModalSpec, modal_chrome};
 use crate::keys::leader::{LeaderEngine, LeaderNode};
 use crate::settings::themes::Theme;
 
@@ -37,17 +38,16 @@ pub fn render(
     engine: &LeaderEngine,
     gateway_label: &str,
 ) {
-    f.render_widget(Clear, rect);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.focus_border.to_ratatui()))
-        .style(
-            Style::default()
-                .fg(theme.fg.to_ratatui())
-                .bg(theme.bg_hard.to_ratatui()),
-        );
-    let inner = block.inner(rect);
-    f.render_widget(block, rect);
+    let inner = modal_chrome(
+        f,
+        rect,
+        theme,
+        ModalSpec {
+            border: Some(Style::default().fg(theme.focus_border.to_ratatui())),
+            bg: ModalBg::Hard,
+            ..Default::default()
+        },
+    );
     if inner.height == 0 {
         return;
     }

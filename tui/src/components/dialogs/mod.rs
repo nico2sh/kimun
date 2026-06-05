@@ -346,20 +346,7 @@ pub(super) fn render_confirm_hint(
 // ---------------------------------------------------------------------------
 
 /// Centre a dialog of exactly `width` × `height` characters.
-pub(super) fn fixed_centered_rect(
-    width: u16,
-    height: u16,
-    area: ratatui::layout::Rect,
-) -> ratatui::layout::Rect {
-    let w = width.min(area.width);
-    let h = height.min(area.height);
-    ratatui::layout::Rect {
-        x: area.x + (area.width.saturating_sub(w)) / 2,
-        y: area.y + (area.height.saturating_sub(h)) / 2,
-        width: w,
-        height: h,
-    }
-}
+pub(super) use crate::components::fixed_centered_rect;
 
 #[cfg(test)]
 mod tests {

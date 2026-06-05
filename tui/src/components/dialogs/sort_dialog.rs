@@ -2,11 +2,12 @@ use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::Paragraph;
 
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, SortTarget};
 use crate::components::file_list::{SortField, SortOrder};
+use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::settings::themes::Theme;
 
 /// The selectable rows, in display order.
@@ -134,15 +135,16 @@ impl crate::components::Component for SortDialog {
         // rows + borders(2) + footer(1).
         let outer_height = self.rows.len() as u16 + 3;
         let popup = super::fixed_centered_rect(OUTER_WIDTH, outer_height, rect);
-        f.render_widget(Clear, popup);
-
-        let block = Block::default()
-            .title(" Sort ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.fg.to_ratatui()))
-            .style(theme.panel_style());
-        let inner = block.inner(popup);
-        f.render_widget(block, popup);
+        let inner = modal_chrome(
+            f,
+            popup,
+            theme,
+            ModalSpec {
+                title: Some(" Sort "),
+                border: Some(Style::default().fg(theme.fg.to_ratatui())),
+                ..Default::default()
+            },
+        );
         if inner.height < 2 {
             return;
         }

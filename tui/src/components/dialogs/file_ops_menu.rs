@@ -3,11 +3,12 @@ use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::Paragraph;
 
 use crate::components::Component;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx};
+use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::settings::themes::Theme;
 
 // ---------------------------------------------------------------------------
@@ -79,15 +80,16 @@ impl Component for FileOpsMenuDialog {
         // But keep it tight: border(2) + 7 inner rows = 9
         let popup_area = super::fixed_centered_rect(46, 9, rect);
 
-        f.render_widget(Clear, popup_area);
-
-        let outer_block = Block::default()
-            .title(" File Operations ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.fg.to_ratatui()))
-            .style(theme.panel_style());
-        let inner = outer_block.inner(popup_area);
-        f.render_widget(outer_block, popup_area);
+        let inner = modal_chrome(
+            f,
+            popup_area,
+            theme,
+            ModalSpec {
+                title: Some(" File Operations "),
+                border: Some(Style::default().fg(theme.fg.to_ratatui())),
+                ..Default::default()
+            },
+        );
 
         // ── Layout ────────────────────────────────────────────────────────────
         // Row 0: spacer

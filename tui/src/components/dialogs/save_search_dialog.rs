@@ -1,10 +1,11 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::Paragraph;
 
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, SaveSource};
+use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::components::single_line_input::{InputOutcome, SingleLineInput};
 use crate::settings::themes::Theme;
 
@@ -128,19 +129,20 @@ impl SaveSearchDialog {
     pub fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, _focused: bool) {
         let popup_area = super::fixed_centered_rect(62, 9, rect);
 
-        f.render_widget(Clear, popup_area);
-
         let fg = theme.fg.to_ratatui();
         let gray = theme.gray.to_ratatui();
         let bg = theme.bg_panel.to_ratatui();
 
-        let outer_block = Block::default()
-            .title(" Save search ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(gray))
-            .style(theme.panel_style());
-        let inner = outer_block.inner(popup_area);
-        f.render_widget(outer_block, popup_area);
+        let inner = modal_chrome(
+            f,
+            popup_area,
+            theme,
+            ModalSpec {
+                title: Some(" Save search "),
+                border: Some(Style::default().fg(gray)),
+                ..Default::default()
+            },
+        );
 
         let rows = Layout::default()
             .direction(Direction::Vertical)
