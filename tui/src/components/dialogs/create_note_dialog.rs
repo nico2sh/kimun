@@ -68,14 +68,14 @@ impl Component for CreateNoteDialog {
 
         f.render_widget(Clear, popup_area);
 
-        let fg_muted = theme.fg_muted.to_ratatui();
+        let gray = theme.gray.to_ratatui();
         let fg = theme.fg.to_ratatui();
         let bg = theme.bg_panel.to_ratatui();
 
         let outer_block = Block::default()
             .title(" Create note? ")
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(fg_muted))
+            .border_style(Style::default().fg(gray))
             .style(theme.panel_style());
         let inner = outer_block.inner(popup_area);
         f.render_widget(outer_block, popup_area);
@@ -95,18 +95,18 @@ impl Component for CreateNoteDialog {
             .split(inner);
 
         super::render_path_row(f, rows[1], &self.path_display, fg, bg);
-        super::render_separator(f, rows[2], fg_muted, bg);
+        super::render_separator(f, rows[2], gray, bg);
         f.render_widget(
-            Paragraph::new("  Note doesn't exist.").style(Style::default().fg(fg_muted).bg(bg)),
+            Paragraph::new("  Note doesn't exist.").style(Style::default().fg(gray).bg(bg)),
             rows[3],
         );
         f.render_widget(
             Paragraph::new("  [Enter] Create   [Esc] Cancel")
-                .style(Style::default().fg(fg_muted).bg(bg)),
+                .style(Style::default().fg(gray).bg(bg)),
             rows[5],
         );
         if let Some(msg) = &self.error {
-            super::render_error_row(f, rows[6], msg, bg);
+            super::render_error_row(f, rows[6], msg, theme);
         }
     }
 }

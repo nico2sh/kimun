@@ -193,7 +193,7 @@ impl FileListEntry {
         let lines: Vec<Line> = match self {
             Self::Up { .. } => vec![Line::from(Span::styled(
                 format!("{} [UP] ..", icons.directory_up),
-                Style::default().fg(theme.fg_muted.to_ratatui()),
+                Style::default().fg(theme.gray.to_ratatui()),
             ))],
             Self::Note {
                 title,

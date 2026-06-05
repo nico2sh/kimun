@@ -5,7 +5,7 @@ use kimun_core::nfs::VaultPath;
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use tokio::task::JoinHandle;
 
@@ -201,17 +201,17 @@ impl Component for RenameDialog {
 
         let bg = theme.bg_panel.to_ratatui();
         let fg = theme.fg.to_ratatui();
-        let fg_muted = theme.fg_muted.to_ratatui();
+        let gray = theme.gray.to_ratatui();
 
         // Row 1: path.
         super::render_path_row(f, rows[1], &self.path_display, fg, bg);
 
         // Row 2: separator.
-        super::render_separator(f, rows[2], fg_muted, bg);
+        super::render_separator(f, rows[2], gray, bg);
 
         // Row 3: "NEW NAME" label.
         f.render_widget(
-            Paragraph::new("  NEW NAME").style(Style::default().fg(fg_muted).bg(bg)),
+            Paragraph::new("  NEW NAME").style(Style::default().fg(gray).bg(bg)),
             rows[3],
         );
 
@@ -228,7 +228,7 @@ impl Component for RenameDialog {
 
         let input_block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(fg_muted))
+            .border_style(Style::default().fg(gray))
             .style(Style::default().bg(bg));
         let input_inner = input_block.inner(input_chunks[0]);
         f.render_widget(input_block, input_chunks[0]);
@@ -238,9 +238,11 @@ impl Component for RenameDialog {
         // Validation indicator glyph, centred vertically in the 3-row area.
         let (indicator_text, indicator_style) = match self.validation_state {
             ValidationState::Idle => ("   ", Style::default()),
-            ValidationState::Pending => (" \u{231b} ", Style::default().fg(fg_muted)),
-            ValidationState::Available => (" \u{2713} ", Style::default().fg(Color::Green)),
-            ValidationState::Taken => (" \u{2717} ", Style::default().fg(Color::Red)),
+            ValidationState::Pending => (" \u{231b} ", Style::default().fg(gray)),
+            ValidationState::Available => {
+                (" \u{2713} ", Style::default().fg(theme.green.to_ratatui()))
+            }
+            ValidationState::Taken => (" \u{2717} ", Style::default().fg(theme.red.to_ratatui())),
         };
         let indicator_rows = Layout::default()
             .direction(Direction::Vertical)
@@ -258,9 +260,15 @@ impl Component for RenameDialog {
         // Row 5: validation status text.
         let (status_text, status_style) = match self.validation_state {
             ValidationState::Idle => ("", Style::default()),
-            ValidationState::Pending => ("  Checking...", Style::default().fg(fg_muted).bg(bg)),
-            ValidationState::Available => ("  Available", Style::default().fg(Color::Green).bg(bg)),
-            ValidationState::Taken => ("  Already exists", Style::default().fg(Color::Red).bg(bg)),
+            ValidationState::Pending => ("  Checking...", Style::default().fg(gray).bg(bg)),
+            ValidationState::Available => (
+                "  Available",
+                Style::default().fg(theme.green.to_ratatui()).bg(bg),
+            ),
+            ValidationState::Taken => (
+                "  Already exists",
+                Style::default().fg(theme.red.to_ratatui()).bg(bg),
+            ),
         };
         f.render_widget(Paragraph::new(status_text).style(status_style), rows[5]);
 
@@ -271,13 +279,13 @@ impl Component for RenameDialog {
             "  [Enter] Rename",
             self.validation_state == ValidationState::Available,
             fg,
-            fg_muted,
+            gray,
             bg,
         );
 
         // Row 8 (optional): error message.
         if let Some(msg) = &self.error {
-            super::render_error_row(f, rows[8], msg, bg);
+            super::render_error_row(f, rows[8], msg, theme);
         }
     }
 }

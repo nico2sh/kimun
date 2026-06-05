@@ -65,12 +65,12 @@ pub struct BacklinkEntry {
 impl SearchRow for BacklinkEntry {
     fn to_list_item(&self, theme: &Theme, _icons: &Icons, selected: bool) -> ListItem<'static> {
         let fg = theme.fg.to_ratatui();
-        let fg_muted = theme.fg_muted.to_ratatui();
+        let gray = theme.gray.to_ratatui();
         let bg = theme.bg_panel.to_ratatui();
         let title_style = if selected {
             Style::default()
-                .fg(theme.fg_selected.to_ratatui())
-                .bg(theme.bg_selected.to_ratatui())
+                .fg(theme.selection_fg.to_ratatui())
+                .bg(theme.selection_bg.to_ratatui())
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(fg).bg(bg)
@@ -84,8 +84,8 @@ impl SearchRow for BacklinkEntry {
             Span::styled(format!("  {} ", title_display), title_style),
             Span::styled(
                 format!(" {}", self.filename),
-                Style::default().fg(fg_muted).bg(if selected {
-                    theme.bg_selected.to_ratatui()
+                Style::default().fg(gray).bg(if selected {
+                    theme.selection_bg.to_ratatui()
                 } else {
                     bg
                 }),
@@ -735,7 +735,7 @@ impl QueryPanel {
         self.full_header_rect = Rect::default();
 
         let border_style = theme.border_style(focused);
-        let fg_muted = theme.fg_muted.to_ratatui();
+        let gray = theme.gray.to_ratatui();
         let bg = theme.bg_panel.to_ratatui();
 
         let count = self.list.visible_rows().len();
@@ -789,7 +789,7 @@ impl QueryPanel {
 
         if self.list.is_loading() {
             f.render_widget(
-                Paragraph::new("  Loading...").style(Style::default().fg(fg_muted).bg(bg)),
+                Paragraph::new("  Loading...").style(Style::default().fg(gray).bg(bg)),
                 inner,
             );
             self.list.render_autocomplete(f, rect, theme);
@@ -798,7 +798,7 @@ impl QueryPanel {
 
         if self.list.visible_rows().is_empty() {
             f.render_widget(
-                Paragraph::new("  No results").style(Style::default().fg(fg_muted).bg(bg)),
+                Paragraph::new("  No results").style(Style::default().fg(gray).bg(bg)),
                 inner,
             );
             self.list.render_autocomplete(f, rect, theme);
@@ -840,13 +840,13 @@ impl QueryPanel {
                         Span::styled(
                             format!("\u{25BC} {} ", title_display),
                             Style::default()
-                                .fg(theme.fg_selected.to_ratatui())
+                                .fg(theme.selection_fg.to_ratatui())
                                 .bg(bg)
                                 .add_modifier(Modifier::BOLD),
                         ),
                         Span::styled(
                             format!(" {}", entry.filename),
-                            Style::default().fg(fg_muted).bg(bg),
+                            Style::default().fg(gray).bg(bg),
                         ),
                     ]))
                     .style(Style::default().bg(bg)),
@@ -856,7 +856,7 @@ impl QueryPanel {
                 // Fixed divider.
                 f.render_widget(
                     Paragraph::new("\u{2500}".repeat(parts[1].width as usize))
-                        .style(Style::default().fg(fg_muted).bg(bg)),
+                        .style(Style::default().fg(gray).bg(bg)),
                     parts[1],
                 );
 
@@ -869,7 +869,7 @@ impl QueryPanel {
                 for line in text.lines() {
                     let wrapped = wrap_line(line, wrap_width);
                     for wline in wrapped {
-                        let spans = highlight_needles(&wline, needles, fg_muted, bg, theme);
+                        let spans = highlight_needles(&wline, needles, gray, bg, theme);
                         let mut indented =
                             vec![Span::styled(" ".repeat(indent), Style::default().bg(bg))];
                         indented.extend(spans);
@@ -920,7 +920,7 @@ impl QueryPanel {
         if let Some(div) = divider_area {
             f.render_widget(
                 Paragraph::new("\u{2500}".repeat(div.width as usize))
-                    .style(Style::default().fg(fg_muted).bg(bg)),
+                    .style(Style::default().fg(gray).bg(bg)),
                 div,
             );
         }
@@ -959,7 +959,7 @@ impl QueryPanel {
                     {
                         link_line = Some(lines.len());
                     }
-                    let spans = highlight_needles(&wline, needles, fg_muted, bg, theme);
+                    let spans = highlight_needles(&wline, needles, gray, bg, theme);
                     let mut indented =
                         vec![Span::styled(" ".repeat(indent), Style::default().bg(bg))];
                     indented.extend(spans);
@@ -1146,11 +1146,11 @@ fn extract_context_multi(text: &str, needles: &[String]) -> String {
 fn highlight_needles(
     line: &str,
     needles: &[String],
-    fg_muted: ratatui::style::Color,
+    gray: ratatui::style::Color,
     bg: ratatui::style::Color,
     theme: &Theme,
 ) -> Vec<Span<'static>> {
-    let normal = Style::default().fg(fg_muted).bg(bg);
+    let normal = Style::default().fg(gray).bg(bg);
     let bold = Style::default()
         .fg(theme.accent.to_ratatui())
         .bg(bg)

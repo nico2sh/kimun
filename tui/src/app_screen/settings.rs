@@ -181,7 +181,8 @@ impl SettingsScreen {
             .iter()
             .find(|t| t.name == s.theme)
             .cloned()
-            .unwrap_or_default();
+            .unwrap_or_default()
+            .adapt_to_terminal();
         let active_name = theme.name.clone();
         let vault_available = s.workspace_dir.is_some()
             || s.workspace_config
@@ -565,7 +566,7 @@ impl AppScreen for SettingsScreen {
                             if r.is_consumed() {
                                 let theme = self.appearance_section.selected_theme().clone();
                                 self.settings.write().unwrap().set_theme(theme.name.clone());
-                                self.theme = theme;
+                                self.theme = theme.adapt_to_terminal();
                             }
                             r
                         }
@@ -792,7 +793,7 @@ impl AppScreen for SettingsScreen {
         let header = Block::default()
             .title("Settings")
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border.to_ratatui()))
+            .border_style(Style::default().fg(theme.border_dim.to_ratatui()))
             .style(theme.base_style())
             .title_style(Style::default().fg(theme.accent.to_ratatui()));
         f.render_widget(header, rows[0]);
@@ -801,7 +802,7 @@ impl AppScreen for SettingsScreen {
         f.render_widget(
             Paragraph::new("  [Esc] Save & Close  [Tab] Switch sidebar/content").style(
                 Style::default()
-                    .fg(theme.fg_muted.to_ratatui())
+                    .fg(theme.gray.to_ratatui())
                     .bg(theme.bg.to_ratatui()),
             ),
             rows[2],

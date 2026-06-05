@@ -227,7 +227,7 @@ impl Component for WorkspacesSection {
     fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
         let border_style = theme.border_style(focused);
         let fg = theme.fg.to_ratatui();
-        let fg_muted = theme.fg_muted.to_ratatui();
+        let gray = theme.gray.to_ratatui();
         let bg = theme.bg_panel.to_ratatui();
 
         // Reserve bottom lines: 1 for hint, 1 for error (if any), 2 for border
@@ -259,7 +259,7 @@ impl Component for WorkspacesSection {
         if self.entries.is_empty() {
             f.render_widget(
                 Paragraph::new("  No workspaces configured.")
-                    .style(Style::default().fg(fg_muted).bg(bg)),
+                    .style(Style::default().fg(gray).bg(bg)),
                 rows[0],
             );
         } else {
@@ -283,7 +283,7 @@ impl Component for WorkspacesSection {
 
             let list = List::new(items)
                 .style(Style::default().bg(bg))
-                .highlight_style(Style::default().bg(theme.bg_selected.to_ratatui()));
+                .highlight_style(Style::default().bg(theme.selection_bg.to_ratatui()));
 
             f.render_stateful_widget(list, rows[0], &mut self.list_state);
         }
@@ -320,7 +320,7 @@ impl Component for WorkspacesSection {
             }
         };
         f.render_widget(
-            Paragraph::new(hint_text).style(Style::default().fg(fg_muted).bg(bg)),
+            Paragraph::new(hint_text).style(Style::default().fg(gray).bg(bg)),
             rows[hint_idx],
         );
 

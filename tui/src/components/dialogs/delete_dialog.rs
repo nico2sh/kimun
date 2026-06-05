@@ -5,7 +5,7 @@ use kimun_core::nfs::VaultPath;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::components::Component;
@@ -77,7 +77,7 @@ impl Component for DeleteConfirmDialog {
         let outer_block = Block::default()
             .title(" Delete ")
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Red))
+            .border_style(Style::default().fg(theme.red.to_ratatui()))
             .style(theme.panel_style());
         let inner = outer_block.inner(popup_area);
         f.render_widget(outer_block, popup_area);
@@ -108,31 +108,31 @@ impl Component for DeleteConfirmDialog {
 
         let bg = theme.bg_panel.to_ratatui();
         let fg = theme.fg.to_ratatui();
-        let fg_muted = theme.fg_muted.to_ratatui();
+        let gray = theme.gray.to_ratatui();
 
         // Row 1: path
         super::render_path_row(f, rows[1], &self.path_display, fg, bg);
 
         // Row 2: separator
-        super::render_separator(f, rows[2], fg_muted, bg);
+        super::render_separator(f, rows[2], gray, bg);
 
         // Row 3: warning
         f.render_widget(
             Paragraph::new("  This cannot be undone.")
-                .style(Style::default().fg(Color::Red).bg(bg)),
+                .style(Style::default().fg(theme.red.to_ratatui()).bg(bg)),
             rows[3],
         );
 
         // Row 5: hint
         f.render_widget(
             Paragraph::new("  [Enter] Delete   [Esc] Cancel")
-                .style(Style::default().fg(fg_muted).bg(bg)),
+                .style(Style::default().fg(gray).bg(bg)),
             rows[5],
         );
 
         // Row 6: error (optional)
         if let Some(msg) = &self.error {
-            super::render_error_row(f, rows[6], msg, bg);
+            super::render_error_row(f, rows[6], msg, theme);
         }
     }
 }

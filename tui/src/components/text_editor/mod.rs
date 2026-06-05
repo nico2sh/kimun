@@ -277,10 +277,10 @@ fn render_search_bar(
 ) {
     let base = theme.base_style();
     let muted = Style::default()
-        .fg(theme.fg_muted.to_ratatui())
+        .fg(theme.gray.to_ratatui())
         .bg(theme.bg.to_ratatui());
     let err = Style::default()
-        .fg(ratatui::style::Color::Red)
+        .fg(theme.red.to_ratatui())
         .bg(theme.bg.to_ratatui());
     let prompt_cols = unicode_width::UnicodeWidthStr::width(FIND_PROMPT) as u16;
     // Tail sits after the full value (in display columns, accounting for

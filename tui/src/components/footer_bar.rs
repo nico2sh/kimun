@@ -69,7 +69,7 @@ impl FooterBar {
                 self.settings_key, self.toggle_key, self.right_bar_key, self.quit_key,
             ))
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border.to_ratatui()))
+            .border_style(Style::default().fg(theme.border_dim.to_ratatui()))
             .style(theme.base_style())
             .title_style(Style::default().fg(theme.fg_secondary.to_ratatui()));
         let footer_inner = footer.inner(rect);

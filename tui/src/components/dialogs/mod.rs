@@ -275,18 +275,22 @@ pub(super) fn render_path_row(f: &mut Frame, rect: Rect, path: &str, fg: Color, 
 }
 
 /// Renders a single-line horizontal rule (TOP border only).
-pub(super) fn render_separator(f: &mut Frame, rect: Rect, fg_muted: Color, bg: Color) {
+pub(super) fn render_separator(f: &mut Frame, rect: Rect, gray: Color, bg: Color) {
     Block::default()
         .borders(Borders::TOP)
-        .border_style(Style::default().fg(fg_muted))
+        .border_style(Style::default().fg(gray))
         .style(Style::default().bg(bg))
         .render(rect, f.buffer_mut());
 }
 
-/// Renders `  Error: {msg}` in red.
-pub(super) fn render_error_row(f: &mut Frame, rect: Rect, msg: &str, bg: Color) {
+/// Renders `  Error: {msg}` in the theme's error color on the panel background.
+pub(super) fn render_error_row(f: &mut Frame, rect: Rect, msg: &str, theme: &Theme) {
     f.render_widget(
-        Paragraph::new(format!("  Error: {msg}")).style(Style::default().fg(Color::Red).bg(bg)),
+        Paragraph::new(format!("  Error: {msg}")).style(
+            Style::default()
+                .fg(theme.red.to_ratatui())
+                .bg(theme.bg_panel.to_ratatui()),
+        ),
         rect,
     );
 }
@@ -299,16 +303,13 @@ pub(super) fn render_confirm_hint(
     enter_text: &str,
     enter_active: bool,
     fg: Color,
-    fg_muted: Color,
+    gray: Color,
     bg: Color,
 ) {
     let enter_style = if enter_active {
         Style::default().fg(fg).bg(bg)
     } else {
-        Style::default()
-            .fg(fg_muted)
-            .bg(bg)
-            .add_modifier(Modifier::DIM)
+        Style::default().fg(gray).bg(bg).add_modifier(Modifier::DIM)
     };
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -319,7 +320,7 @@ pub(super) fn render_confirm_hint(
         .split(rect);
     f.render_widget(Paragraph::new(enter_text).style(enter_style), chunks[0]);
     f.render_widget(
-        Paragraph::new("  [Esc] Cancel").style(Style::default().fg(fg_muted).bg(bg)),
+        Paragraph::new("  [Esc] Cancel").style(Style::default().fg(gray).bg(bg)),
         chunks[1],
     );
 }

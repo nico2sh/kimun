@@ -392,7 +392,7 @@ pub(super) fn span_style(kind: Option<ElementKind>, is_sigil_region: bool, theme
     match kind {
         None => {
             if is_sigil_region {
-                Style::default().fg(theme.fg_muted.to_ratatui())
+                Style::default().fg(theme.gray.to_ratatui())
             } else {
                 Style::default().fg(theme.fg.to_ratatui())
             }
@@ -408,7 +408,7 @@ pub(super) fn span_style(kind: Option<ElementKind>, is_sigil_region: bool, theme
             .add_modifier(Modifier::CROSSED_OUT),
         Some(ElementKind::InlineCode) => Style::default()
             .fg(theme.fg.to_ratatui())
-            .bg(theme.bg_selected.to_ratatui()),
+            .bg(theme.selection_bg.to_ratatui()),
         Some(ElementKind::Link) => Style::default()
             .fg(theme.accent.to_ratatui())
             .add_modifier(Modifier::UNDERLINED),
@@ -417,7 +417,7 @@ pub(super) fn span_style(kind: Option<ElementKind>, is_sigil_region: bool, theme
             .add_modifier(Modifier::ITALIC),
         Some(ElementKind::HeadingH1) => {
             if is_sigil_region {
-                Style::default().fg(theme.fg_muted.to_ratatui())
+                Style::default().fg(theme.gray.to_ratatui())
             } else {
                 Style::default()
                     .fg(theme.accent.to_ratatui())
@@ -426,7 +426,7 @@ pub(super) fn span_style(kind: Option<ElementKind>, is_sigil_region: bool, theme
         }
         Some(ElementKind::HeadingH2) => {
             if is_sigil_region {
-                Style::default().fg(theme.fg_muted.to_ratatui())
+                Style::default().fg(theme.gray.to_ratatui())
             } else {
                 Style::default()
                     .fg(theme.fg.to_ratatui())
@@ -435,7 +435,7 @@ pub(super) fn span_style(kind: Option<ElementKind>, is_sigil_region: bool, theme
         }
         Some(ElementKind::HeadingH3) => {
             if is_sigil_region {
-                Style::default().fg(theme.fg_muted.to_ratatui())
+                Style::default().fg(theme.gray.to_ratatui())
             } else {
                 Style::default().fg(theme.fg_secondary.to_ratatui())
             }

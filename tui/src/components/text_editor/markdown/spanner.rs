@@ -166,12 +166,12 @@ impl MarkdownSpanner {
             if cursor_col.is_some() {
                 return vec![Span::styled(
                     content,
-                    Style::default().fg(theme.fg_muted.to_ratatui()),
+                    Style::default().fg(theme.gray.to_ratatui()),
                 )];
             }
             return vec![Span::styled(
                 "─".repeat(available_width as usize),
-                Style::default().fg(theme.fg_muted.to_ratatui()),
+                Style::default().fg(theme.gray.to_ratatui()),
             )];
         }
         // Force-raw (inside fenced code block). Expand tabs to spaces (at the
@@ -257,7 +257,7 @@ impl MarkdownSpanner {
             }
             let seg = std::mem::take(seg_str);
             let style = if seg_is_expanded {
-                Style::default().fg(theme.fg_muted.to_ratatui())
+                Style::default().fg(theme.gray.to_ratatui())
             } else {
                 // OR in emphasis modifiers from outer elements so a Link /
                 // WikiLink nested in `**…**` / `*…*` keeps the bold/italic the

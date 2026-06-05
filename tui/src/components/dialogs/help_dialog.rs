@@ -166,8 +166,8 @@ impl Component for HelpDialog {
 
         let bg = theme.bg_panel.to_ratatui();
         let fg = theme.fg.to_ratatui();
-        let fg_muted = theme.fg_muted.to_ratatui();
-        let fg_accent = theme.fg_selected.to_ratatui();
+        let gray = theme.gray.to_ratatui();
+        let fg_accent = theme.selection_fg.to_ratatui();
 
         // Cache for PageUp/PageDown.
         self.last_body_height = body_area.height;
@@ -203,7 +203,7 @@ impl Component for HelpDialog {
                     );
                 }
                 HelpRow::Separator => {
-                    super::render_separator(f, row_rect, fg_muted, bg);
+                    super::render_separator(f, row_rect, gray, bg);
                 }
                 HelpRow::Binding { keys, label } => {
                     let cols = Layout::default()
@@ -228,7 +228,7 @@ impl Component for HelpDialog {
 
         f.render_widget(
             Paragraph::new("  [↑↓ PgUp/PgDn] Scroll   [Esc] Close")
-                .style(Style::default().fg(fg_muted).bg(bg)),
+                .style(Style::default().fg(gray).bg(bg)),
             footer_area,
         );
     }

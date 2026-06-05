@@ -78,13 +78,13 @@ impl QuickNoteModal {
         f.render_widget(Clear, popup_area);
 
         let fg = theme.fg.to_ratatui();
-        let fg_muted = theme.fg_muted.to_ratatui();
+        let gray = theme.gray.to_ratatui();
         let bg = theme.bg_panel.to_ratatui();
 
         let outer_block = Block::default()
             .title(" Quick Note ")
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border_focused.to_ratatui()))
+            .border_style(Style::default().fg(theme.focus_border.to_ratatui()))
             .style(theme.panel_style());
         let inner = outer_block.inner(popup_area);
         f.render_widget(outer_block, popup_area);
@@ -105,8 +105,7 @@ impl QuickNoteModal {
         if self.input.is_empty() {
             // Placeholder text + caret in muted style.
             f.render_widget(
-                Paragraph::new("  Type your thought...")
-                    .style(Style::default().fg(fg_muted).bg(bg)),
+                Paragraph::new("  Type your thought...").style(Style::default().fg(gray).bg(bg)),
                 rows[1],
             );
             f.set_cursor_position((rows[1].x + 2, rows[1].y));
@@ -116,20 +115,20 @@ impl QuickNoteModal {
                 .render(f, rows[1], Style::default().fg(fg).bg(bg), 2, true);
         }
 
-        super::render_separator(f, rows[2], fg_muted, bg);
+        super::render_separator(f, rows[2], gray, bg);
 
         f.render_widget(
             Paragraph::new("  [Enter] Save  [Shift+Enter] Save & Open")
-                .style(Style::default().fg(fg_muted).bg(bg)),
+                .style(Style::default().fg(gray).bg(bg)),
             rows[3],
         );
         f.render_widget(
-            Paragraph::new("  [Esc] Cancel").style(Style::default().fg(fg_muted).bg(bg)),
+            Paragraph::new("  [Esc] Cancel").style(Style::default().fg(gray).bg(bg)),
             rows[4],
         );
 
         if let Some(msg) = &self.error {
-            super::render_error_row(f, rows[5], msg, bg);
+            super::render_error_row(f, rows[5], msg, theme);
         }
     }
 }

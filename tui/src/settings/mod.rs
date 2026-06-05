@@ -275,29 +275,7 @@ impl Default for AppSettings {
 
 impl AppSettings {
     pub fn theme_list(&self) -> Vec<Theme> {
-        let mut list = vec![
-            Theme::gruvbox_dark(),
-            Theme::gruvbox_light(),
-            Theme::catppuccin_mocha(),
-            Theme::catppuccin_latte(),
-            Theme::tokyo_night(),
-            Theme::tokyo_night_storm(),
-            Theme::solarized_dark(),
-            Theme::solarized_light(),
-            Theme::nord(),
-            Theme::dracula(),
-            Theme::alucard(),
-            Theme::one_dark(),
-            Theme::one_light(),
-            Theme::monokai(),
-            Theme::everforest_dark(),
-            Theme::everforest_light(),
-            Theme::rose_pine(),
-            Theme::rose_pine_dawn(),
-            Theme::kanagawa_wave(),
-            Theme::kanagawa_lotus(),
-            Theme::ansi(),
-        ];
+        let mut list = Theme::builtins();
         list.append(&mut Self::load_custom_themes());
         // Merge the user's default.toml override if present.
         if let Ok(custom_default) = Self::load_default_theme() {
@@ -676,14 +654,20 @@ impl AppSettings {
     }
 
     /// Resolve the active theme by name, falling back to the default.
+    ///
+    /// The resolved theme is adapted to the terminal's color depth (truecolor
+    /// themes are quantized on 256-color terminals and mapped to role-semantic
+    /// ANSI slots on 16-color terminals).
     pub fn get_theme(&self) -> Theme {
-        if self.theme.is_empty() {
-            return Theme::default();
-        }
-        self.theme_list()
-            .into_iter()
-            .find(|t| t.name == self.theme)
-            .unwrap_or_default()
+        let theme = if self.theme.is_empty() {
+            Theme::default()
+        } else {
+            self.theme_list()
+                .into_iter()
+                .find(|t| t.name == self.theme)
+                .unwrap_or_default()
+        };
+        theme.adapt_to_terminal()
     }
 }
 
