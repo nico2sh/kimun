@@ -555,9 +555,24 @@ impl QueryPanel {
             self.scroll_content(key);
             return EventState::Consumed;
         }
-        // NOTE: Enter is NOT pre-checked here. It must reach the engine so an
-        // open autocomplete popup can accept on Enter; only when the popup is
-        // closed does the engine return `Submit`, which toggles expand below.
+        // Ctrl+Enter opens the selected note (kitty-protocol terminals; the
+        // FollowLink combo below is the always-works path). Pre-checked here
+        // because Enter-with-modifiers never participates in the engine's
+        // autocomplete/Submit flow.
+        if key.code == KeyCode::Enter
+            && key
+                .modifiers
+                .contains(ratatui::crossterm::event::KeyModifiers::CONTROL)
+        {
+            if let Some(path) = self.selected_path().cloned() {
+                tx.send(AppEvent::OpenPath(path)).ok();
+            }
+            return EventState::Consumed;
+        }
+        // NOTE: plain Enter is NOT pre-checked here. It must reach the engine
+        // so an open autocomplete popup can accept on Enter; only when the
+        // popup is closed does the engine return `Submit`, which toggles
+        // expand below.
         let prev_query = self.list.query().to_string();
         match self.list.handle_key(key) {
             KeyReaction::Intercepted(c) if self.follow_link_combos.contains(&c) => {
@@ -1296,6 +1311,47 @@ mod tests {
     fn make_panel(vault: Arc<NoteVault>) -> QueryPanel {
         let kb = crate::settings::AppSettings::default().key_bindings.clone();
         QueryPanel::new(vault, kb)
+    }
+
+    /// Ctrl+Enter opens the selected result (kitty-protocol terminals) —
+    /// regression: it must not fall through to the engine as a plain key.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ctrl_enter_opens_selected_result() {
+        let vault = crate::test_support::temp_vault("qp-ctrl-enter").await;
+        vault.validate_and_init().await.unwrap();
+        vault
+            .save_note(&VaultPath::note_path_from("target"), "the note body")
+            .await
+            .unwrap();
+        let mut panel = make_panel(vault);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        // Query for the note and let the async load land.
+        panel.apply_query("target".to_string(), None, tx.clone());
+        for _ in 0..50 {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            panel.list.poll();
+        }
+        assert!(
+            panel.selected_path().is_some(),
+            "result loaded and selected"
+        );
+
+        panel.handle_key(
+            &KeyEvent::new(
+                KeyCode::Enter,
+                ratatui::crossterm::event::KeyModifiers::CONTROL,
+            ),
+            &tx,
+        );
+
+        let mut opened = None;
+        while let Ok(ev) = rx.try_recv() {
+            if let AppEvent::OpenPath(path) = ev {
+                opened = Some(path);
+            }
+        }
+        assert_eq!(opened, Some(VaultPath::note_path_from("target")));
     }
 
     /// The memoised highlight needles must follow both cache keys: recompute
