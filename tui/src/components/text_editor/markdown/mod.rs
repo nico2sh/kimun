@@ -407,29 +407,21 @@ pub(super) fn span_style(kind: Option<ElementKind>, is_sigil_region: bool, theme
             .fg(theme.fg_secondary.to_ratatui())
             .add_modifier(Modifier::CROSSED_OUT),
         Some(ElementKind::InlineCode) => Style::default()
-            .fg(theme.fg.to_ratatui())
-            .bg(theme.selection_bg.to_ratatui()),
+            .fg(theme.aqua.to_ratatui())
+            .bg(theme.bg_soft.to_ratatui()),
         Some(ElementKind::Link) => Style::default()
             .fg(theme.accent.to_ratatui())
             .add_modifier(Modifier::UNDERLINED),
         Some(ElementKind::Image) => Style::default()
             .fg(theme.accent.to_ratatui())
             .add_modifier(Modifier::ITALIC),
-        Some(ElementKind::HeadingH1) => {
+        // Spec §5.1: H1/H2 bright + bold, H3 yellow + bold.
+        Some(ElementKind::HeadingH1) | Some(ElementKind::HeadingH2) => {
             if is_sigil_region {
                 Style::default().fg(theme.gray.to_ratatui())
             } else {
                 Style::default()
-                    .fg(theme.accent.to_ratatui())
-                    .add_modifier(Modifier::BOLD)
-            }
-        }
-        Some(ElementKind::HeadingH2) => {
-            if is_sigil_region {
-                Style::default().fg(theme.gray.to_ratatui())
-            } else {
-                Style::default()
-                    .fg(theme.fg.to_ratatui())
+                    .fg(theme.fg_bright.to_ratatui())
                     .add_modifier(Modifier::BOLD)
             }
         }
@@ -437,12 +429,15 @@ pub(super) fn span_style(kind: Option<ElementKind>, is_sigil_region: bool, theme
             if is_sigil_region {
                 Style::default().fg(theme.gray.to_ratatui())
             } else {
-                Style::default().fg(theme.fg_secondary.to_ratatui())
+                Style::default()
+                    .fg(theme.yellow.to_ratatui())
+                    .add_modifier(Modifier::BOLD)
             }
         }
         Some(ElementKind::Blockquote) => Style::default().fg(theme.fg_secondary.to_ratatui()),
+        // Spec §5.1: wikilink targets are blue + underlined.
         Some(ElementKind::WikiLink) => Style::default()
-            .fg(theme.color_directory.to_ratatui())
+            .fg(theme.blue.to_ratatui())
             .add_modifier(Modifier::UNDERLINED),
         Some(ElementKind::Label) => Style::default()
             .fg(theme.color_tag.to_ratatui())

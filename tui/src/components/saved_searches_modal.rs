@@ -251,7 +251,9 @@ impl Overlay for SavedSearchesModal {
                     }
                     EventState::Consumed
                 }
-                SearchMouse::Selected(_) | SearchMouse::Scrolled => EventState::Consumed,
+                SearchMouse::Context(_) | SearchMouse::Selected(_) | SearchMouse::Scrolled => {
+                    EventState::Consumed
+                }
                 // No content sub-region is recorded by this host, so these
                 // are unreachable.
                 SearchMouse::ContentScrollUp | SearchMouse::ContentScrollDown => {

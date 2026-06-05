@@ -66,6 +66,15 @@ pub struct EditorScreen {
     last_git_fetch: Option<std::time::Instant>,
     /// The leader-key sequence state machine (Ctrl-G gateway, spec §8a).
     leader: LeaderEngine,
+    /// Link-under-cursor affordance cache: `(target, backlink count once
+    /// loaded)`. Refreshed when the cursor enters a different link.
+    link_meta: Option<(String, Option<usize>)>,
+    /// App event sender, captured on enter — render-side async kicks (the
+    /// link-affordance backlink fetch) need it where no `tx` is threaded.
+    app_tx: Option<AppTx>,
+    /// Emphasis needles waiting for the next note open (sent by query
+    /// surfaces right before their `OpenPath`).
+    pending_search_needles: Option<Vec<String>>,
     autosave: AutosaveTimer,
     /// The active overlay, if any. An open overlay intercepts input ahead of
     /// the panels; closing it restores focus to the panel that opened it.
@@ -110,6 +119,9 @@ impl EditorScreen {
             git_status: None,
             last_git_fetch: None,
             leader: LeaderEngine::new(),
+            link_meta: None,
+            app_tx: None,
+            pending_search_needles: None,
             autosave: AutosaveTimer::new(),
             overlays: OverlayHost::new(),
             autosave_task: SingleSlotTask::empty(),
@@ -296,10 +308,18 @@ impl EditorScreen {
         });
 
         self.path = path.clone();
+        // Take the pending arrive-from-query needles up front: they pair with
+        // THIS open only — a failed open must not leak them into a later one.
+        let pending_needles = self.pending_search_needles.take();
         match self.vault.get_note_text(&self.path).await {
             Ok(content) => {
                 self.refresh_doc_meta(tx);
                 self.panels.editor_mut().set_text(content);
+                // Arrive-from-query emphasis: apply after the load so the
+                // buffer's new revision owns the needles.
+                if let Some(needles) = pending_needles {
+                    self.panels.editor_mut().set_search_needles(needles);
+                }
                 self.panels.editor_mut().set_redraw_tx(tx);
                 tx.send(AppEvent::Redraw).ok();
                 if self.find_drawer_open() {
@@ -505,12 +525,6 @@ impl EditorScreen {
     /// (the heavy side effect that keeps the reveal in the host rather than
     /// in `PanelSet`).
     fn open_drawer_view(&mut self, view: DrawerView, tx: &AppTx) {
-        // CFG is not a drawer (yet): the rail item opens the theme picker —
-        // the same surface as leader `v c` — so the two config doors agree.
-        if view == DrawerView::Config {
-            self.open_theme_picker();
-            return;
-        }
         let find_newly_shown = view == DrawerView::Find && !self.find_drawer_open();
         self.panels.open_drawer_view(view);
         match view {
@@ -518,6 +532,28 @@ impl EditorScreen {
                 self.panels
                     .query_mut()
                     .set_note(self.path.clone(), tx.clone());
+            }
+            DrawerView::Config => {
+                let info = {
+                    let s = self.settings.read().unwrap();
+                    let key_of = |a: &ActionShortcuts| {
+                        s.key_bindings
+                            .first_combo_for(a)
+                            .unwrap_or_else(|| "unbound".to_string())
+                    };
+                    crate::components::drawer::ConfigInfo {
+                        theme_name: s.get_theme().name,
+                        leader_key: key_of(&ActionShortcuts::Leader),
+                        settings_key: key_of(&ActionShortcuts::OpenSettings),
+                        leader_timeout_ms: s.leader_timeout_ms,
+                        config_path: s
+                            .config_file
+                            .as_ref()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_else(|| "default location".to_string()),
+                    }
+                };
+                self.panels.drawer_set_config_info(info);
             }
             DrawerView::Tags => self.panels.tags_mut().refresh(tx),
             DrawerView::Links => self.panels.links_mut().set_note(self.path.clone(), tx),
@@ -637,7 +673,8 @@ impl EditorScreen {
     }
 
     /// Open the live theme picker (leader `v c` and the CFG rail item). The
-    /// full settings screen stays on Ctrl+P. No-op while an overlay is open.
+    /// full settings screen stays on the OpenSettings binding. No-op while an
+    /// overlay is open.
     fn open_theme_picker(&mut self) {
         if self.overlays.is_open() {
             return;
@@ -666,7 +703,7 @@ impl EditorScreen {
             return;
         }
         let s = self.settings.read().unwrap();
-        let dialog = ActiveDialog::cheatsheet(&s.key_bindings);
+        let dialog = ActiveDialog::cheatsheet(&s);
         drop(s);
         self.present_overlay(Box::new(dialog));
     }
@@ -854,8 +891,17 @@ impl EditorScreen {
             // +vault
             LeaderAction::VaultSwitch => self.open_workspace_switcher(),
             LeaderAction::VaultReindex => {
-                self.footer
-                    .flash("reindex lives in Settings (Ctrl+P)".to_string(), tx);
+                self.footer.flash(
+                    {
+                        let s = self.settings.read().unwrap();
+                        let key = s
+                            .key_bindings
+                            .first_combo_for(&ActionShortcuts::OpenSettings)
+                            .unwrap_or_else(|| "OpenSettings".to_string());
+                        format!("reindex lives in Settings ({key})")
+                    },
+                    tx,
+                );
             }
             LeaderAction::VaultConfig => self.open_theme_picker(),
 
@@ -973,6 +1019,7 @@ impl AppScreen for EditorScreen {
     }
 
     async fn on_enter(&mut self, tx: &AppTx) {
+        self.app_tx = Some(tx.clone());
         self.open_path(self.path.clone(), tx).await;
     }
 
@@ -1246,7 +1293,14 @@ impl AppScreen for EditorScreen {
             // `PanelSet` hit-tests the panel columns: a click focuses the
             // panel under the cursor (one rule for every panel) and the event
             // is forwarded to that panel for its internal behavior.
-            return self.panels.handle_mouse(event, tx);
+            let state = self.panels.handle_mouse(event, tx);
+            // A selectionless right-click in the editor asks for the note's
+            // context menu — the screen owns the path, so it opens it here.
+            if self.panels.editor().wants_context_menu {
+                self.panels.editor_mut().wants_context_menu = false;
+                tx.send(AppEvent::ShowFileOpsMenu(self.path.clone())).ok();
+            }
+            return state;
         }
 
         // Bare Space leads only where it has no typing job: a focused list
@@ -1388,6 +1442,49 @@ impl AppScreen for EditorScreen {
             }
         };
         let path_str = self.path.to_string();
+        // Link-under-cursor affordance (spec §5.2): `→ target · N backlinks`.
+        // The backlink count loads async, cached per target.
+        let link_segment = if self.panels.focused() == PanelKind::Editor && !self.overlays.is_open()
+        {
+            use crate::components::text_editor::LinkTarget;
+            match self.panels.editor().link_at_cursor() {
+                Some(LinkTarget::Note(target)) => {
+                    if self.link_meta.as_ref().map(|(t, _)| t.as_str()) != Some(target.as_str()) {
+                        self.link_meta = Some((target.clone(), None));
+                        let vault = self.vault.clone();
+                        let t2 = target.clone();
+                        let tx2 = self.app_tx.clone();
+                        if let Some(tx2) = tx2 {
+                            tokio::spawn(async move {
+                                let path = kimun_core::nfs::VaultPath::note_path_from(&t2);
+                                let count = vault
+                                    .get_backlinks(&path)
+                                    .await
+                                    .map(|b| b.len())
+                                    .unwrap_or_default();
+                                tx2.send(AppEvent::LinkTargetMeta { target: t2, count })
+                                    .ok();
+                            });
+                        }
+                    }
+                    match &self.link_meta {
+                        Some((t, Some(n))) => Some(format!("→ {t} · {n} backlinks")),
+                        Some((t, None)) => Some(format!("→ {t}")),
+                        None => None,
+                    }
+                }
+                Some(LinkTarget::Label(name)) => {
+                    self.link_meta = None;
+                    Some(format!("→ #{name} · tag query"))
+                }
+                None => {
+                    self.link_meta = None;
+                    None
+                }
+            }
+        } else {
+            None
+        };
         // ln/col only when the editor buffer holds the cursor.
         let ln_col =
             (self.panels.focused() == PanelKind::Editor && !self.overlays.is_open()).then(|| {
@@ -1420,6 +1517,7 @@ impl AppScreen for EditorScreen {
                 backlinks: self.backlink_count,
                 git: self.git_status.clone(),
                 matches,
+                link: link_segment,
             },
         };
         self.footer.render(f, rows[2], theme, &ctx);
@@ -1477,6 +1575,19 @@ impl AppScreen for EditorScreen {
             }
             AppEvent::GitStatusLoaded(status) => {
                 self.git_status = status;
+            }
+            AppEvent::SetEditorSearchNeedles(needles) => {
+                // Applied after the upcoming OpenPath loads the buffer —
+                // setting now would be wiped by that load's revision bump.
+                self.pending_search_needles = Some(needles);
+            }
+            AppEvent::LinkTargetMeta { target, count } => {
+                // Only land the count if the cursor is still on that link.
+                if let Some((cached, slot)) = &mut self.link_meta
+                    && *cached == target
+                {
+                    *slot = Some(count);
+                }
             }
             AppEvent::ExecuteLeaderAction(action) => {
                 if self.overlays.is_open() {

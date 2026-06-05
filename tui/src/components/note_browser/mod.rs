@@ -173,26 +173,16 @@ impl NoteBrowserModal {
         if self.scope != BrowserScope::Query {
             return Vec::new();
         }
-        let terms = kimun_core::SearchTerms::from_query_string(self.list.query());
-        let mut needles: Vec<String> = terms
-            .terms
-            .iter()
-            .map(|t| t.to_lowercase())
-            // Labels match their in-body `#tag` form; link targets match the
-            // wikilink text, so tag-follow and backlink queries get emphasis
-            // too.
-            .chain(
-                terms
-                    .labels
-                    .iter()
-                    .map(|l| format!("#{}", l.to_lowercase())),
-            )
-            .chain(terms.links.iter().map(|l| l.to_lowercase()))
-            .chain(terms.forward_links.iter().map(|l| l.to_lowercase()))
-            .filter(|t| !t.is_empty() && !t.contains('{'))
-            .collect();
-        needles.dedup();
-        needles
+        crate::components::query_highlight::emphasis_needles(self.list.query())
+    }
+
+    /// Arriving at a note from a query result carries the query's needles to
+    /// the editor so the matched spans light up (spec §5.1).
+    fn send_emphasis(&self, tx: &AppTx) {
+        let needles = self.preview_needles();
+        if !needles.is_empty() {
+            tx.send(AppEvent::SetEditorSearchNeedles(needles)).ok();
+        }
     }
 
     // ── Async preview loading ──────────────────────────────────────────────
@@ -289,6 +279,7 @@ impl NoteBrowserModal {
             return;
         }
         let path = entry.path().clone();
+        self.send_emphasis(tx);
         tx.send(AppEvent::OpenPath(path)).ok();
     }
 
@@ -332,7 +323,7 @@ impl Overlay for NoteBrowserModal {
                     self.open_selected(tx);
                     EventState::Consumed
                 }
-                SearchMouse::Selected(_) | SearchMouse::Scrolled => {
+                SearchMouse::Context(_) | SearchMouse::Selected(_) | SearchMouse::Scrolled => {
                     self.refresh_preview_from_list();
                     EventState::Consumed
                 }

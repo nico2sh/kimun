@@ -41,6 +41,8 @@ pub struct DocState<'a> {
     pub git: Option<String>,
     /// Result count when a query context is focused.
     pub matches: Option<usize>,
+    /// Link-under-cursor affordance: `→ target · N backlinks` (spec §5.2).
+    pub link: Option<String>,
 }
 
 /// Everything the status bar shows for the current frame.
@@ -247,6 +249,12 @@ impl FooterBar {
                     format!("{matches} matches"),
                     Style::default().fg(theme.fg_secondary.to_ratatui()),
                 ),
+            );
+        }
+        if let Some(link) = &doc.link {
+            push(
+                &mut segments,
+                Span::styled(link.clone(), Style::default().fg(theme.blue.to_ratatui())),
             );
         }
         f.render_widget(Paragraph::new(Line::from(segments)), rows[1]);

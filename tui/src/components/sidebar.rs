@@ -354,6 +354,18 @@ impl Component for SidebarComponent {
             if let Some(list) = &mut self.list {
                 match list.handle_mouse(mouse) {
                     SearchMouse::Activated(_) => self.activate_selected_entry(tx),
+                    // Right-click on a file/dir row → context menu (spec §10).
+                    SearchMouse::Context(_) => {
+                        if let Some(entry) = list.selected_row()
+                            && !matches!(
+                                entry,
+                                FileListEntry::Up { .. } | FileListEntry::CreateNote { .. }
+                            )
+                        {
+                            tx.send(AppEvent::ShowFileOpsMenu(entry.path().clone()))
+                                .ok();
+                        }
+                    }
                     // ContentScroll* are unreachable: this host records no
                     // content sub-region.
                     SearchMouse::Selected(_)

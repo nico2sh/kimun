@@ -87,10 +87,11 @@ impl HelpDialog {
     /// followed by the flat Tier-0 bindings. Built from the same
     /// `leader_tree()` the engine and the which-key overlay walk — one
     /// source, three surfaces.
-    pub fn cheatsheet(key_bindings: &KeyBindings) -> Self {
+    pub fn cheatsheet(settings: &crate::settings::AppSettings) -> Self {
         use crate::keys::action_shortcuts::ActionShortcuts;
         use crate::keys::leader::{LeaderNode, leader_tree};
 
+        let key_bindings = &settings.key_bindings;
         let gateway = key_bindings
             .first_combo_for(&ActionShortcuts::Leader)
             .unwrap_or_else(|| "leader".to_string());
@@ -110,6 +111,21 @@ impl HelpDialog {
 
         let tree = leader_tree();
         let mut rows: Vec<HelpRow> = Vec::new();
+        // Current configuration up top (spec phase-10: surface theme + keys).
+        rows.push(HelpRow::Header("Configuration".to_string()));
+        rows.push(HelpRow::Separator);
+        rows.push(HelpRow::Binding {
+            keys: settings.get_theme().name,
+            label: "active theme (leader v c to switch)".to_string(),
+        });
+        rows.push(HelpRow::Binding {
+            keys: gateway.clone(),
+            label: "leader gateway".to_string(),
+        });
+        rows.push(HelpRow::Binding {
+            keys: format!("{} ms", settings.leader_timeout_ms),
+            label: "which-key reveal timeout".to_string(),
+        });
         for (key, child) in tree.children() {
             match child {
                 LeaderNode::Group { label, .. } => {

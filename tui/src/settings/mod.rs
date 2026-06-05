@@ -83,6 +83,13 @@ const CONFIG_HEADER: &str = "\
 #   OpenSettings = [\"ctrl+shift&P\"]      # Ctrl+Shift+P
 #   NewJournal   = [\"ctrl&J\"]            # Ctrl+J
 #   FileOperations = [\"F2\"]              # F2  (open file-ops menu: delete/rename/move)
+#   Leader       = [\"ctrl&G\"]            # Ctrl+G  (leader gateway: Ctrl+G f f, ...)
+#   OpenCommandPalette = [\"ctrl&P\"]      # Ctrl+P  (every leader command, fuzzy)
+#
+# OTHER SETTINGS
+# ──────────────
+#   theme             = \"Gruvbox Dark\"   # or any built-in / custom theme name
+#   leader_timeout_ms = 400               # hesitation before the which-key menu
 #
 # ─────────────────────────────────────────────────────────────────────────────
 ";
@@ -180,7 +187,9 @@ fn default_keybindings() -> KeyBindings {
     // which the deserialize safety net uses to recover an unreachable app.
     kb.batch_add()
         .with_ctrl()
-        .add(KeyStrike::KeyP, ActionShortcuts::OpenSettings)
+        // Ctrl-P is the command palette (decision 2026-06-05); settings
+        // live on Ctrl+Shift+P.
+        .add(KeyStrike::KeyP, ActionShortcuts::OpenCommandPalette)
         .add(KeyStrike::KeyQ, ActionShortcuts::Quit)
         .add(KeyStrike::KeyJ, ActionShortcuts::NewJournal)
         // Drawer toggle. Deliberate spec deviation: the spec's Tier-0 puts
@@ -200,11 +209,11 @@ fn default_keybindings() -> KeyBindings {
         .add(KeyStrike::KeyE, ActionShortcuts::ToggleQueryPanel)
         .add(KeyStrike::KeyF, ActionShortcuts::FindInBuffer);
 
-    // Command palette — the classic Ctrl+Shift+P (also leader `p`).
+    // Settings — Ctrl+Shift+P (the palette took plain Ctrl-P).
     kb.batch_add()
         .with_ctrl()
         .with_shift()
-        .add(KeyStrike::KeyP, ActionShortcuts::OpenCommandPalette);
+        .add(KeyStrike::KeyP, ActionShortcuts::OpenSettings);
 
     // File operations menu (F2 — no modifier, reliable in all terminals).
     kb.batch_add()

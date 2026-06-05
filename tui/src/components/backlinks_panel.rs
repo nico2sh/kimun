@@ -363,6 +363,17 @@ impl QueryPanel {
         self.list.query()
     }
 
+    /// Arriving at a note from a query result carries the query's needles to
+    /// the editor so the matched spans light up (spec §5.1). The resolved
+    /// query (not the template) supplies them, so `{note}` never leaks.
+    fn send_emphasis(&self, tx: &AppTx) {
+        let resolved = resolve_query(self.list.query(), Some(&self.current_note()));
+        let needles = crate::components::query_highlight::emphasis_needles(&resolved);
+        if !needles.is_empty() {
+            tx.send(AppEvent::SetEditorSearchNeedles(needles)).ok();
+        }
+    }
+
     /// Number of results currently listed — the status bar's match count.
     pub fn result_count(&self) -> usize {
         self.list.match_count()
@@ -566,6 +577,7 @@ impl QueryPanel {
                 .contains(ratatui::crossterm::event::KeyModifiers::CONTROL)
         {
             if let Some(path) = self.selected_path().cloned() {
+                self.send_emphasis(tx);
                 tx.send(AppEvent::OpenPath(path)).ok();
             }
             return EventState::Consumed;
@@ -578,6 +590,7 @@ impl QueryPanel {
         match self.list.handle_key(key) {
             KeyReaction::Intercepted(c) if self.follow_link_combos.contains(&c) => {
                 if let Some(path) = self.selected_path().cloned() {
+                    self.send_emphasis(tx);
                     tx.send(AppEvent::OpenPath(path)).ok();
                 }
                 EventState::Consumed
@@ -675,6 +688,13 @@ impl QueryPanel {
             }
             SearchMouse::Activated(_) => {
                 self.toggle_expand();
+                EventState::Consumed
+            }
+            // Right-click on a result row → file/note context menu (spec §10).
+            SearchMouse::Context(_) => {
+                if let Some(path) = self.selected_path().cloned() {
+                    tx.send(AppEvent::ShowFileOpsMenu(path)).ok();
+                }
                 EventState::Consumed
             }
             SearchMouse::Selected(_) | SearchMouse::Scrolled => {

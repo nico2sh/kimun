@@ -91,8 +91,8 @@ impl ActiveDialog {
     }
 
     /// The full leader-tree cheatsheet (leader `?`).
-    pub fn cheatsheet(key_bindings: &crate::keys::KeyBindings) -> Self {
-        ActiveDialog::Help(HelpDialog::cheatsheet(key_bindings))
+    pub fn cheatsheet(settings: &crate::settings::AppSettings) -> Self {
+        ActiveDialog::Help(HelpDialog::cheatsheet(settings))
     }
 
     /// The live theme picker (leader `v c`).
