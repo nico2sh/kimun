@@ -19,6 +19,13 @@
 #   OpenSettings = ["ctrl+shift&P"]      # Ctrl+Shift+P
 #   NewJournal   = ["ctrl&J"]            # Ctrl+J
 #   FileOperations = ["F2"]              # F2  (open file-ops menu: delete/rename/move)
+#   Leader       = ["ctrl&G"]            # Ctrl+G  (leader gateway: Ctrl+G f f, ...)
+#   OpenCommandPalette = ["ctrl&P"]      # Ctrl+P  (every leader command, fuzzy)
+#
+# OTHER SETTINGS
+# ──────────────
+#   theme             = "Gruvbox Dark"   # or any built-in / custom theme name
+#   leader_timeout_ms = 400               # hesitation before the which-key menu
 #
 # ─────────────────────────────────────────────────────────────────────────────
 config_version = 5

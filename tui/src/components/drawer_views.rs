@@ -337,6 +337,9 @@ pub struct LinksPanel {
     note: VaultPath,
     tab: LinksTab,
     list: Option<SearchList<LinkEntry>>,
+    /// Screen cell each sub-view tab was drawn into on the last render —
+    /// click-to-switch hit-test (keyboard ↔ mouse parity, spec §10).
+    tab_cells: Vec<(LinksTab, Rect)>,
 }
 
 impl LinksPanel {
@@ -347,6 +350,7 @@ impl LinksPanel {
             note: VaultPath::empty(),
             tab: LinksTab::Backlinks,
             list: None,
+            tab_cells: Vec::new(),
         }
     }
 
@@ -450,6 +454,23 @@ impl LinksPanel {
                 }
             }
             InputEvent::Mouse(mouse) => {
+                // A click on the tab bar switches the sub-view.
+                if matches!(
+                    mouse.kind,
+                    ratatui::crossterm::event::MouseEventKind::Down(
+                        ratatui::crossterm::event::MouseButton::Left
+                    )
+                ) && let Some(tab) = self
+                    .tab_cells
+                    .iter()
+                    .find(|(_, r)| {
+                        r.contains(ratatui::layout::Position::new(mouse.column, mouse.row))
+                    })
+                    .map(|(t, _)| *t)
+                {
+                    self.set_tab(tab, tx);
+                    return EventState::Consumed;
+                }
                 let Some(list) = &mut self.list else {
                     return EventState::NotConsumed;
                 };
@@ -473,14 +494,18 @@ impl LinksPanel {
             .constraints([Constraint::Length(1), Constraint::Min(0)])
             .split(inner);
 
-        // Sub-view tab bar: the active tab pops.
+        // Sub-view tab bar: the active tab pops; each tab's cell is recorded
+        // so a click switches to it.
+        self.tab_cells.clear();
         let mut spans = Vec::new();
+        let mut x = rows[0].x;
         for (i, tab) in LinksTab::ORDER.into_iter().enumerate() {
             if i > 0 {
                 spans.push(Span::styled(
                     " · ",
                     Style::default().fg(theme.gray.to_ratatui()),
                 ));
+                x += 3;
             }
             let style = if tab == self.tab {
                 Style::default()
@@ -489,7 +514,13 @@ impl LinksPanel {
             } else {
                 Style::default().fg(theme.gray.to_ratatui())
             };
+            let w = tab.label().len() as u16; // labels are ASCII
+            if x < rows[0].right() {
+                self.tab_cells
+                    .push((tab, Rect::new(x, rows[0].y, w.min(rows[0].right() - x), 1)));
+            }
             spans.push(Span::styled(tab.label(), style));
+            x += w;
         }
         f.render_widget(Paragraph::new(Line::from(spans)), rows[0]);
 
