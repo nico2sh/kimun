@@ -7,6 +7,7 @@ pub use quick_note_modal::QuickNoteModal;
 pub use rename_dialog::RenameDialog;
 pub use save_search_dialog::SaveSearchDialog;
 pub use sort_dialog::SortDialog;
+pub use theme_picker::ThemePickerDialog;
 pub use workspace_switcher::WorkspaceSwitcherModal;
 
 use std::sync::Arc;
@@ -50,6 +51,7 @@ pub mod quick_note_modal;
 pub mod rename_dialog;
 pub mod save_search_dialog;
 pub mod sort_dialog;
+pub mod theme_picker;
 pub mod workspace_switcher;
 
 pub enum ActiveDialog {
@@ -63,6 +65,7 @@ pub enum ActiveDialog {
     WorkspaceSwitcher(WorkspaceSwitcherModal),
     SaveSearch(SaveSearchDialog),
     Sort(SortDialog),
+    ThemePicker(ThemePickerDialog),
 }
 
 impl ActiveDialog {
@@ -78,12 +81,23 @@ impl ActiveDialog {
             ActiveDialog::WorkspaceSwitcher(_) => {} // no error state
             ActiveDialog::SaveSearch(_) => {}        // no error state
             ActiveDialog::Sort(_) => {}              // no error state
+            ActiveDialog::ThemePicker(_) => {}       // no error state
         }
     }
 
     // Constructors for the dialogs opened by EditorScreen via OverlayHost.
     pub fn help(key_bindings: &crate::keys::KeyBindings) -> Self {
         ActiveDialog::Help(HelpDialog::new(key_bindings))
+    }
+
+    /// The full leader-tree cheatsheet (leader `?`).
+    pub fn cheatsheet(key_bindings: &crate::keys::KeyBindings) -> Self {
+        ActiveDialog::Help(HelpDialog::cheatsheet(key_bindings))
+    }
+
+    /// The live theme picker (leader `v c`).
+    pub fn theme_picker(settings: &crate::settings::AppSettings) -> Self {
+        ActiveDialog::ThemePicker(ThemePickerDialog::new(settings))
     }
 
     pub fn quick_note(vault: Arc<NoteVault>) -> Self {
@@ -243,6 +257,7 @@ impl Component for ActiveDialog {
             ActiveDialog::WorkspaceSwitcher(d) => d.handle_key(*key, tx),
             ActiveDialog::SaveSearch(d) => d.handle_input(event, tx),
             ActiveDialog::Sort(d) => d.handle_input(event, tx),
+            ActiveDialog::ThemePicker(d) => d.handle_key(*key, tx),
         }
     }
 
@@ -258,6 +273,7 @@ impl Component for ActiveDialog {
             ActiveDialog::WorkspaceSwitcher(d) => d.render(f, rect, theme, focused),
             ActiveDialog::SaveSearch(d) => d.render(f, rect, theme, focused),
             ActiveDialog::Sort(d) => d.render(f, rect, theme, focused),
+            ActiveDialog::ThemePicker(d) => d.render(f, rect, theme, focused),
         }
     }
 }

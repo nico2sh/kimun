@@ -23,6 +23,7 @@ pub mod settings;
 pub mod sidebar;
 pub mod single_line_input;
 pub mod text_editor;
+pub mod which_key;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
