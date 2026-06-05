@@ -393,12 +393,9 @@ impl AppSettings {
         match toml::from_str::<Theme>(&theme_string) {
             Ok(theme) => Ok(theme),
             Err(e) => {
-                tracing::debug!(
-                    "Failed to deserialize theme file {:?}: {}. Removing.",
-                    path,
-                    e
-                );
-                let _ = fs::remove_file(path);
+                // Never delete a user-authored file over a typo — warn and
+                // skip, exactly like load_custom_themes does.
+                tracing::warn!("Skipping unparsable theme file {:?}: {}", path, e);
                 Err(eyre::eyre!("corrupt theme file: {}", e))
             }
         }
@@ -806,10 +803,10 @@ mod tests {
         let result = AppSettings::load_theme_from_path(&path);
 
         assert!(result.is_err(), "should return Err for corrupt TOML");
-        assert!(
-            !path.exists(),
-            "corrupt file must be removed, not recreated"
-        );
+        // The user's file must SURVIVE a parse error (a typo must never
+        // delete a hand-authored theme).
+        assert!(path.exists(), "corrupt theme file must not be deleted");
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]

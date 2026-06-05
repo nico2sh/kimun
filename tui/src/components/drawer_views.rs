@@ -299,7 +299,7 @@ impl RowSource<LinkEntry> for LinksSource {
                 // phrase, not an AND of words. Fetch both sets concurrently.
                 let (backlinks, mentions) = tokio::join!(
                     self.vault.get_backlinks(&self.note),
-                    self.vault.search_notes(format!("\"{name}\""))
+                    self.vault.search_notes(kimun_core::quote_query_term(&name))
                 );
                 let linked: HashSet<VaultPath> = backlinks
                     .unwrap_or_default()
@@ -474,10 +474,17 @@ impl LinksPanel {
                 let Some(list) = &mut self.list else {
                     return EventState::NotConsumed;
                 };
-                if let crate::components::search_list::SearchMouse::Activated(_) =
-                    list.handle_mouse(mouse)
-                {
-                    self.open_selected(tx);
+                match list.handle_mouse(mouse) {
+                    crate::components::search_list::SearchMouse::Activated(_) => {
+                        self.open_selected(tx);
+                    }
+                    // Right-click: link rows are real notes → context menu.
+                    crate::components::search_list::SearchMouse::Context(_) => {
+                        if let Some(entry) = list.selected_row() {
+                            tx.send(AppEvent::ShowFileOpsMenu(entry.path.clone())).ok();
+                        }
+                    }
+                    _ => {}
                 }
                 EventState::Consumed
             }

@@ -125,6 +125,7 @@ pub fn emphasis_needles(query: &str) -> Vec<String> {
         .chain(terms.forward_links.iter().map(|l| l.to_lowercase()))
         .filter(|t| !t.is_empty() && !t.contains('{'))
         .collect();
+    needles.sort_unstable();
     needles.dedup();
     needles
 }

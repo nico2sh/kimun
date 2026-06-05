@@ -179,7 +179,10 @@ impl ActivityRail {
                 ]),
                 cell,
             );
-            rows.push((view, cell));
+            // CFG is drawn last; on cramped rails its cell can overlap a top
+            // item — insert at the FRONT so hit-testing favors the
+            // most-recently drawn (topmost) cell.
+            rows.insert(0, (view, cell));
         };
 
         let mut y = inner.y;
