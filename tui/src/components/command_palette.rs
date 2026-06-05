@@ -17,7 +17,7 @@ use crate::components::rich_row::RichRow;
 use crate::components::search_list::{
     Emit, Filter, KeyReaction, RowSource, SearchList, SearchMouse, SearchRow,
 };
-use crate::keys::leader::{LeaderAction, LeaderNode, leader_tree};
+use crate::keys::leader::{LeaderAction, LeaderNode};
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
 
@@ -50,8 +50,8 @@ impl SearchRow for CommandEntry {
     }
 }
 
-/// Flatten the leader tree into palette entries — the single keymap source.
-pub fn command_entries(gateway: &str) -> Vec<CommandEntry> {
+/// Flatten a leader tree into palette entries — the single keymap source.
+pub fn command_entries(tree: &LeaderNode, gateway: &str) -> Vec<CommandEntry> {
     fn walk(node: &LeaderNode, group: &str, keys: &str, out: &mut Vec<CommandEntry>) {
         for (key, child) in node.children() {
             let child_keys = format!("{keys} {key}");
@@ -76,9 +76,8 @@ pub fn command_entries(gateway: &str) -> Vec<CommandEntry> {
             }
         }
     }
-    let tree = leader_tree();
     let mut out = Vec::new();
-    walk(&tree, "", gateway, &mut out);
+    walk(tree, "", gateway, &mut out);
     out
 }
 
@@ -103,9 +102,9 @@ pub struct CommandPaletteModal {
 }
 
 impl CommandPaletteModal {
-    pub fn new(gateway: &str, icons: Icons, tx: AppTx) -> Self {
+    pub fn new(tree: &LeaderNode, gateway: &str, icons: Icons, tx: AppTx) -> Self {
         let source = CommandSource {
-            entries: command_entries(gateway),
+            entries: command_entries(tree, gateway),
         };
         let list = SearchList::builder(source, redraw_callback(tx))
             .filter(Filter::Fuzzy)
@@ -215,7 +214,7 @@ mod tests {
 
     #[test]
     fn entries_cover_every_leader_leaf() {
-        let entries = command_entries("Ctrl+G");
+        let entries = command_entries(&crate::keys::leader::leader_tree(), "Ctrl+G");
         // Spot-check shape and coverage.
         assert!(entries.len() > 20);
         assert!(
@@ -233,7 +232,12 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn enter_closes_then_executes() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut palette = CommandPaletteModal::new("Ctrl+G", Icons::new(false), tx.clone());
+        let mut palette = CommandPaletteModal::new(
+            &crate::keys::leader::leader_tree(),
+            "Ctrl+G",
+            Icons::new(false),
+            tx.clone(),
+        );
         // Let the load land.
         for _ in 0..50 {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;

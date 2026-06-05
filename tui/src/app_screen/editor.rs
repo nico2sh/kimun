@@ -105,6 +105,7 @@ impl EditorScreen {
         let drawer = DrawerHost::new(sidebar, backlinks_panel, tags, links, outline);
         let mut editor = TextEditorComponent::new(kb, &s);
         editor.set_vault(vault.clone());
+        let leader_engine = LeaderEngine::with_tree(s.leader_tree());
         drop(s);
         let rail_icons = icons.clone();
         Self {
@@ -118,7 +119,7 @@ impl EditorScreen {
             backlink_count: None,
             git_status: None,
             last_git_fetch: None,
-            leader: LeaderEngine::new(),
+            leader: leader_engine,
             link_meta: None,
             app_tx: None,
             pending_search_needles: None,
@@ -664,7 +665,12 @@ impl EditorScreen {
                 s.icons(),
             )
         };
+        let tree = {
+            let s = self.settings.read().unwrap();
+            s.leader_tree()
+        };
         let modal = crate::components::command_palette::CommandPaletteModal::new(
+            &tree,
             &gateway,
             icons,
             tx.clone(),
@@ -907,6 +913,10 @@ impl EditorScreen {
             // theme picker directly (also reachable inside CFG via `t`).
             LeaderAction::VaultConfig => self.open_drawer_view(DrawerView::Config, tx),
             LeaderAction::VaultTheme => self.open_theme_picker(),
+            LeaderAction::VaultSettings => {
+                tx.send(AppEvent::OpenScreen(ScreenEvent::OpenSettings))
+                    .ok();
+            }
 
             // +window
             LeaderAction::WindowZen => {

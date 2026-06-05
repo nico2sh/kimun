@@ -89,7 +89,7 @@ impl HelpDialog {
     /// source, three surfaces.
     pub fn cheatsheet(settings: &crate::settings::AppSettings) -> Self {
         use crate::keys::action_shortcuts::ActionShortcuts;
-        use crate::keys::leader::{LeaderNode, leader_tree};
+        use crate::keys::leader::LeaderNode;
 
         let key_bindings = &settings.key_bindings;
         let gateway = key_bindings
@@ -109,7 +109,7 @@ impl HelpDialog {
             }
         }
 
-        let tree = leader_tree();
+        let tree = settings.leader_tree();
         let mut rows: Vec<HelpRow> = Vec::new();
         // Current configuration up top (spec phase-10: surface theme + keys).
         rows.push(HelpRow::Header("Configuration".to_string()));
