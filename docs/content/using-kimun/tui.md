@@ -14,9 +14,9 @@ Kimün's terminal UI is built around a single editor screen with an activity rai
 │  │                │                               │
 │R │     DRAWER     │            EDITOR             │
 │A │  (one of:      │                               │
-│I │   FILES FIND   │                               │
-│L │   TAGS LINKS   │                               │
-│  │   OUTL CFG)    │                               │
+│I │   FIL FND TAG  │                               │
+│L │   LNK OUT CFG) │                               │
+│  │                │                               │
 ├──┴────────────────┴───────────────────────────────┤
 │ ⌨ EDITOR  hints…                     global hints │
 │ path · ln/col · ✓ saved · backlinks · git         │

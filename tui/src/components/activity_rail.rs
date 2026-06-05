@@ -21,11 +21,11 @@ pub const RAIL_WIDTH: u16 = 7;
 /// The rail items in presentation order. CFG is last and pinned to the
 /// bottom of the strip by a spacer.
 const ITEMS: [(&str, DrawerView); 6] = [
-    ("FILES", DrawerView::Files),
-    ("FIND", DrawerView::Find),
-    ("TAGS", DrawerView::Tags),
-    ("LINKS", DrawerView::Links),
-    ("OUTL", DrawerView::Outline),
+    ("FIL", DrawerView::Files),
+    ("FND", DrawerView::Find),
+    ("TAG", DrawerView::Tags),
+    ("LNK", DrawerView::Links),
+    ("OUT", DrawerView::Outline),
     ("CFG", DrawerView::Config),
 ];
 
@@ -172,11 +172,14 @@ impl ActivityRail {
             };
             let label_style = if is_cursor { cursor_style } else { dim };
             let cell = Rect::new(inner.x, y, inner.width, 2);
+            // Labels are all three letters wide, so centering yields one
+            // column of padding on each side of the 5-wide inner strip.
             f.render_widget(
                 Paragraph::new(vec![
-                    Line::from(Span::styled(format!(" {glyph} "), glyph_style)),
-                    Line::from(Span::styled(format!(" {label}"), label_style)),
-                ]),
+                    Line::from(Span::styled(glyph, glyph_style)),
+                    Line::from(Span::styled(label, label_style)),
+                ])
+                .alignment(ratatui::layout::Alignment::Center),
                 cell,
             );
             // CFG is drawn last; on cramped rails its cell can overlap a top
