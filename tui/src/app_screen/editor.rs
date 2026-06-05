@@ -903,7 +903,10 @@ impl EditorScreen {
                     tx,
                 );
             }
-            LeaderAction::VaultConfig => self.open_theme_picker(),
+            // `v c` opens the config panel (the CFG drawer); `v t` opens the
+            // theme picker directly (also reachable inside CFG via `t`).
+            LeaderAction::VaultConfig => self.open_drawer_view(DrawerView::Config, tx),
+            LeaderAction::VaultTheme => self.open_theme_picker(),
 
             // +window
             LeaderAction::WindowZen => {
@@ -1597,6 +1600,9 @@ impl AppScreen for EditorScreen {
                 } else {
                     self.execute_leader_action(action, tx);
                 }
+            }
+            AppEvent::OpenThemePicker => {
+                self.open_theme_picker();
             }
             AppEvent::ApplyTheme { theme, persist } => {
                 // The picker resolved the theme already — no disk re-read,

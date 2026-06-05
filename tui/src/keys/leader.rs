@@ -43,6 +43,7 @@ pub enum LeaderAction {
     VaultSwitch,
     VaultReindex,
     VaultConfig,
+    VaultTheme,
     // +window
     WindowZen,
     WindowSplit,
@@ -187,6 +188,7 @@ pub fn leader_tree() -> LeaderNode {
                         ('s', leaf("switch vault", A::VaultSwitch)),
                         ('r', leaf("reindex", A::VaultReindex)),
                         ('c', leaf("config", A::VaultConfig)),
+                        ('t', leaf("theme picker", A::VaultTheme)),
                     ],
                 },
             ),
