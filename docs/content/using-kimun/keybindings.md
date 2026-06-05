@@ -20,7 +20,7 @@ Everything on one screen. Looking for how to *change* a binding? That's in [Conf
 | Query search (telescope) | `Ctrl+K` |
 | Open note (fuzzy finder) | `Ctrl+O` |
 | Toggle drawer | `Ctrl+T` |
-| Open FIND view | `Ctrl+E` |
+| Open file browser (FILES view) | `Ctrl+E` |
 | Find in buffer | `Ctrl+F` |
 | Follow link | `Ctrl+Enter` (modern terminals) / `Ctrl+N` |
 | New journal entry | `Ctrl+J` |

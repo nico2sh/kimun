@@ -31,10 +31,10 @@ pub enum ActionShortcuts {
     SearchNotes,
     OpenNote,
     NewJournal,
-    TogglePreview,
     Text(TextAction),
     // TUI navigation / file list
     ToggleSidebar,
+    OpenFileBrowser,
     FocusEditor,
     FocusSidebar,
     OpenSortDialog,
@@ -67,6 +67,7 @@ impl ActionShortcuts {
             ActionShortcuts::Leader
             | ActionShortcuts::OpenCommandPalette
             | ActionShortcuts::ToggleSidebar
+            | ActionShortcuts::OpenFileBrowser
             | ActionShortcuts::FocusSidebar
             | ActionShortcuts::FocusEditor
             | ActionShortcuts::OpenSortDialog
@@ -85,9 +86,7 @@ impl ActionShortcuts {
 
             ActionShortcuts::Text(_) => ShortcutCategory::TextEditing,
 
-            ActionShortcuts::Quit
-            | ActionShortcuts::OpenPreferences
-            | ActionShortcuts::TogglePreview => ShortcutCategory::Other,
+            ActionShortcuts::Quit | ActionShortcuts::OpenPreferences => ShortcutCategory::Other,
         }
     }
 
@@ -98,8 +97,8 @@ impl ActionShortcuts {
             ActionShortcuts::SearchNotes => "Search notes".into(),
             ActionShortcuts::OpenNote => "Open note".into(),
             ActionShortcuts::NewJournal => "New journal entry".into(),
-            ActionShortcuts::TogglePreview => "Toggle preview".into(),
             ActionShortcuts::ToggleSidebar => "Toggle drawer".into(),
+            ActionShortcuts::OpenFileBrowser => "Open file browser".into(),
             ActionShortcuts::FocusEditor => "Focus right".into(),
             ActionShortcuts::FocusSidebar => "Focus left".into(),
             ActionShortcuts::OpenSortDialog => "Sort options".into(),
@@ -135,9 +134,9 @@ impl Display for ActionShortcuts {
             ActionShortcuts::SearchNotes => "SearchNotes".to_string(),
             ActionShortcuts::OpenNote => "OpenNote".to_string(),
             ActionShortcuts::NewJournal => "NewJournal".to_string(),
-            ActionShortcuts::TogglePreview => "TogglePreview".to_string(),
             ActionShortcuts::Text(text_action) => format!("TextEditor-{}", text_action),
             ActionShortcuts::ToggleSidebar => "ToggleSidebar".to_string(),
+            ActionShortcuts::OpenFileBrowser => "OpenFileBrowser".to_string(),
             ActionShortcuts::FocusEditor => "FocusEditor".to_string(),
             ActionShortcuts::FocusSidebar => "FocusSidebar".to_string(),
             ActionShortcuts::OpenSortDialog => "OpenSortDialog".to_string(),
@@ -168,8 +167,8 @@ impl TryFrom<String> for ActionShortcuts {
             "SearchNotes" => ActionShortcuts::SearchNotes,
             "OpenNote" => ActionShortcuts::OpenNote,
             "NewJournal" => ActionShortcuts::NewJournal,
-            "TogglePreview" => ActionShortcuts::TogglePreview,
             "ToggleSidebar" => ActionShortcuts::ToggleSidebar,
+            "OpenFileBrowser" => ActionShortcuts::OpenFileBrowser,
             "FocusEditor" => ActionShortcuts::FocusEditor,
             "FocusSidebar" => ActionShortcuts::FocusSidebar,
             "OpenSortDialog" => ActionShortcuts::OpenSortDialog,
@@ -304,10 +303,6 @@ mod tests {
             ActionShortcuts::OpenPreferences.category(),
             ShortcutCategory::Other
         );
-        assert_eq!(
-            ActionShortcuts::TogglePreview.category(),
-            ShortcutCategory::Other
-        );
     }
 
     #[test]
@@ -317,8 +312,11 @@ mod tests {
         assert_eq!(ActionShortcuts::SearchNotes.label(), "Search notes");
         assert_eq!(ActionShortcuts::OpenNote.label(), "Open note");
         assert_eq!(ActionShortcuts::NewJournal.label(), "New journal entry");
-        assert_eq!(ActionShortcuts::TogglePreview.label(), "Toggle preview");
         assert_eq!(ActionShortcuts::ToggleSidebar.label(), "Toggle drawer");
+        assert_eq!(
+            ActionShortcuts::OpenFileBrowser.label(),
+            "Open file browser"
+        );
         assert_eq!(ActionShortcuts::FocusEditor.label(), "Focus right");
         assert_eq!(ActionShortcuts::FocusSidebar.label(), "Focus left");
         assert_eq!(ActionShortcuts::OpenSortDialog.label(), "Sort options");
@@ -377,6 +375,22 @@ mod tests {
         assert_eq!(
             ActionShortcuts::try_from("FileOperations".to_string()),
             Ok(ActionShortcuts::FileOperations)
+        );
+    }
+
+    #[test]
+    fn open_file_browser_roundtrip() {
+        assert_eq!(
+            ActionShortcuts::OpenFileBrowser.to_string(),
+            "OpenFileBrowser"
+        );
+        assert_eq!(
+            ActionShortcuts::try_from("OpenFileBrowser".to_string()),
+            Ok(ActionShortcuts::OpenFileBrowser)
+        );
+        assert_eq!(
+            ActionShortcuts::OpenFileBrowser.category(),
+            ShortcutCategory::Navigation
         );
     }
 
