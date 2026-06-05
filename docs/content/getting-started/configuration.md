@@ -207,8 +207,8 @@ Use these names exactly as shown. For the default shortcuts each one ships with,
 - `OpenCommandPalette` — The command palette (default `Ctrl+P`)
 - `OpenSettings` — Open the Preferences screen (default `Ctrl+,`)
 - `ToggleSidebar` — Show/hide the drawer (default `Ctrl+T`)
-- `ToggleBacklinks` — Open the FIND drawer view (default `Ctrl+E`)
-- `TogglePreview` — Show/hide the preview pane
+- `OpenFileBrowser` — Open (or switch the drawer to) the file browser (default `Ctrl+E`)
+- `ToggleQueryPanel` — Toggle the FIND drawer view (no default binding; `ToggleBacklinks` still parses as an alias)
 - `FocusEditor` / `FocusSidebar` — Move focus right / left across the visible panels
 - `SwitchWorkspace` — Open the workspace switcher
 - `OpenSavedSearches` — Open the saved-searches picker (default `F3`)

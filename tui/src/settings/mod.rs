@@ -177,7 +177,6 @@ fn default_keybindings() -> KeyBindings {
         .with_ctrl()
         .add(KeyStrike::KeyK, ActionShortcuts::SearchNotes)
         .add(KeyStrike::KeyO, ActionShortcuts::OpenNote)
-        .add(KeyStrike::KeyY, ActionShortcuts::TogglePreview)
         .add(KeyStrike::KeyB, ActionShortcuts::Text(TextAction::Bold))
         .add(KeyStrike::KeyI, ActionShortcuts::Text(TextAction::Italic))
         .add(
@@ -223,7 +222,10 @@ fn default_keybindings() -> KeyBindings {
         .add(KeyStrike::KeyH, ActionShortcuts::FocusSidebar)
         .add(KeyStrike::KeyL, ActionShortcuts::FocusEditor)
         .add(KeyStrike::KeyW, ActionShortcuts::QuickNote)
-        .add(KeyStrike::KeyE, ActionShortcuts::ToggleQueryPanel)
+        // Ctrl-E opens (or switches the drawer to) the file browser; the
+        // pure drawer toggle is Ctrl-T above. ToggleQueryPanel has no
+        // default binding — FIND stays reachable via the rail and leader.
+        .add(KeyStrike::KeyE, ActionShortcuts::OpenFileBrowser)
         .add(KeyStrike::KeyF, ActionShortcuts::FindInBuffer);
 
     // Settings — the classic Ctrl+, (Ctrl+Shift+P collides with kitty's

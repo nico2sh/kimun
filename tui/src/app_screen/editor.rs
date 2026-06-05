@@ -1161,6 +1161,12 @@ impl AppScreen for EditorScreen {
                     self.toggle_backlinks(tx);
                     return EventState::Consumed;
                 }
+                Some(ActionShortcuts::OpenFileBrowser) => {
+                    // Open (or switch to) the FILES view — never hides the
+                    // drawer; Ctrl-T (ToggleSidebar) is the on/off switch.
+                    self.open_drawer_view(DrawerView::Files, tx);
+                    return EventState::Consumed;
+                }
                 Some(ActionShortcuts::OpenSavedSearches) => {
                     if self.overlays.active_kind() == Some(OverlayKind::SavedSearches) {
                         self.dismiss_overlay();
