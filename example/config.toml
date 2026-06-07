@@ -55,7 +55,7 @@ journal_sort_order = "descending"
 group_directories = false
 
 [global]
-current_workspace = "work"
+current_workspace = "personal"
 
 [workspaces.personal]
 path = "personal"
