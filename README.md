@@ -17,12 +17,6 @@
 
 ---
 
-<div align="center">
-  <img src="assets/demo.gif" alt="Kimün TUI Interface Demo" width="60%" />
-</div>
-
----
-
 **Kimün** is a lightweight, blazing-fast, terminal-based notes application focused on ultimate simplicity and robust search. 
 
 It doesn't try to be a bloated, all-in-one life-management tool or a _second brain_ (some of us struggle with a single brain already!). Instead, it serves as a minimalist local-first vault that seamlessly weaves into your existing developer terminal environment. Because your notes are stored as plain Markdown files, it plays beautifully alongside tools like **Obsidian**, **Logseq**, or **QOwnNotes** giving you an ultra-fast TUI/CLI alternative right in your shell.
@@ -52,9 +46,9 @@ Do you want to know more? ⭐️🚀 Check out our official documentation site f
 
 ---
 
-### 📸 TUI Snapshot
+### 📸 How the TUI looks
 <div align="center">
-  <img src="assets/screenshot.png" alt="Kimün Notes Preview and Search Panel Screenshot" width="60%" />
+  <img src="assets/screenshot.png" alt="Kimün Notes Preview and Search Panel Screenshot" width="80%" />
 </div>
 
 ---

@@ -5,7 +5,7 @@ weight = 2
 
 # Piping Output
 
-Kimun's CLI output is designed to work seamlessly with Unix pipes and other command-line tools. This guide covers common patterns for combining kimun with tools like `less`, `bat`, `fzf`, and more.
+Kimün's CLI output is designed to work seamlessly with Unix pipes and other command-line tools. This guide covers common patterns for combining kimun with tools like `less`, `bat`, `fzf`, and more.
 
 ## Basic piping
 

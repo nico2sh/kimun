@@ -80,9 +80,28 @@ const CONFIG_HEADER: &str = "\
 #   Quit         = [\"ctrl&Q\"]            # Ctrl+Q
 #   SearchNotes  = [\"ctrl&K\"]            # Ctrl+K
 #   OpenNote     = [\"ctrl&O\"]            # Ctrl+O  (fuzzy file finder)
-#   OpenSettings = [\"ctrl+shift&P\"]      # Ctrl+Shift+P
+#   OpenSettings = [\"ctrl&,\"]            # Ctrl+,
 #   NewJournal   = [\"ctrl&J\"]            # Ctrl+J
 #   FileOperations = [\"F2\"]              # F2  (open file-ops menu: delete/rename/move)
+#   Leader       = [\"ctrl&G\"]            # Ctrl+G  (leader gateway: Ctrl+G f f, ...)
+#   OpenCommandPalette = [\"ctrl&P\"]      # Ctrl+P  (every leader command, fuzzy)
+#
+# OTHER SETTINGS
+# ──────────────
+#   theme             = \"Gruvbox Dark\"   # or any built-in / custom theme name
+#   leader_timeout_ms = 400               # hesitation before the which-key menu
+#
+# LEADER TREE OVERRIDES
+# ─────────────────────
+#   Remap, add, or remove leader sequences ([leader.bind]) and rename group
+#   captions ([leader.labels]). Keys are the sequence AFTER the gateway;
+#   bind values are action ids (see the cheatsheet) or \"none\" to unbind.
+#   [leader.bind]
+#   \"o f\" = \"find.files\"     # remap: leader o f now opens the file picker
+#   \"x\"   = \"note.daily\"     # add:   leader x opens today's journal
+#   \"g p\" = \"none\"           # remove the git-sync stub binding
+#   [leader.labels]
+#   \"f\"   = \"+search\"        # rename the +find group caption
 #
 # ─────────────────────────────────────────────────────────────────────────────
 ";
@@ -121,6 +140,15 @@ pub struct AppSettings {
     pub key_bindings: KeyBindings,
     #[serde(default = "default_autosave_interval")]
     pub autosave_interval_secs: u64,
+    /// Hesitation timeout (ms) before the which-key overlay reveals itself
+    /// during a pending leader sequence. Sequences typed faster never wait.
+    #[serde(default = "default_leader_timeout_ms")]
+    pub leader_timeout_ms: u64,
+    /// Leader-tree customization: `[leader.bind]` sequence→action-id
+    /// overrides and `[leader.labels]` group captions. Applied over the
+    /// built-in tree.
+    #[serde(default)]
+    pub leader: LeaderConfig,
     #[serde(default = "default_use_nerd_fonts")]
     pub use_nerd_fonts: bool,
     #[serde(default)]
@@ -149,7 +177,6 @@ fn default_keybindings() -> KeyBindings {
         .with_ctrl()
         .add(KeyStrike::KeyK, ActionShortcuts::SearchNotes)
         .add(KeyStrike::KeyO, ActionShortcuts::OpenNote)
-        .add(KeyStrike::KeyY, ActionShortcuts::TogglePreview)
         .add(KeyStrike::KeyB, ActionShortcuts::Text(TextAction::Bold))
         .add(KeyStrike::KeyI, ActionShortcuts::Text(TextAction::Italic))
         .add(
@@ -176,17 +203,36 @@ fn default_keybindings() -> KeyBindings {
     // which the deserialize safety net uses to recover an unreachable app.
     kb.batch_add()
         .with_ctrl()
-        .add(KeyStrike::KeyP, ActionShortcuts::OpenSettings)
+        // Ctrl-P is the command palette (decision 2026-06-05); settings
+        // live on Ctrl+Shift+P.
+        .add(KeyStrike::KeyP, ActionShortcuts::OpenCommandPalette)
         .add(KeyStrike::KeyQ, ActionShortcuts::Quit)
         .add(KeyStrike::KeyJ, ActionShortcuts::NewJournal)
+        // Drawer toggle. Deliberate spec deviation: the spec's Tier-0 puts
+        // this on Ctrl-B, but Ctrl-B stays Bold (decision 2026-06-05) — the
+        // drawer toggle lives on Ctrl-T.
         .add(KeyStrike::KeyT, ActionShortcuts::ToggleSidebar)
         .add(KeyStrike::KeyR, ActionShortcuts::OpenSortDialog)
-        .add(KeyStrike::KeyG, ActionShortcuts::FollowLink)
+        // Leader gateway. Spec deviation: spec says Ctrl-K, which stays the
+        // note browser; the gateway lives on Ctrl-G (decision 2026-06-05).
+        .add(KeyStrike::KeyG, ActionShortcuts::Leader)
+        // FollowLink's always-works binding; Ctrl+Enter also follows on
+        // kitty-protocol terminals (hardcoded in the editor screen).
+        .add(KeyStrike::KeyN, ActionShortcuts::FollowLink)
         .add(KeyStrike::KeyH, ActionShortcuts::FocusSidebar)
         .add(KeyStrike::KeyL, ActionShortcuts::FocusEditor)
         .add(KeyStrike::KeyW, ActionShortcuts::QuickNote)
-        .add(KeyStrike::KeyE, ActionShortcuts::ToggleQueryPanel)
+        // Ctrl-E opens (or switches the drawer to) the file browser; the
+        // pure drawer toggle is Ctrl-T above. ToggleQueryPanel has no
+        // default binding — FIND stays reachable via the rail and leader.
+        .add(KeyStrike::KeyE, ActionShortcuts::OpenFileBrowser)
         .add(KeyStrike::KeyF, ActionShortcuts::FindInBuffer);
+
+    // Settings — the classic Ctrl+, (Ctrl+Shift+P collides with kitty's
+    // default hints-kitten chord prefix, which holds the screen mid-chord).
+    kb.batch_add()
+        .with_ctrl()
+        .add(KeyStrike::Comma, ActionShortcuts::OpenPreferences);
 
     // File operations menu (F2 — no modifier, reliable in all terminals).
     kb.batch_add()
@@ -215,6 +261,45 @@ fn yes() -> bool {
 
 fn default_autosave_interval() -> u64 {
     5
+}
+
+fn default_leader_timeout_ms() -> u64 {
+    400
+}
+
+/// The `[leader]` config section: binding overrides + group captions.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct LeaderConfig {
+    /// `[leader.bind]`: sequence (after the gateway, e.g. `"o f"` / `"x"`) →
+    /// action id (see the cheatsheet) or `"none"` to unbind.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub bind: std::collections::BTreeMap<String, String>,
+    /// `[leader.labels]`: group sequence (e.g. `"f"`) → caption shown in the
+    /// which-key overlay and cheatsheet.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub labels: std::collections::BTreeMap<String, String>,
+}
+
+impl AppSettings {
+    /// The leader tree with this config's `[leader]` overrides applied — the
+    /// ONE constructor every surface (engine, which-key, cheatsheet, palette)
+    /// must use, so they can never disagree.
+    pub fn leader_tree(&self) -> crate::keys::leader::LeaderNode {
+        let tree = crate::keys::leader::apply_overrides(
+            crate::keys::leader::leader_tree(),
+            self.leader
+                .bind
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str())),
+        );
+        crate::keys::leader::apply_labels(
+            tree,
+            self.leader
+                .labels
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str())),
+        )
+    }
 }
 
 fn default_cache_dir() -> PathBuf {
@@ -260,6 +345,8 @@ impl Default for AppSettings {
             needs_indexing: true,
             key_bindings: default_keybindings(),
             autosave_interval_secs: default_autosave_interval(),
+            leader_timeout_ms: default_leader_timeout_ms(),
+            leader: LeaderConfig::default(),
             use_nerd_fonts: false,
             editor_backend: EditorBackendSetting::Textarea,
             nvim_path: None,
@@ -275,29 +362,7 @@ impl Default for AppSettings {
 
 impl AppSettings {
     pub fn theme_list(&self) -> Vec<Theme> {
-        let mut list = vec![
-            Theme::gruvbox_dark(),
-            Theme::gruvbox_light(),
-            Theme::catppuccin_mocha(),
-            Theme::catppuccin_latte(),
-            Theme::tokyo_night(),
-            Theme::tokyo_night_storm(),
-            Theme::solarized_dark(),
-            Theme::solarized_light(),
-            Theme::nord(),
-            Theme::dracula(),
-            Theme::alucard(),
-            Theme::one_dark(),
-            Theme::one_light(),
-            Theme::monokai(),
-            Theme::everforest_dark(),
-            Theme::everforest_light(),
-            Theme::rose_pine(),
-            Theme::rose_pine_dawn(),
-            Theme::kanagawa_wave(),
-            Theme::kanagawa_lotus(),
-            Theme::ansi(),
-        ];
+        let mut list = Theme::builtins();
         list.append(&mut Self::load_custom_themes());
         // Merge the user's default.toml override if present.
         if let Ok(custom_default) = Self::load_default_theme() {
@@ -330,12 +395,9 @@ impl AppSettings {
         match toml::from_str::<Theme>(&theme_string) {
             Ok(theme) => Ok(theme),
             Err(e) => {
-                tracing::debug!(
-                    "Failed to deserialize theme file {:?}: {}. Removing.",
-                    path,
-                    e
-                );
-                let _ = fs::remove_file(path);
+                // Never delete a user-authored file over a typo — warn and
+                // skip, exactly like load_custom_themes does.
+                tracing::warn!("Skipping unparsable theme file {:?}: {}", path, e);
                 Err(eyre::eyre!("corrupt theme file: {}", e))
             }
         }
@@ -494,13 +556,36 @@ impl AppSettings {
         }
     }
 
-    /// Fills in any actions from `default_keybindings()` that are absent in the loaded config.
-    /// Existing user-customised bindings are never overwritten.
+    /// Fills in defaults from `default_keybindings()` that are absent in the
+    /// loaded config: actions with no binding at all, plus default combos
+    /// added in newer versions (e.g. Ctrl-B for the drawer toggle) — as long
+    /// as the combo is not already bound to *any* action. Existing
+    /// user-customised bindings are never overwritten.
     fn merge_missing_default_bindings(&mut self) {
         let defaults = default_keybindings().to_hashmap();
         let mut current = self.key_bindings.to_hashmap();
+        let mut bound: std::collections::HashSet<_> = current.values().flatten().cloned().collect();
         for (action, combos) in defaults {
-            current.entry(action).or_insert(combos);
+            match current.entry(action) {
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    // Never steal a combo the user has bound to something
+                    // else — insert only the free ones, and claim them so a
+                    // later default in this pass cannot double-bind.
+                    let free: Vec<_> = combos.into_iter().filter(|c| !bound.contains(c)).collect();
+                    if !free.is_empty() {
+                        bound.extend(free.iter().copied());
+                        e.insert(free);
+                    }
+                }
+                std::collections::hash_map::Entry::Occupied(mut e) => {
+                    for combo in combos {
+                        if !bound.contains(&combo) && !e.get().contains(&combo) {
+                            bound.insert(combo);
+                            e.get_mut().push(combo);
+                        }
+                    }
+                }
+            }
         }
         self.key_bindings = KeyBindings::from_hashmap(current);
     }
@@ -676,14 +761,20 @@ impl AppSettings {
     }
 
     /// Resolve the active theme by name, falling back to the default.
+    ///
+    /// The resolved theme is adapted to the terminal's color depth (truecolor
+    /// themes are quantized on 256-color terminals and mapped to role-semantic
+    /// ANSI slots on 16-color terminals).
     pub fn get_theme(&self) -> Theme {
-        if self.theme.is_empty() {
-            return Theme::default();
-        }
-        self.theme_list()
-            .into_iter()
-            .find(|t| t.name == self.theme)
-            .unwrap_or_default()
+        let theme = if self.theme.is_empty() {
+            Theme::default()
+        } else {
+            self.theme_list()
+                .into_iter()
+                .find(|t| t.name == self.theme)
+                .unwrap_or_default()
+        };
+        theme.adapt_to_terminal()
     }
 }
 
@@ -714,10 +805,10 @@ mod tests {
         let result = AppSettings::load_theme_from_path(&path);
 
         assert!(result.is_err(), "should return Err for corrupt TOML");
-        assert!(
-            !path.exists(),
-            "corrupt file must be removed, not recreated"
-        );
+        // The user's file must SURVIVE a parse error (a typo must never
+        // delete a hand-authored theme).
+        assert!(path.exists(), "corrupt theme file must not be deleted");
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]

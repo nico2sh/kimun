@@ -121,8 +121,8 @@ impl Component for SortingSection {
 
         let selected = self.list_state.selected().unwrap_or(0);
         let highlight = Style::default()
-            .fg(theme.fg_selected.to_ratatui())
-            .bg(theme.bg_selected.to_ratatui());
+            .fg(theme.selection_fg.to_ratatui())
+            .bg(theme.selection_bg.to_ratatui());
 
         // ── Default sub-block (rows 0–1) ───────────────────────────────────
         let default_items = vec![

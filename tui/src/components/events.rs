@@ -49,16 +49,57 @@ pub enum AppEvent {
         path: VaultPath,
         saved_revision: Option<NonZeroU64>,
     },
-    OpenPath(VaultPath),
+    /// Open a note (or directory) — `emphasis` carries the originating
+    /// query's needles when the open comes from a query result, so the
+    /// editor lights up the matched spans (spec §5.1). Use
+    /// [`AppEvent::open`] for the plain case.
+    OpenPath {
+        path: VaultPath,
+        emphasis: Option<Vec<String>>,
+    },
     FocusSidebar,
-    /// Sent by SettingsScreen when user confirms Save. The shared settings
+    /// Switch the drawer to the given view and reveal it (sent by the
+    /// activity rail and, later, by leader paths / mouse clicks).
+    OpenDrawerView(crate::components::drawer::DrawerView),
+    /// Run the query `#<label>` in the FIND drawer (sent by the TAGS drawer).
+    RunTagQuery(String),
+    /// Jump the editor cursor to the first heading with this text (sent by
+    /// the OUTLINE drawer).
+    JumpToHeading(String),
+    /// Run a leader-tree action (sent by the command palette after it has
+    /// closed itself, so the action sees no open overlay).
+    ExecuteLeaderAction(crate::keys::leader::LeaderAction),
+    /// Show a transient footer flash — async tasks report results with it.
+    FlashMessage(String),
+    /// Apply (and optionally persist) a resolved theme — sent by the theme
+    /// picker: previews on selection move, persists on Enter. Carries the
+    /// full `Theme` so applying never re-reads the themes directory.
+    ApplyTheme {
+        theme: Box<crate::settings::themes::Theme>,
+        persist: bool,
+    },
+    /// Async-loaded backlink count for the link target under the editor
+    /// cursor (status line 2's `→ target · N backlinks` affordance).
+    LinkTargetMeta {
+        target: String,
+        count: usize,
+    },
+    /// Async-loaded backlink count for the note at `path` (status line 2).
+    BacklinkCountLoaded {
+        path: VaultPath,
+        count: usize,
+    },
+    /// Async-loaded workspace git summary for the status bar, `None` when
+    /// the workspace is not a git repository.
+    GitStatusLoaded(Option<String>),
+    /// Sent by PreferencesScreen when user confirms Save. The shared settings
     /// reference already contains the updated values.
-    SettingsSaved,
-    /// Sent by SettingsScreen when user discards or closes unchanged.
-    CloseSettings,
-    /// Sent by VaultSection; SettingsScreen::handle_app_message intercepts.
+    PreferencesSaved,
+    /// Sent by PreferencesScreen when user discards or closes unchanged.
+    ClosePreferences,
+    /// Sent by VaultSection; PreferencesScreen::handle_app_message intercepts.
     OpenFileBrowser,
-    /// Sent by IndexingSection; SettingsScreen intercepts.
+    /// Sent by IndexingSection; PreferencesScreen intercepts.
     TriggerFastReindex,
     TriggerFullReindex,
     /// Sent by indexing tokio task on completion.
@@ -180,6 +221,14 @@ impl AppEvent {
     pub fn send_input(event: InputEvent) -> Self {
         AppEvent::Input(event)
     }
+
+    /// `OpenPath` without query emphasis — the common case.
+    pub fn open(path: kimun_core::nfs::VaultPath) -> Self {
+        AppEvent::OpenPath {
+            path,
+            emphasis: None,
+        }
+    }
 }
 
 // ── Input events ────────────────────────────────────────────────────────
@@ -198,9 +247,9 @@ pub enum InputEvent {
 #[derive(Debug, Clone)]
 pub enum ScreenEvent {
     Start,
-    OpenSettings,
+    OpenPreferences,
     /// Open the settings screen with an error overlay already shown.
-    OpenSettingsWithError(String),
+    OpenPreferencesWithError(String),
     /// Navigate to the editor for the given vault root path.
     OpenEditor(Arc<NoteVault>, VaultPath),
     /// Navigate to the browse screen for the given vault root and directory path.

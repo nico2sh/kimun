@@ -17,6 +17,7 @@ use crate::settings::themes::Theme;
 pub enum OverlayKind {
     NoteBrowser,
     SavedSearches,
+    CommandPalette,
     Dialog,
 }
 
@@ -26,6 +27,7 @@ impl OverlayKind {
         match self {
             OverlayKind::NoteBrowser => "NOTE BROWSER",
             OverlayKind::SavedSearches => "SAVED SEARCHES",
+            OverlayKind::CommandPalette => "COMMANDS",
             OverlayKind::Dialog => "DIALOG",
         }
     }

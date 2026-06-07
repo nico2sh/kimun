@@ -1,10 +1,11 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::Paragraph;
 
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, SaveSource};
+use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::components::single_line_input::{InputOutcome, SingleLineInput};
 use crate::settings::themes::Theme;
 
@@ -128,19 +129,20 @@ impl SaveSearchDialog {
     pub fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, _focused: bool) {
         let popup_area = super::fixed_centered_rect(62, 9, rect);
 
-        f.render_widget(Clear, popup_area);
-
         let fg = theme.fg.to_ratatui();
-        let fg_muted = theme.fg_muted.to_ratatui();
+        let gray = theme.gray.to_ratatui();
         let bg = theme.bg_panel.to_ratatui();
 
-        let outer_block = Block::default()
-            .title(" Save search ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(fg_muted))
-            .style(theme.panel_style());
-        let inner = outer_block.inner(popup_area);
-        f.render_widget(outer_block, popup_area);
+        let inner = modal_chrome(
+            f,
+            popup_area,
+            theme,
+            ModalSpec {
+                title: Some(" Save search "),
+                border: Some(Style::default().fg(gray)),
+                ..Default::default()
+            },
+        );
 
         let rows = Layout::default()
             .direction(Direction::Vertical)
@@ -158,17 +160,17 @@ impl SaveSearchDialog {
         // Row 1: read-only query context in muted style.
         f.render_widget(
             Paragraph::new(format!("  Query: {}", self.query))
-                .style(Style::default().fg(fg_muted).bg(bg)),
+                .style(Style::default().fg(gray).bg(bg)),
             rows[1],
         );
 
-        super::render_separator(f, rows[2], fg_muted, bg);
+        super::render_separator(f, rows[2], gray, bg);
 
         // Row 3: name input with a "Name: " prefix.
         let prefix = "  Name: ";
         let prefix_len = prefix.len() as u16;
         f.render_widget(
-            Paragraph::new(prefix).style(Style::default().fg(fg_muted).bg(bg)),
+            Paragraph::new(prefix).style(Style::default().fg(gray).bg(bg)),
             rows[3],
         );
         self.name
@@ -183,18 +185,14 @@ impl SaveSearchDialog {
             SaveHint::SaveNewAsQuery(query) => (format!("Save new: '{query}'"), false, false),
             SaveHint::Pending => ("Save".to_string(), false, true),
         };
-        let enter_fg = if warn {
-            ratatui::style::Color::Yellow
-        } else {
-            fg
-        };
+        let enter_fg = if warn { theme.yellow.to_ratatui() } else { fg };
         super::render_confirm_hint(
             f,
             rows[5],
             &format!("  [Enter] {action}"),
             !pending,
             enter_fg,
-            fg_muted,
+            gray,
             bg,
         );
     }

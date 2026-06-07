@@ -110,6 +110,13 @@ pub struct SearchList<R: SearchRow> {
     /// for the host to pin as the saved-search breadcrumb. Read once via
     /// [`take_accepted_saved_search`](Self::take_accepted_saved_search).
     accepted_saved_search: Option<String>,
+    /// Visible position of the last left-click, so "click the selected row
+    /// again activates" only fires on a true click-click — never on a click
+    /// landing on an auto- or keyboard-made selection.
+    last_click_pos: Option<usize>,
+    /// Render the query input with §9 syntax highlighting (the FIND drawer
+    /// and the telescope modal; plain inputs like the sidebar filter skip it).
+    highlight_query: bool,
 }
 
 /// Mouse interaction result from [`SearchList::handle_mouse`].
@@ -117,6 +124,9 @@ pub struct SearchList<R: SearchRow> {
 pub enum SearchMouse {
     Selected(usize),
     Activated(usize),
+    /// Right-click on a row: selected, and the host should open its context
+    /// menu for it.
+    Context(usize),
     Scrolled,
     /// The wheel landed inside the host's content sub-region (see
     /// [`SearchList::set_content_rect`]); the host owns that view's scroll,
@@ -135,6 +145,7 @@ pub struct SearchListBuilder<R: SearchRow> {
     intercept: Vec<KeyCombo>,
     icons: Icons,
     debounce: Option<std::time::Duration>,
+    highlight_query: bool,
 }
 
 impl<R: SearchRow> SearchList<R> {
@@ -151,6 +162,7 @@ impl<R: SearchRow> SearchList<R> {
             intercept: Vec::new(),
             icons: Icons::new(false),
             debounce: None,
+            highlight_query: false,
         }
     }
 
@@ -185,6 +197,8 @@ impl<R: SearchRow> SearchList<R> {
             query: b.initial_query,
             loader,
             input,
+            highlight_query: b.highlight_query,
+            last_click_pos: None,
             autocomplete,
             intercept: b.intercept,
             icons: b.icons,
@@ -261,6 +275,12 @@ impl<R: SearchRow> SearchList<R> {
     /// Length of the visible sequence `[leading?] ++ display`.
     pub fn visible_len(&self) -> usize {
         self.leading_offset() + self.display.len()
+    }
+
+    /// Number of real matches — the visible rows minus the synthetic leading
+    /// affordance ("Create: …"), for result-count displays.
+    pub fn match_count(&self) -> usize {
+        self.display.len()
     }
 
     /// Row at visible position `pos` in `[leading?] ++ display`.
@@ -515,15 +535,16 @@ impl<R: SearchRow> SearchList<R> {
     }
 
     pub fn render_query(&mut self, f: &mut Frame, area: Rect, theme: &Theme, focused: bool) {
-        self.input.render(
-            f,
-            area,
-            Style::default()
-                .fg(theme.fg.to_ratatui())
-                .bg(theme.bg_panel.to_ratatui()),
-            0,
-            focused,
-        );
+        let base = Style::default()
+            .fg(theme.fg.to_ratatui())
+            .bg(theme.bg_panel.to_ratatui());
+        if self.highlight_query {
+            let line =
+                crate::components::query_highlight::highlight_line(self.input.value(), theme, base);
+            self.input.render_line(f, area, line, base, 0, focused);
+        } else {
+            self.input.render(f, area, base, 0, focused);
+        }
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect, theme: &Theme, focused: bool) {
@@ -538,7 +559,7 @@ impl<R: SearchRow> SearchList<R> {
         let mut state = ListState::default().with_offset(self.offset);
         state.select(self.selected);
         let list =
-            List::new(items).highlight_style(Style::default().bg(theme.bg_selected.to_ratatui()));
+            List::new(items).highlight_style(Style::default().bg(theme.selection_bg.to_ratatui()));
         f.render_stateful_widget(list, area, &mut state);
         // Read the offset back: ratatui clamps it and keeps the selection in
         // view (keyboard moves included), so the stored offset always matches
@@ -666,7 +687,8 @@ impl<R: SearchRow> SearchList<R> {
             return SearchMouse::None;
         }
         match m.kind {
-            MouseEventKind::Down(MouseButton::Left) if m.row >= r.y => {
+            MouseEventKind::Down(MouseButton::Left | MouseButton::Right) if m.row >= r.y => {
+                let right_click = matches!(m.kind, MouseEventKind::Down(MouseButton::Right));
                 let target_visual = m.row - r.y; // 0-based visual offset; row 0 = first item
                 let mut acc: u16 = 0;
                 let mut hit: Option<usize> = None;
@@ -687,8 +709,13 @@ impl<R: SearchRow> SearchList<R> {
                 }
                 if let Some(pos) = hit {
                     let prev = self.selected;
+                    let prev_click = self.last_click_pos.replace(pos);
                     self.selected = Some(pos);
-                    return if prev == Some(pos) {
+                    return if right_click {
+                        SearchMouse::Context(pos)
+                    } else if prev == Some(pos) && prev_click == Some(pos) {
+                        // Activate only on click-click: the row was already
+                        // selected BY A CLICK, not by auto-select or keys.
                         SearchMouse::Activated(pos)
                     } else {
                         SearchMouse::Selected(pos)
@@ -764,6 +791,11 @@ impl<R: SearchRow> SearchListBuilder<R> {
     }
     pub fn intercept(mut self, v: Vec<KeyCombo>) -> Self {
         self.intercept = v;
+        self
+    }
+    /// Render the query input with §9 syntax highlighting.
+    pub fn highlight_query(mut self) -> Self {
+        self.highlight_query = true;
         self
     }
     pub fn icons(mut self, icons: Icons) -> Self {

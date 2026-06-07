@@ -8,6 +8,7 @@ use kimun_core::{NoteVault, NotesValidation, ResultType, VaultBrowseOptionsBuild
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::Style;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::components::Component;
@@ -144,6 +145,9 @@ pub struct SidebarComponent {
     /// the sort dialog mutates it via `apply_sort`, then the listing reloads.
     group_dirs: Arc<Mutex<bool>>,
     rendered_rect: Rect,
+    /// Screen cell each breadcrumb segment was drawn into on the last render,
+    /// with the directory it navigates to — clickable breadcrumb hit-test.
+    breadcrumb_cells: Vec<(Rect, VaultPath)>,
     key_bindings: KeyBindings,
 }
 
@@ -180,8 +184,17 @@ impl SidebarComponent {
             sort: Arc::new(Mutex::new((default_sort_field, default_sort_order))),
             group_dirs: Arc::new(Mutex::new(settings.group_directories)),
             rendered_rect: Rect::default(),
+            breadcrumb_cells: Vec::new(),
             key_bindings,
         }
+    }
+
+    /// The breadcrumb segment under the given screen cell, if any.
+    fn breadcrumb_at(&self, column: u16, row: u16) -> Option<&VaultPath> {
+        self.breadcrumb_cells
+            .iter()
+            .find(|(rect, _)| rect.contains(Position { x: column, y: row }))
+            .map(|(_, dir)| dir)
     }
 
     pub fn current_dir(&self) -> &VaultPath {
@@ -296,11 +309,11 @@ impl SidebarComponent {
                         tracing::warn!("create note failed for {path}: {e}");
                         return;
                     }
-                    tx2.send(AppEvent::OpenPath(path)).ok();
+                    tx2.send(AppEvent::open(path)).ok();
                 });
             }
             other => {
-                tx.send(AppEvent::OpenPath(other.path().clone())).ok();
+                tx.send(AppEvent::open(other.path().clone())).ok();
             }
         }
     }
@@ -322,6 +335,17 @@ impl Component for SidebarComponent {
             if !self.rendered_rect.contains(pos) {
                 return EventState::NotConsumed;
             }
+            // A click on a breadcrumb segment jumps up the tree.
+            if matches!(
+                mouse.kind,
+                ratatui::crossterm::event::MouseEventKind::Down(
+                    ratatui::crossterm::event::MouseButton::Left
+                )
+            ) && let Some(dir) = self.breadcrumb_at(mouse.column, mouse.row)
+            {
+                tx.send(AppEvent::open(dir.clone())).ok();
+                return EventState::Consumed;
+            }
             // Click-to-focus is handled centrally by `PanelSet::handle_mouse`;
             // only the sidebar's internal behavior lives here. The engine
             // hit-tests the wheel against the recorded panel rect (the whole
@@ -330,6 +354,18 @@ impl Component for SidebarComponent {
             if let Some(list) = &mut self.list {
                 match list.handle_mouse(mouse) {
                     SearchMouse::Activated(_) => self.activate_selected_entry(tx),
+                    // Right-click on a file/dir row → context menu (spec §10).
+                    SearchMouse::Context(_) => {
+                        if let Some(entry) = list.selected_row()
+                            && !matches!(
+                                entry,
+                                FileListEntry::Up { .. } | FileListEntry::CreateNote { .. }
+                            )
+                        {
+                            tx.send(AppEvent::ShowFileOpsMenu(entry.path().clone()))
+                                .ok();
+                        }
+                    }
                     // ContentScroll* are unreachable: this host records no
                     // content sub-region.
                     SearchMouse::Selected(_)
@@ -363,17 +399,13 @@ impl Component for SidebarComponent {
     fn hint_shortcuts(&self) -> Vec<(String, String)> {
         use crate::keys::action_shortcuts::ActionShortcuts;
 
-        [
-            (ActionShortcuts::FocusEditor, "editor \u{2192}"),
-            (ActionShortcuts::OpenSortDialog, "sort"),
-        ]
-        .iter()
-        .filter_map(|(action, label)| {
-            self.key_bindings
-                .first_combo_for(action)
-                .map(|k| (k, label.to_string()))
-        })
-        .collect()
+        crate::components::hints::hints_for(
+            &self.key_bindings,
+            &[
+                (ActionShortcuts::FocusEditor, "editor \u{2192}"),
+                (ActionShortcuts::OpenSortDialog, "sort"),
+            ],
+        )
     }
 
     fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
@@ -391,20 +423,58 @@ impl Component for SidebarComponent {
         let border_style = theme.border_style(focused);
 
         let header = Block::default()
-            .title(self.current_dir.to_string())
+            .title(format!("─ Files · {} ", self.current_dir))
             .borders(Borders::ALL)
             .border_style(border_style)
             .style(theme.panel_style());
         let header_inner = header.inner(rows[0]);
         f.render_widget(header, rows[0]);
-        f.render_widget(
-            Paragraph::new(format!("{} notes", self.note_count())).style(
-                Style::default()
-                    .fg(theme.fg_muted.to_ratatui())
-                    .bg(theme.bg_panel.to_ratatui()),
-            ),
-            header_inner,
-        );
+
+        // Clickable breadcrumb: one span per ancestor directory, separated by
+        // " / ", with the note count right-aligned. Each segment's cell is
+        // recorded for the click hit-test.
+        self.breadcrumb_cells.clear();
+        let seg_style = Style::default()
+            .fg(theme.fg_secondary.to_ratatui())
+            .bg(theme.bg_panel.to_ratatui());
+        let sep_style = Style::default()
+            .fg(theme.gray.to_ratatui())
+            .bg(theme.bg_panel.to_ratatui());
+        let mut spans: Vec<Span> = Vec::new();
+        let mut x = header_inner.x;
+        let mut push_segment =
+            |spans: &mut Vec<Span>, x: &mut u16, label: String, dir: VaultPath| {
+                let w = unicode_width::UnicodeWidthStr::width(label.as_str()) as u16;
+                // Only record cells that are (at least partly) visible — the
+                // Paragraph clips at the header edge, so fully clipped
+                // segments must not be clickable.
+                if *x < header_inner.right() {
+                    let visible = w.min(header_inner.right() - *x);
+                    self.breadcrumb_cells
+                        .push((Rect::new(*x, header_inner.y, visible, 1), dir));
+                }
+                spans.push(Span::styled(label, seg_style));
+                *x += w;
+            };
+        push_segment(&mut spans, &mut x, "~".to_string(), VaultPath::root());
+        let slices = self.current_dir.get_slices();
+        let mut acc = String::new();
+        for slice in &slices {
+            spans.push(Span::styled(" / ", sep_style));
+            x += 3;
+            acc.push('/');
+            acc.push_str(slice);
+            push_segment(&mut spans, &mut x, slice.clone(), VaultPath::new(&acc));
+        }
+        let count = format!("{} notes", self.note_count());
+        let used: u16 = x - header_inner.x;
+        let pad = header_inner
+            .width
+            .saturating_sub(used)
+            .saturating_sub(unicode_width::UnicodeWidthStr::width(count.as_str()) as u16);
+        spans.push(Span::styled(" ".repeat(pad as usize), sep_style));
+        spans.push(Span::styled(count, sep_style));
+        f.render_widget(Paragraph::new(Line::from(spans)), header_inner);
 
         let search_block = Block::default()
             .title(" Search")
@@ -570,7 +640,7 @@ mod tests {
         assert!(
             events
                 .iter()
-                .any(|e| matches!(e, AppEvent::OpenPath(p) if p.to_string().contains("alpha"))),
+                .any(|e| matches!(e, AppEvent::OpenPath { path: p, .. } if p.to_string().contains("alpha"))),
             "expected OpenPath for the activated note, got {events:?}"
         );
     }

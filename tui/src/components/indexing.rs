@@ -2,10 +2,10 @@ use std::time::Duration;
 
 use ratatui::Frame;
 use ratatui::layout::Alignment;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::Style;
 use ratatui::text::Text;
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::Paragraph;
 use throbber_widgets_tui::{Throbber, ThrobberState};
 
 use crate::components::events::{AppEvent, AppTx};
@@ -42,16 +42,7 @@ pub fn spawn_running(work: tokio::task::JoinHandle<()>, tx: &AppTx) -> IndexingP
     IndexingProgressState::Running { work, ticker }
 }
 
-pub fn fixed_centered_rect(width: u16, height: u16, r: Rect) -> Rect {
-    let x = r.x + (r.width.saturating_sub(width)) / 2;
-    let y = r.y + (r.height.saturating_sub(height)) / 2;
-    Rect {
-        x,
-        y,
-        width: width.min(r.width),
-        height: height.min(r.height),
-    }
-}
+pub use crate::components::fixed_centered_rect;
 
 /// Render a centered indexing progress dialog over the current frame.
 ///
@@ -66,14 +57,16 @@ pub fn render_indexing_overlay(
     running_label: &str,
 ) {
     let area = fixed_centered_rect(44, 5, f.area());
-    f.render_widget(Clear, area);
-    let block = Block::default()
-        .title("Indexing")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.accent.to_ratatui()))
-        .style(theme.base_style());
-    let inner = block.inner(area);
-    f.render_widget(block, area);
+    let inner = crate::components::panel::modal_chrome(
+        f,
+        area,
+        theme,
+        crate::components::panel::ModalSpec {
+            title: Some("Indexing"),
+            border: Some(Style::default().fg(theme.accent.to_ratatui())),
+            bg: crate::components::panel::ModalBg::Base,
+        },
+    );
 
     match state {
         IndexingProgressState::Running { .. } => {

@@ -221,9 +221,6 @@ function debounce(func, wait) {
         if (!results[i].doc.body) {
           continue;
         }
-        // var item = document.createElement("li");
-        // item.innerHTML = formatSearchResultItem(results[i], term.split(" "));
-        console.log(results[i]);
         $searchResultsItems.appendChild(formatSearchResultItem(results[i], term.split(" ")));
       }
     }, 150));
@@ -251,6 +248,57 @@ function debounce(func, wait) {
     menuIcon.style.display = isOpen ? "" : "none";
     closeIcon.style.display = isOpen ? "none" : "";
   }
+
+document.addEventListener("DOMContentLoaded", function () {
+  // Close the mobile menu when a nav link is tapped
+  const trees = document.querySelector("#trees");
+  if (trees) {
+    trees.addEventListener("click", function (e) {
+      if (e.target.closest("a") && trees.style.display === "block") {
+        burger();
+      }
+    });
+  }
+
+  // Scroll-spy: highlight the TOC entry for the section currently in view.
+  // The observer is only a trigger; the active heading is always recomputed
+  // from scratch (last heading above the 40%-viewport line), so there is a
+  // single source of truth for "where am I".
+  const tocLinks = document.querySelectorAll("#toc a");
+  if (tocLinks.length === 0 || !("IntersectionObserver" in window)) return;
+
+  const linkByAnchor = new Map();
+  tocLinks.forEach(function (link) {
+    const hash = decodeURIComponent(new URL(link.href).hash).slice(1);
+    if (hash) linkByAnchor.set(hash, link);
+  });
+
+  const headings = Array.from(
+    document.querySelectorAll("#wrap h2[id], #wrap h3[id]")
+  ).filter(function (h) { return linkByAnchor.has(h.id); });
+  if (headings.length === 0) return;
+
+  let activeLink = null;
+  function updateActive() {
+    const threshold = window.innerHeight * 0.4;
+    let current = null;
+    for (const h of headings) {
+      if (h.getBoundingClientRect().top <= threshold) current = h;
+      else break;
+    }
+    const link = current ? linkByAnchor.get(current.id) : null;
+    if (link === activeLink) return;
+    if (activeLink) activeLink.classList.remove("active");
+    if (link) link.classList.add("active");
+    activeLink = link;
+  }
+
+  const observer = new IntersectionObserver(updateActive, {
+    rootMargin: "0px 0px -60% 0px",
+  });
+  headings.forEach(function (h) { observer.observe(h); });
+  updateActive();
+});
 
 // https://aaronluna.dev/blog/add-copy-button-to-code-blocks-hugo-chroma/
 
