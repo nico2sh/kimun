@@ -44,9 +44,9 @@ Do you want to know more? ⭐️🚀 Check out our official documentation site f
 
 ---
 
-### 📸 TUI Snapshot
+### 📸 How the TUI looks
 <div align="center">
-  <img src="assets/screenshot.png" alt="Kimün Notes Preview and Search Panel Screenshot" width="60%" />
+  <img src="assets/screenshot.png" alt="Kimün Notes Preview and Search Panel Screenshot" width="80%" />
 </div>
 
 ---
