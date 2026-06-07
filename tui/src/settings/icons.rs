@@ -38,7 +38,7 @@ impl Icons {
                 rail_tags: "#",
                 rail_links: "↩",
                 rail_outline: "≡",
-                rail_config: "⚙",
+                rail_config: "",
             }
         } else {
             Self {
