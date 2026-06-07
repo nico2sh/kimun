@@ -4,6 +4,8 @@ use std::fmt::Display;
 
 /// Built-in theme definitions (`Theme::gruvbox_dark()`, `Theme::nord()`, …).
 mod builtin;
+/// Terminal color-depth detection and 256/16-color theme adaptation.
+pub mod color_depth;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ThemeColor {
@@ -199,50 +201,92 @@ impl Display for ThemeColor {
 /// ```toml
 /// name = "My Theme"
 /// bg               = "#1e1e2e"
+/// bg_hard          = "#11111b"
+/// bg_soft          = "#313244"
 /// bg_panel         = "#181825"
-/// bg_selected      = "#313244"
+/// selection_bg      = "#313244"
 /// fg               = "#cdd6f4"
+/// fg_bright        = "#f5e0dc"
 /// fg_secondary     = "#a6adc8"
-/// fg_muted         = "#6c7086"
-/// fg_selected      = "#cdd6f4"
-/// border           = "#45475a"
-/// border_focused   = "#89b4fa"
+/// gray         = "#6c7086"
+/// selection_fg      = "#cdd6f4"
+/// border_dim           = "#45475a"
+/// focus_border   = "#89b4fa"
 /// accent           = "#89b4fa"
+/// cursor           = "#f5e0dc"
+/// red              = "#f38ba8"
+/// green            = "#a6e3a1"
+/// yellow           = "#f9e2af"
+/// blue             = "#89b4fa"
+/// purple           = "#cba6f7"
+/// aqua             = "#94e2d5"
+/// orange           = "#fab387"
 /// color_directory  = "#89dceb"
 /// color_journal_date = "#94e2d5"
 /// color_search_match = "#a6e3a1"
+/// color_tag        = "#fab387"
+/// blockquote_bar   = "#cba6f7"
+/// code_bg          = "#181825"
 /// ```
+///
+/// Roles introduced after a theme file was written may be omitted — they are
+/// derived from the closest sibling role (see [`ThemeToml`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(from = "ThemeToml")]
 pub struct Theme {
     pub name: String,
 
     // ── Backgrounds ─────────────────────────────────────────────────────────
     /// Main/editor background.
     pub bg: ThemeColor,
+    /// Hard-contrast background: modals and input fields.
+    pub bg_hard: ThemeColor,
+    /// Soft background: alternating rows, horizontal rules.
+    pub bg_soft: ThemeColor,
     /// Sidebar / panel background (usually slightly offset from `bg`).
     pub bg_panel: ThemeColor,
     /// Background of the currently selected row in lists.
-    pub bg_selected: ThemeColor,
+    pub selection_bg: ThemeColor,
 
     // ── Foreground / text ────────────────────────────────────────────────────
     /// Primary text color.
     pub fg: ThemeColor,
+    /// Bright/high-contrast text: titles, headings.
+    pub fg_bright: ThemeColor,
     /// Secondary text: filenames, metadata, subdued hints.
     pub fg_secondary: ThemeColor,
     /// Very dim text: placeholders, separators, disabled items.
-    pub fg_muted: ThemeColor,
+    pub gray: ThemeColor,
     /// Text color of a selected/highlighted row (often brighter than `fg`).
-    pub fg_selected: ThemeColor,
+    pub selection_fg: ThemeColor,
 
     // ── Borders ──────────────────────────────────────────────────────────────
     /// Default (unfocused) border color.
-    pub border: ThemeColor,
+    pub border_dim: ThemeColor,
     /// Border color when the pane has keyboard focus.
-    pub border_focused: ThemeColor,
+    pub focus_border: ThemeColor,
 
     // ── Accent ───────────────────────────────────────────────────────────────
     /// Primary accent: title bars, active markers, cursor highlights.
     pub accent: ThemeColor,
+    /// Block-cursor color in text fields.
+    pub cursor: ThemeColor,
+
+    // ── Accent palette (semantic, theme-bound) ──────────────────────────────
+    /// Errors, destructive actions, query negation.
+    pub red: ThemeColor,
+    /// Success / OK states.
+    pub green: ThemeColor,
+    /// Warnings, field keys, keycaps.
+    pub yellow: ThemeColor,
+    /// Wikilink targets.
+    pub blue: ThemeColor,
+    /// Numbers and date literals.
+    pub purple: ThemeColor,
+    /// Tags, links, group labels.
+    pub aqua: ThemeColor,
+    /// Operators and strong accents.
+    pub orange: ThemeColor,
 
     // ── Semantic colors for file-list entries ────────────────────────────────
     /// Color used for directory entries in the file list.
@@ -252,31 +296,86 @@ pub struct Theme {
     /// Color for highlighted search-match text.
     pub color_search_match: ThemeColor,
     /// Color for #hashtag label spans in the editor.
-    #[serde(default = "default_color_tag")]
     pub color_tag: ThemeColor,
     /// Color of the `│` blockquote bar drawn in place of `>` markers.
-    #[serde(default = "default_blockquote_bar")]
     pub blockquote_bar: ThemeColor,
     /// Background of fenced and indented code blocks (the "code box").
-    /// Inline `code` uses `bg_selected`, not this.
-    #[serde(default = "default_code_bg")]
+    /// Inline `code` uses `selection_bg`, not this.
     pub code_bg: ThemeColor,
 }
 
-/// Serde default for `color_tag` — used when deserializing older theme TOML
-/// files that do not contain the field. Falls back to Gruvbox Dark's orange.
-fn default_color_tag() -> ThemeColor {
-    ThemeColor::from_string("#fe8019").unwrap()
+/// Deserialization shadow of [`Theme`].
+///
+/// Newer roles are optional so theme TOML files written before they existed
+/// still parse; missing roles are derived from the closest sibling role (or a
+/// chromatic ANSI slot for the accent palette, which adapts to the user's
+/// terminal palette) in [`From<ThemeToml>`].
+#[derive(Deserialize)]
+struct ThemeToml {
+    name: String,
+    bg: ThemeColor,
+    bg_hard: Option<ThemeColor>,
+    bg_soft: Option<ThemeColor>,
+    bg_panel: ThemeColor,
+    selection_bg: ThemeColor,
+    fg: ThemeColor,
+    fg_bright: Option<ThemeColor>,
+    fg_secondary: ThemeColor,
+    gray: ThemeColor,
+    selection_fg: ThemeColor,
+    border_dim: ThemeColor,
+    focus_border: ThemeColor,
+    accent: ThemeColor,
+    cursor: Option<ThemeColor>,
+    red: Option<ThemeColor>,
+    green: Option<ThemeColor>,
+    yellow: Option<ThemeColor>,
+    blue: Option<ThemeColor>,
+    purple: Option<ThemeColor>,
+    aqua: Option<ThemeColor>,
+    orange: Option<ThemeColor>,
+    color_directory: ThemeColor,
+    color_journal_date: ThemeColor,
+    color_search_match: ThemeColor,
+    color_tag: Option<ThemeColor>,
+    blockquote_bar: Option<ThemeColor>,
+    code_bg: Option<ThemeColor>,
 }
 
-/// Serde default for `blockquote_bar` — Gruvbox Dark's accent yellow.
-fn default_blockquote_bar() -> ThemeColor {
-    ThemeColor::from_string("#fabd2f").unwrap()
-}
-
-/// Serde default for `code_bg` — Gruvbox Dark's panel background.
-fn default_code_bg() -> ThemeColor {
-    ThemeColor::from_string("#32302f").unwrap()
+impl From<ThemeToml> for Theme {
+    fn from(t: ThemeToml) -> Self {
+        let orange = t.orange.unwrap_or(ThemeColor::Ansi(208));
+        Theme {
+            name: t.name,
+            bg_hard: t.bg_hard.unwrap_or_else(|| t.bg_panel.clone()),
+            bg_soft: t.bg_soft.unwrap_or_else(|| t.selection_bg.clone()),
+            fg_bright: t.fg_bright.unwrap_or_else(|| t.selection_fg.clone()),
+            cursor: t.cursor.unwrap_or_else(|| t.fg.clone()),
+            red: t.red.unwrap_or(ThemeColor::Ansi(9)),
+            green: t.green.unwrap_or(ThemeColor::Ansi(10)),
+            yellow: t.yellow.unwrap_or(ThemeColor::Ansi(11)),
+            blue: t.blue.unwrap_or(ThemeColor::Ansi(12)),
+            purple: t.purple.unwrap_or(ThemeColor::Ansi(13)),
+            aqua: t.aqua.unwrap_or(ThemeColor::Ansi(14)),
+            color_tag: t.color_tag.unwrap_or_else(|| orange.clone()),
+            blockquote_bar: t.blockquote_bar.unwrap_or_else(|| t.accent.clone()),
+            code_bg: t.code_bg.unwrap_or_else(|| t.bg_panel.clone()),
+            orange,
+            bg: t.bg,
+            bg_panel: t.bg_panel,
+            selection_bg: t.selection_bg,
+            fg: t.fg,
+            fg_secondary: t.fg_secondary,
+            gray: t.gray,
+            selection_fg: t.selection_fg,
+            border_dim: t.border_dim,
+            focus_border: t.focus_border,
+            accent: t.accent,
+            color_directory: t.color_directory,
+            color_journal_date: t.color_journal_date,
+            color_search_match: t.color_search_match,
+        }
+    }
 }
 
 impl Default for Theme {
@@ -289,9 +388,9 @@ impl Theme {
     /// Returns the appropriate border style depending on focus state.
     pub fn border_style(&self, focused: bool) -> Style {
         if focused {
-            Style::default().fg(self.border_focused.to_ratatui())
+            Style::default().fg(self.focus_border.to_ratatui())
         } else {
-            Style::default().fg(self.border.to_ratatui())
+            Style::default().fg(self.border_dim.to_ratatui())
         }
     }
 
@@ -319,17 +418,14 @@ mod tests {
     fn test_border_style_focused() {
         let theme = Theme::gruvbox_dark();
         let style = theme.border_style(true);
-        assert_eq!(
-            style,
-            Style::default().fg(theme.border_focused.to_ratatui())
-        );
+        assert_eq!(style, Style::default().fg(theme.focus_border.to_ratatui()));
     }
 
     #[test]
     fn test_border_style_unfocused() {
         let theme = Theme::gruvbox_dark();
         let style = theme.border_style(false);
-        assert_eq!(style, Style::default().fg(theme.border.to_ratatui()));
+        assert_eq!(style, Style::default().fg(theme.border_dim.to_ratatui()));
     }
 
     #[test]
@@ -557,7 +653,7 @@ mod tests {
         assert!(toml_string.contains("name = \"Gruvbox Dark\""));
         assert!(toml_string.contains("bg = \"#282828\""));
         assert!(toml_string.contains("bg_panel = \"#32302f\""));
-        assert!(toml_string.contains("border_focused = \"#fabd2f\""));
+        assert!(toml_string.contains("focus_border = \"#b8bb26\""));
         assert!(toml_string.contains("color_journal_date = \"#8ec07c\""));
     }
 
@@ -567,13 +663,13 @@ mod tests {
             name = "Test Theme"
             bg                 = "#282828"
             bg_panel           = "#32302f"
-            bg_selected        = "#504945"
+            selection_bg        = "#504945"
             fg                 = "#ebdbb2"
             fg_secondary       = "#a89984"
-            fg_muted           = "#7c6f64"
-            fg_selected        = "#fbf1c7"
-            border             = "#504945"
-            border_focused     = "#fabd2f"
+            gray           = "#7c6f64"
+            selection_fg        = "#fbf1c7"
+            border_dim             = "#504945"
+            focus_border     = "#fabd2f"
             accent             = "#fabd2f"
             color_directory    = "#83a598"
             color_journal_date = "#8ec07c"
@@ -584,7 +680,7 @@ mod tests {
         let theme: Theme = toml::from_str(toml_str).unwrap();
         assert_eq!(theme.name, "Test Theme");
         assert_eq!(theme.bg, ThemeColor::new(0x28, 0x28, 0x28));
-        assert_eq!(theme.border_focused, ThemeColor::new(0xfa, 0xbd, 0x2f));
+        assert_eq!(theme.focus_border, ThemeColor::new(0xfa, 0xbd, 0x2f));
         assert_eq!(theme.color_journal_date, ThemeColor::new(0x8e, 0xc0, 0x7c));
     }
 
@@ -597,7 +693,7 @@ mod tests {
         assert_eq!(original.name, deserialized.name);
         assert_eq!(original.bg, deserialized.bg);
         assert_eq!(original.fg, deserialized.fg);
-        assert_eq!(original.border_focused, deserialized.border_focused);
+        assert_eq!(original.focus_border, deserialized.focus_border);
         assert_eq!(original.color_journal_date, deserialized.color_journal_date);
     }
 
@@ -681,8 +777,8 @@ mod tests {
         assert_eq!(theme.name, "ANSI");
         assert_eq!(theme.bg, ThemeColor::Reset);
         assert_eq!(theme.fg, ThemeColor::Reset);
-        assert_eq!(theme.bg_selected, ThemeColor::Ansi(4));
-        assert_eq!(theme.border_focused, ThemeColor::Ansi(6));
+        assert_eq!(theme.selection_bg, ThemeColor::Ansi(4));
+        assert_eq!(theme.focus_border, ThemeColor::Ansi(10));
         assert_eq!(theme.color_directory, ThemeColor::Ansi(12));
     }
 
@@ -701,20 +797,66 @@ mod tests {
             name = "Old"
             bg = "#000000"
             bg_panel = "#111111"
-            bg_selected = "#222222"
+            selection_bg = "#222222"
             fg = "#ffffff"
             fg_secondary = "#cccccc"
-            fg_muted = "#888888"
-            fg_selected = "#ffffff"
-            border = "#333333"
-            border_focused = "#444444"
+            gray = "#888888"
+            selection_fg = "#ffffff"
+            border_dim = "#333333"
+            focus_border = "#444444"
             accent = "#55aaff"
             color_directory = "#66ccee"
             color_journal_date = "#77ddcc"
             color_search_match = "#88eeaa"
         "##;
         let parsed: Theme = toml::from_str(toml).expect("old theme TOML must still parse");
-        assert_eq!(parsed.blockquote_bar, default_blockquote_bar());
-        assert_eq!(parsed.code_bg, default_code_bg());
+        // Sibling-derived defaults.
+        assert_eq!(parsed.blockquote_bar, parsed.accent);
+        assert_eq!(parsed.code_bg, parsed.bg_panel);
+    }
+
+    #[test]
+    fn old_theme_toml_derives_new_roles_from_siblings() {
+        // A theme file written before the §1 role expansion must still parse,
+        // with the new roles derived from their closest sibling.
+        let toml = r##"
+            name = "Old"
+            bg = "#000000"
+            bg_panel = "#111111"
+            selection_bg = "#222222"
+            fg = "#ffffff"
+            fg_secondary = "#cccccc"
+            gray = "#888888"
+            selection_fg = "#eeeeee"
+            border_dim = "#333333"
+            focus_border = "#444444"
+            accent = "#55aaff"
+            color_directory = "#66ccee"
+            color_journal_date = "#77ddcc"
+            color_search_match = "#88eeaa"
+        "##;
+        let t: Theme = toml::from_str(toml).expect("old theme TOML must still parse");
+        assert_eq!(t.bg_hard, t.bg_panel);
+        assert_eq!(t.bg_soft, t.selection_bg);
+        assert_eq!(t.fg_bright, t.selection_fg);
+        assert_eq!(t.cursor, t.fg);
+        // Accent palette falls back to chromatic ANSI slots.
+        assert_eq!(t.red, ThemeColor::Ansi(9));
+        assert_eq!(t.green, ThemeColor::Ansi(10));
+        assert_eq!(t.yellow, ThemeColor::Ansi(11));
+        assert_eq!(t.blue, ThemeColor::Ansi(12));
+        assert_eq!(t.purple, ThemeColor::Ansi(13));
+        assert_eq!(t.aqua, ThemeColor::Ansi(14));
+        assert_eq!(t.orange, ThemeColor::Ansi(208));
+        // color_tag tracks the orange accent when absent.
+        assert_eq!(t.color_tag, t.orange);
+    }
+
+    #[test]
+    fn new_roles_roundtrip_through_toml() {
+        let original = Theme::gruvbox_dark();
+        let toml_string = toml::to_string_pretty(&original).unwrap();
+        let parsed: Theme = toml::from_str(&toml_string).unwrap();
+        assert_eq!(original, parsed);
     }
 }

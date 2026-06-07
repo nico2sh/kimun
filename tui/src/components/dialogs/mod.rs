@@ -7,6 +7,7 @@ pub use quick_note_modal::QuickNoteModal;
 pub use rename_dialog::RenameDialog;
 pub use save_search_dialog::SaveSearchDialog;
 pub use sort_dialog::SortDialog;
+pub use theme_picker::ThemePickerDialog;
 pub use workspace_switcher::WorkspaceSwitcherModal;
 
 use std::sync::Arc;
@@ -50,6 +51,7 @@ pub mod quick_note_modal;
 pub mod rename_dialog;
 pub mod save_search_dialog;
 pub mod sort_dialog;
+pub mod theme_picker;
 pub mod workspace_switcher;
 
 pub enum ActiveDialog {
@@ -63,6 +65,7 @@ pub enum ActiveDialog {
     WorkspaceSwitcher(WorkspaceSwitcherModal),
     SaveSearch(SaveSearchDialog),
     Sort(SortDialog),
+    ThemePicker(ThemePickerDialog),
 }
 
 impl ActiveDialog {
@@ -78,12 +81,23 @@ impl ActiveDialog {
             ActiveDialog::WorkspaceSwitcher(_) => {} // no error state
             ActiveDialog::SaveSearch(_) => {}        // no error state
             ActiveDialog::Sort(_) => {}              // no error state
+            ActiveDialog::ThemePicker(_) => {}       // no error state
         }
     }
 
     // Constructors for the dialogs opened by EditorScreen via OverlayHost.
     pub fn help(key_bindings: &crate::keys::KeyBindings) -> Self {
         ActiveDialog::Help(HelpDialog::new(key_bindings))
+    }
+
+    /// The full leader-tree cheatsheet (leader `?`).
+    pub fn cheatsheet(settings: &crate::settings::AppSettings) -> Self {
+        ActiveDialog::Help(HelpDialog::cheatsheet(settings))
+    }
+
+    /// The live theme picker (leader `v c`).
+    pub fn theme_picker(settings: &crate::settings::AppSettings) -> Self {
+        ActiveDialog::ThemePicker(ThemePickerDialog::new(settings))
     }
 
     pub fn quick_note(vault: Arc<NoteVault>) -> Self {
@@ -243,6 +257,7 @@ impl Component for ActiveDialog {
             ActiveDialog::WorkspaceSwitcher(d) => d.handle_key(*key, tx),
             ActiveDialog::SaveSearch(d) => d.handle_input(event, tx),
             ActiveDialog::Sort(d) => d.handle_input(event, tx),
+            ActiveDialog::ThemePicker(d) => d.handle_key(*key, tx),
         }
     }
 
@@ -258,6 +273,7 @@ impl Component for ActiveDialog {
             ActiveDialog::WorkspaceSwitcher(d) => d.render(f, rect, theme, focused),
             ActiveDialog::SaveSearch(d) => d.render(f, rect, theme, focused),
             ActiveDialog::Sort(d) => d.render(f, rect, theme, focused),
+            ActiveDialog::ThemePicker(d) => d.render(f, rect, theme, focused),
         }
     }
 }
@@ -275,18 +291,22 @@ pub(super) fn render_path_row(f: &mut Frame, rect: Rect, path: &str, fg: Color, 
 }
 
 /// Renders a single-line horizontal rule (TOP border only).
-pub(super) fn render_separator(f: &mut Frame, rect: Rect, fg_muted: Color, bg: Color) {
+pub(super) fn render_separator(f: &mut Frame, rect: Rect, gray: Color, bg: Color) {
     Block::default()
         .borders(Borders::TOP)
-        .border_style(Style::default().fg(fg_muted))
+        .border_style(Style::default().fg(gray))
         .style(Style::default().bg(bg))
         .render(rect, f.buffer_mut());
 }
 
-/// Renders `  Error: {msg}` in red.
-pub(super) fn render_error_row(f: &mut Frame, rect: Rect, msg: &str, bg: Color) {
+/// Renders `  Error: {msg}` in the theme's error color on the panel background.
+pub(super) fn render_error_row(f: &mut Frame, rect: Rect, msg: &str, theme: &Theme) {
     f.render_widget(
-        Paragraph::new(format!("  Error: {msg}")).style(Style::default().fg(Color::Red).bg(bg)),
+        Paragraph::new(format!("  Error: {msg}")).style(
+            Style::default()
+                .fg(theme.red.to_ratatui())
+                .bg(theme.bg_panel.to_ratatui()),
+        ),
         rect,
     );
 }
@@ -299,16 +319,13 @@ pub(super) fn render_confirm_hint(
     enter_text: &str,
     enter_active: bool,
     fg: Color,
-    fg_muted: Color,
+    gray: Color,
     bg: Color,
 ) {
     let enter_style = if enter_active {
         Style::default().fg(fg).bg(bg)
     } else {
-        Style::default()
-            .fg(fg_muted)
-            .bg(bg)
-            .add_modifier(Modifier::DIM)
+        Style::default().fg(gray).bg(bg).add_modifier(Modifier::DIM)
     };
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -319,7 +336,7 @@ pub(super) fn render_confirm_hint(
         .split(rect);
     f.render_widget(Paragraph::new(enter_text).style(enter_style), chunks[0]);
     f.render_widget(
-        Paragraph::new("  [Esc] Cancel").style(Style::default().fg(fg_muted).bg(bg)),
+        Paragraph::new("  [Esc] Cancel").style(Style::default().fg(gray).bg(bg)),
         chunks[1],
     );
 }
@@ -329,20 +346,7 @@ pub(super) fn render_confirm_hint(
 // ---------------------------------------------------------------------------
 
 /// Centre a dialog of exactly `width` × `height` characters.
-pub(super) fn fixed_centered_rect(
-    width: u16,
-    height: u16,
-    area: ratatui::layout::Rect,
-) -> ratatui::layout::Rect {
-    let w = width.min(area.width);
-    let h = height.min(area.height);
-    ratatui::layout::Rect {
-        x: area.x + (area.width.saturating_sub(w)) / 2,
-        y: area.y + (area.height.saturating_sub(h)) / 2,
-        width: w,
-        height: h,
-    }
-}
+pub(super) use crate::components::fixed_centered_rect;
 
 #[cfg(test)]
 mod tests {

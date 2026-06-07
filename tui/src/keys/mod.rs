@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize, de::Visitor, ser::SerializeMap};
 pub mod action_shortcuts;
 pub mod key_combo;
 pub mod key_strike;
+pub mod leader;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyBindings {
@@ -206,7 +207,8 @@ impl KeyBindings {
                 } else {
                     tracing::warn!(
                         "Skipping invalid key combo '{}' for action '{}': \
-                         only ctrl/alt (with optional shift) + a letter (a-z), or bare F1–F12 are supported",
+                         only ctrl/alt (with optional shift) + a letter, digit, or \
+                         punctuation key, or bare F1–F12 are supported",
                         combo,
                         action
                     );
@@ -390,7 +392,7 @@ mod tests {
         let mut km = KeyBindings::empty();
         km.batch_add()
             .with_ctrl()
-            .add(KeyStrike::KeyN, ActionShortcuts::TogglePreview)
+            .add(KeyStrike::KeyN, ActionShortcuts::NewJournal)
             .add(KeyStrike::KeyH, ActionShortcuts::Text(TextAction::Bold))
             .with_alt()
             .add(
@@ -399,7 +401,7 @@ mod tests {
             );
         let km_str = toml::to_string(&km).unwrap();
 
-        let expected = r#"TogglePreview = ["ctrl&N"]
+        let expected = r#"NewJournal = ["ctrl&N"]
 TextEditor-Bold = ["ctrl&H"]
 TextEditor-Header2 = ["ctrl+alt&L"]
 "#
@@ -412,13 +414,13 @@ TextEditor-Header2 = ["ctrl+alt&L"]
         let mut km = KeyBindings::empty();
         km.batch_add()
             .with_ctrl()
-            .add(KeyStrike::KeyN, ActionShortcuts::TogglePreview)
+            .add(KeyStrike::KeyN, ActionShortcuts::NewJournal)
             .add(KeyStrike::KeyH, ActionShortcuts::Text(TextAction::Bold))
             .with_alt()
             .add(KeyStrike::KeyL, ActionShortcuts::Text(TextAction::Bold));
         let km_str = toml::to_string(&km).unwrap();
 
-        let expected = r#"TogglePreview = ["ctrl&N"]
+        let expected = r#"NewJournal = ["ctrl&N"]
 TextEditor-Bold = ["ctrl&H", "ctrl+alt&L"]
 "#
         .to_string();
@@ -431,13 +433,13 @@ TextEditor-Bold = ["ctrl&H", "ctrl+alt&L"]
         expected_km
             .batch_add()
             .with_ctrl()
-            .add(KeyStrike::KeyN, ActionShortcuts::TogglePreview)
+            .add(KeyStrike::KeyN, ActionShortcuts::NewJournal)
             .add(KeyStrike::KeyH, ActionShortcuts::Text(TextAction::Bold))
             .add(KeyStrike::KeyQ, ActionShortcuts::Quit)
             .with_alt()
             .add(KeyStrike::KeyL, ActionShortcuts::Text(TextAction::Bold));
 
-        let km_str = r#"TogglePreview = ["ctrl & N"]
+        let km_str = r#"NewJournal = ["ctrl & N"]
 TextEditor-Bold = ["ctrl & H", "ctrl+alt & L"]
 Quit = ["ctrl & Q"]
 "#
@@ -450,7 +452,7 @@ Quit = ["ctrl & Q"]
 
     #[test]
     fn deserialize_skips_entry_with_unknown_action() {
-        let toml_str = r#"TogglePreview = ["ctrl & N"]
+        let toml_str = r#"NewJournal = ["ctrl & N"]
 NotARealAction = ["ctrl & X"]
 Quit = ["ctrl & Q"]
 "#;
@@ -461,7 +463,7 @@ Quit = ["ctrl & Q"]
         expected
             .batch_add()
             .with_ctrl()
-            .add(KeyStrike::KeyN, ActionShortcuts::TogglePreview)
+            .add(KeyStrike::KeyN, ActionShortcuts::NewJournal)
             .add(KeyStrike::KeyQ, ActionShortcuts::Quit);
 
         assert_eq!(expected, km);
@@ -469,7 +471,7 @@ Quit = ["ctrl & Q"]
 
     #[test]
     fn deserialize_skips_entry_with_malformed_combo() {
-        let toml_str = r#"TogglePreview = ["ctrl & N"]
+        let toml_str = r#"NewJournal = ["ctrl & N"]
 OpenNote = ["bogus & ZZZZ"]
 Quit = ["ctrl & Q"]
 "#;
@@ -480,7 +482,7 @@ Quit = ["ctrl & Q"]
         expected
             .batch_add()
             .with_ctrl()
-            .add(KeyStrike::KeyN, ActionShortcuts::TogglePreview)
+            .add(KeyStrike::KeyN, ActionShortcuts::NewJournal)
             .add(KeyStrike::KeyQ, ActionShortcuts::Quit);
 
         assert_eq!(expected, km);
@@ -488,7 +490,7 @@ Quit = ["ctrl & Q"]
 
     #[test]
     fn deserialize_injects_default_quit_when_missing() {
-        let toml_str = r#"TogglePreview = ["ctrl & N"]
+        let toml_str = r#"NewJournal = ["ctrl & N"]
 "#;
 
         let km: KeyBindings = toml::from_str(toml_str).expect("should not error");
@@ -497,7 +499,7 @@ Quit = ["ctrl & Q"]
         expected
             .batch_add()
             .with_ctrl()
-            .add(KeyStrike::KeyN, ActionShortcuts::TogglePreview)
+            .add(KeyStrike::KeyN, ActionShortcuts::NewJournal)
             .add(KeyStrike::KeyQ, ActionShortcuts::Quit);
 
         assert_eq!(expected, km);
@@ -520,7 +522,7 @@ Quit = ["ctrl & Q"]
 
     #[test]
     fn deserialize_recovers_quit_when_quit_entry_is_malformed() {
-        let toml_str = r#"TogglePreview = ["ctrl & N"]
+        let toml_str = r#"NewJournal = ["ctrl & N"]
 Quit = ["bogus & ZZZZ"]
 "#;
 
@@ -530,7 +532,7 @@ Quit = ["bogus & ZZZZ"]
         expected
             .batch_add()
             .with_ctrl()
-            .add(KeyStrike::KeyN, ActionShortcuts::TogglePreview)
+            .add(KeyStrike::KeyN, ActionShortcuts::NewJournal)
             .add(KeyStrike::KeyQ, ActionShortcuts::Quit);
 
         assert_eq!(expected, km);

@@ -5,7 +5,7 @@ $background: #1A1816;
 $color: #E8E4DC;
 $links: #82BAD5;
 $hover-links: #F9C844;
-$visited-links: #6B8FA3;
+$visited-links: #7BA0B5; // dimmer than $links but ≥6:1 on $background (AA with headroom)
 
 // Typography
 $font-size: 1.0625rem;
@@ -17,7 +17,8 @@ $code_font: 400 0.9375rem/1.75 '0xProto', 'SFMono-Regular', 'Consolas', 'Liberat
 
 // UI elements
 $quote-bg: #28241E;
-$quote-border: #F9C844 4px solid;
+// Thin ▏-style bar, mirroring the app's own blockquote treatment
+$quote-border: #F9C844 1px solid;
 $quote-alert-note-color: #82BAD5;
 $quote-alert-tip-color: #5ACB5A;
 $quote-alert-important-color: #ab7df8;

@@ -3,7 +3,7 @@ title = "CLI Skill"
 weight = 21
 +++
 
-# AI Skills
+# CLI Skill
 
 Kimün ships with a ready-made **skill** for AI coding assistants. A skill is a short reference file that tells an AI agent which CLI commands are available and how to use them correctly, so it can manage your notes on your behalf without guessing.
 
@@ -14,8 +14,7 @@ With the skill installed, an AI assistant can:
 - Search your vault for context before starting a task
 - Read specific notes on request
 
-Destructive edits (overwrite, replace, delete) back up the note's previous
-content automatically, so changes stay recoverable.
+Destructive edits are [backed up automatically](@/using-kimun/cli.md#backups), so an overenthusiastic agent can't lose your notes.
 
 ## Installation
 

@@ -203,6 +203,32 @@ impl SingleLineInput {
             ..rect
         };
         f.render_widget(Paragraph::new(self.value.as_str()).style(style), inner);
+        self.place_caret(f, inner, focused);
+    }
+
+    /// Like [`Self::render`], but with a pre-styled line (e.g. the query
+    /// highlighter's output). The line must render the same text as the
+    /// input's value, so caret math stays valid.
+    pub fn render_line(
+        &mut self,
+        f: &mut Frame,
+        rect: Rect,
+        line: ratatui::text::Line<'static>,
+        base_style: Style,
+        value_offset_x: u16,
+        focused: bool,
+    ) {
+        let inner = Rect {
+            x: rect.x.saturating_add(value_offset_x),
+            width: rect.width.saturating_sub(value_offset_x),
+            ..rect
+        };
+        f.render_widget(Paragraph::new(line).style(base_style), inner);
+        self.place_caret(f, inner, focused);
+    }
+
+    /// Shared caret placement for both render paths.
+    fn place_caret(&mut self, f: &mut Frame, inner: Rect, focused: bool) {
         self.last_caret_pos = None;
         if focused {
             let caret_x = inner

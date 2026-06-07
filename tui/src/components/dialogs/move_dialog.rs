@@ -7,14 +7,15 @@ use nucleo::pattern::{CaseMatching, Normalization, Pattern};
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
+use ratatui::style::{Modifier, Style};
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use tokio::task::JoinHandle;
 
 use crate::components::Component;
 use crate::components::dialogs::ValidationState;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx};
+use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::components::single_line_input::{InputOutcome, SingleLineInput};
 use crate::settings::themes::Theme;
 
@@ -304,21 +305,20 @@ impl Component for MoveDialog {
     fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, _focused: bool) {
         let popup_area = crate::components::centered_rect(50, 60, rect);
 
-        // Backdrop: clear whatever is rendered behind the popup.
-        f.render_widget(Clear, popup_area);
-
-        // Outer block.
-        let outer_block = Block::default()
-            .title(" Move ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.fg.to_ratatui()))
-            .style(theme.panel_style());
-        let inner = outer_block.inner(popup_area);
-        f.render_widget(outer_block, popup_area);
+        let inner = modal_chrome(
+            f,
+            popup_area,
+            theme,
+            ModalSpec {
+                title: Some(" Move "),
+                border: Some(Style::default().fg(theme.fg.to_ratatui())),
+                ..Default::default()
+            },
+        );
 
         let bg = theme.bg_panel.to_ratatui();
         let fg = theme.fg.to_ratatui();
-        let fg_muted = theme.fg_muted.to_ratatui();
+        let gray = theme.gray.to_ratatui();
 
         // ── Vertical layout inside the block ─────────────────────────────────
         //
@@ -349,7 +349,7 @@ impl Component for MoveDialog {
 
         // Row 0: "MOVING" label.
         f.render_widget(
-            Paragraph::new("  MOVING").style(Style::default().fg(fg_muted).bg(bg)),
+            Paragraph::new("  MOVING").style(Style::default().fg(gray).bg(bg)),
             rows[0],
         );
 
@@ -360,14 +360,14 @@ impl Component for MoveDialog {
 
         // Row 3: "DESTINATION" label.
         f.render_widget(
-            Paragraph::new("  DESTINATION").style(Style::default().fg(fg_muted).bg(bg)),
+            Paragraph::new("  DESTINATION").style(Style::default().fg(gray).bg(bg)),
             rows[3],
         );
 
         // Row 4: search input with cursor indicator.
         let input_block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(fg_muted))
+            .border_style(Style::default().fg(gray))
             .style(Style::default().bg(bg));
         let input_inner = input_block.inner(rows[4]);
         f.render_widget(input_block, rows[4]);
@@ -377,9 +377,9 @@ impl Component for MoveDialog {
         // Row 5: directory list (or loading placeholder).
         let list_items: Vec<ListItem> = if self.results().is_empty() {
             if self.load_task.is_some() {
-                vec![ListItem::new("  (loading...)").style(Style::default().fg(fg_muted).bg(bg))]
+                vec![ListItem::new("  (loading...)").style(Style::default().fg(gray).bg(bg))]
             } else {
-                vec![ListItem::new("  (no matches)").style(Style::default().fg(fg_muted).bg(bg))]
+                vec![ListItem::new("  (no matches)").style(Style::default().fg(gray).bg(bg))]
             }
         } else {
             self.results()
@@ -397,15 +397,15 @@ impl Component for MoveDialog {
 
         let list_block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(fg_muted))
+            .border_style(Style::default().fg(gray))
             .style(Style::default().bg(bg));
 
         let list = List::new(list_items)
             .block(list_block)
             .highlight_style(
                 Style::default()
-                    .bg(theme.bg_selected.to_ratatui())
-                    .fg(theme.fg_selected.to_ratatui())
+                    .bg(theme.selection_bg.to_ratatui())
+                    .fg(theme.selection_fg.to_ratatui())
                     .add_modifier(Modifier::BOLD),
             )
             .highlight_symbol(">> ");
@@ -415,9 +415,15 @@ impl Component for MoveDialog {
         // Row 6: validation status.
         let (status_text, status_style) = match self.dest_validation {
             ValidationState::Idle => ("", Style::default().bg(bg)),
-            ValidationState::Pending => ("  Checking...", Style::default().fg(fg_muted).bg(bg)),
-            ValidationState::Available => ("  Available", Style::default().fg(Color::Green).bg(bg)),
-            ValidationState::Taken => ("  Already exists", Style::default().fg(Color::Red).bg(bg)),
+            ValidationState::Pending => ("  Checking...", Style::default().fg(gray).bg(bg)),
+            ValidationState::Available => (
+                "  Available",
+                Style::default().fg(theme.green.to_ratatui()).bg(bg),
+            ),
+            ValidationState::Taken => (
+                "  Already exists",
+                Style::default().fg(theme.red.to_ratatui()).bg(bg),
+            ),
         };
         f.render_widget(Paragraph::new(status_text).style(status_style), rows[6]);
 
@@ -428,13 +434,13 @@ impl Component for MoveDialog {
             "  [Enter] Move here",
             self.dest_validation == ValidationState::Available,
             fg,
-            fg_muted,
+            gray,
             bg,
         );
 
         // Row 8 (optional): error message.
         if let Some(msg) = &self.error {
-            super::render_error_row(f, rows[8], msg, bg);
+            super::render_error_row(f, rows[8], msg, theme);
         }
     }
 }

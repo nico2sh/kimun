@@ -5,7 +5,7 @@ weight = 3
 
 # Scripting with JSON
 
-Kimun's JSON output format makes it easy to automate note management and build custom workflows. This guide covers the JSON structure and provides practical recipes for common tasks.
+Kimün's JSON output format makes it easy to automate note management and build custom workflows. This guide covers the JSON structure and provides practical recipes for common tasks.
 
 ## Enabling JSON output
 
@@ -133,12 +133,9 @@ kimun notes --format json | jq '.notes[] | select(.created > (now | floor - 8640
 
 ## Quick note automation
 
-`kimun note quick` captures thoughts into timestamped inbox notes. It pairs well with aliases and scripts:
+`kimun note quick` captures thoughts into timestamped inbox notes — handy in scripts:
 
 ```sh
-# Shortest possible capture alias
-alias q='kimun note quick'
-
 # Log a command's output as a quick note
 some-command 2>&1 | kimun note quick
 
@@ -148,6 +145,8 @@ pbpaste | kimun note quick
 # Batch-capture from a file (one note per line)
 while IFS= read -r line; do kimun note quick "$line"; done < ideas.txt
 ```
+
+For shell aliases like `alias q='kimun note quick'`, see [Piping Output](@/guides/piping-output.md#shell-aliases-and-functions).
 
 List inbox contents with `kimun note triage`, or use the MCP `triage_inbox` prompt to let an AI organize them.
 

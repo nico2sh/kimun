@@ -48,7 +48,7 @@ use std::io;
 use crate::app::App;
 use crate::app_screen::browse::BrowseScreen;
 use crate::app_screen::editor::EditorScreen;
-use crate::app_screen::settings::SettingsScreen;
+use crate::app_screen::preferences::PreferencesScreen;
 use crate::app_screen::start::StartScreen;
 use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::events::{AppEvent, AppTx, InputEvent, ScreenEvent};
@@ -267,9 +267,9 @@ async fn switch_screen(app: &mut App, tx: &AppTx, new_screen: ScreenEvent) {
 
     let mut screen: Box<dyn AppScreen> = match new_screen {
         ScreenEvent::Start => Box::new(StartScreen::new(app.settings.clone(), app.vault.clone())),
-        ScreenEvent::OpenSettings => Box::new(SettingsScreen::new(app.settings.clone())),
-        ScreenEvent::OpenSettingsWithError(msg) => {
-            Box::new(SettingsScreen::new_with_error(app.settings.clone(), msg))
+        ScreenEvent::OpenPreferences => Box::new(PreferencesScreen::new(app.settings.clone())),
+        ScreenEvent::OpenPreferencesWithError(msg) => {
+            Box::new(PreferencesScreen::new_with_error(app.settings.clone(), msg))
         }
         ScreenEvent::OpenEditor(note_vault, vault_path) => Box::new(EditorScreen::new(
             note_vault,
@@ -362,15 +362,15 @@ where
                                         tx.send(AppEvent::Quit).ok();
                                         true
                                     }
-                                    Some(ActionShortcuts::OpenSettings) => {
+                                    Some(ActionShortcuts::OpenPreferences) => {
                                         let already_on_settings = app
                                             .current_screen
                                             .as_ref()
-                                            .map(|s| s.get_kind() == ScreenKind::Settings)
+                                            .map(|s| s.get_kind() == ScreenKind::Preferences)
                                             .unwrap_or(false);
                                         if !already_on_settings {
                                             tx.send(AppEvent::OpenScreen(
-                                                ScreenEvent::OpenSettings,
+                                                ScreenEvent::OpenPreferences,
                                             ))
                                             .ok();
                                         }
@@ -438,10 +438,10 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
         AppEvent::OpenScreen(screen) => {
             switch_screen(app, tx, screen).await;
         }
-        AppEvent::OpenPath(path) => {
+        AppEvent::OpenPath { path, emphasis } => {
             // We either handle the new path within the current screen, or we switch to a new screen for this path
             let unhandled = if let Some(screen) = app.current_screen.as_mut() {
-                screen.try_open_path(path, tx).await
+                screen.try_open_path(path, emphasis, tx).await
             } else {
                 Some(path)
             };
@@ -455,17 +455,17 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
                             .ok();
                     }
                 } else {
-                    tx.send(AppEvent::OpenScreen(ScreenEvent::OpenSettings))
+                    tx.send(AppEvent::OpenScreen(ScreenEvent::OpenPreferences))
                         .ok();
                 }
             }
         }
-        AppEvent::SettingsSaved => {
+        AppEvent::PreferencesSaved => {
             // Rebuild the vault so workspace path and inbox_path changes take effect.
             app.vault = rebuild_vault(&app.settings).await;
             tx.send(AppEvent::OpenScreen(ScreenEvent::Start)).ok();
         }
-        AppEvent::CloseSettings => {
+        AppEvent::ClosePreferences => {
             tx.send(AppEvent::OpenScreen(ScreenEvent::Start)).ok();
         }
         AppEvent::VaultConflict(msg) => {
@@ -478,7 +478,7 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
                 s.save_to_disk().ok();
             }
             app.vault = None;
-            switch_screen(app, tx, ScreenEvent::OpenSettingsWithError(msg)).await;
+            switch_screen(app, tx, ScreenEvent::OpenPreferencesWithError(msg)).await;
         }
         AppEvent::WorkspaceSwitched(name) => {
             {
@@ -516,25 +516,27 @@ mod tests {
     #[test]
     fn settings_keybinding_sends_open_settings() {
         let settings = AppSettings::default();
+        // Settings live on Ctrl+, (Ctrl+P is the palette; Ctrl+Shift+P
+        // collides with kitty's hints-kitten chord prefix).
         let key = KeyEvent {
-            code: KeyCode::Char('p'),
+            code: KeyCode::Char(','),
             modifiers: KeyModifiers::CONTROL,
             kind: KeyEventKind::Press,
             state: KeyEventState::NONE,
         };
 
-        let combo = key_event_to_combo(&key).expect("Ctrl+P should produce a combo");
+        let combo = key_event_to_combo(&key).expect("Ctrl+, should produce a combo");
         let action = settings.key_bindings.get_action(&combo);
-        assert_eq!(action, Some(ActionShortcuts::OpenSettings));
+        assert_eq!(action, Some(ActionShortcuts::OpenPreferences));
 
         // Simulate the app-level dispatch: on OpenSettings, send OpenScreen(OpenSettings).
         let (tx, mut rx) = unbounded_channel();
-        tx.send(AppEvent::OpenScreen(ScreenEvent::OpenSettings))
+        tx.send(AppEvent::OpenScreen(ScreenEvent::OpenPreferences))
             .ok();
         let msg = rx.try_recv().expect("should have a message");
         assert!(matches!(
             msg,
-            AppEvent::OpenScreen(ScreenEvent::OpenSettings)
+            AppEvent::OpenScreen(ScreenEvent::OpenPreferences)
         ));
     }
 

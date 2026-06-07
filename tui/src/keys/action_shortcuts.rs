@@ -27,14 +27,14 @@ impl Display for ShortcutCategory {
 #[serde(try_from = "String", into = "String")]
 pub enum ActionShortcuts {
     Quit,
-    OpenSettings,
+    OpenPreferences,
     SearchNotes,
     OpenNote,
     NewJournal,
-    TogglePreview,
     Text(TextAction),
     // TUI navigation / file list
     ToggleSidebar,
+    OpenFileBrowser,
     FocusEditor,
     FocusSidebar,
     OpenSortDialog,
@@ -53,12 +53,21 @@ pub enum ActionShortcuts {
     // In-buffer find (Ctrl+F by default; reopens / advances to next match if
     // already open).
     FindInBuffer,
+    /// The leader gateway (Ctrl+G by default): starts a key sequence against
+    /// the leader tree in every context, including mid-typing.
+    Leader,
+    /// The command palette (Ctrl+Shift+P by default): every leader command
+    /// as a fuzzy list.
+    OpenCommandPalette,
 }
 
 impl ActionShortcuts {
     pub fn category(&self) -> ShortcutCategory {
         match self {
-            ActionShortcuts::ToggleSidebar
+            ActionShortcuts::Leader
+            | ActionShortcuts::OpenCommandPalette
+            | ActionShortcuts::ToggleSidebar
+            | ActionShortcuts::OpenFileBrowser
             | ActionShortcuts::FocusSidebar
             | ActionShortcuts::FocusEditor
             | ActionShortcuts::OpenSortDialog
@@ -77,32 +86,32 @@ impl ActionShortcuts {
 
             ActionShortcuts::Text(_) => ShortcutCategory::TextEditing,
 
-            ActionShortcuts::Quit
-            | ActionShortcuts::OpenSettings
-            | ActionShortcuts::TogglePreview => ShortcutCategory::Other,
+            ActionShortcuts::Quit | ActionShortcuts::OpenPreferences => ShortcutCategory::Other,
         }
     }
 
     pub fn label(&self) -> String {
         match self {
             ActionShortcuts::Quit => "Quit".into(),
-            ActionShortcuts::OpenSettings => "Settings".into(),
+            ActionShortcuts::OpenPreferences => "Preferences".into(),
             ActionShortcuts::SearchNotes => "Search notes".into(),
             ActionShortcuts::OpenNote => "Open note".into(),
             ActionShortcuts::NewJournal => "New journal entry".into(),
-            ActionShortcuts::TogglePreview => "Toggle preview".into(),
-            ActionShortcuts::ToggleSidebar => "Toggle sidebar".into(),
+            ActionShortcuts::ToggleSidebar => "Toggle drawer".into(),
+            ActionShortcuts::OpenFileBrowser => "Open file browser".into(),
             ActionShortcuts::FocusEditor => "Focus right".into(),
             ActionShortcuts::FocusSidebar => "Focus left".into(),
             ActionShortcuts::OpenSortDialog => "Sort options".into(),
             ActionShortcuts::FileOperations => "File operations".into(),
             ActionShortcuts::FollowLink => "Follow link".into(),
             ActionShortcuts::QuickNote => "Quick note".into(),
-            ActionShortcuts::ToggleQueryPanel => "Toggle query panel".into(),
+            ActionShortcuts::ToggleQueryPanel => "Toggle query drawer".into(),
             ActionShortcuts::OpenSavedSearches => "Saved searches".into(),
             ActionShortcuts::SaveCurrentQuery => "Save current query".into(),
             ActionShortcuts::SwitchWorkspace => "Switch workspace".into(),
             ActionShortcuts::FindInBuffer => "Find in note".into(),
+            ActionShortcuts::Leader => "Leader menu".into(),
+            ActionShortcuts::OpenCommandPalette => "Command palette".into(),
             ActionShortcuts::Text(ta) => match ta {
                 TextAction::Bold => "Bold".into(),
                 TextAction::Italic => "Italic".into(),
@@ -121,13 +130,13 @@ impl Display for ActionShortcuts {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let action = match self {
             ActionShortcuts::Quit => "Quit".to_string(),
-            ActionShortcuts::OpenSettings => "OpenSettings".to_string(),
+            ActionShortcuts::OpenPreferences => "OpenSettings".to_string(),
             ActionShortcuts::SearchNotes => "SearchNotes".to_string(),
             ActionShortcuts::OpenNote => "OpenNote".to_string(),
             ActionShortcuts::NewJournal => "NewJournal".to_string(),
-            ActionShortcuts::TogglePreview => "TogglePreview".to_string(),
             ActionShortcuts::Text(text_action) => format!("TextEditor-{}", text_action),
             ActionShortcuts::ToggleSidebar => "ToggleSidebar".to_string(),
+            ActionShortcuts::OpenFileBrowser => "OpenFileBrowser".to_string(),
             ActionShortcuts::FocusEditor => "FocusEditor".to_string(),
             ActionShortcuts::FocusSidebar => "FocusSidebar".to_string(),
             ActionShortcuts::OpenSortDialog => "OpenSortDialog".to_string(),
@@ -139,6 +148,8 @@ impl Display for ActionShortcuts {
             ActionShortcuts::SaveCurrentQuery => "SaveCurrentQuery".to_string(),
             ActionShortcuts::SwitchWorkspace => "SwitchWorkspace".to_string(),
             ActionShortcuts::FindInBuffer => "FindInBuffer".to_string(),
+            ActionShortcuts::Leader => "Leader".to_string(),
+            ActionShortcuts::OpenCommandPalette => "OpenCommandPalette".to_string(),
         };
         write!(f, "{}", action)
     }
@@ -150,12 +161,14 @@ impl TryFrom<String> for ActionShortcuts {
     fn try_from(value: String) -> Result<Self, Self::Error> {
         let action = match value.as_str() {
             "Quit" => ActionShortcuts::Quit,
-            "OpenSettings" => ActionShortcuts::OpenSettings,
+            // "OpenSettings" is the stable on-disk name; "OpenPreferences"
+            // accepted as an alias since the screen is named Preferences now.
+            "OpenSettings" | "OpenPreferences" => ActionShortcuts::OpenPreferences,
             "SearchNotes" => ActionShortcuts::SearchNotes,
             "OpenNote" => ActionShortcuts::OpenNote,
             "NewJournal" => ActionShortcuts::NewJournal,
-            "TogglePreview" => ActionShortcuts::TogglePreview,
             "ToggleSidebar" => ActionShortcuts::ToggleSidebar,
+            "OpenFileBrowser" => ActionShortcuts::OpenFileBrowser,
             "FocusEditor" => ActionShortcuts::FocusEditor,
             "FocusSidebar" => ActionShortcuts::FocusSidebar,
             "OpenSortDialog" => ActionShortcuts::OpenSortDialog,
@@ -170,6 +183,8 @@ impl TryFrom<String> for ActionShortcuts {
             "SaveCurrentQuery" => ActionShortcuts::SaveCurrentQuery,
             "SwitchWorkspace" => ActionShortcuts::SwitchWorkspace,
             "FindInBuffer" => ActionShortcuts::FindInBuffer,
+            "Leader" => ActionShortcuts::Leader,
+            "OpenCommandPalette" => ActionShortcuts::OpenCommandPalette,
             _ => {
                 if let Some(text_action) = value.strip_prefix("TextEditor-") {
                     match TextAction::try_from(text_action.to_string()) {
@@ -285,11 +300,7 @@ mod tests {
 
         assert_eq!(ActionShortcuts::Quit.category(), ShortcutCategory::Other);
         assert_eq!(
-            ActionShortcuts::OpenSettings.category(),
-            ShortcutCategory::Other
-        );
-        assert_eq!(
-            ActionShortcuts::TogglePreview.category(),
+            ActionShortcuts::OpenPreferences.category(),
             ShortcutCategory::Other
         );
     }
@@ -297,12 +308,15 @@ mod tests {
     #[test]
     fn action_shortcuts_labels() {
         assert_eq!(ActionShortcuts::Quit.label(), "Quit");
-        assert_eq!(ActionShortcuts::OpenSettings.label(), "Settings");
+        assert_eq!(ActionShortcuts::OpenPreferences.label(), "Preferences");
         assert_eq!(ActionShortcuts::SearchNotes.label(), "Search notes");
         assert_eq!(ActionShortcuts::OpenNote.label(), "Open note");
         assert_eq!(ActionShortcuts::NewJournal.label(), "New journal entry");
-        assert_eq!(ActionShortcuts::TogglePreview.label(), "Toggle preview");
-        assert_eq!(ActionShortcuts::ToggleSidebar.label(), "Toggle sidebar");
+        assert_eq!(ActionShortcuts::ToggleSidebar.label(), "Toggle drawer");
+        assert_eq!(
+            ActionShortcuts::OpenFileBrowser.label(),
+            "Open file browser"
+        );
         assert_eq!(ActionShortcuts::FocusEditor.label(), "Focus right");
         assert_eq!(ActionShortcuts::FocusSidebar.label(), "Focus left");
         assert_eq!(ActionShortcuts::OpenSortDialog.label(), "Sort options");
@@ -311,7 +325,7 @@ mod tests {
         assert_eq!(ActionShortcuts::QuickNote.label(), "Quick note");
         assert_eq!(
             ActionShortcuts::ToggleQueryPanel.label(),
-            "Toggle query panel"
+            "Toggle query drawer"
         );
         assert_eq!(ActionShortcuts::OpenSavedSearches.label(), "Saved searches");
         assert_eq!(
@@ -361,6 +375,22 @@ mod tests {
         assert_eq!(
             ActionShortcuts::try_from("FileOperations".to_string()),
             Ok(ActionShortcuts::FileOperations)
+        );
+    }
+
+    #[test]
+    fn open_file_browser_roundtrip() {
+        assert_eq!(
+            ActionShortcuts::OpenFileBrowser.to_string(),
+            "OpenFileBrowser"
+        );
+        assert_eq!(
+            ActionShortcuts::try_from("OpenFileBrowser".to_string()),
+            Ok(ActionShortcuts::OpenFileBrowser)
+        );
+        assert_eq!(
+            ActionShortcuts::OpenFileBrowser.category(),
+            ShortcutCategory::Navigation
         );
     }
 

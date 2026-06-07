@@ -13,6 +13,13 @@ pub struct Icons {
     // UI chrome icons
     pub info: &'static str,
     pub workspace: &'static str,
+    // Activity-rail glyphs (one per drawer view)
+    pub rail_files: &'static str,
+    pub rail_find: &'static str,
+    pub rail_tags: &'static str,
+    pub rail_links: &'static str,
+    pub rail_outline: &'static str,
+    pub rail_config: &'static str,
 }
 
 impl Icons {
@@ -26,6 +33,12 @@ impl Icons {
                 attachment: "",
                 info: "󰋽",
                 workspace: "⊙",
+                rail_files: "▤",
+                rail_find: "⌕",
+                rail_tags: "#",
+                rail_links: "↩",
+                rail_outline: "≡",
+                rail_config: "⚙",
             }
         } else {
             Self {
@@ -36,6 +49,12 @@ impl Icons {
                 attachment: "   ",
                 info: "(i)",
                 workspace: "W",
+                rail_files: "=",
+                rail_find: "?",
+                rail_tags: "#",
+                rail_links: "<",
+                rail_outline: "-",
+                rail_config: "*",
             }
         }
     }

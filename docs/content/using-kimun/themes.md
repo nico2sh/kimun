@@ -1,44 +1,38 @@
 +++
 title = "Themes"
-weight = 12
+weight = 14
 +++
 
 # Themes
 
-Kimün ships with several built-in themes and supports fully custom themes defined as TOML files.
+Kimün ships with 21 built-in themes — all the classics — and lets you write your own as a small TOML file.
+
+The fastest way to pick one is the **live theme picker** — `Ctrl+G v t` (or the CFG drawer's `t`): moving the selection restyles the whole app instantly, Enter persists, Esc reverts. Or set it in your config:
+
+```toml
+theme = "Nord"
+```
 
 ## Built-in Themes
 
-The following themes are included out of the box:
+| Family | Dark | Light |
+|---|---|---|
+| Gruvbox | **Gruvbox Dark** *(default)* | Gruvbox Light |
+| Catppuccin | Catppuccin Mocha | Catppuccin Latte |
+| Tokyo Night | Tokyo Night, Tokyo Night Storm | — |
+| Solarized | Solarized Dark | Solarized Light |
+| Dracula | Dracula | Alucard *(Dracula's official light variant)* |
+| One | One Dark | One Light |
+| Everforest | Everforest Dark | Everforest Light |
+| Rosé Pine | Rosé Pine | Rosé Pine Dawn |
+| Kanagawa | Kanagawa Wave | Kanagawa Lotus |
+| Nord | Nord | — |
+| Monokai | Monokai | — |
+| ANSI | *adapts to your terminal's 16-color palette — works light or dark* | |
 
-- **Gruvbox Dark** *(default)*
-- **Gruvbox Light**
-- **Catppuccin Mocha**
-- **Catppuccin Latte**
-- **Tokyo Night**
-- **Tokyo Night Storm**
-- **Solarized Dark**
-- **Solarized Light**
-- **Nord**
-- **Dracula**
-- **Alucard** — Dracula's official light variant
-- **One Dark**
-- **One Light**
-- **Monokai**
-- **Everforest Dark**
-- **Everforest Light**
-- **Rosé Pine**
-- **Rosé Pine Dawn** — Rosé Pine's light variant
-- **Kanagawa Wave**
-- **Kanagawa Lotus** — Kanagawa's light variant
-- **ANSI** — adapts to your terminal's configured 16-color palette (works for both light and dark terminal themes)
+### Color depth
 
-Switch between them via the Settings screen in the TUI, or by setting the `theme` field in your config file:
-
-```toml
-[global]
-theme = "Nord"
-```
+Themes adapt automatically to what your terminal supports: truecolor where available, quantized to 256 colors, or mapped onto the 16 ANSI slots on basic terminals (where every theme effectively becomes the **ANSI** theme, following your terminal's palette).
 
 ## Creating a Custom Theme
 
@@ -53,33 +47,47 @@ Each file must have a `.toml` extension. The filename is not significant — the
 
 ### Theme File Format
 
-A theme file is a TOML file with a `name` field and 13 color fields:
+A theme file is a TOML file with a `name` field and up to 27 color roles. **Only `name` and the core roles you want to change are required** — anything omitted derives from a sensible sibling (e.g. `bg_hard`/`bg_soft` derive from `bg`, `focus_border` from `green`, `selection_fg` from `fg_bright`), so a minimal theme can be just a handful of lines.
 
 ```toml
 name = "My Theme"
 
-# Background colors
-bg               = "#1e1e2e"   # Main background (editor area)
-bg_panel         = "#181825"   # Sidebar and panel background
-bg_selected      = "#313244"   # Selected row background
+# Backgrounds
+bg            = "#1e1e2e"   # main/editor background
+bg_hard       = "#11111b"   # modals and input fields (harder contrast)
+bg_soft       = "#24243a"   # alternating rows, horizontal rules
+bg_panel      = "#181825"   # drawer / panel background
+selection_bg  = "#313244"   # selected row background
 
-# Text colors
-fg               = "#cdd6f4"   # Primary text
-fg_secondary     = "#a6adc8"   # Filenames, metadata, hints
-fg_muted         = "#6c7086"   # Placeholders, separators, disabled text
-fg_selected      = "#cdd6f4"   # Text on selected rows
+# Text
+fg            = "#cdd6f4"   # primary text
+fg_bright     = "#f5f7ff"   # titles, headings
+fg_secondary  = "#a6adc8"   # filenames, metadata, hints
+gray          = "#6c7086"   # placeholders, separators, disabled
+selection_fg  = "#f5f7ff"   # text on selected rows
 
-# Border colors
-border           = "#45475a"   # Unfocused borders
-border_focused   = "#89b4fa"   # Focused borders
+# Chrome
+border_dim    = "#45475a"   # unfocused borders
+focus_border  = "#a6e3a1"   # focused borders (the green frame)
+accent        = "#89b4fa"   # title bars, active markers
+cursor        = "#f5e0dc"   # block cursor in text fields
 
-# Accent
-accent           = "#89b4fa"   # Title bars, cursor, markers
+# Accent palette (query highlighting, status, markdown)
+red           = "#f38ba8"   # errors, query negation
+green         = "#a6e3a1"   # success, quoted query terms
+yellow        = "#f9e2af"   # warnings, field keys, keycaps
+blue          = "#89b4fa"   # wikilink targets
+purple        = "#cba6f7"   # numbers and dates
+aqua          = "#94e2d5"   # tags, group labels
+orange        = "#fab387"   # operators, strong accents
 
-# Semantic colors
-color_directory    = "#89dceb" # Directory entries in the file list
-color_journal_date = "#94e2d5" # Journal date annotations
-color_search_match = "#a6e3a1" # Highlighted search match text
+# Semantic
+color_directory    = "#89dceb"  # directory rows in the file list
+color_journal_date = "#94e2d5"  # journal date annotations
+color_search_match = "#a6e3a1"  # highlighted search matches
+color_tag          = "#fab387"  # #hashtag spans in the editor
+blockquote_bar     = "#585b70"  # the ▏ bar replacing > markers
+code_bg            = "#181825"  # fenced/indented code-block background
 ```
 
 ### Color Formats
@@ -96,10 +104,9 @@ Colors can be specified in the following formats:
 
 ### Activating a Custom Theme
 
-Once the file is saved, start (or restart) Kimün. Your theme will appear in the theme picker in the Settings screen alongside the built-in themes. You can also set it directly in `config.toml`:
+Once the file is saved, start (or restart) Kimün. Your theme appears in the theme picker (`Ctrl+G v t`) alongside the built-in ones. You can also set it directly in `config.toml`:
 
 ```toml
-[global]
 theme = "My Theme"
 ```
 
@@ -109,24 +116,33 @@ The name must match the `name` field in your `.toml` file exactly.
 
 If you save a file named `default.toml` in the themes directory, it will be loaded as an additional theme option. It does not replace the built-in default — to make it the active theme, set it in `[global]` as shown above.
 
-## Example: Ayu Dark Theme
+## Example: Ayu Dark Theme (minimal)
+
+Derivation fills everything not listed:
 
 ```toml
 name = "Ayu Dark"
 
-bg               = "#0a0e14"
-bg_panel         = "#0d1017"
-bg_selected      = "#273747"
-fg               = "#b3b1ad"
-fg_secondary     = "#6c7380"
-fg_muted         = "#4d5566"
-fg_selected      = "#b3b1ad"
-border           = "#11151c"
-border_focused   = "#e6b450"
-accent           = "#e6b450"
-color_directory    = "#39bae6"
-color_journal_date = "#95e6cb"
-color_search_match = "#c2d94c"
+bg           = "#0a0e14"
+bg_panel     = "#0d1017"
+selection_bg = "#273747"
+fg           = "#b3b1ad"
+fg_secondary = "#6c7380"
+gray         = "#4d5566"
+border_dim   = "#11151c"
+accent       = "#e6b450"
+
+red    = "#d95757"
+green  = "#7fd962"
+yellow = "#e6b450"
+blue   = "#39bae6"
+purple = "#d2a6ff"
+aqua   = "#95e6cb"
+orange = "#ff8f40"
 ```
 
 Save this as `~/.config/kimun/themes/ayu-dark.toml` and set `theme = "Ayu Dark"` in your config.
+
+---
+
+Made a theme you like? Themes are just TOML — easy to share. And if you're now in the mood to customize everything else too, head to [Configuration](@/getting-started/configuration.md).

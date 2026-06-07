@@ -1,8 +1,9 @@
 pub mod browse;
+pub mod doc_meta;
 pub mod editor;
 pub mod overlay_host;
 pub mod panel_set;
-pub mod settings;
+pub mod preferences;
 pub mod start;
 
 use async_trait::async_trait;
@@ -18,7 +19,7 @@ pub enum ScreenKind {
     Start,
     Browse,
     Editor,
-    Settings,
+    Preferences,
 }
 
 #[async_trait]
@@ -42,7 +43,15 @@ pub trait AppScreen: Send {
     /// buffer, or navigate a sidebar). Return `Some(path)` if the screen
     /// does not handle it, in which case the main loop switches to an
     /// appropriate screen. Default: not handled.
-    async fn try_open_path(&mut self, path: VaultPath, _tx: &AppTx) -> Option<VaultPath> {
+    /// `emphasis` carries the originating query's needles when the open came
+    /// from a query result; only the editor screen uses it (spec §5.1) — it
+    /// is dropped when the open reroutes to a screen switch.
+    async fn try_open_path(
+        &mut self,
+        path: VaultPath,
+        _emphasis: Option<Vec<String>>,
+        _tx: &AppTx,
+    ) -> Option<VaultPath> {
         Some(path)
     }
 
@@ -60,7 +69,7 @@ mod tests {
     use std::sync::{Arc, RwLock};
 
     use super::*;
-    use crate::app_screen::settings::SettingsScreen;
+    use crate::app_screen::preferences::PreferencesScreen;
     use crate::settings::AppSettings;
 
     fn shared_defaults() -> crate::settings::SharedSettings {
@@ -70,7 +79,7 @@ mod tests {
     #[tokio::test]
     async fn on_exit_default_is_noop() {
         let (tx, _rx) = unbounded_channel::<AppEvent>();
-        let mut screen = SettingsScreen::new(shared_defaults());
+        let mut screen = PreferencesScreen::new(shared_defaults());
         screen.on_exit(&tx).await; // must compile and not panic
     }
 }

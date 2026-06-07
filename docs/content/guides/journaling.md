@@ -7,13 +7,13 @@ weight = 1
 
 ## What is a journal entry in kimun?
 
-Kimun treats any note under a `journal/` directory as a journal entry. The filename should follow the format `YYYY-MM-DD.md` for date detection (e.g., `journal/2024-01-15.md`). This allows kimun to extract the journal date and include it in search results and JSON output.
+Kimün treats any note under a `journal/` directory as a journal entry. The filename should follow the format `YYYY-MM-DD.md` for date detection (e.g., `journal/2024-01-15.md`). This allows kimun to extract the journal date and include it in search results and JSON output.
 
 ## Creating a journal entry
 
 ### In the TUI
 
-Press `Ctrl+J` to create a new journal entry. Kimun creates a file named with today's date under `journal/` in the current workspace and opens it in the editor.
+Press `Ctrl+J` to create a new journal entry. Kimün creates a file named with today's date under `journal/` in the current workspace and opens it in the editor.
 
 ### In the CLI
 
@@ -79,7 +79,7 @@ The entry will be created if it doesn't exist. The date must be in `YYYY-MM-DD` 
 
 ## Browsing journal entries
 
-In the TUI sidebar, journal entries appear in reverse chronological order by default (newest first). You can change this in Configuration with `journal_sort_field` and `journal_sort_order`.
+In the FILES drawer, journal entries appear in reverse chronological order by default (newest first). You can change this in Configuration with `journal_sort_field` and `journal_sort_order`.
 
 ## Searching journal entries
 

@@ -4,11 +4,12 @@ use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::Paragraph;
 
 use crate::components::Component;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent};
+use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::ShortcutCategory;
 use crate::settings::themes::Theme;
@@ -30,6 +31,9 @@ pub enum HelpRow {
 
 pub struct HelpDialog {
     pub rows: Vec<HelpRow>,
+    /// Window title — distinguishes the flat F1 help from the leader-tree
+    /// cheatsheet, which share this widget.
+    title: &'static str,
     scroll: usize,
     /// Cached body height from last render, used for PageUp/PageDown page size.
     last_body_height: u16,
@@ -73,6 +77,89 @@ impl HelpDialog {
 
         Self {
             rows,
+            title: " Keyboard Shortcuts ",
+            scroll: 0,
+            last_body_height: 20,
+        }
+    }
+
+    /// The full leader-tree cheatsheet (leader `?`): every sequence in the
+    /// tree as `gateway keys → description`, grouped per top-level group,
+    /// followed by the flat Tier-0 bindings. Built from the same
+    /// `leader_tree()` the engine and the which-key overlay walk — one
+    /// source, three surfaces.
+    pub fn cheatsheet(settings: &crate::settings::AppSettings) -> Self {
+        use crate::keys::action_shortcuts::ActionShortcuts;
+        use crate::keys::leader::LeaderNode;
+
+        let key_bindings = &settings.key_bindings;
+        let gateway = key_bindings
+            .first_combo_for(&ActionShortcuts::Leader)
+            .unwrap_or_else(|| "leader".to_string());
+
+        fn walk(node: &LeaderNode, prefix: &str, rows: &mut Vec<HelpRow>) {
+            for (key, child) in node.children() {
+                let keys = format!("{prefix} {key}");
+                match child {
+                    LeaderNode::Leaf { label, .. } => rows.push(HelpRow::Binding {
+                        keys,
+                        label: (*label).to_string(),
+                    }),
+                    LeaderNode::Group { .. } => walk(child, &keys, rows),
+                }
+            }
+        }
+
+        let tree = settings.leader_tree();
+        let mut rows: Vec<HelpRow> = Vec::new();
+        // Current configuration up top (spec phase-10: surface theme + keys).
+        rows.push(HelpRow::Header("Configuration".to_string()));
+        rows.push(HelpRow::Separator);
+        rows.push(HelpRow::Binding {
+            keys: settings.get_theme().name,
+            label: "active theme (leader v c to switch)".to_string(),
+        });
+        rows.push(HelpRow::Binding {
+            keys: gateway.clone(),
+            label: "leader gateway".to_string(),
+        });
+        rows.push(HelpRow::Binding {
+            keys: format!("{} ms", settings.leader_timeout_ms),
+            label: "which-key reveal timeout".to_string(),
+        });
+        for (key, child) in tree.children() {
+            match child {
+                LeaderNode::Group { label, .. } => {
+                    rows.push(HelpRow::Blank);
+                    rows.push(HelpRow::Header(format!("{gateway} {key}  {label}")));
+                    rows.push(HelpRow::Separator);
+                    walk(child, &format!("{gateway} {key}"), &mut rows);
+                }
+                LeaderNode::Leaf { label, .. } => {
+                    rows.push(HelpRow::Blank);
+                    rows.push(HelpRow::Binding {
+                        keys: format!("{gateway} {key}"),
+                        label: (*label).to_string(),
+                    });
+                }
+            }
+        }
+
+        // Tier-0: the flat always-on bindings, from the same help builder.
+        let flat = Self::new(key_bindings);
+        rows.push(HelpRow::Blank);
+        rows.push(HelpRow::Header("Always-on shortcuts".to_string()));
+        rows.push(HelpRow::Separator);
+        rows.extend(
+            flat.rows
+                .into_iter()
+                .filter(|r| matches!(r, HelpRow::Binding { .. })),
+        );
+        rows.push(HelpRow::Blank);
+
+        Self {
+            rows,
+            title: " Cheatsheet — leader keys ",
             scroll: 0,
             last_body_height: 20,
         }
@@ -142,15 +229,16 @@ impl Component for HelpDialog {
         let outer_height = desired_height.min(max_height);
 
         let popup_area = super::fixed_centered_rect(OUTER_WIDTH, outer_height, rect);
-        f.render_widget(Clear, popup_area);
-
-        let outer_block = Block::default()
-            .title(" Keyboard Shortcuts ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.fg.to_ratatui()))
-            .style(theme.panel_style());
-        let inner = outer_block.inner(popup_area);
-        f.render_widget(outer_block, popup_area);
+        let inner = modal_chrome(
+            f,
+            popup_area,
+            theme,
+            ModalSpec {
+                title: Some(self.title),
+                border: Some(Style::default().fg(theme.fg.to_ratatui())),
+                ..Default::default()
+            },
+        );
 
         if inner.height < 2 {
             return;
@@ -166,8 +254,8 @@ impl Component for HelpDialog {
 
         let bg = theme.bg_panel.to_ratatui();
         let fg = theme.fg.to_ratatui();
-        let fg_muted = theme.fg_muted.to_ratatui();
-        let fg_accent = theme.fg_selected.to_ratatui();
+        let gray = theme.gray.to_ratatui();
+        let fg_accent = theme.selection_fg.to_ratatui();
 
         // Cache for PageUp/PageDown.
         self.last_body_height = body_area.height;
@@ -203,7 +291,7 @@ impl Component for HelpDialog {
                     );
                 }
                 HelpRow::Separator => {
-                    super::render_separator(f, row_rect, fg_muted, bg);
+                    super::render_separator(f, row_rect, gray, bg);
                 }
                 HelpRow::Binding { keys, label } => {
                     let cols = Layout::default()
@@ -228,7 +316,7 @@ impl Component for HelpDialog {
 
         f.render_widget(
             Paragraph::new("  [↑↓ PgUp/PgDn] Scroll   [Esc] Close")
-                .style(Style::default().fg(fg_muted).bg(bg)),
+                .style(Style::default().fg(gray).bg(bg)),
             footer_area,
         );
     }

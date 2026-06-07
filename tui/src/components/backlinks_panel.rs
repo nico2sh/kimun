@@ -27,8 +27,9 @@ use crate::keys::key_combo::KeyCombo;
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
 
-/// The default query the panel runs: backlinks to the current note.
-/// Backlinks are `<` / `lk:` (`>` is now forward links).
+/// The canonical backlinks query (`<` / `lk:`; `>` is forward links). The
+/// panel no longer starts on it — the LINKS drawer owns backlinks — but any
+/// spelling of it still titles the panel "Backlinks".
 const DEFAULT_QUERY: &str = "<{note}";
 /// The long-form spelling of [`DEFAULT_QUERY`] (`lk:` is the documented
 /// synonym of `<`), recognized so it also reads as the default.
@@ -63,34 +64,26 @@ pub struct BacklinkEntry {
 }
 
 impl SearchRow for BacklinkEntry {
-    fn to_list_item(&self, theme: &Theme, _icons: &Icons, selected: bool) -> ListItem<'static> {
-        let fg = theme.fg.to_ratatui();
-        let fg_muted = theme.fg_muted.to_ratatui();
-        let bg = theme.bg_panel.to_ratatui();
-        let title_style = if selected {
-            Style::default()
-                .fg(theme.fg_selected.to_ratatui())
-                .bg(theme.bg_selected.to_ratatui())
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(fg).bg(bg)
-        };
+    fn to_list_item(&self, theme: &Theme, icons: &Icons, selected: bool) -> ListItem<'static> {
         let title_display = if self.title.is_empty() {
             &self.filename
         } else {
             &self.title
         };
-        ListItem::new(Line::from(vec![
-            Span::styled(format!("  {} ", title_display), title_style),
-            Span::styled(
-                format!(" {}", self.filename),
-                Style::default().fg(fg_muted).bg(if selected {
-                    theme.bg_selected.to_ratatui()
-                } else {
-                    bg
-                }),
-            ),
-        ]))
+        let title_style = if selected {
+            Style::default()
+                .fg(theme.selection_fg.to_ratatui())
+                .bg(theme.selection_bg.to_ratatui())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+                .fg(theme.fg.to_ratatui())
+                .bg(theme.bg_panel.to_ratatui())
+        };
+        crate::components::rich_row::RichRow::new(icons.note, title_display.clone())
+            .title_style(title_style)
+            .meta(self.filename.clone())
+            .into_list_item(theme)
     }
 
     fn match_text(&self) -> Option<&str> {
@@ -297,8 +290,7 @@ pub struct QueryPanel {
 }
 
 impl QueryPanel {
-    pub fn new(vault: Arc<NoteVault>, key_bindings: KeyBindings) -> Self {
-        let icons = Icons::new(false);
+    pub fn new(vault: Arc<NoteVault>, key_bindings: KeyBindings, icons: Icons) -> Self {
         let current_note = Arc::new(Mutex::new(VaultPath::empty()));
         // The redraw callback reads a shared slot that `set_note`/`handle_key`
         // fill once a `tx` is available (the panel is constructed before the
@@ -329,7 +321,7 @@ impl QueryPanel {
         intercept.extend(follow_link_combos.iter().cloned());
 
         let list = SearchList::builder(source, redraw)
-            .initial_query(DEFAULT_QUERY)
+            .highlight_query()
             .icons(icons.clone())
             .autocomplete(
                 Arc::new(VaultSuggestions {
@@ -351,15 +343,13 @@ impl QueryPanel {
             key_bindings,
             redraw_tx,
             follow_link_combos,
-            // DEFAULT_QUERY carries no order directive → (Name, Ascending).
+            // An empty query carries no order directive → (Name, Ascending).
             order_cache: (SortField::Name, SortOrder::Ascending),
             order_cache_query: String::new(),
-            // The panel starts on DEFAULT_QUERY; the first render's
-            // query-changed gate recomputes this anyway.
-            is_default_cache: true,
+            // The panel starts empty; the first render's query-changed gate
+            // recomputes this anyway.
+            is_default_cache: false,
             needles_cache: Vec::new(),
-            // An impossible key (queries are never empty in practice, and the
-            // panel starts with DEFAULT_QUERY) so the first read computes.
             needles_cache_key: (String::new(), VaultPath::empty()),
         }
     }
@@ -368,6 +358,20 @@ impl QueryPanel {
 
     pub fn active_query(&self) -> &str {
         self.list.query()
+    }
+
+    /// The emphasis payload an open from this panel carries: the resolved
+    /// query's needles (spec §5.1) — resolved, not the template, so `{note}`
+    /// never leaks.
+    fn emphasis(&self) -> Option<Vec<String>> {
+        let resolved = resolve_query(self.list.query(), Some(&self.current_note()));
+        let needles = crate::components::query_highlight::emphasis_needles(&resolved);
+        (!needles.is_empty()).then_some(needles)
+    }
+
+    /// Number of results currently listed — the status bar's match count.
+    pub fn result_count(&self) -> usize {
+        self.list.match_count()
     }
 
     pub fn set_active_query(&mut self, q: String) {
@@ -558,14 +562,37 @@ impl QueryPanel {
             self.scroll_content(key);
             return EventState::Consumed;
         }
-        // NOTE: Enter is NOT pre-checked here. It must reach the engine so an
-        // open autocomplete popup can accept on Enter; only when the popup is
-        // closed does the engine return `Submit`, which toggles expand below.
+        // Ctrl+Enter opens the selected note (kitty-protocol terminals; the
+        // FollowLink combo below is the always-works path). Pre-checked here
+        // because Enter-with-modifiers never participates in the engine's
+        // autocomplete/Submit flow.
+        if key.code == KeyCode::Enter
+            && key
+                .modifiers
+                .contains(ratatui::crossterm::event::KeyModifiers::CONTROL)
+        {
+            if let Some(path) = self.selected_path().cloned() {
+                tx.send(AppEvent::OpenPath {
+                    path,
+                    emphasis: self.emphasis(),
+                })
+                .ok();
+            }
+            return EventState::Consumed;
+        }
+        // NOTE: plain Enter is NOT pre-checked here. It must reach the engine
+        // so an open autocomplete popup can accept on Enter; only when the
+        // popup is closed does the engine return `Submit`, which toggles
+        // expand below.
         let prev_query = self.list.query().to_string();
         match self.list.handle_key(key) {
             KeyReaction::Intercepted(c) if self.follow_link_combos.contains(&c) => {
                 if let Some(path) = self.selected_path().cloned() {
-                    tx.send(AppEvent::OpenPath(path)).ok();
+                    tx.send(AppEvent::OpenPath {
+                        path,
+                        emphasis: self.emphasis(),
+                    })
+                    .ok();
                 }
                 EventState::Consumed
             }
@@ -664,6 +691,13 @@ impl QueryPanel {
                 self.toggle_expand();
                 EventState::Consumed
             }
+            // Right-click on a result row → file/note context menu (spec §10).
+            SearchMouse::Context(_) => {
+                if let Some(path) = self.selected_path().cloned() {
+                    tx.send(AppEvent::ShowFileOpsMenu(path)).ok();
+                }
+                EventState::Consumed
+            }
             SearchMouse::Selected(_) | SearchMouse::Scrolled => {
                 self.sync_expand_anchor();
                 EventState::Consumed
@@ -703,20 +737,16 @@ impl QueryPanel {
     }
 
     pub fn hint_shortcuts(&self) -> Vec<(String, String)> {
-        [
-            (ActionShortcuts::FocusSidebar, "\u{2190} editor"),
-            (ActionShortcuts::FollowLink, "open note"),
-            (ActionShortcuts::SaveCurrentQuery, "save query"),
-            (ActionShortcuts::OpenSavedSearches, "searches"),
-            (ActionShortcuts::OpenSortDialog, "sort"),
-        ]
-        .iter()
-        .filter_map(|(action, label)| {
-            self.key_bindings
-                .first_combo_for(action)
-                .map(|k| (k, label.to_string()))
-        })
-        .collect()
+        crate::components::hints::hints_for(
+            &self.key_bindings,
+            &[
+                (ActionShortcuts::FocusSidebar, "\u{2190} editor"),
+                (ActionShortcuts::FollowLink, "open note"),
+                (ActionShortcuts::SaveCurrentQuery, "save query"),
+                (ActionShortcuts::OpenSavedSearches, "searches"),
+                (ActionShortcuts::OpenSortDialog, "sort"),
+            ],
+        )
     }
 
     // ── Rendering ──────────────────────────────────────────────────────
@@ -735,7 +765,7 @@ impl QueryPanel {
         self.full_header_rect = Rect::default();
 
         let border_style = theme.border_style(focused);
-        let fg_muted = theme.fg_muted.to_ratatui();
+        let gray = theme.gray.to_ratatui();
         let bg = theme.bg_panel.to_ratatui();
 
         let count = self.list.visible_rows().len();
@@ -754,7 +784,9 @@ impl QueryPanel {
         // spelling of the default (`<{note}`, bare `<`, `lk:`), so sorting or
         // typing a synonym still reads as "Backlinks". Memoised above — the
         // helper allocates and this runs every frame.
-        let title = if self.is_default_cache {
+        let title = if self.list.query().trim().is_empty() {
+            "Find".to_string()
+        } else if self.is_default_cache {
             format!("Backlinks ({}) {}", count, sort_indicator)
         } else {
             format!("Query ({}) {}", count, sort_indicator)
@@ -776,11 +808,22 @@ impl QueryPanel {
         // The saved-search breadcrumb (`‹ name ›` / `‹ name • edited ›`) titles
         // the query searchbox when a saved search is active.
         let search_title = self.saved_search.border_title(self.list.query(), " Query");
-        let search_block = Block::default()
+        let mut search_block = Block::default()
             .title(search_title)
             .borders(Borders::ALL)
             .border_style(border_style)
             .style(theme.panel_style());
+        // Parse problems surface as a second, red title segment — the input
+        // itself never blocks (spec §9).
+        if let Some(reason) = crate::components::query_highlight::error_reason(self.list.query()) {
+            search_block = search_block.title(
+                ratatui::text::Line::from(ratatui::text::Span::styled(
+                    format!(" ⚠ {reason} "),
+                    Style::default().fg(theme.red.to_ratatui()),
+                ))
+                .right_aligned(),
+            );
+        }
         let search_inner = search_block.inner(rows[0]);
         f.render_widget(search_block, rows[0]);
         self.list.render_query(f, search_inner, theme, focused);
@@ -789,7 +832,7 @@ impl QueryPanel {
 
         if self.list.is_loading() {
             f.render_widget(
-                Paragraph::new("  Loading...").style(Style::default().fg(fg_muted).bg(bg)),
+                Paragraph::new("  Loading...").style(Style::default().fg(gray).bg(bg)),
                 inner,
             );
             self.list.render_autocomplete(f, rect, theme);
@@ -798,7 +841,7 @@ impl QueryPanel {
 
         if self.list.visible_rows().is_empty() {
             f.render_widget(
-                Paragraph::new("  No results").style(Style::default().fg(fg_muted).bg(bg)),
+                Paragraph::new("  No results").style(Style::default().fg(gray).bg(bg)),
                 inner,
             );
             self.list.render_autocomplete(f, rect, theme);
@@ -840,13 +883,13 @@ impl QueryPanel {
                         Span::styled(
                             format!("\u{25BC} {} ", title_display),
                             Style::default()
-                                .fg(theme.fg_selected.to_ratatui())
+                                .fg(theme.selection_fg.to_ratatui())
                                 .bg(bg)
                                 .add_modifier(Modifier::BOLD),
                         ),
                         Span::styled(
                             format!(" {}", entry.filename),
-                            Style::default().fg(fg_muted).bg(bg),
+                            Style::default().fg(gray).bg(bg),
                         ),
                     ]))
                     .style(Style::default().bg(bg)),
@@ -856,7 +899,7 @@ impl QueryPanel {
                 // Fixed divider.
                 f.render_widget(
                     Paragraph::new("\u{2500}".repeat(parts[1].width as usize))
-                        .style(Style::default().fg(fg_muted).bg(bg)),
+                        .style(Style::default().fg(gray).bg(bg)),
                     parts[1],
                 );
 
@@ -869,7 +912,7 @@ impl QueryPanel {
                 for line in text.lines() {
                     let wrapped = wrap_line(line, wrap_width);
                     for wline in wrapped {
-                        let spans = highlight_needles(&wline, needles, fg_muted, bg, theme);
+                        let spans = highlight_needles(&wline, needles, gray, bg, theme);
                         let mut indented =
                             vec![Span::styled(" ".repeat(indent), Style::default().bg(bg))];
                         indented.extend(spans);
@@ -913,14 +956,47 @@ impl QueryPanel {
 
         // The engine draws the collapsed list (1 line per row, with the
         // selected-row marker handled in `to_list_item`).
-        self.list.render(f, list_area, theme, focused);
+        if self.list.query().trim().is_empty() {
+            // Empty-state: a short query-syntax primer instead of a blank
+            // list (spec §9 discoverability; the panel no longer pre-fills
+            // a backlinks query — the LINKS drawer owns those).
+            let dim = Style::default().fg(theme.gray.to_ratatui());
+            let key = Style::default().fg(theme.yellow.to_ratatui());
+            let lines = vec![
+                ratatui::text::Line::from(Span::styled("type to search the vault", dim)),
+                ratatui::text::Line::default(),
+                ratatui::text::Line::from(vec![
+                    Span::styled(" #tag      ", key),
+                    Span::styled("label", dim),
+                ]),
+                ratatui::text::Line::from(vec![
+                    Span::styled(" <  >      ", key),
+                    Span::styled("backlinks · links", dim),
+                ]),
+                ratatui::text::Line::from(vec![
+                    Span::styled(" \"phrase\"  ", key),
+                    Span::styled("exact match", dim),
+                ]),
+                ratatui::text::Line::from(vec![
+                    Span::styled(" =date     ", key),
+                    Span::styled("modified", dim),
+                ]),
+                ratatui::text::Line::from(vec![
+                    Span::styled(" ?name     ", key),
+                    Span::styled("saved search", dim),
+                ]),
+            ];
+            f.render_widget(ratatui::widgets::Paragraph::new(lines), list_area);
+        } else {
+            self.list.render(f, list_area, theme, focused);
+        }
         self.list.set_list_rect(list_area);
 
         // Divider between list and content.
         if let Some(div) = divider_area {
             f.render_widget(
                 Paragraph::new("\u{2500}".repeat(div.width as usize))
-                    .style(Style::default().fg(fg_muted).bg(bg)),
+                    .style(Style::default().fg(gray).bg(bg)),
                 div,
             );
         }
@@ -959,7 +1035,7 @@ impl QueryPanel {
                     {
                         link_line = Some(lines.len());
                     }
-                    let spans = highlight_needles(&wline, needles, fg_muted, bg, theme);
+                    let spans = highlight_needles(&wline, needles, gray, bg, theme);
                     let mut indented =
                         vec![Span::styled(" ".repeat(indent), Style::default().bg(bg))];
                     indented.extend(spans);
@@ -1146,11 +1222,11 @@ fn extract_context_multi(text: &str, needles: &[String]) -> String {
 fn highlight_needles(
     line: &str,
     needles: &[String],
-    fg_muted: ratatui::style::Color,
+    gray: ratatui::style::Color,
     bg: ratatui::style::Color,
     theme: &Theme,
 ) -> Vec<Span<'static>> {
-    let normal = Style::default().fg(fg_muted).bg(bg);
+    let normal = Style::default().fg(gray).bg(bg);
     let bold = Style::default()
         .fg(theme.accent.to_ratatui())
         .bg(bg)
@@ -1302,7 +1378,48 @@ mod tests {
 
     fn make_panel(vault: Arc<NoteVault>) -> QueryPanel {
         let kb = crate::settings::AppSettings::default().key_bindings.clone();
-        QueryPanel::new(vault, kb)
+        QueryPanel::new(vault, kb, Icons::new(false))
+    }
+
+    /// Ctrl+Enter opens the selected result (kitty-protocol terminals) —
+    /// regression: it must not fall through to the engine as a plain key.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ctrl_enter_opens_selected_result() {
+        let vault = crate::test_support::temp_vault("qp-ctrl-enter").await;
+        vault.validate_and_init().await.unwrap();
+        vault
+            .save_note(&VaultPath::note_path_from("target"), "the note body")
+            .await
+            .unwrap();
+        let mut panel = make_panel(vault);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        // Query for the note and let the async load land.
+        panel.apply_query("target".to_string(), None, tx.clone());
+        for _ in 0..50 {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            panel.list.poll();
+        }
+        assert!(
+            panel.selected_path().is_some(),
+            "result loaded and selected"
+        );
+
+        panel.handle_key(
+            &KeyEvent::new(
+                KeyCode::Enter,
+                ratatui::crossterm::event::KeyModifiers::CONTROL,
+            ),
+            &tx,
+        );
+
+        let mut opened = None;
+        while let Ok(ev) = rx.try_recv() {
+            if let AppEvent::OpenPath { path, .. } = ev {
+                opened = Some(path);
+            }
+        }
+        assert_eq!(opened, Some(VaultPath::note_path_from("target")));
     }
 
     /// The memoised highlight needles must follow both cache keys: recompute
@@ -1312,8 +1429,9 @@ mod tests {
         let vault = crate::test_support::temp_vault("qp_needles").await;
         vault.validate_and_init().await.unwrap();
         let mut panel = make_panel(vault);
+        panel.list.set_query(DEFAULT_QUERY);
 
-        // Default query `<{note}` resolved against "spec".
+        // Backlinks query `<{note}` resolved against "spec".
         *panel.current_note.lock().unwrap() = VaultPath::note_path_from("spec");
         assert!(panel.cached_needles().iter().any(|n| n == "spec"));
 
@@ -1902,7 +2020,10 @@ mod tests {
             .await
             .unwrap();
         let mut panel = make_panel(vault);
-        assert_eq!(panel.active_query(), DEFAULT_QUERY);
+        // The panel starts empty (LINKS owns backlinks); type the backlinks
+        // query to exercise the `{note}` re-resolution machinery.
+        assert_eq!(panel.active_query(), "");
+        panel.list.set_query(DEFAULT_QUERY);
 
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         panel.set_note(VaultPath::note_path_from("/target.md"), tx);
@@ -1943,6 +2064,7 @@ mod tests {
             .await
             .unwrap();
         let mut panel = make_panel(vault);
+        panel.list.set_query(DEFAULT_QUERY);
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
 
         panel.set_note(VaultPath::note_path_from("/a.md"), tx.clone());

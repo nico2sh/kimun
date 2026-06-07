@@ -19,11 +19,12 @@ use kimun_core::{NoteVault, SavedSearch};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::widgets::{Block, Borders, Clear, ListItem, Paragraph};
+use ratatui::widgets::{Block, Borders, ListItem, Paragraph};
 
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, redraw_callback};
 use crate::components::overlay::{Overlay, OverlayKind};
+use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::components::search_list::{
     Emit, Filter, KeyReaction, RowSource, SearchList, SearchMouse, SearchRow,
 };
@@ -251,7 +252,9 @@ impl Overlay for SavedSearchesModal {
                     }
                     EventState::Consumed
                 }
-                SearchMouse::Selected(_) | SearchMouse::Scrolled => EventState::Consumed,
+                SearchMouse::Context(_) | SearchMouse::Selected(_) | SearchMouse::Scrolled => {
+                    EventState::Consumed
+                }
                 // No content sub-region is recorded by this host, so these
                 // are unreachable.
                 SearchMouse::ContentScrollUp | SearchMouse::ContentScrollDown => {
@@ -294,16 +297,15 @@ impl Overlay for SavedSearchesModal {
     fn render(&mut self, f: &mut Frame, area: Rect, theme: &Theme) {
         let popup_rect = crate::components::centered_rect(60, 60, area);
 
-        // Clear the area behind the modal so the editor doesn't bleed through.
-        f.render_widget(Clear, popup_rect);
-
-        let outer_block = Block::default()
-            .title(" Saved Searches ")
-            .borders(Borders::ALL)
-            .border_style(theme.border_style(true))
-            .style(theme.panel_style());
-        let inner = outer_block.inner(popup_rect);
-        f.render_widget(outer_block, popup_rect);
+        let inner = modal_chrome(
+            f,
+            popup_rect,
+            theme,
+            ModalSpec {
+                title: Some(" Saved Searches "),
+                ..Default::default()
+            },
+        );
 
         let rows = Layout::default()
             .direction(Direction::Vertical)

@@ -2,10 +2,11 @@ use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{List, ListItem, ListState, Paragraph};
 
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx};
+use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::settings::AppSettings;
 use crate::settings::themes::Theme;
 
@@ -81,27 +82,28 @@ impl WorkspaceSwitcherModal {
 
     pub fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, _focused: bool) {
         let fg = theme.fg.to_ratatui();
-        let fg_muted = theme.fg_muted.to_ratatui();
+        let gray = theme.gray.to_ratatui();
         let bg = theme.bg_panel.to_ratatui();
 
         let height = (self.workspaces.len() as u16 + 5).min(rect.height.saturating_sub(4));
         let width = 50u16.min(rect.width.saturating_sub(4));
         let popup = super::fixed_centered_rect(width, height, rect);
 
-        f.render_widget(Clear, popup);
-
-        let outer = Block::default()
-            .title(" Switch Workspace ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border_focused.to_ratatui()))
-            .style(theme.panel_style());
-        let inner = outer.inner(popup);
-        f.render_widget(outer, popup);
+        let inner = modal_chrome(
+            f,
+            popup,
+            theme,
+            ModalSpec {
+                title: Some(" Switch Workspace "),
+                border: Some(Style::default().fg(theme.focus_border.to_ratatui())),
+                ..Default::default()
+            },
+        );
 
         if self.workspaces.is_empty() {
             f.render_widget(
-                Paragraph::new("  No workspaces configured.\n  Use Settings to create one.")
-                    .style(Style::default().fg(fg_muted).bg(bg)),
+                Paragraph::new("  No workspaces configured.\n  Use Preferences to create one.")
+                    .style(Style::default().fg(gray).bg(bg)),
                 inner,
             );
             return;
@@ -131,13 +133,13 @@ impl WorkspaceSwitcherModal {
 
         let list = List::new(items)
             .style(Style::default().bg(bg))
-            .highlight_style(Style::default().bg(theme.bg_selected.to_ratatui()));
+            .highlight_style(Style::default().bg(theme.selection_bg.to_ratatui()));
 
         f.render_stateful_widget(list, rows[0], &mut self.list_state);
 
         f.render_widget(
             Paragraph::new("  [Enter] Switch  [Esc] Cancel")
-                .style(Style::default().fg(fg_muted).bg(bg)),
+                .style(Style::default().fg(gray).bg(bg)),
             rows[1],
         );
     }

@@ -7,13 +7,14 @@ use kimun_core::nfs::VaultPath;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::components::autocomplete::AutocompleteMode;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, redraw_callback};
 use crate::components::file_list::FileListEntry;
 use crate::components::overlay::{Overlay, OverlayKind};
+use crate::components::panel::{ModalBg, ModalSpec, modal_chrome};
 use crate::components::saved_search_breadcrumb::SavedSearchBreadcrumb;
 use crate::components::search_list::{
     KeyReaction, RowSource, SearchList, SearchMouse, VaultSuggestions,
@@ -35,7 +36,21 @@ pub mod search_provider;
 /// async-loaded result list + hashtag autocomplete) and adds the two things
 /// unique to the browser: a live preview pane for the selected note and the
 /// open-on-enter glue that emits [`AppEvent::OpenPath`].
+/// What the modal is scoped to — drives the input prefix glyph and whether
+/// the §9 query highlighter applies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrowserScope {
+    /// Full query syntax (Ctrl-K, tag/backlink leaves): `⌕` prefix +
+    /// syntax highlighting.
+    Query,
+    /// Fuzzy file finding (Ctrl-O): plain input.
+    Files,
+}
+
 pub struct NoteBrowserModal {
+    scope: BrowserScope,
+    /// Input prefix glyph for the scope (`⌕` query / `▤` files).
+    prefix_glyph: &'static str,
     title: String,
     list: SearchList<FileListEntry>,
     vault: Arc<NoteVault>,
@@ -59,6 +74,7 @@ pub struct NoteBrowserModal {
 impl NoteBrowserModal {
     pub fn new(
         title: impl Into<String>,
+        scope: BrowserScope,
         provider: impl RowSource<FileListEntry>,
         vault: Arc<NoteVault>,
         key_bindings: KeyBindings,
@@ -67,6 +83,7 @@ impl NoteBrowserModal {
     ) -> Self {
         Self::new_with_query(
             title,
+            scope,
             provider,
             vault,
             key_bindings,
@@ -81,8 +98,10 @@ impl NoteBrowserModal {
     /// Behaves exactly like [`new`](Self::new) except the search input is
     /// pre-populated with `query` (cursor placed at the end) and the initial
     /// load is triggered for that query string.
+    #[allow(clippy::too_many_arguments)]
     pub fn with_initial_query<S: Into<String>>(
         title: impl Into<String>,
+        scope: BrowserScope,
         provider: impl RowSource<FileListEntry>,
         vault: Arc<NoteVault>,
         key_bindings: KeyBindings,
@@ -92,6 +111,7 @@ impl NoteBrowserModal {
     ) -> Self {
         Self::new_with_query(
             title,
+            scope,
             provider,
             vault,
             key_bindings,
@@ -101,8 +121,10 @@ impl NoteBrowserModal {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn new_with_query(
         title: impl Into<String>,
+        scope: BrowserScope,
         provider: impl RowSource<FileListEntry>,
         vault: Arc<NoteVault>,
         key_bindings: KeyBindings,
@@ -110,7 +132,11 @@ impl NoteBrowserModal {
         tx: AppTx,
         initial_query: String,
     ) -> Self {
-        let list = SearchList::builder(provider, redraw_callback(tx.clone()))
+        let prefix_glyph = match scope {
+            BrowserScope::Query => icons.rail_find,
+            BrowserScope::Files => icons.rail_files,
+        };
+        let mut builder = SearchList::builder(provider, redraw_callback(tx.clone()))
             .initial_query(initial_query)
             .icons(icons)
             .autocomplete(
@@ -118,9 +144,14 @@ impl NoteBrowserModal {
                     vault: vault.clone(),
                 }),
                 AutocompleteMode::SearchQuery,
-            )
-            .build();
+            );
+        if scope == BrowserScope::Query {
+            builder = builder.highlight_query();
+        }
+        let list = builder.build();
         let mut modal = Self {
+            scope,
+            prefix_glyph,
             title: title.into(),
             list,
             vault,
@@ -134,6 +165,23 @@ impl NoteBrowserModal {
         };
         modal.refresh_preview(None);
         modal
+    }
+
+    /// The lowercase text needles the preview emphasizes: the query's plain
+    /// search terms (Query scope only — the fuzzy Files scope matches names,
+    /// not content).
+    fn preview_needles(&self) -> Vec<String> {
+        if self.scope != BrowserScope::Query {
+            return Vec::new();
+        }
+        crate::components::query_highlight::emphasis_needles(self.list.query())
+    }
+
+    /// The emphasis payload an open from this modal carries: the query's
+    /// needles (spec §5.1), Query scope only.
+    fn emphasis(&self) -> Option<Vec<String>> {
+        let needles = self.preview_needles();
+        (!needles.is_empty()).then_some(needles)
     }
 
     // ── Async preview loading ──────────────────────────────────────────────
@@ -225,12 +273,16 @@ impl NoteBrowserModal {
             let tx = tx.clone();
             tokio::spawn(async move {
                 vault.load_or_create_note(&path, None).await.ok();
-                tx.send(AppEvent::OpenPath(path)).ok();
+                tx.send(AppEvent::open(path)).ok();
             });
             return;
         }
         let path = entry.path().clone();
-        tx.send(AppEvent::OpenPath(path)).ok();
+        tx.send(AppEvent::OpenPath {
+            path,
+            emphasis: self.emphasis(),
+        })
+        .ok();
     }
 
     /// The saved-search breadcrumb label for the search border, or `None` when
@@ -273,7 +325,7 @@ impl Overlay for NoteBrowserModal {
                     self.open_selected(tx);
                     EventState::Consumed
                 }
-                SearchMouse::Selected(_) | SearchMouse::Scrolled => {
+                SearchMouse::Context(_) | SearchMouse::Selected(_) | SearchMouse::Scrolled => {
                     self.refresh_preview_from_list();
                     EventState::Consumed
                 }
@@ -313,18 +365,23 @@ impl Overlay for NoteBrowserModal {
     fn render(&mut self, f: &mut Frame, area: Rect, theme: &Theme) {
         self.poll_preview();
 
-        let popup_rect = crate::components::centered_rect(80, 75, area);
+        let popup_rect = crate::components::centered_rect(75, 75, area);
 
-        // Clear the area behind the modal so the editor doesn't bleed through.
-        f.render_widget(Clear, popup_rect);
-
-        let outer_block = Block::default()
-            .title(format!(" {} ", self.title))
-            .borders(Borders::ALL)
-            .border_style(theme.border_style(true))
-            .style(theme.panel_style());
-        let inner = outer_block.inner(popup_rect);
-        f.render_widget(outer_block, popup_rect);
+        // Modal chrome (spec §6): hard background, focus-green border.
+        let modal_style = Style::default()
+            .fg(theme.fg.to_ratatui())
+            .bg(theme.bg_hard.to_ratatui());
+        let title = format!(" {} ", self.title);
+        let inner = modal_chrome(
+            f,
+            popup_rect,
+            theme,
+            ModalSpec {
+                title: Some(&title),
+                bg: ModalBg::Hard,
+                ..Default::default()
+            },
+        );
 
         let rows = Layout::default()
             .direction(Direction::Vertical)
@@ -341,14 +398,41 @@ impl Overlay for NoteBrowserModal {
         let search_title = self
             .saved_search
             .border_title(self.list.query(), " Search ");
+        let result_count = self.list.match_count();
         let search_block = Block::default()
             .title(search_title)
+            .title(
+                ratatui::text::Line::from(ratatui::text::Span::styled(
+                    format!(" {result_count} results "),
+                    Style::default().fg(theme.gray.to_ratatui()),
+                ))
+                .right_aligned(),
+            )
             .borders(Borders::ALL)
             .border_style(theme.border_style(true))
-            .style(theme.panel_style());
+            .style(modal_style);
         let search_inner = search_block.inner(rows[0]);
         f.render_widget(search_block, rows[0]);
-        self.list.render_query(f, search_inner, theme, true);
+        // Scope prefix glyph to the input's left, the input shifted past it.
+        let prefix = format!("{} ", self.prefix_glyph);
+        let prefix_w = unicode_width::UnicodeWidthStr::width(prefix.as_str()) as u16;
+        f.render_widget(
+            Paragraph::new(prefix).style(
+                Style::default()
+                    .fg(theme.yellow.to_ratatui())
+                    .bg(theme.bg_hard.to_ratatui()),
+            ),
+            Rect {
+                width: prefix_w.min(search_inner.width),
+                ..search_inner
+            },
+        );
+        let input_rect = Rect {
+            x: search_inner.x.saturating_add(prefix_w),
+            width: search_inner.width.saturating_sub(prefix_w),
+            ..search_inner
+        };
+        self.list.render_query(f, input_rect, theme, true);
 
         // ── List + Preview ────────────────────────────────────────────────
         let columns = Layout::default()
@@ -362,7 +446,7 @@ impl Overlay for NoteBrowserModal {
         let list_block = Block::default()
             .borders(Borders::ALL)
             .border_style(theme.border_style(false))
-            .style(theme.panel_style());
+            .style(modal_style);
         let list_inner = list_block.inner(columns[0]);
         f.render_widget(list_block, columns[0]);
         self.list.render(f, list_inner, theme, false);
@@ -378,19 +462,31 @@ impl Overlay for NoteBrowserModal {
             self.refresh_preview_from_list();
         }
 
+        // Preview header: filename, plus the match count when the query
+        // carries text terms (spec §6: `filename · N matches`).
+        let needles = self.preview_needles();
+        let match_count = count_matches(&self.preview_text, &needles);
+        let preview_title = match (&self.preview_path, match_count) {
+            (Some(path), Some(n)) => {
+                format!(" {} · {} matches ", path.get_name(), n)
+            }
+            (Some(path), None) => format!(" {} ", path.get_name()),
+            (None, _) => " Preview ".to_string(),
+        };
         let preview_block = Block::default()
-            .title(" Preview ")
+            .title(preview_title)
             .borders(Borders::ALL)
             .border_style(theme.border_style(false))
-            .style(theme.panel_style());
+            .style(modal_style);
         let preview_inner = preview_block.inner(columns[1]);
         f.render_widget(preview_block, columns[1]);
         f.render_widget(
-            Paragraph::new(self.preview_text.as_str()).style(
-                Style::default()
-                    .fg(theme.fg.to_ratatui())
-                    .bg(theme.bg.to_ratatui()),
-            ),
+            Paragraph::new(highlight_matches(
+                &self.preview_text,
+                &needles,
+                theme,
+                modal_style,
+            )),
             preview_inner,
         );
 
@@ -434,6 +530,86 @@ pub(super) fn format_journal_date(date: NaiveDate) -> String {
 // Tests
 // ---------------------------------------------------------------------------
 
+/// Total needle occurrences in `text` (case-insensitive), or `None` when
+/// there are no needles — the preview header shows a count only for queries
+/// with text terms.
+fn count_matches(text: &str, needles: &[String]) -> Option<usize> {
+    if needles.is_empty() {
+        return None;
+    }
+    let lower = text.to_lowercase();
+    Some(
+        needles
+            .iter()
+            .map(|n| lower.match_indices(n.as_str()).count())
+            .sum(),
+    )
+}
+
+/// The preview text with needle matches emphasized in `yellow` (spec §6).
+/// Lines whose lowercase form changes byte length (rare non-ASCII case
+/// folds) are rendered unhighlighted rather than risking misaligned spans.
+fn highlight_matches<'a>(
+    text: &'a str,
+    needles: &[String],
+    theme: &Theme,
+    base: Style,
+) -> ratatui::text::Text<'a> {
+    use ratatui::text::{Line, Span};
+    if needles.is_empty() {
+        return ratatui::text::Text::styled(text, base);
+    }
+    let emphasis = base.patch(
+        Style::default()
+            .fg(theme.color_search_match.to_ratatui())
+            .add_modifier(ratatui::style::Modifier::BOLD),
+    );
+    let mut lines = Vec::new();
+    for line in text.lines() {
+        let lower = line.to_lowercase();
+        if lower.len() != line.len() {
+            lines.push(Line::styled(line, base));
+            continue;
+        }
+        // Collect non-overlapping match ranges across all needles.
+        let mut ranges: Vec<(usize, usize)> = needles
+            .iter()
+            .flat_map(|n| {
+                lower
+                    .match_indices(n.as_str())
+                    .map(|(i, m)| (i, i + m.len()))
+            })
+            .collect();
+        // Longest match first at each start, so an overlapping shorter
+        // needle never truncates a longer one.
+        ranges.sort_unstable_by_key(|(s, e)| (*s, std::cmp::Reverse(*e)));
+        ranges.dedup();
+        let mut spans = Vec::new();
+        let mut pos = 0;
+        for (start, end) in ranges {
+            if start < pos {
+                continue; // overlapping with a previous needle — skip
+            }
+            // Length-preserving case folds can still SHIFT char boundaries
+            // (e.g. İ + ẞ); offsets from the lowered line must land on real
+            // boundaries of the original or the slice would panic.
+            if !line.is_char_boundary(start) || !line.is_char_boundary(end) {
+                continue;
+            }
+            if start > pos {
+                spans.push(Span::styled(&line[pos..start], base));
+            }
+            spans.push(Span::styled(&line[start..end], emphasis));
+            pos = end;
+        }
+        if pos < line.len() {
+            spans.push(Span::styled(&line[pos..], base));
+        }
+        lines.push(Line::from(spans));
+    }
+    ratatui::text::Text::from(lines)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -467,6 +643,7 @@ mod tests {
         let settings = AppSettings::default();
         NoteBrowserModal::new(
             "test",
+            BrowserScope::Query,
             source,
             vault,
             settings.key_bindings.clone(),
@@ -482,6 +659,7 @@ mod tests {
         let (tx, _rx) = unbounded_channel();
         let modal = NoteBrowserModal::with_initial_query(
             "test",
+            BrowserScope::Query,
             OneNoteSource {
                 path: VaultPath::note_path_from("/a.md"),
             },
@@ -518,7 +696,7 @@ mod tests {
         assert!(
             events
                 .iter()
-                .any(|e| matches!(e, AppEvent::OpenPath(p) if *p == path)),
+                .any(|e| matches!(e, AppEvent::OpenPath { path: p, .. } if *p == path)),
             "expected OpenPath, got {events:?}"
         );
         assert!(
@@ -582,6 +760,7 @@ mod tests {
         let (tx, _rx) = unbounded_channel();
         let mut modal = NoteBrowserModal::new(
             "test",
+            BrowserScope::Query,
             OneNoteSource {
                 path: VaultPath::note_path_from("/a.md"),
             },

@@ -16,16 +16,36 @@
 #   Quit         = ["ctrl&Q"]            # Ctrl+Q
 #   SearchNotes  = ["ctrl&K"]            # Ctrl+K
 #   OpenNote     = ["ctrl&O"]            # Ctrl+O  (fuzzy file finder)
-#   OpenSettings = ["ctrl+shift&P"]      # Ctrl+Shift+P
+#   OpenSettings = ["ctrl&,"]            # Ctrl+,
 #   NewJournal   = ["ctrl&J"]            # Ctrl+J
 #   FileOperations = ["F2"]              # F2  (open file-ops menu: delete/rename/move)
+#   Leader       = ["ctrl&G"]            # Ctrl+G  (leader gateway: Ctrl+G f f, ...)
+#   OpenCommandPalette = ["ctrl&P"]      # Ctrl+P  (every leader command, fuzzy)
+#
+# OTHER SETTINGS
+# ──────────────
+#   theme             = "Gruvbox Dark"   # or any built-in / custom theme name
+#   leader_timeout_ms = 400               # hesitation before the which-key menu
+#
+# LEADER TREE OVERRIDES
+# ─────────────────────
+#   Remap, add, or remove leader sequences ([leader.bind]) and rename group
+#   captions ([leader.labels]). Keys are the sequence AFTER the gateway;
+#   bind values are action ids (see the cheatsheet) or "none" to unbind.
+#   [leader.bind]
+#   "o f" = "find.files"     # remap: leader o f now opens the file picker
+#   "x"   = "note.daily"     # add:   leader x opens today's journal
+#   "g p" = "none"           # remove the git-sync stub binding
+#   [leader.labels]
+#   "f"   = "+search"        # rename the +find group caption
 #
 # ─────────────────────────────────────────────────────────────────────────────
-config_version = 3
-theme = "ANSI"
+config_version = 6
+theme = "Gruvbox Dark"
 cache_dir = "."
 history_dir = "history"
 autosave_interval_secs = 5
+leader_timeout_ms = 400
 use_nerd_fonts = true
 editor_backend = "textarea"
 default_sort_field = "name"
@@ -35,7 +55,7 @@ journal_sort_order = "descending"
 group_directories = false
 
 [global]
-current_workspace = "work"
+current_workspace = "personal"
 
 [workspaces.personal]
 path = "personal"
@@ -47,11 +67,10 @@ created = "2026-04-01T00:00:00Z"
 
 [key_bindings]
 Quit = ["ctrl&Q"]
-OpenSettings = ["ctrl&P"]
+OpenSettings = ["ctrl&,"]
 SearchNotes = ["ctrl&K"]
 OpenNote = ["ctrl&O"]
 NewJournal = ["ctrl&J"]
-TogglePreview = ["ctrl&Y"]
 TextEditor-Bold = ["ctrl&B"]
 TextEditor-Italic = ["ctrl&I"]
 TextEditor-Image = ["ctrl+shift&L"]
@@ -62,10 +81,14 @@ FocusEditor = ["ctrl&L"]
 FocusSidebar = ["ctrl&H"]
 OpenSortDialog = ["ctrl&R"]
 FileOperations = ["F2"]
-FollowLink = ["ctrl&G"]
+FollowLink = ["ctrl&N"]
 QuickNote = ["ctrl&W"]
 ToggleQueryPanel = ["ctrl&E"]
 OpenSavedSearches = ["F3"]
 SaveCurrentQuery = ["ctrl&D"]
 SwitchWorkspace = ["F4"]
 FindInBuffer = ["ctrl&F"]
+Leader = ["ctrl&G"]
+OpenCommandPalette = ["ctrl&P"]
+
+[leader]

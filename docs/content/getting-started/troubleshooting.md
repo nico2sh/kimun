@@ -5,6 +5,21 @@ weight = 10
 
 # Troubleshooting
 
+Something acting weird? The log file usually knows why.
+
+## Ctrl+Enter Acts Like Plain Enter
+
+Most terminals can't tell `Ctrl+Enter` from `Enter` unless the [kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/) is active. Kimün requests it automatically, but the terminal has to play along:
+
+- **WezTerm** ships with it **off**. Enable it in `~/.wezterm.lua`:
+
+  ```lua
+  config.enable_kitty_keyboard = true
+  ```
+
+- **Kitty, Ghostty, foot** support it out of the box.
+- On terminals that can't be taught, use `Ctrl+N` — it follows links exactly like `Ctrl+Enter`.
+
 ## Log Files
 
 Kimün writes a log file on every run. In release builds only warnings and errors are recorded, keeping the file small. Debug builds log everything.
@@ -48,3 +63,7 @@ If Kimün cannot write to the platform directory (for example, because the home 
 |----------|---------|
 | macOS / Linux | `/tmp/kimun.log` (or wherever `$TMPDIR` points) |
 | Windows | `%TEMP%\kimun.log` |
+
+## Still Stuck?
+
+[Open an issue](https://github.com/nico2sh/kimun/issues) with the relevant section of `kimun.log` — especially any `[PANIC]` lines. If search is misbehaving, `kimun workspace reindex <name>` rebuilds the index from scratch and fixes most weirdness (see [Workspaces](@/getting-started/workspaces.md#reindex-rebuild-the-search-index)).
