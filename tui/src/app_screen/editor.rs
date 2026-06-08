@@ -735,6 +735,23 @@ impl EditorScreen {
         self.present_overlay(Box::new(dialog));
     }
 
+    /// True when the Find drawer view (the query panel) holds focus — the
+    /// context in which F1 surfaces query syntax help instead of the flat
+    /// key-bindings panel.
+    fn find_panel_focused(&self) -> bool {
+        self.panels.focused() == PanelKind::Drawer
+            && self.panels.active_drawer_view() == DrawerView::Find
+    }
+
+    /// Open the search query syntax reference (F1 while the Find panel is
+    /// focused). No-op while an overlay is open.
+    fn open_query_help(&mut self) {
+        if self.overlays.is_open() {
+            return;
+        }
+        self.present_overlay(Box::new(ActiveDialog::query_syntax()));
+    }
+
     /// Open the full leader-tree cheatsheet (leader `?`). No-op while an
     /// overlay is open.
     fn open_cheatsheet(&mut self) {
@@ -1289,8 +1306,14 @@ impl AppScreen for EditorScreen {
                 _ => {
                     if is_fkey {
                         // F1 opens the help modal (only when no other dialog is active).
+                        // Over the Find panel it surfaces query syntax instead of
+                        // the flat key-bindings help.
                         if combo.key == KeyStrike::F1 && combo.modifiers.is_empty() {
-                            self.open_help();
+                            if self.find_panel_focused() {
+                                self.open_query_help();
+                            } else {
+                                self.open_help();
+                            }
                         }
                         // All F-keys (including F1 when a dialog is already open) are consumed
                         // and never forwarded to the embedded editor.
@@ -1319,18 +1342,10 @@ impl AppScreen for EditorScreen {
             return state;
         }
 
-        // Bare Space leads only where it has no typing job: a focused list
-        // or the rail — never the editor or a text-input drawer view
-        // (spec §8a).
-        if self.panels.focused() != PanelKind::Editor
-            && !self.panels.drawer_is_text_input()
-            && let InputEvent::Key(key) = event
-            && key.code == ratatui::crossterm::event::KeyCode::Char(' ')
-            && key.modifiers.is_empty()
-        {
-            self.leader.start();
-            return EventState::Consumed;
-        }
+        // Bare Space never leads — the leader is only the configured gateway
+        // (Ctrl-G by default). Space falls through to the focused panel, so it
+        // types a space in any text input (the file browser filter, the editor)
+        // and is a no-op in lists that don't bind it.
 
         // Tab / Shift-Tab cycle panel focus (spec §2). The focused panel gets
         // first crack — the Query panel's autocomplete accepts on Tab — and
@@ -1985,10 +2000,11 @@ mod tests {
         assert_eq!(screen.panels.focused(), PanelKind::Editor);
     }
 
-    /// Space leads only where it has no typing job: it arms the sequence
-    /// from the rail, but types a space in the focused editor.
+    /// Bare Space never leads — the leader is only the configured gateway.
+    /// Space types a space in the editor and never arms the sequence, whatever
+    /// panel is focused (rail, a list drawer, or a text-input drawer).
     #[tokio::test]
-    async fn space_leads_in_lists_but_types_in_editor() {
+    async fn space_never_leads() {
         let (mut screen, _, _, _dir) = test_screen().await;
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
 
@@ -1998,11 +2014,10 @@ mod tests {
         assert!(!screen.leader.is_pending());
         assert_eq!(screen.panels.editor().get_text(), " ");
 
-        // Rail focused: Space arms the leader.
+        // Rail focused: Space must NOT lead.
         screen.panels.focus(PanelKind::Rail);
         screen.handle_input(&chr(' '), &tx);
-        assert!(screen.leader.is_pending());
-        screen.leader.cancel();
+        assert!(!screen.leader.is_pending());
 
         // FIND drawer (a text input): Space must NOT lead.
         screen.panels.open_drawer_view(DrawerView::Find);
