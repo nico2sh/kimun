@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.14.0...kimun-notes-v0.15.0) - 2026-06-08
+
+### Added
+
+- mouse actions
+- command palette
+- hint on leader key
+- leader key
+- sections enabled for strip
+- activity rail stub
+
+### Fixed
+
+- multiline selection indent fixed
+- mouse position cursor correctly continue lists and indents
+- editor small refactor
+- open drawer at current dir
+- small fixes
+- ghostty option arrow nav
+- small desig improvements
+- icons in results
+- fixed preferences shortcuts
+- better open by search highlights
+- bugfixes
+- settings from keys
+- ctrl+enter on preview notes
+- vault icon
+
+### Other
+
+- cargo fmt
+- screenshot width
+- query text help and correct space behavior in search
+- config icon
+- Merge pull request #127 from nico2sh/revamp
+- screenshot size
+- updated readme with screenshot
+- tunued shortcuts
+- cargo fmt
+- renamed rail labels
+- settings to preferences
+- texteditor backend separation
+- better panels
+- window chrome
+- custom leader keys
+- colors in themes
+- Merge branch 'main' of github.com:nico2sh/kimun
+
 ## [0.14.0](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.13.0...kimun-notes-v0.14.0) - 2026-06-04
 
 ### Added
