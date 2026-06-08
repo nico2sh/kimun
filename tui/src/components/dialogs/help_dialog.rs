@@ -127,6 +127,10 @@ impl HelpDialog {
             keys: format!("{} ms", settings.leader_timeout_ms),
             label: "which-key reveal timeout".to_string(),
         });
+        rows.push(HelpRow::Binding {
+            keys: "F1 in Find".to_string(),
+            label: "search query syntax".to_string(),
+        });
         for (key, child) in tree.children() {
             match child {
                 LeaderNode::Group { label, .. } => {
@@ -160,6 +164,59 @@ impl HelpDialog {
         Self {
             rows,
             title: " Cheatsheet — leader keys ",
+            scroll: 0,
+            last_body_height: 20,
+        }
+    }
+
+    /// Reference card for the search query language (F1 over the Find drawer
+    /// view). Operators, modifiers, and a few worked examples — mirrors the
+    /// canonical table in `docs/.../search.md` and ADR-0005, condensed to the
+    /// keys|label shape the help widget already renders. The full prose guide
+    /// lives on the docs site, not here.
+    pub fn query_syntax() -> Self {
+        // (short / long, meaning) — sourced from search.md's operator table.
+        const OPERATORS: &[(&str, &str)] = &[
+            ("(type text)", "full-text body search"),
+            ("= / name:", "by note name"),
+            ("@ / in:", "by section heading"),
+            ("/ / pt:", "by path / folder"),
+            ("# / lb:", "by label (tag)"),
+            ("< / lk:", "links TO it (backlinks)"),
+            ("> / fwd:", "it links to (forward)"),
+            ("^ / or:", "sort results (-^ = desc)"),
+        ];
+        const MODIFIERS: &[(&str, &str)] = &[
+            ("- prefix", "exclude (e.g. -#draft)"),
+            ("*", "wildcard prefix (screen*)"),
+            ("\" \"", "quote values with spaces"),
+        ];
+        const EXAMPLES: &[(&str, &str)] = &[
+            ("#finance report", "labelled finance + text"),
+            ("@work -cancelled", "Work section, not cancelled"),
+            ("<kimun #project", "kimun backlinks + label"),
+        ];
+
+        fn section(rows: &mut Vec<HelpRow>, header: &str, entries: &[(&str, &str)]) {
+            rows.push(HelpRow::Header(header.to_string()));
+            rows.push(HelpRow::Separator);
+            for (keys, label) in entries {
+                rows.push(HelpRow::Binding {
+                    keys: (*keys).to_string(),
+                    label: (*label).to_string(),
+                });
+            }
+            rows.push(HelpRow::Blank);
+        }
+
+        let mut rows: Vec<HelpRow> = Vec::new();
+        section(&mut rows, "Operators", OPERATORS);
+        section(&mut rows, "Modifiers", MODIFIERS);
+        section(&mut rows, "Examples", EXAMPLES);
+
+        Self {
+            rows,
+            title: " Search Query Syntax ",
             scroll: 0,
             last_body_height: 20,
         }

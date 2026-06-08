@@ -95,6 +95,11 @@ impl ActiveDialog {
         ActiveDialog::Help(HelpDialog::cheatsheet(settings))
     }
 
+    /// The search query syntax reference (F1 over the Find drawer view).
+    pub fn query_syntax() -> Self {
+        ActiveDialog::Help(HelpDialog::query_syntax())
+    }
+
     /// The live theme picker (leader `v c`).
     pub fn theme_picker(settings: &crate::settings::AppSettings) -> Self {
         ActiveDialog::ThemePicker(ThemePickerDialog::new(settings))
