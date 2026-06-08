@@ -1002,7 +1002,10 @@ impl TextEditorComponent {
             };
             // A mouse click leaves a zero-width selection active (handle_mouse
             // calls start_selection on Down), so only bail on a non-empty one.
-            if ta.selection_range().is_some_and(|(start, end)| start != end) {
+            if ta
+                .selection_range()
+                .is_some_and(|(start, end)| start != end)
+            {
                 return false;
             }
             let (row, col) = cursor_tuple(ta);
