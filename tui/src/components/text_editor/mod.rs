@@ -1140,6 +1140,12 @@ impl TextEditorComponent {
         let mut row_deltas: Vec<isize> = Vec::with_capacity(row_count);
         let mut any_change = false;
 
+        // Drop the live selection before mutating: with the anchor still set,
+        // `move_cursor(Jump(row, 0))` re-anchors the selection from the start
+        // column back to col 0, so `insert_str`/`delete_str` would replace the
+        // text before the selection. The selection is restored at the end.
+        ta.cancel_selection();
+
         for row in start_row..=end_row {
             if dedent {
                 let count = {
@@ -3033,6 +3039,28 @@ mod tests {
         assert_eq!(lines[0], "foo");
         assert!(lines[1].starts_with(' ') || lines[1].starts_with('\t'));
         assert!(lines[1].trim_start() == "bar");
+    }
+
+    #[test]
+    fn indent_midline_selection_keeps_text_before_and_selection() {
+        let mut editor = make_editor();
+        editor.set_text("hello world".to_string());
+        {
+            let ta = get_ta(&mut editor);
+            ta.move_cursor(ratatui_textarea::CursorMove::Jump(0, 6));
+            ta.start_selection();
+            ta.move_cursor(ratatui_textarea::CursorMove::End);
+        }
+        editor.indent_lines(false);
+        let ta = get_ta(&mut editor);
+        // Text before the selection must survive; only a leading indent added.
+        assert_eq!(ta.lines()[0].trim_start(), "hello world");
+        // Selection preserved, shifted right by the inserted indent.
+        let indent = ta.lines()[0].len() - "hello world".len();
+        assert_eq!(
+            ta.selection_range(),
+            Some(((0, 6 + indent), (0, 11 + indent)))
+        );
     }
 
     #[test]
