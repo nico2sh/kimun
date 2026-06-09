@@ -223,24 +223,32 @@ impl<R: SearchRow> SearchList<R> {
                 self.offset = 0;
                 self.applied_generation = current_gen;
             }
-        }
-        for ev in drained {
-            match ev {
-                LoadedInner::Replace(rows) => {
-                    self.rows = rows;
+            for ev in drained {
+                match ev {
+                    LoadedInner::Replace(rows) => {
+                        self.rows = rows;
+                    }
+                    LoadedInner::Push(row) => {
+                        self.rows.push(row);
+                    }
+                    LoadedInner::Done => {}
                 }
-                LoadedInner::Push(row) => {
-                    self.rows.push(row);
-                }
-                LoadedInner::Done => {}
             }
-        }
-        self.recompute_display();
-        if self.selected.is_none() && self.visible_len() > 0 {
-            self.selected = Some(0);
+            self.recompute_and_seed();
         }
         if let Some(ac) = &mut self.autocomplete {
             ac.poll_results();
+        }
+    }
+
+    /// Recompute the display order, then seed the selection to the first row
+    /// when nothing is selected yet (e.g. after the first load or a filter that
+    /// repopulated the list). The single place display + initial selection are
+    /// brought in sync.
+    fn recompute_and_seed(&mut self) {
+        self.recompute_display();
+        if self.selected.is_none() && self.visible_len() > 0 {
+            self.selected = Some(0);
         }
     }
 
@@ -361,7 +369,7 @@ impl<R: SearchRow> SearchList<R> {
         if self.source.reload_on_query() {
             self.loader.start(self.source.clone(), self.query.clone());
         } else {
-            self.recompute_display();
+            self.recompute_and_seed();
         }
     }
 
@@ -1576,5 +1584,50 @@ mod tests {
         // A no-op mutation reports no change and does not panic.
         let changed_again = list.update_rows(|_| false);
         assert!(!changed_again, "no row changed");
+    }
+
+    // Regression guard: local-filter sources (reload_on_query == false) must
+    // reseed the selection back to row 0 when a filter change repopulates the
+    // list after having emptied it.
+    //
+    // The gate in `poll()` (only recompute when drain is non-empty) must NOT
+    // suppress the reseed for local filters, because they go through
+    // `requery()` → `recompute_and_seed()` directly — no loader drain.
+    #[tokio::test]
+    async fn local_filter_reseed_after_empty_then_repopulate() {
+        let src = VecSource {
+            rows: vec![
+                TestRow::new("alpha"),
+                TestRow::new("beta"),
+                TestRow::new("gamma"),
+            ],
+            reload: false,
+        };
+        let mut list = SearchList::builder(src, noop_redraw())
+            .filter(Filter::Fuzzy)
+            .build();
+        list.poll_until_idle().await;
+
+        // Sanity: initial load selected the first row.
+        assert!(list.selected_row().is_some(), "should have a selection after initial load");
+
+        // Apply a filter that matches nothing → visible list is empty → selection cleared.
+        list.set_query("zzznomatch");
+        assert_eq!(list.visible_len(), 0, "no rows should match 'zzznomatch'");
+        assert!(list.selected_row().is_none(), "selection must be None when list is empty");
+
+        // Widen the filter so rows come back (no drain will happen — local filter).
+        list.set_query("alp");
+        assert!(list.visible_len() > 0, "at least 'alpha' should match 'alp'");
+        // The selection MUST be reseeded to Some(0) — the subtlety the gating
+        // would regress if recompute_and_seed() weren't called from requery().
+        assert!(
+            list.selected_row().is_some(),
+            "selection must be reseeded to first visible row after repopulation"
+        );
+        assert_eq!(
+            list.selected_row().unwrap().name, "alpha",
+            "first visible row must be selected after reseeding"
+        );
     }
 }
