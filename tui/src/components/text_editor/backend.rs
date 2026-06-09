@@ -176,6 +176,21 @@ impl BackendState {
         true
     }
 
+    /// If the active backend is the vim interpreter, run it for this key and
+    /// return the outcome. Returns `None` for Direct / Nvim backends.
+    pub fn vim_handle_key(
+        &mut self,
+        key: &ratatui::crossterm::event::KeyEvent,
+    ) -> Option<super::vim::VimKeyOutcome> {
+        match self {
+            BackendState::Textarea(TextareaBackend {
+                ta,
+                input: InputInterpreter::Vim(engine),
+            }) => Some(engine.handle_key(key, ta)),
+            _ => None,
+        }
+    }
+
     pub fn from_settings(
         editor_backend: &EditorBackendSetting,
         nvim_path: Option<&PathBuf>,
