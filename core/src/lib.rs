@@ -1660,7 +1660,10 @@ mod tests {
         assert!(created_first, "missing note must be created");
 
         let (_, created_second) = vault.load_or_create_note(&path, None).await.unwrap();
-        assert!(!created_second, "existing note must be loaded, not recreated");
+        assert!(
+            !created_second,
+            "existing note must be loaded, not recreated"
+        );
     }
 
     #[tokio::test]

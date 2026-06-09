@@ -285,7 +285,11 @@ impl SidebarComponent {
     pub fn update_note_row(&mut self, path: &VaultPath, new_title: &str) {
         if let Some(list) = &mut self.list {
             list.update_rows(|row| {
-                if let FileListEntry::Note { path: row_path, title, .. } = row
+                if let FileListEntry::Note {
+                    path: row_path,
+                    title,
+                    ..
+                } = row
                     && row_path.is_like(path)
                     && title != new_title
                 {
@@ -1012,8 +1016,14 @@ mod tests {
         navigate_to_root(&mut sb, &tx).await;
 
         sb.set_open_note(Some(VaultPath::note_path_from("alpha")));
-        assert!(sb.note_row_is_open_for_test("alpha.md"), "open note is marked");
-        assert!(!sb.note_row_is_open_for_test("beta.md"), "other note is not marked");
+        assert!(
+            sb.note_row_is_open_for_test("alpha.md"),
+            "open note is marked"
+        );
+        assert!(
+            !sb.note_row_is_open_for_test("beta.md"),
+            "other note is not marked"
+        );
 
         sb.set_open_note(Some(VaultPath::note_path_from("beta")));
         assert!(!sb.note_row_is_open_for_test("alpha.md"));
@@ -1030,7 +1040,10 @@ mod tests {
         navigate_to_root(&mut sb, &tx).await;
 
         sb.update_note_row(&VaultPath::note_path_from("alpha"), "Fresh Title");
-        assert_eq!(sb.note_row_title_for_test("alpha.md").as_deref(), Some("Fresh Title"));
+        assert_eq!(
+            sb.note_row_title_for_test("alpha.md").as_deref(),
+            Some("Fresh Title")
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1042,8 +1055,14 @@ mod tests {
         let to = VaultPath::note_path_from("gamma");
         let expected_filename = to.get_parent_path().1;
         sb.rename_note_row(&VaultPath::note_path_from("alpha"), &to);
-        assert!(sb.note_row_title_for_test("gamma.md").is_some(), "row now at new name");
-        assert!(sb.note_row_title_for_test("alpha.md").is_none(), "old name gone");
+        assert!(
+            sb.note_row_title_for_test("gamma.md").is_some(),
+            "row now at new name"
+        );
+        assert!(
+            sb.note_row_title_for_test("alpha.md").is_none(),
+            "old name gone"
+        );
         // Also verify the filename field itself was updated to the new name.
         let renamed_filename = sb
             .list

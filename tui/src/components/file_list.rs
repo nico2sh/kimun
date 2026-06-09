@@ -286,7 +286,10 @@ mod open_marker_tests {
 
     #[test]
     fn display_title_substitutes_placeholder_for_empty() {
-        assert_eq!(FileListEntry::display_title("   ".to_string()), "<no title>");
+        assert_eq!(
+            FileListEntry::display_title("   ".to_string()),
+            "<no title>"
+        );
         assert_eq!(FileListEntry::display_title("Real".to_string()), "Real");
     }
 
@@ -331,10 +334,7 @@ mod open_marker_tests {
         ];
         let expected = ListItem::new(Text::from(expected_lines));
         let actual = note.to_list_item(&theme, &icons);
-        assert_eq!(
-            actual, expected,
-            "ListItem mismatch for is_open={is_open}"
-        );
+        assert_eq!(actual, expected, "ListItem mismatch for is_open={is_open}");
         // Return the color for the simpler assertions below.
         glyph_style.fg.expect("glyph style must have an fg color")
     }

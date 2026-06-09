@@ -19,11 +19,11 @@ use crate::components::drawer::{DrawerHost, DrawerView};
 use crate::components::drawer_views::{LinksPanel, OutlinePanel, TagsPanel};
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, SaveSource, ScreenEvent, SortTarget};
+use crate::components::file_list::FileListEntry;
 use crate::components::footer_bar::FooterBar;
 use crate::components::note_browser::file_finder_provider::FileFinderProvider;
 use crate::components::note_browser::search_provider::SearchNotesProvider;
 use crate::components::note_browser::{BrowserScope, NoteBrowserModal};
-use crate::components::file_list::FileListEntry;
 use crate::components::overlay::{Overlay, OverlayKind, OverlayMsg};
 use crate::components::panel::PanelKind;
 use crate::components::saved_searches_modal::SavedSearchesModal;
@@ -2587,7 +2587,10 @@ mod tests {
         }
 
         assert!(
-            screen.panels.sidebar().note_row_is_open_for_test("alpha.md"),
+            screen
+                .panels
+                .sidebar()
+                .note_row_is_open_for_test("alpha.md"),
             "the open note's row is marked"
         );
 

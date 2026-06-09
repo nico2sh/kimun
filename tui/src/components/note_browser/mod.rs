@@ -348,26 +348,26 @@ impl Overlay for NoteBrowserModal {
                 // Any keypress clears a stale create/open error.
                 self.error = None;
                 match self.list.handle_key(key) {
-                KeyReaction::Submit => {
-                    self.open_selected(tx);
-                    EventState::Consumed
-                }
-                KeyReaction::Cancel => {
-                    tx.send(AppEvent::CloseOverlay).ok();
-                    EventState::Consumed
-                }
-                KeyReaction::Consumed => {
-                    // Forward the query event to the breadcrumb: a `?name`
-                    // expansion pins it, an emptied field clears it, a manual
-                    // edit keeps it (sticky).
-                    let accepted = self.list.take_accepted_saved_search();
-                    let blank = self.list.query().trim().is_empty();
-                    self.saved_search
-                        .on_query_consumed(accepted, self.list.query(), blank);
-                    self.refresh_preview_from_list();
-                    EventState::Consumed
-                }
-                KeyReaction::Intercepted(_) | KeyReaction::Unhandled => EventState::NotConsumed,
+                    KeyReaction::Submit => {
+                        self.open_selected(tx);
+                        EventState::Consumed
+                    }
+                    KeyReaction::Cancel => {
+                        tx.send(AppEvent::CloseOverlay).ok();
+                        EventState::Consumed
+                    }
+                    KeyReaction::Consumed => {
+                        // Forward the query event to the breadcrumb: a `?name`
+                        // expansion pins it, an emptied field clears it, a manual
+                        // edit keeps it (sticky).
+                        let accepted = self.list.take_accepted_saved_search();
+                        let blank = self.list.query().trim().is_empty();
+                        self.saved_search
+                            .on_query_consumed(accepted, self.list.query(), blank);
+                        self.refresh_preview_from_list();
+                        EventState::Consumed
+                    }
+                    KeyReaction::Intercepted(_) | KeyReaction::Unhandled => EventState::NotConsumed,
                 }
             }
             _ => EventState::NotConsumed,
@@ -690,11 +690,8 @@ mod tests {
         let mut modal = make_modal_with(OneNoteSource { path }, tx.clone()).await;
         let vault = temp_vault("modal_err").await;
 
-        let consumed = modal.handle_app_message(
-            &AppEvent::DialogError("boom".to_string()),
-            &vault,
-            &tx,
-        );
+        let consumed =
+            modal.handle_app_message(&AppEvent::DialogError("boom".to_string()), &vault, &tx);
         assert!(matches!(consumed, OverlayMsg::Consumed));
         assert_eq!(modal.error.as_deref(), Some("boom"));
 
