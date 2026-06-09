@@ -1535,7 +1535,10 @@ mod tests {
         list.set_query("alp");
         list.poll();
         assert_eq!(
-            list.visible_rows().iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
+            list.visible_rows()
+                .iter()
+                .map(|r| r.name.as_str())
+                .collect::<Vec<_>>(),
             vec!["alpha"],
             "before update: only 'alpha' matches 'alp'"
         );
@@ -1626,7 +1629,10 @@ mod tests {
         // correct without waiting for it.
         list.poll_until_idle().await;
         let vis = list.visible_rows();
-        assert_eq!(vis[0].name, "create:alp", "leading row correct after drain too");
+        assert_eq!(
+            vis[0].name, "create:alp",
+            "leading row correct after drain too"
+        );
         // Only "alpha" matches "alp" from the server-side filter.
         assert_eq!(vis.len(), 2, "leading + alpha");
         assert_eq!(vis[1].name, "alpha");
@@ -1655,16 +1661,25 @@ mod tests {
         list.poll_until_idle().await;
 
         // Sanity: initial load selected the first row.
-        assert!(list.selected_row().is_some(), "should have a selection after initial load");
+        assert!(
+            list.selected_row().is_some(),
+            "should have a selection after initial load"
+        );
 
         // Apply a filter that matches nothing → visible list is empty → selection cleared.
         list.set_query("zzznomatch");
         assert_eq!(list.visible_len(), 0, "no rows should match 'zzznomatch'");
-        assert!(list.selected_row().is_none(), "selection must be None when list is empty");
+        assert!(
+            list.selected_row().is_none(),
+            "selection must be None when list is empty"
+        );
 
         // Widen the filter so rows come back (no drain will happen — local filter).
         list.set_query("alp");
-        assert!(list.visible_len() > 0, "at least 'alpha' should match 'alp'");
+        assert!(
+            list.visible_len() > 0,
+            "at least 'alpha' should match 'alp'"
+        );
         // The selection MUST be reseeded to Some(0) — the subtlety the gating
         // would regress if recompute_and_seed() weren't called from requery().
         assert!(
@@ -1672,7 +1687,8 @@ mod tests {
             "selection must be reseeded to first visible row after repopulation"
         );
         assert_eq!(
-            list.selected_row().unwrap().name, "alpha",
+            list.selected_row().unwrap().name,
+            "alpha",
             "first visible row must be selected after reseeding"
         );
     }

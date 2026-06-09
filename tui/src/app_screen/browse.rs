@@ -55,7 +55,8 @@ impl AppScreen for BrowseScreen {
     }
 
     async fn on_enter(&mut self, tx: &AppTx) {
-        self.navigate_sidebar(self.sidebar.current_dir().clone(), tx).await;
+        self.navigate_sidebar(self.sidebar.current_dir().clone(), tx)
+            .await;
     }
 
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
@@ -143,9 +144,7 @@ mod tests {
     use crate::components::events::AppEvent;
     use crate::settings::AppSettings;
     use crate::test_support::{key_event, temp_vault};
-    use ratatui::crossterm::event::{
-        KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers,
-    };
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
     use std::sync::RwLock;
     use tokio::sync::mpsc::unbounded_channel;
 
