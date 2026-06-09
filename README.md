@@ -88,8 +88,10 @@ kimun --vault ./example
 | Shortcut | Action |
 | --- | --- |
 | Ctrl + K | Global fuzzy search (Telescope-like) |
-| Ctrl + G | Follow `[[wikilink]]` under cursor |
-| Ctrl + E | Open Backlinks panel with live preview |
+| Ctrl + N | Follow `[[wikilink]]` under cursor |
+| Ctrl + G | Leader gateway (e.g. `Ctrl + G` then `l b` opens Backlinks) |
+| Ctrl + E | Open the file browser drawer |
+| Ctrl + T | Toggle the sidebar drawer |
 | Ctrl + W | Quick Note — immediately capture thoughts to your inbox |
 | F4 | Switch Workspaces (e.g., Toggle Personal / Work) |
 
