@@ -2167,7 +2167,13 @@ impl Component for TextEditorComponent {
         // (set via set_cursor_position) wins over the editor's caret call.
         let bar_focused = self.search.is_some() && focused;
         let editor_focused = focused && !bar_focused;
-        self.view.render(f, editor_rect, theme, editor_focused);
+        use self::view::CursorShape;
+        let cursor_shape = match self.backend.mode_label().as_deref() {
+            Some(m) if m != "INSERT" => Some(CursorShape::Block),
+            Some(_) => Some(CursorShape::Bar), // INSERT
+            None => None,                       // Direct textarea — leave terminal default
+        };
+        self.view.render(f, editor_rect, theme, editor_focused, cursor_shape);
 
         // Search-match emphasis (spec §5.1): paint needle matches and task
         // checkboxes over the rendered viewport. Buffer-level post-pass —
