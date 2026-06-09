@@ -130,6 +130,10 @@ impl RowSource<FileListEntry> for DirListingSource {
 
 pub struct SidebarComponent {
     current_dir: VaultPath,
+    /// The note currently open in the editor, if any — drives the open-note
+    /// marker. `None` on the Browse screen (it never opens notes). Matched
+    /// against `FileListEntry::Note` rows by `is_like`.
+    open_note: Option<VaultPath>,
     list: Option<SearchList<FileListEntry>>,
     vault: Arc<NoteVault>,
     icons: Icons,
@@ -174,6 +178,7 @@ impl SidebarComponent {
         let default_sort_order = SortOrder::from(settings.default_sort_order);
         Self {
             current_dir: VaultPath::root(),
+            open_note: None,
             list: None,
             vault,
             icons,
@@ -244,6 +249,76 @@ impl SidebarComponent {
     pub fn refresh_if_showing(&mut self, dir: &VaultPath, tx: &AppTx) {
         if dir.is_like(&self.current_dir) {
             self.navigate(self.current_dir.clone(), tx);
+        }
+    }
+
+    /// Set (or clear) the note the editor currently has open, then re-stamp the
+    /// marker on the live rows. The editor calls this on every open and on an
+    /// open-note rename.
+    pub fn set_open_note(&mut self, path: Option<VaultPath>) {
+        self.open_note = path;
+        self.stamp_open_marker();
+    }
+
+    /// Re-apply `is_open` to the rows so exactly the open note's row is marked.
+    /// Idempotent: a full reload rebuilds rows without the flag, so this runs
+    /// again after each load (see `render`).
+    fn stamp_open_marker(&mut self) {
+        let open = self.open_note.clone();
+        if let Some(list) = &mut self.list {
+            list.update_rows(|row| {
+                if let FileListEntry::Note { path, is_open, .. } = row {
+                    let want = open.as_ref().is_some_and(|o| path.is_like(o));
+                    if *is_open != want {
+                        *is_open = want;
+                        return true;
+                    }
+                }
+                false
+            });
+        }
+    }
+
+    /// Update the title of the row whose note path matches `path`, if it is in
+    /// the current listing. Called when a note is saved and its title (first
+    /// body line) may have changed. Position is left unchanged (no re-sort).
+    pub fn update_note_row(&mut self, path: &VaultPath, new_title: &str) {
+        if let Some(list) = &mut self.list {
+            list.update_rows(|row| {
+                if let FileListEntry::Note {
+                    path: row_path,
+                    title,
+                    ..
+                } = row
+                {
+                    if row_path.is_like(path) && title != new_title {
+                        *title = new_title.to_string();
+                        return true;
+                    }
+                }
+                false
+            });
+        }
+    }
+
+    /// Move the row at `from` to `to` (path + filename) in place, for a
+    /// same-directory note rename. Position is left unchanged (no re-sort).
+    pub fn rename_note_row(&mut self, from: &VaultPath, to: &VaultPath) {
+        let new_filename = to.get_parent_path().1;
+        if let Some(list) = &mut self.list {
+            list.update_rows(|row| {
+                if let FileListEntry::Note {
+                    path, filename, ..
+                } = row
+                {
+                    if path.is_like(from) {
+                        *path = to.clone();
+                        *filename = new_filename.clone();
+                        return true;
+                    }
+                }
+                false
+            });
         }
     }
 
@@ -509,13 +584,16 @@ impl Component for SidebarComponent {
         let list_inner = list_block.inner(rows[2]);
         f.render_widget(list_block, rows[2]);
 
+        // Poll the engine so a just-completed load's rows are applied, then
+        // re-stamp the open-note marker (the reload rebuilt rows without it)
+        // before the list renders.
+        if let Some(list) = &mut self.list {
+            list.poll();
+        }
+        self.stamp_open_marker();
         if let Some(list) = &mut self.list {
             list.render_query(f, search_inner, theme, focused);
             list.render(f, list_inner, theme, focused);
-            // Record the rendered-items rect (the block's inner area) for mouse
-            // hit-testing: the engine maps a click to `row - rect.y`, row 0 being
-            // the first item. The panel rect makes the wheel scroll from anywhere
-            // within the sidebar.
             list.set_list_rect(list_inner);
             list.set_panel_rect(rect);
         }
@@ -871,6 +949,72 @@ mod tests {
             (SortField::Title, SortOrder::Descending)
         );
         assert!(!sidebar.group_dirs());
+    }
+
+    fn note_row_is_open(sb: &SidebarComponent, name: &str) -> bool {
+        sb.list
+            .as_ref()
+            .unwrap()
+            .rows()
+            .iter()
+            .find_map(|r| match r {
+                FileListEntry::Note { path, is_open, .. } if path.get_name() == name => {
+                    Some(*is_open)
+                }
+                _ => None,
+            })
+            .unwrap_or(false)
+    }
+
+    fn note_row_title(sb: &SidebarComponent, name: &str) -> Option<String> {
+        sb.list.as_ref().unwrap().rows().iter().find_map(|r| match r {
+            FileListEntry::Note { path, title, .. } if path.get_name() == name => {
+                Some(title.clone())
+            }
+            _ => None,
+        })
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn set_open_note_stamps_matching_row() {
+        let mut sb = sidebar_with_notes("sb-open", &["alpha", "beta"]).await;
+        let (tx, _rx) = unbounded_channel();
+        navigate_to_root(&mut sb, &tx).await;
+
+        sb.set_open_note(Some(VaultPath::note_path_from("alpha")));
+        assert!(note_row_is_open(&sb, "alpha.md"), "open note is marked");
+        assert!(!note_row_is_open(&sb, "beta.md"), "other note is not marked");
+
+        sb.set_open_note(Some(VaultPath::note_path_from("beta")));
+        assert!(!note_row_is_open(&sb, "alpha.md"));
+        assert!(note_row_is_open(&sb, "beta.md"));
+
+        sb.set_open_note(None);
+        assert!(!note_row_is_open(&sb, "beta.md"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn update_note_row_changes_title_in_place() {
+        let mut sb = sidebar_with_notes("sb-title", &["alpha"]).await;
+        let (tx, _rx) = unbounded_channel();
+        navigate_to_root(&mut sb, &tx).await;
+
+        sb.update_note_row(&VaultPath::note_path_from("alpha"), "Fresh Title");
+        assert_eq!(note_row_title(&sb, "alpha.md").as_deref(), Some("Fresh Title"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rename_note_row_updates_path_and_filename() {
+        let mut sb = sidebar_with_notes("sb-rename", &["alpha"]).await;
+        let (tx, _rx) = unbounded_channel();
+        navigate_to_root(&mut sb, &tx).await;
+
+        sb.rename_note_row(
+            &VaultPath::note_path_from("alpha"),
+            &VaultPath::note_path_from("gamma"),
+        );
+        assert!(note_row_title(&sb, "gamma.md").is_some(), "row now at new name");
+        assert!(note_row_title(&sb, "alpha.md").is_none(), "old name gone");
     }
 
     /// Regression: saving a default must survive navigation. `save_default`
