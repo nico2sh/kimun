@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.15.0...kimun-notes-v0.16.0) - 2026-06-09
+
+### Added
+
+- *(editor)* retarget-in-place on open-note rename, targeted sidebar row update
+- *(editor)* mark open note on open, retitle sidebar row on save
+- *(sidebar)* track open note, stamp marker, targeted title/rename row updates
+- *(file_list)* is_open flag, display_title helper, accent glyph for open note
+- *(search_list)* add update_rows in-place mutation seam
+
+### Fixed
+
+- *(search_list)* refresh leading row on query change for reload sources; dedupe sidebar test helpers
+- *(editor,sidebar)* refresh drawers + journal_date on rename, guard reload failure
+- *(editor)* abort in-flight autosave on open-note rename to avoid resurrecting old path
+- *(sidebar)* collapse if-lets (clippy), restore hit-test comment, assert renamed filename
+- small correctness
+- new note refreshes browse sidebar
+- create journal from browse screen
+
+### Other
+
+- cargo fmt
+- *(search_list)* recompute display only when poll drains new rows
+- *(file_list)* assert open-note glyph is accent-colored
+- *(search_list)* cover update_rows re-filter of the visible view
+- Update README.md
+- updated shortcuts in readme
+
 ## [0.15.0](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.14.0...kimun-notes-v0.15.0) - 2026-06-08
 
 ### Added

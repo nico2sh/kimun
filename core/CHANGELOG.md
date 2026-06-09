@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.18](https://github.com/nico2sh/kimun/compare/kimun_core-v0.2.17...kimun_core-v0.2.18) - 2026-06-09
+
+### Fixed
+
+- new note refreshes browse sidebar
+
+### Other
+
+- cargo fmt
+
 ## [0.2.17](https://github.com/nico2sh/kimun/compare/kimun_core-v0.2.16...kimun_core-v0.2.17) - 2026-06-08
 
 ### Added
