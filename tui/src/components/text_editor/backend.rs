@@ -191,6 +191,19 @@ impl BackendState {
         }
     }
 
+    /// The footer modal-mode label, when the backend has one (nvim, or the
+    /// vim interpreter). `None` for the plain Direct textarea.
+    pub fn mode_label(&self) -> Option<String> {
+        match self {
+            BackendState::Textarea(TextareaBackend {
+                input: InputInterpreter::Vim(engine),
+                ..
+            }) => Some(engine.mode_label()),
+            BackendState::Textarea(_) => None,
+            BackendState::Nvim(nvim) => Some(nvim.snapshot().footer_label()),
+        }
+    }
+
     pub fn from_settings(
         editor_backend: &EditorBackendSetting,
         nvim_path: Option<&PathBuf>,
@@ -511,6 +524,28 @@ impl NvimBackend {
                 }
             }
         });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui_textarea::TextArea;
+
+    #[test]
+    fn direct_backend_has_no_mode_label() {
+        let b = BackendState::Textarea(TextareaBackend::direct(TextArea::default()));
+        assert_eq!(b.mode_label(), None);
+    }
+
+    #[test]
+    fn vim_backend_reports_normal_label() {
+        let b = BackendState::Textarea(TextareaBackend::vim(TextArea::default()));
+        assert_eq!(b.mode_label().as_deref(), Some("NORMAL"));
     }
 }
 

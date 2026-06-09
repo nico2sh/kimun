@@ -2246,9 +2246,8 @@ impl Component for TextEditorComponent {
     fn hint_shortcuts(&self) -> Vec<(String, String)> {
         use crate::keys::action_shortcuts::ActionShortcuts;
 
-        // For the Nvim backend, prepend the current mode as the first "hint".
-        if let Some(nvim) = self.backend.as_nvim() {
-            let label = nvim.snapshot().footer_label();
+        // Prepend the modal-mode label (nvim or vim) as the first "hint".
+        if let Some(label) = self.backend.mode_label() {
             let mut hints = vec![(String::new(), label)];
             hints.extend(
                 [

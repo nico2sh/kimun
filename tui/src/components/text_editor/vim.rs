@@ -37,7 +37,6 @@ impl VimEngine {
     }
 
     /// Footer label for the current mode (e.g. "NORMAL").
-    #[allow(dead_code)] // used in Plan 1 Task 5
     pub fn mode_label(&self) -> String {
         self.mode.label().to_string()
     }
