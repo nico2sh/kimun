@@ -506,6 +506,14 @@ impl EditorScreen {
         self.dismiss_overlay();
         self.panels.sidebar_mut().rename_note_row(&from, &to);
         if from == self.path {
+            // The open note was renamed. Kill any in-flight autosave still
+            // targeting the OLD path before retargeting — spawn_autosave bakes
+            // the path in at spawn time, and vault.save_note writes
+            // unconditionally, so a stale in-flight save would recreate the
+            // renamed-away file. abort() is best-effort (it can't unwind a
+            // syscall already in progress), but it closes the common case and
+            // mirrors the discipline open_path/on_entry_op already follow.
+            self.autosave_task.abort();
             self.path = to.clone();
             if let Ok(text) = self.vault.get_note_text(&self.path).await {
                 self.panels.editor_mut().set_text(text.clone());
@@ -515,6 +523,9 @@ impl EditorScreen {
                 .sidebar_mut()
                 .set_open_note(Some(self.path.clone()));
             self.doc_meta.note_opened(&self.path, tx);
+            // Fresh autosave timer for the new path (mirrors open_path).
+            let interval = self.settings.read().unwrap().autosave_interval_secs;
+            self.autosave.restart(interval, tx.clone());
         }
     }
 }
