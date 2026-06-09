@@ -305,9 +305,15 @@ impl SidebarComponent {
                 let vault = Arc::clone(&self.vault);
                 let tx2 = tx.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = vault.load_or_create_note(&path, None).await {
-                        tracing::warn!("create note failed for {path}: {e}");
-                        return;
+                    let created = match vault.load_or_create_note(&path, None).await {
+                        Ok((_, created)) => created,
+                        Err(e) => {
+                            tracing::warn!("create note failed for {path}: {e}");
+                            return;
+                        }
+                    };
+                    if created {
+                        tx2.send(AppEvent::EntryCreated(path.clone())).ok();
                     }
                     tx2.send(AppEvent::open(path)).ok();
                 });

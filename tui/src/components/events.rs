@@ -139,7 +139,9 @@ pub enum AppEvent {
         from: VaultPath,
         to: VaultPath,
     },
-    /// A new note was just created and should be opened; sidebar should reflect it.
+    /// Notification that a note was just created at this path. The current
+    /// screen refreshes its sidebar if it is browsing the note's directory.
+    /// Opening the note is a separate concern (the creator emits `OpenPath`).
     EntryCreated(VaultPath),
     /// A dialog operation failed; carries a human-readable error message.
     DialogError(String),
