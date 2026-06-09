@@ -11,9 +11,9 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::components::autocomplete::AutocompleteMode;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, InputEvent, redraw_callback};
+use crate::components::events::{AppEvent, AppTx, AppTxExt, InputEvent, redraw_callback};
 use crate::components::file_list::FileListEntry;
-use crate::components::overlay::{Overlay, OverlayKind};
+use crate::components::overlay::{Overlay, OverlayKind, OverlayMsg};
 use crate::components::panel::{ModalBg, ModalSpec, modal_chrome};
 use crate::components::saved_search_breadcrumb::SavedSearchBreadcrumb;
 use crate::components::search_list::{
@@ -69,6 +69,9 @@ pub struct NoteBrowserModal {
     /// sticky/clear/edited state machine; the modal only forwards query events.
     /// See [`SavedSearchBreadcrumb`].
     saved_search: SavedSearchBreadcrumb,
+    /// Last create/open error (e.g. a failed `Create: …`), shown in the hint
+    /// bar until the next keystroke. Cleared on input.
+    error: Option<String>,
 }
 
 impl NoteBrowserModal {
@@ -162,6 +165,7 @@ impl NoteBrowserModal {
             preview_path: None,
             key_bindings,
             saved_search: SavedSearchBreadcrumb::default(),
+            error: None,
         };
         modal.refresh_preview(None);
         modal
@@ -272,8 +276,12 @@ impl NoteBrowserModal {
             let vault = Arc::clone(&self.vault);
             let tx = tx.clone();
             tokio::spawn(async move {
-                vault.load_or_create_note(&path, None).await.ok();
-                tx.send(AppEvent::open(path)).ok();
+                match vault.load_or_create_note(&path, None).await {
+                    Ok((_, created)) => tx.announce_and_open(path, created),
+                    Err(e) => {
+                        tx.send(AppEvent::DialogError(e.to_string())).ok();
+                    }
+                }
             });
             return;
         }
@@ -336,29 +344,49 @@ impl Overlay for NoteBrowserModal {
                 }
                 SearchMouse::None => EventState::NotConsumed,
             },
-            InputEvent::Key(key) => match self.list.handle_key(key) {
-                KeyReaction::Submit => {
-                    self.open_selected(tx);
-                    EventState::Consumed
+            InputEvent::Key(key) => {
+                // Any keypress clears a stale create/open error.
+                self.error = None;
+                match self.list.handle_key(key) {
+                    KeyReaction::Submit => {
+                        self.open_selected(tx);
+                        EventState::Consumed
+                    }
+                    KeyReaction::Cancel => {
+                        tx.send(AppEvent::CloseOverlay).ok();
+                        EventState::Consumed
+                    }
+                    KeyReaction::Consumed => {
+                        // Forward the query event to the breadcrumb: a `?name`
+                        // expansion pins it, an emptied field clears it, a manual
+                        // edit keeps it (sticky).
+                        let accepted = self.list.take_accepted_saved_search();
+                        let blank = self.list.query().trim().is_empty();
+                        self.saved_search
+                            .on_query_consumed(accepted, self.list.query(), blank);
+                        self.refresh_preview_from_list();
+                        EventState::Consumed
+                    }
+                    KeyReaction::Intercepted(_) | KeyReaction::Unhandled => EventState::NotConsumed,
                 }
-                KeyReaction::Cancel => {
-                    tx.send(AppEvent::CloseOverlay).ok();
-                    EventState::Consumed
-                }
-                KeyReaction::Consumed => {
-                    // Forward the query event to the breadcrumb: a `?name`
-                    // expansion pins it, an emptied field clears it, a manual
-                    // edit keeps it (sticky).
-                    let accepted = self.list.take_accepted_saved_search();
-                    let blank = self.list.query().trim().is_empty();
-                    self.saved_search
-                        .on_query_consumed(accepted, self.list.query(), blank);
-                    self.refresh_preview_from_list();
-                    EventState::Consumed
-                }
-                KeyReaction::Intercepted(_) | KeyReaction::Unhandled => EventState::NotConsumed,
-            },
+            }
             _ => EventState::NotConsumed,
+        }
+    }
+
+    fn handle_app_message(
+        &mut self,
+        msg: &AppEvent,
+        _vault: &Arc<NoteVault>,
+        _tx: &AppTx,
+    ) -> OverlayMsg {
+        // A failed `Create: …` (or other open error) surfaces here while the
+        // modal stays open, so the user sees why nothing happened.
+        if let AppEvent::DialogError(text) = msg {
+            self.error = Some(text.clone());
+            OverlayMsg::Consumed
+        } else {
+            OverlayMsg::NotConsumed
         }
     }
 
@@ -490,12 +518,14 @@ impl Overlay for NoteBrowserModal {
             preview_inner,
         );
 
-        // ── Hint bar ──────────────────────────────────────────────────────
-        f.render_widget(
-            Paragraph::new("↑↓: navigate  |  Enter: open  |  Esc: close")
+        // ── Hint bar (or last error) ──────────────────────────────────────
+        let hint = match &self.error {
+            Some(err) => Paragraph::new(format!("⚠ {err}"))
+                .style(Style::default().fg(theme.red.to_ratatui())),
+            None => Paragraph::new("↑↓: navigate  |  Enter: open  |  Esc: close")
                 .style(Style::default().fg(theme.fg_secondary.to_ratatui())),
-            rows[2],
-        );
+        };
+        f.render_widget(hint, rows[2]);
 
         // ── Autocomplete popup ───────────────────────────────────────────
         // Clamp to the modal's bounds so it never spills past the border.
@@ -634,6 +664,7 @@ mod tests {
                 title: "Note".to_string(),
                 filename: self.path.to_string(),
                 journal_date: None,
+                is_open: false,
             }]);
         }
     }
@@ -650,6 +681,26 @@ mod tests {
             settings.icons(),
             tx,
         )
+    }
+
+    #[tokio::test]
+    async fn dialog_error_surfaces_then_clears_on_keystroke() {
+        let (tx, _rx) = unbounded_channel();
+        let path = VaultPath::note_path_from("/a.md");
+        let mut modal = make_modal_with(OneNoteSource { path }, tx.clone()).await;
+        let vault = temp_vault("modal_err").await;
+
+        let consumed =
+            modal.handle_app_message(&AppEvent::DialogError("boom".to_string()), &vault, &tx);
+        assert!(matches!(consumed, OverlayMsg::Consumed));
+        assert_eq!(modal.error.as_deref(), Some("boom"));
+
+        // Any keystroke clears the error.
+        modal.handle_input(
+            &InputEvent::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
+            &tx,
+        );
+        assert_eq!(modal.error, None, "keystroke should clear the error");
     }
 
     #[tokio::test]

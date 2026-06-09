@@ -59,8 +59,13 @@ impl QuickNoteModal {
         tokio::spawn(async move {
             match vault.quick_note(&text).await {
                 Ok(details) => {
+                    // quick_note always materialises a fresh note — tell the
+                    // sidebar so it refreshes if browsing that directory.
+                    tx_clone
+                        .send(AppEvent::EntryCreated(details.path.clone()))
+                        .ok();
                     if open_after {
-                        tx_clone.send(AppEvent::EntryCreated(details.path)).ok();
+                        tx_clone.send(AppEvent::open(details.path)).ok();
                     } else {
                         tx_clone.send(AppEvent::CloseOverlay).ok();
                     }

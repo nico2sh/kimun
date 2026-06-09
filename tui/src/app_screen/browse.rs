@@ -11,35 +11,39 @@ use ratatui::widgets::{Block, Paragraph};
 use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::Component;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppTx, InputEvent};
+use crate::components::events::{AppEvent, AppTx, InputEvent};
 use crate::components::sidebar::SidebarComponent;
+use crate::keys::action_shortcuts::ActionShortcuts;
+use crate::keys::key_event_to_combo;
 use crate::settings::SharedSettings;
 use crate::settings::themes::Theme;
 
 pub struct BrowseScreen {
     sidebar: SidebarComponent,
     theme: Theme,
-    path: VaultPath,
+    settings: SharedSettings,
 }
 
 impl BrowseScreen {
     pub fn new(vault: Arc<NoteVault>, path: VaultPath, settings: SharedSettings) -> Self {
         let s = settings.read().unwrap();
         let theme = s.get_theme();
-        let sidebar = SidebarComponent::from_settings(vault, &s);
+        let mut sidebar = SidebarComponent::from_settings(vault, &s);
         drop(s);
+        // The sidebar's `current_dir` is the single source of truth for the
+        // browsed directory; seed it so `on_enter` opens at `path`.
+        sidebar.set_current_dir(path);
         Self {
             sidebar,
             theme,
-            path,
+            settings,
         }
     }
 
     async fn navigate_sidebar(&mut self, dir: VaultPath, tx: &AppTx) {
         // The sidebar hosts a streamed `SearchList`; (re)building its engine for
         // `dir` runs `browse_vault` inside the source and emits rows as they
-        // arrive.
-        self.path = dir.clone();
+        // arrive. `navigate` updates the sidebar's `current_dir`.
         self.sidebar.navigate(dir, tx);
     }
 }
@@ -51,11 +55,38 @@ impl AppScreen for BrowseScreen {
     }
 
     async fn on_enter(&mut self, tx: &AppTx) {
-        self.navigate_sidebar(self.path.clone(), tx).await;
+        self.navigate_sidebar(self.sidebar.current_dir().clone(), tx)
+            .await;
     }
 
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
+        // Intercept the journal shortcut (Ctrl+J by default) so today's entry
+        // can be opened straight from Browse; everything else feeds the sidebar.
+        if let InputEvent::Key(key) = event
+            && let Some(combo) = key_event_to_combo(key)
+        {
+            let action = {
+                let s = self.settings.read().unwrap();
+                s.key_bindings.get_action(&combo)
+            };
+            if action == Some(ActionShortcuts::NewJournal) {
+                // App-level OpenJournal resolves today's entry and routes it
+                // via OpenPath, switching to the editor (Browse does not open
+                // notes itself).
+                tx.send(AppEvent::OpenJournal).ok();
+                return EventState::Consumed;
+            }
+        }
         self.sidebar.handle_input(event, tx)
+    }
+
+    async fn handle_app_message(&mut self, msg: AppEvent, tx: &AppTx) {
+        if let AppEvent::EntryCreated(path) = msg {
+            // A note was created somewhere; rebuild the listing only when we are
+            // browsing its directory so the new note shows up.
+            let (parent, _) = path.get_parent_path();
+            self.sidebar.refresh_if_showing(&parent, tx);
+        }
     }
 
     fn render(&mut self, f: &mut Frame) {
@@ -110,9 +141,10 @@ impl AppScreen for BrowseScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::events::AppEvent;
     use crate::settings::AppSettings;
     use crate::test_support::{key_event, temp_vault};
-    use ratatui::crossterm::event::KeyCode;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
     use std::sync::RwLock;
     use tokio::sync::mpsc::unbounded_channel;
 
@@ -125,12 +157,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn new_stores_path() {
+    async fn new_seeds_sidebar_dir() {
         let vault = make_vault().await;
         let settings = make_settings_with_defaults();
-        let path = VaultPath::root();
+        let path = VaultPath::new("subdir");
         let screen = BrowseScreen::new(vault, path.clone(), settings);
-        assert_eq!(screen.path, path);
+        assert_eq!(screen.sidebar.current_dir(), &path);
     }
 
     #[tokio::test]
@@ -148,6 +180,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ctrl_j_requests_journal() {
+        let vault = make_vault().await;
+        let settings = make_settings_with_defaults();
+        let (tx, mut rx) = unbounded_channel();
+        let mut screen = BrowseScreen::new(vault, VaultPath::root(), settings);
+        let ctrl_j = InputEvent::Key(KeyEvent {
+            code: KeyCode::Char('j'),
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        });
+        let state = screen.handle_input(&ctrl_j, &tx);
+        assert_eq!(state, EventState::Consumed, "Ctrl+J should be consumed");
+        assert!(
+            matches!(rx.try_recv(), Ok(AppEvent::OpenJournal)),
+            "Ctrl+J should request the journal entry"
+        );
+    }
+
+    #[tokio::test]
     async fn try_open_path_dir_is_consumed() {
         let vault = make_vault().await;
         let settings = make_settings_with_defaults();
@@ -156,7 +208,11 @@ mod tests {
         let mut screen = BrowseScreen::new(vault, VaultPath::root(), settings);
         let result = screen.try_open_path(dir.clone(), None, &tx).await;
         assert!(result.is_none(), "dir path should be consumed");
-        assert_eq!(screen.path, dir, "path should be updated");
+        assert_eq!(
+            screen.sidebar.current_dir(),
+            &dir,
+            "sidebar dir should be updated"
+        );
     }
 
     #[tokio::test]
