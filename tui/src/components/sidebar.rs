@@ -13,7 +13,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::components::Component;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, InputEvent, redraw_callback};
+use crate::components::events::{AppEvent, AppTx, AppTxExt, InputEvent, redraw_callback};
 use crate::components::file_list::{FileListEntry, SortField, SortOrder};
 use crate::components::search_list::{
     Emit, Filter, KeyReaction, RowSource, SearchList, SearchMouse,
@@ -237,6 +237,23 @@ impl SidebarComponent {
         );
     }
 
+    /// Rebuild the listing only when it is currently showing `dir`, so a
+    /// create/rename/delete/move in that directory is reflected without yanking
+    /// the user away from an unrelated directory they browsed to. A no-op
+    /// otherwise. Shared by every screen that hosts a sidebar.
+    pub fn refresh_if_showing(&mut self, dir: &VaultPath, tx: &AppTx) {
+        if dir.is_like(&self.current_dir) {
+            self.navigate(self.current_dir.clone(), tx);
+        }
+    }
+
+    /// Seed the directory the sidebar will show before its first `navigate`.
+    /// Lets a screen open at a non-root path while keeping `current_dir` the
+    /// single source of truth for the browsed directory.
+    pub fn set_current_dir(&mut self, dir: VaultPath) {
+        self.current_dir = dir;
+    }
+
     /// Current sort field/order for the active listing.
     pub fn current_sort(&self) -> (SortField, SortOrder) {
         *self.sort.lock().unwrap()
@@ -305,17 +322,12 @@ impl SidebarComponent {
                 let vault = Arc::clone(&self.vault);
                 let tx2 = tx.clone();
                 tokio::spawn(async move {
-                    let created = match vault.load_or_create_note(&path, None).await {
-                        Ok((_, created)) => created,
+                    match vault.load_or_create_note(&path, None).await {
+                        Ok((_, created)) => tx2.announce_and_open(path, created),
                         Err(e) => {
                             tracing::warn!("create note failed for {path}: {e}");
-                            return;
                         }
-                    };
-                    if created {
-                        tx2.send(AppEvent::EntryCreated(path.clone())).ok();
                     }
-                    tx2.send(AppEvent::open(path)).ok();
                 });
             }
             other => {

@@ -361,10 +361,7 @@ impl EditorScreen {
     /// Deliberately the inverse of `reveal_note_dir_in_sidebar`, which
     /// navigates when the sidebar is NOT on the target dir.
     fn refresh_sidebar_if_showing(&mut self, dir: &VaultPath, tx: &AppTx) {
-        if dir.is_like(self.panels.sidebar().current_dir()) {
-            let current = self.panels.sidebar().current_dir().clone();
-            self.navigate_sidebar(current, tx);
-        }
+        self.panels.sidebar_mut().refresh_if_showing(dir, tx);
     }
 
     async fn try_save(&mut self) {

@@ -51,7 +51,7 @@ use crate::app_screen::editor::EditorScreen;
 use crate::app_screen::preferences::PreferencesScreen;
 use crate::app_screen::start::StartScreen;
 use crate::app_screen::{AppScreen, ScreenKind};
-use crate::components::events::{AppEvent, AppTx, InputEvent, ScreenEvent};
+use crate::components::events::{AppEvent, AppTx, AppTxExt, InputEvent, ScreenEvent};
 use crate::event_handler::EventHandler;
 use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::key_event_to_combo;
@@ -468,13 +468,9 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
             if let Some(vault) = app.vault.clone()
                 && let Ok((details, _, created)) = vault.journal_entry().await
             {
-                let path = details.path;
-                if created {
-                    // Tell the current screen's sidebar a note appeared so it
-                    // refreshes if browsing the journal directory.
-                    tx.send(AppEvent::EntryCreated(path.clone())).ok();
-                }
-                tx.send(AppEvent::open(path)).ok();
+                // Notify the current screen's sidebar when freshly created, then
+                // open it — works from every screen via OpenPath.
+                tx.announce_and_open(details.path, created);
             }
         }
         AppEvent::PreferencesSaved => {
