@@ -23,6 +23,7 @@ use crate::components::footer_bar::FooterBar;
 use crate::components::note_browser::file_finder_provider::FileFinderProvider;
 use crate::components::note_browser::search_provider::SearchNotesProvider;
 use crate::components::note_browser::{BrowserScope, NoteBrowserModal};
+use crate::components::file_list::FileListEntry;
 use crate::components::overlay::{Overlay, OverlayKind, OverlayMsg};
 use crate::components::panel::PanelKind;
 use crate::components::saved_searches_modal::SavedSearchesModal;
@@ -294,6 +295,10 @@ impl EditorScreen {
         });
 
         self.path = path.clone();
+        // Mark this note's row in the sidebar (clears the previous one).
+        self.panels
+            .sidebar_mut()
+            .set_open_note(Some(self.path.clone()));
         match self.vault.get_note_text(&self.path).await {
             Ok(content) => {
                 self.doc_meta.note_opened(&self.path, tx);
@@ -364,6 +369,14 @@ impl EditorScreen {
         self.panels.sidebar_mut().refresh_if_showing(dir, tx);
     }
 
+    /// A note at `path` was just saved with raw title `raw_title`; update its
+    /// sidebar row in place. Keyed by the saved path, not the open note, so a
+    /// just-saved-then-deselected note's row updates too.
+    fn note_saved(&mut self, path: &VaultPath, raw_title: String) {
+        let title = FileListEntry::display_title(raw_title);
+        self.panels.sidebar_mut().update_note_row(path, &title);
+    }
+
     async fn try_save(&mut self) {
         // Wait out any background autosave so two concurrent `vault.save_note`
         // calls cannot race on the same path. Capped at 5s so a wedged
@@ -397,8 +410,10 @@ impl EditorScreen {
             // disk. A timeout returns Err(_); we skip mark_saved so the
             // editor stays dirty for any subsequent retry.
             let save = self.vault.save_note(&self.path, &text);
-            if matches!(tokio::time::timeout(SAVE_TIMEOUT, save).await, Ok(Ok(_))) {
+            if let Ok(Ok((_, content))) = tokio::time::timeout(SAVE_TIMEOUT, save).await {
                 self.panels.editor_mut().mark_saved(text);
+                let path = self.path.clone();
+                self.note_saved(&path, content.title);
             }
         }
     }
@@ -426,10 +441,14 @@ impl EditorScreen {
         let path = self.path.clone();
         let tx = tx.clone();
         self.autosave_task.spawn(async move {
-            let saved_revision = vault.save_note(&path, &text).await.ok().map(|_| revision);
+            let (saved_revision, title) = match vault.save_note(&path, &text).await {
+                Ok((_, content)) => (Some(revision), Some(content.title)),
+                Err(_) => (None, None),
+            };
             let _ = tx.send(AppEvent::AutosaveCompleted {
                 path,
                 saved_revision,
+                title,
             });
         });
     }
@@ -1692,11 +1711,15 @@ impl AppScreen for EditorScreen {
             AppEvent::AutosaveCompleted {
                 path,
                 saved_revision,
+                title,
             } => {
                 if path == self.path
                     && let Some(rev) = saved_revision
                 {
                     self.panels.editor_mut().mark_saved_at_revision(rev);
+                }
+                if let Some(raw_title) = title {
+                    self.note_saved(&path, raw_title);
                 }
                 // The write changed the working tree — refresh the git
                 // segment (throttled).
@@ -2439,6 +2462,54 @@ mod tests {
             screen.overlays.active_kind(),
             Some(OverlayKind::Dialog),
             "saving from the note browser opens the save-search dialog"
+        );
+    }
+
+    /// Opening a note marks its sidebar row; saving it (AutosaveCompleted with a
+    /// new title) updates that row's title in place.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn open_then_save_marks_and_retitles_sidebar_row() {
+        let vault = crate::test_support::temp_vault("editor-marksave").await;
+        vault.validate_and_init().await.unwrap();
+        vault
+            .create_note(&VaultPath::note_path_from("alpha"), "# Alpha\n\nbody")
+            .await
+            .unwrap();
+        let settings = std::sync::Arc::new(std::sync::RwLock::new(
+            crate::settings::AppSettings::default(),
+        ));
+        let path = VaultPath::note_path_from("alpha");
+        let mut screen = EditorScreen::new(vault.clone(), path.clone(), settings);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        screen.on_enter(&tx).await;
+        for _ in 0..50 {
+            screen.panels.sidebar_mut().poll_for_test();
+            if !screen.panels.sidebar().is_loading_for_test() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+
+        assert!(
+            screen.panels.sidebar().note_row_is_open_for_test("alpha.md"),
+            "the open note's row is marked"
+        );
+
+        screen
+            .handle_app_message(
+                AppEvent::AutosaveCompleted {
+                    path: path.clone(),
+                    saved_revision: None,
+                    title: Some("New First Line".to_string()),
+                },
+                &tx,
+            )
+            .await;
+
+        assert_eq!(
+            screen.panels.sidebar().note_row_title_for_test("alpha.md"),
+            Some("New First Line".to_string()),
+            "the saved note's row title updated in place"
         );
     }
 }

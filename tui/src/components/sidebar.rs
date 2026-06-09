@@ -598,6 +598,40 @@ impl Component for SidebarComponent {
 }
 
 #[cfg(test)]
+impl SidebarComponent {
+    pub(crate) fn poll_for_test(&mut self) {
+        if let Some(list) = &mut self.list {
+            list.poll();
+        }
+        self.stamp_open_marker();
+    }
+
+    pub(crate) fn is_loading_for_test(&self) -> bool {
+        self.list.as_ref().is_some_and(|l| l.is_loading())
+    }
+
+    pub(crate) fn note_row_is_open_for_test(&self, name: &str) -> bool {
+        self.list.as_ref().is_some_and(|l| {
+            l.rows().iter().any(|r| {
+                matches!(r, FileListEntry::Note { path, is_open, .. }
+                    if path.get_name() == name && *is_open)
+            })
+        })
+    }
+
+    pub(crate) fn note_row_title_for_test(&self, name: &str) -> Option<String> {
+        self.list.as_ref().and_then(|l| {
+            l.rows().iter().find_map(|r| match r {
+                FileListEntry::Note { path, title, .. } if path.get_name() == name => {
+                    Some(title.clone())
+                }
+                _ => None,
+            })
+        })
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::settings::AppSettings;
