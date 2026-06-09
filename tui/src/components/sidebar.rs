@@ -285,16 +285,12 @@ impl SidebarComponent {
     pub fn update_note_row(&mut self, path: &VaultPath, new_title: &str) {
         if let Some(list) = &mut self.list {
             list.update_rows(|row| {
-                if let FileListEntry::Note {
-                    path: row_path,
-                    title,
-                    ..
-                } = row
+                if let FileListEntry::Note { path: row_path, title, .. } = row
+                    && row_path.is_like(path)
+                    && title != new_title
                 {
-                    if row_path.is_like(path) && title != new_title {
-                        *title = new_title.to_string();
-                        return true;
-                    }
+                    *title = new_title.to_string();
+                    return true;
                 }
                 false
             });
@@ -307,15 +303,12 @@ impl SidebarComponent {
         let new_filename = to.get_parent_path().1;
         if let Some(list) = &mut self.list {
             list.update_rows(|row| {
-                if let FileListEntry::Note {
-                    path, filename, ..
-                } = row
+                if let FileListEntry::Note { path, filename, .. } = row
+                    && path.is_like(from)
                 {
-                    if path.is_like(from) {
-                        *path = to.clone();
-                        *filename = new_filename.clone();
-                        return true;
-                    }
+                    *path = to.clone();
+                    *filename = new_filename.clone();
+                    return true;
                 }
                 false
             });
@@ -594,6 +587,10 @@ impl Component for SidebarComponent {
         if let Some(list) = &mut self.list {
             list.render_query(f, search_inner, theme, focused);
             list.render(f, list_inner, theme, focused);
+            // Record the rendered-items rect (block inner area) for mouse
+            // hit-testing: the engine maps a click to `row - rect.y`, so row 0
+            // is the first item. The panel rect (whole sidebar) lets the wheel
+            // scroll from anywhere within the sidebar, not just over the list.
             list.set_list_rect(list_inner);
             list.set_panel_rect(rect);
         }
@@ -1009,12 +1006,29 @@ mod tests {
         let (tx, _rx) = unbounded_channel();
         navigate_to_root(&mut sb, &tx).await;
 
-        sb.rename_note_row(
-            &VaultPath::note_path_from("alpha"),
-            &VaultPath::note_path_from("gamma"),
-        );
+        let to = VaultPath::note_path_from("gamma");
+        let expected_filename = to.get_parent_path().1;
+        sb.rename_note_row(&VaultPath::note_path_from("alpha"), &to);
         assert!(note_row_title(&sb, "gamma.md").is_some(), "row now at new name");
         assert!(note_row_title(&sb, "alpha.md").is_none(), "old name gone");
+        // Also verify the filename field itself was updated to the new name.
+        let renamed_filename = sb
+            .list
+            .as_ref()
+            .unwrap()
+            .rows()
+            .iter()
+            .find_map(|r| match r {
+                FileListEntry::Note { path, filename, .. } if path.is_like(&to) => {
+                    Some(filename.clone())
+                }
+                _ => None,
+            });
+        assert_eq!(
+            renamed_filename.as_deref(),
+            Some(expected_filename.as_str()),
+            "filename field must be updated to the new name"
+        );
     }
 
     /// Regression: saving a default must survive navigation. `save_default`
