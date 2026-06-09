@@ -17,9 +17,9 @@
 
 ---
 
-**Kimün** is a lightweight, blazing-fast, terminal-based notes application focused on ultimate simplicity and robust search. 
+**Kimün** is a lightweight, fast, terminal-based notes application focused on simplicity and powerful search. Local-first; you own the notes.
 
-It doesn't try to be a bloated, all-in-one life-management tool or a _second brain_ (some of us struggle with a single brain already!). Instead, it serves as a minimalist local-first vault that seamlessly weaves into your existing developer terminal environment. Because your notes are stored as plain Markdown files, it plays beautifully alongside tools like **Obsidian**, **Logseq**, or **QOwnNotes** giving you an ultra-fast TUI/CLI alternative right in your shell.
+It doesn't try to be a bloated, all-in-one life-management tool or a _second brain_ (some of us struggle with a single brain already!). Instead, it serves as a minimalist local-first vault that seamlessly weaves into your existing developer terminal environment. Because your notes are stored as plain Markdown files, it plays beautifully alongside tools like **Obsidian**, **Logseq**, or **QOwnNotes** giving you a fast TUI/CLI alternative right in your shell.
 
 ### USERS BEWARE: Kimün is in heavy development; configuration and custom themes may break with newer updates. If the app fails to start after an update, remove your configuration file so a new one is generated.
 
@@ -38,7 +38,7 @@ Do you want to know more? ⭐️🚀 Check out our official documentation site f
 * ⚡ **Blazing Fast Search:** Local Markdown files are automatically indexed into a local SQLite database for (_almost_) instantaneous full-text, structured, and fuzzy search.
 * 🗺️ **Zettelkasten-Ready Linkages:** Seamlessly navigate your knowledge base using `[[wikilinks]]` and standard Markdown links with intuitive keyboard shortcuts. Includes backlink support with interactive previews!
 * 🧠 **AI & MCP Native:** Equipped with a dedicated **Model Context Protocol (MCP) Server** and LLM tools. Let your local or cloud AI models (like Claude Code) scan your notes, run daily reviews, update journals, or synthesize concepts directly.
-* 🤖 **Dual Interface Layout:**
+* 🤖 **Two Interfaces:**
   * **TUI (Terminal User Interface):** An elegant, interactive pane for capturing thoughts, browsing workspaces, and previewing files.
   * **CLI (Command Line Interface):** Fully scriptable. Pipe outputs, log entries via cron jobs, and manipulate entries using `jq` and shell tools.
 * 🗂️ **Workspaces in Context:** Effortlessly separate your notes into distinct contexts (e.g., `Personal` vs `Work`) using multiple independent vaults.
