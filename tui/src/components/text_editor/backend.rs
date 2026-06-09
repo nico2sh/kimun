@@ -11,6 +11,7 @@ use ratatui_textarea::TextArea;
 
 use super::nvim_rpc::key_event_to_nvim_string;
 use super::snapshot::{EditorMode, NvimSnapshot};
+use super::vim::VimEngine;
 use crate::components::events::{AppEvent, AppTx};
 use crate::settings::EditorBackendSetting;
 
@@ -68,12 +69,42 @@ impl Handler for NvimHandler {
 }
 
 // ---------------------------------------------------------------------------
+// InputInterpreter + TextareaBackend
+// ---------------------------------------------------------------------------
+
+/// How key events are translated into edits on a `TextArea` (adr/0012).
+#[derive(Debug, Default)]
+pub enum InputInterpreter {
+    /// Today's behavior: keys go straight to the textarea.
+    #[default]
+    Direct,
+    /// Built-in vim emulation.
+    Vim(VimEngine),
+}
+
+/// The in-process textarea storage plus its input interpreter.
+#[derive(Debug)]
+pub struct TextareaBackend {
+    pub ta: TextArea<'static>,
+    pub input: InputInterpreter,
+}
+
+impl TextareaBackend {
+    pub fn direct(ta: TextArea<'static>) -> Self {
+        Self { ta, input: InputInterpreter::Direct }
+    }
+    pub fn vim(ta: TextArea<'static>) -> Self {
+        Self { ta, input: InputInterpreter::Vim(VimEngine::default()) }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // BackendState
 // ---------------------------------------------------------------------------
 
 #[allow(clippy::large_enum_variant)]
 pub enum BackendState {
-    Textarea(TextArea<'static>),
+    Textarea(TextareaBackend),
     Nvim(NvimBackend),
 }
 
@@ -88,14 +119,14 @@ impl BackendState {
     /// (autocomplete, smart edits, mouse selection) guard on this.
     pub fn as_textarea(&self) -> Option<&TextArea<'static>> {
         match self {
-            BackendState::Textarea(ta) => Some(ta),
+            BackendState::Textarea(tb) => Some(&tb.ta),
             BackendState::Nvim(_) => None,
         }
     }
 
     pub fn as_textarea_mut(&mut self) -> Option<&mut TextArea<'static>> {
         match self {
-            BackendState::Textarea(ta) => Some(ta),
+            BackendState::Textarea(tb) => Some(&mut tb.ta),
             BackendState::Nvim(_) => None,
         }
     }
@@ -111,7 +142,7 @@ impl BackendState {
     /// The whole buffer as one string, whichever backend holds it.
     pub fn text(&self) -> String {
         match self {
-            BackendState::Textarea(ta) => ta.lines().join("\n"),
+            BackendState::Textarea(tb) => tb.ta.lines().join("\n"),
             BackendState::Nvim(nvim) => nvim.snapshot().lines.join("\n"),
         }
     }
@@ -121,7 +152,7 @@ impl BackendState {
     /// lag the real cursor for a frame), matching the snapshot path.
     pub fn cursor(&self) -> (usize, usize) {
         match self {
-            BackendState::Textarea(ta) => super::cursor_tuple(ta),
+            BackendState::Textarea(tb) => super::cursor_tuple(&tb.ta),
             BackendState::Nvim(nvim) => {
                 let snap = nvim.snapshot();
                 let max_row = snap.lines.len().saturating_sub(1);
@@ -139,7 +170,9 @@ impl BackendState {
             _ => return false,
         };
         tracing::warn!("nvim process died; falling back to textarea backend");
-        *self = BackendState::Textarea(TextArea::from(fallback_text.lines()));
+        *self = BackendState::Textarea(TextareaBackend::direct(TextArea::from(
+            fallback_text.lines(),
+        )));
         true
     }
 
@@ -155,7 +188,15 @@ impl BackendState {
                 }
             }
         }
-        BackendState::Textarea(TextArea::default())
+        let tb = match editor_backend {
+            EditorBackendSetting::Vim => TextareaBackend::vim(TextArea::default()),
+            // Nvim is handled by the early return above; Textarea and any
+            // future non-modal setting use the direct interpreter.
+            EditorBackendSetting::Textarea | EditorBackendSetting::Nvim => {
+                TextareaBackend::direct(TextArea::default())
+            }
+        };
+        BackendState::Textarea(tb)
     }
 }
 

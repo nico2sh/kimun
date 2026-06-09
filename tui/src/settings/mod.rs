@@ -47,6 +47,7 @@ pub enum EditorBackendSetting {
     #[default]
     Textarea,
     Nvim,
+    Vim,
 }
 
 // pub mod theme;
@@ -1002,6 +1003,17 @@ mod backend_tests {
         let toml = "editor_backend = \"nvim\"\n";
         let parsed: AppSettings = toml::from_str(toml).unwrap();
         assert!(matches!(parsed.editor_backend, EditorBackendSetting::Nvim));
+    }
+
+    #[test]
+    fn editor_backend_vim_roundtrips_through_toml() {
+        #[derive(serde::Serialize, serde::Deserialize)]
+        struct W { editor_backend: EditorBackendSetting }
+        let w = W { editor_backend: EditorBackendSetting::Vim };
+        let s = toml::to_string(&w).unwrap();
+        assert!(s.contains("editor_backend = \"vim\""), "serialized: {s}");
+        let back: W = toml::from_str(&s).unwrap();
+        assert_eq!(back.editor_backend, EditorBackendSetting::Vim);
     }
 
     // ── expand_path tests ──────────────────────────────────────────────
