@@ -101,7 +101,7 @@ macro_rules! cursor_move {
 
 use self::backend::BackendState;
 use self::markdown::ParsedBuffer;
-use self::snapshot::{EditorSnapshot, NvimMode};
+use self::snapshot::{EditorSnapshot, EditorMode};
 use self::view::MarkdownEditorView;
 use crate::util::single_slot_task::SingleSlotTask;
 
@@ -1300,7 +1300,7 @@ impl TextEditorComponent {
         } else if key.code == KeyCode::Char('Z') {
             let in_normal = {
                 let snap = nvim.snapshot();
-                snap.mode == NvimMode::Normal
+                snap.mode == EditorMode::Normal
             };
             if in_normal {
                 self.nvim_pending_z = true;
@@ -1313,7 +1313,7 @@ impl TextEditorComponent {
         if key.code == KeyCode::Enter {
             let (is_cmd, cmdline) = {
                 let snap = nvim.snapshot();
-                let cmd = if snap.mode == NvimMode::Command {
+                let cmd = if snap.mode == EditorMode::Command {
                     snap.cmdline
                         .as_deref()
                         .unwrap_or("")
@@ -1322,7 +1322,7 @@ impl TextEditorComponent {
                 } else {
                     String::new()
                 };
-                (snap.mode == NvimMode::Command, cmd)
+                (snap.mode == EditorMode::Command, cmd)
             };
             if is_cmd {
                 let saves = matches!(
