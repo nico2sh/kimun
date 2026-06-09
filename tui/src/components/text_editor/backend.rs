@@ -10,7 +10,7 @@ use nvim_rs::{Handler, Neovim, UiAttachOptions, create::tokio::new_child_cmd, er
 use ratatui_textarea::TextArea;
 
 use super::nvim_rpc::key_event_to_nvim_string;
-use super::snapshot::{NvimMode, NvimSnapshot};
+use super::snapshot::{EditorMode, NvimSnapshot};
 use crate::components::events::{AppEvent, AppTx};
 use crate::settings::EditorBackendSetting;
 
@@ -488,11 +488,11 @@ fn apply_lua_state(
         Some(s) => s,
         None => return,
     };
-    let mode = NvimMode::from_nvim_str(mode_str);
+    let mode = EditorMode::from_nvim_str(mode_str);
 
     let mut snap = snapshot.lock().unwrap_or_else(|p| p.into_inner());
 
-    if mode == NvimMode::Command {
+    if mode == EditorMode::Command {
         let cmdtype = arr
             .get(1)
             .and_then(|v| v.as_str())
@@ -544,7 +544,7 @@ fn apply_lua_state(
 
     // Visual selection: getpos("v") → [bufnum, lnum(1-indexed), col(1-indexed byte offset), off].
     // Convert the 1-indexed byte col to a 0-indexed char index.
-    let visual_selection = if matches!(mode, NvimMode::Visual | NvimMode::VisualLine) {
+    let visual_selection = if matches!(mode, EditorMode::Visual | EditorMode::VisualLine) {
         arr.get(3)
             .and_then(|v| v.as_array())
             .and_then(|p| {
@@ -566,7 +566,7 @@ fn apply_lua_state(
                 } else {
                     (cursor, anchor)
                 };
-                if mode == NvimMode::VisualLine {
+                if mode == EditorMode::VisualLine {
                     start.1 = 0;
                     end.1 = usize::MAX;
                 }
