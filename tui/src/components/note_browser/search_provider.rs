@@ -48,6 +48,7 @@ impl SearchNotesProvider {
             title,
             filename,
             journal_date,
+            is_open: false,
         }
     }
 }
