@@ -368,9 +368,11 @@ impl<R: SearchRow> SearchList<R> {
     fn requery(&mut self) {
         if self.source.reload_on_query() {
             self.loader.start(self.source.clone(), self.query.clone());
-        } else {
-            self.recompute_and_seed();
         }
+        // Recompute now so the query-fresh leading row (and local filter, for
+        // non-reload sources) reflect the new query in this frame. Reload
+        // sources refresh again when their load drains in poll().
+        self.recompute_and_seed();
     }
 
     /// Re-run the source load for the current query (e.g. after a mutation).
@@ -845,8 +847,8 @@ impl<R: SearchRow> SearchListBuilder<R> {
 #[cfg(test)]
 mod tests {
     use super::adapters::{
-        ScriptedStreamLeadSource, ScriptedStreamSource, StreamRow, TestRow, VecSource,
-        VecSourceWithLead,
+        ReloadWithLeadSource, ScriptedStreamLeadSource, ScriptedStreamSource, StreamRow, TestRow,
+        VecSource, VecSourceWithLead,
     };
     use super::*;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -1584,6 +1586,50 @@ mod tests {
         // A no-op mutation reports no change and does not panic.
         let changed_again = list.update_rows(|_| false);
         assert!(!changed_again, "no row changed");
+    }
+
+    // Regression guard (Fix A): for reload_on_query == true sources that also
+    // expose a leading row, set_query must rebuild the leading row synchronously
+    // in the same frame — before any poll/drain. The old code skipped
+    // recompute_and_seed() for reload sources, so the leading row lagged until
+    // the async load landed. This test must FAIL without the fix (the leading
+    // row still shows the old query immediately after set_query).
+    #[tokio::test]
+    async fn reload_source_leading_row_updates_synchronously_on_set_query() {
+        let src = ReloadWithLeadSource {
+            rows: vec![
+                TestRow::new("alpha"),
+                TestRow::new("beta"),
+                TestRow::new("gamma"),
+            ],
+        };
+        let mut list = SearchList::builder(src, noop_redraw()).build();
+        list.poll_until_idle().await;
+        // Sanity: no leading row for empty query.
+        assert!(list.leading.is_none(), "no leading row for empty query");
+
+        // Change query — do NOT poll/drain after this.
+        list.set_query("alp");
+
+        // The leading row must reflect the NEW query immediately (synchronously).
+        let vis = list.visible_rows();
+        assert!(
+            !vis.is_empty(),
+            "visible_rows must not be empty right after set_query"
+        );
+        assert_eq!(
+            vis[0].name, "create:alp",
+            "leading row must show new query synchronously, before any poll/drain"
+        );
+
+        // The async load will also arrive, but the leading row must already be
+        // correct without waiting for it.
+        list.poll_until_idle().await;
+        let vis = list.visible_rows();
+        assert_eq!(vis[0].name, "create:alp", "leading row correct after drain too");
+        // Only "alpha" matches "alp" from the server-side filter.
+        assert_eq!(vis.len(), 2, "leading + alpha");
+        assert_eq!(vis[1].name, "alpha");
     }
 
     // Regression guard: local-filter sources (reload_on_query == false) must

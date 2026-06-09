@@ -1005,30 +1005,6 @@ mod tests {
         assert!(!sidebar.group_dirs());
     }
 
-    fn note_row_is_open(sb: &SidebarComponent, name: &str) -> bool {
-        sb.list
-            .as_ref()
-            .unwrap()
-            .rows()
-            .iter()
-            .find_map(|r| match r {
-                FileListEntry::Note { path, is_open, .. } if path.get_name() == name => {
-                    Some(*is_open)
-                }
-                _ => None,
-            })
-            .unwrap_or(false)
-    }
-
-    fn note_row_title(sb: &SidebarComponent, name: &str) -> Option<String> {
-        sb.list.as_ref().unwrap().rows().iter().find_map(|r| match r {
-            FileListEntry::Note { path, title, .. } if path.get_name() == name => {
-                Some(title.clone())
-            }
-            _ => None,
-        })
-    }
-
     #[tokio::test(flavor = "multi_thread")]
     async fn set_open_note_stamps_matching_row() {
         let mut sb = sidebar_with_notes("sb-open", &["alpha", "beta"]).await;
@@ -1036,15 +1012,15 @@ mod tests {
         navigate_to_root(&mut sb, &tx).await;
 
         sb.set_open_note(Some(VaultPath::note_path_from("alpha")));
-        assert!(note_row_is_open(&sb, "alpha.md"), "open note is marked");
-        assert!(!note_row_is_open(&sb, "beta.md"), "other note is not marked");
+        assert!(sb.note_row_is_open_for_test("alpha.md"), "open note is marked");
+        assert!(!sb.note_row_is_open_for_test("beta.md"), "other note is not marked");
 
         sb.set_open_note(Some(VaultPath::note_path_from("beta")));
-        assert!(!note_row_is_open(&sb, "alpha.md"));
-        assert!(note_row_is_open(&sb, "beta.md"));
+        assert!(!sb.note_row_is_open_for_test("alpha.md"));
+        assert!(sb.note_row_is_open_for_test("beta.md"));
 
         sb.set_open_note(None);
-        assert!(!note_row_is_open(&sb, "beta.md"));
+        assert!(!sb.note_row_is_open_for_test("beta.md"));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1054,7 +1030,7 @@ mod tests {
         navigate_to_root(&mut sb, &tx).await;
 
         sb.update_note_row(&VaultPath::note_path_from("alpha"), "Fresh Title");
-        assert_eq!(note_row_title(&sb, "alpha.md").as_deref(), Some("Fresh Title"));
+        assert_eq!(sb.note_row_title_for_test("alpha.md").as_deref(), Some("Fresh Title"));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1066,8 +1042,8 @@ mod tests {
         let to = VaultPath::note_path_from("gamma");
         let expected_filename = to.get_parent_path().1;
         sb.rename_note_row(&VaultPath::note_path_from("alpha"), &to);
-        assert!(note_row_title(&sb, "gamma.md").is_some(), "row now at new name");
-        assert!(note_row_title(&sb, "alpha.md").is_none(), "old name gone");
+        assert!(sb.note_row_title_for_test("gamma.md").is_some(), "row now at new name");
+        assert!(sb.note_row_title_for_test("alpha.md").is_none(), "old name gone");
         // Also verify the filename field itself was updated to the new name.
         let renamed_filename = sb
             .list
@@ -1114,17 +1090,13 @@ mod tests {
         // Navigate to the journal directory (not root) so the note row is listed.
         sb.navigate(journal_path.clone(), &tx);
         for _ in 0..50 {
-            if let Some(list) = &mut sb.list {
-                list.poll();
-                if !list.is_loading() {
-                    break;
-                }
+            sb.poll_for_test();
+            if !sb.is_loading_for_test() {
+                break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
-        if let Some(list) = &mut sb.list {
-            list.poll();
-        }
+        sb.poll_for_test();
 
         // Precondition: the journal row has a non-None `journal_date`.
         assert!(
