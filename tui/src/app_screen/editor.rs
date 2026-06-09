@@ -496,6 +496,27 @@ impl EditorScreen {
             self.refresh_sidebar_if_showing(&from.get_parent_path().0, tx);
         }
     }
+
+    /// A note was renamed. Update its sidebar row in place; if it is the note
+    /// currently open, retarget the editor to the new path and reload the body
+    /// from disk so any self-link rewrites from the rename land in the buffer
+    /// (the in-memory text still holds the pre-rename self-links). We
+    /// deliberately do NOT `try_save` — the old path no longer exists on disk.
+    async fn on_note_renamed(&mut self, from: VaultPath, to: VaultPath, tx: &AppTx) {
+        self.dismiss_overlay();
+        self.panels.sidebar_mut().rename_note_row(&from, &to);
+        if from == self.path {
+            self.path = to.clone();
+            if let Ok(text) = self.vault.get_note_text(&self.path).await {
+                self.panels.editor_mut().set_text(text.clone());
+                self.panels.editor_mut().mark_saved(text);
+            }
+            self.panels
+                .sidebar_mut()
+                .set_open_note(Some(self.path.clone()));
+            self.doc_meta.note_opened(&self.path, tx);
+        }
+    }
 }
 
 impl EditorScreen {
@@ -1776,8 +1797,14 @@ impl AppScreen for EditorScreen {
             AppEvent::EntryDeleted(path) => {
                 self.on_entry_op(path, tx).await;
             }
-            AppEvent::EntryRenamed { from, .. } => {
-                self.on_entry_op(from, tx).await;
+            AppEvent::EntryRenamed { from, to } => {
+                // Note rename → targeted row update (and retarget the editor if
+                // it is the open note). Directory rename keeps the full reload.
+                if from.is_note() {
+                    self.on_note_renamed(from, to, tx).await;
+                } else {
+                    self.on_entry_op(from, tx).await;
+                }
             }
             AppEvent::EntryMoved { from, .. } => {
                 self.on_entry_op(from, tx).await;
@@ -2462,6 +2489,40 @@ mod tests {
             screen.overlays.active_kind(),
             Some(OverlayKind::Dialog),
             "saving from the note browser opens the save-search dialog"
+        );
+    }
+
+    /// Renaming the open note keeps it open under the new path (retarget in
+    /// place) instead of navigating away, and reloads the buffer clean.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn renaming_open_note_retargets_in_place() {
+        let vault = crate::test_support::temp_vault("editor-rename").await;
+        vault.validate_and_init().await.unwrap();
+        let from = VaultPath::note_path_from("old");
+        vault.create_note(&from, "# Old\n\nbody").await.unwrap();
+        let settings = std::sync::Arc::new(std::sync::RwLock::new(
+            crate::settings::AppSettings::default(),
+        ));
+        let mut screen = EditorScreen::new(vault.clone(), from.clone(), settings);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        screen.on_enter(&tx).await;
+
+        let to = VaultPath::note_path_from("new");
+        vault.rename_note(&from, &to).await.unwrap();
+        screen
+            .handle_app_message(
+                AppEvent::EntryRenamed {
+                    from: from.clone(),
+                    to: to.clone(),
+                },
+                &tx,
+            )
+            .await;
+
+        assert_eq!(screen.path, to, "editor retargets to the new path");
+        assert!(
+            !screen.panels.editor().is_dirty(),
+            "reloaded buffer is clean (won't clobber the renamed file)"
         );
     }
 
