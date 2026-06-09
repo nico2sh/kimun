@@ -460,6 +460,21 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
                 }
             }
         }
+        AppEvent::OpenJournal => {
+            // Resolve today's journal entry (creating it if needed) once, then
+            // route it like any other note via OpenPath so it works from every
+            // screen — the current screen opens it inline or the loop switches
+            // to the editor.
+            if let Some(vault) = app.vault.clone()
+                && let Ok((details, _)) = vault.journal_entry().await
+            {
+                tx.send(AppEvent::OpenPath {
+                    path: details.path,
+                    emphasis: None,
+                })
+                .ok();
+            }
+        }
         AppEvent::PreferencesSaved => {
             // Rebuild the vault so workspace path and inbox_path changes take effect.
             app.vault = rebuild_vault(&app.settings).await;
