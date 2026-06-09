@@ -48,6 +48,9 @@ pub enum AppEvent {
     AutosaveCompleted {
         path: VaultPath,
         saved_revision: Option<NonZeroU64>,
+        /// The note's recomputed title (first body line) from the save, so the
+        /// sidebar row can be retitled. `None` when the save failed.
+        title: Option<String>,
     },
     /// Open a note (or directory) — `emphasis` carries the originating
     /// query's needles when the open comes from a query result, so the

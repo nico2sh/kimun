@@ -103,6 +103,10 @@ _Avoid_: sidebar / Query panel as panel names (they are now drawer views), side 
 **Drawer view**:
 What the **Drawer** can show: FILES (the file browser, formerly the sidebar), FIND (the **Query panel**), TAGS, LINKS, OUTLINE, CFG. The rail and the drawer stay in step through the view, not through panel identities.
 
+**Open-note marker**:
+The accent recoloring of a FILES-list row's type glyph that flags the note currently open in the editor. Lives only in the editor's FILES **drawer view** — Browse never has an open note. Driven by the sidebar's tracked open-note path, matched by `is_like`, and re-applied after every listing (re)load. Distinct from selection (the navigation cursor's row highlight): a row can be selected, open, both, or neither.
+_Avoid_: active note (collides with the focused **Panel** / selection), current note (that is the `{note}` **query variable** — the open note's clean name).
+
 **PanelSet**:
 The fixed left→right collection of the editor screen's **Panels** (rail → drawer → editor); owns which panel is focused, drawer visibility and width, and focus cycling, and routes input and render to the focused panel. Focus cycles over the visible panels, wrapping at both ends. The persistent-surface counterpart to the **OverlayHost**.
 _Avoid_: panel manager, layout, panel stack.

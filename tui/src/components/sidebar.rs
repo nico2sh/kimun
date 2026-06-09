@@ -130,6 +130,10 @@ impl RowSource<FileListEntry> for DirListingSource {
 
 pub struct SidebarComponent {
     current_dir: VaultPath,
+    /// The note currently open in the editor, if any — drives the open-note
+    /// marker. `None` on the Browse screen (it never opens notes). Matched
+    /// against `FileListEntry::Note` rows by `is_like`.
+    open_note: Option<VaultPath>,
     list: Option<SearchList<FileListEntry>>,
     vault: Arc<NoteVault>,
     icons: Icons,
@@ -174,6 +178,7 @@ impl SidebarComponent {
         let default_sort_order = SortOrder::from(settings.default_sort_order);
         Self {
             current_dir: VaultPath::root(),
+            open_note: None,
             list: None,
             vault,
             icons,
@@ -244,6 +249,79 @@ impl SidebarComponent {
     pub fn refresh_if_showing(&mut self, dir: &VaultPath, tx: &AppTx) {
         if dir.is_like(&self.current_dir) {
             self.navigate(self.current_dir.clone(), tx);
+        }
+    }
+
+    /// Set (or clear) the note the editor currently has open, then re-stamp the
+    /// marker on the live rows. The editor calls this on every open and on an
+    /// open-note rename.
+    pub fn set_open_note(&mut self, path: Option<VaultPath>) {
+        self.open_note = path;
+        self.stamp_open_marker();
+    }
+
+    /// Re-apply `is_open` to the rows so exactly the open note's row is marked.
+    /// Idempotent: a full reload rebuilds rows without the flag, so this runs
+    /// again after each load (see `render`).
+    fn stamp_open_marker(&mut self) {
+        let open = self.open_note.clone();
+        if let Some(list) = &mut self.list {
+            list.update_rows(|row| {
+                if let FileListEntry::Note { path, is_open, .. } = row {
+                    let want = open.as_ref().is_some_and(|o| path.is_like(o));
+                    if *is_open != want {
+                        *is_open = want;
+                        return true;
+                    }
+                }
+                false
+            });
+        }
+    }
+
+    /// Update the title of the row whose note path matches `path`, if it is in
+    /// the current listing. Called when a note is saved and its title (first
+    /// body line) may have changed. Position is left unchanged (no re-sort).
+    pub fn update_note_row(&mut self, path: &VaultPath, new_title: &str) {
+        if let Some(list) = &mut self.list {
+            list.update_rows(|row| {
+                if let FileListEntry::Note { path: row_path, title, .. } = row
+                    && row_path.is_like(path)
+                    && title != new_title
+                {
+                    *title = new_title.to_string();
+                    return true;
+                }
+                false
+            });
+        }
+    }
+
+    /// Move the row at `from` to `to` (path + filename + journal_date) in
+    /// place, for a same-directory note rename. Position is left unchanged
+    /// (no re-sort). `journal_date` is recomputed so a rename into/out of a
+    /// `YYYY-MM-DD` name under the journal directory flips the glyph and the
+    /// secondary date line correctly.
+    pub fn rename_note_row(&mut self, from: &VaultPath, to: &VaultPath) {
+        let new_filename = to.get_parent_path().1;
+        let new_journal_date = self.vault.journal_date(to).map(format_journal_date);
+        if let Some(list) = &mut self.list {
+            list.update_rows(|row| {
+                if let FileListEntry::Note {
+                    path,
+                    filename,
+                    journal_date,
+                    ..
+                } = row
+                    && path.is_like(from)
+                {
+                    *path = to.clone();
+                    *filename = new_filename.clone();
+                    *journal_date = new_journal_date.clone();
+                    return true;
+                }
+                false
+            });
         }
     }
 
@@ -509,16 +587,70 @@ impl Component for SidebarComponent {
         let list_inner = list_block.inner(rows[2]);
         f.render_widget(list_block, rows[2]);
 
+        // Poll the engine so a just-completed load's rows are applied, then
+        // re-stamp the open-note marker (the reload rebuilt rows without it)
+        // before the list renders.
+        if let Some(list) = &mut self.list {
+            list.poll();
+        }
+        self.stamp_open_marker();
         if let Some(list) = &mut self.list {
             list.render_query(f, search_inner, theme, focused);
             list.render(f, list_inner, theme, focused);
-            // Record the rendered-items rect (the block's inner area) for mouse
-            // hit-testing: the engine maps a click to `row - rect.y`, row 0 being
-            // the first item. The panel rect makes the wheel scroll from anywhere
-            // within the sidebar.
+            // Record the rendered-items rect (block inner area) for mouse
+            // hit-testing: the engine maps a click to `row - rect.y`, so row 0
+            // is the first item. The panel rect (whole sidebar) lets the wheel
+            // scroll from anywhere within the sidebar, not just over the list.
             list.set_list_rect(list_inner);
             list.set_panel_rect(rect);
         }
+    }
+}
+
+#[cfg(test)]
+impl SidebarComponent {
+    pub(crate) fn poll_for_test(&mut self) {
+        if let Some(list) = &mut self.list {
+            list.poll();
+        }
+        self.stamp_open_marker();
+    }
+
+    pub(crate) fn is_loading_for_test(&self) -> bool {
+        self.list.as_ref().is_some_and(|l| l.is_loading())
+    }
+
+    pub(crate) fn note_row_is_open_for_test(&self, name: &str) -> bool {
+        self.list.as_ref().is_some_and(|l| {
+            l.rows().iter().any(|r| {
+                matches!(r, FileListEntry::Note { path, is_open, .. }
+                    if path.get_name() == name && *is_open)
+            })
+        })
+    }
+
+    pub(crate) fn note_row_title_for_test(&self, name: &str) -> Option<String> {
+        self.list.as_ref().and_then(|l| {
+            l.rows().iter().find_map(|r| match r {
+                FileListEntry::Note { path, title, .. } if path.get_name() == name => {
+                    Some(title.clone())
+                }
+                _ => None,
+            })
+        })
+    }
+
+    pub(crate) fn note_row_journal_date_for_test(&self, path: &VaultPath) -> Option<String> {
+        self.list.as_ref().and_then(|l| {
+            l.rows().iter().find_map(|r| match r {
+                FileListEntry::Note {
+                    path: row_path,
+                    journal_date,
+                    ..
+                } if row_path.is_like(path) => journal_date.clone(),
+                _ => None,
+            })
+        })
     }
 }
 
@@ -871,6 +1003,119 @@ mod tests {
             (SortField::Title, SortOrder::Descending)
         );
         assert!(!sidebar.group_dirs());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn set_open_note_stamps_matching_row() {
+        let mut sb = sidebar_with_notes("sb-open", &["alpha", "beta"]).await;
+        let (tx, _rx) = unbounded_channel();
+        navigate_to_root(&mut sb, &tx).await;
+
+        sb.set_open_note(Some(VaultPath::note_path_from("alpha")));
+        assert!(sb.note_row_is_open_for_test("alpha.md"), "open note is marked");
+        assert!(!sb.note_row_is_open_for_test("beta.md"), "other note is not marked");
+
+        sb.set_open_note(Some(VaultPath::note_path_from("beta")));
+        assert!(!sb.note_row_is_open_for_test("alpha.md"));
+        assert!(sb.note_row_is_open_for_test("beta.md"));
+
+        sb.set_open_note(None);
+        assert!(!sb.note_row_is_open_for_test("beta.md"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn update_note_row_changes_title_in_place() {
+        let mut sb = sidebar_with_notes("sb-title", &["alpha"]).await;
+        let (tx, _rx) = unbounded_channel();
+        navigate_to_root(&mut sb, &tx).await;
+
+        sb.update_note_row(&VaultPath::note_path_from("alpha"), "Fresh Title");
+        assert_eq!(sb.note_row_title_for_test("alpha.md").as_deref(), Some("Fresh Title"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rename_note_row_updates_path_and_filename() {
+        let mut sb = sidebar_with_notes("sb-rename", &["alpha"]).await;
+        let (tx, _rx) = unbounded_channel();
+        navigate_to_root(&mut sb, &tx).await;
+
+        let to = VaultPath::note_path_from("gamma");
+        let expected_filename = to.get_parent_path().1;
+        sb.rename_note_row(&VaultPath::note_path_from("alpha"), &to);
+        assert!(sb.note_row_title_for_test("gamma.md").is_some(), "row now at new name");
+        assert!(sb.note_row_title_for_test("alpha.md").is_none(), "old name gone");
+        // Also verify the filename field itself was updated to the new name.
+        let renamed_filename = sb
+            .list
+            .as_ref()
+            .unwrap()
+            .rows()
+            .iter()
+            .find_map(|r| match r {
+                FileListEntry::Note { path, filename, .. } if path.is_like(&to) => {
+                    Some(filename.clone())
+                }
+                _ => None,
+            });
+        assert_eq!(
+            renamed_filename.as_deref(),
+            Some(expected_filename.as_str()),
+            "filename field must be updated to the new name"
+        );
+    }
+
+    /// Renaming a journal-dir note (`YYYY-MM-DD`) to a non-date name clears
+    /// `journal_date` on the row so the glyph and secondary date line update.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rename_note_row_clears_journal_date_when_renamed_away_from_date_name() {
+        // Build a vault and create a note inside the journal directory with a
+        // valid YYYY-MM-DD name so `vault.journal_date` returns Some(_).
+        let vault = crate::test_support::temp_vault("sb-jdate").await;
+        vault.validate_and_init().await.unwrap();
+        let journal_path = vault.journal_path().clone();
+        let date_name = "2026-06-09";
+        let from = journal_path
+            .append(&VaultPath::note_path_from(date_name))
+            .absolute();
+        vault.create_note(&from, "journal body").await.unwrap();
+
+        let settings = AppSettings::default();
+        let mut sb = SidebarComponent::new(
+            settings.key_bindings.clone(),
+            vault,
+            settings.icons(),
+            &settings,
+        );
+        let (tx, _rx) = unbounded_channel();
+        // Navigate to the journal directory (not root) so the note row is listed.
+        sb.navigate(journal_path.clone(), &tx);
+        for _ in 0..50 {
+            sb.poll_for_test();
+            if !sb.is_loading_for_test() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        sb.poll_for_test();
+
+        // Precondition: the journal row has a non-None `journal_date`.
+        assert!(
+            sb.note_row_journal_date_for_test(&from).is_some(),
+            "journal note must have a journal_date before rename"
+        );
+
+        // Rename the note to a plain name (not a date) in the same directory.
+        let to = journal_path
+            .append(&VaultPath::note_path_from("meeting"))
+            .absolute();
+        sb.rename_note_row(&from, &to);
+
+        // The row should now have journal_date = None.
+        assert_eq!(
+            sb.note_row_journal_date_for_test(&to),
+            None,
+            "journal_date must be cleared after renaming to a non-date name"
+        );
     }
 
     /// Regression: saving a default must survive navigation. `save_default`

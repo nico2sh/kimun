@@ -103,6 +103,39 @@ impl RowSource<TestRow> for ScriptedStreamSource {
     }
 }
 
+/// A reload-on-query source that also exposes a query-fresh leading row.
+/// Used to prove that the `reload_on_query == true` branch of `requery()`
+/// also rebuilds the leading row synchronously (Fix A regression guard).
+pub struct ReloadWithLeadSource {
+    pub rows: Vec<TestRow>,
+}
+
+#[async_trait]
+impl RowSource<TestRow> for ReloadWithLeadSource {
+    async fn load(&self, query: &str, emit: Emit<TestRow>) {
+        let out: Vec<TestRow> = if query.is_empty() {
+            self.rows.clone()
+        } else {
+            self.rows
+                .iter()
+                .filter(|r| r.name.contains(query))
+                .cloned()
+                .collect()
+        };
+        emit.replace(out);
+    }
+    fn leading_row(&self, query: &str) -> Option<TestRow> {
+        if query.is_empty() {
+            None
+        } else {
+            Some(TestRow::new(&format!("create:{query}")))
+        }
+    }
+    fn reload_on_query(&self) -> bool {
+        true
+    }
+}
+
 /// A row type whose leading variant is filter-exempt (`match_text() == None`).
 /// Mirrors the sidebar's `FileListEntry`: streamed `Item` rows plus a synthetic
 /// `Create` leading row.

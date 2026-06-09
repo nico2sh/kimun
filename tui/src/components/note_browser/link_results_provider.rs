@@ -27,6 +27,7 @@ impl LinkResultsProvider {
                     title,
                     filename,
                     journal_date: None,
+                    is_open: false,
                 }
             })
             .collect();
