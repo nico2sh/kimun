@@ -370,6 +370,27 @@ impl<R: SearchRow> SearchList<R> {
         self.loader.start(self.source.clone(), self.query.clone());
     }
 
+    /// Mutate rows in place. `mutate` is called for each row and returns `true`
+    /// for each row it changed; if any did, the display order is recomputed
+    /// (re-filter, no re-sort) so an active filter stays correct. Returns
+    /// whether anything changed.
+    ///
+    /// This is the one seam that touches rows outside the [`RowSource`]; every
+    /// other change rebuilds from the source. Structural changes (add/remove/
+    /// reorder) must still reload. See `adr/0010`.
+    pub fn update_rows(&mut self, mut mutate: impl FnMut(&mut R) -> bool) -> bool {
+        let mut changed = false;
+        for row in &mut self.rows {
+            if mutate(row) {
+                changed = true;
+            }
+        }
+        if changed {
+            self.recompute_display();
+        }
+        changed
+    }
+
     pub fn select_next(&mut self) {
         let n = self.visible_len();
         if n == 0 {
@@ -1481,5 +1502,34 @@ mod tests {
         assert_eq!(list.visible_len(), 2);
         assert_eq!(list.visible_rows().len(), 2);
         assert_eq!(list.selected_row().unwrap().name, "a");
+    }
+
+    #[tokio::test]
+    async fn update_rows_mutates_in_place_and_recomputes() {
+        let source = VecSource {
+            rows: vec![TestRow::new("alpha"), TestRow::new("beta")],
+            reload: false,
+        };
+        let mut list = SearchList::builder(source, noop_redraw()).build();
+        list.poll_until_idle().await;
+
+        // Mutate the row named "alpha".
+        let changed = list.update_rows(|r| {
+            if r.name == "alpha" {
+                r.name = "renamed".to_string();
+                true
+            } else {
+                false
+            }
+        });
+        assert!(changed, "a row was changed");
+        assert!(
+            list.rows().iter().any(|r| r.name == "renamed"),
+            "the mutation is visible in rows()"
+        );
+
+        // A no-op mutation reports no change and does not panic.
+        let changed_again = list.update_rows(|_| false);
+        assert!(!changed_again, "no row changed");
     }
 }
