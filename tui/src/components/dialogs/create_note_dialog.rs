@@ -10,7 +10,7 @@ use ratatui::widgets::Paragraph;
 
 use crate::components::Component;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx};
+use crate::components::events::{AppEvent, AppTx, AppTxExt};
 use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::settings::themes::Theme;
 
@@ -43,12 +43,7 @@ impl CreateNoteDialog {
                 let tx_clone = tx.clone();
                 tokio::spawn(async move {
                     match vault.load_or_create_note(&path, None).await {
-                        Ok((_, created)) => {
-                            if created {
-                                tx_clone.send(AppEvent::EntryCreated(path.clone())).ok();
-                            }
-                            tx_clone.send(AppEvent::open(path)).ok();
-                        }
+                        Ok((_, created)) => tx_clone.announce_and_open(path, created),
                         Err(e) => {
                             tx_clone.send(AppEvent::DialogError(e.to_string())).ok();
                         }

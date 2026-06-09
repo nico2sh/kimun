@@ -261,6 +261,25 @@ pub enum ScreenEvent {
 /// Convenience alias used throughout the codebase.
 pub type AppTx = UnboundedSender<AppEvent>;
 
+/// Sender helpers for the create-then-open sequence shared by every
+/// note-creation site (create dialog, quick note, note browser, sidebar,
+/// journal).
+pub trait AppTxExt {
+    /// Announce a freshly created note so sidebars browsing its directory
+    /// refresh, then open it. The notification is gated on `created` (an
+    /// already-existing note needs no refresh); the note is opened regardless.
+    fn announce_and_open(&self, path: VaultPath, created: bool);
+}
+
+impl AppTxExt for AppTx {
+    fn announce_and_open(&self, path: VaultPath, created: bool) {
+        if created {
+            self.send(AppEvent::EntryCreated(path.clone())).ok();
+        }
+        self.send(AppEvent::open(path)).ok();
+    }
+}
+
 /// Build a `Send + Sync` callback that fires `AppEvent::Redraw` on the
 /// app event bus. Used by long-lived components (autocomplete query
 /// task, etc.) that need to wake the render loop from a background

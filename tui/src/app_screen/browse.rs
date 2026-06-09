@@ -21,7 +21,6 @@ use crate::settings::themes::Theme;
 pub struct BrowseScreen {
     sidebar: SidebarComponent,
     theme: Theme,
-    path: VaultPath,
     settings: SharedSettings,
 }
 
@@ -29,12 +28,14 @@ impl BrowseScreen {
     pub fn new(vault: Arc<NoteVault>, path: VaultPath, settings: SharedSettings) -> Self {
         let s = settings.read().unwrap();
         let theme = s.get_theme();
-        let sidebar = SidebarComponent::from_settings(vault, &s);
+        let mut sidebar = SidebarComponent::from_settings(vault, &s);
         drop(s);
+        // The sidebar's `current_dir` is the single source of truth for the
+        // browsed directory; seed it so `on_enter` opens at `path`.
+        sidebar.set_current_dir(path);
         Self {
             sidebar,
             theme,
-            path,
             settings,
         }
     }
@@ -42,8 +43,7 @@ impl BrowseScreen {
     async fn navigate_sidebar(&mut self, dir: VaultPath, tx: &AppTx) {
         // The sidebar hosts a streamed `SearchList`; (re)building its engine for
         // `dir` runs `browse_vault` inside the source and emits rows as they
-        // arrive.
-        self.path = dir.clone();
+        // arrive. `navigate` updates the sidebar's `current_dir`.
         self.sidebar.navigate(dir, tx);
     }
 }
@@ -55,7 +55,7 @@ impl AppScreen for BrowseScreen {
     }
 
     async fn on_enter(&mut self, tx: &AppTx) {
-        self.navigate_sidebar(self.path.clone(), tx).await;
+        self.navigate_sidebar(self.sidebar.current_dir().clone(), tx).await;
     }
 
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
@@ -84,9 +84,7 @@ impl AppScreen for BrowseScreen {
             // A note was created somewhere; rebuild the listing only when we are
             // browsing its directory so the new note shows up.
             let (parent, _) = path.get_parent_path();
-            if parent.is_like(&self.path) {
-                self.navigate_sidebar(self.path.clone(), tx).await;
-            }
+            self.sidebar.refresh_if_showing(&parent, tx);
         }
     }
 
@@ -160,12 +158,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn new_stores_path() {
+    async fn new_seeds_sidebar_dir() {
         let vault = make_vault().await;
         let settings = make_settings_with_defaults();
-        let path = VaultPath::root();
+        let path = VaultPath::new("subdir");
         let screen = BrowseScreen::new(vault, path.clone(), settings);
-        assert_eq!(screen.path, path);
+        assert_eq!(screen.sidebar.current_dir(), &path);
     }
 
     #[tokio::test]
@@ -211,7 +209,11 @@ mod tests {
         let mut screen = BrowseScreen::new(vault, VaultPath::root(), settings);
         let result = screen.try_open_path(dir.clone(), None, &tx).await;
         assert!(result.is_none(), "dir path should be consumed");
-        assert_eq!(screen.path, dir, "path should be updated");
+        assert_eq!(
+            screen.sidebar.current_dir(),
+            &dir,
+            "sidebar dir should be updated"
+        );
     }
 
     #[tokio::test]
