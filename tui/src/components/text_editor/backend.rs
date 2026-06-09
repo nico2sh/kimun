@@ -176,6 +176,18 @@ impl BackendState {
         true
     }
 
+    /// Reset the vim interpreter to Normal mode (called when a fresh note is
+    /// loaded). No-op for Direct / Nvim backends.
+    pub fn vim_reset_to_normal(&mut self) {
+        if let BackendState::Textarea(TextareaBackend {
+            input: InputInterpreter::Vim(engine),
+            ..
+        }) = self
+        {
+            engine.reset_to_normal();
+        }
+    }
+
     /// If the active backend is the vim interpreter, run it for this key and
     /// return the outcome. Returns `None` for Direct / Nvim backends.
     pub fn vim_handle_key(

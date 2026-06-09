@@ -720,6 +720,7 @@ impl TextEditorComponent {
                 nvim.set_text(&text);
             }
         }
+        self.backend.vim_reset_to_normal();
         self.bump_content();
         let reconstructed = self.get_text();
         self.mark_saved(reconstructed);

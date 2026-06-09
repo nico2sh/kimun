@@ -41,6 +41,10 @@ impl VimEngine {
         self.mode.label().to_string()
     }
 
+    pub fn reset_to_normal(&mut self) {
+        self.mode = EditorMode::Normal;
+    }
+
     /// Interpret one key. In Insert mode everything except `Esc` is
     /// `PassThrough` (the host runs the existing direct textarea path).
     /// In Normal mode, motions move the cursor and the insert-entry keys
@@ -206,6 +210,16 @@ mod tests {
         assert_eq!(out, VimKeyOutcome::TextMutated);
         assert_eq!(t.lines().len(), 3);
         assert_eq!(super::super::cursor_tuple(&t).0, 1);
+    }
+
+    #[test]
+    fn reset_returns_to_normal_from_insert() {
+        let mut e = VimEngine::default();
+        let mut t = ta();
+        e.handle_key(&key('i'), &mut t);
+        assert_eq!(*e.mode(), EditorMode::Insert);
+        e.reset_to_normal();
+        assert_eq!(*e.mode(), EditorMode::Normal);
     }
 
     #[test]
