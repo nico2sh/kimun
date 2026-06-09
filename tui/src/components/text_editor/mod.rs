@@ -1992,6 +1992,27 @@ impl Component for TextEditorComponent {
                         HandleKeyOutcome::NotHandled => {}
                     }
                 }
+                // Vim interpreter: Normal/Visual consume the key here; Insert
+                // mode returns PassThrough and falls into the direct path below
+                // so typing, autocomplete, auto-surround and smart-Enter all
+                // keep working (adr/0012).
+                if let Some(outcome) = self.backend.vim_handle_key(key) {
+                    use self::vim::VimKeyOutcome;
+                    match outcome {
+                        VimKeyOutcome::TextMutated => {
+                            self.selection = None;
+                            self.bump_content();
+                            return EventState::Consumed;
+                        }
+                        VimKeyOutcome::CursorOnly => {
+                            self.refresh_autocomplete_if_open();
+                            self.edit_generation = self.edit_generation.wrapping_add(1);
+                            return EventState::Consumed;
+                        }
+                        VimKeyOutcome::NoOp => return EventState::Consumed,
+                        VimKeyOutcome::PassThrough => { /* fall through to direct path */ }
+                    }
+                }
                 if let Some(state) = self.handle_nvim_key(key, tx) {
                     return state;
                 }
@@ -3390,5 +3411,29 @@ mod tests {
             matches!(result, Some(LinkTarget::Note(_))),
             "expected Note variant for markdown link fragment, got {result:?}"
         );
+    }
+
+    #[test]
+    fn vim_normal_i_then_typing_inserts_text() {
+        let mut settings = crate::settings::AppSettings::default();
+        settings.editor_backend = crate::settings::EditorBackendSetting::Vim;
+        let mut editor = TextEditorComponent::new(KeyBindings::empty(), &settings);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        // In Normal mode, 'x' is unmapped → no text change.
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('x'), KeyModifiers::NONE)),
+            &tx,
+        );
+        assert_eq!(editor.get_text(), "");
+        // 'i' enters Insert; then 'x' types a literal x via the direct path.
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('i'), KeyModifiers::NONE)),
+            &tx,
+        );
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('x'), KeyModifiers::NONE)),
+            &tx,
+        );
+        assert_eq!(editor.get_text(), "x");
     }
 }
