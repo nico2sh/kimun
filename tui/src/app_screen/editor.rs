@@ -1716,16 +1716,6 @@ impl AppScreen for EditorScreen {
             AppEvent::FocusSidebar => {
                 self.focus_sidebar(tx);
             }
-            AppEvent::OpenJournal => {
-                // Dismiss any open overlay so the journal note isn't loaded
-                // behind it (mirrors OpenPath / EntryCreated).
-                self.dismiss_overlay();
-                if let Ok((details, _)) = self.vault.journal_entry().await {
-                    let path = details.path;
-                    self.open_path(path.clone(), None, tx).await;
-                    self.refresh_sidebar_if_showing(&path.get_parent_path().0, tx);
-                }
-            }
             AppEvent::SavedSearchSelected { query, name } => {
                 // Deliberate non-restoring close: the selection lands in the
                 // Query panel (set by apply_saved_search), not back on the
@@ -2360,8 +2350,9 @@ mod tests {
     }
 
     /// Opening the journal while an overlay is up dismisses the overlay, so the
-    /// journal note isn't loaded behind it (regression for the OpenJournal arm,
-    /// which used to skip the restore that OpenPath/EntryCreated do).
+    /// journal note isn't loaded behind it. OpenJournal is now resolved at the
+    /// app level into an OpenPath, which lands here in `try_open_path` — that's
+    /// the door that must dismiss the overlay.
     #[tokio::test(flavor = "multi_thread")]
     async fn open_journal_dismisses_open_overlay() {
         let vault = crate::test_support::temp_vault("editor-journal").await;
@@ -2385,11 +2376,12 @@ mod tests {
         }
         assert!(screen.overlays.is_open(), "precondition: overlay open");
 
-        screen.handle_app_message(AppEvent::OpenJournal, &tx).await;
+        let (details, _) = vault.journal_entry().await.unwrap();
+        screen.try_open_path(details.path, None, &tx).await;
 
         assert!(
             !screen.overlays.is_open(),
-            "OpenJournal must dismiss the overlay before loading the note"
+            "opening the journal must dismiss the overlay before loading the note"
         );
     }
 

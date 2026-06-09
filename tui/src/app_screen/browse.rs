@@ -11,8 +11,10 @@ use ratatui::widgets::{Block, Paragraph};
 use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::Component;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppTx, InputEvent};
+use crate::components::events::{AppEvent, AppTx, InputEvent};
 use crate::components::sidebar::SidebarComponent;
+use crate::keys::action_shortcuts::ActionShortcuts;
+use crate::keys::key_event_to_combo;
 use crate::settings::SharedSettings;
 use crate::settings::themes::Theme;
 
@@ -20,6 +22,7 @@ pub struct BrowseScreen {
     sidebar: SidebarComponent,
     theme: Theme,
     path: VaultPath,
+    settings: SharedSettings,
 }
 
 impl BrowseScreen {
@@ -32,6 +35,7 @@ impl BrowseScreen {
             sidebar,
             theme,
             path,
+            settings,
         }
     }
 
@@ -55,6 +59,23 @@ impl AppScreen for BrowseScreen {
     }
 
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
+        // Intercept the journal shortcut (Ctrl+J by default) so today's entry
+        // can be opened straight from Browse; everything else feeds the sidebar.
+        if let InputEvent::Key(key) = event
+            && let Some(combo) = key_event_to_combo(key)
+        {
+            let action = {
+                let s = self.settings.read().unwrap();
+                s.key_bindings.get_action(&combo)
+            };
+            if action == Some(ActionShortcuts::NewJournal) {
+                // App-level OpenJournal resolves today's entry and routes it
+                // via OpenPath, switching to the editor (Browse does not open
+                // notes itself).
+                tx.send(AppEvent::OpenJournal).ok();
+                return EventState::Consumed;
+            }
+        }
         self.sidebar.handle_input(event, tx)
     }
 
@@ -110,9 +131,12 @@ impl AppScreen for BrowseScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::events::AppEvent;
     use crate::settings::AppSettings;
     use crate::test_support::{key_event, temp_vault};
-    use ratatui::crossterm::event::KeyCode;
+    use ratatui::crossterm::event::{
+        KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers,
+    };
     use std::sync::RwLock;
     use tokio::sync::mpsc::unbounded_channel;
 
@@ -144,6 +168,26 @@ mod tests {
         assert!(
             rx.try_recv().is_err(),
             "Esc should not send any message from BrowseScreen"
+        );
+    }
+
+    #[tokio::test]
+    async fn ctrl_j_requests_journal() {
+        let vault = make_vault().await;
+        let settings = make_settings_with_defaults();
+        let (tx, mut rx) = unbounded_channel();
+        let mut screen = BrowseScreen::new(vault, VaultPath::root(), settings);
+        let ctrl_j = InputEvent::Key(KeyEvent {
+            code: KeyCode::Char('j'),
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        });
+        let state = screen.handle_input(&ctrl_j, &tx);
+        assert_eq!(state, EventState::Consumed, "Ctrl+J should be consumed");
+        assert!(
+            matches!(rx.try_recv(), Ok(AppEvent::OpenJournal)),
+            "Ctrl+J should request the journal entry"
         );
     }
 
