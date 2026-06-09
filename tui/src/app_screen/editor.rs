@@ -1748,9 +1748,9 @@ impl AppScreen for EditorScreen {
                 self.present_overlay(Box::new(modal));
             }
             AppEvent::EntryCreated(path) => {
-                self.dismiss_overlay();
-                self.open_path(path.clone(), None, tx).await;
-                self.focus_editor();
+                // Pure notification: a note now exists at `path`. Opening is the
+                // creator's job (via OpenPath); here we only keep the sidebar in
+                // step when it is browsing the new note's directory.
                 self.refresh_sidebar_if_showing(&path.get_parent_path().0, tx);
             }
             AppEvent::EntryDeleted(path) => {
@@ -2376,7 +2376,7 @@ mod tests {
         }
         assert!(screen.overlays.is_open(), "precondition: overlay open");
 
-        let (details, _) = vault.journal_entry().await.unwrap();
+        let (details, _, _) = vault.journal_entry().await.unwrap();
         screen.try_open_path(details.path, None, &tx).await;
 
         assert!(

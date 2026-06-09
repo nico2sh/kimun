@@ -272,8 +272,12 @@ impl NoteBrowserModal {
             let vault = Arc::clone(&self.vault);
             let tx = tx.clone();
             tokio::spawn(async move {
-                vault.load_or_create_note(&path, None).await.ok();
-                tx.send(AppEvent::open(path)).ok();
+                if let Ok((_, created)) = vault.load_or_create_note(&path, None).await {
+                    if created {
+                        tx.send(AppEvent::EntryCreated(path.clone())).ok();
+                    }
+                    tx.send(AppEvent::open(path)).ok();
+                }
             });
             return;
         }

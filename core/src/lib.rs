@@ -385,14 +385,15 @@ impl NoteVault {
     }
 
     /// Loads today's journal entry, creating it with a date heading if it does
-    /// not exist yet. Returns the note details and its content.
-    pub async fn journal_entry(&self) -> Result<(NoteDetails, String), VaultError> {
+    /// not exist yet. Returns the note details, its content, and `true` when the
+    /// entry was freshly created.
+    pub async fn journal_entry(&self) -> Result<(NoteDetails, String, bool), VaultError> {
         let (title, note_path) = self.get_todays_journal();
-        let content = self
+        let (content, created) = self
             .load_or_create_note(&note_path, Some(format!("# {}\n\n", title)))
             .await?;
         let details = NoteDetails::new(&note_path, &content);
-        Ok((details, content))
+        Ok((details, content, created))
     }
 
     fn get_todays_journal(&self) -> (String, VaultPath) {
@@ -425,17 +426,20 @@ impl NoteVault {
 
     /// Loads the note at `path` if it exists; otherwise creates it with `default_text`
     /// (or empty if `None`) and returns that text.
+    /// Returns the note's text and `true` when the note had to be created (it
+    /// did not exist yet), so callers can react to a fresh note — e.g. refresh
+    /// a directory listing.
     pub async fn load_or_create_note(
         &self,
         path: &VaultPath,
         default_text: Option<String>,
-    ) -> Result<String, VaultError> {
+    ) -> Result<(String, bool), VaultError> {
         match nfs::load_note(self.workspace_path(), path).await {
-            Ok(text) => Ok(text),
+            Ok(text) => Ok((text, false)),
             Err(e) if e.is_not_found() => {
                 let text = default_text.unwrap_or_default();
                 self.create_note(path, &text).await?;
-                Ok(text)
+                Ok((text, true))
             }
             Err(e) => Err(e.into()),
         }
@@ -801,7 +805,7 @@ impl NoteVault {
         default: Option<String>,
     ) -> Result<(), VaultError> {
         let _guard = self.lock_note(path).await;
-        let existing = self.load_or_create_note(path, default).await?;
+        let (existing, _created) = self.load_or_create_note(path, default).await?;
         let combined = if existing.is_empty() {
             text.to_string()
         } else {
@@ -1628,6 +1632,35 @@ mod tests {
             .append(&VaultPath::note_path_from(&expected_title))
             .absolute();
         assert_eq!(note_path, expected_path);
+    }
+
+    #[tokio::test]
+    async fn journal_entry_reports_creation_then_reuse() {
+        let temp_dir = TempDir::new().unwrap();
+        let vault = NoteVault::new(VaultConfig::new(temp_dir.path()))
+            .await
+            .unwrap();
+
+        let (_, _, created_first) = vault.journal_entry().await.unwrap();
+        assert!(created_first, "first call must create today's entry");
+
+        let (_, _, created_second) = vault.journal_entry().await.unwrap();
+        assert!(!created_second, "second call must reuse the existing entry");
+    }
+
+    #[tokio::test]
+    async fn load_or_create_note_reports_creation_then_reuse() {
+        let temp_dir = TempDir::new().unwrap();
+        let vault = NoteVault::new(VaultConfig::new(temp_dir.path()))
+            .await
+            .unwrap();
+        let path = VaultPath::note_path_from("notes/fresh.md");
+
+        let (_, created_first) = vault.load_or_create_note(&path, None).await.unwrap();
+        assert!(created_first, "missing note must be created");
+
+        let (_, created_second) = vault.load_or_create_note(&path, None).await.unwrap();
+        assert!(!created_second, "existing note must be loaded, not recreated");
     }
 
     #[tokio::test]

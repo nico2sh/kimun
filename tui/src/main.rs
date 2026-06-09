@@ -466,13 +466,15 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
             // screen — the current screen opens it inline or the loop switches
             // to the editor.
             if let Some(vault) = app.vault.clone()
-                && let Ok((details, _)) = vault.journal_entry().await
+                && let Ok((details, _, created)) = vault.journal_entry().await
             {
-                tx.send(AppEvent::OpenPath {
-                    path: details.path,
-                    emphasis: None,
-                })
-                .ok();
+                let path = details.path;
+                if created {
+                    // Tell the current screen's sidebar a note appeared so it
+                    // refreshes if browsing the journal directory.
+                    tx.send(AppEvent::EntryCreated(path.clone())).ok();
+                }
+                tx.send(AppEvent::open(path)).ok();
             }
         }
         AppEvent::PreferencesSaved => {

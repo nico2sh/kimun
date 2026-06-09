@@ -79,6 +79,17 @@ impl AppScreen for BrowseScreen {
         self.sidebar.handle_input(event, tx)
     }
 
+    async fn handle_app_message(&mut self, msg: AppEvent, tx: &AppTx) {
+        if let AppEvent::EntryCreated(path) = msg {
+            // A note was created somewhere; rebuild the listing only when we are
+            // browsing its directory so the new note shows up.
+            let (parent, _) = path.get_parent_path();
+            if parent.is_like(&self.path) {
+                self.navigate_sidebar(self.path.clone(), tx).await;
+            }
+        }
+    }
+
     fn render(&mut self, f: &mut Frame) {
         f.render_widget(Block::default().style(self.theme.base_style()), f.area());
 
