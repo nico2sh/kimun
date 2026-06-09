@@ -11,6 +11,13 @@ use std::ops::Range;
 use std::sync::OnceLock;
 use unicode_width::UnicodeWidthStr;
 
+/// Terminal cursor shape the editor requests while focused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CursorShape {
+    Bar,
+    Block,
+}
+
 /// Describes how `view.update`'s Gate 1 modified the parse caches this
 /// frame. Read by Gate 2 to decide what subset of `rendered_cache` and
 /// `WordWrapLayout` needs to be rebuilt.
@@ -865,7 +872,14 @@ impl MarkdownEditorView {
         Some((widened, slice, splice_path))
     }
 
-    pub fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
+    pub fn render(
+        &mut self,
+        f: &mut Frame,
+        rect: Rect,
+        theme: &Theme,
+        focused: bool,
+        cursor_shape: Option<CursorShape>,
+    ) {
         if rect.height == 0 {
             return;
         }
@@ -1007,6 +1021,17 @@ impl MarkdownEditorView {
                 let cy = rect.y + (cursor_vrow - scroll) as u16;
                 f.set_cursor_position(Position { x: cx, y: cy });
                 self.last_cursor_screen = Some((cx, cy));
+                // TODO(cursor-style): the requested style lingers in other UI
+                // surfaces when the editor loses focus; emit a reset on focus
+                // loss in a later focus-management cleanup task.
+                if let Some(shape) = cursor_shape {
+                    use ratatui::crossterm::cursor::SetCursorStyle;
+                    let style = match shape {
+                        CursorShape::Block => SetCursorStyle::SteadyBlock,
+                        CursorShape::Bar => SetCursorStyle::SteadyBar,
+                    };
+                    let _ = ratatui::crossterm::execute!(std::io::stdout(), style);
+                }
             }
         }
     }
@@ -1341,7 +1366,7 @@ mod tests {
         let mut view = make_view_for_lines(&lines, (3, 0), 40);
         let mut terminal = Terminal::new(TestBackend::new(40, 5)).unwrap();
         terminal
-            .draw(|f| view.render(f, f.area(), &theme, true))
+            .draw(|f| view.render(f, f.area(), &theme, true, Some(CursorShape::Bar)))
             .unwrap();
         let buf = terminal.backend().buffer().clone();
         let code_bg = theme.code_bg.to_ratatui();
@@ -1518,7 +1543,7 @@ mod tests {
         );
         // Render with focus so the cursor branch runs.
         terminal
-            .draw(|f| v.render(f, f.area(), &theme, true))
+            .draw(|f| v.render(f, f.area(), &theme, true, Some(CursorShape::Bar)))
             .expect("render must not panic on stale cursor");
     }
 
