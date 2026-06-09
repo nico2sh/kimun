@@ -1504,6 +1504,51 @@ mod tests {
         assert_eq!(list.selected_row().unwrap().name, "a");
     }
 
+    // update_rows re-runs the active fuzzy filter after the mutation so rows
+    // that no longer match the query drop out of the visible view.
+    #[tokio::test]
+    async fn update_rows_refilters_visible_view() {
+        let source = VecSource {
+            rows: vec![
+                TestRow::new("alpha"),
+                TestRow::new("beta"),
+                TestRow::new("gamma"),
+            ],
+            reload: false,
+        };
+        let mut list = SearchList::builder(source, noop_redraw())
+            .filter(Filter::Fuzzy)
+            .build();
+        list.poll_until_idle().await;
+
+        // With query "alp", only "alpha" should be visible.
+        list.set_query("alp");
+        list.poll();
+        assert_eq!(
+            list.visible_rows().iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
+            vec!["alpha"],
+            "before update: only 'alpha' matches 'alp'"
+        );
+
+        // Rename "alpha" to something that no longer contains "alp".
+        let changed = list.update_rows(|r| {
+            if r.name == "alpha" {
+                r.name = "renamed".to_string();
+                true
+            } else {
+                false
+            }
+        });
+        assert!(changed);
+
+        // The visible view must now be empty: "renamed" does not match "alp".
+        assert_eq!(
+            list.visible_rows().len(),
+            0,
+            "after renaming 'alpha' -> 'renamed', nothing should match 'alp'"
+        );
+    }
+
     #[tokio::test]
     async fn update_rows_mutates_in_place_and_recomputes() {
         let source = VecSource {
