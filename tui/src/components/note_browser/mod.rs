@@ -664,6 +664,7 @@ mod tests {
                 title: "Note".to_string(),
                 filename: self.path.to_string(),
                 journal_date: None,
+                is_open: false,
             }]);
         }
     }

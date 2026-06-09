@@ -106,6 +106,10 @@ pub enum FileListEntry {
         title: String,
         filename: String,
         journal_date: Option<String>,
+        /// `true` when this is the note currently open in the editor. Drives the
+        /// open-note marker (accent glyph). Stamped by the sidebar after each
+        /// load; always `false` from the row source and on non-sidebar surfaces.
+        is_open: bool,
     },
     Directory {
         path: VaultPath,
@@ -125,19 +129,13 @@ impl FileListEntry {
     pub fn from_result(result: SearchResult, journal_date: Option<String>) -> Self {
         let filename = result.path.get_parent_path().1;
         match result.rtype {
-            ResultType::Note(data) => {
-                let title = if data.title.trim().is_empty() {
-                    "<no title>".to_string()
-                } else {
-                    data.title
-                };
-                Self::Note {
-                    path: result.path,
-                    title,
-                    filename,
-                    journal_date,
-                }
-            }
+            ResultType::Note(data) => Self::Note {
+                path: result.path,
+                title: Self::display_title(data.title),
+                filename,
+                journal_date,
+                is_open: false,
+            },
             ResultType::Directory => Self::Directory {
                 path: result.path,
                 name: filename,
@@ -146,6 +144,17 @@ impl FileListEntry {
                 path: result.path,
                 filename,
             },
+        }
+    }
+
+    /// Map a raw note title to its display form, substituting a placeholder
+    /// for an empty/whitespace title. Shared by listing construction and the
+    /// sidebar's live title updates so they never diverge.
+    pub fn display_title(raw: String) -> String {
+        if raw.trim().is_empty() {
+            "<no title>".to_string()
+        } else {
+            raw
         }
     }
 
@@ -199,6 +208,7 @@ impl FileListEntry {
                 title,
                 filename,
                 journal_date,
+                is_open,
                 ..
             } => {
                 let glyph = if journal_date.is_some() {
@@ -207,6 +217,10 @@ impl FileListEntry {
                     icons.note
                 };
                 let mut row = RichRow::new(glyph, title.clone()).filename(filename.clone());
+                if *is_open {
+                    // Open-note marker: accent the type glyph (see CONTEXT.md).
+                    row = row.glyph_style(Style::default().fg(theme.accent.to_ratatui()));
+                }
                 if let Some(date) = journal_date {
                     row = row.secondary(
                         date.clone(),
@@ -260,6 +274,33 @@ impl crate::components::search_list::SearchRow for FileListEntry {
             Self::Directory { name, .. } => Some(name),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod open_marker_tests {
+    use super::*;
+
+    #[test]
+    fn display_title_substitutes_placeholder_for_empty() {
+        assert_eq!(FileListEntry::display_title("   ".to_string()), "<no title>");
+        assert_eq!(FileListEntry::display_title("Real".to_string()), "Real");
+    }
+
+    #[test]
+    fn open_note_renders_without_panicking() {
+        use crate::settings::icons::Icons;
+        use crate::settings::themes::Theme;
+        let theme = Theme::default();
+        let icons = Icons::new(false);
+        let note = FileListEntry::Note {
+            path: kimun_core::nfs::VaultPath::note_path_from("a.md"),
+            title: "A".to_string(),
+            filename: "a.md".to_string(),
+            journal_date: None,
+            is_open: true,
+        };
+        let _ = note.to_list_item(&theme, &icons);
     }
 }
 
