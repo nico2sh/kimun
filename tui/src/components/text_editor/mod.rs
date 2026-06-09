@@ -4,6 +4,7 @@ pub mod markdown;
 pub mod nvim_rpc;
 pub mod parse_incremental;
 pub mod snapshot;
+mod vim;
 pub mod view;
 pub mod widener_metrics;
 pub mod word_wrap;
@@ -37,9 +38,9 @@ fn snapshot_from_backend(
     content_revision: NonZeroU64,
 ) -> EditorSnapshot<'_> {
     match backend {
-        BackendState::Textarea(ta) => {
-            let cursor = cursor_tuple(ta);
-            EditorSnapshot::borrowed(ta.lines(), cursor, content_revision)
+        BackendState::Textarea(tb) => {
+            let cursor = cursor_tuple(&tb.ta);
+            EditorSnapshot::borrowed(tb.ta.lines(), cursor, content_revision)
         }
         BackendState::Nvim(nvim) => {
             let snap = nvim.snapshot();
@@ -650,7 +651,7 @@ impl TextEditorComponent {
     /// which reads from the snapshot.
     pub fn lines(&self) -> &[String] {
         match &self.backend {
-            BackendState::Textarea(ta) => ta.lines(),
+            BackendState::Textarea(tb) => tb.ta.lines(),
             BackendState::Nvim(_) => &[],
         }
     }
@@ -711,9 +712,9 @@ impl TextEditorComponent {
             return;
         }
         match &mut self.backend {
-            BackendState::Textarea(ta) => {
+            BackendState::Textarea(tb) => {
                 let lines = text.lines();
-                *ta = TextArea::from(lines);
+                tb.ta = TextArea::from(lines);
             }
             BackendState::Nvim(nvim) => {
                 nvim.set_text(&text);
@@ -794,9 +795,9 @@ impl TextEditorComponent {
     /// cursor is not inside a wikilink, markdown link, or hashtag span.
     pub fn link_at_cursor(&self) -> Option<LinkTarget> {
         let (_row, col, line) = match &self.backend {
-            BackendState::Textarea(ta) => {
-                let (row, col) = cursor_tuple(ta);
-                let line = ta.lines().get(row)?.to_string();
+            BackendState::Textarea(tb) => {
+                let (row, col) = cursor_tuple(&tb.ta);
+                let line = tb.ta.lines().get(row)?.to_string();
                 (row, col, line)
             }
             BackendState::Nvim(nvim) => {
@@ -878,14 +879,14 @@ impl TextEditorComponent {
             return;
         }
         match &mut self.backend {
-            BackendState::Textarea(ta) => {
-                let selection = linkable_url(text).and_then(|_| selection_text(ta));
+            BackendState::Textarea(tb) => {
+                let selection = linkable_url(text).and_then(|_| selection_text(&tb.ta));
                 let wrapped = try_build_markdown_link(text, selection.as_deref());
-                if ta.selection_range().is_some() {
-                    ta.cut();
+                if tb.ta.selection_range().is_some() {
+                    tb.ta.cut();
                 }
-                ta.insert_str(wrapped.as_deref().unwrap_or(text));
-                self.selection = ta.selection_range();
+                tb.ta.insert_str(wrapped.as_deref().unwrap_or(text));
+                self.selection = tb.ta.selection_range();
                 self.bump_content();
             }
             BackendState::Nvim(nvim) => {
@@ -2297,7 +2298,7 @@ mod tests {
 
     fn get_ta(editor: &mut TextEditorComponent) -> &mut TextArea<'static> {
         match &mut editor.backend {
-            BackendState::Textarea(ta) => ta,
+            BackendState::Textarea(tb) => &mut tb.ta,
             _ => panic!("expected Textarea backend"),
         }
     }
@@ -2453,8 +2454,8 @@ mod tests {
         ta.move_cursor(ratatui_textarea::CursorMove::WordForward);
         assert!(ta.selection_range().is_some());
         ta.cancel_selection();
-        editor.selection = if let BackendState::Textarea(ta) = &editor.backend {
-            ta.selection_range()
+        editor.selection = if let BackendState::Textarea(tb) = &editor.backend {
+            tb.ta.selection_range()
         } else {
             None
         };
