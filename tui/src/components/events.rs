@@ -48,6 +48,9 @@ pub enum AppEvent {
     AutosaveCompleted {
         path: VaultPath,
         saved_revision: Option<NonZeroU64>,
+        /// The note's recomputed title (first body line) from the save, so the
+        /// sidebar row can be retitled. `None` when the save failed.
+        title: Option<String>,
     },
     /// Open a note (or directory) — `emphasis` carries the originating
     /// query's needles when the open comes from a query result, so the
@@ -139,7 +142,9 @@ pub enum AppEvent {
         from: VaultPath,
         to: VaultPath,
     },
-    /// A new note was just created and should be opened; sidebar should reflect it.
+    /// Notification that a note was just created at this path. The current
+    /// screen refreshes its sidebar if it is browsing the note's directory.
+    /// Opening the note is a separate concern (the creator emits `OpenPath`).
     EntryCreated(VaultPath),
     /// A dialog operation failed; carries a human-readable error message.
     DialogError(String),
@@ -258,6 +263,25 @@ pub enum ScreenEvent {
 
 /// Convenience alias used throughout the codebase.
 pub type AppTx = UnboundedSender<AppEvent>;
+
+/// Sender helpers for the create-then-open sequence shared by every
+/// note-creation site (create dialog, quick note, note browser, sidebar,
+/// journal).
+pub trait AppTxExt {
+    /// Announce a freshly created note so sidebars browsing its directory
+    /// refresh, then open it. The notification is gated on `created` (an
+    /// already-existing note needs no refresh); the note is opened regardless.
+    fn announce_and_open(&self, path: VaultPath, created: bool);
+}
+
+impl AppTxExt for AppTx {
+    fn announce_and_open(&self, path: VaultPath, created: bool) {
+        if created {
+            self.send(AppEvent::EntryCreated(path.clone())).ok();
+        }
+        self.send(AppEvent::open(path)).ok();
+    }
+}
 
 /// Build a `Send + Sync` callback that fires `AppEvent::Redraw` on the
 /// app event bus. Used by long-lived components (autocomplete query

@@ -19,6 +19,7 @@ use crate::components::drawer::{DrawerHost, DrawerView};
 use crate::components::drawer_views::{LinksPanel, OutlinePanel, TagsPanel};
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, SaveSource, ScreenEvent, SortTarget};
+use crate::components::file_list::FileListEntry;
 use crate::components::footer_bar::FooterBar;
 use crate::components::note_browser::file_finder_provider::FileFinderProvider;
 use crate::components::note_browser::search_provider::SearchNotesProvider;
@@ -294,6 +295,10 @@ impl EditorScreen {
         });
 
         self.path = path.clone();
+        // Mark this note's row in the sidebar (clears the previous one).
+        self.panels
+            .sidebar_mut()
+            .set_open_note(Some(self.path.clone()));
         match self.vault.get_note_text(&self.path).await {
             Ok(content) => {
                 self.doc_meta.note_opened(&self.path, tx);
@@ -305,17 +310,9 @@ impl EditorScreen {
                 }
                 self.panels.editor_mut().set_redraw_tx(tx);
                 tx.send(AppEvent::Redraw).ok();
-                if self.drawer_open_on(DrawerView::Find) {
-                    self.panels.query_mut().set_note(path.clone(), tx.clone());
-                }
-                // LINKS and OUTLINE reflect the open note; keep them in step.
-                if self.panels.is_visible(PanelKind::Drawer) {
-                    match self.panels.active_drawer_view() {
-                        DrawerView::Links => self.panels.links_mut().set_note(path.clone(), tx),
-                        DrawerView::Outline => self.panels.outline_mut().set_note(path.clone(), tx),
-                        _ => {}
-                    }
-                }
+                // FIND / LINKS / OUTLINE reflect the open note; keep them in
+                // step. Shared with `on_note_renamed` via the helper.
+                self.reflect_open_note_in_drawers(tx);
             }
             Err(e) => {
                 if matches!(e, VaultError::FSError(FSError::VaultPathNotFound { .. })) {
@@ -361,10 +358,15 @@ impl EditorScreen {
     /// Deliberately the inverse of `reveal_note_dir_in_sidebar`, which
     /// navigates when the sidebar is NOT on the target dir.
     fn refresh_sidebar_if_showing(&mut self, dir: &VaultPath, tx: &AppTx) {
-        if dir.is_like(self.panels.sidebar().current_dir()) {
-            let current = self.panels.sidebar().current_dir().clone();
-            self.navigate_sidebar(current, tx);
-        }
+        self.panels.sidebar_mut().refresh_if_showing(dir, tx);
+    }
+
+    /// A note at `path` was just saved with raw title `raw_title`; update its
+    /// sidebar row in place. Keyed by the saved path, not the open note, so a
+    /// just-saved-then-deselected note's row updates too.
+    fn note_saved(&mut self, path: &VaultPath, raw_title: String) {
+        let title = FileListEntry::display_title(raw_title);
+        self.panels.sidebar_mut().update_note_row(path, &title);
     }
 
     async fn try_save(&mut self) {
@@ -400,8 +402,10 @@ impl EditorScreen {
             // disk. A timeout returns Err(_); we skip mark_saved so the
             // editor stays dirty for any subsequent retry.
             let save = self.vault.save_note(&self.path, &text);
-            if matches!(tokio::time::timeout(SAVE_TIMEOUT, save).await, Ok(Ok(_))) {
+            if let Ok(Ok((_, content))) = tokio::time::timeout(SAVE_TIMEOUT, save).await {
                 self.panels.editor_mut().mark_saved(text);
+                let path = self.path.clone();
+                self.note_saved(&path, content.title);
             }
         }
     }
@@ -429,10 +433,14 @@ impl EditorScreen {
         let path = self.path.clone();
         let tx = tx.clone();
         self.autosave_task.spawn(async move {
-            let saved_revision = vault.save_note(&path, &text).await.ok().map(|_| revision);
+            let (saved_revision, title) = match vault.save_note(&path, &text).await {
+                Ok((_, content)) => (Some(revision), Some(content.title)),
+                Err(_) => (None, None),
+            };
             let _ = tx.send(AppEvent::AutosaveCompleted {
                 path,
                 saved_revision,
+                title,
             });
         });
     }
@@ -480,6 +488,52 @@ impl EditorScreen {
             self.refresh_sidebar_if_showing(&from.get_parent_path().0, tx);
         }
     }
+
+    /// A note was renamed. Update its sidebar row in place; if it is the note
+    /// currently open, retarget the editor to the new path and reload the body
+    /// from disk so any self-link rewrites from the rename land in the buffer
+    /// (the in-memory text still holds the pre-rename self-links). We
+    /// deliberately do NOT `try_save` — the old path no longer exists on disk.
+    async fn on_note_renamed(&mut self, from: VaultPath, to: VaultPath, tx: &AppTx) {
+        self.dismiss_overlay();
+        self.panels.sidebar_mut().rename_note_row(&from, &to);
+        if from == self.path {
+            // The open note was renamed. Kill any in-flight autosave still
+            // targeting the OLD path before retargeting (spawn_autosave bakes
+            // the path in; vault.save_note writes unconditionally, so a stale
+            // save would recreate the renamed-away file). abort() is
+            // best-effort (can't unwind a syscall already in progress).
+            self.autosave_task.abort();
+            match self.vault.get_note_text(&to).await {
+                Ok(text) => {
+                    self.path = to.clone();
+                    self.panels.editor_mut().set_text(text.clone());
+                    self.panels.editor_mut().mark_saved(text);
+                    self.panels
+                        .sidebar_mut()
+                        .set_open_note(Some(self.path.clone()));
+                    self.doc_meta.note_opened(&self.path, tx);
+                    self.reflect_open_note_in_drawers(tx);
+                    // Fresh autosave timer for the new path (mirrors open_path).
+                    let interval = self.settings.read().unwrap().autosave_interval_secs;
+                    self.autosave.restart(interval, tx.clone());
+                }
+                Err(_) => {
+                    // Couldn't load the renamed note — do NOT keep a dirty
+                    // buffer pointed at it (autosave would clobber the
+                    // on-disk rewrite). Fall back to Browse on the new
+                    // parent dir.
+                    self.autosave.stop();
+                    let parent = to.get_parent_path().0;
+                    tx.send(AppEvent::OpenScreen(ScreenEvent::OpenBrowse(
+                        self.vault.clone(),
+                        parent,
+                    )))
+                    .ok();
+                }
+            }
+        }
+    }
 }
 
 impl EditorScreen {
@@ -497,6 +551,24 @@ impl EditorScreen {
     /// Whether the drawer is open showing `view`.
     fn drawer_open_on(&self, view: DrawerView) -> bool {
         self.panels.is_visible(PanelKind::Drawer) && self.panels.active_drawer_view() == view
+    }
+
+    /// Reflect the currently-open note (`self.path`) into whichever drawer view
+    /// is visible (FIND/LINKS/OUTLINE). Shared by `open_path` and
+    /// `on_note_renamed` so a rename keeps the drawers in step, not just a
+    /// fresh open.
+    fn reflect_open_note_in_drawers(&mut self, tx: &AppTx) {
+        let path = self.path.clone();
+        if self.drawer_open_on(DrawerView::Find) {
+            self.panels.query_mut().set_note(path.clone(), tx.clone());
+        }
+        if self.panels.is_visible(PanelKind::Drawer) {
+            match self.panels.active_drawer_view() {
+                DrawerView::Links => self.panels.links_mut().set_note(path.clone(), tx),
+                DrawerView::Outline => self.panels.outline_mut().set_note(path, tx),
+                _ => {}
+            }
+        }
     }
 
     /// Point the sidebar at the current note's directory. Skips the engine
@@ -1695,11 +1767,15 @@ impl AppScreen for EditorScreen {
             AppEvent::AutosaveCompleted {
                 path,
                 saved_revision,
+                title,
             } => {
                 if path == self.path
                     && let Some(rev) = saved_revision
                 {
                     self.panels.editor_mut().mark_saved_at_revision(rev);
+                }
+                if let Some(raw_title) = title {
+                    self.note_saved(&path, raw_title);
                 }
                 // The write changed the working tree — refresh the git
                 // segment (throttled).
@@ -1715,16 +1791,6 @@ impl AppScreen for EditorScreen {
             }
             AppEvent::FocusSidebar => {
                 self.focus_sidebar(tx);
-            }
-            AppEvent::OpenJournal => {
-                // Dismiss any open overlay so the journal note isn't loaded
-                // behind it (mirrors OpenPath / EntryCreated).
-                self.dismiss_overlay();
-                if let Ok((details, _)) = self.vault.journal_entry().await {
-                    let path = details.path;
-                    self.open_path(path.clone(), None, tx).await;
-                    self.refresh_sidebar_if_showing(&path.get_parent_path().0, tx);
-                }
             }
             AppEvent::SavedSearchSelected { query, name } => {
                 // Deliberate non-restoring close: the selection lands in the
@@ -1758,16 +1824,22 @@ impl AppScreen for EditorScreen {
                 self.present_overlay(Box::new(modal));
             }
             AppEvent::EntryCreated(path) => {
-                self.dismiss_overlay();
-                self.open_path(path.clone(), None, tx).await;
-                self.focus_editor();
+                // Pure notification: a note now exists at `path`. Opening is the
+                // creator's job (via OpenPath); here we only keep the sidebar in
+                // step when it is browsing the new note's directory.
                 self.refresh_sidebar_if_showing(&path.get_parent_path().0, tx);
             }
             AppEvent::EntryDeleted(path) => {
                 self.on_entry_op(path, tx).await;
             }
-            AppEvent::EntryRenamed { from, .. } => {
-                self.on_entry_op(from, tx).await;
+            AppEvent::EntryRenamed { from, to } => {
+                // Note rename → targeted row update (and retarget the editor if
+                // it is the open note). Directory rename keeps the full reload.
+                if from.is_note() {
+                    self.on_note_renamed(from, to, tx).await;
+                } else {
+                    self.on_entry_op(from, tx).await;
+                }
             }
             AppEvent::EntryMoved { from, .. } => {
                 self.on_entry_op(from, tx).await;
@@ -2360,8 +2432,9 @@ mod tests {
     }
 
     /// Opening the journal while an overlay is up dismisses the overlay, so the
-    /// journal note isn't loaded behind it (regression for the OpenJournal arm,
-    /// which used to skip the restore that OpenPath/EntryCreated do).
+    /// journal note isn't loaded behind it. OpenJournal is now resolved at the
+    /// app level into an OpenPath, which lands here in `try_open_path` — that's
+    /// the door that must dismiss the overlay.
     #[tokio::test(flavor = "multi_thread")]
     async fn open_journal_dismisses_open_overlay() {
         let vault = crate::test_support::temp_vault("editor-journal").await;
@@ -2385,11 +2458,12 @@ mod tests {
         }
         assert!(screen.overlays.is_open(), "precondition: overlay open");
 
-        screen.handle_app_message(AppEvent::OpenJournal, &tx).await;
+        let (details, _, _) = vault.journal_entry().await.unwrap();
+        screen.try_open_path(details.path, None, &tx).await;
 
         assert!(
             !screen.overlays.is_open(),
-            "OpenJournal must dismiss the overlay before loading the note"
+            "opening the journal must dismiss the overlay before loading the note"
         );
     }
 
@@ -2450,6 +2524,91 @@ mod tests {
             screen.overlays.active_kind(),
             Some(OverlayKind::Dialog),
             "saving from the note browser opens the save-search dialog"
+        );
+    }
+
+    /// Renaming the open note keeps it open under the new path (retarget in
+    /// place) instead of navigating away, and reloads the buffer clean.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn renaming_open_note_retargets_in_place() {
+        let vault = crate::test_support::temp_vault("editor-rename").await;
+        vault.validate_and_init().await.unwrap();
+        let from = VaultPath::note_path_from("old");
+        vault.create_note(&from, "# Old\n\nbody").await.unwrap();
+        let settings = std::sync::Arc::new(std::sync::RwLock::new(
+            crate::settings::AppSettings::default(),
+        ));
+        let mut screen = EditorScreen::new(vault.clone(), from.clone(), settings);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        screen.on_enter(&tx).await;
+
+        let to = VaultPath::note_path_from("new");
+        vault.rename_note(&from, &to).await.unwrap();
+        screen
+            .handle_app_message(
+                AppEvent::EntryRenamed {
+                    from: from.clone(),
+                    to: to.clone(),
+                },
+                &tx,
+            )
+            .await;
+
+        assert_eq!(screen.path, to, "editor retargets to the new path");
+        assert!(
+            !screen.panels.editor().is_dirty(),
+            "reloaded buffer is clean (won't clobber the renamed file)"
+        );
+    }
+
+    /// Opening a note marks its sidebar row; saving it (AutosaveCompleted with a
+    /// new title) updates that row's title in place.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn open_then_save_marks_and_retitles_sidebar_row() {
+        let vault = crate::test_support::temp_vault("editor-marksave").await;
+        vault.validate_and_init().await.unwrap();
+        vault
+            .create_note(&VaultPath::note_path_from("alpha"), "# Alpha\n\nbody")
+            .await
+            .unwrap();
+        let settings = std::sync::Arc::new(std::sync::RwLock::new(
+            crate::settings::AppSettings::default(),
+        ));
+        let path = VaultPath::note_path_from("alpha");
+        let mut screen = EditorScreen::new(vault.clone(), path.clone(), settings);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        screen.on_enter(&tx).await;
+        for _ in 0..50 {
+            screen.panels.sidebar_mut().poll_for_test();
+            if !screen.panels.sidebar().is_loading_for_test() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+
+        assert!(
+            screen
+                .panels
+                .sidebar()
+                .note_row_is_open_for_test("alpha.md"),
+            "the open note's row is marked"
+        );
+
+        screen
+            .handle_app_message(
+                AppEvent::AutosaveCompleted {
+                    path: path.clone(),
+                    saved_revision: None,
+                    title: Some("New First Line".to_string()),
+                },
+                &tx,
+            )
+            .await;
+
+        assert_eq!(
+            screen.panels.sidebar().note_row_title_for_test("alpha.md"),
+            Some("New First Line".to_string()),
+            "the saved note's row title updated in place"
         );
     }
 }

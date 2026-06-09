@@ -223,24 +223,32 @@ impl<R: SearchRow> SearchList<R> {
                 self.offset = 0;
                 self.applied_generation = current_gen;
             }
-        }
-        for ev in drained {
-            match ev {
-                LoadedInner::Replace(rows) => {
-                    self.rows = rows;
+            for ev in drained {
+                match ev {
+                    LoadedInner::Replace(rows) => {
+                        self.rows = rows;
+                    }
+                    LoadedInner::Push(row) => {
+                        self.rows.push(row);
+                    }
+                    LoadedInner::Done => {}
                 }
-                LoadedInner::Push(row) => {
-                    self.rows.push(row);
-                }
-                LoadedInner::Done => {}
             }
-        }
-        self.recompute_display();
-        if self.selected.is_none() && self.visible_len() > 0 {
-            self.selected = Some(0);
+            self.recompute_and_seed();
         }
         if let Some(ac) = &mut self.autocomplete {
             ac.poll_results();
+        }
+    }
+
+    /// Recompute the display order, then seed the selection to the first row
+    /// when nothing is selected yet (e.g. after the first load or a filter that
+    /// repopulated the list). The single place display + initial selection are
+    /// brought in sync.
+    fn recompute_and_seed(&mut self) {
+        self.recompute_display();
+        if self.selected.is_none() && self.visible_len() > 0 {
+            self.selected = Some(0);
         }
     }
 
@@ -360,14 +368,37 @@ impl<R: SearchRow> SearchList<R> {
     fn requery(&mut self) {
         if self.source.reload_on_query() {
             self.loader.start(self.source.clone(), self.query.clone());
-        } else {
-            self.recompute_display();
         }
+        // Recompute now so the query-fresh leading row (and local filter, for
+        // non-reload sources) reflect the new query in this frame. Reload
+        // sources refresh again when their load drains in poll().
+        self.recompute_and_seed();
     }
 
     /// Re-run the source load for the current query (e.g. after a mutation).
     pub fn reload(&mut self) {
         self.loader.start(self.source.clone(), self.query.clone());
+    }
+
+    /// Mutate rows in place. `mutate` is called for each row and returns `true`
+    /// for each row it changed; if any did, the display order is recomputed
+    /// (re-filter, no re-sort) so an active filter stays correct. Returns
+    /// whether anything changed.
+    ///
+    /// This is the one seam that touches rows outside the [`RowSource`]; every
+    /// other change rebuilds from the source. Structural changes (add/remove/
+    /// reorder) must still reload. See `adr/0010`.
+    pub fn update_rows(&mut self, mut mutate: impl FnMut(&mut R) -> bool) -> bool {
+        let mut changed = false;
+        for row in &mut self.rows {
+            if mutate(row) {
+                changed = true;
+            }
+        }
+        if changed {
+            self.recompute_display();
+        }
+        changed
     }
 
     pub fn select_next(&mut self) {
@@ -816,8 +847,8 @@ impl<R: SearchRow> SearchListBuilder<R> {
 #[cfg(test)]
 mod tests {
     use super::adapters::{
-        ScriptedStreamLeadSource, ScriptedStreamSource, StreamRow, TestRow, VecSource,
-        VecSourceWithLead,
+        ReloadWithLeadSource, ScriptedStreamLeadSource, ScriptedStreamSource, StreamRow, TestRow,
+        VecSource, VecSourceWithLead,
     };
     use super::*;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -1481,5 +1512,184 @@ mod tests {
         assert_eq!(list.visible_len(), 2);
         assert_eq!(list.visible_rows().len(), 2);
         assert_eq!(list.selected_row().unwrap().name, "a");
+    }
+
+    // update_rows re-runs the active fuzzy filter after the mutation so rows
+    // that no longer match the query drop out of the visible view.
+    #[tokio::test]
+    async fn update_rows_refilters_visible_view() {
+        let source = VecSource {
+            rows: vec![
+                TestRow::new("alpha"),
+                TestRow::new("beta"),
+                TestRow::new("gamma"),
+            ],
+            reload: false,
+        };
+        let mut list = SearchList::builder(source, noop_redraw())
+            .filter(Filter::Fuzzy)
+            .build();
+        list.poll_until_idle().await;
+
+        // With query "alp", only "alpha" should be visible.
+        list.set_query("alp");
+        list.poll();
+        assert_eq!(
+            list.visible_rows()
+                .iter()
+                .map(|r| r.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha"],
+            "before update: only 'alpha' matches 'alp'"
+        );
+
+        // Rename "alpha" to something that no longer contains "alp".
+        let changed = list.update_rows(|r| {
+            if r.name == "alpha" {
+                r.name = "renamed".to_string();
+                true
+            } else {
+                false
+            }
+        });
+        assert!(changed);
+
+        // The visible view must now be empty: "renamed" does not match "alp".
+        assert_eq!(
+            list.visible_rows().len(),
+            0,
+            "after renaming 'alpha' -> 'renamed', nothing should match 'alp'"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_rows_mutates_in_place_and_recomputes() {
+        let source = VecSource {
+            rows: vec![TestRow::new("alpha"), TestRow::new("beta")],
+            reload: false,
+        };
+        let mut list = SearchList::builder(source, noop_redraw()).build();
+        list.poll_until_idle().await;
+
+        // Mutate the row named "alpha".
+        let changed = list.update_rows(|r| {
+            if r.name == "alpha" {
+                r.name = "renamed".to_string();
+                true
+            } else {
+                false
+            }
+        });
+        assert!(changed, "a row was changed");
+        assert!(
+            list.rows().iter().any(|r| r.name == "renamed"),
+            "the mutation is visible in rows()"
+        );
+
+        // A no-op mutation reports no change and does not panic.
+        let changed_again = list.update_rows(|_| false);
+        assert!(!changed_again, "no row changed");
+    }
+
+    // Regression guard (Fix A): for reload_on_query == true sources that also
+    // expose a leading row, set_query must rebuild the leading row synchronously
+    // in the same frame — before any poll/drain. The old code skipped
+    // recompute_and_seed() for reload sources, so the leading row lagged until
+    // the async load landed. This test must FAIL without the fix (the leading
+    // row still shows the old query immediately after set_query).
+    #[tokio::test]
+    async fn reload_source_leading_row_updates_synchronously_on_set_query() {
+        let src = ReloadWithLeadSource {
+            rows: vec![
+                TestRow::new("alpha"),
+                TestRow::new("beta"),
+                TestRow::new("gamma"),
+            ],
+        };
+        let mut list = SearchList::builder(src, noop_redraw()).build();
+        list.poll_until_idle().await;
+        // Sanity: no leading row for empty query.
+        assert!(list.leading.is_none(), "no leading row for empty query");
+
+        // Change query — do NOT poll/drain after this.
+        list.set_query("alp");
+
+        // The leading row must reflect the NEW query immediately (synchronously).
+        let vis = list.visible_rows();
+        assert!(
+            !vis.is_empty(),
+            "visible_rows must not be empty right after set_query"
+        );
+        assert_eq!(
+            vis[0].name, "create:alp",
+            "leading row must show new query synchronously, before any poll/drain"
+        );
+
+        // The async load will also arrive, but the leading row must already be
+        // correct without waiting for it.
+        list.poll_until_idle().await;
+        let vis = list.visible_rows();
+        assert_eq!(
+            vis[0].name, "create:alp",
+            "leading row correct after drain too"
+        );
+        // Only "alpha" matches "alp" from the server-side filter.
+        assert_eq!(vis.len(), 2, "leading + alpha");
+        assert_eq!(vis[1].name, "alpha");
+    }
+
+    // Regression guard: local-filter sources (reload_on_query == false) must
+    // reseed the selection back to row 0 when a filter change repopulates the
+    // list after having emptied it.
+    //
+    // The gate in `poll()` (only recompute when drain is non-empty) must NOT
+    // suppress the reseed for local filters, because they go through
+    // `requery()` → `recompute_and_seed()` directly — no loader drain.
+    #[tokio::test]
+    async fn local_filter_reseed_after_empty_then_repopulate() {
+        let src = VecSource {
+            rows: vec![
+                TestRow::new("alpha"),
+                TestRow::new("beta"),
+                TestRow::new("gamma"),
+            ],
+            reload: false,
+        };
+        let mut list = SearchList::builder(src, noop_redraw())
+            .filter(Filter::Fuzzy)
+            .build();
+        list.poll_until_idle().await;
+
+        // Sanity: initial load selected the first row.
+        assert!(
+            list.selected_row().is_some(),
+            "should have a selection after initial load"
+        );
+
+        // Apply a filter that matches nothing → visible list is empty → selection cleared.
+        list.set_query("zzznomatch");
+        assert_eq!(list.visible_len(), 0, "no rows should match 'zzznomatch'");
+        assert!(
+            list.selected_row().is_none(),
+            "selection must be None when list is empty"
+        );
+
+        // Widen the filter so rows come back (no drain will happen — local filter).
+        list.set_query("alp");
+        assert!(
+            list.visible_len() > 0,
+            "at least 'alpha' should match 'alp'"
+        );
+        // The selection MUST be reseeded to Some(0) — the subtlety the gating
+        // would regress if recompute_and_seed() weren't called from requery().
+        assert!(
+            list.selected_row().is_some(),
+            "selection must be reseeded to first visible row after repopulation"
+        );
+        assert_eq!(
+            list.selected_row().unwrap().name,
+            "alpha",
+            "first visible row must be selected after reseeding"
+        );
     }
 }
