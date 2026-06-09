@@ -310,17 +310,9 @@ impl EditorScreen {
                 }
                 self.panels.editor_mut().set_redraw_tx(tx);
                 tx.send(AppEvent::Redraw).ok();
-                if self.drawer_open_on(DrawerView::Find) {
-                    self.panels.query_mut().set_note(path.clone(), tx.clone());
-                }
-                // LINKS and OUTLINE reflect the open note; keep them in step.
-                if self.panels.is_visible(PanelKind::Drawer) {
-                    match self.panels.active_drawer_view() {
-                        DrawerView::Links => self.panels.links_mut().set_note(path.clone(), tx),
-                        DrawerView::Outline => self.panels.outline_mut().set_note(path.clone(), tx),
-                        _ => {}
-                    }
-                }
+                // FIND / LINKS / OUTLINE reflect the open note; keep them in
+                // step. Shared with `on_note_renamed` via the helper.
+                self.reflect_open_note_in_drawers(tx);
             }
             Err(e) => {
                 if matches!(e, VaultError::FSError(FSError::VaultPathNotFound { .. })) {
@@ -507,25 +499,39 @@ impl EditorScreen {
         self.panels.sidebar_mut().rename_note_row(&from, &to);
         if from == self.path {
             // The open note was renamed. Kill any in-flight autosave still
-            // targeting the OLD path before retargeting — spawn_autosave bakes
-            // the path in at spawn time, and vault.save_note writes
-            // unconditionally, so a stale in-flight save would recreate the
-            // renamed-away file. abort() is best-effort (it can't unwind a
-            // syscall already in progress), but it closes the common case and
-            // mirrors the discipline open_path/on_entry_op already follow.
+            // targeting the OLD path before retargeting (spawn_autosave bakes
+            // the path in; vault.save_note writes unconditionally, so a stale
+            // save would recreate the renamed-away file). abort() is
+            // best-effort (can't unwind a syscall already in progress).
             self.autosave_task.abort();
-            self.path = to.clone();
-            if let Ok(text) = self.vault.get_note_text(&self.path).await {
-                self.panels.editor_mut().set_text(text.clone());
-                self.panels.editor_mut().mark_saved(text);
+            match self.vault.get_note_text(&to).await {
+                Ok(text) => {
+                    self.path = to.clone();
+                    self.panels.editor_mut().set_text(text.clone());
+                    self.panels.editor_mut().mark_saved(text);
+                    self.panels
+                        .sidebar_mut()
+                        .set_open_note(Some(self.path.clone()));
+                    self.doc_meta.note_opened(&self.path, tx);
+                    self.reflect_open_note_in_drawers(tx);
+                    // Fresh autosave timer for the new path (mirrors open_path).
+                    let interval = self.settings.read().unwrap().autosave_interval_secs;
+                    self.autosave.restart(interval, tx.clone());
+                }
+                Err(_) => {
+                    // Couldn't load the renamed note — do NOT keep a dirty
+                    // buffer pointed at it (autosave would clobber the
+                    // on-disk rewrite). Fall back to Browse on the new
+                    // parent dir.
+                    self.autosave.stop();
+                    let parent = to.get_parent_path().0;
+                    tx.send(AppEvent::OpenScreen(ScreenEvent::OpenBrowse(
+                        self.vault.clone(),
+                        parent,
+                    )))
+                    .ok();
+                }
             }
-            self.panels
-                .sidebar_mut()
-                .set_open_note(Some(self.path.clone()));
-            self.doc_meta.note_opened(&self.path, tx);
-            // Fresh autosave timer for the new path (mirrors open_path).
-            let interval = self.settings.read().unwrap().autosave_interval_secs;
-            self.autosave.restart(interval, tx.clone());
         }
     }
 }
@@ -545,6 +551,24 @@ impl EditorScreen {
     /// Whether the drawer is open showing `view`.
     fn drawer_open_on(&self, view: DrawerView) -> bool {
         self.panels.is_visible(PanelKind::Drawer) && self.panels.active_drawer_view() == view
+    }
+
+    /// Reflect the currently-open note (`self.path`) into whichever drawer view
+    /// is visible (FIND/LINKS/OUTLINE). Shared by `open_path` and
+    /// `on_note_renamed` so a rename keeps the drawers in step, not just a
+    /// fresh open.
+    fn reflect_open_note_in_drawers(&mut self, tx: &AppTx) {
+        let path = self.path.clone();
+        if self.drawer_open_on(DrawerView::Find) {
+            self.panels.query_mut().set_note(path.clone(), tx.clone());
+        }
+        if self.panels.is_visible(PanelKind::Drawer) {
+            match self.panels.active_drawer_view() {
+                DrawerView::Links => self.panels.links_mut().set_note(path.clone(), tx),
+                DrawerView::Outline => self.panels.outline_mut().set_note(path, tx),
+                _ => {}
+            }
+        }
     }
 
     /// Point the sidebar at the current note's directory. Skips the engine

@@ -297,17 +297,27 @@ impl SidebarComponent {
         }
     }
 
-    /// Move the row at `from` to `to` (path + filename) in place, for a
-    /// same-directory note rename. Position is left unchanged (no re-sort).
+    /// Move the row at `from` to `to` (path + filename + journal_date) in
+    /// place, for a same-directory note rename. Position is left unchanged
+    /// (no re-sort). `journal_date` is recomputed so a rename into/out of a
+    /// `YYYY-MM-DD` name under the journal directory flips the glyph and the
+    /// secondary date line correctly.
     pub fn rename_note_row(&mut self, from: &VaultPath, to: &VaultPath) {
         let new_filename = to.get_parent_path().1;
+        let new_journal_date = self.vault.journal_date(to).map(format_journal_date);
         if let Some(list) = &mut self.list {
             list.update_rows(|row| {
-                if let FileListEntry::Note { path, filename, .. } = row
+                if let FileListEntry::Note {
+                    path,
+                    filename,
+                    journal_date,
+                    ..
+                } = row
                     && path.is_like(from)
                 {
                     *path = to.clone();
                     *filename = new_filename.clone();
+                    *journal_date = new_journal_date.clone();
                     return true;
                 }
                 false
@@ -625,6 +635,19 @@ impl SidebarComponent {
                 FileListEntry::Note { path, title, .. } if path.get_name() == name => {
                     Some(title.clone())
                 }
+                _ => None,
+            })
+        })
+    }
+
+    pub(crate) fn note_row_journal_date_for_test(&self, path: &VaultPath) -> Option<String> {
+        self.list.as_ref().and_then(|l| {
+            l.rows().iter().find_map(|r| match r {
+                FileListEntry::Note {
+                    path: row_path,
+                    journal_date,
+                    ..
+                } if row_path.is_like(path) => journal_date.clone(),
                 _ => None,
             })
         })
@@ -1062,6 +1085,64 @@ mod tests {
             renamed_filename.as_deref(),
             Some(expected_filename.as_str()),
             "filename field must be updated to the new name"
+        );
+    }
+
+    /// Renaming a journal-dir note (`YYYY-MM-DD`) to a non-date name clears
+    /// `journal_date` on the row so the glyph and secondary date line update.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rename_note_row_clears_journal_date_when_renamed_away_from_date_name() {
+        // Build a vault and create a note inside the journal directory with a
+        // valid YYYY-MM-DD name so `vault.journal_date` returns Some(_).
+        let vault = crate::test_support::temp_vault("sb-jdate").await;
+        vault.validate_and_init().await.unwrap();
+        let journal_path = vault.journal_path().clone();
+        let date_name = "2026-06-09";
+        let from = journal_path
+            .append(&VaultPath::note_path_from(date_name))
+            .absolute();
+        vault.create_note(&from, "journal body").await.unwrap();
+
+        let settings = AppSettings::default();
+        let mut sb = SidebarComponent::new(
+            settings.key_bindings.clone(),
+            vault,
+            settings.icons(),
+            &settings,
+        );
+        let (tx, _rx) = unbounded_channel();
+        // Navigate to the journal directory (not root) so the note row is listed.
+        sb.navigate(journal_path.clone(), &tx);
+        for _ in 0..50 {
+            if let Some(list) = &mut sb.list {
+                list.poll();
+                if !list.is_loading() {
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        if let Some(list) = &mut sb.list {
+            list.poll();
+        }
+
+        // Precondition: the journal row has a non-None `journal_date`.
+        assert!(
+            sb.note_row_journal_date_for_test(&from).is_some(),
+            "journal note must have a journal_date before rename"
+        );
+
+        // Rename the note to a plain name (not a date) in the same directory.
+        let to = journal_path
+            .append(&VaultPath::note_path_from("meeting"))
+            .absolute();
+        sb.rename_note_row(&from, &to);
+
+        // The row should now have journal_date = None.
+        assert_eq!(
+            sb.note_row_journal_date_for_test(&to),
+            None,
+            "journal_date must be cleared after renaming to a non-date name"
         );
     }
 
