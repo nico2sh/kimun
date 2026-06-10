@@ -161,6 +161,34 @@ impl VimEngine {
         self.mode.label().to_string()
     }
 
+    /// The in-progress command sequence, for the footer hint (e.g. "2d", "f").
+    /// Returns `None` when nothing is pending (no display needed).
+    pub fn pending_hint(&self) -> Option<String> {
+        let mut s = String::new();
+        if let Some(n) = self.pending_count {
+            s.push_str(&n.to_string());
+        }
+        if let Some(op) = self.pending_operator {
+            s.push(match op {
+                Operator::Delete => 'd',
+                Operator::Change => 'c',
+                Operator::Yank => 'y',
+                Operator::Indent => '>',
+                Operator::Outdent => '<',
+            });
+        }
+        if self.pending_g {
+            s.push('g');
+        }
+        if self.pending_replace {
+            s.push('r');
+        }
+        if self.pending_find.is_some() {
+            s.push('f');
+        }
+        if s.is_empty() { None } else { Some(s) }
+    }
+
     pub fn reset_to_normal(&mut self) {
         self.mode = EditorMode::Normal;
         self.clear_pending();
@@ -264,6 +292,28 @@ impl VimEngine {
         // 'o': swap selection end — documented v1 no-op (swap-end not implemented).
         if c == 'o' {
             return VimKeyOutcome::NoOp;
+        }
+
+        // Task 12: visual `>`/`<` — indent/outdent the selected line range.
+        if c == '>' || c == '<' {
+            let outdent = c == '<';
+            let line_count = if let Some(((sr, _), (er, _))) = ta.selection_range() {
+                er.saturating_sub(sr) + 1
+            } else {
+                1
+            };
+            // Cancel selection; jump to first selected row; then indent.
+            let start_row = if let Some(((sr, _), _)) = ta.selection_range() {
+                sr
+            } else {
+                super::cursor_tuple(ta).0
+            };
+            ta.cancel_selection();
+            ta.move_cursor(CursorMove::Jump(start_row as u16, 0));
+            self.indent_lines(outdent, line_count, ta);
+            self.mode = EditorMode::Normal;
+            self.clear_pending();
+            return VimKeyOutcome::TextMutated;
         }
 
         // Pair chars: set Normal and return PassThrough so the host's existing
@@ -645,7 +695,16 @@ impl VimEngine {
                     });
                 }
             }
-            Operator::Indent | Operator::Outdent => { /* Task 13 */ }
+            Operator::Indent | Operator::Outdent => {
+                // Linewise indent/outdent triggered by e.g. ">>" reaching
+                // apply_operator_linewise is handled via normal_char's direct
+                // indent_lines path. This arm is a safety net; it should not
+                // normally be reached (>> goes through the doubled-operator path).
+                let outdent = op == Operator::Outdent;
+                let (r0, _) = super::cursor_tuple(ta);
+                self.indent_lines(outdent, count, ta);
+                ta.move_cursor(CursorMove::Jump(r0 as u16, 0));
+            }
         }
     }
 
@@ -659,6 +718,30 @@ impl VimEngine {
             self.enter_insert_capture(Command::OperateToLineEnd(op));
         } else {
             self.apply_operator_on_selection(op, RegisterKind::Charwise, ta);
+        }
+    }
+
+    /// Indent (add 4 spaces) or outdent (remove up to 4 leading spaces) the
+    /// cursor's line, then repeat for `count` lines total (moving down after
+    /// each). Used by `>>`, `<<`, and the visual `>`/`<` operators.
+    fn indent_lines(&self, outdent: bool, count: usize, ta: &mut TextArea<'static>) {
+        for _ in 0..count.max(1) {
+            ta.move_cursor(CursorMove::Head);
+            if outdent {
+                // Remove up to 4 leading spaces.
+                let (row, _) = super::cursor_tuple(ta);
+                let n = ta
+                    .lines()
+                    .get(row)
+                    .map(|l| l.chars().take(4).take_while(|c| *c == ' ').count())
+                    .unwrap_or(0);
+                for _ in 0..n {
+                    ta.delete_next_char();
+                }
+            } else {
+                ta.insert_str("    ");
+            }
+            ta.move_cursor(CursorMove::Down);
         }
     }
 
@@ -688,7 +771,21 @@ impl VimEngine {
                     self.enter_insert_capture(Command::OperateMotion(op, Motion::Right, 1));
                 }
             }
-            Operator::Indent | Operator::Outdent => { /* Task 13 */ }
+            Operator::Indent | Operator::Outdent => {
+                // Compute the selected row range, cancel the selection, then
+                // indent/outdent those rows. This covers operator+motion (e.g.
+                // `>j`) and visual `>`/`<` (which call this via handle_visual).
+                let outdent = op == Operator::Outdent;
+                let (rows, start_row) = if let Some(((sr, _), (er, _))) = ta.selection_range() {
+                    (er.saturating_sub(sr) + 1, sr)
+                } else {
+                    let (r, _) = super::cursor_tuple(ta);
+                    (1, r)
+                };
+                ta.cancel_selection();
+                ta.move_cursor(CursorMove::Jump(start_row as u16, 0));
+                self.indent_lines(outdent, rows, ta);
+            }
         }
     }
 
@@ -906,6 +1003,28 @@ impl VimEngine {
             }
             self.clear_pending();
             return self.outcome_for(op);
+        }
+
+        // Task 12: >`>`/`<`< indent/outdent
+        // First `>` or `<` sets pending_operator (Indent/Outdent) and returns NoOp.
+        // Second matching char (doubled `>>` / `<<`) executes indent_lines on
+        // `count` lines and clears pending.
+        // If a non-matching key follows (e.g. `>j`), the operator is already set
+        // and the motion dispatch below calls apply_operator_motion, which invokes
+        // apply_operator_on_selection(Indent/Outdent, …) — also correct.
+        if c == '>' || c == '<' {
+            let outdent = c == '<';
+            if (outdent && self.pending_operator == Some(Operator::Outdent))
+                || (!outdent && self.pending_operator == Some(Operator::Indent))
+            {
+                // Doubled operator → indent the cursor's line `count` times.
+                let cnt = self.take_count();
+                self.indent_lines(outdent, cnt, ta);
+                self.clear_pending();
+                return VimKeyOutcome::TextMutated;
+            }
+            self.pending_operator = Some(if outdent { Operator::Outdent } else { Operator::Indent });
+            return VimKeyOutcome::NoOp;
         }
 
         // Task 5: paste p/P
@@ -1789,6 +1908,35 @@ mod tests {
         e.handle_key(&key('c'), &mut t);   // delete "he", enter Insert
         assert_eq!(*e.mode(), EditorMode::Insert);
         assert_eq!(t.lines(), &["llo"]);
+    }
+
+    // ── Plan 2 Task 12 tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn indent_line_adds_spaces() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["x"]);
+        e.handle_key(&key('>'), &mut t);
+        e.handle_key(&key('>'), &mut t);
+        assert_eq!(t.lines(), &["    x"]);
+    }
+
+    #[test]
+    fn outdent_removes_spaces() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["        x"]); // 8 spaces
+        e.handle_key(&key('<'), &mut t);
+        e.handle_key(&key('<'), &mut t);
+        assert_eq!(t.lines(), &["    x"]); // removed 4
+    }
+
+    #[test]
+    fn pending_hint_shows_operator_and_count() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["abc"]);
+        e.handle_key(&key('2'), &mut t);
+        e.handle_key(&key('d'), &mut t);
+        assert_eq!(e.pending_hint().as_deref(), Some("2d"));
     }
 
     // ── Plan 2 Task 11 tests ─────────────────────────────────────────────────
