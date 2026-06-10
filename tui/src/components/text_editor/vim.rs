@@ -118,7 +118,6 @@ pub struct VimEngine {
     pending_g: bool,              // first key of `gg`
     pending_find: Option<PendingFind>,
     pending_replace: bool,        // awaiting the char after `r`
-    #[allow(dead_code)] // Plan 2 Task 8
     pending_object_kind: Option<bool>, // Some(around): saw `i`/`a` after operator
     last_find: Option<(char, bool, bool)>, // (ch, till, forward) for ; and ,
     register: RegisterKind,
@@ -615,6 +614,28 @@ impl VimEngine {
             return VimKeyOutcome::CursorOnly;
         }
 
+        // Task 8: text object parsing — intercepted here, BEFORE the motion
+        // dispatch, so that the object char (e.g. `w` in `diw`) is not consumed
+        // as a motion. The `i`/`a` interception for `pending_object_kind` must
+        // also be before insert-entry so that `di`/`ci`/`yi` work correctly.
+        if self.pending_operator.is_some() {
+            if c == 'i' || c == 'a' {
+                self.pending_object_kind = Some(c == 'a');
+                return VimKeyOutcome::NoOp;
+            }
+            if let Some(around) = self.pending_object_kind.take() {
+                if let Some(obj) = Self::object_for_char(c, around) {
+                    let op = self.pending_operator.take().unwrap();
+                    self.apply_operator_object(op, obj, ta);
+                    self.clear_pending();
+                    return self.outcome_for(op);
+                }
+                // Unrecognised object char — clear state and fall through as NoOp.
+                self.clear_pending();
+                return VimKeyOutcome::NoOp;
+            }
+        }
+
         // Task 3: motion dispatch (count-aware)
         let count = self.pending_count.unwrap_or(1);
         let motion = match c {
@@ -714,6 +735,8 @@ impl VimEngine {
         }
 
         // Insert-entry keys (from Plan 1, kept intact)
+        // NOTE: i/a only reach here when NO operator is pending — operator + i/a
+        // is handled above by the Task 8 text-object block.
         match c {
             'i' => self.enter_insert(ta, None),
             'a' => self.enter_insert(ta, Some(CursorMove::Forward)),
@@ -722,6 +745,101 @@ impl VimEngine {
             'o' => self.open_line(ta, false),
             'O' => self.open_line(ta, true),
             _ => { self.clear_pending(); VimKeyOutcome::NoOp }
+        }
+    }
+
+    // ── Plan 2 Task 8: text object helpers ──────────────────────────────────
+
+    /// Map an object char (e.g. `w`, `(`, `"`) to a `TextObject`.
+    fn object_for_char(c: char, around: bool) -> Option<TextObject> {
+        match c {
+            'w' => Some(TextObject::Word { around }),
+            '(' | ')' | 'b' => Some(TextObject::Pair { open: '(', close: ')', around }),
+            '{' | '}' | 'B' => Some(TextObject::Pair { open: '{', close: '}', around }),
+            '[' | ']' => Some(TextObject::Pair { open: '[', close: ']', around }),
+            '<' | '>' => Some(TextObject::Pair { open: '<', close: '>', around }),
+            '"' => Some(TextObject::Quote { ch: '"', around }),
+            '\'' => Some(TextObject::Quote { ch: '\'', around }),
+            '`' => Some(TextObject::Quote { ch: '`', around }),
+            _ => None,
+        }
+    }
+
+    /// Apply `op` over the text object `obj` at the current cursor position.
+    fn apply_operator_object(
+        &mut self,
+        op: Operator,
+        obj: TextObject,
+        ta: &mut TextArea<'static>,
+    ) {
+        let (row, col) = super::cursor_tuple(ta);
+        let Some(line) = ta.lines().get(row).cloned() else { return };
+        let chars: Vec<char> = line.chars().collect();
+        let Some((start, end)) = Self::object_range(&chars, col, obj) else { return };
+        // Select [start, end) on this row via Jump, then apply the operator.
+        ta.move_cursor(CursorMove::Jump(row as u16, start as u16));
+        ta.start_selection();
+        ta.move_cursor(CursorMove::Jump(row as u16, end as u16));
+        self.apply_operator_on_selection(op, RegisterKind::Charwise, ta);
+    }
+
+    /// Returns the half-open `[start, end)` char range for `obj` centred at
+    /// `col` within `chars`.
+    ///
+    /// NOTE: text objects are **single-line** in this implementation.
+    /// Multi-line pair/quote spans are a later enhancement.
+    fn object_range(chars: &[char], col: usize, obj: TextObject) -> Option<(usize, usize)> {
+        match obj {
+            TextObject::Word { around } => {
+                let is_word = |c: char| c.is_alphanumeric() || c == '_';
+                // Expand left to the start of the word.
+                let mut s = col;
+                while s > 0 && is_word(chars[s - 1]) {
+                    s -= 1;
+                }
+                // Expand right past the end of the word.
+                let mut e = col;
+                while e < chars.len() && is_word(chars[e]) {
+                    e += 1;
+                }
+                if around {
+                    // Also consume trailing whitespace (vim `aw` behaviour).
+                    while e < chars.len() && chars[e].is_whitespace() {
+                        e += 1;
+                    }
+                }
+                Some((s, e))
+            }
+            TextObject::Quote { ch, around } => {
+                // Collect all positions of the quote character on this line.
+                let positions: Vec<usize> = chars
+                    .iter()
+                    .enumerate()
+                    .filter(|&(_, &c)| c == ch)
+                    .map(|(i, _)| i)
+                    .collect();
+                // Find the pair that surrounds or starts at/after the cursor.
+                let pair = positions
+                    .chunks(2)
+                    .find(|p| p.len() == 2 && p[1] >= col)?;
+                let (o, c) = (pair[0], pair[1]);
+                if around {
+                    Some((o, c + 1))
+                } else {
+                    Some((o + 1, c))
+                }
+            }
+            TextObject::Pair { open, close, around } => {
+                // Search backwards from col (inclusive) for the opening char.
+                let o = (0..=col).rev().find(|&i| chars[i] == open)?;
+                // Search forwards from col (inclusive) for the closing char.
+                let c = (col..chars.len()).find(|&i| chars[i] == close)?;
+                if around {
+                    Some((o, c + 1))
+                } else {
+                    Some((o + 1, c))
+                }
+            }
         }
     }
 
@@ -1120,5 +1238,56 @@ mod tests {
         assert_eq!(super::super::cursor_tuple(&t).1, 1);
         e.handle_key(&key(';'), &mut t);
         assert_eq!(super::super::cursor_tuple(&t).1, 3);
+    }
+
+    // ── Plan 2 Task 8 tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn diw_deletes_inner_word() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["foo bar baz"]);
+        // cursor on 'b' of "bar"
+        e.handle_key(&key('w'), &mut t);
+        e.handle_key(&key('d'), &mut t);
+        e.handle_key(&key('i'), &mut t);
+        e.handle_key(&key('w'), &mut t);
+        assert_eq!(t.lines(), &["foo  baz"]);
+    }
+
+    #[test]
+    fn ci_quote_changes_inside_quotes() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["say \"hi\" now"]);
+        // move onto the text inside quotes: f then h lands on 'h' (col 5)
+        e.handle_key(&key('f'), &mut t);
+        e.handle_key(&key('h'), &mut t);
+        e.handle_key(&key('c'), &mut t);
+        e.handle_key(&key('i'), &mut t);
+        e.handle_key(&key('"'), &mut t);
+        assert_eq!(t.lines(), &["say \"\" now"]);
+        assert_eq!(*e.mode(), EditorMode::Insert);
+    }
+
+    #[test]
+    fn di_paren_deletes_inside_parens() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["foo(bar)baz"]);
+        e.handle_key(&key('f'), &mut t);
+        e.handle_key(&key('('), &mut t); // cursor on '('
+        e.handle_key(&key('d'), &mut t);
+        e.handle_key(&key('i'), &mut t);
+        e.handle_key(&key('('), &mut t);
+        assert_eq!(t.lines(), &["foo()baz"]);
+    }
+
+    #[test]
+    fn daw_deletes_word_and_trailing_space() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["foo bar baz"]);
+        e.handle_key(&key('w'), &mut t); // onto "bar"
+        e.handle_key(&key('d'), &mut t);
+        e.handle_key(&key('a'), &mut t);
+        e.handle_key(&key('w'), &mut t);
+        assert_eq!(t.lines(), &["foo baz"]);
     }
 }
