@@ -657,9 +657,11 @@ impl VimEngine {
             m
         };
         self.apply_motion(effective_motion, count, ta);
-        // For Change, advance one position to make WordEnd inclusive (cursor
-        // sits ON the last char, so we extend one past it to cut the whole word).
-        if op == Operator::Change && matches!(m, Motion::WordForward) {
+        // WordEnd lands ON the last char of the word; ratatui selections are
+        // exclusive of the cursor position, so [anchor, cursor) would miss that
+        // last char.  Advance one extra position to make the selection inclusive
+        // for all operators (de, ce, ye, and the cw=ce substitution path).
+        if matches!(effective_motion, Motion::WordEnd) {
             ta.move_cursor(CursorMove::Forward);
         }
         // For Change, pass the actual command so dot-repeat captures the right
@@ -2292,6 +2294,34 @@ mod tests {
         let out = e.handle_key(&key('Z'), &mut t);
         assert_eq!(out, VimKeyOutcome::NoOp);
         assert_eq!(t.lines(), &[""]);
+    }
+
+    // ── Bug fix: vim `e` must land ON the last word char (inclusive) ─────────
+
+    #[test]
+    fn e_lands_on_last_word_char() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["hello world"]);
+        e.handle_key(&key('e'), &mut t);
+        assert_eq!(super::super::cursor_tuple(&t), (0, 4)); // 'o', last char of "hello"
+    }
+
+    #[test]
+    fn e_twice_reaches_second_word_end() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["hello world"]);
+        e.handle_key(&key('e'), &mut t);
+        e.handle_key(&key('e'), &mut t);
+        assert_eq!(super::super::cursor_tuple(&t), (0, 10)); // 'd', last char of "world"
+    }
+
+    #[test]
+    fn de_deletes_to_word_end_inclusive() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["hello world"]);
+        e.handle_key(&key('d'), &mut t);
+        e.handle_key(&key('e'), &mut t);
+        assert_eq!(t.lines(), &[" world"]); // deletes "hello" inclusive of 'o'
     }
 }
 
