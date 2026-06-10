@@ -652,7 +652,6 @@ impl VimEngine {
         count: usize,
         ta: &mut TextArea<'static>,
     ) {
-        let start = super::cursor_tuple(ta);
         ta.start_selection();
         // Vim `cw`/`cW` semantics: change + word-forward uses word-end (not
         // word-start of the next word), so the trailing space is preserved.
@@ -682,10 +681,6 @@ impl VimEngine {
             self.enter_insert_capture(Command::OperateMotion(op, m, count), ta);
         } else {
             self.apply_operator_on_selection(op, RegisterKind::Charwise, ta);
-        }
-        // Yank does not move the cursor in vim — restore to the start position.
-        if op == Operator::Yank {
-            ta.move_cursor(CursorMove::Jump(start.0 as u16, start.1 as u16));
         }
     }
 
@@ -816,9 +811,13 @@ impl VimEngine {
     ) {
         match op {
             Operator::Yank => {
+                let start = ta.selection_range().map(|(s, _)| s);
                 ta.copy();
                 self.register = kind;
                 ta.cancel_selection();
+                if let Some((r, c)) = start {
+                    ta.move_cursor(CursorMove::Jump(r as u16, c as u16));
+                }
             }
             Operator::Delete => {
                 ta.cut();
@@ -983,7 +982,9 @@ impl VimEngine {
             }
             RegisterKind::Charwise => {
                 if after {
-                    ta.move_cursor(CursorMove::Forward);
+                    let (row, col) = super::cursor_tuple(ta);
+                    let len = ta.lines().get(row).map(|l| l.chars().count()).unwrap_or(col);
+                    ta.move_cursor(CursorMove::Jump(row as u16, (col + 1).min(len) as u16));
                 }
                 for _ in 0..count.max(1) {
                     ta.insert_str(&text);
@@ -2334,6 +2335,48 @@ mod tests {
         e.handle_key(&key('d'), &mut t);
         e.handle_key(&key('e'), &mut t);
         assert_eq!(t.lines(), &[" world"]); // deletes "hello" inclusive of 'o'
+    }
+
+    // ── Bug fix: vim yank leaves cursor at selection start; charwise p never wraps ──
+
+    #[test]
+    fn visual_y_leaves_cursor_at_selection_start() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["foo bar", "baz"]);
+        for _ in 0..4 { e.handle_key(&key('l'), &mut t); } // onto 'b' of "bar" (col 4)
+        e.handle_key(&key('v'), &mut t);
+        e.handle_key(&key('e'), &mut t); // select "bar"
+        e.handle_key(&key('y'), &mut t);
+        assert_eq!(super::super::cursor_tuple(&t), (0, 4)); // cursor at start of selection, not the end
+    }
+
+    #[test]
+    fn charwise_p_after_eol_word_does_not_touch_next_line() {
+        // reproduce the user's bug: yank an end-of-line word, paste, must NOT hit the line below
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["foo bar", "baz"]);
+        for _ in 0..4 { e.handle_key(&key('l'), &mut t); } // 'b' of "bar"
+        e.handle_key(&key('v'), &mut t);
+        e.handle_key(&key('e'), &mut t); // select "bar" (end of line 0)
+        e.handle_key(&key('y'), &mut t); // yank; cursor → col 4
+        e.handle_key(&key('p'), &mut t); // paste after cursor char 'b'
+        assert_eq!(t.lines()[1], "baz");           // line below UNTOUCHED
+        assert_eq!(t.lines().len(), 2);            // no new line, no merge
+        assert_eq!(t.lines()[0], "foo bbarar");    // "bar" pasted after 'b' on line 0 (vim p-after)
+    }
+
+    #[test]
+    fn charwise_p_at_line_end_appends_same_line() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["ab", "cd"]);
+        // yank "ab" charwise via v e y
+        e.handle_key(&key('v'), &mut t);
+        e.handle_key(&key('e'), &mut t); // select "ab"
+        e.handle_key(&key('y'), &mut t); // cursor → col 0
+        e.handle_key(&key('$'), &mut t); // to last char of line 0 ('b')
+        e.handle_key(&key('p'), &mut t); // append "ab" after 'b'
+        assert_eq!(t.lines()[0], "abab");
+        assert_eq!(t.lines()[1], "cd"); // line below untouched
     }
 }
 
