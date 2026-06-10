@@ -2021,6 +2021,20 @@ impl Component for TextEditorComponent {
                                 .backend
                                 .as_textarea()
                                 .and_then(|ta| ta.selection_range());
+                            // Charwise Visual highlight: extend end col by 1 so the
+                            // char under the cursor is visually included (vim inclusive).
+                            // VisualLine uses a separate rendering path (full-line) and
+                            // is left unchanged.
+                            if self.backend.vim_is_charwise_visual() {
+                                if let Some(((sr, sc), (er, ec))) = self.selection {
+                                    let len = self.backend
+                                        .as_textarea()
+                                        .and_then(|ta| ta.lines().get(er))
+                                        .map(|l| l.chars().count())
+                                        .unwrap_or(ec);
+                                    self.selection = Some(((sr, sc), (er, (ec + 1).min(len))));
+                                }
+                            }
                             self.refresh_autocomplete_if_open();
                             self.edit_generation = self.edit_generation.wrapping_add(1);
                             return EventState::Consumed;

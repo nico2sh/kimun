@@ -320,7 +320,17 @@ impl VimEngine {
                 let count = end_row - start_row + 1;
                 self.apply_operator_linewise(op, count, ta);
             } else {
-                // Charwise visual: the selection is already live; just apply.
+                // Charwise Visual: vim selection is inclusive of the char under
+                // the cursor. Ratatui uses half-open [anchor, cursor), so extend
+                // the high end by one char (clamped to end-of-line) before applying.
+                if let Some(((sr, sc), (er, ec))) = ta.selection_range() {
+                    let end_line_len = ta.lines().get(er).map(|l| l.chars().count()).unwrap_or(ec);
+                    let ec_incl = (ec + 1).min(end_line_len);
+                    ta.cancel_selection();
+                    ta.move_cursor(CursorMove::Jump(sr as u16, sc as u16));
+                    ta.start_selection();
+                    ta.move_cursor(CursorMove::Jump(er as u16, ec_incl as u16));
+                }
                 self.apply_operator_on_selection(op, RegisterKind::Charwise, ta);
             }
             self.mode = if op == Operator::Change {
@@ -1917,21 +1927,17 @@ mod tests {
 
     // ── Plan 2 Task 10 tests ─────────────────────────────────────────────────
 
-    /// Reconciliation note: ratatui-textarea's selection is EXCLUSIVE of the
-    /// cursor column: anchor at col 0, cursor at col N → selection covers
-    /// chars [0, N) (N chars). So two `l` presses yield cursor col 2,
-    /// selecting "he" (2 chars). To delete "hel" (3 chars) leaving "lo",
-    /// we need THREE `l` presses (cursor col 3 → selection [0,3) = "hel").
+    /// Charwise Visual is inclusive of the cursor char. `v` + 2×`l` leaves
+    /// the cursor on col 2 ('l'); the inclusive range covers cols 0,1,2 = "hel".
     #[test]
     fn v_motion_d_deletes_selection() {
         let mut e = VimEngine::default();
         let mut t = TextArea::from(["hello"]);
         e.handle_key(&key('v'), &mut t);   // anchor col 0
-        e.handle_key(&key('l'), &mut t);   // cursor → col 1, selection "h"
-        e.handle_key(&key('l'), &mut t);   // cursor → col 2, selection "he"
-        e.handle_key(&key('l'), &mut t);   // cursor → col 3, selection "hel"
+        e.handle_key(&key('l'), &mut t);   // cursor → col 1
+        e.handle_key(&key('l'), &mut t);   // cursor → col 2, inclusive covers "hel"
         e.handle_key(&key('d'), &mut t);   // delete "hel"
-        assert_eq!(t.lines(), &["lo"]);
+        assert_eq!(t.lines(), &["lo"]); // inclusive: deletes cols 0,1,2 ("hel")
         assert_eq!(*e.mode(), EditorMode::Normal);
     }
 
@@ -1946,36 +1952,22 @@ mod tests {
         assert_eq!(*e.mode(), EditorMode::Normal);
     }
 
-    /// Yank test: v + l selects first char ("h"), y yanks it, mode → Normal.
-    /// Then p pastes the yanked char after the cursor (charwise), so the
-    /// buffer becomes "hHello" — wait, yank moves cursor back to anchor,
-    /// then p pastes after: anchor was col 0, after yank cursor is still
-    /// col 0, p moves one forward then inserts "h" → "hHello"?
-    ///
-    /// Actual: after 'v' at col 0 + 'l' → cursor col 1, selection "h";
-    /// 'y' calls copy() then cancel_selection(). The cursor stays at col 1
-    /// after copy (yank does not restore cursor unlike operator-motion yank).
-    /// Then mode = Normal, p (after=true) moves Forward from col 1 → col 2,
-    /// inserts "h" → "hehllo". But actually apply_operator_on_selection for
-    /// Yank calls ta.copy() + cancel_selection(). Cursor stays at col 1.
-    /// p pastes "h" after col 1 → inserts at col 2: "hehllo".
-    ///
-    /// Assertion adjusted to actual behavior: just verify mode is Normal
-    /// and the buffer grew (p pasted something).
+    /// Inclusive yank: v + l (cursor col 1) yanks "he" (2 chars, inclusive).
+    /// After p pastes the yanked text, buffer grew by 2.
     #[test]
     fn visual_y_yanks_and_returns_to_normal() {
         let mut e = VimEngine::default();
         let mut t = TextArea::from(["hello"]);
         e.handle_key(&key('v'), &mut t);   // anchor col 0
-        e.handle_key(&key('l'), &mut t);   // cursor col 1, selection "h"
-        e.handle_key(&key('y'), &mut t);   // yank "h", mode → Normal
+        e.handle_key(&key('l'), &mut t);   // cursor col 1, inclusive selection "he"
+        e.handle_key(&key('y'), &mut t);   // yank "he" (2 chars), mode → Normal
         assert_eq!(*e.mode(), EditorMode::Normal);
-        // p pastes the yanked "h" after current cursor
+        // p pastes the yanked "he" after current cursor
         let before_len: usize = t.lines().iter().map(|l| l.len()).sum();
         e.handle_key(&key('p'), &mut t);
         let after_len: usize = t.lines().iter().map(|l| l.len()).sum();
-        // buffer grew by exactly 1 char (the yanked "h")
-        assert_eq!(after_len, before_len + 1);
+        // buffer grew by exactly 2 chars (the yanked "he")
+        assert_eq!(after_len, before_len + 2);
     }
 
     #[test]
@@ -1996,11 +1988,10 @@ mod tests {
         let mut e = VimEngine::default();
         let mut t = TextArea::from(["hello"]);
         e.handle_key(&key('v'), &mut t);   // anchor col 0
-        e.handle_key(&key('l'), &mut t);   // select "h"
-        e.handle_key(&key('l'), &mut t);   // select "he"
-        e.handle_key(&key('c'), &mut t);   // delete "he", enter Insert
+        e.handle_key(&key('l'), &mut t);   // cursor col 1, inclusive covers "he"
+        e.handle_key(&key('c'), &mut t);   // delete "he" (inclusive), enter Insert
         assert_eq!(*e.mode(), EditorMode::Insert);
-        assert_eq!(t.lines(), &["llo"]);
+        assert_eq!(t.lines(), &["llo"]); // inclusive: deletes cols 0,1 ("he")
     }
 
     // ── Plan 2 Task 12 tests ─────────────────────────────────────────────────
@@ -2294,6 +2285,27 @@ mod tests {
         let out = e.handle_key(&key('Z'), &mut t);
         assert_eq!(out, VimKeyOutcome::NoOp);
         assert_eq!(t.lines(), &[""]);
+    }
+
+    // ── P2.G: charwise Visual inclusive tests ────────────────────────────────
+
+    #[test]
+    fn visual_v_then_d_deletes_char_under_cursor() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["abc"]);
+        e.handle_key(&key('v'), &mut t); // select just 'a' (cursor col0)
+        e.handle_key(&key('d'), &mut t);
+        assert_eq!(t.lines(), &["bc"]); // 'a' deleted (inclusive of cursor char)
+    }
+
+    #[test]
+    fn visual_e_then_d_inclusive() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["hello world"]);
+        e.handle_key(&key('v'), &mut t);
+        e.handle_key(&key('e'), &mut t); // cursor on 'o' col4
+        e.handle_key(&key('d'), &mut t);
+        assert_eq!(t.lines(), &[" world"]); // "hello" deleted inclusive
     }
 
     // ── Bug fix: vim `e` must land ON the last word char (inclusive) ─────────
