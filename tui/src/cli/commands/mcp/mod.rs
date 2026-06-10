@@ -127,7 +127,12 @@ pub struct DeleteNoteParams {
 #[derive(Clone)]
 pub struct KimunHandler {
     vault: Arc<NoteVault>,
+    // Read at runtime by the `#[tool_handler]` / `#[prompt_handler]` generated
+    // impls (see below); clippy can't see through the macro expansion, so it
+    // flags these as unread despite being the live tool/prompt dispatch tables.
+    #[allow(dead_code)]
     tool_router: ToolRouter<KimunHandler>,
+    #[allow(dead_code)]
     prompt_router: PromptRouter<KimunHandler>,
 }
 

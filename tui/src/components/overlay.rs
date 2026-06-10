@@ -44,9 +44,10 @@ pub enum OverlayMsg {
     Consumed,
 }
 
-// `Send`: an `OverlayHost` lives in `EditorScreen`, whose `#[async_trait]`
-// `AppScreen` methods desugar to `Send` futures — so the boxed overlay must be `Send`.
-pub trait Overlay: Send {
+// No `Send` bound: `EditorScreen` (which hosts overlays) is itself non-`Send`
+// because of its `ratatui-textarea` buffer (see `AppScreen` in `app_screen/mod.rs`),
+// and it is only ever driven on the main `block_on` future, never spawned.
+pub trait Overlay {
     fn kind(&self) -> OverlayKind;
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState;
     fn handle_app_message(

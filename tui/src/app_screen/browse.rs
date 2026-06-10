@@ -48,7 +48,7 @@ impl BrowseScreen {
     }
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl AppScreen for BrowseScreen {
     fn get_kind(&self) -> ScreenKind {
         ScreenKind::Browse

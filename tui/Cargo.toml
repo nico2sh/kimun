@@ -21,8 +21,9 @@ kimun_core = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 color-eyre = "0.6.5"
 crossterm = { version = "0.29.0", features = ["event-stream"] }
-ratatui = { version = "0.30.0", features = ["serde"] }
-rmcp = { version = "1.3", features = ["server", "transport-io"] }
+ratatui = { version = "0.30.1", features = ["serde"] }
+ratatui-widgets = "0.3.1"
+rmcp = { version = "1.7", features = ["server", "transport-io"] }
 serde = { workspace = true }
 toml = { workspace = true }
 itertools = "0.14.0"
