@@ -164,6 +164,7 @@ impl NvimSnapshot {
 pub enum EditorMode {
     Normal,
     Insert,
+    Replace,
     Visual,
     VisualLine,
     Command,
@@ -175,6 +176,7 @@ impl EditorMode {
         match self {
             EditorMode::Normal => "NORMAL",
             EditorMode::Insert => "INSERT",
+            EditorMode::Replace => "REPLACE",
             EditorMode::Visual => "VISUAL",
             EditorMode::VisualLine => "V-LINE",
             EditorMode::Command => "COMMAND",
@@ -188,6 +190,7 @@ impl EditorMode {
         match s {
             "n" | "no" | "nov" | "noV" | "no\x16" => EditorMode::Normal,
             "i" => EditorMode::Insert,
+            "R" => EditorMode::Replace,
             "v" => EditorMode::Visual,
             "V" => EditorMode::VisualLine,
             "c" => EditorMode::Command,
@@ -296,11 +299,16 @@ mod tests {
     }
 
     #[test]
+    fn mode_from_str_replace() {
+        assert!(matches!(EditorMode::from_nvim_str("R"), EditorMode::Replace));
+    }
+
+    #[test]
     fn mode_from_str_unknown() {
-        let m = EditorMode::from_nvim_str("R");
+        let m = EditorMode::from_nvim_str("t"); // terminal mode — unmapped
         assert!(matches!(m, EditorMode::Other(_)));
         if let EditorMode::Other(s) = m {
-            assert_eq!(s, "R");
+            assert_eq!(s, "t");
         }
     }
 

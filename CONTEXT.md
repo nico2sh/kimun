@@ -11,7 +11,7 @@ Which engine drives the TUI text editor, chosen in config (`editor_backend`): **
 _Avoid_: editor engine, editor mode (collides with **editing mode**).
 
 **Editing mode**:
-The active modal state inside a vim-style backend — Normal, Insert, Visual, Visual-line, Command. Shared by the **nvim** and **vim** backends (the `EditorMode` enum); the **textarea** backend has none. Distinct from the **editor backend**, which selects the engine, not the state within it.
+The active modal state inside a vim-style backend — Normal, Insert, Replace, Visual, Visual-line, Command. Shared by the **nvim** and **vim** backends (the `EditorMode` enum); the **textarea** backend has none. Distinct from the **editor backend**, which selects the engine, not the state within it. Replace (`R`) is engine-owned in the **vim** backend: keys overwrite in place and never reach the textarea's insert features.
 _Avoid_: vim mode (ambiguous — backend or state?), NvimMode (the superseded nvim-only name).
 
 ### Vim emulation
