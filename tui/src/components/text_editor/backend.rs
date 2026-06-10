@@ -176,6 +176,15 @@ impl BackendState {
         true
     }
 
+    /// True when a bare Space should start the leader: vim backend in Normal
+    /// mode with empty pending state. False for Direct / Nvim backends and for
+    /// vim Insert/Visual modes or any pending state.
+    pub fn vim_space_leads(&self) -> bool {
+        matches!(self,
+            BackendState::Textarea(TextareaBackend { input: InputInterpreter::Vim(e), .. })
+            if e.space_leads())
+    }
+
     /// Reset the vim interpreter to Normal mode (called when a fresh note is
     /// loaded). No-op for Direct / Nvim backends.
     pub fn vim_reset_to_normal(&mut self) {
@@ -587,6 +596,12 @@ mod tests {
     fn vim_backend_reports_normal_label() {
         let b = BackendState::Textarea(TextareaBackend::vim(TextArea::default()));
         assert_eq!(b.mode_label().as_deref(), Some("NORMAL"));
+    }
+
+    #[test]
+    fn vim_space_leads_only_for_vim_backend() {
+        assert!(!BackendState::Textarea(TextareaBackend::direct(TextArea::default())).vim_space_leads());
+        assert!(BackendState::Textarea(TextareaBackend::vim(TextArea::default())).vim_space_leads());
     }
 }
 

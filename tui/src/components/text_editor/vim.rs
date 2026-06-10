@@ -205,6 +205,19 @@ impl VimEngine {
         self.clear_pending();
     }
 
+    /// True when a bare Space should start the leader: Normal mode, nothing
+    /// pending (so `d<Space>`, `f<Space>`, counts etc. still take Space as an
+    /// argument/motion, not the leader).
+    pub fn space_leads(&self) -> bool {
+        self.mode == EditorMode::Normal
+            && self.pending_count.is_none()
+            && self.pending_operator.is_none()
+            && !self.pending_g
+            && !self.pending_replace
+            && self.pending_find.is_none()
+            && self.pending_object_kind.is_none()
+    }
+
     /// Interpret one key. In Insert mode everything except `Esc` is
     /// `PassThrough` (the host runs the existing direct textarea path).
     /// In Visual/VisualLine mode, motions extend the selection; operators
@@ -1998,6 +2011,21 @@ mod tests {
         e.handle_key(&key('w'), &mut t);
         e.handle_key(&key('.'), &mut t);
         assert_eq!(t.lines(), &["X X"]);
+    }
+
+    // ── Plan 3 Task 4: space_leads predicate tests ───────────────────────────
+
+    #[test]
+    fn space_leads_only_in_clean_normal() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["x"]);
+        assert!(e.space_leads());
+        e.handle_key(&key('d'), &mut t); // operator pending
+        assert!(!e.space_leads());
+        e.handle_key(&key('w'), &mut t); // completes dw, clears pending
+        assert!(e.space_leads());
+        e.handle_key(&key('i'), &mut t); // insert
+        assert!(!e.space_leads());
     }
 
     // ── Plan 3 Task 3: host-action tests ────────────────────────────────────

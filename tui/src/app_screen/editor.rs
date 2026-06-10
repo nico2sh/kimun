@@ -1423,10 +1423,28 @@ impl AppScreen for EditorScreen {
             return state;
         }
 
-        // Bare Space never leads — the leader is only the configured gateway
-        // (Ctrl-G by default). Space falls through to the focused panel, so it
-        // types a space in any text input (the file browser filter, the editor)
-        // and is a no-op in lists that don't bind it.
+        // Bare Space falls through to the focused panel (types a space in text
+        // inputs, no-op in lists) — EXCEPT in vim Normal mode with empty pending
+        // state, where Space is a second leader gateway (in addition to Ctrl-G).
+        // Insert/Visual/other backends keep Space typing a space because
+        // `vim_space_leads()` returns false for those states.
+
+        // Vim Normal mode: bare Space is the leader (in addition to Ctrl-G),
+        // but only with an empty pending state so it never shadows Space as a
+        // motion/operator argument. Insert/Visual and the other backends keep
+        // Space typing a space (the rule below the Tab handling).
+        if self.editor_active()
+            && !self.overlays.is_open()
+            && !self.leader.is_pending()
+            && let InputEvent::Key(key) = event
+            && key.code == ratatui::crossterm::event::KeyCode::Char(' ')
+            && key.modifiers.is_empty()
+            && self.panels.editor().vim_space_leads()
+        {
+            self.leader.start();
+            self.schedule_whichkey_reveal(tx);
+            return EventState::Consumed;
+        }
 
         // Tab / Shift-Tab cycle panel focus (spec §2). The focused panel gets
         // first crack — the Query panel's autocomplete accepts on Tab — and
