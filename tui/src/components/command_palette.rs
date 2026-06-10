@@ -114,21 +114,7 @@ impl CommandPaletteModal {
         Self { list }
     }
 
-    /// If the live query is exactly a vim Ex alias, return that action.
-    fn ex_alias_action(&self) -> Option<LeaderAction> {
-        let q = self.list.query().trim();
-        if q.is_empty() {
-            return None;
-        }
-        LeaderAction::ALL.iter().copied().find(|a| a.vim_aliases().contains(&q))
-    }
-
     fn execute_selected(&self, tx: &AppTx) {
-        if let Some(action) = self.ex_alias_action() {
-            tx.send(AppEvent::CloseOverlay).ok();
-            tx.send(AppEvent::ExecuteLeaderAction(action)).ok();
-            return;
-        }
         if let Some(entry) = self.list.selected_row() {
             let action = entry.action;
             // Close first so the action runs with no overlay open — several
@@ -278,85 +264,4 @@ mod tests {
         assert_eq!(order, vec!["close", "execute"]);
     }
 
-    // Driven tests: set query on the real modal and verify ex_alias_action.
-    fn make_palette(tx: AppTx) -> CommandPaletteModal {
-        CommandPaletteModal::new(
-            &crate::keys::leader::leader_tree(),
-            "Ctrl+G",
-            Icons::new(false),
-            tx,
-        )
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn ex_alias_w_resolves_to_note_save() {
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut palette = make_palette(tx);
-        palette.list.set_query("w");
-        assert_eq!(palette.ex_alias_action(), Some(LeaderAction::NoteSave));
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn ex_alias_wq_resolves_to_app_quit() {
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut palette = make_palette(tx);
-        palette.list.set_query("wq");
-        assert_eq!(palette.ex_alias_action(), Some(LeaderAction::AppQuit));
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn ex_alias_partial_does_not_match() {
-        // "wri" is a prefix of "write" but NOT an exact alias — must be None.
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut palette = make_palette(tx);
-        palette.list.set_query("wri");
-        assert_eq!(palette.ex_alias_action(), None);
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn ex_alias_empty_query_is_none() {
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut palette = make_palette(tx);
-        palette.list.set_query("");
-        assert_eq!(palette.ex_alias_action(), None);
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn ex_alias_enter_fires_correct_action() {
-        // Full integration: type "w", press Enter → CloseOverlay then
-        // ExecuteLeaderAction(NoteSave) — NOT the fuzzy-top row.
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut palette = make_palette(tx.clone());
-        // Let the async load settle.
-        for _ in 0..50 {
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-            palette.list.poll();
-        }
-        palette.list.set_query("w");
-
-        palette.handle_input(
-            &InputEvent::Key(ratatui::crossterm::event::KeyEvent::new(
-                ratatui::crossterm::event::KeyCode::Enter,
-                ratatui::crossterm::event::KeyModifiers::NONE,
-            )),
-            &tx,
-        );
-
-        let mut events = Vec::new();
-        while let Ok(ev) = rx.try_recv() {
-            events.push(ev);
-        }
-        assert!(
-            events
-                .iter()
-                .any(|e| matches!(e, AppEvent::CloseOverlay)),
-            "expected CloseOverlay"
-        );
-        assert!(
-            events
-                .iter()
-                .any(|e| matches!(e, AppEvent::ExecuteLeaderAction(LeaderAction::NoteSave))),
-            "expected ExecuteLeaderAction(NoteSave), got: {events:?}"
-        );
-    }
 }

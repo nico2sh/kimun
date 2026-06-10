@@ -229,15 +229,6 @@ impl LeaderAction {
         }
     }
 
-    /// Exact-match vim Ex command aliases the command palette resolves before
-    /// fuzzy ranking (e.g. `:w` → NoteSave). Empty for most actions.
-    pub fn vim_aliases(&self) -> &'static [&'static str] {
-        match self {
-            LeaderAction::NoteSave => &["w", "write"],
-            LeaderAction::AppQuit => &["q", "qa", "wq", "x"],
-            _ => &[],
-        }
-    }
 }
 
 /// One node of the leader tree.
@@ -852,20 +843,6 @@ mod tests {
         e.start();
         e.feed('n');
         assert_eq!(e.feed('D'), LeaderOutcome::Fired(LeaderAction::NoteDelete));
-    }
-
-    #[test]
-    fn ex_aliases_resolve_to_actions() {
-        let by_alias = |a: &str| {
-            LeaderAction::ALL
-                .iter()
-                .copied()
-                .find(|act| act.vim_aliases().contains(&a))
-        };
-        assert_eq!(by_alias("w"), Some(LeaderAction::NoteSave));
-        assert_eq!(by_alias("q"), Some(LeaderAction::AppQuit));
-        assert_eq!(by_alias("wq"), Some(LeaderAction::AppQuit));
-        assert_eq!(by_alias("nope"), None);
     }
 
     #[test]
