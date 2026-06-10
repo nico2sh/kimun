@@ -186,6 +186,25 @@ impl VimEngine {
     }
 
     fn handle_normal(&mut self, key: &KeyEvent, ta: &mut TextArea<'static>) -> VimKeyOutcome {
+        // Task 6: consume the replacement char when pending_replace is set
+        if self.pending_replace {
+            self.pending_replace = false;
+            if let KeyCode::Char(c) = key.code {
+                return self.replace_char(c, ta);
+            }
+            return VimKeyOutcome::NoOp; // Esc etc cancels
+        }
+
+        // Task 6: Ctrl-r → redo (before the plain filter so it isn't stripped)
+        if key.code == KeyCode::Char('r') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            let cnt = self.take_count();
+            for _ in 0..cnt {
+                ta.redo();
+            }
+            self.clear_pending();
+            return VimKeyOutcome::TextMutated;
+        }
+
         let plain =
             key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT;
         match key.code {
@@ -558,6 +577,73 @@ impl VimEngine {
             return VimKeyOutcome::CursorOnly;
         }
 
+        // Task 6: single-key edits
+        match c {
+            'x' => {
+                let cnt = self.take_count();
+                for _ in 0..cnt {
+                    ta.delete_next_char();
+                }
+                self.clear_pending();
+                return VimKeyOutcome::TextMutated;
+            }
+            'X' => {
+                let cnt = self.take_count();
+                for _ in 0..cnt {
+                    ta.delete_char();
+                }
+                self.clear_pending();
+                return VimKeyOutcome::TextMutated;
+            }
+            'r' => {
+                self.pending_replace = true;
+                return VimKeyOutcome::NoOp;
+            }
+            's' => {
+                let cnt = self.take_count();
+                for _ in 0..cnt {
+                    ta.delete_next_char();
+                }
+                self.enter_insert_capture(Command::SubstituteChar(cnt));
+                self.clear_pending();
+                return VimKeyOutcome::CursorOnly;
+            }
+            'S' => {
+                ta.move_cursor(CursorMove::Head);
+                ta.start_selection();
+                ta.move_cursor(CursorMove::End);
+                ta.cut();
+                self.enter_insert_capture(Command::SubstituteLine);
+                self.clear_pending();
+                return VimKeyOutcome::TextMutated;
+            }
+            'J' => {
+                let cnt = self.take_count().max(2) - 1;
+                for _ in 0..cnt {
+                    Self::join_line(ta);
+                }
+                self.clear_pending();
+                return VimKeyOutcome::TextMutated;
+            }
+            '~' => {
+                let cnt = self.take_count();
+                for _ in 0..cnt {
+                    Self::toggle_case_at_cursor(ta);
+                }
+                self.clear_pending();
+                return VimKeyOutcome::TextMutated;
+            }
+            'u' => {
+                let cnt = self.take_count();
+                for _ in 0..cnt {
+                    ta.undo();
+                }
+                self.clear_pending();
+                return VimKeyOutcome::TextMutated;
+            }
+            _ => {}
+        }
+
         // Insert-entry keys (from Plan 1, kept intact)
         match c {
             'i' => self.enter_insert(ta, None),
@@ -595,6 +681,42 @@ impl VimEngine {
         self.mode = EditorMode::Insert;
         self.clear_pending();
         VimKeyOutcome::TextMutated
+    }
+
+    // ── Plan 2 Task 6: single-key edit helpers ───────────────────────────────
+
+    /// Replace the char under the cursor with `c`, stay in Normal mode.
+    fn replace_char(&mut self, c: char, ta: &mut TextArea<'static>) -> VimKeyOutcome {
+        if ta.delete_next_char() {
+            ta.insert_char(c);
+            ta.move_cursor(CursorMove::Back);
+        }
+        self.last_change = Some(Change { command: Command::ReplaceChar(c), inserted: None });
+        VimKeyOutcome::TextMutated
+    }
+
+    /// Join the next line up onto the current one by removing the trailing newline.
+    // TODO(J): real vim inserts a space between the joined lines and strips the
+    //          next line's leading whitespace; this just deletes the newline.
+    fn join_line(ta: &mut TextArea<'static>) {
+        ta.move_cursor(CursorMove::End);
+        ta.delete_next_char(); // removes the newline, joining the next line up
+    }
+
+    /// Toggle the case of the char under the cursor and advance one char.
+    fn toggle_case_at_cursor(ta: &mut TextArea<'static>) {
+        let (row, col) = super::cursor_tuple(ta);
+        if let Some(line) = ta.lines().get(row) {
+            if let Some(ch) = line.chars().nth(col) {
+                let flipped: String = if ch.is_uppercase() {
+                    ch.to_lowercase().collect()
+                } else {
+                    ch.to_uppercase().collect()
+                };
+                ta.delete_next_char();
+                ta.insert_str(&flipped);
+            }
+        }
     }
 }
 
@@ -851,5 +973,42 @@ mod tests {
         e.handle_key(&key('y'), &mut t);
         e.handle_key(&key('p'), &mut t);
         assert_eq!(t.lines(), &["one", "two", "two"]);
+    }
+
+    // ── Plan 2 Task 6 tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn x_deletes_char_under_cursor() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["abc"]);
+        e.handle_key(&key('x'), &mut t);
+        assert_eq!(t.lines(), &["bc"]);
+    }
+
+    #[test]
+    fn r_replaces_char() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["abc"]);
+        e.handle_key(&key('r'), &mut t);
+        e.handle_key(&key('Z'), &mut t);
+        assert_eq!(t.lines(), &["Zbc"]);
+        assert_eq!(*e.mode(), EditorMode::Normal);
+    }
+
+    #[test]
+    fn u_undoes_last_edit() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["abc"]);
+        e.handle_key(&key('x'), &mut t);
+        e.handle_key(&key('u'), &mut t);
+        assert_eq!(t.lines(), &["abc"]);
+    }
+
+    #[test]
+    fn tilde_toggles_case() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["abc"]);
+        e.handle_key(&key('~'), &mut t);
+        assert_eq!(t.lines(), &["Abc"]);
     }
 }
