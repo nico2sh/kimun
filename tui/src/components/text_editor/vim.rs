@@ -71,9 +71,10 @@ pub enum TextObject {
 }
 
 /// The fully-parsed unit of work, ready to apply (adr/0011).
+// Some variants are recorded for dot-repeat/future macros but not yet read in replay (adr/0011).
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum Command {
-    Move(Motion, usize),                    // motion, count
     OperateMotion(Operator, Motion, usize), // e.g. 2dw
     OperateLine(Operator, usize),           // dd / cc / yy / >> with count
     OperateObject(Operator, TextObject),    // diw, ci"
@@ -85,8 +86,6 @@ pub enum Command {
     JoinLines(usize),                       // J
     ToggleCase(usize),                      // ~
     Paste { after: bool, count: usize },    // p / P
-    Undo(usize),
-    Redo(usize),
 }
 
 // ── Plan 2 Task 1: pending-state helper types ────────────────────────────────
@@ -1581,6 +1580,7 @@ mod tests {
     // ── Plan 2 Task 3 tests ──────────────────────────────────────────────────
 
     #[test]
+    #[allow(non_snake_case)]
     fn gg_and_G_jump_file_ends() {
         let mut e = VimEngine::default();
         let mut t = TextArea::from(["one", "two", "three"]);
@@ -1894,6 +1894,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(non_snake_case)]
     fn V_then_d_deletes_line() {
         let mut e = VimEngine::default();
         let mut t = TextArea::from(["one", "two"]);
@@ -2057,6 +2058,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(non_snake_case)]
     fn n_and_N_emit_search_nav() {
         let mut e = VimEngine::default();
         let mut t = TextArea::from(["x"]);
