@@ -343,17 +343,20 @@ impl VimEngine {
         }
 
         // 'p'/'P': replace the current visual selection with the register.
-        // CRITICAL: capture the register text+kind BEFORE cut() overwrites yank_text.
+        // CRITICAL: capture the register text BEFORE cut() overwrites yank_text.
         if c == 'p' || c == 'P' {
             let text = ta.yank_text();
-            let kind = self.register;
             if text.is_empty() {
                 ta.cancel_selection();
                 self.mode = EditorMode::Normal;
                 return VimKeyOutcome::CursorOnly;
             }
             if self.mode == EditorMode::VisualLine {
-                // VisualLine: delete the selected whole lines, then paste the register.
+                // VisualLine: delete the selected whole lines, then paste the saved content.
+                // After the delete, the deleted lines are in the yank buffer (that's what we
+                // now WANT to keep in the register — vim swap behavior). We insert the
+                // saved `text` directly without going through `self.paste` (which reads the
+                // yank buffer, which now holds the deleted lines).
                 let (start_row, end_row) = if let Some(((sr, _), (er, _))) = ta.selection_range() {
                     (sr, er)
                 } else {
@@ -363,16 +366,20 @@ impl VimEngine {
                 ta.cancel_selection();
                 ta.move_cursor(CursorMove::Jump(start_row as u16, 0));
                 let count = end_row - start_row + 1;
-                // Delete the lines (reuse linewise delete logic).
+                // Delete the lines — this leaves the deleted lines in the yank buffer.
                 self.apply_operator_linewise(Operator::Delete, count, ta);
-                // Restore the original register (the delete just clobbered it).
-                ta.set_yank_text(&text);
-                self.register = kind;
-                // Paste the register at the current position (before the line that
-                // landed at start_row after the delete).
-                self.paste(false, 1, ta);
+                // Register now holds the deleted lines (linewise). Insert the saved
+                // content (the original register) as lines before the current position.
+                self.register = RegisterKind::Linewise;
+                let body = text.strip_suffix('\n').unwrap_or(&text);
+                ta.move_cursor(CursorMove::Head);
+                ta.insert_str(body);
+                ta.insert_newline();
+                ta.move_cursor(CursorMove::Up);
             } else {
-                // Charwise: make an inclusive selection, delete it, then insert.
+                // Charwise: make an inclusive selection, delete it (cut leaves the deleted
+                // selection in the yank buffer — that's the vim swap: deleted text enters
+                // the register), then insert the saved `text`.
                 if let Some(((sr, sc), (er, ec))) = ta.selection_range() {
                     let len = ta.lines().get(er).map(|l| l.chars().count()).unwrap_or(ec);
                     let ec_incl = (ec + 1).min(len);
@@ -381,20 +388,14 @@ impl VimEngine {
                     ta.start_selection();
                     ta.move_cursor(CursorMove::Jump(er as u16, ec_incl as u16));
                 }
-                ta.cut(); // cursor lands at the deletion gap
-                // Restore the original register (cut clobbered it) and insert.
-                ta.set_yank_text(&text);
-                self.register = kind;
-                if kind == RegisterKind::Charwise {
-                    // Record where the paste starts so we can leave the cursor there
-                    // (vim visual-p leaves cursor at the start of the pasted text).
-                    let paste_start = super::cursor_tuple(ta);
-                    ta.insert_str(&text);
-                    ta.move_cursor(CursorMove::Jump(paste_start.0 as u16, paste_start.1 as u16));
-                } else {
-                    // Linewise register over a charwise selection.
-                    self.paste(false, 1, ta);
-                }
+                ta.cut(); // cursor lands at the deletion gap; yank buffer now = deleted selection
+                // Register now holds the deleted (replaced) selection — vim swap behavior.
+                self.register = RegisterKind::Charwise;
+                // Record where the paste starts so we can leave the cursor there
+                // (vim visual-p leaves cursor at the start of the pasted text).
+                let paste_start = super::cursor_tuple(ta);
+                ta.insert_str(&text); // insert the SAVED content, not the yank buffer
+                ta.move_cursor(CursorMove::Jump(paste_start.0 as u16, paste_start.1 as u16));
             }
             self.mode = EditorMode::Normal;
             self.clear_pending();
@@ -512,9 +513,12 @@ impl VimEngine {
         }
 
         // Esc cancels any pending Normal-mode sequence (operator, count, g, i/a object).
+        // Also cancels any stray textarea selection that may have been left live
+        // while the engine is already in Normal mode (e.g. auto-surround PassThrough path).
         if key.code == KeyCode::Esc {
             self.clear_pending();
-            return VimKeyOutcome::NoOp;
+            ta.cancel_selection();
+            return VimKeyOutcome::CursorOnly;
         }
 
         // Task 6: Ctrl-r → redo (before the plain filter so it isn't stripped)
@@ -2459,26 +2463,38 @@ mod tests {
     }
 
     #[test]
-    fn visual_p_register_preserved_for_repeat() {
+    fn visual_p_yanks_replaced_selection() {
         let mut e = VimEngine::default();
-        let mut t = TextArea::from(["aa bb cc"]);
-        // yank "aa"
+        let mut t = TextArea::from(["foo bar"]);
+        // yank "foo"
         e.handle_key(&key('v'), &mut t);
         e.handle_key(&key('e'), &mut t);
-        e.handle_key(&key('y'), &mut t); // reg = "aa", cursor col 0
-        // replace "bb"
-        for _ in 0..3 { e.handle_key(&key('l'), &mut t); } // col 3 'b'
+        e.handle_key(&key('y'), &mut t); // reg = "foo", cursor col 0
+        // select "bar" and paste over it
+        for _ in 0..4 { e.handle_key(&key('l'), &mut t); } // col 4 'b'
         e.handle_key(&key('v'), &mut t);
         e.handle_key(&key('e'), &mut t);
-        e.handle_key(&key('p'), &mut t); // "bb" -> "aa"
-        assert_eq!(t.lines(), &["aa aa cc"]);
-        // replace "cc" with the SAME register (preserved)
-        // cursor is at start of the just-pasted "aa" (col 3); move to "cc"
-        for _ in 0..3 { e.handle_key(&key('l'), &mut t); } // toward "cc" (col 6 'c')
-        e.handle_key(&key('v'), &mut t);
-        e.handle_key(&key('e'), &mut t);
-        e.handle_key(&key('p'), &mut t);
-        assert_eq!(t.lines(), &["aa aa aa"]);
+        e.handle_key(&key('p'), &mut t); // "bar" replaced by "foo"; "bar" now yanked
+        assert_eq!(t.lines(), &["foo foo"]);
+        // now paste the replaced "bar" at end of line to prove it's in the register
+        e.handle_key(&key('$'), &mut t);   // last char ('o', col 6)
+        e.handle_key(&key('p'), &mut t);   // append "bar" after it
+        assert_eq!(t.lines(), &["foo foobar"]);
+    }
+
+    #[test]
+    fn esc_in_normal_clears_stray_selection() {
+        let mut e = VimEngine::default(); // Normal mode
+        let mut t = TextArea::from(["hello world"]);
+        // simulate a live selection while in Normal mode (as auto-surround/mouse-sync can leave)
+        t.start_selection();
+        t.move_cursor(ratatui_textarea::CursorMove::Forward);
+        t.move_cursor(ratatui_textarea::CursorMove::Forward);
+        assert!(t.selection_range().is_some());
+        let out = e.handle_key(&esc(), &mut t);
+        assert!(t.selection_range().is_none(), "Esc in Normal must cancel a stray selection");
+        assert_eq!(out, VimKeyOutcome::CursorOnly);
+        assert_eq!(*e.mode(), EditorMode::Normal);
     }
 }
 
