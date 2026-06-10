@@ -2111,6 +2111,22 @@ impl Component for TextEditorComponent {
                         None => {}
                     }
                 }
+                // Plan 3 Task 5: reconcile the vim engine mode from whether the
+                // textarea selection is live after the mouse event. A drag that
+                // creates a selection enters Visual; a click that clears one
+                // returns to Normal. Insert mode is left untouched (the engine
+                // match arm is a no-op for all modes other than Normal/Visual).
+                // A bare click leaves a collapsed (zero-width) selection active
+                // because handle_mouse's Down arm calls start_selection().
+                // Only treat a NON-EMPTY selection as "real" to avoid flipping
+                // vim Normal→Visual on a plain click.  Mirrors the same guard
+                // at ~line 1014 which protects auto-indent from collapsed sel.
+                let has_sel = self
+                    .backend
+                    .as_textarea()
+                    .and_then(|ta| ta.selection_range())
+                    .is_some_and(|(s, e)| s != e);
+                self.backend.vim_sync_mouse_selection(has_sel);
                 result
             }
             // Bracketed paste is intercepted by EditorScreen so it can run the
@@ -3486,5 +3502,69 @@ mod tests {
             &tx,
         );
         assert_eq!(editor.get_text(), "x");
+    }
+
+    /// Helper: construct a vim-backend editor.
+    fn make_vim_editor() -> TextEditorComponent {
+        let mut settings = crate::settings::AppSettings::default();
+        settings.editor_backend = crate::settings::EditorBackendSetting::Vim;
+        TextEditorComponent::new(KeyBindings::empty(), &settings)
+    }
+
+    /// Helper: extract the current vim EditorMode, panicking if the backend
+    /// is not a vim textarea (so test failures are obvious).
+    fn vim_mode(editor: &TextEditorComponent) -> EditorMode {
+        match &editor.backend {
+            BackendState::Textarea(tb) => match &tb.input {
+                backend::InputInterpreter::Vim(e) => e.mode().clone(),
+                _ => panic!("expected Vim input interpreter"),
+            },
+            _ => panic!("expected Textarea backend"),
+        }
+    }
+
+    /// Regression: a bare left click (Down with no Drag) must NOT flip
+    /// vim Normal → Visual.  The textarea's Down arm calls `start_selection()`
+    /// which leaves a collapsed (start==end) selection; the fix at ~line 2124
+    /// uses `.is_some_and(|(s, e)| s != e)` to require a non-empty selection
+    /// before treating it as "real" (mirrors the same guard at ~line 1014).
+    ///
+    /// We test `vim_sync_mouse_selection` directly (the exact code that was
+    /// broken) rather than routing through `handle_input` → `handle_mouse`,
+    /// which needs a fully rendered view to resolve screen→logical coordinates.
+    #[test]
+    fn vim_sync_collapsed_sel_stays_normal() {
+        let mut editor = make_vim_editor();
+        editor.set_text("hello world".to_string());
+
+        // Sanity: starts in Normal.
+        assert_eq!(vim_mode(&editor), EditorMode::Normal);
+
+        // A bare click leaves has_sel == false (collapsed selection filtered
+        // out by the is_some_and guard).  Sync with no selection must keep Normal.
+        editor.backend.vim_sync_mouse_selection(false);
+        assert_eq!(
+            vim_mode(&editor),
+            EditorMode::Normal,
+            "collapsed (bare click) selection must not enter Visual mode"
+        );
+    }
+
+    /// A drag that creates a real (non-empty) selection DOES enter Visual mode.
+    #[test]
+    fn vim_sync_real_sel_enters_visual() {
+        let mut editor = make_vim_editor();
+        editor.set_text("hello world".to_string());
+
+        // Sanity: starts in Normal.
+        assert_eq!(vim_mode(&editor), EditorMode::Normal);
+
+        // A drag with start != end yields has_sel == true.
+        editor.backend.vim_sync_mouse_selection(true);
+        assert_eq!(
+            vim_mode(&editor),
+            EditorMode::Visual,
+            "real drag selection must enter Visual mode"
+        );
     }
 }
