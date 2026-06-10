@@ -2020,6 +2020,26 @@ impl Component for TextEditorComponent {
                         }
                         VimKeyOutcome::NoOp => return EventState::Consumed,
                         VimKeyOutcome::PassThrough => { /* fall through to direct path */ }
+                        VimKeyOutcome::Host(action) => {
+                            use self::vim::VimHostAction;
+                            match action {
+                                VimHostAction::OpenPalette => {
+                                    // Reuse the existing palette gateway.
+                                    tx.send(AppEvent::ExecuteLeaderAction(
+                                        crate::keys::leader::LeaderAction::Palette,
+                                    )).ok();
+                                }
+                                VimHostAction::OpenSearch { forward: _ } => {
+                                    // `/` and `?` open the existing find bar.
+                                    // (`?` backward-first is a later refinement;
+                                    // n/N still navigate both directions.)
+                                    self.open_or_advance_search();
+                                }
+                                VimHostAction::SearchNext => self.search_advance(false),
+                                VimHostAction::SearchPrev => self.search_advance(true),
+                            }
+                            return EventState::Consumed;
+                        }
                     }
                 }
                 if let Some(state) = self.handle_nvim_key(key, tx) {

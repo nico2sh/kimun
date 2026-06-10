@@ -5,6 +5,15 @@ use super::snapshot::EditorMode;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui_textarea::{CursorMove, TextArea};
 
+/// Screen-level actions the host performs on the engine's behalf (adr/0012).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VimHostAction {
+    OpenPalette,                  // `:`
+    OpenSearch { forward: bool }, // `/` (true) `?` (false)
+    SearchNext,                   // `n`
+    SearchPrev,                   // `N`
+}
+
 /// What a key did, so the host can bump the right revision counters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VimKeyOutcome {
@@ -16,6 +25,8 @@ pub enum VimKeyOutcome {
     NoOp,
     /// Insert mode: defer to the existing `handle_textarea_key` path.
     PassThrough,
+    /// The host must perform a screen-level action.
+    Host(VimHostAction),
 }
 
 // ── Plan 2 Task 1: reified command model ────────────────────────────────────
@@ -1225,6 +1236,20 @@ impl VimEngine {
             return VimKeyOutcome::CursorOnly;
         }
 
+        // Plan 3 Task 3: host actions — `:` `/` `?` `n` `N`.
+        // These were previously NoOp; now they emit Host signals for the
+        // component to turn into AppEvent / find-bar calls (adr/0012).
+        // Note: `?` backward-first is deferred; `/` and `?` both open the
+        // find bar for v1 — `n`/`N` navigate both directions.
+        match c {
+            ':' => { self.clear_pending(); return VimKeyOutcome::Host(VimHostAction::OpenPalette); }
+            '/' => { self.clear_pending(); return VimKeyOutcome::Host(VimHostAction::OpenSearch { forward: true }); }
+            '?' => { self.clear_pending(); return VimKeyOutcome::Host(VimHostAction::OpenSearch { forward: false }); }
+            'n' => { self.clear_pending(); return VimKeyOutcome::Host(VimHostAction::SearchNext); }
+            'N' => { self.clear_pending(); return VimKeyOutcome::Host(VimHostAction::SearchPrev); }
+            _ => {}
+        }
+
         // Insert-entry keys (from Plan 1, kept intact)
         // NOTE: i/a only reach here when NO operator is pending — operator + i/a
         // is handled above by the Task 8 text-object block.
@@ -1973,6 +1998,30 @@ mod tests {
         e.handle_key(&key('w'), &mut t);
         e.handle_key(&key('.'), &mut t);
         assert_eq!(t.lines(), &["X X"]);
+    }
+
+    // ── Plan 3 Task 3: host-action tests ────────────────────────────────────
+
+    #[test]
+    fn colon_emits_open_palette() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["x"]);
+        assert_eq!(e.handle_key(&key(':'), &mut t), VimKeyOutcome::Host(VimHostAction::OpenPalette));
+    }
+
+    #[test]
+    fn slash_emits_open_search_forward() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["x"]);
+        assert_eq!(e.handle_key(&key('/'), &mut t), VimKeyOutcome::Host(VimHostAction::OpenSearch { forward: true }));
+    }
+
+    #[test]
+    fn n_and_N_emit_search_nav() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["x"]);
+        assert_eq!(e.handle_key(&key('n'), &mut t), VimKeyOutcome::Host(VimHostAction::SearchNext));
+        assert_eq!(e.handle_key(&key('N'), &mut t), VimKeyOutcome::Host(VimHostAction::SearchPrev));
     }
 }
 
