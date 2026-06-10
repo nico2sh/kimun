@@ -720,7 +720,11 @@ impl VimEngine {
                 self.register = RegisterKind::Linewise;
                 if op == Operator::Change {
                     // cc: open a fresh empty line to type into, at the right spot
-                    if r0 > 0 && r1 == last {
+                    if r0 == 0 && r1 == last {
+                        // whole-buffer case: cut() left [""], the cursor is already
+                        // at (0,0) on an empty line — no extra newline needed.
+                        ta.move_cursor(CursorMove::Jump(0, 0));
+                    } else if r0 > 0 && r1 == last {
                         // we consumed the preceding newline; add a line back
                         ta.move_cursor(CursorMove::End);
                         ta.insert_newline();
@@ -1336,6 +1340,53 @@ impl VimEngine {
         }
     }
 
+    /// Find the innermost enclosing pair `(open, close)` around `col`.
+    /// If the cursor is on an open bracket, that bracket is the enclosing open.
+    /// Otherwise scans left with depth counting (closing chars raise depth) to
+    /// find the nearest unmatched open, then scans right from that open with
+    /// depth counting to find the matching close.
+    fn find_enclosing_pair(
+        chars: &[char],
+        col: usize,
+        open: char,
+        close: char,
+    ) -> Option<(usize, usize)> {
+        // Locate the open bracket that encloses col.
+        let open_idx = if chars.get(col) == Some(&open) {
+            col
+        } else {
+            let mut depth = 0usize;
+            let mut found = None;
+            for i in (0..col).rev() {
+                if chars[i] == close {
+                    depth += 1;
+                } else if chars[i] == open {
+                    if depth == 0 {
+                        found = Some(i);
+                        break;
+                    }
+                    depth -= 1;
+                }
+            }
+            found?
+        };
+        // Find the matching close bracket scanning right from open_idx+1.
+        let mut depth = 0usize;
+        let mut close_idx = None;
+        for i in (open_idx + 1)..chars.len() {
+            if chars[i] == open {
+                depth += 1;
+            } else if chars[i] == close {
+                if depth == 0 {
+                    close_idx = Some(i);
+                    break;
+                }
+                depth -= 1;
+            }
+        }
+        Some((open_idx, close_idx?))
+    }
+
     /// Returns the half-open `[start, end)` char range for `obj` centred at
     /// `col` within `chars`.
     ///
@@ -1374,10 +1425,11 @@ impl VimEngine {
                     .filter(|&(_, &c)| c == ch)
                     .map(|(i, _)| i)
                     .collect();
-                // Find the pair that surrounds or starts at/after the cursor.
+                // Find the pair that strictly contains the cursor (p[0] <= col <= p[1]).
+                // Cursor in the gap between two quoted spans returns None (no-op).
                 let pair = positions
                     .chunks(2)
-                    .find(|p| p.len() == 2 && p[1] >= col)?;
+                    .find(|p| p.len() == 2 && p[0] <= col && col <= p[1])?;
                 let (o, c) = (pair[0], pair[1]);
                 if around {
                     Some((o, c + 1))
@@ -1386,10 +1438,7 @@ impl VimEngine {
                 }
             }
             TextObject::Pair { open, close, around } => {
-                // Search backwards from col (inclusive) for the opening char.
-                let o = (0..=col).rev().find(|&i| chars[i] == open)?;
-                // Search forwards from col (inclusive) for the closing char.
-                let c = (col..chars.len()).find(|&i| chars[i] == close)?;
+                let (o, c) = Self::find_enclosing_pair(chars, col, open, close)?;
                 if around {
                     Some((o, c + 1))
                 } else {
@@ -1433,9 +1482,11 @@ impl VimEngine {
         if ta.delete_next_char() {
             ta.insert_char(c);
             ta.move_cursor(CursorMove::Back);
+            self.last_change = Some(Change { command: Command::ReplaceChar(c), inserted: None });
+            VimKeyOutcome::TextMutated
+        } else {
+            VimKeyOutcome::NoOp
         }
-        self.last_change = Some(Change { command: Command::ReplaceChar(c), inserted: None });
-        VimKeyOutcome::TextMutated
     }
 
     /// Join the next line up onto the current one by removing the trailing newline.
@@ -2139,6 +2190,105 @@ mod tests {
         e.handle_key(&key('w'), &mut t);
         assert_eq!(*e.mode(), EditorMode::Normal);
         assert_eq!(t.lines(), &["foo bar baz"], "w after Esc must be a motion, not diw");
+    }
+
+    // ── Bug A: di( on nested parens ─────────────────────────────────────────
+
+    #[test]
+    fn di_paren_nested_selects_inner_of_outer() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["((x))"]);
+        // cursor at col 0 (outer '(')
+        e.handle_key(&key('d'), &mut t);
+        e.handle_key(&key('i'), &mut t);
+        e.handle_key(&key('('), &mut t);
+        assert_eq!(t.lines(), &["()"]); // outer kept, inner content "(x)" deleted
+    }
+
+    #[test]
+    fn di_paren_from_inside_nested() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["((x))"]);
+        e.handle_key(&key('l'), &mut t); // col1 (inner '(')
+        e.handle_key(&key('l'), &mut t); // col2 ('x')
+        e.handle_key(&key('d'), &mut t);
+        e.handle_key(&key('i'), &mut t);
+        e.handle_key(&key('('), &mut t);
+        assert_eq!(t.lines(), &["(())"]); // inner content "x" deleted
+    }
+
+    // ── Bug B: di" in gap between pairs ─────────────────────────────────────
+
+    #[test]
+    fn di_quote_in_gap_is_noop() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["\"foo\" \"bar\""]);
+        // move cursor to the space (col 5) between the two strings
+        for _ in 0..5 { e.handle_key(&key('l'), &mut t); }
+        assert_eq!(super::super::cursor_tuple(&t).1, 5);
+        e.handle_key(&key('d'), &mut t);
+        e.handle_key(&key('i'), &mut t);
+        e.handle_key(&key('"'), &mut t);
+        assert_eq!(t.lines(), &["\"foo\" \"bar\""]); // unchanged (no-op)
+    }
+
+    #[test]
+    fn di_quote_inside_still_works() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["\"foo\" \"bar\""]);
+        for _ in 0..7 { e.handle_key(&key('l'), &mut t); } // inside "bar"
+        e.handle_key(&key('d'), &mut t);
+        e.handle_key(&key('i'), &mut t);
+        e.handle_key(&key('"'), &mut t);
+        assert_eq!(t.lines(), &["\"foo\" \"\""]); // bar deleted, foo intact
+    }
+
+    // ── Bug C: df<last-char> must not join next line ─────────────────────────
+
+    #[test]
+    fn df_last_char_does_not_join_next_line() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["abc", "xyz"]);
+        // cursor at (0,0); df c  → delete through the 'c' (last char of line 0)
+        e.handle_key(&key('d'), &mut t);
+        e.handle_key(&key('f'), &mut t);
+        e.handle_key(&key('c'), &mut t);
+        assert_eq!(t.lines(), &["", "xyz"]); // line 0 emptied, newline + line 1 intact
+    }
+
+    // ── Bug D: cc on a single-line buffer ────────────────────────────────────
+
+    #[test]
+    fn cc_single_line_leaves_one_empty_line() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["hello"]);
+        e.handle_key(&key('c'), &mut t);
+        e.handle_key(&key('c'), &mut t);
+        assert_eq!(t.lines(), &[""]);
+        assert_eq!(*e.mode(), EditorMode::Insert);
+    }
+
+    #[test]
+    fn cc_middle_line_still_works() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["one","two","three"]);
+        e.handle_key(&key('j'), &mut t); // line "two"
+        e.handle_key(&key('c'), &mut t);
+        e.handle_key(&key('c'), &mut t);
+        assert_eq!(t.lines(), &["one","","three"]);
+        assert_eq!(*e.mode(), EditorMode::Insert);
+    }
+
+    // ── Bug E: r on empty line must be no-op ────────────────────────────────
+
+    #[test]
+    fn r_on_empty_line_is_noop() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from([""]);
+        e.handle_key(&key('r'), &mut t);
+        let out = e.handle_key(&key('Z'), &mut t);
+        assert_eq!(out, VimKeyOutcome::NoOp);
+        assert_eq!(t.lines(), &[""]);
     }
 }
 
