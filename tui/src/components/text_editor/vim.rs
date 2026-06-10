@@ -116,12 +116,10 @@ pub struct VimEngine {
     pending_count: Option<usize>,
     pending_operator: Option<Operator>,
     pending_g: bool,              // first key of `gg`
-    #[allow(dead_code)] // Plan 2 Task 7
     pending_find: Option<PendingFind>,
     pending_replace: bool,        // awaiting the char after `r`
     #[allow(dead_code)] // Plan 2 Task 8
     pending_object_kind: Option<bool>, // Some(around): saw `i`/`a` after operator
-    #[allow(dead_code)] // Plan 2 Task 7
     last_find: Option<(char, bool, bool)>, // (ch, till, forward) for ; and ,
     register: RegisterKind,
     #[allow(dead_code)] // Plan 2 Task 11
@@ -193,6 +191,30 @@ impl VimEngine {
                 return self.replace_char(c, ta);
             }
             return VimKeyOutcome::NoOp; // Esc etc cancels
+        }
+
+        // Task 7: consume the find target char when pending_find is set
+        if let Some(pf) = self.pending_find.take() {
+            if let KeyCode::Char(ch) = key.code {
+                self.last_find = Some((ch, pf.till, pf.forward));
+                let motion = Motion::FindChar { ch, till: pf.till, forward: pf.forward };
+                let cnt = self.take_count();
+                if let Some(op) = pf.operator {
+                    ta.start_selection();
+                    self.apply_motion(motion, cnt, ta);
+                    // f is inclusive of the target: extend one more for delete
+                    if !pf.till && pf.forward {
+                        ta.move_cursor(CursorMove::Forward);
+                    }
+                    self.apply_operator_on_selection(op, RegisterKind::Charwise, ta);
+                    self.clear_pending();
+                    return self.outcome_for(op);
+                }
+                self.apply_motion(motion, cnt, ta);
+                self.clear_pending();
+                return VimKeyOutcome::CursorOnly;
+            }
+            return VimKeyOutcome::NoOp; // non-char (e.g. Esc) cancels
         }
 
         // Task 6: Ctrl-r → redo (before the plain filter so it isn't stripped)
@@ -303,9 +325,29 @@ impl VimEngine {
     /// Stub — implemented in Task 9.
     fn match_pair(_ta: &mut TextArea<'static>) { /* Task 9 */ }
 
-    /// Stub — implemented in Task 7.
-    fn find_char(_ta: &mut TextArea<'static>, _ch: char, _till: bool, _forward: bool) {
-        /* Task 7 */
+    /// Find the next occurrence of `ch` on the current line.
+    /// `forward`: search right from col+1; `!forward`: search left from col-1.
+    /// `till`: stop one column short of the target (t/T behaviour).
+    fn find_char(ta: &mut TextArea<'static>, ch: char, till: bool, forward: bool) {
+        let (row, col) = super::cursor_tuple(ta);
+        let Some(line) = ta.lines().get(row).cloned() else { return };
+        let chars: Vec<char> = line.chars().collect();
+        if forward {
+            let start = col + 1;
+            if let Some(pos) = (start..chars.len()).find(|&i| chars[i] == ch) {
+                let target = if till { pos.saturating_sub(1) } else { pos };
+                for _ in col..target {
+                    ta.move_cursor(CursorMove::Forward);
+                }
+            }
+        } else {
+            if let Some(pos) = (0..col).rev().find(|&i| chars[i] == ch) {
+                let target = if till { pos + 1 } else { pos };
+                for _ in target..col {
+                    ta.move_cursor(CursorMove::Back);
+                }
+            }
+        }
     }
 
     // ── Plan 2 Task 4: operator framework ───────────────────────────────────
@@ -544,6 +586,33 @@ impl VimEngine {
             self.paste(after, cnt, ta);
             self.clear_pending();
             return VimKeyOutcome::TextMutated;
+        }
+
+        // Task 7: f/F/t/T — set pending_find (captures pending_operator so df, works)
+        if let Some((till, forward)) = match c {
+            'f' => Some((false, true)),
+            'F' => Some((false, false)),
+            't' => Some((true, true)),
+            'T' => Some((true, false)),
+            _ => None,
+        } {
+            self.pending_find = Some(PendingFind {
+                operator: self.pending_operator.take(),
+                till,
+                forward,
+            });
+            return VimKeyOutcome::NoOp;
+        }
+
+        // Task 7: ; and , — repeat last find (same / opposite direction)
+        if c == ';' || c == ',' {
+            if let Some((ch, till, fwd)) = self.last_find {
+                let forward = if c == ';' { fwd } else { !fwd };
+                let cnt = self.take_count();
+                self.apply_motion(Motion::FindChar { ch, till, forward }, cnt, ta);
+            }
+            self.clear_pending();
+            return VimKeyOutcome::CursorOnly;
         }
 
         // Task 3: motion dispatch (count-aware)
@@ -1010,5 +1079,46 @@ mod tests {
         let mut t = TextArea::from(["abc"]);
         e.handle_key(&key('~'), &mut t);
         assert_eq!(t.lines(), &["Abc"]);
+    }
+
+    // ── Plan 2 Task 7 tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn f_moves_to_char() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["hello, world"]);
+        e.handle_key(&key('f'), &mut t);
+        e.handle_key(&key(','), &mut t);
+        assert_eq!(super::super::cursor_tuple(&t), (0, 5));
+    }
+
+    #[test]
+    fn df_deletes_through_char() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["hello, world"]);
+        e.handle_key(&key('d'), &mut t);
+        e.handle_key(&key('f'), &mut t);
+        e.handle_key(&key(','), &mut t);
+        assert_eq!(t.lines(), &[" world"]);
+    }
+
+    #[test]
+    fn t_stops_before_char() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["hello, world"]);
+        e.handle_key(&key('t'), &mut t);
+        e.handle_key(&key(','), &mut t);
+        assert_eq!(super::super::cursor_tuple(&t), (0, 4)); // on 'o', before ','
+    }
+
+    #[test]
+    fn semicolon_repeats_find() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["a.b.c.d"]);
+        e.handle_key(&key('f'), &mut t);
+        e.handle_key(&key('.'), &mut t);
+        assert_eq!(super::super::cursor_tuple(&t).1, 1);
+        e.handle_key(&key(';'), &mut t);
+        assert_eq!(super::super::cursor_tuple(&t).1, 3);
     }
 }
