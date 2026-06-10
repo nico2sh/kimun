@@ -4,6 +4,16 @@ Domain language for kimün — a note-taking app split into **core** (file ops, 
 
 ## Language
 
+### Editor backend
+
+**Editor backend**:
+Which engine drives the TUI text editor, chosen in config (`editor_backend`): **textarea** (the built-in ratatui-textarea), **nvim** (an external neovim process), or **vim** (built-in vim emulation — a textarea buffer plus a modal state machine, no external process). One config axis, three values.
+_Avoid_: editor engine, editor mode (collides with **editing mode**).
+
+**Editing mode**:
+The active modal state inside a vim-style backend — Normal, Insert, Visual, Visual-line, Command. Shared by the **nvim** and **vim** backends (the `EditorMode` enum); the **textarea** backend has none. Distinct from the **editor backend**, which selects the engine, not the state within it.
+_Avoid_: vim mode (ambiguous — backend or state?), NvimMode (the superseded nvim-only name).
+
 ### Editor parsing
 
 **Parse state**:
