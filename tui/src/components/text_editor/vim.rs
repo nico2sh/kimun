@@ -321,8 +321,38 @@ impl VimEngine {
         }
     }
 
-    /// Stub — implemented in Task 9.
-    fn match_pair(_ta: &mut TextArea<'static>) { /* Task 9 */ }
+    /// Jump to the bracket that matches the one under the cursor (single-line).
+    /// Opening bracket → search forward with depth counting to the matching
+    /// close; closing bracket → search backward to the matching open.
+    /// No-op if the cursor is not on a bracket or no match exists on the line.
+    fn match_pair(ta: &mut TextArea<'static>) {
+        let (row, col) = super::cursor_tuple(ta);
+        let Some(line) = ta.lines().get(row).cloned() else { return };
+        let chars: Vec<char> = line.chars().collect();
+        let Some(&here) = chars.get(col) else { return };
+        let pairs = [('(', ')'), ('[', ']'), ('{', '}'), ('<', '>')];
+        // open → search forward with depth counting to the matching close
+        if let Some(&(_, close)) = pairs.iter().find(|&&(o, _)| o == here) {
+            let mut depth = 0i32;
+            for i in col..chars.len() {
+                if chars[i] == here { depth += 1; }
+                else if chars[i] == close { depth -= 1; if depth == 0 {
+                    for _ in col..i { ta.move_cursor(CursorMove::Forward); }
+                    return;
+                }}
+            }
+        // close → search backward with depth counting to the matching open
+        } else if let Some(&(open, _)) = pairs.iter().find(|&&(_, c)| c == here) {
+            let mut depth = 0i32;
+            for i in (0..=col).rev() {
+                if chars[i] == here { depth += 1; }
+                else if chars[i] == open { depth -= 1; if depth == 0 {
+                    for _ in i..col { ta.move_cursor(CursorMove::Back); }
+                    return;
+                }}
+            }
+        }
+    }
 
     /// Find the next occurrence of `ch` on the current line.
     /// `forward`: search right from col+1; `!forward`: search left from col-1.
@@ -1289,5 +1319,36 @@ mod tests {
         e.handle_key(&key('a'), &mut t);
         e.handle_key(&key('w'), &mut t);
         assert_eq!(t.lines(), &["foo baz"]);
+    }
+
+    // ── Plan 2 Task 9 tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn percent_jumps_to_matching_paren() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["foo(bar)baz"]);
+        e.handle_key(&key('f'), &mut t);
+        e.handle_key(&key('('), &mut t); // cursor on '('
+        e.handle_key(&key('%'), &mut t);
+        assert_eq!(super::super::cursor_tuple(&t), (0, 7)); // matching ')'
+    }
+
+    #[test]
+    fn percent_jumps_back_from_close() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["foo(bar)baz"]);
+        e.handle_key(&key('f'), &mut t);
+        e.handle_key(&key(')'), &mut t); // cursor on ')'
+        e.handle_key(&key('%'), &mut t);
+        assert_eq!(super::super::cursor_tuple(&t), (0, 3)); // back to '('
+    }
+
+    #[test]
+    fn percent_handles_nested() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["(a(b)c)"]);
+        // cursor on outer '(' at col 0
+        e.handle_key(&key('%'), &mut t);
+        assert_eq!(super::super::cursor_tuple(&t), (0, 6)); // matching outer ')'
     }
 }
