@@ -91,10 +91,16 @@ pub struct TextareaBackend {
 
 impl TextareaBackend {
     pub fn direct(ta: TextArea<'static>) -> Self {
-        Self { ta, input: InputInterpreter::Direct }
+        Self {
+            ta,
+            input: InputInterpreter::Direct,
+        }
     }
     pub fn vim(ta: TextArea<'static>) -> Self {
-        Self { ta, input: InputInterpreter::Vim(VimEngine::default()) }
+        Self {
+            ta,
+            input: InputInterpreter::Vim(VimEngine::default()),
+        }
     }
 }
 
@@ -117,7 +123,13 @@ impl BackendState {
 
     /// True when the active backend is the built-in vim interpreter (any mode).
     pub fn is_vim(&self) -> bool {
-        matches!(self, BackendState::Textarea(TextareaBackend { input: InputInterpreter::Vim(_), .. }))
+        matches!(
+            self,
+            BackendState::Textarea(TextareaBackend {
+                input: InputInterpreter::Vim(_),
+                ..
+            })
+        )
     }
 
     /// The textarea, when it is the active backend. Textarea-only features
@@ -186,7 +198,11 @@ impl BackendState {
     /// If the selection is gone and the engine is in Visual/VisualLine, returns
     /// to Normal. No-op for Direct / Nvim backends.
     pub fn vim_sync_mouse_selection(&mut self, has_selection: bool) {
-        if let BackendState::Textarea(TextareaBackend { input: InputInterpreter::Vim(e), .. }) = self {
+        if let BackendState::Textarea(TextareaBackend {
+            input: InputInterpreter::Vim(e),
+            ..
+        }) = self
+        {
             e.sync_mouse_selection(has_selection);
         }
     }
@@ -623,22 +639,24 @@ mod tests {
 
     #[test]
     fn vim_space_leads_only_for_vim_backend() {
-        assert!(!BackendState::Textarea(TextareaBackend::direct(TextArea::default())).vim_space_leads());
-        assert!(BackendState::Textarea(TextareaBackend::vim(TextArea::default())).vim_space_leads());
+        assert!(
+            !BackendState::Textarea(TextareaBackend::direct(TextArea::default())).vim_space_leads()
+        );
+        assert!(
+            BackendState::Textarea(TextareaBackend::vim(TextArea::default())).vim_space_leads()
+        );
     }
 
     #[test]
     fn modal_is_insert_classifies_backends() {
         // Direct textarea → None (non-modal, leave terminal cursor alone).
         assert_eq!(
-            BackendState::Textarea(TextareaBackend::direct(TextArea::default()))
-                .modal_is_insert(),
+            BackendState::Textarea(TextareaBackend::direct(TextArea::default())).modal_is_insert(),
             None
         );
         // Vim backend starts in Normal mode → Some(false) (block cursor).
         assert_eq!(
-            BackendState::Textarea(TextareaBackend::vim(TextArea::default()))
-                .modal_is_insert(),
+            BackendState::Textarea(TextareaBackend::vim(TextArea::default())).modal_is_insert(),
             Some(false)
         );
     }
