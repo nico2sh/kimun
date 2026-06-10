@@ -449,6 +449,12 @@ impl VimEngine {
             return VimKeyOutcome::NoOp; // non-char (e.g. Esc) cancels
         }
 
+        // Esc cancels any pending Normal-mode sequence (operator, count, g, i/a object).
+        if key.code == KeyCode::Esc {
+            self.clear_pending();
+            return VimKeyOutcome::NoOp;
+        }
+
         // Task 6: Ctrl-r → redo (before the plain filter so it isn't stripped)
         if key.code == KeyCode::Char('r') && key.modifiers.contains(KeyModifiers::CONTROL) {
             let cnt = self.take_count();
@@ -1336,6 +1342,9 @@ impl VimEngine {
     /// NOTE: text objects are **single-line** in this implementation.
     /// Multi-line pair/quote spans are a later enhancement.
     fn object_range(chars: &[char], col: usize, obj: TextObject) -> Option<(usize, usize)> {
+        if chars.is_empty() || col >= chars.len() {
+            return None;
+        }
         match obj {
             TextObject::Word { around } => {
                 let is_word = |c: char| c.is_alphanumeric() || c == '_';
@@ -2091,6 +2100,45 @@ mod tests {
         e.handle_key(&key('i'), &mut t); // Insert
         e.sync_mouse_selection(true);
         assert_eq!(*e.mode(), EditorMode::Insert); // mouse doesn't yank Insert into Visual
+    }
+
+    // ── Bug-fix regression tests ─────────────────────────────────────────────
+
+    #[test]
+    fn di_paren_on_empty_line_does_not_panic() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from([""]); // empty line
+        e.handle_key(&key('d'), &mut t);
+        e.handle_key(&key('i'), &mut t);
+        e.handle_key(&key('('), &mut t); // must not panic; no-op
+        assert_eq!(t.lines(), &[""]);
+    }
+
+    #[test]
+    fn esc_clears_pending_g_in_normal() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["one", "two", "three"]);
+        e.handle_key(&key('G'), &mut t); // last line
+        assert_eq!(super::super::cursor_tuple(&t).0, 2);
+        e.handle_key(&key('g'), &mut t);                                  // start gg
+        e.handle_key(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &mut t); // cancel
+        e.handle_key(&key('g'), &mut t);                                  // lone g
+        assert_eq!(super::super::cursor_tuple(&t).0, 2, "Esc must cancel pending g");
+    }
+
+    #[test]
+    fn esc_clears_pending_operator_object_in_normal() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["foo bar baz"]);
+        e.handle_key(&key('d'), &mut t); // operator pending
+        e.handle_key(&key('i'), &mut t); // object kind pending (NOT insert — operator pending)
+        e.handle_key(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &mut t); // cancel
+        // buffer unchanged (no diw happened)
+        assert_eq!(t.lines(), &["foo bar baz"]);
+        // and we're back to clean Normal: a plain motion works, mode still Normal
+        e.handle_key(&key('w'), &mut t);
+        assert_eq!(*e.mode(), EditorMode::Normal);
+        assert_eq!(t.lines(), &["foo bar baz"], "w after Esc must be a motion, not diw");
     }
 }
 
