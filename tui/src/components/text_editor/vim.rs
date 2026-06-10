@@ -112,8 +112,7 @@ struct Change {
 #[derive(Debug, Clone)]
 struct InsertCapture {
     command: Command,
-    start_len: usize,
-    text: String,
+    start: (usize, usize),
 }
 
 // ── VimEngine ────────────────────────────────────────────────────────────────
@@ -389,12 +388,14 @@ impl VimEngine {
     fn handle_insert(&mut self, key: &KeyEvent, ta: &mut TextArea<'static>) -> VimKeyOutcome {
         if key.code == KeyCode::Esc {
             self.mode = EditorMode::Normal;
-            // Task 11: fold the insert capture into last_change BEFORE the
-            // cursor step-back so the captured text reflects the final buffer.
+            // Compute the inserted text once at Esc, slicing from the start cursor
+            // recorded when Insert began to the current cursor (multi-line aware).
             if let Some(cap) = self.insert_capture.take() {
+                let end = super::cursor_tuple(ta);
+                let inserted = Self::text_between(ta.lines(), cap.start, end);
                 self.last_change = Some(Change {
                     command: cap.command,
-                    inserted: Some(cap.text),
+                    inserted: Some(inserted),
                 });
             }
             if super::cursor_tuple(ta).1 > 0 {
@@ -432,7 +433,7 @@ impl VimEngine {
                     if op == Operator::Change && !self.replaying {
                         ta.cut();
                         self.register = RegisterKind::Charwise;
-                        self.enter_insert_capture(Command::OperateMotion(op, motion, cnt));
+                        self.enter_insert_capture(Command::OperateMotion(op, motion, cnt), ta);
                     } else {
                         self.apply_operator_on_selection(op, RegisterKind::Charwise, ta);
                         if op != Operator::Change {
@@ -660,7 +661,7 @@ impl VimEngine {
         if op == Operator::Change && !self.replaying {
             ta.cut();
             self.register = RegisterKind::Charwise;
-            self.enter_insert_capture(Command::OperateMotion(op, m, count));
+            self.enter_insert_capture(Command::OperateMotion(op, m, count), ta);
         } else {
             self.apply_operator_on_selection(op, RegisterKind::Charwise, ta);
         }
@@ -735,8 +736,7 @@ impl VimEngine {
                     self.mode = EditorMode::Insert;
                     self.insert_capture = Some(InsertCapture {
                         command: Command::OperateLine(op, count),
-                        start_len: 0,
-                        text: String::new(),
+                        start: super::cursor_tuple(ta),
                     });
                 }
             }
@@ -760,7 +760,7 @@ impl VimEngine {
         if op == Operator::Change && !self.replaying {
             ta.cut();
             self.register = RegisterKind::Charwise;
-            self.enter_insert_capture(Command::OperateToLineEnd(op));
+            self.enter_insert_capture(Command::OperateToLineEnd(op), ta);
         } else {
             self.apply_operator_on_selection(op, RegisterKind::Charwise, ta);
         }
@@ -813,7 +813,7 @@ impl VimEngine {
                 // directly instead of re-entering Insert mode. Only call
                 // enter_insert_capture when NOT replaying.
                 if !self.replaying {
-                    self.enter_insert_capture(Command::OperateMotion(op, Motion::Right, 1));
+                    self.enter_insert_capture(Command::OperateMotion(op, Motion::Right, 1), ta);
                 }
             }
             Operator::Indent | Operator::Outdent => {
@@ -834,12 +834,44 @@ impl VimEngine {
         }
     }
 
-    fn enter_insert_capture(&mut self, command: Command) {
+    /// Slice the buffer text between two cursor positions (row, col), inclusive
+    /// of `start` and exclusive of `end`. Works across lines: the result for a
+    /// two-line insert is `"line1_suffix\nline2_prefix"`. Returns `""` when
+    /// `end <= start`.
+    fn text_between(lines: &[String], start: (usize, usize), end: (usize, usize)) -> String {
+        if end <= start {
+            return String::new();
+        }
+        let (sr, sc) = start;
+        let (er, ec) = end;
+        if sr == er {
+            return lines
+                .get(sr)
+                .map(|l| l.chars().skip(sc).take(ec.saturating_sub(sc)).collect())
+                .unwrap_or_default();
+        }
+        let mut out = String::new();
+        if let Some(l) = lines.get(sr) {
+            out.extend(l.chars().skip(sc));
+        }
+        out.push('\n');
+        for r in (sr + 1)..er {
+            if let Some(l) = lines.get(r) {
+                out.push_str(l);
+            }
+            out.push('\n');
+        }
+        if let Some(l) = lines.get(er) {
+            out.extend(l.chars().take(ec));
+        }
+        out
+    }
+
+    fn enter_insert_capture(&mut self, command: Command, ta: &TextArea<'static>) {
         self.mode = EditorMode::Insert;
         self.insert_capture = Some(InsertCapture {
             command,
-            start_len: 0,
-            text: String::new(),
+            start: super::cursor_tuple(ta),
         });
     }
 
@@ -849,47 +881,6 @@ impl VimEngine {
     /// Called at every mutating, non-insert completion point.
     fn record(&mut self, command: Command) {
         self.last_change = Some(Change { command, inserted: None });
-    }
-
-    /// Called by the host (mod.rs) after Insert-mode pass-through edits land
-    /// in the textarea, so the engine can accumulate the insert delta for `.`.
-    ///
-    /// Dual-path:
-    /// - **App path** (`typed = ""`): the textarea was already updated; the
-    ///   captured text is re-derived from the buffer. The entry column is
-    ///   stored in `cap.start_len` on the first call (when `cap.text` is
-    ///   still empty and the cursor has moved one past the entry point).
-    /// - **Test path** (`typed != ""`): inserts the text into the textarea
-    ///   (simulating the PassThrough key) AND records it in the capture,
-    ///   so unit tests don't need a separate `ta.insert_str`.
-    ///
-    /// v1 captures single-line inserts (typical in a notes editor).
-    pub fn note_inserted_text(&mut self, ta: &mut TextArea<'static>, typed: &str) {
-        let Some(cap) = self.insert_capture.as_mut() else { return };
-
-        if !typed.is_empty() {
-            // Test path: simulate the keypress and record the text directly.
-            ta.insert_str(typed);
-            cap.text.push_str(typed);
-            return;
-        }
-
-        // App path: textarea already updated — re-derive from the buffer.
-        // On the first call (cap.text is empty), record the entry column as
-        // start_len; subsequent calls expand the window.
-        let (row, col) = super::cursor_tuple(ta);
-        if let Some(line) = ta.lines().get(row) {
-            if cap.start_len == 0 && cap.text.is_empty() {
-                // Entry column: one before the current cursor
-                // (the user just typed the first char, so cursor advanced one).
-                cap.start_len = col.saturating_sub(1);
-            }
-            cap.text = line
-                .chars()
-                .skip(cap.start_len)
-                .take(col.saturating_sub(cap.start_len))
-                .collect();
-        }
     }
 
     /// Replay a stored `Change` (the dot-repeat implementation).
@@ -1201,7 +1192,7 @@ impl VimEngine {
                 for _ in 0..cnt {
                     ta.delete_next_char();
                 }
-                self.enter_insert_capture(Command::SubstituteChar(cnt));
+                self.enter_insert_capture(Command::SubstituteChar(cnt), ta);
                 self.clear_pending();
                 return VimKeyOutcome::CursorOnly;
             }
@@ -1210,7 +1201,7 @@ impl VimEngine {
                 ta.start_selection();
                 ta.move_cursor(CursorMove::End);
                 ta.cut();
-                self.enter_insert_capture(Command::SubstituteLine);
+                self.enter_insert_capture(Command::SubstituteLine, ta);
                 self.clear_pending();
                 return VimKeyOutcome::TextMutated;
             }
@@ -1334,7 +1325,7 @@ impl VimEngine {
         if op == Operator::Change && !self.replaying {
             ta.cut();
             self.register = RegisterKind::Charwise;
-            self.enter_insert_capture(Command::OperateObject(op, obj));
+            self.enter_insert_capture(Command::OperateObject(op, obj), ta);
         } else {
             self.apply_operator_on_selection(op, RegisterKind::Charwise, ta);
         }
@@ -2077,13 +2068,36 @@ mod tests {
         let mut t = TextArea::from(["foo bar"]);
         // cw -> type "X" -> Esc, then move to next word and dot
         e.handle_key(&key('c'), &mut t);
-        e.handle_key(&key('w'), &mut t);
-        // simulate insert-mode typing via the host pass-through path:
-        e.note_inserted_text(&mut t, "X");
-        e.handle_key(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &mut t);
-        e.handle_key(&key('w'), &mut t);
-        e.handle_key(&key('.'), &mut t);
+        e.handle_key(&key('w'), &mut t); // cw: deletes "foo" (cw=ce keeps trailing space), enters Insert at col 0
+        // simulate the user typing "X" via the host PassThrough path:
+        t.insert_str("X");
+        e.handle_key(&esc(), &mut t);     // capture "X"
+        e.handle_key(&key('w'), &mut t);  // move to "bar"
+        e.handle_key(&key('.'), &mut t);  // repeat cw+X
         assert_eq!(t.lines(), &["X X"]);
+    }
+
+    #[test]
+    fn dot_repeats_multiline_change() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["foo bar"]);
+        e.handle_key(&key('c'), &mut t);
+        e.handle_key(&key('w'), &mut t); // cw on "foo" → Insert at col 0
+        t.insert_str("a");
+        t.insert_newline();
+        t.insert_str("b");               // typed "a\nb"
+        e.handle_key(&esc(), &mut t);    // captures "a\nb"
+        // Buffer is now ["a", "b bar"]; cursor stepped back to col 0 of row 1 ("b bar").
+        // Confirm the multi-line buffer state from the insert:
+        assert_eq!(t.lines(), &["a", "b bar"]);
+
+        // Verify replay: position on "bar", run `.`, should produce "a\nb" again.
+        // Move to word "bar" (it is at col 2 of row 1).
+        e.handle_key(&key('w'), &mut t);  // move to "bar" (word-forward from "b" → "bar")
+        e.handle_key(&key('.'), &mut t);  // replay: cw on "bar" → insert "a\nb"
+        // After replay the buffer should have "a\nb" inserted in place of "bar":
+        // row 1 was "b bar", cw from "bar" removes "bar", inserts "a\nb" → ["a", "b a", "b"]
+        assert!(t.lines().len() >= 3, "replay of multiline insert should produce >=3 lines: {:?}", t.lines());
     }
 
     // ── Plan 3 Task 4: space_leads predicate tests ───────────────────────────

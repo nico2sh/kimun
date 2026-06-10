@@ -2067,10 +2067,6 @@ impl Component for TextEditorComponent {
                 let result = self.handle_textarea_key(key, tx);
                 let cursor_after = self.textarea_cursor();
                 if self.content_revision != text_rev_before {
-                    // Task 11 (dot-repeat): notify the vim engine of the insert delta
-                    // so it can accumulate the typed text for `.` replay. No-op for
-                    // Direct/Nvim backends and when the engine is not in Insert mode.
-                    self.backend.vim_note_insert();
                     self.sync_autocomplete();
                 } else if cursor_before != cursor_after {
                     self.refresh_autocomplete_if_open();
