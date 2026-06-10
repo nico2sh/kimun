@@ -115,6 +115,11 @@ impl BackendState {
         matches!(self, BackendState::Textarea(_))
     }
 
+    /// True when the active backend is the built-in vim interpreter (any mode).
+    pub fn is_vim(&self) -> bool {
+        matches!(self, BackendState::Textarea(TextareaBackend { input: InputInterpreter::Vim(_), .. }))
+    }
+
     /// The textarea, when it is the active backend. Textarea-only features
     /// (autocomplete, smart edits, mouse selection) guard on this.
     pub fn as_textarea(&self) -> Option<&TextArea<'static>> {
