@@ -792,6 +792,13 @@ impl TextEditorComponent {
         }
     }
 
+    /// Whether a bare Space should start the leader (vim Normal mode only).
+    /// Returns `false` for the direct textarea backend, the nvim backend,
+    /// vim Insert/Visual modes, and any pending state.
+    pub fn vim_space_leads(&self) -> bool {
+        self.backend.vim_space_leads()
+    }
+
     /// Returns the link or label target under the cursor, or `None` if the
     /// cursor is not inside a wikilink, markdown link, or hashtag span.
     pub fn link_at_cursor(&self) -> Option<LinkTarget> {
