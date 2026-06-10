@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.1](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.16.0...kimun-notes-v0.16.1) - 2026-06-10
+
+### Fixed
+
+- avoid using Send on appscreen
+- upgrade dependencies
+
+### Other
+
+- clippy
+
 ## [0.16.0](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.15.0...kimun-notes-v0.16.0) - 2026-06-09
 
 ### Added
