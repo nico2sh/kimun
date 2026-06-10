@@ -4,8 +4,8 @@ pub mod markdown;
 pub mod nvim_rpc;
 pub mod parse_incremental;
 pub mod snapshot;
-mod vim;
 pub mod view;
+mod vim;
 pub mod widener_metrics;
 pub mod word_wrap;
 
@@ -102,7 +102,7 @@ macro_rules! cursor_move {
 
 use self::backend::BackendState;
 use self::markdown::ParsedBuffer;
-use self::snapshot::{EditorSnapshot, EditorMode};
+use self::snapshot::{EditorMode, EditorSnapshot};
 use self::view::MarkdownEditorView;
 use crate::util::single_slot_task::SingleSlotTask;
 
@@ -1543,8 +1543,14 @@ impl TextEditorComponent {
     /// pattern, even when the find bar is closed.
     fn vim_search_repeat(&mut self, backward: bool) {
         let found = {
-            let Some(ta) = self.backend.as_textarea_mut() else { return };
-            if backward { ta.search_back(false) } else { ta.search_forward(false) }
+            let Some(ta) = self.backend.as_textarea_mut() else {
+                return;
+            };
+            if backward {
+                ta.search_back(false)
+            } else {
+                ta.search_forward(false)
+            }
         };
         self.highlight_current_match(found);
     }
@@ -2054,7 +2060,8 @@ impl Component for TextEditorComponent {
                             // is left unchanged.
                             if self.backend.vim_is_charwise_visual() {
                                 if let Some(((sr, sc), (er, ec))) = self.selection {
-                                    let len = self.backend
+                                    let len = self
+                                        .backend
                                         .as_textarea()
                                         .and_then(|ta| ta.lines().get(er))
                                         .map(|l| l.chars().count())
@@ -2075,7 +2082,8 @@ impl Component for TextEditorComponent {
                                     // Reuse the existing palette gateway.
                                     tx.send(AppEvent::ExecuteLeaderAction(
                                         crate::keys::leader::LeaderAction::Palette,
-                                    )).ok();
+                                    ))
+                                    .ok();
                                 }
                                 VimHostAction::OpenSearch { forward: _ } => {
                                     // `/` and `?` open the existing find bar.
@@ -2262,11 +2270,12 @@ impl Component for TextEditorComponent {
         let editor_focused = focused && !bar_focused;
         use self::view::CursorShape;
         let cursor_shape = match self.backend.modal_is_insert() {
-            None => None,                // Direct textarea — leave terminal default
+            None => None, // Direct textarea — leave terminal default
             Some(true) => Some(CursorShape::Bar),
             Some(false) => Some(CursorShape::Block),
         };
-        self.view.render(f, editor_rect, theme, editor_focused, cursor_shape);
+        self.view
+            .render(f, editor_rect, theme, editor_focused, cursor_shape);
 
         // Search-match emphasis (spec §5.1): paint needle matches and task
         // checkboxes over the rendered viewport. Buffer-level post-pass —

@@ -41,20 +41,20 @@ pub enum Motion {
     WordForward,
     WordBack,
     WordEnd,
-    WordForwardBig,                            // W — WORD: any non-blank run
-    WordBackBig,                               // B
-    WordEndBig,                                // E
-    WordEndBack { big: bool },                 // ge / gE
+    WordForwardBig,            // W — WORD: any non-blank run
+    WordBackBig,               // B
+    WordEndBig,                // E
+    WordEndBack { big: bool }, // ge / gE
     LineStart,
     FirstNonBlank,
-    LastNonBlank,                              // g_
+    LastNonBlank, // g_
     LineEnd,
     FileStart,
     FileEnd,
-    GotoLine(usize),                           // 5gg / 5G (1-based)
+    GotoLine(usize), // 5gg / 5G (1-based)
     ParagraphForward,
     ParagraphBack,
-    MatchingPair,                              // %
+    MatchingPair,                                     // %
     FindChar { ch: char, till: bool, forward: bool }, // f/F/t/T
 }
 
@@ -85,9 +85,18 @@ enum SpanKind {
 /// A text object (`iw`, `a"`, …).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextObject {
-    Word { around: bool },
-    Pair { open: char, close: char, around: bool },
-    Quote { ch: char, around: bool },
+    Word {
+        around: bool,
+    },
+    Pair {
+        open: char,
+        close: char,
+        around: bool,
+    },
+    Quote {
+        ch: char,
+        around: bool,
+    },
 }
 
 /// Where an insert-entry command places the cursor before entering Insert.
@@ -107,24 +116,24 @@ pub enum InsertEntry {
 #[derive(Debug, Clone)]
 pub enum Command {
     Move(Motion, usize),
-    OperateMotion(Operator, Motion, usize), // e.g. 2dw
-    OperateLine(Operator, usize),           // dd / cc / yy with count
-    OperateObject(Operator, TextObject),    // diw, ci"
-    OperateToLineEnd(Operator),             // D / C / Y
+    OperateMotion(Operator, Motion, usize),      // e.g. 2dw
+    OperateLine(Operator, usize),                // dd / cc / yy with count
+    OperateObject(Operator, TextObject),         // diw, ci"
+    OperateToLineEnd(Operator),                  // D / C / Y
     IndentLines { outdent: bool, count: usize }, // >> / <<
-    DeleteChar { forward: bool, count: usize }, // x / X
-    ReplaceChar(char),                      // r<ch>
-    SubstituteChar(usize),                  // s
-    SubstituteLine,                         // S
-    JoinLines { count: usize, spaced: bool }, // J (spaced) / gJ (raw)
-    ToggleCase(usize),                      // ~
-    Paste { after: bool, count: usize },    // p / P
-    Undo(usize),                            // u
-    Redo(usize),                            // Ctrl-r
-    EnterInsert(InsertEntry),               // i a I A o O
-    EnterReplace,                           // R — overwrite until Esc
-    EnterVisual { line: bool },             // v / V
-    Repeat,                                 // .
+    DeleteChar { forward: bool, count: usize },  // x / X
+    ReplaceChar(char),                           // r<ch>
+    SubstituteChar(usize),                       // s
+    SubstituteLine,                              // S
+    JoinLines { count: usize, spaced: bool },    // J (spaced) / gJ (raw)
+    ToggleCase(usize),                           // ~
+    Paste { after: bool, count: usize },         // p / P
+    Undo(usize),                                 // u
+    Redo(usize),                                 // Ctrl-r
+    EnterInsert(InsertEntry),                    // i a I A o O
+    EnterReplace,                                // R — overwrite until Esc
+    EnterVisual { line: bool },                  // v / V
+    Repeat,                                      // .
 }
 
 /// One key of the g-command grammar (the key AFTER a pending `g`). Produced
@@ -386,7 +395,11 @@ impl VimEngine {
                 if let KeyCode::Char(ch) = key.code {
                     self.last_find = Some((ch, pf.till, pf.forward));
                     let cnt = self.take_count();
-                    let motion = Motion::FindChar { ch, till: pf.till, forward: pf.forward };
+                    let motion = Motion::FindChar {
+                        ch,
+                        till: pf.till,
+                        forward: pf.forward,
+                    };
                     self.apply_motion(motion, cnt, ta);
                     return VimKeyOutcome::CursorOnly;
                 }
@@ -417,8 +430,7 @@ impl VimEngine {
         }
 
         // Arrow keys: extend the selection.
-        let plain =
-            key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT;
+        let plain = key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT;
         let KeyCode::Char(c) = key.code else {
             match key.code {
                 KeyCode::Left => {
@@ -555,7 +567,10 @@ impl VimEngine {
         // auto-surround path wraps the selection. Skipped while a `g` is
         // pending — `g~` (case toggle) must reach the g-block below.
         if !matches!(self.awaiting, Some(Awaiting::G))
-            && matches!(c, '(' | '[' | '{' | '<' | '"' | '\'' | '`' | '*' | '_' | '~')
+            && matches!(
+                c,
+                '(' | '[' | '{' | '<' | '"' | '\'' | '`' | '*' | '_' | '~'
+            )
         {
             self.mode = EditorMode::Normal;
             return VimKeyOutcome::PassThrough;
@@ -603,7 +618,11 @@ impl VimEngine {
 
         // f/F/t/T: pend a selection-extending find.
         if let Some((till, forward)) = Self::find_spec_for(c) {
-            self.awaiting = Some(Awaiting::Find(PendingFind { operator: None, till, forward }));
+            self.awaiting = Some(Awaiting::Find(PendingFind {
+                operator: None,
+                till,
+                forward,
+            }));
             return VimKeyOutcome::NoOp;
         }
 
@@ -727,7 +746,9 @@ impl VimEngine {
     /// selections are inclusive; the operator's inclusive `+1` restores the
     /// half-open range `object_range` computed).
     fn select_object_visual(obj: TextObject, ta: &mut TextArea<'static>) {
-        let Some((row, start, end)) = Self::object_range_at_cursor(ta, obj) else { return };
+        let Some((row, start, end)) = Self::object_range_at_cursor(ta, obj) else {
+            return;
+        };
         if start >= end {
             // Empty object (vi( on "()"): collapsing to one char would make
             // the operator's inclusive +1 grab the closing delimiter. No-op.
@@ -924,7 +945,11 @@ impl VimEngine {
             Awaiting::ReplaceChar => Parsed::Cmd(Command::ReplaceChar(c)),
             Awaiting::Find(pf) => {
                 self.last_find = Some((c, pf.till, pf.forward));
-                let motion = Motion::FindChar { ch: c, till: pf.till, forward: pf.forward };
+                let motion = Motion::FindChar {
+                    ch: c,
+                    till: pf.till,
+                    forward: pf.forward,
+                };
                 match pf.operator {
                     Some(op) => {
                         Parsed::Cmd(Command::OperateMotion(op, motion, self.take_total_count()))
@@ -1076,7 +1101,11 @@ impl VimEngine {
                 self.clear_pending();
                 return Parsed::Nothing; // d> etc. abort (vim)
             }
-            self.pending_operator = Some(if outdent { Operator::Outdent } else { Operator::Indent });
+            self.pending_operator = Some(if outdent {
+                Operator::Outdent
+            } else {
+                Operator::Indent
+            });
             self.pending_op_count = self.pending_count.take();
             return Parsed::Pending;
         }
@@ -1161,8 +1190,14 @@ impl VimEngine {
         // NOTE: i/a only reach here when NO operator is pending — operator +
         // i/a is the text-object path above.
         let cmd = match c {
-            'x' => Command::DeleteChar { forward: true, count: self.take_count() },
-            'X' => Command::DeleteChar { forward: false, count: self.take_count() },
+            'x' => Command::DeleteChar {
+                forward: true,
+                count: self.take_count(),
+            },
+            'X' => Command::DeleteChar {
+                forward: false,
+                count: self.take_count(),
+            },
             'r' => {
                 self.awaiting = Some(Awaiting::ReplaceChar);
                 return Parsed::Pending;
@@ -1205,9 +1240,7 @@ impl VimEngine {
     /// defer recording to Esc (the insert capture owns it).
     fn execute(&mut self, cmd: Command, ta: &mut TextArea<'static>) -> VimKeyOutcome {
         let outcome = self.apply(&cmd, None, ta);
-        if outcome != VimKeyOutcome::NoOp
-            && Self::repeatable(&cmd)
-            && self.insert_capture.is_none()
+        if outcome != VimKeyOutcome::NoOp && Self::repeatable(&cmd) && self.insert_capture.is_none()
         {
             self.record(cmd);
         }
@@ -1252,9 +1285,9 @@ impl VimEngine {
         match cmd {
             Command::EnterInsert(
                 InsertEntry::Here
-                    | InsertEntry::After
-                    | InsertEntry::LineStart
-                    | InsertEntry::LineEnd,
+                | InsertEntry::After
+                | InsertEntry::LineStart
+                | InsertEntry::LineEnd,
             )
             | Command::EnterReplace => false,
             Command::EnterInsert(InsertEntry::OpenBelow | InsertEntry::OpenAbove)
@@ -1873,7 +1906,6 @@ impl VimEngine {
         }
     }
 
-
     /// Jump to the bracket that matches the one under the cursor, scanning
     /// across lines. Opening bracket → forward with depth counting to the
     /// matching close; closing bracket → backward to the matching open.
@@ -1911,7 +1943,11 @@ impl VimEngine {
             let mut found = None;
             'back: for r in (0..=row).rev() {
                 let chars: Vec<char> = lines[r].chars().collect();
-                let last = if r == row { col } else { chars.len().saturating_sub(1) };
+                let last = if r == row {
+                    col
+                } else {
+                    chars.len().saturating_sub(1)
+                };
                 if chars.is_empty() {
                     continue;
                 }
@@ -1948,17 +1984,25 @@ impl VimEngine {
         count: usize,
     ) {
         let (row, col) = super::cursor_tuple(ta);
-        let Some(line) = ta.lines().get(row).cloned() else { return };
+        let Some(line) = ta.lines().get(row).cloned() else {
+            return;
+        };
         let chars: Vec<char> = line.chars().collect();
         let n = count.max(1);
         let pos = if forward {
-            ((col + 1)..chars.len()).filter(|&i| chars[i] == ch).nth(n - 1)
+            ((col + 1)..chars.len())
+                .filter(|&i| chars[i] == ch)
+                .nth(n - 1)
         } else {
             (0..col).rev().filter(|&i| chars[i] == ch).nth(n - 1)
         };
         let Some(pos) = pos else { return };
         let target = if till {
-            if forward { pos.saturating_sub(1) } else { pos + 1 }
+            if forward {
+                pos.saturating_sub(1)
+            } else {
+                pos + 1
+            }
         } else {
             pos
         };
@@ -2313,7 +2357,10 @@ impl VimEngine {
     /// Record a completed mutating command in `last_change` (no inserted text).
     /// Called at every mutating, non-insert completion point.
     fn record(&mut self, command: Command) {
-        self.last_change = Some(Change { command, inserted: None });
+        self.last_change = Some(Change {
+            command,
+            inserted: None,
+        });
     }
 
     // ── Paste p/P ────────────────────────────────────────────────────────────
@@ -2347,7 +2394,11 @@ impl VimEngine {
             RegisterKind::Charwise => {
                 if after {
                     let (row, col) = super::cursor_tuple(ta);
-                    let len = ta.lines().get(row).map(|l| l.chars().count()).unwrap_or(col);
+                    let len = ta
+                        .lines()
+                        .get(row)
+                        .map(|l| l.chars().count())
+                        .unwrap_or(col);
                     ta.move_cursor(CursorMove::Jump(row as u16, (col + 1).min(len) as u16));
                 }
                 for _ in 0..count.max(1) {
@@ -2364,10 +2415,26 @@ impl VimEngine {
     fn object_for_char(c: char, around: bool) -> Option<TextObject> {
         match c {
             'w' => Some(TextObject::Word { around }),
-            '(' | ')' | 'b' => Some(TextObject::Pair { open: '(', close: ')', around }),
-            '{' | '}' | 'B' => Some(TextObject::Pair { open: '{', close: '}', around }),
-            '[' | ']' => Some(TextObject::Pair { open: '[', close: ']', around }),
-            '<' | '>' => Some(TextObject::Pair { open: '<', close: '>', around }),
+            '(' | ')' | 'b' => Some(TextObject::Pair {
+                open: '(',
+                close: ')',
+                around,
+            }),
+            '{' | '}' | 'B' => Some(TextObject::Pair {
+                open: '{',
+                close: '}',
+                around,
+            }),
+            '[' | ']' => Some(TextObject::Pair {
+                open: '[',
+                close: ']',
+                around,
+            }),
+            '<' | '>' => Some(TextObject::Pair {
+                open: '<',
+                close: '>',
+                around,
+            }),
             '"' => Some(TextObject::Quote { ch: '"', around }),
             '\'' => Some(TextObject::Quote { ch: '\'', around }),
             '`' => Some(TextObject::Quote { ch: '`', around }),
@@ -2509,7 +2576,11 @@ impl VimEngine {
                     Some((o + 1, c))
                 }
             }
-            TextObject::Pair { open, close, around } => {
+            TextObject::Pair {
+                open,
+                close,
+                around,
+            } => {
                 let (o, c) = Self::find_enclosing_pair(chars, col, open, close)?;
                 if around {
                     Some((o, c + 1))
@@ -2754,12 +2825,16 @@ mod tests {
     fn pending_g_cancels_on_unmapped_key() {
         let mut e = VimEngine::default();
         let mut t = TextArea::from(["one", "two", "three"]);
-        e.handle_key(&key('G'), &mut t);            // go to last line
+        e.handle_key(&key('G'), &mut t); // go to last line
         assert_eq!(super::super::cursor_tuple(&t).0, 2);
-        e.handle_key(&key('g'), &mut t);            // start gg
-        e.handle_key(&key('z'), &mut t);            // unmapped → should cancel pending g
-        e.handle_key(&key('g'), &mut t);            // lone g, NOT gg
-        assert_eq!(super::super::cursor_tuple(&t).0, 2, "stray g after cancelled prefix must not jump to file start");
+        e.handle_key(&key('g'), &mut t); // start gg
+        e.handle_key(&key('z'), &mut t); // unmapped → should cancel pending g
+        e.handle_key(&key('g'), &mut t); // lone g, NOT gg
+        assert_eq!(
+            super::super::cursor_tuple(&t).0,
+            2,
+            "stray g after cancelled prefix must not jump to file start"
+        );
     }
 
     #[test]
@@ -2767,11 +2842,15 @@ mod tests {
         let mut e = VimEngine::default();
         let mut t = TextArea::from(["one", "two", "three"]);
         e.handle_key(&key('G'), &mut t);
-        e.handle_key(&key('g'), &mut t);            // start gg
-        e.handle_key(&key('a'), &mut t);            // enter insert (should clear pending_g)
+        e.handle_key(&key('g'), &mut t); // start gg
+        e.handle_key(&key('a'), &mut t); // enter insert (should clear pending_g)
         e.handle_key(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &mut t);
-        e.handle_key(&key('g'), &mut t);            // lone g
-        assert_eq!(super::super::cursor_tuple(&t).0, 2, "g after insert must not complete a stale gg");
+        e.handle_key(&key('g'), &mut t); // lone g
+        assert_eq!(
+            super::super::cursor_tuple(&t).0,
+            2,
+            "g after insert must not complete a stale gg"
+        );
     }
 
     // ── Operator + motion tests ──────────────────────────────────────────────
@@ -3042,10 +3121,10 @@ mod tests {
     fn v_motion_d_deletes_selection() {
         let mut e = VimEngine::default();
         let mut t = TextArea::from(["hello"]);
-        e.handle_key(&key('v'), &mut t);   // anchor col 0
-        e.handle_key(&key('l'), &mut t);   // cursor → col 1
-        e.handle_key(&key('l'), &mut t);   // cursor → col 2, inclusive covers "hel"
-        e.handle_key(&key('d'), &mut t);   // delete "hel"
+        e.handle_key(&key('v'), &mut t); // anchor col 0
+        e.handle_key(&key('l'), &mut t); // cursor → col 1
+        e.handle_key(&key('l'), &mut t); // cursor → col 2, inclusive covers "hel"
+        e.handle_key(&key('d'), &mut t); // delete "hel"
         assert_eq!(t.lines(), &["lo"]); // inclusive: deletes cols 0,1,2 ("hel")
         assert_eq!(*e.mode(), EditorMode::Normal);
     }
@@ -3067,9 +3146,9 @@ mod tests {
     fn visual_y_yanks_and_returns_to_normal() {
         let mut e = VimEngine::default();
         let mut t = TextArea::from(["hello"]);
-        e.handle_key(&key('v'), &mut t);   // anchor col 0
-        e.handle_key(&key('l'), &mut t);   // cursor col 1, inclusive selection "he"
-        e.handle_key(&key('y'), &mut t);   // yank "he" (2 chars), mode → Normal
+        e.handle_key(&key('v'), &mut t); // anchor col 0
+        e.handle_key(&key('l'), &mut t); // cursor col 1, inclusive selection "he"
+        e.handle_key(&key('y'), &mut t); // yank "he" (2 chars), mode → Normal
         assert_eq!(*e.mode(), EditorMode::Normal);
         // p pastes the yanked "he" after current cursor
         let before_len: usize = t.lines().iter().map(|l| l.len()).sum();
@@ -3096,9 +3175,9 @@ mod tests {
     fn visual_c_enters_insert_after_delete() {
         let mut e = VimEngine::default();
         let mut t = TextArea::from(["hello"]);
-        e.handle_key(&key('v'), &mut t);   // anchor col 0
-        e.handle_key(&key('l'), &mut t);   // cursor col 1, inclusive covers "he"
-        e.handle_key(&key('c'), &mut t);   // delete "he" (inclusive), enter Insert
+        e.handle_key(&key('v'), &mut t); // anchor col 0
+        e.handle_key(&key('l'), &mut t); // cursor col 1, inclusive covers "he"
+        e.handle_key(&key('c'), &mut t); // delete "he" (inclusive), enter Insert
         assert_eq!(*e.mode(), EditorMode::Insert);
         assert_eq!(t.lines(), &["llo"]); // inclusive: deletes cols 0,1 ("he")
     }
@@ -3162,9 +3241,9 @@ mod tests {
         e.handle_key(&key('w'), &mut t); // cw: deletes "foo" (cw=ce keeps trailing space), enters Insert at col 0
         // simulate the user typing "X" via the host PassThrough path:
         t.insert_str("X");
-        e.handle_key(&esc(), &mut t);     // capture "X"
-        e.handle_key(&key('w'), &mut t);  // move to "bar"
-        e.handle_key(&key('.'), &mut t);  // repeat cw+X
+        e.handle_key(&esc(), &mut t); // capture "X"
+        e.handle_key(&key('w'), &mut t); // move to "bar"
+        e.handle_key(&key('.'), &mut t); // repeat cw+X
         assert_eq!(t.lines(), &["X X"]);
     }
 
@@ -3176,19 +3255,23 @@ mod tests {
         e.handle_key(&key('w'), &mut t); // cw on "foo" → Insert at col 0
         t.insert_str("a");
         t.insert_newline();
-        t.insert_str("b");               // typed "a\nb"
-        e.handle_key(&esc(), &mut t);    // captures "a\nb"
+        t.insert_str("b"); // typed "a\nb"
+        e.handle_key(&esc(), &mut t); // captures "a\nb"
         // Buffer is now ["a", "b bar"]; cursor stepped back to col 0 of row 1 ("b bar").
         // Confirm the multi-line buffer state from the insert:
         assert_eq!(t.lines(), &["a", "b bar"]);
 
         // Verify replay: position on "bar", run `.`, should produce "a\nb" again.
         // Move to word "bar" (it is at col 2 of row 1).
-        e.handle_key(&key('w'), &mut t);  // move to "bar" (word-forward from "b" → "bar")
-        e.handle_key(&key('.'), &mut t);  // replay: cw on "bar" → insert "a\nb"
+        e.handle_key(&key('w'), &mut t); // move to "bar" (word-forward from "b" → "bar")
+        e.handle_key(&key('.'), &mut t); // replay: cw on "bar" → insert "a\nb"
         // After replay the buffer should have "a\nb" inserted in place of "bar":
         // row 1 was "b bar", cw from "bar" removes "bar", inserts "a\nb" → ["a", "b a", "b"]
-        assert!(t.lines().len() >= 3, "replay of multiline insert should produce >=3 lines: {:?}", t.lines());
+        assert!(
+            t.lines().len() >= 3,
+            "replay of multiline insert should produce >=3 lines: {:?}",
+            t.lines()
+        );
     }
 
     // ── space_leads predicate tests ──────────────────────────────────────────
@@ -3212,14 +3295,20 @@ mod tests {
     fn colon_emits_open_palette() {
         let mut e = VimEngine::default();
         let mut t = TextArea::from(["x"]);
-        assert_eq!(e.handle_key(&key(':'), &mut t), VimKeyOutcome::Host(VimHostAction::OpenPalette));
+        assert_eq!(
+            e.handle_key(&key(':'), &mut t),
+            VimKeyOutcome::Host(VimHostAction::OpenPalette)
+        );
     }
 
     #[test]
     fn slash_emits_open_search_forward() {
         let mut e = VimEngine::default();
         let mut t = TextArea::from(["x"]);
-        assert_eq!(e.handle_key(&key('/'), &mut t), VimKeyOutcome::Host(VimHostAction::OpenSearch { forward: true }));
+        assert_eq!(
+            e.handle_key(&key('/'), &mut t),
+            VimKeyOutcome::Host(VimHostAction::OpenSearch { forward: true })
+        );
     }
 
     #[test]
@@ -3227,8 +3316,14 @@ mod tests {
     fn n_and_N_emit_search_nav() {
         let mut e = VimEngine::default();
         let mut t = TextArea::from(["x"]);
-        assert_eq!(e.handle_key(&key('n'), &mut t), VimKeyOutcome::Host(VimHostAction::SearchNext));
-        assert_eq!(e.handle_key(&key('N'), &mut t), VimKeyOutcome::Host(VimHostAction::SearchPrev));
+        assert_eq!(
+            e.handle_key(&key('n'), &mut t),
+            VimKeyOutcome::Host(VimHostAction::SearchNext)
+        );
+        assert_eq!(
+            e.handle_key(&key('N'), &mut t),
+            VimKeyOutcome::Host(VimHostAction::SearchPrev)
+        );
     }
 
     // ── Mouse → Visual mode tests ────────────────────────────────────────────
@@ -3276,10 +3371,14 @@ mod tests {
         let mut t = TextArea::from(["one", "two", "three"]);
         e.handle_key(&key('G'), &mut t); // last line
         assert_eq!(super::super::cursor_tuple(&t).0, 2);
-        e.handle_key(&key('g'), &mut t);                                  // start gg
+        e.handle_key(&key('g'), &mut t); // start gg
         e.handle_key(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &mut t); // cancel
-        e.handle_key(&key('g'), &mut t);                                  // lone g
-        assert_eq!(super::super::cursor_tuple(&t).0, 2, "Esc must cancel pending g");
+        e.handle_key(&key('g'), &mut t); // lone g
+        assert_eq!(
+            super::super::cursor_tuple(&t).0,
+            2,
+            "Esc must cancel pending g"
+        );
     }
 
     #[test]
@@ -3294,7 +3393,11 @@ mod tests {
         // and we're back to clean Normal: a plain motion works, mode still Normal
         e.handle_key(&key('w'), &mut t);
         assert_eq!(*e.mode(), EditorMode::Normal);
-        assert_eq!(t.lines(), &["foo bar baz"], "w after Esc must be a motion, not diw");
+        assert_eq!(
+            t.lines(),
+            &["foo bar baz"],
+            "w after Esc must be a motion, not diw"
+        );
     }
 
     // ── Bug A: di( on nested parens ─────────────────────────────────────────
@@ -3329,7 +3432,9 @@ mod tests {
         let mut e = VimEngine::default();
         let mut t = TextArea::from(["\"foo\" \"bar\""]);
         // move cursor to the space (col 5) between the two strings
-        for _ in 0..5 { e.handle_key(&key('l'), &mut t); }
+        for _ in 0..5 {
+            e.handle_key(&key('l'), &mut t);
+        }
         assert_eq!(super::super::cursor_tuple(&t).1, 5);
         e.handle_key(&key('d'), &mut t);
         e.handle_key(&key('i'), &mut t);
@@ -3341,7 +3446,9 @@ mod tests {
     fn di_quote_inside_still_works() {
         let mut e = VimEngine::default();
         let mut t = TextArea::from(["\"foo\" \"bar\""]);
-        for _ in 0..7 { e.handle_key(&key('l'), &mut t); } // inside "bar"
+        for _ in 0..7 {
+            e.handle_key(&key('l'), &mut t);
+        } // inside "bar"
         e.handle_key(&key('d'), &mut t);
         e.handle_key(&key('i'), &mut t);
         e.handle_key(&key('"'), &mut t);
@@ -3376,11 +3483,11 @@ mod tests {
     #[test]
     fn cc_middle_line_still_works() {
         let mut e = VimEngine::default();
-        let mut t = TextArea::from(["one","two","three"]);
+        let mut t = TextArea::from(["one", "two", "three"]);
         e.handle_key(&key('j'), &mut t); // line "two"
         e.handle_key(&key('c'), &mut t);
         e.handle_key(&key('c'), &mut t);
-        assert_eq!(t.lines(), &["one","","three"]);
+        assert_eq!(t.lines(), &["one", "", "three"]);
         assert_eq!(*e.mode(), EditorMode::Insert);
     }
 
@@ -3451,7 +3558,9 @@ mod tests {
     fn visual_y_leaves_cursor_at_selection_start() {
         let mut e = VimEngine::default();
         let mut t = TextArea::from(["foo bar", "baz"]);
-        for _ in 0..4 { e.handle_key(&key('l'), &mut t); } // onto 'b' of "bar" (col 4)
+        for _ in 0..4 {
+            e.handle_key(&key('l'), &mut t);
+        } // onto 'b' of "bar" (col 4)
         e.handle_key(&key('v'), &mut t);
         e.handle_key(&key('e'), &mut t); // select "bar"
         e.handle_key(&key('y'), &mut t);
@@ -3463,14 +3572,16 @@ mod tests {
         // reproduce the user's bug: yank an end-of-line word, paste, must NOT hit the line below
         let mut e = VimEngine::default();
         let mut t = TextArea::from(["foo bar", "baz"]);
-        for _ in 0..4 { e.handle_key(&key('l'), &mut t); } // 'b' of "bar"
+        for _ in 0..4 {
+            e.handle_key(&key('l'), &mut t);
+        } // 'b' of "bar"
         e.handle_key(&key('v'), &mut t);
         e.handle_key(&key('e'), &mut t); // select "bar" (end of line 0)
         e.handle_key(&key('y'), &mut t); // yank; cursor → col 4
         e.handle_key(&key('p'), &mut t); // paste after cursor char 'b'
-        assert_eq!(t.lines()[1], "baz");           // line below UNTOUCHED
-        assert_eq!(t.lines().len(), 2);            // no new line, no merge
-        assert_eq!(t.lines()[0], "foo bbarar");    // "bar" pasted after 'b' on line 0 (vim p-after)
+        assert_eq!(t.lines()[1], "baz"); // line below UNTOUCHED
+        assert_eq!(t.lines().len(), 2); // no new line, no merge
+        assert_eq!(t.lines()[0], "foo bbarar"); // "bar" pasted after 'b' on line 0 (vim p-after)
     }
 
     #[test]
@@ -3499,7 +3610,9 @@ mod tests {
         e.handle_key(&key('y'), &mut t);
         assert_eq!(super::super::cursor_tuple(&t), (0, 0));
         // select "bar" and paste over it
-        for _ in 0..4 { e.handle_key(&key('l'), &mut t); } // onto 'b' (col 4)
+        for _ in 0..4 {
+            e.handle_key(&key('l'), &mut t);
+        } // onto 'b' (col 4)
         e.handle_key(&key('v'), &mut t);
         e.handle_key(&key('e'), &mut t); // select "bar"
         e.handle_key(&key('p'), &mut t);
@@ -3516,14 +3629,16 @@ mod tests {
         e.handle_key(&key('e'), &mut t);
         e.handle_key(&key('y'), &mut t); // reg = "foo", cursor col 0
         // select "bar" and paste over it
-        for _ in 0..4 { e.handle_key(&key('l'), &mut t); } // col 4 'b'
+        for _ in 0..4 {
+            e.handle_key(&key('l'), &mut t);
+        } // col 4 'b'
         e.handle_key(&key('v'), &mut t);
         e.handle_key(&key('e'), &mut t);
         e.handle_key(&key('p'), &mut t); // "bar" replaced by "foo"; "bar" now yanked
         assert_eq!(t.lines(), &["foo foo"]);
         // now paste the replaced "bar" at end of line to prove it's in the register
-        e.handle_key(&key('$'), &mut t);   // last char ('o', col 6)
-        e.handle_key(&key('p'), &mut t);   // append "bar" after it
+        e.handle_key(&key('$'), &mut t); // last char ('o', col 6)
+        e.handle_key(&key('p'), &mut t); // append "bar" after it
         assert_eq!(t.lines(), &["foo foobar"]);
     }
 
@@ -3712,7 +3827,10 @@ mod tests {
         e.handle_key(&key('R'), &mut t);
         e.handle_key(&key('X'), &mut t); // 'a' → X
         e.handle_key(&key('Y'), &mut t); // 'b' → Y
-        e.handle_key(&KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE), &mut t);
+        e.handle_key(
+            &KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+            &mut t,
+        );
         e.handle_key(&esc(), &mut t);
         assert_eq!(t.lines(), &["Xbc"]); // 'b' restored (vim replace stack)
     }
@@ -3724,7 +3842,10 @@ mod tests {
         e.handle_key(&key('R'), &mut t);
         e.handle_key(&key('X'), &mut t); // 'a' → X
         e.handle_key(&key('Y'), &mut t); // appended past EOL
-        e.handle_key(&KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE), &mut t);
+        e.handle_key(
+            &KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+            &mut t,
+        );
         e.handle_key(&esc(), &mut t);
         assert_eq!(t.lines(), &["X"]); // appended char removed, not restored
     }
@@ -3878,7 +3999,10 @@ mod tests {
         t.start_selection();
         t.move_cursor(ratatui_textarea::CursorMove::Forward);
         e.handle_key(&esc(), &mut t);
-        assert!(t.selection_range().is_none(), "Esc must drop the stray selection");
+        assert!(
+            t.selection_range().is_none(),
+            "Esc must drop the stray selection"
+        );
         assert_eq!(*e.mode(), EditorMode::Normal);
     }
 
@@ -4633,7 +4757,10 @@ mod tests {
         e.handle_key(&key('l'), &mut t); // yank "a" charwise
         e.handle_key(&key('j'), &mut t); // empty line
         e.handle_key(&key('x'), &mut t); // no-op delete (empty line)
-        let reg = e.registers.read().expect("register must survive a no-op delete");
+        let reg = e
+            .registers
+            .read()
+            .expect("register must survive a no-op delete");
         assert_eq!(reg.text, "a");
     }
 
@@ -4647,9 +4774,11 @@ mod tests {
         t.move_cursor(ratatui_textarea::CursorMove::Forward);
         assert!(t.selection_range().is_some());
         let out = e.handle_key(&esc(), &mut t);
-        assert!(t.selection_range().is_none(), "Esc in Normal must cancel a stray selection");
+        assert!(
+            t.selection_range().is_none(),
+            "Esc in Normal must cancel a stray selection"
+        );
         assert_eq!(out, VimKeyOutcome::CursorOnly);
         assert_eq!(*e.mode(), EditorMode::Normal);
     }
 }
-

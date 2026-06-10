@@ -263,5 +263,4 @@ mod tests {
         }
         assert_eq!(order, vec!["close", "execute"]);
     }
-
 }

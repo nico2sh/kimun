@@ -290,17 +290,26 @@ mod tests {
 
     #[test]
     fn mode_from_str_visual_line() {
-        assert!(matches!(EditorMode::from_nvim_str("V"), EditorMode::VisualLine));
+        assert!(matches!(
+            EditorMode::from_nvim_str("V"),
+            EditorMode::VisualLine
+        ));
     }
 
     #[test]
     fn mode_from_str_command() {
-        assert!(matches!(EditorMode::from_nvim_str("c"), EditorMode::Command));
+        assert!(matches!(
+            EditorMode::from_nvim_str("c"),
+            EditorMode::Command
+        ));
     }
 
     #[test]
     fn mode_from_str_replace() {
-        assert!(matches!(EditorMode::from_nvim_str("R"), EditorMode::Replace));
+        assert!(matches!(
+            EditorMode::from_nvim_str("R"),
+            EditorMode::Replace
+        ));
     }
 
     #[test]

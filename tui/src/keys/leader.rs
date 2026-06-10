@@ -228,7 +228,6 @@ impl LeaderAction {
             LeaderAction::AppQuit => "quit kimün",
         }
     }
-
 }
 
 /// One node of the leader tree.
