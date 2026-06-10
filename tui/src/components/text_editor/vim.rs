@@ -29,7 +29,7 @@ pub enum VimKeyOutcome {
     Host(VimHostAction),
 }
 
-// ── Plan 2 Task 1: reified command model ────────────────────────────────────
+// ── Reified command model (adr/0011) ────────────────────────────────────────
 
 /// A cursor motion. Operators consume a motion to form a range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,8 +48,8 @@ pub enum Motion {
     FileEnd,
     ParagraphForward,
     ParagraphBack,
-    MatchingPair,                              // % — Task 9
-    FindChar { ch: char, till: bool, forward: bool }, // f/F/t/T — Task 7
+    MatchingPair,                              // %
+    FindChar { ch: char, till: bool, forward: bool }, // f/F/t/T
 }
 
 /// An operator awaiting a motion or text object.
@@ -130,7 +130,7 @@ enum Parsed {
     Nothing,
 }
 
-// ── Plan 2 Task 1: pending-state helper types ────────────────────────────────
+// ── Pending-state helper types ───────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy)]
 struct PendingFind {
@@ -195,7 +195,7 @@ struct InsertCapture {
 #[derive(Debug)]
 pub struct VimEngine {
     mode: EditorMode,
-    // Plan 2 Task 1: pending-state + dot-repeat fields
+    // pending-state + dot-repeat fields
     pending_count: Option<usize>,
     /// Count typed BEFORE the operator (`2` in `2d3w`); multiplied with the
     /// motion count at completion (vim: `2d3w` deletes 6 words).
@@ -204,7 +204,7 @@ pub struct VimEngine {
     pending_g: bool,              // first key of `gg`
     pending_find: Option<PendingFind>,
     pending_replace: bool,        // awaiting the char after `r`
-    pending_object_kind: Option<bool>, // Some(around): saw `i`/`a` after operator
+    pending_object_around: Option<bool>, // Some(around): saw `i`/`a` after operator
     last_find: Option<(char, bool, bool)>, // (ch, till, forward) for ; and ,
     registers: Registers,
     /// The last mutating command + captured insert delta, for `.` (adr/0011).
@@ -224,7 +224,7 @@ impl Default for VimEngine {
             pending_g: false,
             pending_find: None,
             pending_replace: false,
-            pending_object_kind: None,
+            pending_object_around: None,
             last_find: None,
             registers: Registers::default(),
             last_change: None,
@@ -316,7 +316,7 @@ impl VimEngine {
             && !self.pending_g
             && !self.pending_replace
             && self.pending_find.is_none()
-            && self.pending_object_kind.is_none()
+            && self.pending_object_around.is_none()
     }
 
     /// Interpret one key. In Insert mode everything except `Esc` is
@@ -332,7 +332,7 @@ impl VimEngine {
         }
     }
 
-    // ── Plan 2 Task 10: Visual + Visual-line mode handler ────────────────────
+    // ── Visual + Visual-line mode handler ────────────────────────────────────
 
     fn handle_visual(&mut self, key: &KeyEvent, ta: &mut TextArea<'static>) -> VimKeyOutcome {
         // f/F/t/T target pending: resolve as a selection-extending motion
@@ -353,7 +353,7 @@ impl VimEngine {
 
         // Object char pending (after `i`/`a` in charwise Visual): re-aim the
         // selection at the text object under the cursor (`vi(`, `va"`).
-        if let Some(around) = self.pending_object_kind.take() {
+        if let Some(around) = self.pending_object_around.take() {
             if let KeyCode::Char(ch) = key.code {
                 if let Some(obj) = Self::object_for_char(ch, around) {
                     Self::select_object_visual(obj, ta);
@@ -435,19 +435,40 @@ impl VimEngine {
             } else {
                 // Charwise Visual: vim selection is inclusive of the char under
                 // the cursor — re-select through select_range's inclusive end.
-                if let Some((start, end)) = ta.selection_range() {
+                let range = ta.selection_range();
+                if let Some((start, end)) = range {
                     ta.cancel_selection();
                     Self::select_range(ta, start, end, true);
                 }
-                self.apply_operator_on_selection(op, RegisterKind::Charwise, ta);
+                if op == Operator::Change {
+                    // Honest dot-repeat: `.` after a visual change replays a
+                    // same-sized change from the cursor (vim semantics) —
+                    // chars on one row, whole lines across rows.
+                    let capture_cmd = match range {
+                        Some(((sr, sc), (er, ec))) if sr == er => Command::OperateMotion(
+                            Operator::Change,
+                            Motion::Right,
+                            ec.saturating_sub(sc) + 1,
+                        ),
+                        Some(((sr, _), (er, _))) => {
+                            Command::OperateLine(Operator::Change, er.saturating_sub(sr) + 1)
+                        }
+                        None => Command::OperateMotion(Operator::Change, Motion::Right, 1),
+                    };
+                    ta.cut();
+                    self.fill_from_textarea(ta, RegisterKind::Charwise);
+                    self.finish_insert_entry(&capture_cmd, None, ta);
+                } else {
+                    self.apply_operator_on_selection(op, ta);
+                }
             }
-            self.mode = if op == Operator::Change {
-                EditorMode::Insert
-            } else {
-                EditorMode::Normal
-            };
+            // Change paths own the Insert transition (via the insert capture);
+            // d/x/y return to Normal here — one writer per transition.
+            if op != Operator::Change {
+                self.mode = EditorMode::Normal;
+            }
             self.clear_pending();
-            return self.outcome_for(op);
+            return Self::outcome_for(op);
         }
 
         // 'p'/'P': replace the current visual selection with the register.
@@ -513,7 +534,7 @@ impl VimEngine {
             return VimKeyOutcome::CursorOnly;
         }
 
-        // Task 12: visual `>`/`<` — indent/outdent the selected line range.
+        // Visual `>`/`<` — indent/outdent the selected line range.
         if c == '>' || c == '<' {
             let outdent = c == '<';
             let line_count = if let Some(((sr, _), (er, _))) = ta.selection_range() {
@@ -536,7 +557,7 @@ impl VimEngine {
         }
 
         // Pair chars: set Normal and return PassThrough so the host's existing
-        // auto-surround path wraps the selection (Q11 decision; verified in Plan 3).
+        // auto-surround path wraps the selection.
         if matches!(c, '(' | '[' | '{' | '<' | '"' | '\'' | '`' | '*' | '_' | '~') {
             self.mode = EditorMode::Normal;
             return VimKeyOutcome::PassThrough;
@@ -555,23 +576,16 @@ impl VimEngine {
         }
 
         // f/F/t/T: pend a selection-extending find.
-        if let Some((till, forward)) = match c {
-            'f' => Some((false, true)),
-            'F' => Some((false, false)),
-            't' => Some((true, true)),
-            'T' => Some((true, false)),
-            _ => None,
-        } {
+        if let Some((till, forward)) = Self::find_spec_for(c) {
             self.pending_find = Some(PendingFind { operator: None, till, forward });
             return VimKeyOutcome::NoOp;
         }
 
         // ; and , repeat the last find, extending the selection.
         if c == ';' || c == ',' {
-            if let Some((ch, till, fwd)) = self.last_find {
-                let forward = if c == ';' { fwd } else { !fwd };
+            if let Some(motion) = self.repeat_find_motion(c) {
                 let cnt = self.take_count();
-                self.apply_motion(Motion::FindChar { ch, till, forward }, cnt, ta);
+                self.apply_motion(motion, cnt, ta);
             }
             self.clear_pending();
             return VimKeyOutcome::CursorOnly;
@@ -579,7 +593,7 @@ impl VimEngine {
 
         // i/a: text-object selection (charwise Visual only — `vi(`, `va"`).
         if (c == 'i' || c == 'a') && self.mode == EditorMode::Visual {
-            self.pending_object_kind = Some(c == 'a');
+            self.pending_object_around = Some(c == 'a');
             return VimKeyOutcome::NoOp;
         }
 
@@ -600,20 +614,16 @@ impl VimEngine {
     /// selections are inclusive; the operator's inclusive `+1` restores the
     /// half-open range `object_range` computed).
     fn select_object_visual(obj: TextObject, ta: &mut TextArea<'static>) {
-        let (row, col) = super::cursor_tuple(ta);
-        let Some(line) = ta.lines().get(row).cloned() else { return };
-        let chars: Vec<char> = line.chars().collect();
-        let Some((start, end)) = Self::object_range(&chars, col, obj) else { return };
+        let Some((row, start, end)) = Self::object_range_at_cursor(ta, obj) else { return };
         if start >= end {
             // Empty object (vi( on "()"): collapsing to one char would make
             // the operator's inclusive +1 grab the closing delimiter. No-op.
             return;
         }
         ta.cancel_selection();
-        let end_incl = end.saturating_sub(1).max(start);
-        ta.move_cursor(CursorMove::Jump(row as u16, start as u16));
-        ta.start_selection();
-        ta.move_cursor(CursorMove::Jump(row as u16, end_incl as u16));
+        // Leave the selection end ON the object's last char (visual
+        // selections are inclusive; the operator's +1 restores [start, end)).
+        Self::select_range(ta, (row, start), (row, end - 1), false);
     }
 
     fn handle_insert(&mut self, key: &KeyEvent, ta: &mut TextArea<'static>) -> VimKeyOutcome {
@@ -750,7 +760,17 @@ impl VimEngine {
             | Command::OperateLine(op, _)
             | Command::OperateObject(op, _)
             | Command::OperateToLineEnd(op) => *op != Operator::Yank,
-            _ => true,
+            // Exhaustive on purpose — a new Command variant must decide its
+            // dot-repeat policy here, not inherit a silent default.
+            Command::IndentLines { .. }
+            | Command::DeleteChar { .. }
+            | Command::ReplaceChar(_)
+            | Command::SubstituteChar(_)
+            | Command::SubstituteLine
+            | Command::JoinLines(_)
+            | Command::ToggleCase(_)
+            | Command::Paste { .. }
+            | Command::EnterInsert(_) => true,
         }
     }
 
@@ -771,25 +791,25 @@ impl VimEngine {
             }
             Command::OperateMotion(op, m, n) => {
                 if self.apply_operator_motion(op, m, n, inserted, ta) {
-                    self.outcome_for(op)
+                    Self::outcome_for(op)
                 } else {
                     VimKeyOutcome::NoOp
                 }
             }
             Command::OperateLine(op, n) => {
                 self.apply_operator_linewise(op, n, inserted, ta);
-                self.outcome_for(op)
+                Self::outcome_for(op)
             }
             Command::OperateObject(op, obj) => {
                 if self.apply_operator_object(op, obj, inserted, ta) {
-                    self.outcome_for(op)
+                    Self::outcome_for(op)
                 } else {
                     VimKeyOutcome::NoOp
                 }
             }
             Command::OperateToLineEnd(op) => {
                 self.apply_operator_to_line_end(op, inserted, ta);
-                self.outcome_for(op)
+                Self::outcome_for(op)
             }
             Command::IndentLines { outdent, count } => {
                 self.indent_lines(outdent, count, ta);
@@ -971,7 +991,27 @@ impl VimEngine {
         }
     }
 
-    // ── Plan 2 Task 2: count accumulation helpers ────────────────────────────
+    /// Map a find key to its `(till, forward)` spec. Shared by the Normal
+    /// parser and the Visual handler.
+    fn find_spec_for(c: char) -> Option<(bool, bool)> {
+        match c {
+            'f' => Some((false, true)),
+            'F' => Some((false, false)),
+            't' => Some((true, true)),
+            'T' => Some((true, false)),
+            _ => None,
+        }
+    }
+
+    /// The motion `;` / `,` repeats: the last find, same or reversed
+    /// direction. Shared by the Normal parser and the Visual handler.
+    fn repeat_find_motion(&self, c: char) -> Option<Motion> {
+        let (ch, till, fwd) = self.last_find?;
+        let forward = if c == ';' { fwd } else { !fwd };
+        Some(Motion::FindChar { ch, till, forward })
+    }
+
+    // ── count accumulation helpers ───────────────────────────────────────────
 
     fn take_count(&mut self) -> usize {
         self.pending_count.take().unwrap_or(1)
@@ -989,7 +1029,7 @@ impl VimEngine {
         self.pending_operator = None;
         self.pending_g = false;
         self.pending_replace = false;
-        self.pending_object_kind = None;
+        self.pending_object_around = None;
         // pending_find is cleared by its own resolution path
     }
 
@@ -1007,7 +1047,7 @@ impl VimEngine {
         false
     }
 
-    // ── Plan 2 Task 3: motion resolution ────────────────────────────────────
+    // ── Motion resolution ────────────────────────────────────────────────────
 
     /// Where `motion` (× count) would land, as a position value — no net
     /// cursor mutation (the cursor is restored before returning).
@@ -1061,6 +1101,13 @@ impl VimEngine {
     }
 
     fn apply_motion(&self, motion: Motion, count: usize, ta: &mut TextArea<'static>) {
+        // Count-finds are atomic in vim: `2fx` with one 'x' fails the WHOLE
+        // motion (cursor stays put) — never "as far as possible". Handled
+        // outside the per-count loop, which can't express that.
+        if let Motion::FindChar { ch, till, forward } = motion {
+            Self::find_char_count(ta, ch, till, forward, count);
+            return;
+        }
         for _ in 0..count.max(1) {
             match motion {
                 Motion::Left => ta.move_cursor(CursorMove::Back),
@@ -1077,10 +1124,8 @@ impl VimEngine {
                 Motion::FileEnd => ta.move_cursor(CursorMove::Bottom),
                 Motion::ParagraphForward => ta.move_cursor(CursorMove::ParagraphForward),
                 Motion::ParagraphBack => ta.move_cursor(CursorMove::ParagraphBack),
-                Motion::MatchingPair => Self::match_pair(ta), // Task 9
-                Motion::FindChar { ch, till, forward } => {
-                    Self::find_char(ta, ch, till, forward); // Task 7
-                }
+                Motion::MatchingPair => Self::match_pair(ta),
+                Motion::FindChar { .. } => unreachable!("handled atomically above"),
             }
         }
     }
@@ -1126,30 +1171,38 @@ impl VimEngine {
         }
     }
 
-    /// Find the next occurrence of `ch` on the current line.
-    /// `forward`: search right from col+1; `!forward`: search left from col-1.
-    /// `till`: stop one column short of the target (t/T behaviour).
-    fn find_char(ta: &mut TextArea<'static>, ch: char, till: bool, forward: bool) {
+    /// Move to the `count`-th occurrence of `ch` on the current line —
+    /// atomically: fewer than `count` occurrences fails the whole motion and
+    /// the cursor does not move (vim). `forward`: search right from col+1;
+    /// otherwise left from col-1. `till`: stop one column short (t/T).
+    fn find_char_count(
+        ta: &mut TextArea<'static>,
+        ch: char,
+        till: bool,
+        forward: bool,
+        count: usize,
+    ) {
         let (row, col) = super::cursor_tuple(ta);
         let Some(line) = ta.lines().get(row).cloned() else { return };
         let chars: Vec<char> = line.chars().collect();
-        if forward {
-            let start = col + 1;
-            if let Some(pos) = (start..chars.len()).find(|&i| chars[i] == ch) {
-                let target = if till { pos.saturating_sub(1) } else { pos };
-                ta.move_cursor(CursorMove::Jump(row as u16, target as u16));
-            }
+        let n = count.max(1);
+        let pos = if forward {
+            ((col + 1)..chars.len()).filter(|&i| chars[i] == ch).nth(n - 1)
         } else {
-            if let Some(pos) = (0..col).rev().find(|&i| chars[i] == ch) {
-                let target = if till { pos + 1 } else { pos };
-                ta.move_cursor(CursorMove::Jump(row as u16, target as u16));
-            }
-        }
+            (0..col).rev().filter(|&i| chars[i] == ch).nth(n - 1)
+        };
+        let Some(pos) = pos else { return };
+        let target = if till {
+            if forward { pos.saturating_sub(1) } else { pos + 1 }
+        } else {
+            pos
+        };
+        ta.move_cursor(CursorMove::Jump(row as u16, target as u16));
     }
 
-    // ── Plan 2 Task 4: operator framework ───────────────────────────────────
+    // ── Operator framework ───────────────────────────────────────────────────
 
-    fn outcome_for(&self, op: Operator) -> VimKeyOutcome {
+    fn outcome_for(op: Operator) -> VimKeyOutcome {
         match op {
             Operator::Yank => VimKeyOutcome::CursorOnly, // yank doesn't change text
             _ => VimKeyOutcome::TextMutated,
@@ -1226,7 +1279,7 @@ impl VimEngine {
                     self.fill_from_textarea(ta, RegisterKind::Charwise);
                     self.finish_insert_entry(&Command::OperateMotion(op, m, count), inserted, ta);
                 } else {
-                    self.apply_operator_on_selection(op, RegisterKind::Charwise, ta);
+                    self.apply_operator_on_selection(op, ta);
                 }
                 true
             }
@@ -1323,7 +1376,7 @@ impl VimEngine {
             self.fill_from_textarea(ta, RegisterKind::Charwise);
             self.finish_insert_entry(&Command::OperateToLineEnd(op), inserted, ta);
         } else {
-            self.apply_operator_on_selection(op, RegisterKind::Charwise, ta);
+            self.apply_operator_on_selection(op, ta);
         }
     }
 
@@ -1358,32 +1411,23 @@ impl VimEngine {
         self.registers.fill(ta.yank_text(), kind);
     }
 
-    fn apply_operator_on_selection(
-        &mut self,
-        op: Operator,
-        kind: RegisterKind,
-        ta: &mut TextArea<'static>,
-    ) {
+    /// Charwise operator over the live selection. Change never reaches here —
+    /// every Change path captures its own command before cutting (so `.`
+    /// replays the right thing); linewise flows use apply_operator_linewise.
+    fn apply_operator_on_selection(&mut self, op: Operator, ta: &mut TextArea<'static>) {
         match op {
             Operator::Yank => {
                 let start = ta.selection_range().map(|(s, _)| s);
                 ta.copy();
-                self.fill_from_textarea(ta, kind);
+                self.fill_from_textarea(ta, RegisterKind::Charwise);
                 ta.cancel_selection();
                 if let Some((r, c)) = start {
                     ta.move_cursor(CursorMove::Jump(r as u16, c as u16));
                 }
             }
-            Operator::Delete => {
+            Operator::Delete | Operator::Change => {
                 ta.cut();
-                self.fill_from_textarea(ta, kind);
-            }
-            Operator::Change => {
-                ta.cut();
-                self.fill_from_textarea(ta, kind);
-                // Visual `c` only reaches here (first press by definition);
-                // the capture command is a stand-in for the visual range.
-                self.enter_insert_capture(Command::OperateMotion(op, Motion::Right, 1), ta);
+                self.fill_from_textarea(ta, RegisterKind::Charwise);
             }
             Operator::Indent | Operator::Outdent => {
                 // Compute the selected row range, cancel the selection, then
@@ -1444,7 +1488,7 @@ impl VimEngine {
         });
     }
 
-    // ── Plan 2 Task 11: dot-repeat helpers ──────────────────────────────────
+    // ── Dot-repeat recording ─────────────────────────────────────────────────
 
     /// Record a completed mutating command in `last_change` (no inserted text).
     /// Called at every mutating, non-insert completion point.
@@ -1452,17 +1496,19 @@ impl VimEngine {
         self.last_change = Some(Change { command, inserted: None });
     }
 
-    // ── Plan 2 Task 5: paste p/P ─────────────────────────────────────────────
+    // ── Paste p/P ────────────────────────────────────────────────────────────
 
     /// Returns `false` when the register is empty (nothing pasted).
     fn paste(&mut self, after: bool, count: usize, ta: &mut TextArea<'static>) -> bool {
-        let Some(reg) = self.registers.read().cloned() else {
+        // Borrow, don't clone — the body only mutates `ta`, never `self`,
+        // so a large register isn't copied on every p/P.
+        let Some(reg) = self.registers.read() else {
             return false;
         };
-        let text = reg.text;
+        let text = &reg.text;
         match reg.kind {
             RegisterKind::Linewise => {
-                let body = text.strip_suffix('\n').unwrap_or(&text);
+                let body = text.strip_suffix('\n').unwrap_or(text);
                 let n = count.max(1);
                 if after {
                     ta.move_cursor(CursorMove::End);
@@ -1485,7 +1531,7 @@ impl VimEngine {
                     ta.move_cursor(CursorMove::Jump(row as u16, (col + 1).min(len) as u16));
                 }
                 for _ in 0..count.max(1) {
-                    ta.insert_str(&text);
+                    ta.insert_str(text);
                 }
             }
         }
@@ -1571,13 +1617,7 @@ impl VimEngine {
         }
 
         // f/F/t/T — pend the find target (captures the operator so `df,` works).
-        if let Some((till, forward)) = match c {
-            'f' => Some((false, true)),
-            'F' => Some((false, false)),
-            't' => Some((true, true)),
-            'T' => Some((true, false)),
-            _ => None,
-        } {
+        if let Some((till, forward)) = Self::find_spec_for(c) {
             self.pending_find = Some(PendingFind {
                 operator: self.pending_operator.take(),
                 till,
@@ -1589,9 +1629,7 @@ impl VimEngine {
         // ; and , — repeat last find (same / opposite direction); with a
         // pending operator (`d;`) forms a range like any motion.
         if c == ';' || c == ',' {
-            if let Some((ch, till, fwd)) = self.last_find {
-                let forward = if c == ';' { fwd } else { !fwd };
-                let motion = Motion::FindChar { ch, till, forward };
+            if let Some(motion) = self.repeat_find_motion(c) {
                 return match self.pending_operator.take() {
                     Some(op) => {
                         Parsed::Cmd(Command::OperateMotion(op, motion, self.take_total_count()))
@@ -1608,10 +1646,10 @@ impl VimEngine {
         // insert-entry so `di`/`ci`/`yi` never enter Insert.
         if self.pending_operator.is_some() {
             if c == 'i' || c == 'a' {
-                self.pending_object_kind = Some(c == 'a');
+                self.pending_object_around = Some(c == 'a');
                 return Parsed::Pending;
             }
-            if let Some(around) = self.pending_object_kind.take() {
+            if let Some(around) = self.pending_object_around.take() {
                 if let Some(obj) = Self::object_for_char(c, around) {
                     let op = self.pending_operator.take().expect("checked is_some");
                     return Parsed::Cmd(Command::OperateObject(op, obj));
@@ -1669,7 +1707,7 @@ impl VimEngine {
     }
 
 
-    // ── Plan 2 Task 8: text object helpers ──────────────────────────────────
+    // ── Text object helpers ──────────────────────────────────────────────────
 
     /// Map an object char (e.g. `w`, `(`, `"`) to a `TextObject`.
     fn object_for_char(c: char, around: bool) -> Option<TextObject> {
@@ -1687,6 +1725,20 @@ impl VimEngine {
     }
 
     /// Apply `op` over the text object `obj` at the current cursor position.
+    /// Resolve `obj` at the cursor to `(row, start, end)` — half-open cols on
+    /// the cursor's row (text objects are single-line for now). Shared by the
+    /// operator path (`diw`) and the visual path (`vi(`).
+    fn object_range_at_cursor(
+        ta: &TextArea<'static>,
+        obj: TextObject,
+    ) -> Option<(usize, usize, usize)> {
+        let (row, col) = super::cursor_tuple(ta);
+        let line = ta.lines().get(row)?;
+        let chars: Vec<char> = line.chars().collect();
+        let (start, end) = Self::object_range(&chars, col, obj)?;
+        Some((row, start, end))
+    }
+
     /// Returns `false` when no object exists at the cursor (vim no-op).
     fn apply_operator_object(
         &mut self,
@@ -1695,24 +1747,16 @@ impl VimEngine {
         inserted: Option<&str>,
         ta: &mut TextArea<'static>,
     ) -> bool {
-        let (row, col) = super::cursor_tuple(ta);
-        let Some(line) = ta.lines().get(row).cloned() else {
+        let Some((row, start, end)) = Self::object_range_at_cursor(ta, obj) else {
             return false;
         };
-        let chars: Vec<char> = line.chars().collect();
-        let Some((start, end)) = Self::object_range(&chars, col, obj) else {
-            return false;
-        };
-        // Select [start, end) on this row via Jump, then apply the operator.
-        ta.move_cursor(CursorMove::Jump(row as u16, start as u16));
-        ta.start_selection();
-        ta.move_cursor(CursorMove::Jump(row as u16, end as u16));
+        Self::select_range(ta, (row, start), (row, end), false);
         if op == Operator::Change {
             ta.cut();
             self.fill_from_textarea(ta, RegisterKind::Charwise);
             self.finish_insert_entry(&Command::OperateObject(op, obj), inserted, ta);
         } else {
-            self.apply_operator_on_selection(op, RegisterKind::Charwise, ta);
+            self.apply_operator_on_selection(op, ta);
         }
         true
     }
@@ -1825,7 +1869,7 @@ impl VimEngine {
         }
     }
 
-    // ── Plan 2 Task 6: single-key edit helpers ───────────────────────────────
+    // ── Single-key edit helpers ──────────────────────────────────────────────
 
     /// Delete `count` chars at the cursor (`forward`: under-and-after, vim
     /// `x`; otherwise before, vim `X`), clamped to the current line — vim's
@@ -1834,7 +1878,9 @@ impl VimEngine {
     /// Returns `false` when nothing was deleted (empty line, X at col 0).
     fn delete_chars(&mut self, forward: bool, count: usize, ta: &mut TextArea<'static>) -> bool {
         let (row, col) = super::cursor_tuple(ta);
-        let Some(line) = ta.lines().get(row).cloned() else {
+        // Borrow, don't clone: all reads of `line` finish before the first
+        // mutation, so held-down x on a long line doesn't copy it each press.
+        let Some(line) = ta.lines().get(row) else {
             return false;
         };
         let line_len = line.chars().count();
@@ -1908,7 +1954,7 @@ mod tests {
         TextArea::from(["hello world", "second line"])
     }
 
-    // ── Plan 1 tests (must stay green) ──────────────────────────────────────
+    // ── Mode-entry + basic motion tests ──────────────────────────────────────
 
     #[test]
     fn i_enters_insert_mode() {
@@ -1991,7 +2037,7 @@ mod tests {
         assert_eq!(*e.mode(), EditorMode::Normal);
     }
 
-    // ── Plan 2 Task 2 tests ──────────────────────────────────────────────────
+    // ── Count accumulation tests ─────────────────────────────────────────────
 
     #[test]
     fn count_accumulates_then_moves() {
@@ -2015,7 +2061,7 @@ mod tests {
         assert_eq!(super::super::cursor_tuple(&t), (0, 0));
     }
 
-    // ── Plan 2 Task 3 tests ──────────────────────────────────────────────────
+    // ── gg/G motion tests ────────────────────────────────────────────────────
 
     #[test]
     #[allow(non_snake_case)]
@@ -2053,7 +2099,7 @@ mod tests {
         assert_eq!(super::super::cursor_tuple(&t).0, 2, "g after insert must not complete a stale gg");
     }
 
-    // ── Plan 2 Task 4 tests ──────────────────────────────────────────────────
+    // ── Operator + motion tests ──────────────────────────────────────────────
 
     #[test]
     fn dw_deletes_word() {
@@ -2099,7 +2145,7 @@ mod tests {
         assert_eq!(t.lines(), &[" world"]);
     }
 
-    // ── Plan 2 Task 5 tests ──────────────────────────────────────────────────
+    // ── Linewise delete/paste tests ──────────────────────────────────────────
 
     #[test]
     fn charwise_p_pastes_after_cursor() {
@@ -2153,7 +2199,7 @@ mod tests {
         assert_eq!(t.lines(), &["one", "two", "two"]);
     }
 
-    // ── Plan 2 Task 6 tests ──────────────────────────────────────────────────
+    // ── Single-key edit tests ────────────────────────────────────────────────
 
     #[test]
     fn x_deletes_char_under_cursor() {
@@ -2190,7 +2236,7 @@ mod tests {
         assert_eq!(t.lines(), &["Abc"]);
     }
 
-    // ── Plan 2 Task 7 tests ──────────────────────────────────────────────────
+    // ── Find (f/t/;/,) tests ─────────────────────────────────────────────────
 
     #[test]
     fn f_moves_to_char() {
@@ -2231,7 +2277,7 @@ mod tests {
         assert_eq!(super::super::cursor_tuple(&t).1, 3);
     }
 
-    // ── Plan 2 Task 8 tests ──────────────────────────────────────────────────
+    // ── Text object tests ────────────────────────────────────────────────────
 
     #[test]
     fn diw_deletes_inner_word() {
@@ -2282,7 +2328,7 @@ mod tests {
         assert_eq!(t.lines(), &["foo baz"]);
     }
 
-    // ── Plan 2 Task 9 tests ──────────────────────────────────────────────────
+    // ── Matching pair (%) tests ──────────────────────────────────────────────
 
     #[test]
     fn percent_jumps_to_matching_paren() {
@@ -2313,7 +2359,7 @@ mod tests {
         assert_eq!(super::super::cursor_tuple(&t), (0, 6)); // matching outer ')'
     }
 
-    // ── Plan 2 Task 10 tests ─────────────────────────────────────────────────
+    // ── Visual mode tests ────────────────────────────────────────────────────
 
     /// Charwise Visual is inclusive of the cursor char. `v` + 2×`l` leaves
     /// the cursor on col 2 ('l'); the inclusive range covers cols 0,1,2 = "hel".
@@ -2382,7 +2428,7 @@ mod tests {
         assert_eq!(t.lines(), &["llo"]); // inclusive: deletes cols 0,1 ("he")
     }
 
-    // ── Plan 2 Task 12 tests ─────────────────────────────────────────────────
+    // ── Indent/outdent tests ─────────────────────────────────────────────────
 
     #[test]
     fn indent_line_adds_spaces() {
@@ -2411,7 +2457,7 @@ mod tests {
         assert_eq!(e.pending_hint().as_deref(), Some("2d"));
     }
 
-    // ── Plan 2 Task 11 tests ─────────────────────────────────────────────────
+    // ── Dot-repeat tests ─────────────────────────────────────────────────────
 
     #[test]
     fn dot_repeats_x() {
@@ -2470,7 +2516,7 @@ mod tests {
         assert!(t.lines().len() >= 3, "replay of multiline insert should produce >=3 lines: {:?}", t.lines());
     }
 
-    // ── Plan 3 Task 4: space_leads predicate tests ───────────────────────────
+    // ── space_leads predicate tests ──────────────────────────────────────────
 
     #[test]
     fn space_leads_only_in_clean_normal() {
@@ -2485,7 +2531,7 @@ mod tests {
         assert!(!e.space_leads());
     }
 
-    // ── Plan 3 Task 3: host-action tests ────────────────────────────────────
+    // ── Host-action tests ────────────────────────────────────────────────────
 
     #[test]
     fn colon_emits_open_palette() {
@@ -2510,7 +2556,7 @@ mod tests {
         assert_eq!(e.handle_key(&key('N'), &mut t), VimKeyOutcome::Host(VimHostAction::SearchPrev));
     }
 
-    // ── Plan 3 Task 5: mouse → Visual mode tests ────────────────────────────
+    // ── Mouse → Visual mode tests ────────────────────────────────────────────
 
     #[test]
     fn mouse_selection_enters_and_leaves_visual() {
@@ -2807,6 +2853,50 @@ mod tests {
     }
 
     // ── Review fixes: failed-op no-ops, dot-register protection ─────────────
+
+    #[test]
+    fn visual_c_dot_repeats_same_width() {
+        // `.` after a visual change replays a same-sized change (vim), not cl
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["abcde fghij"]);
+        e.handle_key(&key('v'), &mut t);
+        e.handle_key(&key('l'), &mut t);
+        e.handle_key(&key('l'), &mut t); // select "abc"
+        e.handle_key(&key('c'), &mut t); // change it
+        t.insert_str("X");
+        e.handle_key(&esc(), &mut t); // "Xde fghij"
+        e.handle_key(&key('w'), &mut t); // onto 'f'
+        e.handle_key(&key('.'), &mut t); // change 3 chars "fgh" → "X"
+        assert_eq!(t.lines(), &["Xde Xij"]);
+    }
+
+    #[test]
+    fn count_find_is_atomic() {
+        // vim 2fx with one 'x': whole motion fails, cursor stays
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["a x b"]);
+        e.handle_key(&key('2'), &mut t);
+        e.handle_key(&key('f'), &mut t);
+        e.handle_key(&key('x'), &mut t);
+        assert_eq!(super::super::cursor_tuple(&t), (0, 0)); // did not move
+        // and with two: lands on the second
+        let mut t2 = TextArea::from(["axbx"]);
+        e.handle_key(&key('2'), &mut t2);
+        e.handle_key(&key('f'), &mut t2);
+        e.handle_key(&key('x'), &mut t2);
+        assert_eq!(super::super::cursor_tuple(&t2), (0, 3));
+    }
+
+    #[test]
+    fn d2fx_with_one_x_is_noop() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["a x b"]);
+        e.handle_key(&key('d'), &mut t);
+        e.handle_key(&key('2'), &mut t);
+        e.handle_key(&key('f'), &mut t);
+        e.handle_key(&key('x'), &mut t); // only one 'x' — vim no-ops everything
+        assert_eq!(t.lines(), &["a x b"]);
+    }
 
     #[test]
     fn reset_to_normal_clears_insert_capture() {
