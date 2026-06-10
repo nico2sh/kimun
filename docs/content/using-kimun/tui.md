@@ -42,7 +42,7 @@ Ctrl+G v t    open the theme picker
 
 The full group-by-group tree is on the [Keybindings cheat-sheet](@/using-kimun/keybindings.md#the-leader-tree).
 
-Hesitate mid-sequence and a **which-key** panel pops up above the status bar showing what each next key does (the delay is configurable — `leader_timeout_ms`). In **lists** (not text fields), a bare `Space` also starts a leader sequence.
+Hesitate mid-sequence and a **which-key** panel pops up above the status bar showing what each next key does (the delay is configurable — `leader_timeout_ms`). In **lists** (not text fields), a bare `Space` also starts a leader sequence — and with the [vim editor backend](@/using-kimun/vim-mode.md), so does `Space` in the editor's Normal mode.
 
 The full tree, with your custom bindings applied, is in the cheatsheet: `Ctrl+G ?`.
 
