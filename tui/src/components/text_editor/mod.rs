@@ -2006,6 +2006,14 @@ impl Component for TextEditorComponent {
                             return EventState::Consumed;
                         }
                         VimKeyOutcome::CursorOnly => {
+                            // Mirror the textarea's selection into self.selection so
+                            // Visual mode renders through the existing selection pipeline.
+                            // For non-visual CursorOnly (plain motion), selection_range()
+                            // returns None → self.selection = None (no regression).
+                            self.selection = self
+                                .backend
+                                .as_textarea()
+                                .and_then(|ta| ta.selection_range());
                             self.refresh_autocomplete_if_open();
                             self.edit_generation = self.edit_generation.wrapping_add(1);
                             return EventState::Consumed;
