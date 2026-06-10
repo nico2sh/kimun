@@ -1520,13 +1520,33 @@ impl TextEditorComponent {
             return false;
         };
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-        match state.input.handle_key(key) {
+        let outcome = state.input.handle_key(key);
+        match outcome {
             InputOutcome::Cancel => self.close_search(),
-            InputOutcome::Submit => self.search_advance(shift),
+            InputOutcome::Submit => {
+                if self.backend.is_vim() {
+                    // Vim confirm: keep the textarea search pattern so n/N can
+                    // use it, but close the find bar. Incremental search already
+                    // placed the cursor on the first match — do NOT advance again.
+                    self.search = None;
+                } else {
+                    self.search_advance(shift);
+                }
+            }
             InputOutcome::Changed => self.refresh_search_pattern(true),
             InputOutcome::Consumed | InputOutcome::NotConsumed => {}
         }
         true
+    }
+
+    /// Repeat the last search (vim `n`/`N`) using the textarea's persisted
+    /// pattern, even when the find bar is closed.
+    fn vim_search_repeat(&mut self, backward: bool) {
+        let found = {
+            let Some(ta) = self.backend.as_textarea_mut() else { return };
+            if backward { ta.search_back(false) } else { ta.search_forward(false) }
+        };
+        self.highlight_current_match(found);
     }
 
     /// Handle a key event when using the Textarea backend.
@@ -2063,8 +2083,8 @@ impl Component for TextEditorComponent {
                                     // n/N still navigate both directions.)
                                     self.open_or_advance_search();
                                 }
-                                VimHostAction::SearchNext => self.search_advance(false),
-                                VimHostAction::SearchPrev => self.search_advance(true),
+                                VimHostAction::SearchNext => self.vim_search_repeat(false),
+                                VimHostAction::SearchPrev => self.vim_search_repeat(true),
                             }
                             return EventState::Consumed;
                         }
@@ -3636,5 +3656,59 @@ mod tests {
             3,
             "cursor must jump to the search match (col 3), not to a vim motion position"
         );
+    }
+
+    /// Vim `/pattern` then Enter confirms the search: the find bar closes, the
+    /// cursor stays on the first match, and `n` / `N` navigate subsequent matches.
+    #[test]
+    fn vim_search_enter_confirms_and_n_navigates() {
+        let mut editor = make_vim_editor();
+        // Three "lo" at cols 0, 6, 12 on a single line.
+        editor.set_text("lo xx lo yy lo".to_string());
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        // Open the find bar (same path as the '/' key: OpenSearch → open_or_advance_search).
+        editor.open_or_advance_search();
+        assert!(editor.search.is_some(), "find bar must open");
+
+        // Type "lo" — keys go into the find query (incremental search).
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('l'), KeyModifiers::NONE)),
+            &tx,
+        );
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('o'), KeyModifiers::NONE)),
+            &tx,
+        );
+
+        // Enter confirms in vim mode: closes the bar, cursor stays on match.
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Enter, KeyModifiers::NONE)),
+            &tx,
+        );
+        assert!(
+            editor.search.is_none(),
+            "find bar must close after Enter in vim mode"
+        );
+
+        // After confirming, 'n' must navigate to the NEXT match, not type into
+        // the (now-closed) find bar. Incremental search left the cursor at the
+        // first "lo" (col 0); 'n' should jump to the second one (col 6).
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('n'), KeyModifiers::NONE)),
+            &tx,
+        );
+        let (_, c1) = editor.cursor_pos();
+        assert_eq!(c1, 6, "'n' must jump to the 2nd 'lo' at col 6");
+
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('n'), KeyModifiers::NONE)),
+            &tx,
+        );
+        let (_, c2) = editor.cursor_pos();
+        assert_eq!(c2, 12, "'n' must jump to the 3rd 'lo' at col 12");
+
+        // The buffer must never have been modified.
+        assert_eq!(editor.get_text(), "lo xx lo yy lo");
     }
 }
