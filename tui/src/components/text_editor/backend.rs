@@ -248,6 +248,21 @@ impl BackendState {
         }
     }
 
+    /// Alloc-free cursor-shape classifier for the render path.
+    /// `None` = non-modal backend (Direct textarea — leave terminal cursor as-is).
+    /// `Some(true)` = Insert mode (bar cursor).
+    /// `Some(false)` = other modal mode (block cursor).
+    pub fn modal_is_insert(&self) -> Option<bool> {
+        match self {
+            BackendState::Textarea(TextareaBackend {
+                input: InputInterpreter::Vim(e),
+                ..
+            }) => Some(*e.mode() == EditorMode::Insert),
+            BackendState::Textarea(_) => None,
+            BackendState::Nvim(nvim) => Some(nvim.snapshot().mode == EditorMode::Insert),
+        }
+    }
+
     pub fn from_settings(
         editor_backend: &EditorBackendSetting,
         nvim_path: Option<&PathBuf>,
@@ -596,6 +611,22 @@ mod tests {
     fn vim_space_leads_only_for_vim_backend() {
         assert!(!BackendState::Textarea(TextareaBackend::direct(TextArea::default())).vim_space_leads());
         assert!(BackendState::Textarea(TextareaBackend::vim(TextArea::default())).vim_space_leads());
+    }
+
+    #[test]
+    fn modal_is_insert_classifies_backends() {
+        // Direct textarea → None (non-modal, leave terminal cursor alone).
+        assert_eq!(
+            BackendState::Textarea(TextareaBackend::direct(TextArea::default()))
+                .modal_is_insert(),
+            None
+        );
+        // Vim backend starts in Normal mode → Some(false) (block cursor).
+        assert_eq!(
+            BackendState::Textarea(TextareaBackend::vim(TextArea::default()))
+                .modal_is_insert(),
+            Some(false)
+        );
     }
 }
 
