@@ -2172,9 +2172,7 @@ impl VimEngine {
                 // indent_lines path. This arm is a safety net; it should not
                 // normally be reached (>> goes through the doubled-operator path).
                 let outdent = op == Operator::Outdent;
-                let (r0, _) = super::cursor_tuple(ta);
                 self.indent_lines(outdent, count, ta);
-                ta.move_cursor(CursorMove::Jump(r0 as u16, 0));
             }
             Operator::Lowercase | Operator::Uppercase | Operator::ToggleCase => {
                 // guu / gUU / g~~ / guj…: transform whole lines in ONE
@@ -2217,6 +2215,7 @@ impl VimEngine {
     /// cursor's line, then repeat for `count` lines total (moving down after
     /// each). Used by `>>`, `<<`, and the visual `>`/`<` operators.
     fn indent_lines(&self, outdent: bool, count: usize, ta: &mut TextArea<'static>) {
+        let (start_row, _) = super::cursor_tuple(ta);
         for _ in 0..count.max(1) {
             ta.move_cursor(CursorMove::Head);
             if outdent {
@@ -2235,6 +2234,10 @@ impl VimEngine {
             }
             ta.move_cursor(CursorMove::Down);
         }
+        // vim leaves the cursor on the FIRST indented line's first non-blank,
+        // not below the block.
+        ta.move_cursor(CursorMove::Jump(start_row as u16, 0));
+        Self::first_non_blank(ta);
     }
 
     /// Capture the text the textarea just cut/copied (its yank buffer) into
@@ -3191,6 +3194,21 @@ mod tests {
         e.handle_key(&key('>'), &mut t);
         e.handle_key(&key('>'), &mut t);
         assert_eq!(t.lines(), &["    x"]);
+    }
+
+    #[test]
+    fn indent_keeps_cursor_on_first_indented_line() {
+        // regression: >> left the cursor one row BELOW the indented block
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["one", "two", "three"]);
+        e.handle_key(&key('>'), &mut t);
+        e.handle_key(&key('>'), &mut t);
+        assert_eq!(super::super::cursor_tuple(&t), (0, 4)); // first non-blank of line 1
+        // counted form too: cursor stays on the first line of the block
+        e.handle_key(&key('2'), &mut t);
+        e.handle_key(&key('>'), &mut t);
+        e.handle_key(&key('>'), &mut t);
+        assert_eq!(super::super::cursor_tuple(&t).0, 0);
     }
 
     #[test]
