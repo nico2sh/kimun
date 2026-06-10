@@ -408,12 +408,12 @@ impl VimEngine {
             }
             Some(Awaiting::ObjectScope { around }) => {
                 self.awaiting = None;
-                if let KeyCode::Char(ch) = key.code {
-                    if let Some(obj) = Self::object_for_char(ch, around) {
-                        Self::select_object_visual(obj, ta);
-                        self.clear_pending();
-                        return VimKeyOutcome::CursorOnly;
-                    }
+                if let KeyCode::Char(ch) = key.code
+                    && let Some(obj) = Self::object_for_char(ch, around)
+                {
+                    Self::select_object_visual(obj, ta);
+                    self.clear_pending();
+                    return VimKeyOutcome::CursorOnly;
                 }
                 self.clear_pending();
                 return VimKeyOutcome::NoOp;
@@ -959,11 +959,11 @@ impl VimEngine {
             }
             Awaiting::G => self.parse_g_key(c),
             Awaiting::ObjectScope { around } => {
-                if let Some(obj) = Self::object_for_char(c, around) {
-                    if let Some(op) = self.pending_operator.take() {
-                        self.clear_pending();
-                        return Parsed::Cmd(Command::OperateObject(op, obj));
-                    }
+                if let Some(obj) = Self::object_for_char(c, around)
+                    && let Some(op) = self.pending_operator.take()
+                {
+                    self.clear_pending();
+                    return Parsed::Cmd(Command::OperateObject(op, obj));
                 }
                 self.clear_pending();
                 Parsed::Nothing
@@ -2512,10 +2512,10 @@ impl VimEngine {
         // Find the matching close bracket scanning right from open_idx+1.
         let mut depth = 0usize;
         let mut close_idx = None;
-        for i in (open_idx + 1)..chars.len() {
-            if chars[i] == open {
+        for (i, &ch) in chars.iter().enumerate().skip(open_idx + 1) {
+            if ch == open {
                 depth += 1;
-            } else if chars[i] == close {
+            } else if ch == close {
                 if depth == 0 {
                     close_idx = Some(i);
                     break;

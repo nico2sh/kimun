@@ -73,13 +73,15 @@ impl Handler for NvimHandler {
 // ---------------------------------------------------------------------------
 
 /// How key events are translated into edits on a `TextArea` (adr/0012).
+/// The engine is boxed so the `Direct` arm doesn't pay the engine's size
+/// (registers, dot-repeat state, replace stack — ~230 bytes).
 #[derive(Debug, Default)]
 pub enum InputInterpreter {
     /// Today's behavior: keys go straight to the textarea.
     #[default]
     Direct,
     /// Built-in vim emulation.
-    Vim(VimEngine),
+    Vim(Box<VimEngine>),
 }
 
 /// The in-process textarea storage plus its input interpreter.
@@ -99,7 +101,7 @@ impl TextareaBackend {
     pub fn vim(ta: TextArea<'static>) -> Self {
         Self {
             ta,
-            input: InputInterpreter::Vim(VimEngine::default()),
+            input: InputInterpreter::Vim(Box::default()),
         }
     }
 }
@@ -617,52 +619,6 @@ impl NvimBackend {
 }
 
 // ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use ratatui_textarea::TextArea;
-
-    #[test]
-    fn direct_backend_has_no_mode_label() {
-        let b = BackendState::Textarea(TextareaBackend::direct(TextArea::default()));
-        assert_eq!(b.mode_label(), None);
-    }
-
-    #[test]
-    fn vim_backend_reports_normal_label() {
-        let b = BackendState::Textarea(TextareaBackend::vim(TextArea::default()));
-        assert_eq!(b.mode_label().as_deref(), Some("NORMAL"));
-    }
-
-    #[test]
-    fn vim_space_leads_only_for_vim_backend() {
-        assert!(
-            !BackendState::Textarea(TextareaBackend::direct(TextArea::default())).vim_space_leads()
-        );
-        assert!(
-            BackendState::Textarea(TextareaBackend::vim(TextArea::default())).vim_space_leads()
-        );
-    }
-
-    #[test]
-    fn modal_is_insert_classifies_backends() {
-        // Direct textarea → None (non-modal, leave terminal cursor alone).
-        assert_eq!(
-            BackendState::Textarea(TextareaBackend::direct(TextArea::default())).modal_is_insert(),
-            None
-        );
-        // Vim backend starts in Normal mode → Some(false) (block cursor).
-        assert_eq!(
-            BackendState::Textarea(TextareaBackend::vim(TextArea::default())).modal_is_insert(),
-            Some(false)
-        );
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Parse the Lua state bundle and apply it to the snapshot.
 // ---------------------------------------------------------------------------
 
@@ -789,4 +745,50 @@ fn apply_lua_state(
     snap.mode = mode;
     snap.cmdline = None;
     snap.visual_selection = visual_selection;
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui_textarea::TextArea;
+
+    #[test]
+    fn direct_backend_has_no_mode_label() {
+        let b = BackendState::Textarea(TextareaBackend::direct(TextArea::default()));
+        assert_eq!(b.mode_label(), None);
+    }
+
+    #[test]
+    fn vim_backend_reports_normal_label() {
+        let b = BackendState::Textarea(TextareaBackend::vim(TextArea::default()));
+        assert_eq!(b.mode_label().as_deref(), Some("NORMAL"));
+    }
+
+    #[test]
+    fn vim_space_leads_only_for_vim_backend() {
+        assert!(
+            !BackendState::Textarea(TextareaBackend::direct(TextArea::default())).vim_space_leads()
+        );
+        assert!(
+            BackendState::Textarea(TextareaBackend::vim(TextArea::default())).vim_space_leads()
+        );
+    }
+
+    #[test]
+    fn modal_is_insert_classifies_backends() {
+        // Direct textarea → None (non-modal, leave terminal cursor alone).
+        assert_eq!(
+            BackendState::Textarea(TextareaBackend::direct(TextArea::default())).modal_is_insert(),
+            None
+        );
+        // Vim backend starts in Normal mode → Some(false) (block cursor).
+        assert_eq!(
+            BackendState::Textarea(TextareaBackend::vim(TextArea::default())).modal_is_insert(),
+            Some(false)
+        );
+    }
 }
