@@ -18,16 +18,133 @@ pub enum VimKeyOutcome {
     PassThrough,
 }
 
+// ── Plan 2 Task 1: reified command model ────────────────────────────────────
+
+/// A cursor motion. Operators consume a motion to form a range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Motion {
+    Left,
+    Right,
+    Up,
+    Down,
+    WordForward,
+    WordBack,
+    WordEnd,
+    LineStart,
+    FirstNonBlank,
+    LineEnd,
+    FileStart,
+    FileEnd,
+    ParagraphForward,
+    ParagraphBack,
+    MatchingPair,                              // % — Task 9
+    FindChar { ch: char, till: bool, forward: bool }, // f/F/t/T — Task 7
+}
+
+/// An operator awaiting a motion or text object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Operator {
+    Delete,
+    Change,
+    Yank,
+    Indent,
+    Outdent,
+}
+
+/// A text object (`iw`, `a"`, …).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextObject {
+    Word { around: bool },
+    Pair { open: char, close: char, around: bool },
+    Quote { ch: char, around: bool },
+}
+
+/// The fully-parsed unit of work, ready to apply (adr/0011).
+#[derive(Debug, Clone)]
+pub enum Command {
+    Move(Motion, usize),                    // motion, count
+    OperateMotion(Operator, Motion, usize), // e.g. 2dw
+    OperateLine(Operator, usize),           // dd / cc / yy / >> with count
+    OperateObject(Operator, TextObject),    // diw, ci"
+    OperateToLineEnd(Operator),             // D / C / Y
+    DeleteChar { forward: bool, count: usize }, // x / X
+    ReplaceChar(char),                      // r<ch>
+    SubstituteChar(usize),                  // s
+    SubstituteLine,                         // S
+    JoinLines(usize),                       // J
+    ToggleCase(usize),                      // ~
+    Paste { after: bool, count: usize },    // p / P
+    Undo(usize),
+    Redo(usize),
+}
+
+// ── Plan 2 Task 1: pending-state helper types ────────────────────────────────
+
+#[derive(Debug, Clone, Copy)]
+struct PendingFind {
+    operator: Option<Operator>,
+    till: bool,
+    forward: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RegisterKind {
+    Charwise,
+    Linewise,
+}
+
+#[derive(Debug, Clone)]
+struct Change {
+    command: Command,
+    inserted: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct InsertCapture {
+    command: Command,
+    start_len: usize,
+    text: String,
+}
+
+// ── VimEngine ────────────────────────────────────────────────────────────────
+
 /// Modal vim state layered over the textarea buffer.
 #[derive(Debug)]
 pub struct VimEngine {
     mode: EditorMode,
+    // Plan 2 Task 1: pending-state + dot-repeat fields
+    pending_count: Option<usize>,
+    pending_operator: Option<Operator>,
+    pending_g: bool,              // first key of `gg`
+    pending_find: Option<PendingFind>,
+    pending_replace: bool,        // awaiting the char after `r`
+    #[allow(dead_code)] // Plan 2 Task 8
+    pending_object_kind: Option<bool>, // Some(around): saw `i`/`a` after operator
+    #[allow(dead_code)] // Plan 2 Task 7
+    last_find: Option<(char, bool, bool)>, // (ch, till, forward) for ; and ,
+    #[allow(dead_code)] // Plan 2 Task 4
+    register: RegisterKind,
+    #[allow(dead_code)] // Plan 2 Task 11
+    last_change: Option<Change>,
+    #[allow(dead_code)] // Plan 2 Task 11
+    insert_capture: Option<InsertCapture>,
 }
 
 impl Default for VimEngine {
     fn default() -> Self {
-        // Notes open in Normal mode (vim convention).
-        Self { mode: EditorMode::Normal }
+        Self {
+            mode: EditorMode::Normal,
+            pending_count: None,
+            pending_operator: None,
+            pending_g: false,
+            pending_find: None,
+            pending_replace: false,
+            pending_object_kind: None,
+            last_find: None,
+            register: RegisterKind::Charwise,
+            last_change: None,
+            insert_capture: None,
+        }
     }
 }
 
@@ -43,6 +160,7 @@ impl VimEngine {
 
     pub fn reset_to_normal(&mut self) {
         self.mode = EditorMode::Normal;
+        self.clear_pending();
     }
 
     /// Interpret one key. In Insert mode everything except `Esc` is
@@ -68,43 +186,187 @@ impl VimEngine {
     }
 
     fn handle_normal(&mut self, key: &KeyEvent, ta: &mut TextArea<'static>) -> VimKeyOutcome {
-        let plain = key.modifiers == KeyModifiers::NONE
-            || key.modifiers == KeyModifiers::SHIFT;
+        let plain =
+            key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT;
         match key.code {
             KeyCode::Char(c) if plain => self.normal_char(c, ta),
-            KeyCode::Left => self.motion(CursorMove::Back, ta),
-            KeyCode::Right => self.motion(CursorMove::Forward, ta),
-            KeyCode::Up => self.motion(CursorMove::Up, ta),
-            KeyCode::Down => self.motion(CursorMove::Down, ta),
+            KeyCode::Left => {
+                self.apply_motion(Motion::Left, 1, ta);
+                self.clear_pending();
+                VimKeyOutcome::CursorOnly
+            }
+            KeyCode::Right => {
+                self.apply_motion(Motion::Right, 1, ta);
+                self.clear_pending();
+                VimKeyOutcome::CursorOnly
+            }
+            KeyCode::Up => {
+                self.apply_motion(Motion::Up, 1, ta);
+                self.clear_pending();
+                VimKeyOutcome::CursorOnly
+            }
+            KeyCode::Down => {
+                self.apply_motion(Motion::Down, 1, ta);
+                self.clear_pending();
+                VimKeyOutcome::CursorOnly
+            }
             _ => VimKeyOutcome::NoOp,
         }
     }
 
-    fn motion(&self, m: CursorMove, ta: &mut TextArea<'static>) -> VimKeyOutcome {
-        ta.move_cursor(m);
-        VimKeyOutcome::CursorOnly
+    // ── Plan 2 Task 2: count accumulation helpers ────────────────────────────
+
+    fn take_count(&mut self) -> usize {
+        self.pending_count.take().unwrap_or(1)
     }
 
+    fn clear_pending(&mut self) {
+        self.pending_count = None;
+        self.pending_operator = None;
+        self.pending_g = false;
+        self.pending_replace = false;
+        self.pending_object_kind = None;
+        // pending_find is cleared by its own resolution path
+    }
+
+    /// Returns true if `c` was consumed as a count digit.
+    fn accumulate_count(&mut self, c: char) -> bool {
+        if c.is_ascii_digit() {
+            // bare '0' with no pending count is the LineStart motion, not a digit
+            if c == '0' && self.pending_count.is_none() {
+                return false;
+            }
+            let d = c as usize - '0' as usize;
+            self.pending_count = Some(self.pending_count.unwrap_or(0) * 10 + d);
+            return true;
+        }
+        false
+    }
+
+    // ── Plan 2 Task 3: motion resolution ────────────────────────────────────
+
+    fn apply_motion(&self, motion: Motion, count: usize, ta: &mut TextArea<'static>) {
+        for _ in 0..count.max(1) {
+            match motion {
+                Motion::Left => ta.move_cursor(CursorMove::Back),
+                Motion::Right => ta.move_cursor(CursorMove::Forward),
+                Motion::Up => ta.move_cursor(CursorMove::Up),
+                Motion::Down => ta.move_cursor(CursorMove::Down),
+                Motion::WordForward => ta.move_cursor(CursorMove::WordForward),
+                Motion::WordBack => ta.move_cursor(CursorMove::WordBack),
+                Motion::WordEnd => ta.move_cursor(CursorMove::WordEnd),
+                Motion::LineStart => ta.move_cursor(CursorMove::Head),
+                Motion::FirstNonBlank => Self::first_non_blank(ta),
+                Motion::LineEnd => ta.move_cursor(CursorMove::End),
+                Motion::FileStart => ta.move_cursor(CursorMove::Top),
+                Motion::FileEnd => ta.move_cursor(CursorMove::Bottom),
+                Motion::ParagraphForward => ta.move_cursor(CursorMove::ParagraphForward),
+                Motion::ParagraphBack => ta.move_cursor(CursorMove::ParagraphBack),
+                Motion::MatchingPair => Self::match_pair(ta), // Task 9
+                Motion::FindChar { ch, till, forward } => {
+                    Self::find_char(ta, ch, till, forward); // Task 7
+                }
+            }
+        }
+    }
+
+    fn first_non_blank(ta: &mut TextArea<'static>) {
+        ta.move_cursor(CursorMove::Head);
+        let (row, _) = super::cursor_tuple(ta);
+        if let Some(line) = ta.lines().get(row) {
+            let n = line.chars().take_while(|c| c.is_whitespace()).count();
+            for _ in 0..n {
+                ta.move_cursor(CursorMove::Forward);
+            }
+        }
+    }
+
+    /// Stub — implemented in Task 9.
+    fn match_pair(_ta: &mut TextArea<'static>) { /* Task 9 */ }
+
+    /// Stub — implemented in Task 7.
+    fn find_char(_ta: &mut TextArea<'static>, _ch: char, _till: bool, _forward: bool) {
+        /* Task 7 */
+    }
+
+    /// Temporary stub — real operator logic implemented in Task 4.
+    fn apply_operator_motion(
+        &mut self,
+        _op: Operator,
+        m: Motion,
+        count: usize,
+        ta: &mut TextArea<'static>,
+    ) {
+        // Placeholder until Task 4: just move (no-op delete). Replaced in Task 4.
+        self.apply_motion(m, count, ta);
+    }
+
+    // ── normal_char ──────────────────────────────────────────────────────────
+
     fn normal_char(&mut self, c: char, ta: &mut TextArea<'static>) -> VimKeyOutcome {
+        // Task 2: consume count digits first
+        if self.accumulate_count(c) {
+            return VimKeyOutcome::NoOp;
+        }
+
+        // Task 3: gg prefix
+        if c == 'g' {
+            if self.pending_g {
+                self.pending_g = false;
+                let cnt = self.take_count();
+                if let Some(op) = self.pending_operator.take() {
+                    self.apply_operator_motion(op, Motion::FileStart, cnt, ta);
+                    self.clear_pending();
+                    return VimKeyOutcome::TextMutated;
+                }
+                self.apply_motion(Motion::FileStart, 1, ta);
+                self.clear_pending();
+                return VimKeyOutcome::CursorOnly;
+            }
+            self.pending_g = true;
+            return VimKeyOutcome::NoOp;
+        }
+
+        // Task 3: motion dispatch (count-aware)
+        let count = self.pending_count.unwrap_or(1);
+        let motion = match c {
+            'h' => Some(Motion::Left),
+            'l' => Some(Motion::Right),
+            'k' => Some(Motion::Up),
+            'j' => Some(Motion::Down),
+            'w' | 'W' => Some(Motion::WordForward),
+            'b' | 'B' => Some(Motion::WordBack),
+            'e' | 'E' => Some(Motion::WordEnd),
+            '0' => Some(Motion::LineStart),
+            '^' => Some(Motion::FirstNonBlank),
+            '$' => Some(Motion::LineEnd),
+            'G' => Some(Motion::FileEnd),
+            '{' => Some(Motion::ParagraphBack),
+            '}' => Some(Motion::ParagraphForward),
+            '%' => Some(Motion::MatchingPair),
+            _ => None,
+        };
+        if let Some(m) = motion {
+            // If an operator is pending, this motion forms a range (Task 4).
+            if let Some(op) = self.pending_operator.take() {
+                self.apply_operator_motion(op, m, count, ta);
+                self.clear_pending();
+                return VimKeyOutcome::TextMutated;
+            }
+            self.apply_motion(m, count, ta);
+            self.clear_pending();
+            return VimKeyOutcome::CursorOnly;
+        }
+
+        // Insert-entry keys (from Plan 1, kept intact)
         match c {
-            'h' => self.motion(CursorMove::Back, ta),
-            'l' => self.motion(CursorMove::Forward, ta),
-            'k' => self.motion(CursorMove::Up, ta),
-            'j' => self.motion(CursorMove::Down, ta),
-            'w' => self.motion(CursorMove::WordForward, ta),
-            'b' => self.motion(CursorMove::WordBack, ta),
-            'e' => self.motion(CursorMove::WordEnd, ta),
-            '0' => self.motion(CursorMove::Head, ta),
-            '$' => self.motion(CursorMove::End, ta),
-            '^' => self.motion(CursorMove::Head, ta), // refined to first-non-blank in Plan 2
-            'G' => self.motion(CursorMove::Bottom, ta),
             'i' => self.enter_insert(ta, None),
             'a' => self.enter_insert(ta, Some(CursorMove::Forward)),
             'I' => self.enter_insert(ta, Some(CursorMove::Head)),
             'A' => self.enter_insert(ta, Some(CursorMove::End)),
             'o' => self.open_line(ta, false),
             'O' => self.open_line(ta, true),
-            _ => VimKeyOutcome::NoOp,
+            _ => { self.clear_pending(); VimKeyOutcome::NoOp }
         }
     }
 
@@ -117,6 +379,7 @@ impl VimEngine {
             ta.move_cursor(m);
         }
         self.mode = EditorMode::Insert;
+        self.clear_pending();
         VimKeyOutcome::CursorOnly
     }
 
@@ -130,6 +393,7 @@ impl VimEngine {
             ta.insert_newline();
         }
         self.mode = EditorMode::Insert;
+        self.clear_pending();
         VimKeyOutcome::TextMutated
     }
 }
@@ -149,6 +413,8 @@ mod tests {
     fn ta() -> TextArea<'static> {
         TextArea::from(["hello world", "second line"])
     }
+
+    // ── Plan 1 tests (must stay green) ──────────────────────────────────────
 
     #[test]
     fn i_enters_insert_mode() {
@@ -229,5 +495,66 @@ mod tests {
         let out = e.handle_key(&key('z'), &mut t);
         assert_eq!(out, VimKeyOutcome::NoOp);
         assert_eq!(*e.mode(), EditorMode::Normal);
+    }
+
+    // ── Plan 2 Task 2 tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn count_accumulates_then_moves() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["abcdef"]);
+        e.handle_key(&key('3'), &mut t);
+        e.handle_key(&key('l'), &mut t);
+        assert_eq!(super::super::cursor_tuple(&t), (0, 3));
+        // pending cleared after the motion
+        e.handle_key(&key('l'), &mut t);
+        assert_eq!(super::super::cursor_tuple(&t), (0, 4));
+    }
+
+    #[test]
+    fn zero_without_count_is_line_start() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["abcdef"]);
+        e.handle_key(&key('l'), &mut t);
+        e.handle_key(&key('l'), &mut t);
+        e.handle_key(&key('0'), &mut t);
+        assert_eq!(super::super::cursor_tuple(&t), (0, 0));
+    }
+
+    // ── Plan 2 Task 3 tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn gg_and_G_jump_file_ends() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["one", "two", "three"]);
+        e.handle_key(&key('G'), &mut t);
+        assert_eq!(super::super::cursor_tuple(&t).0, 2);
+        e.handle_key(&key('g'), &mut t);
+        e.handle_key(&key('g'), &mut t);
+        assert_eq!(super::super::cursor_tuple(&t).0, 0);
+    }
+
+    #[test]
+    fn pending_g_cancels_on_unmapped_key() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["one", "two", "three"]);
+        e.handle_key(&key('G'), &mut t);            // go to last line
+        assert_eq!(super::super::cursor_tuple(&t).0, 2);
+        e.handle_key(&key('g'), &mut t);            // start gg
+        e.handle_key(&key('z'), &mut t);            // unmapped → should cancel pending g
+        e.handle_key(&key('g'), &mut t);            // lone g, NOT gg
+        assert_eq!(super::super::cursor_tuple(&t).0, 2, "stray g after cancelled prefix must not jump to file start");
+    }
+
+    #[test]
+    fn pending_g_cleared_through_insert() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["one", "two", "three"]);
+        e.handle_key(&key('G'), &mut t);
+        e.handle_key(&key('g'), &mut t);            // start gg
+        e.handle_key(&key('a'), &mut t);            // enter insert (should clear pending_g)
+        e.handle_key(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &mut t);
+        e.handle_key(&key('g'), &mut t);            // lone g
+        assert_eq!(super::super::cursor_tuple(&t).0, 2, "g after insert must not complete a stale gg");
     }
 }
