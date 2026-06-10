@@ -205,6 +205,18 @@ impl VimEngine {
         self.clear_pending();
     }
 
+    /// Reconcile mode after a host-driven selection change (mouse). A live
+    /// selection means Visual; losing the selection in Visual returns to Normal.
+    pub fn sync_mouse_selection(&mut self, has_selection: bool) {
+        match (has_selection, &self.mode) {
+            (true, EditorMode::Normal) => self.mode = EditorMode::Visual,
+            (false, EditorMode::Visual) | (false, EditorMode::VisualLine) => {
+                self.mode = EditorMode::Normal
+            }
+            _ => {}
+        }
+    }
+
     /// True when a bare Space should start the leader: Normal mode, nothing
     /// pending (so `d<Space>`, `f<Space>`, counts etc. still take Space as an
     /// argument/motion, not the leader).
@@ -2050,6 +2062,33 @@ mod tests {
         let mut t = TextArea::from(["x"]);
         assert_eq!(e.handle_key(&key('n'), &mut t), VimKeyOutcome::Host(VimHostAction::SearchNext));
         assert_eq!(e.handle_key(&key('N'), &mut t), VimKeyOutcome::Host(VimHostAction::SearchPrev));
+    }
+
+    // ── Plan 3 Task 5: mouse → Visual mode tests ────────────────────────────
+
+    #[test]
+    fn mouse_selection_enters_and_leaves_visual() {
+        let mut e = VimEngine::default();
+        e.sync_mouse_selection(true);
+        assert_eq!(*e.mode(), EditorMode::Visual);
+        e.sync_mouse_selection(false);
+        assert_eq!(*e.mode(), EditorMode::Normal);
+    }
+
+    #[test]
+    fn mouse_no_selection_in_normal_stays_normal() {
+        let mut e = VimEngine::default();
+        e.sync_mouse_selection(false);
+        assert_eq!(*e.mode(), EditorMode::Normal);
+    }
+
+    #[test]
+    fn mouse_does_not_disturb_insert() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["x"]);
+        e.handle_key(&key('i'), &mut t); // Insert
+        e.sync_mouse_selection(true);
+        assert_eq!(*e.mode(), EditorMode::Insert); // mouse doesn't yank Insert into Visual
     }
 }
 

@@ -176,6 +176,16 @@ impl BackendState {
         true
     }
 
+    /// Reconcile the vim engine mode after a host-driven mouse selection change.
+    /// If a selection now exists and the engine is in Normal, enters Visual.
+    /// If the selection is gone and the engine is in Visual/VisualLine, returns
+    /// to Normal. No-op for Direct / Nvim backends.
+    pub fn vim_sync_mouse_selection(&mut self, has_selection: bool) {
+        if let BackendState::Textarea(TextareaBackend { input: InputInterpreter::Vim(e), .. }) = self {
+            e.sync_mouse_selection(has_selection);
+        }
+    }
+
     /// True when a bare Space should start the leader: vim backend in Normal
     /// mode with empty pending state. False for Direct / Nvim backends and for
     /// vim Insert/Visual modes or any pending state.
