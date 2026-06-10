@@ -2215,8 +2215,9 @@ impl VimEngine {
     /// cursor's line, then repeat for `count` lines total (moving down after
     /// each). Used by `>>`, `<<`, and the visual `>`/`<` operators.
     fn indent_lines(&self, outdent: bool, count: usize, ta: &mut TextArea<'static>) {
-        let (start_row, _) = super::cursor_tuple(ta);
-        for _ in 0..count.max(1) {
+        let (start_row, start_col) = super::cursor_tuple(ta);
+        let mut first_line_delta = 0usize; // indent change on the cursor's own line
+        for i in 0..count.max(1) {
             ta.move_cursor(CursorMove::Head);
             if outdent {
                 // Remove up to 4 leading spaces.
@@ -2226,18 +2227,28 @@ impl VimEngine {
                     .get(row)
                     .map(|l| l.chars().take(4).take_while(|c| *c == ' ').count())
                     .unwrap_or(0);
+                if i == 0 {
+                    first_line_delta = n;
+                }
                 for _ in 0..n {
                     ta.delete_next_char();
                 }
             } else {
+                if i == 0 {
+                    first_line_delta = 4;
+                }
                 ta.insert_str("    ");
             }
             ta.move_cursor(CursorMove::Down);
         }
-        // vim leaves the cursor on the FIRST indented line's first non-blank,
-        // not below the block.
-        ta.move_cursor(CursorMove::Jump(start_row as u16, 0));
-        Self::first_non_blank(ta);
+        // Keep the cursor over the same character it sat on, shifted by the
+        // indent change — matches neovim's >> behavior.
+        let col = if outdent {
+            start_col.saturating_sub(first_line_delta)
+        } else {
+            start_col + first_line_delta
+        };
+        ta.move_cursor(CursorMove::Jump(start_row as u16, col as u16));
     }
 
     /// Capture the text the textarea just cut/copied (its yank buffer) into
@@ -3197,18 +3208,33 @@ mod tests {
     }
 
     #[test]
-    fn indent_keeps_cursor_on_first_indented_line() {
-        // regression: >> left the cursor one row BELOW the indented block
+    fn indent_keeps_cursor_over_same_char() {
+        // regression: >> left the cursor one row BELOW the indented block;
+        // the cursor must stay over the char it sat on, shifted with the
+        // indent (neovim behavior).
         let mut e = VimEngine::default();
         let mut t = TextArea::from(["one", "two", "three"]);
+        e.handle_key(&key('l'), &mut t); // onto 'n' (col 1)
         e.handle_key(&key('>'), &mut t);
         e.handle_key(&key('>'), &mut t);
-        assert_eq!(super::super::cursor_tuple(&t), (0, 4)); // first non-blank of line 1
+        assert_eq!(super::super::cursor_tuple(&t), (0, 5)); // still on 'n'
         // counted form too: cursor stays on the first line of the block
         e.handle_key(&key('2'), &mut t);
         e.handle_key(&key('>'), &mut t);
         e.handle_key(&key('>'), &mut t);
         assert_eq!(super::super::cursor_tuple(&t).0, 0);
+    }
+
+    #[test]
+    fn outdent_keeps_cursor_over_same_char() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["    x"]);
+        e.handle_key(&key('f'), &mut t);
+        e.handle_key(&key('x'), &mut t); // ON 'x' (col 4)
+        e.handle_key(&key('<'), &mut t);
+        e.handle_key(&key('<'), &mut t);
+        assert_eq!(t.lines(), &["x"]);
+        assert_eq!(super::super::cursor_tuple(&t).1, 0); // still on 'x'
     }
 
     #[test]
