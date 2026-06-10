@@ -191,6 +191,7 @@ impl PreferencesScreen {
                 .as_ref()
                 .is_some_and(|wc| wc.get_current_workspace().is_some());
         let autosave_interval_secs = s.autosave_interval_secs;
+        let editor_backend = s.editor_backend;
         let use_nerd_fonts = s.use_nerd_fonts;
         let initial_settings = s.clone();
         let workspaces_section = WorkspacesSection::new(&s);
@@ -208,7 +209,7 @@ impl PreferencesScreen {
             workspaces_section,
             pending_create_name: None,
             indexing_section: IndexingSection::new(vault_available),
-            editor_section: EditorSection::new(autosave_interval_secs),
+            editor_section: EditorSection::new(autosave_interval_secs, editor_backend),
             settings,
             initial_settings,
             theme,
@@ -695,8 +696,9 @@ impl AppScreen for PreferencesScreen {
                         }
                         PreferencesSection::Editor => {
                             let r = self.editor_section.handle_input(&app_event, tx);
-                            self.settings.write().unwrap().autosave_interval_secs =
-                                self.editor_section.autosave_interval_secs;
+                            let mut s = self.settings.write().unwrap();
+                            s.autosave_interval_secs = self.editor_section.autosave_interval_secs;
+                            s.editor_backend = self.editor_section.editor_backend;
                             r
                         }
                     }

@@ -41,11 +41,17 @@ pub enum Motion {
     WordForward,
     WordBack,
     WordEnd,
+    WordForwardBig,                            // W — WORD: any non-blank run
+    WordBackBig,                               // B
+    WordEndBig,                                // E
+    WordEndBack { big: bool },                 // ge / gE
     LineStart,
     FirstNonBlank,
+    LastNonBlank,                              // g_
     LineEnd,
     FileStart,
     FileEnd,
+    GotoLine(usize),                           // 5gg / 5G (1-based)
     ParagraphForward,
     ParagraphBack,
     MatchingPair,                              // %
@@ -60,6 +66,9 @@ pub enum Operator {
     Yank,
     Indent,
     Outdent,
+    Lowercase,  // gu
+    Uppercase,  // gU
+    ToggleCase, // g~
 }
 
 /// How a motion forms an operator range (vim `:h exclusive`).
@@ -107,12 +116,13 @@ pub enum Command {
     ReplaceChar(char),                      // r<ch>
     SubstituteChar(usize),                  // s
     SubstituteLine,                         // S
-    JoinLines(usize),                       // J
+    JoinLines { count: usize, spaced: bool }, // J (spaced) / gJ (raw)
     ToggleCase(usize),                      // ~
     Paste { after: bool, count: usize },    // p / P
     Undo(usize),                            // u
     Redo(usize),                            // Ctrl-r
     EnterInsert(InsertEntry),               // i a I A o O
+    EnterReplace,                           // R — overwrite until Esc
     EnterVisual { line: bool },             // v / V
     Repeat,                                 // .
 }
@@ -261,12 +271,15 @@ impl VimEngine {
             s.push_str(&n.to_string());
         }
         if let Some(op) = self.pending_operator {
-            s.push(match op {
-                Operator::Delete => 'd',
-                Operator::Change => 'c',
-                Operator::Yank => 'y',
-                Operator::Indent => '>',
-                Operator::Outdent => '<',
+            s.push_str(match op {
+                Operator::Delete => "d",
+                Operator::Change => "c",
+                Operator::Yank => "y",
+                Operator::Indent => ">",
+                Operator::Outdent => "<",
+                Operator::Lowercase => "gu",
+                Operator::Uppercase => "gU",
+                Operator::ToggleCase => "g~",
             });
         }
         if let Some(n) = self.pending_count {
@@ -327,6 +340,7 @@ impl VimEngine {
     pub fn handle_key(&mut self, key: &KeyEvent, ta: &mut TextArea<'static>) -> VimKeyOutcome {
         match self.mode {
             EditorMode::Insert => self.handle_insert(key, ta),
+            EditorMode::Replace => self.handle_replace(key, ta),
             EditorMode::Visual | EditorMode::VisualLine => self.handle_visual(key, ta),
             _ => self.handle_normal(key, ta),
         }
@@ -413,62 +427,14 @@ impl VimEngine {
             'd' | 'x' => Some(Operator::Delete),
             'c' | 's' => Some(Operator::Change),
             'y' => Some(Operator::Yank),
+            // vim visual case ops. `~` stays on the auto-surround
+            // PassThrough path below (kimün wraps the selection instead).
+            'u' => Some(Operator::Lowercase),
+            'U' => Some(Operator::Uppercase),
             _ => None,
         };
         if let Some(op) = op {
-            let is_line = self.mode == EditorMode::VisualLine;
-            if is_line {
-                // VisualLine: operate on whole selected lines, preserving newlines.
-                // Determine the line range from the current selection.
-                let (start_row, end_row) = if let Some(((sr, _), (er, _))) = ta.selection_range() {
-                    (sr, er)
-                } else {
-                    let (r, _) = super::cursor_tuple(ta);
-                    (r, r)
-                };
-                // Cancel the current selection so apply_operator_linewise can
-                // re-anchor from the correct start row.
-                ta.cancel_selection();
-                ta.move_cursor(CursorMove::Jump(start_row as u16, 0));
-                let count = end_row - start_row + 1;
-                self.apply_operator_linewise(op, count, None, ta);
-            } else {
-                // Charwise Visual: vim selection is inclusive of the char under
-                // the cursor — re-select through select_range's inclusive end.
-                let range = ta.selection_range();
-                if let Some((start, end)) = range {
-                    ta.cancel_selection();
-                    Self::select_range(ta, start, end, true);
-                }
-                if op == Operator::Change {
-                    // Honest dot-repeat: `.` after a visual change replays a
-                    // same-sized change from the cursor (vim semantics) —
-                    // chars on one row, whole lines across rows.
-                    let capture_cmd = match range {
-                        Some(((sr, sc), (er, ec))) if sr == er => Command::OperateMotion(
-                            Operator::Change,
-                            Motion::Right,
-                            ec.saturating_sub(sc) + 1,
-                        ),
-                        Some(((sr, _), (er, _))) => {
-                            Command::OperateLine(Operator::Change, er.saturating_sub(sr) + 1)
-                        }
-                        None => Command::OperateMotion(Operator::Change, Motion::Right, 1),
-                    };
-                    ta.cut();
-                    self.fill_from_textarea(ta, RegisterKind::Charwise);
-                    self.finish_insert_entry(&capture_cmd, None, ta);
-                } else {
-                    self.apply_operator_on_selection(op, ta);
-                }
-            }
-            // Change paths own the Insert transition (via the insert capture);
-            // d/x/y return to Normal here — one writer per transition.
-            if op != Operator::Change {
-                self.mode = EditorMode::Normal;
-            }
-            self.clear_pending();
-            return Self::outcome_for(op);
+            return self.visual_operate(op, ta);
         }
 
         // 'p'/'P': replace the current visual selection with the register.
@@ -557,22 +523,49 @@ impl VimEngine {
         }
 
         // Pair chars: set Normal and return PassThrough so the host's existing
-        // auto-surround path wraps the selection.
-        if matches!(c, '(' | '[' | '{' | '<' | '"' | '\'' | '`' | '*' | '_' | '~') {
+        // auto-surround path wraps the selection. Skipped while a `g` is
+        // pending — `g~` (case toggle) must reach the g-block below.
+        if !self.pending_g
+            && matches!(c, '(' | '[' | '{' | '<' | '"' | '\'' | '`' | '*' | '_' | '~')
+        {
             self.mode = EditorMode::Normal;
             return VimKeyOutcome::PassThrough;
         }
 
-        // gg: extend the selection to the file start.
-        if c == 'g' {
-            if self.pending_g {
-                self.pending_g = false;
-                self.apply_motion(Motion::FileStart, 1, ta);
+        // g prefix: gg / 5gg extend to file start or line N; ge/gE/g_ extend
+        // like any motion.
+        if c == 'g' && !self.pending_g {
+            self.pending_g = true;
+            return VimKeyOutcome::NoOp;
+        }
+        if self.pending_g {
+            self.pending_g = false;
+            if c == 'g' {
+                let m = match self.pending_count.take() {
+                    Some(n) => Motion::GotoLine(n),
+                    None => Motion::FileStart,
+                };
+                self.apply_motion(m, 1, ta);
                 self.clear_pending();
                 return VimKeyOutcome::CursorOnly;
             }
-            self.pending_g = true;
-            return VimKeyOutcome::NoOp;
+            if let Some(m) = Self::motion_for_g(c) {
+                let cnt = self.take_count();
+                self.apply_motion(m, cnt, ta);
+                self.clear_pending();
+                return VimKeyOutcome::CursorOnly;
+            }
+            // g~ / gu / gU: case ops on the selection. Bare `~` belongs to
+            // auto-surround in kimün, so g~ is the visual toggle-case key.
+            if let Some(op) = match c {
+                '~' => Some(Operator::ToggleCase),
+                'u' => Some(Operator::Lowercase),
+                'U' => Some(Operator::Uppercase),
+                _ => None,
+            } {
+                return self.visual_operate(op, ta);
+            }
+            // Unmapped g-sequence: fall through, the key acts on its own.
         }
 
         // f/F/t/T: pend a selection-extending find.
@@ -597,8 +590,13 @@ impl VimEngine {
             return VimKeyOutcome::NoOp;
         }
 
-        // Motions extend the selection.
+        // Motions extend the selection. 5G extends to line 5 (count = line
+        // number, matching the Normal-mode parser).
         if let Some(m) = Self::motion_for_char(c) {
+            let m = match (c, self.pending_count.take()) {
+                ('G', Some(n)) => Motion::GotoLine(n),
+                _ => m,
+            };
             let count = self.take_count();
             self.apply_motion(m, count, ta);
             self.clear_pending();
@@ -607,6 +605,63 @@ impl VimEngine {
 
         self.clear_pending();
         VimKeyOutcome::NoOp
+    }
+
+    /// Apply `op` to the live visual selection (charwise or linewise) and
+    /// leave Visual mode. Shared by the visual operator keys (d/x/c/s/y/u/U)
+    /// and `g~`.
+    fn visual_operate(&mut self, op: Operator, ta: &mut TextArea<'static>) -> VimKeyOutcome {
+        if self.mode == EditorMode::VisualLine {
+            // VisualLine: operate on whole selected lines, preserving newlines.
+            let (start_row, end_row) = if let Some(((sr, _), (er, _))) = ta.selection_range() {
+                (sr, er)
+            } else {
+                let (r, _) = super::cursor_tuple(ta);
+                (r, r)
+            };
+            // Cancel the current selection so apply_operator_linewise can
+            // re-anchor from the correct start row.
+            ta.cancel_selection();
+            ta.move_cursor(CursorMove::Jump(start_row as u16, 0));
+            let count = end_row - start_row + 1;
+            self.apply_operator_linewise(op, count, None, ta);
+        } else {
+            // Charwise Visual: vim selection is inclusive of the char under
+            // the cursor — re-select through select_range's inclusive end.
+            let range = ta.selection_range();
+            if let Some((start, end)) = range {
+                ta.cancel_selection();
+                Self::select_range(ta, start, end, true);
+            }
+            if op == Operator::Change {
+                // Honest dot-repeat: `.` after a visual change replays a
+                // same-sized change from the cursor (vim semantics) —
+                // chars on one row, whole lines across rows.
+                let capture_cmd = match range {
+                    Some(((sr, sc), (er, ec))) if sr == er => Command::OperateMotion(
+                        Operator::Change,
+                        Motion::Right,
+                        ec.saturating_sub(sc) + 1,
+                    ),
+                    Some(((sr, _), (er, _))) => {
+                        Command::OperateLine(Operator::Change, er.saturating_sub(sr) + 1)
+                    }
+                    None => Command::OperateMotion(Operator::Change, Motion::Right, 1),
+                };
+                ta.cut();
+                self.fill_from_textarea(ta, RegisterKind::Charwise);
+                self.finish_insert_entry(&capture_cmd, None, ta);
+            } else {
+                self.apply_operator_on_selection(op, ta);
+            }
+        }
+        // Change paths own the Insert transition (via the insert capture);
+        // everything else returns to Normal here — one writer per transition.
+        if op != Operator::Change {
+            self.mode = EditorMode::Normal;
+        }
+        self.clear_pending();
+        Self::outcome_for(op)
     }
 
     /// Re-aim the charwise visual selection at the text object under the
@@ -628,39 +683,86 @@ impl VimEngine {
 
     fn handle_insert(&mut self, key: &KeyEvent, ta: &mut TextArea<'static>) -> VimKeyOutcome {
         if key.code == KeyCode::Esc {
-            self.mode = EditorMode::Normal;
-            // Compute the inserted text once at Esc, slicing from the start cursor
-            // recorded when Insert began to the current cursor (multi-line aware).
-            if let Some(cap) = self.insert_capture.take() {
-                let end = super::cursor_tuple(ta);
-                let inserted = Self::text_between(ta.lines(), cap.start, end);
-                // An aborted plain insert (i/a/I/A then Esc, nothing typed)
-                // is not a change in vim — don't clobber the dot register.
-                // o/O still record (opening the line IS the change), as do
-                // Change-family commands (cw/s/cc — the cut happened).
-                let aborted_plain = inserted.is_empty()
-                    && matches!(
-                        cap.command,
-                        Command::EnterInsert(
-                            InsertEntry::Here
-                                | InsertEntry::After
-                                | InsertEntry::LineStart
-                                | InsertEntry::LineEnd
-                        )
-                    );
-                if !aborted_plain {
-                    self.last_change = Some(Change {
-                        command: cap.command,
-                        inserted: Some(inserted),
-                    });
-                }
-            }
-            if super::cursor_tuple(ta).1 > 0 {
-                ta.move_cursor(CursorMove::Back);
-            }
-            return VimKeyOutcome::CursorOnly;
+            return self.exit_to_normal(ta);
         }
         VimKeyOutcome::PassThrough
+    }
+
+    /// Replace (overwrite) mode — vim `R`. Keys are handled by the engine,
+    /// never passed to the host textarea path: R is raw overwrite, with no
+    /// auto-surround / smart-Enter underneath.
+    fn handle_replace(&mut self, key: &KeyEvent, ta: &mut TextArea<'static>) -> VimKeyOutcome {
+        let plain = key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT;
+        match key.code {
+            KeyCode::Esc => self.exit_to_normal(ta),
+            KeyCode::Enter => {
+                ta.insert_newline();
+                VimKeyOutcome::TextMutated
+            }
+            KeyCode::Backspace => {
+                // vim restores the original char here; v1 just steps back.
+                if super::cursor_tuple(ta).1 > 0 {
+                    ta.move_cursor(CursorMove::Back);
+                }
+                VimKeyOutcome::CursorOnly
+            }
+            KeyCode::Char(c) if plain => {
+                Self::overwrite_char(ta, c);
+                VimKeyOutcome::TextMutated
+            }
+            _ => VimKeyOutcome::NoOp,
+        }
+    }
+
+    /// Overwrite the char under the cursor (plain insert at EOL — vim R
+    /// appends once the line runs out), cursor left after the written char.
+    fn overwrite_char(ta: &mut TextArea<'static>, ch: char) {
+        if ch == '\n' {
+            ta.insert_newline();
+            return;
+        }
+        let (row, col) = super::cursor_tuple(ta);
+        let len = ta.lines().get(row).map(|l| l.chars().count()).unwrap_or(0);
+        if col < len {
+            ta.delete_next_char();
+        }
+        ta.insert_char(ch);
+    }
+
+    /// Esc out of Insert/Replace mode: finalize the dot capture and step the
+    /// cursor back (vim).
+    fn exit_to_normal(&mut self, ta: &mut TextArea<'static>) -> VimKeyOutcome {
+        self.mode = EditorMode::Normal;
+        // Compute the typed text once at Esc, slicing from the start cursor
+        // recorded when Insert/Replace began to the current cursor.
+        if let Some(cap) = self.insert_capture.take() {
+            let end = super::cursor_tuple(ta);
+            let inserted = Self::text_between(ta.lines(), cap.start, end);
+            // An aborted plain insert (i/a/I/A/R then Esc, nothing typed)
+            // is not a change in vim — don't clobber the dot register.
+            // o/O still record (opening the line IS the change), as do
+            // Change-family commands (cw/s/cc — the cut happened).
+            let aborted_plain = inserted.is_empty()
+                && matches!(
+                    cap.command,
+                    Command::EnterInsert(
+                        InsertEntry::Here
+                            | InsertEntry::After
+                            | InsertEntry::LineStart
+                            | InsertEntry::LineEnd
+                    ) | Command::EnterReplace
+                );
+            if !aborted_plain {
+                self.last_change = Some(Change {
+                    command: cap.command,
+                    inserted: Some(inserted),
+                });
+            }
+        }
+        if super::cursor_tuple(ta).1 > 0 {
+            ta.move_cursor(CursorMove::Back);
+        }
+        VimKeyOutcome::CursorOnly
     }
 
     fn handle_normal(&mut self, key: &KeyEvent, ta: &mut TextArea<'static>) -> VimKeyOutcome {
@@ -767,10 +869,11 @@ impl VimEngine {
             | Command::ReplaceChar(_)
             | Command::SubstituteChar(_)
             | Command::SubstituteLine
-            | Command::JoinLines(_)
+            | Command::JoinLines { .. }
             | Command::ToggleCase(_)
             | Command::Paste { .. }
-            | Command::EnterInsert(_) => true,
+            | Command::EnterInsert(_)
+            | Command::EnterReplace => true,
         }
     }
 
@@ -848,9 +951,9 @@ impl VimEngine {
                 self.finish_insert_entry(cmd, inserted, ta);
                 VimKeyOutcome::TextMutated
             }
-            Command::JoinLines(n) => {
-                for _ in 0..n.max(1) {
-                    Self::join_line(ta);
+            Command::JoinLines { count, spaced } => {
+                for _ in 0..count.max(1) {
+                    Self::join_line(ta, spaced);
                 }
                 VimKeyOutcome::TextMutated
             }
@@ -880,6 +983,23 @@ impl VimEngine {
                 VimKeyOutcome::TextMutated
             }
             Command::EnterInsert(entry) => self.apply_enter_insert(entry, cmd, inserted, ta),
+            Command::EnterReplace => match inserted {
+                Some(text) => {
+                    for ch in text.chars() {
+                        Self::overwrite_char(ta, ch);
+                    }
+                    self.mode = EditorMode::Normal;
+                    if super::cursor_tuple(ta).1 > 0 {
+                        ta.move_cursor(CursorMove::Back);
+                    }
+                    VimKeyOutcome::TextMutated
+                }
+                None => {
+                    self.enter_insert_capture(cmd.clone(), ta);
+                    self.mode = EditorMode::Replace; // the capture helper sets Insert
+                    VimKeyOutcome::CursorOnly
+                }
+            },
             Command::EnterVisual { line } => {
                 if line {
                     ta.move_cursor(CursorMove::Head);
@@ -931,7 +1051,8 @@ impl VimEngine {
                 false
             }
             InsertEntry::LineStart => {
-                ta.move_cursor(CursorMove::Head);
+                // vim I: insert before the FIRST NON-BLANK char, not col 0.
+                Self::first_non_blank(ta);
                 false
             }
             InsertEntry::LineEnd => {
@@ -977,9 +1098,12 @@ impl VimEngine {
             'l' => Some(Motion::Right),
             'k' => Some(Motion::Up),
             'j' => Some(Motion::Down),
-            'w' | 'W' => Some(Motion::WordForward),
-            'b' | 'B' => Some(Motion::WordBack),
-            'e' | 'E' => Some(Motion::WordEnd),
+            'w' => Some(Motion::WordForward),
+            'W' => Some(Motion::WordForwardBig),
+            'b' => Some(Motion::WordBack),
+            'B' => Some(Motion::WordBackBig),
+            'e' => Some(Motion::WordEnd),
+            'E' => Some(Motion::WordEndBig),
             '0' => Some(Motion::LineStart),
             '^' => Some(Motion::FirstNonBlank),
             '$' => Some(Motion::LineEnd),
@@ -987,6 +1111,18 @@ impl VimEngine {
             '{' => Some(Motion::ParagraphBack),
             '}' => Some(Motion::ParagraphForward),
             '%' => Some(Motion::MatchingPair),
+            _ => None,
+        }
+    }
+
+    /// Map the key after a pending `g` to its motion (`ge`, `gE`, `g_`).
+    /// `gg` is handled separately (it carries a count as a line number).
+    /// Shared by the Normal parser and the Visual handler.
+    fn motion_for_g(c: char) -> Option<Motion> {
+        match c {
+            'e' => Some(Motion::WordEndBack { big: false }),
+            'E' => Some(Motion::WordEndBack { big: true }),
+            '_' => Some(Motion::LastNonBlank),
             _ => None,
         }
     }
@@ -1069,10 +1205,17 @@ impl VimEngine {
     /// linewise when consumed by an operator.)
     fn kind_of(motion: Motion) -> SpanKind {
         match motion {
-            Motion::Up | Motion::Down | Motion::FileStart | Motion::FileEnd => SpanKind::Linewise,
-            Motion::WordEnd | Motion::MatchingPair => SpanKind::Inclusive,
-            // d$ deletes through the last char (vim: $ is inclusive).
-            Motion::LineEnd => SpanKind::Inclusive,
+            Motion::Up
+            | Motion::Down
+            | Motion::FileStart
+            | Motion::FileEnd
+            | Motion::GotoLine(_) => SpanKind::Linewise,
+            Motion::WordEnd
+            | Motion::WordEndBig
+            | Motion::WordEndBack { .. }
+            | Motion::MatchingPair => SpanKind::Inclusive,
+            // d$ / dg_ delete through the char they land on (vim: inclusive).
+            Motion::LineEnd | Motion::LastNonBlank => SpanKind::Inclusive,
             // f/t are inclusive; F/T (backward) are exclusive.
             Motion::FindChar { forward: true, .. } => SpanKind::Inclusive,
             _ => SpanKind::Exclusive,
@@ -1117,11 +1260,21 @@ impl VimEngine {
                 Motion::WordForward => ta.move_cursor(CursorMove::WordForward),
                 Motion::WordBack => ta.move_cursor(CursorMove::WordBack),
                 Motion::WordEnd => ta.move_cursor(CursorMove::WordEnd),
+                Motion::WordForwardBig => Self::word_forward_big(ta),
+                Motion::WordBackBig => Self::word_back_big(ta),
+                Motion::WordEndBig => Self::word_end_big(ta),
+                Motion::WordEndBack { big } => Self::word_end_back(ta, big),
                 Motion::LineStart => ta.move_cursor(CursorMove::Head),
                 Motion::FirstNonBlank => Self::first_non_blank(ta),
+                Motion::LastNonBlank => Self::last_non_blank(ta),
                 Motion::LineEnd => ta.move_cursor(CursorMove::End),
                 Motion::FileStart => ta.move_cursor(CursorMove::Top),
                 Motion::FileEnd => ta.move_cursor(CursorMove::Bottom),
+                Motion::GotoLine(n) => {
+                    let last = ta.lines().len().saturating_sub(1);
+                    let row = n.saturating_sub(1).min(last);
+                    ta.move_cursor(CursorMove::Jump(row as u16, 0));
+                }
                 Motion::ParagraphForward => ta.move_cursor(CursorMove::ParagraphForward),
                 Motion::ParagraphBack => ta.move_cursor(CursorMove::ParagraphBack),
                 Motion::MatchingPair => Self::match_pair(ta),
@@ -1138,36 +1291,232 @@ impl VimEngine {
         }
     }
 
-    /// Jump to the bracket that matches the one under the cursor (single-line).
-    /// Opening bracket → search forward with depth counting to the matching
-    /// close; closing bracket → search backward to the matching open.
-    /// No-op if the cursor is not on a bracket or no match exists on the line.
+    /// `g_` — last non-blank char of the line (no-op on a blank line, vim).
+    fn last_non_blank(ta: &mut TextArea<'static>) {
+        let (row, _) = super::cursor_tuple(ta);
+        let idx = ta.lines().get(row).and_then(|line| {
+            line.chars()
+                .enumerate()
+                .filter(|(_, c)| !c.is_whitespace())
+                .map(|(i, _)| i)
+                .last()
+        });
+        if let Some(idx) = idx {
+            ta.move_cursor(CursorMove::Jump(row as u16, idx as u16));
+        }
+    }
+
+    /// Char class for small-word motions: blank / word (alnum + `_`) / punct.
+    fn char_class(c: char) -> u8 {
+        if c.is_whitespace() {
+            0
+        } else if c.is_alphanumeric() || c == '_' {
+            1
+        } else {
+            2
+        }
+    }
+
+    /// `W` — to the start of the next WORD (any non-blank run). Crosses
+    /// lines; an empty line is itself a WORD stop (vim).
+    fn word_forward_big(ta: &mut TextArea<'static>) {
+        let (mut row, mut col) = super::cursor_tuple(ta);
+        let lines = ta.lines();
+        let last = lines.len().saturating_sub(1);
+        let mut chars: Vec<char> = lines[row].chars().collect();
+        // Skip the rest of the current WORD.
+        while col < chars.len() && !chars[col].is_whitespace() {
+            col += 1;
+        }
+        // Skip blanks to the next WORD start.
+        loop {
+            if col >= chars.len() {
+                if row == last {
+                    break; // EOF: rest at line end
+                }
+                row += 1;
+                chars = lines[row].chars().collect();
+                col = 0;
+                if chars.is_empty() {
+                    break;
+                }
+                continue;
+            }
+            if chars[col].is_whitespace() {
+                col += 1;
+            } else {
+                break;
+            }
+        }
+        ta.move_cursor(CursorMove::Jump(row as u16, col as u16));
+    }
+
+    /// `B` — back to the start of the current/previous WORD.
+    fn word_back_big(ta: &mut TextArea<'static>) {
+        let (mut row, mut col) = super::cursor_tuple(ta);
+        let lines = ta.lines();
+        let mut chars: Vec<char> = lines[row].chars().collect();
+        // Walk backward to the previous non-blank char, crossing lines; an
+        // empty line is itself a stop (vim).
+        loop {
+            if col == 0 {
+                if row == 0 {
+                    return;
+                }
+                row -= 1;
+                chars = lines[row].chars().collect();
+                if chars.is_empty() {
+                    ta.move_cursor(CursorMove::Jump(row as u16, 0));
+                    return;
+                }
+                col = chars.len() - 1;
+            } else {
+                col -= 1;
+            }
+            if !chars[col].is_whitespace() {
+                break;
+            }
+        }
+        // Walk to the start of this WORD.
+        while col > 0 && !chars[col - 1].is_whitespace() {
+            col -= 1;
+        }
+        ta.move_cursor(CursorMove::Jump(row as u16, col as u16));
+    }
+
+    /// `E` — forward to the end of the next WORD. No move when no WORD
+    /// follows (vim fails the motion).
+    fn word_end_big(ta: &mut TextArea<'static>) {
+        let (mut row, mut col) = super::cursor_tuple(ta);
+        let lines = ta.lines();
+        let last = lines.len().saturating_sub(1);
+        let mut chars: Vec<char> = lines[row].chars().collect();
+        // Step one position forward, then find the next non-blank.
+        col += 1;
+        loop {
+            if col >= chars.len() {
+                if row == last {
+                    return; // nothing ahead — motion fails, cursor stays
+                }
+                row += 1;
+                chars = lines[row].chars().collect();
+                col = 0;
+                continue;
+            }
+            if chars[col].is_whitespace() {
+                col += 1;
+            } else {
+                break;
+            }
+        }
+        // Advance to the last char of this WORD.
+        while col + 1 < chars.len() && !chars[col + 1].is_whitespace() {
+            col += 1;
+        }
+        ta.move_cursor(CursorMove::Jump(row as u16, col as u16));
+    }
+
+    /// `ge` / `gE` — backward to the nearest previous word end: a non-blank
+    /// char whose successor is blank/EOL (or, for small words, a different
+    /// char class). No move when none exists before the cursor.
+    fn word_end_back(ta: &mut TextArea<'static>, big: bool) {
+        let (mut row, mut col) = super::cursor_tuple(ta);
+        let lines = ta.lines();
+        let mut chars: Vec<char> = lines[row].chars().collect();
+        // The textarea cursor can sit one past the last char ($ / line end);
+        // vim's cursor is ON the last char — clamp so "before the cursor"
+        // doesn't match the char under the cursor itself.
+        if !chars.is_empty() && col >= chars.len() {
+            col = chars.len() - 1;
+        }
+        loop {
+            // Step one position back, crossing lines (EOL is a position).
+            if col == 0 {
+                if row == 0 {
+                    return;
+                }
+                row -= 1;
+                chars = lines[row].chars().collect();
+                col = chars.len();
+                continue;
+            }
+            col -= 1;
+            let ch = chars[col];
+            if ch.is_whitespace() {
+                continue;
+            }
+            let is_end = match chars.get(col + 1) {
+                None => true, // EOL after it
+                Some(&n) => {
+                    n.is_whitespace() || (!big && Self::char_class(n) != Self::char_class(ch))
+                }
+            };
+            if is_end {
+                ta.move_cursor(CursorMove::Jump(row as u16, col as u16));
+                return;
+            }
+        }
+    }
+
+    /// Jump to the bracket that matches the one under the cursor, scanning
+    /// across lines. Opening bracket → forward with depth counting to the
+    /// matching close; closing bracket → backward to the matching open.
+    /// No-op when the cursor is not on a bracket or no match exists.
     fn match_pair(ta: &mut TextArea<'static>) {
         let (row, col) = super::cursor_tuple(ta);
-        let Some(line) = ta.lines().get(row).cloned() else { return };
-        let chars: Vec<char> = line.chars().collect();
-        let Some(&here) = chars.get(col) else { return };
+        let lines = ta.lines();
+        let here = match lines.get(row).and_then(|l| l.chars().nth(col)) {
+            Some(c) => c,
+            None => return,
+        };
         let pairs = [('(', ')'), ('[', ']'), ('{', '}'), ('<', '>')];
-        // open → search forward with depth counting to the matching close
-        if let Some(&(_, close)) = pairs.iter().find(|&&(o, _)| o == here) {
+        let target = if let Some(&(_, close)) = pairs.iter().find(|&&(o, _)| o == here) {
+            // open → scan forward through the buffer
             let mut depth = 0i32;
-            for i in col..chars.len() {
-                if chars[i] == here { depth += 1; }
-                else if chars[i] == close { depth -= 1; if depth == 0 {
-                    ta.move_cursor(CursorMove::Jump(row as u16, i as u16));
-                    return;
-                }}
+            let mut found = None;
+            'fwd: for (r, line) in lines.iter().enumerate().skip(row) {
+                let start = if r == row { col } else { 0 };
+                for (i, ch) in line.chars().enumerate().skip(start) {
+                    if ch == here {
+                        depth += 1;
+                    } else if ch == close {
+                        depth -= 1;
+                        if depth == 0 {
+                            found = Some((r, i));
+                            break 'fwd;
+                        }
+                    }
+                }
             }
-        // close → search backward with depth counting to the matching open
+            found
         } else if let Some(&(open, _)) = pairs.iter().find(|&&(_, c)| c == here) {
+            // close → scan backward through the buffer
             let mut depth = 0i32;
-            for i in (0..=col).rev() {
-                if chars[i] == here { depth += 1; }
-                else if chars[i] == open { depth -= 1; if depth == 0 {
-                    ta.move_cursor(CursorMove::Jump(row as u16, i as u16));
-                    return;
-                }}
+            let mut found = None;
+            'back: for r in (0..=row).rev() {
+                let chars: Vec<char> = lines[r].chars().collect();
+                let last = if r == row { col } else { chars.len().saturating_sub(1) };
+                if chars.is_empty() {
+                    continue;
+                }
+                for i in (0..=last.min(chars.len() - 1)).rev() {
+                    if chars[i] == here {
+                        depth += 1;
+                    } else if chars[i] == open {
+                        depth -= 1;
+                        if depth == 0 {
+                            found = Some((r, i));
+                            break 'back;
+                        }
+                    }
+                }
             }
+            found
+        } else {
+            None
+        };
+        if let Some((r, c)) = target {
+            ta.move_cursor(CursorMove::Jump(r as u16, c as u16));
         }
     }
 
@@ -1230,6 +1579,7 @@ impl VimEngine {
         let effective_motion = if op == Operator::Change {
             match m {
                 Motion::WordForward => Motion::WordEnd,
+                Motion::WordForwardBig => Motion::WordEndBig, // cW = cE
                 other => other,
             }
         } else {
@@ -1360,6 +1710,19 @@ impl VimEngine {
                 self.indent_lines(outdent, count, ta);
                 ta.move_cursor(CursorMove::Jump(r0 as u16, 0));
             }
+            Operator::Lowercase | Operator::Uppercase | Operator::ToggleCase => {
+                // guu / gUU / g~~ / guj…: transform whole lines in place.
+                // Case operators never touch the register (vim).
+                for r in r0..=r1 {
+                    let transformed = Self::transform_case(&ta.lines()[r], op);
+                    ta.move_cursor(CursorMove::Jump(r as u16, 0));
+                    ta.start_selection();
+                    ta.move_cursor(CursorMove::End);
+                    ta.cut();
+                    ta.insert_str(&transformed);
+                }
+                ta.move_cursor(CursorMove::Jump(r0 as u16, 0));
+            }
         }
     }
 
@@ -1444,6 +1807,36 @@ impl VimEngine {
                 ta.move_cursor(CursorMove::Jump(start_row as u16, 0));
                 self.indent_lines(outdent, rows, ta);
             }
+            Operator::Lowercase | Operator::Uppercase | Operator::ToggleCase => {
+                // Replace the selection with its case-transformed text and
+                // leave the cursor at the start (vim). The cut only passes
+                // through the textarea yank buffer — the engine register is
+                // deliberately NOT filled (vim: case operators don't yank).
+                let start = ta.selection_range().map(|(s, _)| s);
+                ta.cut();
+                let transformed = Self::transform_case(&ta.yank_text(), op);
+                ta.insert_str(&transformed);
+                if let Some((r, c)) = start {
+                    ta.move_cursor(CursorMove::Jump(r as u16, c as u16));
+                }
+            }
+        }
+    }
+
+    fn transform_case(text: &str, op: Operator) -> String {
+        match op {
+            Operator::Lowercase => text.to_lowercase(),
+            Operator::Uppercase => text.to_uppercase(),
+            _ => text
+                .chars()
+                .flat_map(|c| {
+                    if c.is_uppercase() {
+                        c.to_lowercase().collect::<Vec<_>>()
+                    } else {
+                        c.to_uppercase().collect::<Vec<_>>()
+                    }
+                })
+                .collect(),
         }
     }
 
@@ -1548,18 +1941,68 @@ impl VimEngine {
             return Parsed::Pending;
         }
 
-        // gg prefix.
-        if c == 'g' {
-            if self.pending_g {
-                self.pending_g = false;
-                let cnt = self.take_total_count();
-                return match self.pending_operator.take() {
-                    Some(op) => Parsed::Cmd(Command::OperateMotion(op, Motion::FileStart, cnt)),
-                    None => Parsed::Cmd(Command::Move(Motion::FileStart, 1)),
-                };
-            }
+        // g prefix: gg (file start / 5gg = line 5), ge/gE/g_ via motion_for_g.
+        if c == 'g' && !self.pending_g {
             self.pending_g = true;
             return Parsed::Pending;
+        }
+        if self.pending_g {
+            self.pending_g = false;
+            if c == 'g' {
+                // A count is a line number (5gg → line 5), wherever it was
+                // typed relative to a pending operator (d5gg / 5dgg).
+                let target = self
+                    .pending_count
+                    .take()
+                    .or_else(|| self.pending_op_count.take());
+                let m = match target {
+                    Some(n) => Motion::GotoLine(n),
+                    None => Motion::FileStart,
+                };
+                return match self.pending_operator.take() {
+                    Some(op) => Parsed::Cmd(Command::OperateMotion(op, m, 1)),
+                    None => Parsed::Cmd(Command::Move(m, 1)),
+                };
+            }
+            if let Some(m) = Self::motion_for_g(c) {
+                return match self.pending_operator.take() {
+                    Some(op) => Parsed::Cmd(Command::OperateMotion(op, m, self.take_total_count())),
+                    None => Parsed::Cmd(Command::Move(m, self.take_count())),
+                };
+            }
+            if c == 'J' {
+                // gJ: join without the space/whitespace handling of J.
+                return Parsed::Cmd(Command::JoinLines {
+                    count: self.take_count().max(2) - 1,
+                    spaced: false,
+                });
+            }
+            // gu/gU/g~: case operators — enter pending like d/c/y.
+            if let Some(op) = match c {
+                'u' => Some(Operator::Lowercase),
+                'U' => Some(Operator::Uppercase),
+                '~' => Some(Operator::ToggleCase),
+                _ => None,
+            } {
+                self.pending_operator = Some(op);
+                self.pending_op_count = self.pending_count.take();
+                return Parsed::Pending;
+            }
+            // Unmapped g-sequence: fall through, the key parses on its own.
+        }
+
+        // guu / gUU / g~~: the doubled-key form runs the case op linewise.
+        if let Some(op) = self.pending_operator {
+            let doubles = matches!(
+                (op, c),
+                (Operator::Lowercase, 'u')
+                    | (Operator::Uppercase, 'U')
+                    | (Operator::ToggleCase, '~')
+            );
+            if doubles {
+                self.pending_operator = None;
+                return Parsed::Cmd(Command::OperateLine(op, self.take_total_count()));
+            }
         }
 
         // Operator entry (d/c/y set pending; doubled → linewise).
@@ -1661,6 +2104,21 @@ impl VimEngine {
 
         // Motion dispatch (count-aware; with a pending operator, forms a range).
         if let Some(m) = Self::motion_for_char(c) {
+            // 5G goes to line 5 — the count is a line number, not a repeat.
+            if c == 'G' {
+                let target = self
+                    .pending_count
+                    .take()
+                    .or_else(|| self.pending_op_count.take());
+                let m = match target {
+                    Some(n) => Motion::GotoLine(n),
+                    None => m,
+                };
+                return match self.pending_operator.take() {
+                    Some(op) => Parsed::Cmd(Command::OperateMotion(op, m, 1)),
+                    None => Parsed::Cmd(Command::Move(m, 1)),
+                };
+            }
             return match self.pending_operator.take() {
                 Some(op) => Parsed::Cmd(Command::OperateMotion(op, m, self.take_total_count())),
                 None => Parsed::Cmd(Command::Move(m, self.take_count())),
@@ -1679,7 +2137,11 @@ impl VimEngine {
             }
             's' => Command::SubstituteChar(self.take_count()),
             'S' => Command::SubstituteLine,
-            'J' => Command::JoinLines(self.take_count().max(2) - 1),
+            'R' => Command::EnterReplace,
+            'J' => Command::JoinLines {
+                count: self.take_count().max(2) - 1,
+                spaced: true,
+            },
             '~' => Command::ToggleCase(self.take_count()),
             'u' => Command::Undo(self.take_count()),
             '.' => Command::Repeat,
@@ -1913,12 +2375,38 @@ impl VimEngine {
         }
     }
 
-    /// Join the next line up onto the current one by removing the trailing newline.
-    // TODO(J): real vim inserts a space between the joined lines and strips the
-    //          next line's leading whitespace; this just deletes the newline.
-    fn join_line(ta: &mut TextArea<'static>) {
+    /// Join the next line onto the current one. `spaced` (vim `J`): the next
+    /// line's leading whitespace is stripped and a single space separates the
+    /// parts (none when the current line is empty or already ends in
+    /// whitespace), cursor left on the join point. Raw (`gJ`): the newline is
+    /// removed verbatim.
+    fn join_line(ta: &mut TextArea<'static>, spaced: bool) {
+        let (row, _) = super::cursor_tuple(ta);
+        let lines = ta.lines();
+        if row + 1 >= lines.len() {
+            return;
+        }
+        let cur_empty = lines[row].is_empty();
+        let cur_ends_ws = lines[row].chars().last().is_some_and(|c| c.is_whitespace());
         ta.move_cursor(CursorMove::End);
-        ta.delete_next_char(); // removes the newline, joining the next line up
+        ta.delete_next_char(); // removes the newline
+        if !spaced {
+            return;
+        }
+        let (r, c) = super::cursor_tuple(ta);
+        let strip = ta.lines()[r]
+            .chars()
+            .skip(c)
+            .take_while(|ch| ch.is_whitespace())
+            .count();
+        for _ in 0..strip {
+            ta.delete_next_char();
+        }
+        let rest_nonempty = ta.lines()[r].chars().count() > c;
+        if !cur_empty && !cur_ends_ws && rest_nonempty {
+            ta.insert_char(' ');
+            ta.move_cursor(CursorMove::Back);
+        }
     }
 
     /// Toggle the case of the char under the cursor and advance one char.
@@ -2850,6 +3338,439 @@ mod tests {
         e.handle_key(&key('$'), &mut t);   // last char ('o', col 6)
         e.handle_key(&key('p'), &mut t);   // append "bar" after it
         assert_eq!(t.lines(), &["foo foobar"]);
+    }
+
+    // ── Cheatsheet motions: g_/5G/5gg, ge/gE, WORD (W/E/B) ───────────────────
+
+    #[test]
+    fn g_underscore_jumps_to_last_non_blank() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["hi there   "]);
+        e.handle_key(&key('g'), &mut t);
+        e.handle_key(&key('_'), &mut t);
+        assert_eq!(super::super::cursor_tuple(&t), (0, 7)); // the final 'e'
+    }
+
+    #[test]
+    fn d_g_underscore_deletes_through_last_non_blank() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["foo bar  "]);
+        e.handle_key(&key('d'), &mut t);
+        e.handle_key(&key('g'), &mut t);
+        e.handle_key(&key('_'), &mut t);
+        assert_eq!(t.lines(), &["  "]); // inclusive of the 'r'
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn count_G_and_count_gg_go_to_line() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["1", "2", "3", "4", "5", "6"]);
+        e.handle_key(&key('5'), &mut t);
+        e.handle_key(&key('G'), &mut t);
+        assert_eq!(super::super::cursor_tuple(&t).0, 4); // line 5
+        e.handle_key(&key('2'), &mut t);
+        e.handle_key(&key('g'), &mut t);
+        e.handle_key(&key('g'), &mut t);
+        assert_eq!(super::super::cursor_tuple(&t).0, 1); // line 2
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn d_count_G_deletes_lines_through_target() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["one", "two", "three"]);
+        e.handle_key(&key('d'), &mut t);
+        e.handle_key(&key('2'), &mut t);
+        e.handle_key(&key('G'), &mut t); // delete lines 1..=2 (linewise)
+        assert_eq!(t.lines(), &["three"]);
+    }
+
+    #[test]
+    fn ge_jumps_to_previous_word_end() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["foo bar"]);
+        e.handle_key(&key('$'), &mut t); // on 'r' (col 6)
+        e.handle_key(&key('g'), &mut t);
+        e.handle_key(&key('e'), &mut t);
+        assert_eq!(super::super::cursor_tuple(&t), (0, 2)); // 'o' of foo
+    }
+
+    #[test]
+    fn ge_stops_at_class_change() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["foo.bar"]);
+        e.handle_key(&key('$'), &mut t); // 'r' (col 6)
+        e.handle_key(&key('g'), &mut t);
+        e.handle_key(&key('e'), &mut t);
+        assert_eq!(super::super::cursor_tuple(&t), (0, 3)); // the '.'
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn gE_ignores_punctuation_boundaries() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["aa bb.cc dd"]);
+        e.handle_key(&key('$'), &mut t); // last 'd' (col 10)
+        e.handle_key(&key('g'), &mut t);
+        e.handle_key(&key('E'), &mut t);
+        assert_eq!(super::super::cursor_tuple(&t), (0, 7)); // end of "bb.cc"
+    }
+
+    #[test]
+    fn ge_at_buffer_start_is_noop() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["foo"]);
+        e.handle_key(&key('g'), &mut t);
+        e.handle_key(&key('e'), &mut t);
+        assert_eq!(super::super::cursor_tuple(&t), (0, 0));
+    }
+
+    #[test]
+    fn dge_deletes_backward_inclusive_of_cursor() {
+        // vim: dge eats from the previous word end through the cursor char
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["abc def"]);
+        e.handle_key(&key('$'), &mut t); // on 'f'
+        e.handle_key(&key('d'), &mut t);
+        e.handle_key(&key('g'), &mut t);
+        e.handle_key(&key('e'), &mut t);
+        assert_eq!(t.lines(), &["ab"]);
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn W_treats_punctuated_run_as_one_word() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["foo.bar baz"]);
+        e.handle_key(&key('W'), &mut t);
+        assert_eq!(super::super::cursor_tuple(&t), (0, 8)); // 'b' of baz
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn E_jumps_to_end_of_WORD() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["foo.bar baz"]);
+        e.handle_key(&key('E'), &mut t);
+        assert_eq!(super::super::cursor_tuple(&t), (0, 6)); // 'r' of foo.bar
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn B_jumps_to_WORD_start() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["foo.bar baz"]);
+        e.handle_key(&key('W'), &mut t); // col 8
+        e.handle_key(&key('B'), &mut t);
+        assert_eq!(super::super::cursor_tuple(&t), (0, 0));
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn W_crosses_lines_and_stops_at_empty_line() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["foo", "", "bar"]);
+        e.handle_key(&key('W'), &mut t);
+        assert_eq!(super::super::cursor_tuple(&t), (1, 0)); // empty line is a stop
+        e.handle_key(&key('W'), &mut t);
+        assert_eq!(super::super::cursor_tuple(&t), (2, 0));
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn dW_deletes_whole_WORD() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["foo.bar baz"]);
+        e.handle_key(&key('d'), &mut t);
+        e.handle_key(&key('W'), &mut t);
+        assert_eq!(t.lines(), &["baz"]);
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn cW_acts_like_cE() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["foo.bar baz"]);
+        e.handle_key(&key('c'), &mut t);
+        e.handle_key(&key('W'), &mut t);
+        assert_eq!(*e.mode(), EditorMode::Insert);
+        assert_eq!(t.lines(), &[" baz"]); // trailing space preserved (cW = cE)
+    }
+
+    // ── Visual g~ (case toggle; bare ~ is auto-surround) ─────────────────────
+
+    #[test]
+    fn visual_g_tilde_toggles_case_of_selection() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["FooBar"]);
+        e.handle_key(&key('v'), &mut t);
+        e.handle_key(&key('e'), &mut t); // select all of "FooBar"
+        e.handle_key(&key('g'), &mut t);
+        e.handle_key(&key('~'), &mut t);
+        assert_eq!(t.lines(), &["fOObAR"]);
+        assert_eq!(*e.mode(), EditorMode::Normal);
+    }
+
+    #[test]
+    fn visual_bare_tilde_still_passes_through_for_surround() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["FooBar"]);
+        e.handle_key(&key('v'), &mut t);
+        e.handle_key(&key('e'), &mut t);
+        let out = e.handle_key(&key('~'), &mut t);
+        assert_eq!(out, VimKeyOutcome::PassThrough); // host auto-surround wraps
+        assert_eq!(*e.mode(), EditorMode::Normal);
+    }
+
+    // ── Case operators gu/gU/g~ ──────────────────────────────────────────────
+
+    #[test]
+    fn guw_lowercases_word() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["HELLO world"]);
+        e.handle_key(&key('g'), &mut t);
+        e.handle_key(&key('u'), &mut t);
+        e.handle_key(&key('w'), &mut t);
+        assert_eq!(t.lines(), &["hello world"]);
+        assert_eq!(super::super::cursor_tuple(&t), (0, 0)); // cursor at start
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn gU_iw_uppercases_inner_word() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["foo bar baz"]);
+        e.handle_key(&key('w'), &mut t); // onto "bar"
+        e.handle_key(&key('g'), &mut t);
+        e.handle_key(&key('U'), &mut t);
+        e.handle_key(&key('i'), &mut t);
+        e.handle_key(&key('w'), &mut t);
+        assert_eq!(t.lines(), &["foo BAR baz"]);
+    }
+
+    #[test]
+    fn g_tilde_toggles_case_to_word_end() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["FooBar baz"]);
+        e.handle_key(&key('g'), &mut t);
+        e.handle_key(&key('~'), &mut t);
+        e.handle_key(&key('e'), &mut t); // inclusive to end of "FooBar"
+        assert_eq!(t.lines(), &["fOObAR baz"]);
+    }
+
+    #[test]
+    fn guu_lowercases_whole_line() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["HELLO World", "NEXT"]);
+        e.handle_key(&key('g'), &mut t);
+        e.handle_key(&key('u'), &mut t);
+        e.handle_key(&key('u'), &mut t);
+        assert_eq!(t.lines(), &["hello world", "NEXT"]);
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn visual_U_uppercases_selection() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["hello"]);
+        e.handle_key(&key('v'), &mut t);
+        e.handle_key(&key('l'), &mut t);
+        e.handle_key(&key('l'), &mut t); // select "hel"
+        e.handle_key(&key('U'), &mut t);
+        assert_eq!(t.lines(), &["HELlo"]);
+        assert_eq!(*e.mode(), EditorMode::Normal);
+    }
+
+    #[test]
+    fn case_op_does_not_touch_register() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["keep CHANGE"]);
+        e.handle_key(&key('y'), &mut t);
+        e.handle_key(&key('e'), &mut t); // register = "keep"
+        e.handle_key(&key('w'), &mut t); // onto "CHANGE"
+        e.handle_key(&key('g'), &mut t);
+        e.handle_key(&key('u'), &mut t);
+        e.handle_key(&key('w'), &mut t); // lowercase it
+        assert_eq!(e.registers.read().unwrap().text, "keep"); // unchanged
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn dot_repeats_gU_word() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["one two"]);
+        e.handle_key(&key('g'), &mut t);
+        e.handle_key(&key('U'), &mut t);
+        e.handle_key(&key('e'), &mut t); // ONE
+        e.handle_key(&key('w'), &mut t); // onto "two"
+        e.handle_key(&key('.'), &mut t);
+        assert_eq!(t.lines(), &["ONE TWO"]);
+    }
+
+    // ── Replace mode (R) ─────────────────────────────────────────────────────
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn R_overwrites_chars() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["abcdef"]);
+        e.handle_key(&key('R'), &mut t);
+        assert_eq!(*e.mode(), EditorMode::Replace);
+        e.handle_key(&key('X'), &mut t);
+        e.handle_key(&key('Y'), &mut t);
+        e.handle_key(&esc(), &mut t);
+        assert_eq!(t.lines(), &["XYcdef"]); // overwrote, didn't insert
+        assert_eq!(*e.mode(), EditorMode::Normal);
+        assert_eq!(super::super::cursor_tuple(&t), (0, 1)); // stepped back onto 'Y'
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn R_appends_past_line_end() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["ab"]);
+        e.handle_key(&key('R'), &mut t);
+        for c in "XYZ".chars() {
+            e.handle_key(&key(c), &mut t);
+        }
+        e.handle_key(&esc(), &mut t);
+        assert_eq!(t.lines(), &["XYZ"]); // overwrote "ab", appended 'Z'
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn R_is_dot_repeatable() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["aaaa bbbb"]);
+        e.handle_key(&key('R'), &mut t);
+        e.handle_key(&key('X'), &mut t);
+        e.handle_key(&key('X'), &mut t);
+        e.handle_key(&esc(), &mut t); // "XXaa bbbb"
+        e.handle_key(&key('w'), &mut t); // onto "bbbb"
+        e.handle_key(&key('.'), &mut t); // overwrite "bb"
+        assert_eq!(t.lines(), &["XXaa XXbb"]);
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn aborted_R_keeps_dot_register() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["abc"]);
+        e.handle_key(&key('x'), &mut t); // real change
+        e.handle_key(&key('R'), &mut t);
+        e.handle_key(&esc(), &mut t); // typed nothing
+        e.handle_key(&key('.'), &mut t); // must repeat x
+        assert_eq!(t.lines(), &["c"]);
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn R_mode_does_not_pass_through() {
+        // Replace mode is engine-owned: chars must never reach the host's
+        // textarea path (no auto-surround under R).
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["ab"]);
+        e.handle_key(&key('R'), &mut t);
+        let out = e.handle_key(&key('('), &mut t);
+        assert_eq!(out, VimKeyOutcome::TextMutated); // consumed, not PassThrough
+        assert_eq!(t.lines()[0].chars().next(), Some('(')); // raw overwrite
+    }
+
+    // ── J / gJ join semantics ────────────────────────────────────────────────
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn J_joins_with_single_space_stripping_indent() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["foo", "   bar"]);
+        e.handle_key(&key('J'), &mut t);
+        assert_eq!(t.lines(), &["foo bar"]);
+        // cursor on the join-point space (vim)
+        assert_eq!(super::super::cursor_tuple(&t), (0, 3));
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn J_adds_no_extra_space_when_line_ends_in_whitespace() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["foo ", "bar"]);
+        e.handle_key(&key('J'), &mut t);
+        assert_eq!(t.lines(), &["foo bar"]);
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn gJ_joins_without_space() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["foo", "   bar"]);
+        e.handle_key(&key('g'), &mut t);
+        e.handle_key(&key('J'), &mut t);
+        assert_eq!(t.lines(), &["foo   bar"]); // verbatim, indent kept
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn three_J_joins_three_lines() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["a", "b", "c"]);
+        e.handle_key(&key('3'), &mut t);
+        e.handle_key(&key('J'), &mut t);
+        assert_eq!(t.lines(), &["a b c"]);
+    }
+
+    // ── Insert entries ───────────────────────────────────────────────────────
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn I_inserts_at_first_non_blank() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["    indented"]);
+        e.handle_key(&key('$'), &mut t); // away from the start
+        e.handle_key(&key('I'), &mut t);
+        assert_eq!(*e.mode(), EditorMode::Insert);
+        assert_eq!(super::super::cursor_tuple(&t), (0, 4)); // on 'i', not col 0
+    }
+
+    // ── % across lines ───────────────────────────────────────────────────────
+
+    #[test]
+    fn percent_matches_across_lines() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["foo (bar", "baz) qux"]);
+        e.handle_key(&key('f'), &mut t);
+        e.handle_key(&key('('), &mut t); // on '(' (0,4)
+        e.handle_key(&key('%'), &mut t);
+        assert_eq!(super::super::cursor_tuple(&t), (1, 3)); // ')' on line 2
+        e.handle_key(&key('%'), &mut t); // and back
+        assert_eq!(super::super::cursor_tuple(&t), (0, 4));
+    }
+
+    #[test]
+    fn percent_nested_across_lines() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["{a {b", "c}", "d}"]);
+        e.handle_key(&key('%'), &mut t); // outer '{' at (0,0)
+        assert_eq!(super::super::cursor_tuple(&t), (2, 1)); // outer '}' line 3
+    }
+
+    #[test]
+    fn d_percent_deletes_across_lines_inclusive() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["a(b", "c)d"]);
+        e.handle_key(&key('f'), &mut t);
+        e.handle_key(&key('('), &mut t); // on '('
+        e.handle_key(&key('d'), &mut t);
+        e.handle_key(&key('%'), &mut t); // delete '(' through ')' inclusive
+        assert_eq!(t.lines(), &["ad"]);
+    }
+
+    #[test]
+    fn percent_unmatched_across_buffer_is_noop() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["(a", "b"]);
+        e.handle_key(&key('%'), &mut t); // no closing paren anywhere
+        assert_eq!(super::super::cursor_tuple(&t), (0, 0));
     }
 
     // ── Review fixes: failed-op no-ops, dot-register protection ─────────────
