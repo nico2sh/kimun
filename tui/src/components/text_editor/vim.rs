@@ -287,6 +287,10 @@ impl VimEngine {
     pub fn reset_to_normal(&mut self) {
         self.mode = EditorMode::Normal;
         self.clear_pending();
+        // A capture from an interrupted Insert (e.g. note switch mid-`cw`)
+        // must not survive: execute() skips dot-recording while one is live,
+        // which would silently disable `.` for every later change.
+        self.insert_capture = None;
     }
 
     /// Reconcile mode after a host-driven selection change (mouse). A live
@@ -600,6 +604,11 @@ impl VimEngine {
         let Some(line) = ta.lines().get(row).cloned() else { return };
         let chars: Vec<char> = line.chars().collect();
         let Some((start, end)) = Self::object_range(&chars, col, obj) else { return };
+        if start >= end {
+            // Empty object (vi( on "()"): collapsing to one char would make
+            // the operator's inclusive +1 grab the closing delimiter. No-op.
+            return;
+        }
         ta.cancel_selection();
         let end_incl = end.saturating_sub(1).max(start);
         ta.move_cursor(CursorMove::Jump(row as u16, start as u16));
@@ -615,10 +624,26 @@ impl VimEngine {
             if let Some(cap) = self.insert_capture.take() {
                 let end = super::cursor_tuple(ta);
                 let inserted = Self::text_between(ta.lines(), cap.start, end);
-                self.last_change = Some(Change {
-                    command: cap.command,
-                    inserted: Some(inserted),
-                });
+                // An aborted plain insert (i/a/I/A then Esc, nothing typed)
+                // is not a change in vim — don't clobber the dot register.
+                // o/O still record (opening the line IS the change), as do
+                // Change-family commands (cw/s/cc — the cut happened).
+                let aborted_plain = inserted.is_empty()
+                    && matches!(
+                        cap.command,
+                        Command::EnterInsert(
+                            InsertEntry::Here
+                                | InsertEntry::After
+                                | InsertEntry::LineStart
+                                | InsertEntry::LineEnd
+                        )
+                    );
+                if !aborted_plain {
+                    self.last_change = Some(Change {
+                        command: cap.command,
+                        inserted: Some(inserted),
+                    });
+                }
             }
             if super::cursor_tuple(ta).1 > 0 {
                 ta.move_cursor(CursorMove::Back);
@@ -745,16 +770,22 @@ impl VimEngine {
                 VimKeyOutcome::CursorOnly
             }
             Command::OperateMotion(op, m, n) => {
-                self.apply_operator_motion(op, m, n, inserted, ta);
-                self.outcome_for(op)
+                if self.apply_operator_motion(op, m, n, inserted, ta) {
+                    self.outcome_for(op)
+                } else {
+                    VimKeyOutcome::NoOp
+                }
             }
             Command::OperateLine(op, n) => {
                 self.apply_operator_linewise(op, n, inserted, ta);
                 self.outcome_for(op)
             }
             Command::OperateObject(op, obj) => {
-                self.apply_operator_object(op, obj, inserted, ta);
-                self.outcome_for(op)
+                if self.apply_operator_object(op, obj, inserted, ta) {
+                    self.outcome_for(op)
+                } else {
+                    VimKeyOutcome::NoOp
+                }
             }
             Command::OperateToLineEnd(op) => {
                 self.apply_operator_to_line_end(op, inserted, ta);
@@ -765,14 +796,23 @@ impl VimEngine {
                 VimKeyOutcome::TextMutated
             }
             Command::DeleteChar { forward, count } => {
-                self.delete_chars(forward, count, ta);
-                VimKeyOutcome::TextMutated
+                if self.delete_chars(forward, count, ta) {
+                    VimKeyOutcome::TextMutated
+                } else {
+                    VimKeyOutcome::NoOp
+                }
             }
             Command::ReplaceChar(c) => self.replace_char(c, ta),
             Command::SubstituteChar(n) => {
-                self.delete_chars(true, n, ta);
+                // vim `s` enters Insert even on an empty line; the delete's
+                // success only matters for the outcome's mutation signal.
+                let deleted = self.delete_chars(true, n, ta);
                 self.finish_insert_entry(cmd, inserted, ta);
-                VimKeyOutcome::TextMutated
+                if deleted || inserted.is_some() {
+                    VimKeyOutcome::TextMutated
+                } else {
+                    VimKeyOutcome::CursorOnly
+                }
             }
             Command::SubstituteLine => {
                 // Linewise register fill (vim: S puts the whole line in the
@@ -801,8 +841,11 @@ impl VimEngine {
                 VimKeyOutcome::TextMutated
             }
             Command::Paste { after, count } => {
-                self.paste(after, count, ta);
-                VimKeyOutcome::TextMutated
+                if self.paste(after, count, ta) {
+                    VimKeyOutcome::TextMutated
+                } else {
+                    VimKeyOutcome::NoOp
+                }
             }
             Command::Undo(n) => {
                 for _ in 0..n {
@@ -1117,6 +1160,8 @@ impl VimEngine {
     /// The range's shape is the motion's `SpanKind`: linewise motions (j/k,
     /// gg/G) operate on whole lines, inclusive motions (e, f/t, %, $) take
     /// the char they land on, exclusive motions stop short of it.
+    /// Returns `false` when the motion failed and the whole operation was a
+    /// vim no-op (nothing deleted, no Insert entry, register untouched).
     fn apply_operator_motion(
         &mut self,
         op: Operator,
@@ -1124,7 +1169,7 @@ impl VimEngine {
         count: usize,
         inserted: Option<&str>,
         ta: &mut TextArea<'static>,
-    ) {
+    ) -> bool {
         // Vim `cw`/`cW` semantics: change + word-forward uses word-end (not
         // word-start of the next word), so the trailing space is preserved.
         // This is vim's well-known `cw = ce` behaviour. Other operators (dw, yw)
@@ -1141,19 +1186,32 @@ impl VimEngine {
         let target = self.resolve_motion(effective_motion, count, ta);
         match Self::kind_of(effective_motion) {
             SpanKind::Linewise => {
+                // j/k must actually traverse `count` rows; at a buffer edge
+                // the motion fails and vim no-ops the whole operation (dj on
+                // the last line deletes nothing). gg/G always resolve —
+                // operating on the current line is valid for them.
+                if matches!(effective_motion, Motion::Up | Motion::Down)
+                    && origin.0.abs_diff(target.0) < count
+                {
+                    return false;
+                }
                 let top = origin.0.min(target.0);
                 let lines = origin.0.abs_diff(target.0) + 1;
                 ta.move_cursor(CursorMove::Jump(top as u16, 0));
                 self.apply_operator_linewise(op, lines, inserted, ta);
+                true
             }
             kind => {
                 if target == origin
                     && (kind == SpanKind::Exclusive
-                        || matches!(effective_motion, Motion::FindChar { .. }))
+                        || matches!(
+                            effective_motion,
+                            Motion::FindChar { .. } | Motion::MatchingPair
+                        ))
                 {
-                    // Failed find or zero-width exclusive range: vim no-op —
-                    // no deletion, no Insert entry, register untouched.
-                    return;
+                    // Failed find/pair-match or zero-width exclusive range:
+                    // vim no-op — nothing deleted, no Insert, register kept.
+                    return false;
                 }
                 let (start, end) = if target < origin {
                     (target, origin)
@@ -1170,6 +1228,7 @@ impl VimEngine {
                 } else {
                     self.apply_operator_on_selection(op, RegisterKind::Charwise, ta);
                 }
+                true
             }
         }
     }
@@ -1395,9 +1454,10 @@ impl VimEngine {
 
     // ── Plan 2 Task 5: paste p/P ─────────────────────────────────────────────
 
-    fn paste(&mut self, after: bool, count: usize, ta: &mut TextArea<'static>) {
+    /// Returns `false` when the register is empty (nothing pasted).
+    fn paste(&mut self, after: bool, count: usize, ta: &mut TextArea<'static>) -> bool {
         let Some(reg) = self.registers.read().cloned() else {
-            return;
+            return false;
         };
         let text = reg.text;
         match reg.kind {
@@ -1429,6 +1489,7 @@ impl VimEngine {
                 }
             }
         }
+        true
     }
 
     // ── parse_normal_char: pure Normal-mode key parser ───────────────────────
@@ -1626,17 +1687,22 @@ impl VimEngine {
     }
 
     /// Apply `op` over the text object `obj` at the current cursor position.
+    /// Returns `false` when no object exists at the cursor (vim no-op).
     fn apply_operator_object(
         &mut self,
         op: Operator,
         obj: TextObject,
         inserted: Option<&str>,
         ta: &mut TextArea<'static>,
-    ) {
+    ) -> bool {
         let (row, col) = super::cursor_tuple(ta);
-        let Some(line) = ta.lines().get(row).cloned() else { return };
+        let Some(line) = ta.lines().get(row).cloned() else {
+            return false;
+        };
         let chars: Vec<char> = line.chars().collect();
-        let Some((start, end)) = Self::object_range(&chars, col, obj) else { return };
+        let Some((start, end)) = Self::object_range(&chars, col, obj) else {
+            return false;
+        };
         // Select [start, end) on this row via Jump, then apply the operator.
         ta.move_cursor(CursorMove::Jump(row as u16, start as u16));
         ta.start_selection();
@@ -1648,6 +1714,7 @@ impl VimEngine {
         } else {
             self.apply_operator_on_selection(op, RegisterKind::Charwise, ta);
         }
+        true
     }
 
     /// Find the innermost enclosing pair `(open, close)` around `col`.
@@ -1764,10 +1831,11 @@ impl VimEngine {
     /// `x`; otherwise before, vim `X`), clamped to the current line — vim's
     /// x/X never join lines — filling the unnamed register with the deleted
     /// text (vim rule: every delete fills the register; `xp` swaps chars).
-    fn delete_chars(&mut self, forward: bool, count: usize, ta: &mut TextArea<'static>) {
+    /// Returns `false` when nothing was deleted (empty line, X at col 0).
+    fn delete_chars(&mut self, forward: bool, count: usize, ta: &mut TextArea<'static>) -> bool {
         let (row, col) = super::cursor_tuple(ta);
         let Some(line) = ta.lines().get(row).cloned() else {
-            return;
+            return false;
         };
         let line_len = line.chars().count();
         let (n, start) = if forward {
@@ -1785,6 +1853,7 @@ impl VimEngine {
                 ta.delete_char();
             }
         }
+        n > 0
     }
 
     /// Replace the char under the cursor with `c`, stay in Normal mode.
@@ -2735,6 +2804,117 @@ mod tests {
         e.handle_key(&key('$'), &mut t);   // last char ('o', col 6)
         e.handle_key(&key('p'), &mut t);   // append "bar" after it
         assert_eq!(t.lines(), &["foo foobar"]);
+    }
+
+    // ── Review fixes: failed-op no-ops, dot-register protection ─────────────
+
+    #[test]
+    fn reset_to_normal_clears_insert_capture() {
+        // regression: stale capture from interrupted cw silently disabled
+        // dot-recording for every later change
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["foo bar"]);
+        e.handle_key(&key('c'), &mut t);
+        e.handle_key(&key('w'), &mut t); // Insert, capture live
+        e.reset_to_normal(); // note switch mid-insert
+        e.handle_key(&key('x'), &mut t); // must record (deletes ' ')
+        e.handle_key(&key('.'), &mut t); // must repeat x (deletes 'b')
+        assert_eq!(t.lines(), &["ar"]); // cw left " bar"; x then . removed 2 chars
+    }
+
+    #[test]
+    fn dj_on_last_line_is_noop() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["only line"]);
+        e.handle_key(&key('y'), &mut t);
+        e.handle_key(&key('y'), &mut t); // register = line
+        e.handle_key(&key('d'), &mut t);
+        e.handle_key(&key('j'), &mut t); // motion fails → whole op no-op
+        assert_eq!(t.lines(), &["only line"]);
+        assert_eq!(e.registers.read().unwrap().text, "only line\n"); // register kept
+    }
+
+    #[test]
+    fn dk_on_first_line_is_noop() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["one", "two"]);
+        e.handle_key(&key('d'), &mut t);
+        e.handle_key(&key('k'), &mut t);
+        assert_eq!(t.lines(), &["one", "two"]);
+    }
+
+    #[test]
+    fn failed_find_op_does_not_clobber_dot() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["abcdef"]);
+        e.handle_key(&key('x'), &mut t); // real change: delete 'a'
+        e.handle_key(&key('d'), &mut t);
+        e.handle_key(&key('f'), &mut t);
+        e.handle_key(&key('z'), &mut t); // failed find — must not record
+        e.handle_key(&key('.'), &mut t); // repeats x, not the failed dfz
+        assert_eq!(t.lines(), &["cdef"]);
+    }
+
+    #[test]
+    fn noop_x_does_not_clobber_dot() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["one two three", ""]);
+        e.handle_key(&key('d'), &mut t);
+        e.handle_key(&key('w'), &mut t); // delete "one "
+        e.handle_key(&key('j'), &mut t); // empty line
+        let out = e.handle_key(&key('x'), &mut t); // no-op
+        assert_eq!(out, VimKeyOutcome::NoOp); // host must not bump content
+        e.handle_key(&key('k'), &mut t);
+        e.handle_key(&key('.'), &mut t); // repeats dw, not the no-op x
+        assert_eq!(t.lines(), &["three", ""]);
+    }
+
+    #[test]
+    fn d_percent_without_pair_is_noop() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["abc"]);
+        e.handle_key(&key('d'), &mut t);
+        e.handle_key(&key('%'), &mut t); // no bracket under cursor
+        assert_eq!(t.lines(), &["abc"]);
+        e.handle_key(&key('c'), &mut t);
+        e.handle_key(&key('%'), &mut t);
+        assert_eq!(*e.mode(), EditorMode::Normal); // failed c% must not enter Insert
+    }
+
+    #[test]
+    fn visual_inner_empty_pair_is_noop() {
+        // regression: vi( on "()" widened onto the ')' and deleted it
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["foo()bar"]);
+        e.handle_key(&key('f'), &mut t);
+        e.handle_key(&key('('), &mut t); // cursor on '('
+        e.handle_key(&key('v'), &mut t);
+        e.handle_key(&key('i'), &mut t);
+        e.handle_key(&key('('), &mut t); // empty object: selection unchanged
+        e.handle_key(&esc(), &mut t);
+        assert_eq!(t.lines(), &["foo()bar"]);
+    }
+
+    #[test]
+    fn aborted_insert_keeps_dot_register() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["abc"]);
+        e.handle_key(&key('x'), &mut t); // real change
+        e.handle_key(&key('i'), &mut t); // changed mind
+        e.handle_key(&esc(), &mut t); // nothing typed — not a change
+        e.handle_key(&key('.'), &mut t); // must repeat x
+        assert_eq!(t.lines(), &["c"]);
+    }
+
+    #[test]
+    fn o_then_esc_is_still_dot_repeatable() {
+        // vim: o<Esc> IS a change (the opened line); `.` opens another
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["x"]);
+        e.handle_key(&key('o'), &mut t);
+        e.handle_key(&esc(), &mut t);
+        e.handle_key(&key('.'), &mut t);
+        assert_eq!(t.lines().len(), 3);
     }
 
     // ── Visual mode: shared motion/object machinery ──────────────────────────
