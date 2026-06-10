@@ -173,6 +173,15 @@ impl VimEngine {
     /// The in-progress command sequence, for the footer hint (e.g. "2d", "f").
     /// Returns `None` when nothing is pending (no display needed).
     pub fn pending_hint(&self) -> Option<String> {
+        // Fast path: nothing pending — skip all allocation (common idle-frame case).
+        if self.pending_count.is_none()
+            && self.pending_operator.is_none()
+            && !self.pending_g
+            && !self.pending_replace
+            && self.pending_find.is_none()
+        {
+            return None;
+        }
         let mut s = String::new();
         if let Some(n) = self.pending_count {
             s.push_str(&n.to_string());
@@ -359,24 +368,7 @@ impl VimEngine {
 
         // Motions extend the selection.
         let count = self.pending_count.unwrap_or(1);
-        let motion = match c {
-            'h' => Some(Motion::Left),
-            'l' => Some(Motion::Right),
-            'k' => Some(Motion::Up),
-            'j' => Some(Motion::Down),
-            'w' | 'W' => Some(Motion::WordForward),
-            'b' | 'B' => Some(Motion::WordBack),
-            'e' | 'E' => Some(Motion::WordEnd),
-            '0' => Some(Motion::LineStart),
-            '^' => Some(Motion::FirstNonBlank),
-            '$' => Some(Motion::LineEnd),
-            'G' => Some(Motion::FileEnd),
-            '{' => Some(Motion::ParagraphBack),
-            '}' => Some(Motion::ParagraphForward),
-            '%' => Some(Motion::MatchingPair),
-            _ => None,
-        };
-        if let Some(m) = motion {
+        if let Some(m) = Self::motion_for_char(c) {
             self.apply_motion(m, count, ta);
             self.clear_pending();
             return VimKeyOutcome::CursorOnly;
@@ -494,6 +486,27 @@ impl VimEngine {
         }
     }
 
+    /// Map a Normal/Visual motion key to its Motion. Shared by normal_char and handle_visual.
+    fn motion_for_char(c: char) -> Option<Motion> {
+        match c {
+            'h' => Some(Motion::Left),
+            'l' => Some(Motion::Right),
+            'k' => Some(Motion::Up),
+            'j' => Some(Motion::Down),
+            'w' | 'W' => Some(Motion::WordForward),
+            'b' | 'B' => Some(Motion::WordBack),
+            'e' | 'E' => Some(Motion::WordEnd),
+            '0' => Some(Motion::LineStart),
+            '^' => Some(Motion::FirstNonBlank),
+            '$' => Some(Motion::LineEnd),
+            'G' => Some(Motion::FileEnd),
+            '{' => Some(Motion::ParagraphBack),
+            '}' => Some(Motion::ParagraphForward),
+            '%' => Some(Motion::MatchingPair),
+            _ => None,
+        }
+    }
+
     // ── Plan 2 Task 2: count accumulation helpers ────────────────────────────
 
     fn take_count(&mut self) -> usize {
@@ -551,13 +564,10 @@ impl VimEngine {
     }
 
     fn first_non_blank(ta: &mut TextArea<'static>) {
-        ta.move_cursor(CursorMove::Head);
         let (row, _) = super::cursor_tuple(ta);
         if let Some(line) = ta.lines().get(row) {
             let n = line.chars().take_while(|c| c.is_whitespace()).count();
-            for _ in 0..n {
-                ta.move_cursor(CursorMove::Forward);
-            }
+            ta.move_cursor(CursorMove::Jump(row as u16, n as u16));
         }
     }
 
@@ -577,7 +587,7 @@ impl VimEngine {
             for i in col..chars.len() {
                 if chars[i] == here { depth += 1; }
                 else if chars[i] == close { depth -= 1; if depth == 0 {
-                    for _ in col..i { ta.move_cursor(CursorMove::Forward); }
+                    ta.move_cursor(CursorMove::Jump(row as u16, i as u16));
                     return;
                 }}
             }
@@ -587,7 +597,7 @@ impl VimEngine {
             for i in (0..=col).rev() {
                 if chars[i] == here { depth += 1; }
                 else if chars[i] == open { depth -= 1; if depth == 0 {
-                    for _ in i..col { ta.move_cursor(CursorMove::Back); }
+                    ta.move_cursor(CursorMove::Jump(row as u16, i as u16));
                     return;
                 }}
             }
@@ -605,16 +615,12 @@ impl VimEngine {
             let start = col + 1;
             if let Some(pos) = (start..chars.len()).find(|&i| chars[i] == ch) {
                 let target = if till { pos.saturating_sub(1) } else { pos };
-                for _ in col..target {
-                    ta.move_cursor(CursorMove::Forward);
-                }
+                ta.move_cursor(CursorMove::Jump(row as u16, target as u16));
             }
         } else {
             if let Some(pos) = (0..col).rev().find(|&i| chars[i] == ch) {
                 let target = if till { pos + 1 } else { pos };
-                for _ in target..col {
-                    ta.move_cursor(CursorMove::Back);
-                }
+                ta.move_cursor(CursorMove::Jump(row as u16, target as u16));
             }
         }
     }
@@ -1128,24 +1134,7 @@ impl VimEngine {
 
         // Task 3: motion dispatch (count-aware)
         let count = self.pending_count.unwrap_or(1);
-        let motion = match c {
-            'h' => Some(Motion::Left),
-            'l' => Some(Motion::Right),
-            'k' => Some(Motion::Up),
-            'j' => Some(Motion::Down),
-            'w' | 'W' => Some(Motion::WordForward),
-            'b' | 'B' => Some(Motion::WordBack),
-            'e' | 'E' => Some(Motion::WordEnd),
-            '0' => Some(Motion::LineStart),
-            '^' => Some(Motion::FirstNonBlank),
-            '$' => Some(Motion::LineEnd),
-            'G' => Some(Motion::FileEnd),
-            '{' => Some(Motion::ParagraphBack),
-            '}' => Some(Motion::ParagraphForward),
-            '%' => Some(Motion::MatchingPair),
-            _ => None,
-        };
-        if let Some(m) = motion {
+        if let Some(m) = Self::motion_for_char(c) {
             // If an operator is pending, this motion forms a range (Task 4).
             if let Some(op) = self.pending_operator.take() {
                 self.apply_operator_motion(op, m, count, ta);

@@ -2220,10 +2220,10 @@ impl Component for TextEditorComponent {
         let bar_focused = self.search.is_some() && focused;
         let editor_focused = focused && !bar_focused;
         use self::view::CursorShape;
-        let cursor_shape = match self.backend.mode_label().as_deref() {
-            Some(m) if m != "INSERT" => Some(CursorShape::Block),
-            Some(_) => Some(CursorShape::Bar), // INSERT
-            None => None,                       // Direct textarea — leave terminal default
+        let cursor_shape = match self.backend.modal_is_insert() {
+            None => None,                // Direct textarea — leave terminal default
+            Some(true) => Some(CursorShape::Bar),
+            Some(false) => Some(CursorShape::Block),
         };
         self.view.render(f, editor_rect, theme, editor_focused, cursor_shape);
 
