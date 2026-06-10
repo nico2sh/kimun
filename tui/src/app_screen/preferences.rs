@@ -468,6 +468,11 @@ impl AppScreen for PreferencesScreen {
                             self.overlay = Overlay::None;
                             self.do_save(tx);
                         } else {
+                            // Discard: section edits were written live into
+                            // the shared settings (theme preview, autosave,
+                            // editor_backend) — roll them back so a later
+                            // save_to_disk can't persist discarded choices.
+                            *self.settings.write().unwrap() = self.initial_settings.clone();
                             tx.send(AppEvent::ClosePreferences).ok();
                         }
                     }

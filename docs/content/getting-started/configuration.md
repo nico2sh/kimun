@@ -159,7 +159,7 @@ For modal editing without any external dependency, use the built-in vim emulatio
 editor_backend = "vim"
 ```
 
-It layers vim's Normal/Insert/Visual modes over the built-in editor: motions, counts, operators (`d`/`c`/`y`, text objects like `diw` and `ci"`), registers, dot-repeat, `f`/`t` finds, and more — while keeping every textarea feature (autocomplete, auto-surround, smart-Enter, the styled markdown view) in Insert mode.
+It layers vim's Normal/Insert/Replace/Visual modes over the built-in editor: motions, counts, operators (`d`/`c`/`y`, case ops, text objects like `diw` and `ci"`), registers, dot-repeat, `f`/`t` finds, and more — while keeping every textarea feature (autocomplete, auto-surround, smart-Enter, the styled markdown view) in Insert mode. The full command table lives in [Vim Mode](@/using-kimun/vim-mode.md).
 
 Or switch to [Neovim](https://neovim.io/) to get modal editing, custom keymaps, plugins, and whatever else your `init.lua` provides:
 
