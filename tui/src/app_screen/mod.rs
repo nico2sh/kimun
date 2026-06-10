@@ -22,8 +22,12 @@ pub enum ScreenKind {
     Preferences,
 }
 
-#[async_trait]
-pub trait AppScreen: Send {
+// `?Send`: screens own a `ratatui-textarea` `TextArea`, whose `Block` field is
+// non-`Send` as of `ratatui-widgets 0.3.1` (its shadow effect holds an
+// `Arc<dyn CellEffect>`). The screen is only ever driven on the main `block_on`
+// future, never spawned, so dropping the `Send` bound is sound.
+#[async_trait(?Send)]
+pub trait AppScreen {
     /// Called once when the screen mounts. Send `AppEvent`s through `tx` to
     /// trigger navigation (e.g. `StartScreen` checking whether a vault exists).
     async fn on_enter(&mut self, _tx: &AppTx) {}

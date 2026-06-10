@@ -333,7 +333,7 @@ impl PreferencesScreen {
 
 // ── AppScreen impl ────────────────────────────────────────────────────────────
 
-#[async_trait]
+#[async_trait(?Send)]
 impl AppScreen for PreferencesScreen {
     fn get_kind(&self) -> ScreenKind {
         ScreenKind::Preferences

@@ -1,0 +1,35 @@
+# Fresh-deps workflow: re-resolve all dependencies to their newest semver-matching
+# versions and build, mirroring what `cargo install` does (it ignores Cargo.lock).
+# Catches upstream breakage early — in CI, not in users' installs.
+on:
+  schedule:
+    # Mondays 06:00 UTC
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+name: fresh-deps
+
+concurrency:
+  group: fresh-deps-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fresh-deps:
+    name: Build against newest deps
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Update dependencies to newest semver-matching versions
+        run: cargo update
+
+      - name: Build
+        run: cargo build --workspace --all-targets
