@@ -2000,6 +2000,13 @@ impl Component for TextEditorComponent {
                         HandleKeyOutcome::NotHandled => {}
                     }
                 }
+                // Find bar intercepts all keys while active. Must run before the
+                // vim engine, which would otherwise consume keys in Normal mode
+                // (the textarea backend also intercepts inside handle_textarea_key,
+                // but the vim Normal-mode path never reaches that).
+                if self.search.is_some() && self.handle_search_key(key) {
+                    return EventState::Consumed;
+                }
                 // Vim interpreter: Normal/Visual consume the key here; Insert
                 // mode returns PassThrough and falls into the direct path below
                 // so typing, autocomplete, auto-surround and smart-Enter all
@@ -3575,6 +3582,59 @@ mod tests {
             vim_mode(&editor),
             EditorMode::Visual,
             "real drag selection must enter Visual mode"
+        );
+    }
+
+    /// Regression: with the find bar open in vim Normal mode, typed keys must
+    /// go into the find query, NOT be processed by the vim engine (which would
+    /// treat 'l'/'o' as motions and move the cursor).
+    #[test]
+    fn vim_find_bar_captures_typing_not_cursor() {
+        let mut editor = make_vim_editor();
+        editor.set_text("hello world\nsecond line".to_string());
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        // Open the find bar (same path as the '/' key: OpenSearch → open_or_advance_search).
+        editor.open_or_advance_search();
+        assert!(editor.search.is_some(), "find bar must be open");
+
+        // Type "lo" — should go into the find query, not be processed as vim motions.
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('l'), KeyModifiers::NONE)),
+            &tx,
+        );
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('o'), KeyModifiers::NONE)),
+            &tx,
+        );
+
+        // Find query must capture "lo". This proves keys went to the find bar
+        // and not the vim engine (which would treat 'l' as a rightward motion
+        // and 'o' as Open-line-below, mutating the buffer).
+        let q = editor
+            .search
+            .as_ref()
+            .map(|s| s.input.value().to_string())
+            .unwrap_or_default();
+        assert_eq!(q, "lo", "find query must capture typed characters");
+
+        // Buffer must be unchanged — 'o' in vim Normal mode inserts a new line,
+        // so a mutated buffer means the key escaped to the vim engine.
+        assert_eq!(
+            editor.get_text(),
+            "hello world\nsecond line",
+            "buffer must not be modified while find bar is open"
+        );
+
+        // The cursor is allowed to move to the first search match (that is
+        // correct search behaviour — refresh_search_pattern jumps to the hit).
+        // What must NOT happen is a vim motion: 'l' in Normal mode would leave
+        // the cursor at col 1 with no query update; here it must be at the
+        // "lo" match col instead (3 — the second 'l' in "hello").
+        assert_eq!(
+            editor.cursor_pos().1,
+            3,
+            "cursor must jump to the search match (col 3), not to a vim motion position"
         );
     }
 }
