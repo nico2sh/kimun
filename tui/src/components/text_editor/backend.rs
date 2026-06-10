@@ -195,6 +195,15 @@ impl BackendState {
             if e.space_leads())
     }
 
+    /// True when the active backend is the vim interpreter in charwise Visual
+    /// mode (not VisualLine). Used by the highlight path to extend the end col
+    /// by one so the char under the cursor is visually included.
+    pub fn vim_is_charwise_visual(&self) -> bool {
+        matches!(self,
+            BackendState::Textarea(TextareaBackend { input: InputInterpreter::Vim(e), .. })
+            if *e.mode() == EditorMode::Visual)
+    }
+
     /// Reset the vim interpreter to Normal mode (called when a fresh note is
     /// loaded). No-op for Direct / Nvim backends.
     pub fn vim_reset_to_normal(&mut self) {
