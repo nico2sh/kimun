@@ -219,6 +219,19 @@ impl BackendState {
         }
     }
 
+    /// The in-progress vim command sequence (count/operator/find/g), for the
+    /// footer hint. Returns `None` for Direct / Nvim backends, or when the
+    /// vim interpreter has no pending state.
+    pub fn vim_pending_hint(&self) -> Option<String> {
+        match self {
+            BackendState::Textarea(TextareaBackend {
+                input: InputInterpreter::Vim(e),
+                ..
+            }) => e.pending_hint(),
+            _ => None,
+        }
+    }
+
     /// The footer modal-mode label, when the backend has one (nvim, or the
     /// vim interpreter). `None` for the plain Direct textarea.
     pub fn mode_label(&self) -> Option<String> {

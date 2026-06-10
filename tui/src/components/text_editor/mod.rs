@@ -2266,7 +2266,13 @@ impl Component for TextEditorComponent {
         use crate::keys::action_shortcuts::ActionShortcuts;
 
         // Prepend the modal-mode label (nvim or vim) as the first "hint".
-        if let Some(label) = self.backend.mode_label() {
+        // When the vim interpreter has a pending command sequence (e.g. "2d",
+        // "f", ">"), append it to the label so the user can see what they have
+        // typed so far.
+        if let Some(mut label) = self.backend.mode_label() {
+            if let Some(p) = self.backend.vim_pending_hint() {
+                label = format!("{label}  {p}");
+            }
             let mut hints = vec![(String::new(), label)];
             hints.extend(
                 [
