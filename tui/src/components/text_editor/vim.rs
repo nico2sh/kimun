@@ -121,10 +121,15 @@ pub struct VimEngine {
     pending_object_kind: Option<bool>, // Some(around): saw `i`/`a` after operator
     last_find: Option<(char, bool, bool)>, // (ch, till, forward) for ; and ,
     register: RegisterKind,
-    #[allow(dead_code)] // Plan 2 Task 11
+    /// The last mutating command + captured insert delta, for `.` (adr/0011).
     last_change: Option<Change>,
-    #[allow(dead_code)] // Plan 2 Task 11
+    /// While in Insert via a vim command, the text typed is accumulated here
+    /// (resulting delta) so `.` can replay it.
     insert_capture: Option<InsertCapture>,
+    /// Set around `replay` calls so `apply_operator_on_selection`'s Change arm
+    /// doesn't re-enter Insert mode during dot-repeat (the replay branch
+    /// inserts the text directly instead).
+    replaying: bool,
 }
 
 impl Default for VimEngine {
@@ -141,6 +146,7 @@ impl Default for VimEngine {
             register: RegisterKind::Charwise,
             last_change: None,
             insert_capture: None,
+            replaying: false,
         }
     }
 }
@@ -298,6 +304,14 @@ impl VimEngine {
     fn handle_insert(&mut self, key: &KeyEvent, ta: &mut TextArea<'static>) -> VimKeyOutcome {
         if key.code == KeyCode::Esc {
             self.mode = EditorMode::Normal;
+            // Task 11: fold the insert capture into last_change BEFORE the
+            // cursor step-back so the captured text reflects the final buffer.
+            if let Some(cap) = self.insert_capture.take() {
+                self.last_change = Some(Change {
+                    command: cap.command,
+                    inserted: Some(cap.text),
+                });
+            }
             if super::cursor_tuple(ta).1 > 0 {
                 ta.move_cursor(CursorMove::Back);
             }
@@ -329,7 +343,17 @@ impl VimEngine {
                     if !pf.till && pf.forward {
                         ta.move_cursor(CursorMove::Forward);
                     }
-                    self.apply_operator_on_selection(op, RegisterKind::Charwise, ta);
+                    // Task 11: for Change with find, handle directly for proper capture.
+                    if op == Operator::Change && !self.replaying {
+                        ta.cut();
+                        self.register = RegisterKind::Charwise;
+                        self.enter_insert_capture(Command::OperateMotion(op, motion, cnt));
+                    } else {
+                        self.apply_operator_on_selection(op, RegisterKind::Charwise, ta);
+                        if op != Operator::Change {
+                            self.record(Command::OperateMotion(op, motion, cnt));
+                        }
+                    }
                     self.clear_pending();
                     return self.outcome_for(op);
                 }
@@ -522,8 +546,33 @@ impl VimEngine {
     ) {
         let start = super::cursor_tuple(ta);
         ta.start_selection();
-        self.apply_motion(m, count, ta);
-        self.apply_operator_on_selection(op, RegisterKind::Charwise, ta);
+        // Vim `cw`/`cW` semantics: change + word-forward uses word-end (not
+        // word-start of the next word), so the trailing space is preserved.
+        // This is vim's well-known `cw = ce` behaviour. Other operators (dw, yw)
+        // use the motion as-is (including the trailing space).
+        let effective_motion = if op == Operator::Change {
+            match m {
+                Motion::WordForward => Motion::WordEnd,
+                other => other,
+            }
+        } else {
+            m
+        };
+        self.apply_motion(effective_motion, count, ta);
+        // For Change, advance one position to make WordEnd inclusive (cursor
+        // sits ON the last char, so we extend one past it to cut the whole word).
+        if op == Operator::Change && matches!(m, Motion::WordForward) {
+            ta.move_cursor(CursorMove::Forward);
+        }
+        // For Change, pass the actual command so dot-repeat captures the right
+        // motion. The dummy OperateMotion(op, Motion::Right, 1) is replaced here.
+        if op == Operator::Change && !self.replaying {
+            ta.cut();
+            self.register = RegisterKind::Charwise;
+            self.enter_insert_capture(Command::OperateMotion(op, m, count));
+        } else {
+            self.apply_operator_on_selection(op, RegisterKind::Charwise, ta);
+        }
         // Yank does not move the cursor in vim — restore to the start position.
         if op == Operator::Yank {
             ta.move_cursor(CursorMove::Jump(start.0 as u16, start.1 as u16));
@@ -603,7 +652,14 @@ impl VimEngine {
     fn apply_operator_to_line_end(&mut self, op: Operator, ta: &mut TextArea<'static>) {
         ta.start_selection();
         ta.move_cursor(CursorMove::End);
-        self.apply_operator_on_selection(op, RegisterKind::Charwise, ta);
+        // Task 11: for Change (C), use the correct command so dot-repeat works.
+        if op == Operator::Change && !self.replaying {
+            ta.cut();
+            self.register = RegisterKind::Charwise;
+            self.enter_insert_capture(Command::OperateToLineEnd(op));
+        } else {
+            self.apply_operator_on_selection(op, RegisterKind::Charwise, ta);
+        }
     }
 
     fn apply_operator_on_selection(
@@ -625,7 +681,12 @@ impl VimEngine {
             Operator::Change => {
                 ta.cut();
                 self.register = kind;
-                self.enter_insert_capture(Command::OperateMotion(op, Motion::Right, 1));
+                // Task 11: during replay, the `replay` branch inserts text
+                // directly instead of re-entering Insert mode. Only call
+                // enter_insert_capture when NOT replaying.
+                if !self.replaying {
+                    self.enter_insert_capture(Command::OperateMotion(op, Motion::Right, 1));
+                }
             }
             Operator::Indent | Operator::Outdent => { /* Task 13 */ }
         }
@@ -638,6 +699,110 @@ impl VimEngine {
             start_len: 0,
             text: String::new(),
         });
+    }
+
+    // ── Plan 2 Task 11: dot-repeat helpers ──────────────────────────────────
+
+    /// Record a completed mutating command in `last_change` (no inserted text).
+    /// Called at every mutating, non-insert completion point.
+    fn record(&mut self, command: Command) {
+        self.last_change = Some(Change { command, inserted: None });
+    }
+
+    /// Called by the host (mod.rs) after Insert-mode pass-through edits land
+    /// in the textarea, so the engine can accumulate the insert delta for `.`.
+    ///
+    /// Dual-path:
+    /// - **App path** (`typed = ""`): the textarea was already updated; the
+    ///   captured text is re-derived from the buffer. The entry column is
+    ///   stored in `cap.start_len` on the first call (when `cap.text` is
+    ///   still empty and the cursor has moved one past the entry point).
+    /// - **Test path** (`typed != ""`): inserts the text into the textarea
+    ///   (simulating the PassThrough key) AND records it in the capture,
+    ///   so unit tests don't need a separate `ta.insert_str`.
+    ///
+    /// v1 captures single-line inserts (typical in a notes editor).
+    pub fn note_inserted_text(&mut self, ta: &mut TextArea<'static>, typed: &str) {
+        let Some(cap) = self.insert_capture.as_mut() else { return };
+
+        if !typed.is_empty() {
+            // Test path: simulate the keypress and record the text directly.
+            ta.insert_str(typed);
+            cap.text.push_str(typed);
+            return;
+        }
+
+        // App path: textarea already updated — re-derive from the buffer.
+        // On the first call (cap.text is empty), record the entry column as
+        // start_len; subsequent calls expand the window.
+        let (row, col) = super::cursor_tuple(ta);
+        if let Some(line) = ta.lines().get(row) {
+            if cap.start_len == 0 && cap.text.is_empty() {
+                // Entry column: one before the current cursor
+                // (the user just typed the first char, so cursor advanced one).
+                cap.start_len = col.saturating_sub(1);
+            }
+            cap.text = line
+                .chars()
+                .skip(cap.start_len)
+                .take(col.saturating_sub(cap.start_len))
+                .collect();
+        }
+    }
+
+    /// Replay a stored `Change` (the dot-repeat implementation).
+    fn replay(&mut self, change: Change, ta: &mut TextArea<'static>) {
+        match change.command {
+            Command::DeleteChar { forward, count } => {
+                for _ in 0..count {
+                    if forward {
+                        ta.delete_next_char();
+                    } else {
+                        ta.delete_char();
+                    }
+                }
+            }
+            Command::OperateMotion(op, m, count) => {
+                let saved_inserted = change.inserted.clone();
+                self.apply_operator_motion(op, m, count, ta);
+                // For Change replays: insert the previously-typed text and
+                // stay in Normal (replaying guard prevents re-entering Insert).
+                if op == Operator::Change {
+                    if let Some(text) = saved_inserted {
+                        ta.insert_str(&text);
+                        self.mode = EditorMode::Normal;
+                    }
+                }
+            }
+            Command::OperateObject(op, obj) => {
+                self.apply_operator_object(op, obj, ta);
+                if let (Operator::Change, Some(text)) = (op, change.inserted) {
+                    ta.insert_str(&text);
+                    self.mode = EditorMode::Normal;
+                }
+            }
+            Command::ReplaceChar(ch) => {
+                self.replace_char(ch, ta);
+            }
+            Command::JoinLines(n) => {
+                for _ in 0..n.max(1) {
+                    Self::join_line(ta);
+                }
+            }
+            Command::ToggleCase(n) => {
+                for _ in 0..n {
+                    Self::toggle_case_at_cursor(ta);
+                }
+            }
+            Command::Paste { after, count } => {
+                self.paste(after, count, ta);
+            }
+            // OperateLine (dd/cc/yy), SubstituteLine, SubstituteChar, Undo, Redo:
+            // best-effort / v1 no-op for dot-repeat. Linewise change-repeat is a
+            // later enhancement. Undo/Redo repeat is intentionally skipped (vim
+            // itself doesn't dot-repeat undo).
+            _other => {}
+        }
     }
 
     // ── Plan 2 Task 5: paste p/P ─────────────────────────────────────────────
@@ -691,6 +856,9 @@ impl VimEngine {
                 let cnt = self.take_count();
                 if let Some(op) = self.pending_operator.take() {
                     self.apply_operator_motion(op, Motion::FileStart, cnt, ta);
+                    if op != Operator::Change {
+                        self.record(Command::OperateMotion(op, Motion::FileStart, cnt));
+                    }
                     self.clear_pending();
                     return self.outcome_for(op);
                 }
@@ -714,6 +882,10 @@ impl VimEngine {
                 // doubled operator → linewise on `count` lines
                 let cnt = self.take_count();
                 self.apply_operator_linewise(op, cnt, ta);
+                // Task 11: Change records on Esc via capture; others record here.
+                if op != Operator::Change {
+                    self.record(Command::OperateLine(op, cnt));
+                }
                 self.clear_pending();
                 return self.outcome_for(op);
             }
@@ -728,6 +900,10 @@ impl VimEngine {
             _ => None,
         } {
             self.apply_operator_to_line_end(op, ta);
+            // Task 11: C enters Insert (capture path owns last_change); D/Y record.
+            if op != Operator::Change {
+                self.record(Command::OperateToLineEnd(op));
+            }
             self.clear_pending();
             return self.outcome_for(op);
         }
@@ -737,6 +913,7 @@ impl VimEngine {
             let after = c == 'p';
             let cnt = self.take_count();
             self.paste(after, cnt, ta);
+            self.record(Command::Paste { after, count: cnt });
             self.clear_pending();
             return VimKeyOutcome::TextMutated;
         }
@@ -781,6 +958,10 @@ impl VimEngine {
                 if let Some(obj) = Self::object_for_char(c, around) {
                     let op = self.pending_operator.take().unwrap();
                     self.apply_operator_object(op, obj, ta);
+                    // Task 11: Change records on Esc via capture; others record here.
+                    if op != Operator::Change {
+                        self.record(Command::OperateObject(op, obj));
+                    }
                     self.clear_pending();
                     return self.outcome_for(op);
                 }
@@ -813,6 +994,12 @@ impl VimEngine {
             // If an operator is pending, this motion forms a range (Task 4).
             if let Some(op) = self.pending_operator.take() {
                 self.apply_operator_motion(op, m, count, ta);
+                // Task 11: record for non-Change ops (Change records on Esc via capture).
+                // For Change, enter_insert_capture stores the command; last_change is set
+                // when the user presses Esc.
+                if op != Operator::Change {
+                    self.record(Command::OperateMotion(op, m, count));
+                }
                 self.clear_pending();
                 return self.outcome_for(op);
             }
@@ -828,6 +1015,7 @@ impl VimEngine {
                 for _ in 0..cnt {
                     ta.delete_next_char();
                 }
+                self.record(Command::DeleteChar { forward: true, count: cnt });
                 self.clear_pending();
                 return VimKeyOutcome::TextMutated;
             }
@@ -836,6 +1024,7 @@ impl VimEngine {
                 for _ in 0..cnt {
                     ta.delete_char();
                 }
+                self.record(Command::DeleteChar { forward: false, count: cnt });
                 self.clear_pending();
                 return VimKeyOutcome::TextMutated;
             }
@@ -866,6 +1055,7 @@ impl VimEngine {
                 for _ in 0..cnt {
                     Self::join_line(ta);
                 }
+                self.record(Command::JoinLines(cnt));
                 self.clear_pending();
                 return VimKeyOutcome::TextMutated;
             }
@@ -874,6 +1064,7 @@ impl VimEngine {
                 for _ in 0..cnt {
                     Self::toggle_case_at_cursor(ta);
                 }
+                self.record(Command::ToggleCase(cnt));
                 self.clear_pending();
                 return VimKeyOutcome::TextMutated;
             }
@@ -886,6 +1077,17 @@ impl VimEngine {
                 return VimKeyOutcome::TextMutated;
             }
             _ => {}
+        }
+
+        // Task 11: `.` — replay the last mutating change (dot-repeat).
+        if c == '.' {
+            if let Some(change) = self.last_change.clone() {
+                self.replaying = true;
+                self.replay(change, ta);
+                self.replaying = false;
+            }
+            self.clear_pending();
+            return VimKeyOutcome::TextMutated;
         }
 
         // Task 10: v/V — enter Visual / Visual-line mode.
@@ -950,7 +1152,14 @@ impl VimEngine {
         ta.move_cursor(CursorMove::Jump(row as u16, start as u16));
         ta.start_selection();
         ta.move_cursor(CursorMove::Jump(row as u16, end as u16));
-        self.apply_operator_on_selection(op, RegisterKind::Charwise, ta);
+        // Task 11: for Change, use the correct command so dot-repeat captures it.
+        if op == Operator::Change && !self.replaying {
+            ta.cut();
+            self.register = RegisterKind::Charwise;
+            self.enter_insert_capture(Command::OperateObject(op, obj));
+        } else {
+            self.apply_operator_on_selection(op, RegisterKind::Charwise, ta);
+        }
     }
 
     /// Returns the half-open `[start, end)` char range for `obj` centred at
@@ -1275,7 +1484,10 @@ mod tests {
         e.handle_key(&key('c'), &mut t);
         e.handle_key(&key('w'), &mut t);
         assert_eq!(*e.mode(), EditorMode::Insert);
-        assert_eq!(t.lines(), &["world"]);
+        // Vim `cw` = `ce`: deletes up to end of word (exclusive of trailing
+        // space), so " world" remains (space preserved). This matches vim's
+        // actual cw = ce behaviour.
+        assert_eq!(t.lines(), &[" world"]);
     }
 
     // ── Plan 2 Task 5 tests ──────────────────────────────────────────────────
@@ -1578,4 +1790,41 @@ mod tests {
         assert_eq!(*e.mode(), EditorMode::Insert);
         assert_eq!(t.lines(), &["llo"]);
     }
+
+    // ── Plan 2 Task 11 tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn dot_repeats_x() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["abcdef"]);
+        e.handle_key(&key('x'), &mut t);
+        e.handle_key(&key('.'), &mut t);
+        assert_eq!(t.lines(), &["cdef"]);
+    }
+
+    #[test]
+    fn dot_repeats_dw() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["one two three four"]);
+        e.handle_key(&key('d'), &mut t);
+        e.handle_key(&key('w'), &mut t); // delete "one "
+        e.handle_key(&key('.'), &mut t); // delete "two "
+        assert_eq!(t.lines(), &["three four"]);
+    }
+
+    #[test]
+    fn dot_repeats_change_with_typed_text() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["foo bar"]);
+        // cw -> type "X" -> Esc, then move to next word and dot
+        e.handle_key(&key('c'), &mut t);
+        e.handle_key(&key('w'), &mut t);
+        // simulate insert-mode typing via the host pass-through path:
+        e.note_inserted_text(&mut t, "X");
+        e.handle_key(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &mut t);
+        e.handle_key(&key('w'), &mut t);
+        e.handle_key(&key('.'), &mut t);
+        assert_eq!(t.lines(), &["X X"]);
+    }
 }
+
