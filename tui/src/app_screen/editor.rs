@@ -1080,6 +1080,15 @@ impl EditorScreen {
 
             LeaderAction::Palette => self.open_command_palette(tx),
             LeaderAction::Help => self.open_cheatsheet(),
+
+            LeaderAction::NoteSave => {
+                // Flush the periodic autosave immediately (no manual-save
+                // concept; this force-persists the current buffer if dirty).
+                self.spawn_autosave(tx);
+            }
+            LeaderAction::AppQuit => {
+                tx.send(AppEvent::Quit).ok();
+            }
         }
     }
 
