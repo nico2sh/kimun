@@ -207,22 +207,6 @@ impl BackendState {
         }
     }
 
-    /// Notify the vim engine that the buffer changed via a PassThrough key
-    /// (Insert-mode char was accepted by the textarea). This accumulates the
-    /// insert delta for dot-repeat. No-op for Direct / Nvim backends, and when
-    /// the engine is not in Insert mode.
-    ///
-    /// Called from `mod.rs` after the direct path runs and the content changed.
-    pub fn vim_note_insert(&mut self) {
-        if let BackendState::Textarea(TextareaBackend {
-            ta,
-            input: InputInterpreter::Vim(engine),
-        }) = self
-        {
-            engine.note_inserted_text(ta, "");
-        }
-    }
-
     /// If the active backend is the vim interpreter, run it for this key and
     /// return the outcome. Returns `None` for Direct / Nvim backends.
     pub fn vim_handle_key(
