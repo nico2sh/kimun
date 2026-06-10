@@ -342,6 +342,65 @@ impl VimEngine {
             return self.outcome_for(op);
         }
 
+        // 'p'/'P': replace the current visual selection with the register.
+        // CRITICAL: capture the register text+kind BEFORE cut() overwrites yank_text.
+        if c == 'p' || c == 'P' {
+            let text = ta.yank_text();
+            let kind = self.register;
+            if text.is_empty() {
+                ta.cancel_selection();
+                self.mode = EditorMode::Normal;
+                return VimKeyOutcome::CursorOnly;
+            }
+            if self.mode == EditorMode::VisualLine {
+                // VisualLine: delete the selected whole lines, then paste the register.
+                let (start_row, end_row) = if let Some(((sr, _), (er, _))) = ta.selection_range() {
+                    (sr, er)
+                } else {
+                    let (r, _) = super::cursor_tuple(ta);
+                    (r, r)
+                };
+                ta.cancel_selection();
+                ta.move_cursor(CursorMove::Jump(start_row as u16, 0));
+                let count = end_row - start_row + 1;
+                // Delete the lines (reuse linewise delete logic).
+                self.apply_operator_linewise(Operator::Delete, count, ta);
+                // Restore the original register (the delete just clobbered it).
+                ta.set_yank_text(&text);
+                self.register = kind;
+                // Paste the register at the current position (before the line that
+                // landed at start_row after the delete).
+                self.paste(false, 1, ta);
+            } else {
+                // Charwise: make an inclusive selection, delete it, then insert.
+                if let Some(((sr, sc), (er, ec))) = ta.selection_range() {
+                    let len = ta.lines().get(er).map(|l| l.chars().count()).unwrap_or(ec);
+                    let ec_incl = (ec + 1).min(len);
+                    ta.cancel_selection();
+                    ta.move_cursor(CursorMove::Jump(sr as u16, sc as u16));
+                    ta.start_selection();
+                    ta.move_cursor(CursorMove::Jump(er as u16, ec_incl as u16));
+                }
+                ta.cut(); // cursor lands at the deletion gap
+                // Restore the original register (cut clobbered it) and insert.
+                ta.set_yank_text(&text);
+                self.register = kind;
+                if kind == RegisterKind::Charwise {
+                    // Record where the paste starts so we can leave the cursor there
+                    // (vim visual-p leaves cursor at the start of the pasted text).
+                    let paste_start = super::cursor_tuple(ta);
+                    ta.insert_str(&text);
+                    ta.move_cursor(CursorMove::Jump(paste_start.0 as u16, paste_start.1 as u16));
+                } else {
+                    // Linewise register over a charwise selection.
+                    self.paste(false, 1, ta);
+                }
+            }
+            self.mode = EditorMode::Normal;
+            self.clear_pending();
+            return VimKeyOutcome::TextMutated;
+        }
+
         // 'o': swap selection end — documented v1 no-op (swap-end not implemented).
         if c == 'o' {
             return VimKeyOutcome::NoOp;
@@ -2377,6 +2436,49 @@ mod tests {
         e.handle_key(&key('p'), &mut t); // append "ab" after 'b'
         assert_eq!(t.lines()[0], "abab");
         assert_eq!(t.lines()[1], "cd"); // line below untouched
+    }
+
+    // ── Visual p: replace selection with register ────────────────────────────
+
+    #[test]
+    fn visual_p_replaces_charwise_selection() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["foo bar"]);
+        // yank "foo" (v e y at col 0) → register = "foo", cursor back to col 0
+        e.handle_key(&key('v'), &mut t);
+        e.handle_key(&key('e'), &mut t);
+        e.handle_key(&key('y'), &mut t);
+        assert_eq!(super::super::cursor_tuple(&t), (0, 0));
+        // select "bar" and paste over it
+        for _ in 0..4 { e.handle_key(&key('l'), &mut t); } // onto 'b' (col 4)
+        e.handle_key(&key('v'), &mut t);
+        e.handle_key(&key('e'), &mut t); // select "bar"
+        e.handle_key(&key('p'), &mut t);
+        assert_eq!(t.lines(), &["foo foo"]); // "bar" replaced by "foo"
+        assert_eq!(*e.mode(), EditorMode::Normal);
+    }
+
+    #[test]
+    fn visual_p_register_preserved_for_repeat() {
+        let mut e = VimEngine::default();
+        let mut t = TextArea::from(["aa bb cc"]);
+        // yank "aa"
+        e.handle_key(&key('v'), &mut t);
+        e.handle_key(&key('e'), &mut t);
+        e.handle_key(&key('y'), &mut t); // reg = "aa", cursor col 0
+        // replace "bb"
+        for _ in 0..3 { e.handle_key(&key('l'), &mut t); } // col 3 'b'
+        e.handle_key(&key('v'), &mut t);
+        e.handle_key(&key('e'), &mut t);
+        e.handle_key(&key('p'), &mut t); // "bb" -> "aa"
+        assert_eq!(t.lines(), &["aa aa cc"]);
+        // replace "cc" with the SAME register (preserved)
+        // cursor is at start of the just-pasted "aa" (col 3); move to "cc"
+        for _ in 0..3 { e.handle_key(&key('l'), &mut t); } // toward "cc" (col 6 'c')
+        e.handle_key(&key('v'), &mut t);
+        e.handle_key(&key('e'), &mut t);
+        e.handle_key(&key('p'), &mut t);
+        assert_eq!(t.lines(), &["aa aa aa"]);
     }
 }
 
