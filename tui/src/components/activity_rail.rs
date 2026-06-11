@@ -13,6 +13,7 @@ use crate::components::drawer::DrawerView;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent};
 use crate::components::panel::panel_block;
+use crate::keys::KeyBindings;
 use crate::settings::themes::Theme;
 
 /// Total column width the rail occupies, borders included.
@@ -53,14 +54,17 @@ pub struct ActivityRail {
     item_rows: Vec<(DrawerView, Rect)>,
     /// Icon set resolving the rail glyphs (nerd-font / ASCII).
     icons: crate::settings::icons::Icons,
+    /// Bindings resolving the focus-cycle hint combos.
+    key_bindings: KeyBindings,
 }
 
 impl ActivityRail {
-    pub fn new(icons: crate::settings::icons::Icons) -> Self {
+    pub fn new(key_bindings: KeyBindings, icons: crate::settings::icons::Icons) -> Self {
         Self {
             cursor: 0,
             item_rows: Vec::new(),
             icons,
+            key_bindings,
         }
     }
 
@@ -86,10 +90,20 @@ impl ActivityRail {
     }
 
     pub fn hint_shortcuts(&self) -> Vec<(String, String)> {
-        vec![
+        use crate::keys::action_shortcuts::ActionShortcuts;
+
+        let mut hints = vec![
             ("↑/↓".into(), "Move".into()),
             ("Enter".into(), "Open/close".into()),
-        ]
+        ];
+        hints.extend(crate::components::hints::hints_for(
+            &self.key_bindings,
+            &[
+                (ActionShortcuts::FocusSidebar, "\u{2190} focus left"),
+                (ActionShortcuts::FocusEditor, "focus right \u{2192}"),
+            ],
+        ));
+        hints
     }
 
     pub fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
@@ -230,7 +244,11 @@ mod tests {
     }
 
     fn test_rail() -> ActivityRail {
-        ActivityRail::new(crate::settings::icons::Icons::new(false))
+        let settings = crate::settings::AppSettings::default();
+        ActivityRail::new(
+            settings.key_bindings,
+            crate::settings::icons::Icons::new(false),
+        )
     }
 
     #[test]
@@ -267,6 +285,18 @@ mod tests {
         let mut rail = test_rail();
         rail.set_cursor(DrawerView::Outline);
         assert_eq!(rail.cursor_view(), DrawerView::Outline);
+    }
+
+    #[test]
+    fn hints_include_focus_cycle() {
+        let rail = test_rail();
+        let labels: Vec<String> = rail
+            .hint_shortcuts()
+            .into_iter()
+            .map(|(_, label)| label)
+            .collect();
+        assert!(labels.contains(&"\u{2190} focus left".to_string()));
+        assert!(labels.contains(&"focus right \u{2192}".to_string()));
     }
 
     #[test]

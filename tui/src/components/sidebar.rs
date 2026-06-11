@@ -502,7 +502,8 @@ impl Component for SidebarComponent {
         crate::components::hints::hints_for(
             &self.key_bindings,
             &[
-                (ActionShortcuts::FocusEditor, "editor \u{2192}"),
+                (ActionShortcuts::FocusSidebar, "\u{2190} focus left"),
+                (ActionShortcuts::FocusEditor, "focus right \u{2192}"),
                 (ActionShortcuts::OpenSortDialog, "sort"),
             ],
         )
