@@ -219,10 +219,11 @@ impl PanelSet {
         drawer: DrawerHost,
         editor: TextEditorComponent,
         icons: crate::settings::icons::Icons,
+        key_bindings: crate::keys::KeyBindings,
     ) -> Self {
         Self {
             order: PanelOrder::new(),
-            rail: ActivityRail::new(icons),
+            rail: ActivityRail::new(key_bindings, icons),
             drawer,
             editor,
             drawer_width: DEFAULT_DRAWER_WIDTH,
@@ -515,7 +516,7 @@ mod tests {
             crate::components::drawer_views::LinksPanel::new(vault.clone(), settings.icons());
         let outline = crate::components::drawer_views::OutlinePanel::new(vault, settings.icons());
         let drawer = DrawerHost::new(sidebar, query, tags, links, outline);
-        PanelSet::from_panels(drawer, editor, settings.icons())
+        PanelSet::from_panels(drawer, editor, settings.icons(), settings.key_bindings)
     }
 
     /// Lay the visible panels out over a fixed area, as a render would.
