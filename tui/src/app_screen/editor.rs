@@ -93,6 +93,7 @@ impl EditorScreen {
         let links = LinksPanel::new(vault.clone(), s.icons());
         let outline = OutlinePanel::new(vault.clone(), s.icons());
         let drawer = DrawerHost::new(sidebar, backlinks_panel, tags, links, outline);
+        let rail_kb = kb.clone();
         let mut editor = TextEditorComponent::new(kb, &s);
         editor.set_vault(vault.clone());
         let leader_engine = LeaderEngine::with_tree(s.leader_tree());
@@ -102,7 +103,7 @@ impl EditorScreen {
             settings,
             icons,
             theme,
-            panels: PanelSet::from_panels(drawer, editor, rail_icons),
+            panels: PanelSet::from_panels(drawer, editor, rail_icons, rail_kb),
             doc_meta: crate::app_screen::doc_meta::DocMeta::new(vault.clone()),
             vault,
             path,
