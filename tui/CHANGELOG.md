@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.16.1...kimun-notes-v0.17.0) - 2026-06-11
+
+### Added
+
+- new vim commands
+- vim Visual p/P replaces selection with register
+- mouse-drag enters vim Visual mode
+- Space as vim Normal-mode leader (intrinsic, pending-safe)
+- vim : / ? n N route to palette + find bar
+- command palette resolves exact vim Ex aliases (:w/:q)
+- note.save + app.quit leader actions with vim aliases
+- vim pending-command footer hint + indent >>/<<
+- vim dot-repeat (.) with insert-delta capture
+- vim Visual + Visual-line modes
+- vim % matching-pair jump (single-line)
+- vim text objects iw/aw/i"/a"/i(/a( (single-line)
+- vim find-char f/F/t/T + ;/,
+- vim edits x/X/s/S/r/J/~ + u/Ctrl-r
+- vim operators d/c/y, dd/cc/yy, D/C/Y, paste p/P
+- reified vim command model, counts, motion resolution
+- reset vim mode to Normal on note open
+- block cursor in normal mode, bar in insert (SetCursorStyle)
+- generalize footer mode label to vim backend
+- route keys through VimEngine in handle_input
+- VimEngine skeleton — normal motions, insert entry, esc
+- TextareaBackend + InputInterpreter, vim settings variant
+
+### Fixed
+
+- concurrent tests fix
+- cursor on focus change in vim mode
+- horizontal scroll on text input
+- indent cursor behavior corrected
+- proper indent with >>
+- motion issues
+- small bug fixes
+- vim search Enter confirms+closes bar; n/N navigate persisted pattern
+- route keys to find bar before vim engine (vim / search input)
+- vim visual-p yanks replaced selection; Esc in Normal clears stray selection
+- vim yank leaves cursor at selection start; charwise p never wraps to next line
+- charwise Visual selection inclusive of cursor char (operators + highlight)
+- vim e/de/ce land on last word char (was off by one)
+- vim dot-repeat captures full multi-line insert delta at Esc (was single-line/fragile)
+- vim text-object nesting/quote-gap, df newline, cc single-line, r no-op
+- drop command-palette Ex-alias layer (overrode selected row); keep real save/quit entries
+- vim object-range panic on empty line + Esc clears pending in Normal
+
+### Other
+
+- Merge pull request #137 from nico2sh/vim
+- cluppy
+- clippy and fmt
+- vim mode in docs
+- better vim structure
+- Jump-based vim motions, alloc-free cursor-shape classify, shared motion table
+- clean up unused vim Command variants and lint warnings
+- rename NvimMode to shared EditorMode
+
 ## [0.16.1](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.16.0...kimun-notes-v0.16.1) - 2026-06-10
 
 ### Fixed
