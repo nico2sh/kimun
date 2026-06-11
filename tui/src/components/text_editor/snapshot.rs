@@ -116,7 +116,7 @@ pub struct NvimSnapshot {
     pub lines: Vec<String>,
     /// Cursor position (row, col), 0-indexed.
     pub cursor: (usize, usize),
-    pub mode: NvimMode,
+    pub mode: EditorMode,
     /// Set when mode is `Command` — the full command line including the type prefix
     /// (e.g., `":set nu"` or `"/pattern"`). `None` in all other modes.
     pub cmdline: Option<String>,
@@ -136,7 +136,7 @@ impl Default for NvimSnapshot {
         Self {
             lines: vec![String::new()],
             cursor: (0, 0),
-            mode: NvimMode::Normal,
+            mode: EditorMode::Normal,
             cmdline: None,
             dirty: false,
             content_gen: 0,
@@ -151,7 +151,7 @@ impl NvimSnapshot {
     /// In command mode, shows the live command line with a block cursor appended.
     /// In all other modes, shows the mode label (e.g., `"NORMAL"`).
     pub fn footer_label(&self) -> String {
-        if self.mode == NvimMode::Command
+        if self.mode == EditorMode::Command
             && let Some(cmd) = &self.cmdline
         {
             return format!("{}\u{2590}", cmd); // ▐ block cursor
@@ -161,36 +161,40 @@ impl NvimSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum NvimMode {
+pub enum EditorMode {
     Normal,
     Insert,
+    Replace,
     Visual,
     VisualLine,
     Command,
     Other(String),
 }
 
-impl NvimMode {
+impl EditorMode {
     pub fn label(&self) -> &str {
         match self {
-            NvimMode::Normal => "NORMAL",
-            NvimMode::Insert => "INSERT",
-            NvimMode::Visual => "VISUAL",
-            NvimMode::VisualLine => "V-LINE",
-            NvimMode::Command => "COMMAND",
-            NvimMode::Other(_) => "OTHER",
+            EditorMode::Normal => "NORMAL",
+            EditorMode::Insert => "INSERT",
+            EditorMode::Replace => "REPLACE",
+            EditorMode::Visual => "VISUAL",
+            EditorMode::VisualLine => "V-LINE",
+            EditorMode::Command => "COMMAND",
+            EditorMode::Other(_) => "OTHER",
         }
     }
 
     /// Parse the one- or two-character mode string returned by `nvim_get_mode`.
+    /// Nvim-only: the vim engine sets its mode directly, never through this.
     pub fn from_nvim_str(s: &str) -> Self {
         match s {
-            "n" | "no" | "nov" | "noV" | "no\x16" => NvimMode::Normal,
-            "i" => NvimMode::Insert,
-            "v" => NvimMode::Visual,
-            "V" => NvimMode::VisualLine,
-            "c" => NvimMode::Command,
-            other => NvimMode::Other(other.to_string()),
+            "n" | "no" | "nov" | "noV" | "no\x16" => EditorMode::Normal,
+            "i" => EditorMode::Insert,
+            "R" => EditorMode::Replace,
+            "v" => EditorMode::Visual,
+            "V" => EditorMode::VisualLine,
+            "c" => EditorMode::Command,
+            other => EditorMode::Other(other.to_string()),
         }
     }
 }
@@ -246,67 +250,81 @@ mod tests {
 
     #[test]
     fn mode_label_normal() {
-        assert_eq!(NvimMode::Normal.label(), "NORMAL");
+        assert_eq!(EditorMode::Normal.label(), "NORMAL");
     }
 
     #[test]
     fn mode_label_insert() {
-        assert_eq!(NvimMode::Insert.label(), "INSERT");
+        assert_eq!(EditorMode::Insert.label(), "INSERT");
     }
 
     #[test]
     fn mode_label_visual() {
-        assert_eq!(NvimMode::Visual.label(), "VISUAL");
+        assert_eq!(EditorMode::Visual.label(), "VISUAL");
     }
 
     #[test]
     fn mode_label_visual_line() {
-        assert_eq!(NvimMode::VisualLine.label(), "V-LINE");
+        assert_eq!(EditorMode::VisualLine.label(), "V-LINE");
     }
 
     #[test]
     fn mode_label_command() {
-        assert_eq!(NvimMode::Command.label(), "COMMAND");
+        assert_eq!(EditorMode::Command.label(), "COMMAND");
     }
 
     #[test]
     fn mode_from_str_normal() {
-        assert!(matches!(NvimMode::from_nvim_str("n"), NvimMode::Normal));
+        assert!(matches!(EditorMode::from_nvim_str("n"), EditorMode::Normal));
     }
 
     #[test]
     fn mode_from_str_insert() {
-        assert!(matches!(NvimMode::from_nvim_str("i"), NvimMode::Insert));
+        assert!(matches!(EditorMode::from_nvim_str("i"), EditorMode::Insert));
     }
 
     #[test]
     fn mode_from_str_visual() {
-        assert!(matches!(NvimMode::from_nvim_str("v"), NvimMode::Visual));
+        assert!(matches!(EditorMode::from_nvim_str("v"), EditorMode::Visual));
     }
 
     #[test]
     fn mode_from_str_visual_line() {
-        assert!(matches!(NvimMode::from_nvim_str("V"), NvimMode::VisualLine));
+        assert!(matches!(
+            EditorMode::from_nvim_str("V"),
+            EditorMode::VisualLine
+        ));
     }
 
     #[test]
     fn mode_from_str_command() {
-        assert!(matches!(NvimMode::from_nvim_str("c"), NvimMode::Command));
+        assert!(matches!(
+            EditorMode::from_nvim_str("c"),
+            EditorMode::Command
+        ));
+    }
+
+    #[test]
+    fn mode_from_str_replace() {
+        assert!(matches!(
+            EditorMode::from_nvim_str("R"),
+            EditorMode::Replace
+        ));
     }
 
     #[test]
     fn mode_from_str_unknown() {
-        let m = NvimMode::from_nvim_str("R");
-        assert!(matches!(m, NvimMode::Other(_)));
-        if let NvimMode::Other(s) = m {
-            assert_eq!(s, "R");
+        let m = EditorMode::from_nvim_str("t"); // terminal mode — unmapped
+        assert!(matches!(m, EditorMode::Other(_)));
+        if let EditorMode::Other(s) = m {
+            assert_eq!(s, "t");
         }
     }
 
     #[test]
     fn footer_label_normal_mode() {
         let snap = NvimSnapshot {
-            mode: NvimMode::Normal,
+            mode: EditorMode::Normal,
             cmdline: None,
             ..Default::default()
         };
@@ -316,7 +334,7 @@ mod tests {
     #[test]
     fn footer_label_command_mode_with_cmdline() {
         let snap = NvimSnapshot {
-            mode: NvimMode::Command,
+            mode: EditorMode::Command,
             cmdline: Some(":set nu".to_string()),
             ..Default::default()
         };
@@ -326,7 +344,7 @@ mod tests {
     #[test]
     fn footer_label_command_mode_no_cmdline() {
         let snap = NvimSnapshot {
-            mode: NvimMode::Command,
+            mode: EditorMode::Command,
             cmdline: None,
             ..Default::default()
         };

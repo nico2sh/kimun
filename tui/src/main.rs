@@ -135,6 +135,7 @@ async fn main() -> Result<()> {
             std::io::stderr(),
             crossterm::terminal::LeaveAlternateScreen,
             crossterm::event::DisableMouseCapture,
+            crossterm::cursor::SetCursorStyle::DefaultUserShape,
         );
 
         // Emit through tracing first (subscriber may still be active).
@@ -200,7 +201,8 @@ async fn main() -> Result<()> {
         terminal.backend_mut(),
         LeaveAlternateScreen,
         DisableMouseCapture,
-        DisableBracketedPaste
+        DisableBracketedPaste,
+        crossterm::cursor::SetCursorStyle::DefaultUserShape
     )?;
     terminal.show_cursor()?;
 

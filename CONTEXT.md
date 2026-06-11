@@ -4,6 +4,30 @@ Domain language for kimün — a note-taking app split into **core** (file ops, 
 
 ## Language
 
+### Editor backend
+
+**Editor backend**:
+Which engine drives the TUI text editor, chosen in config (`editor_backend`): **textarea** (the built-in ratatui-textarea), **nvim** (an external neovim process), or **vim** (built-in vim emulation — a textarea buffer plus a modal state machine, no external process). One config axis, three values.
+_Avoid_: editor engine, editor mode (collides with **editing mode**).
+
+**Editing mode**:
+The active modal state inside a vim-style backend — Normal, Insert, Replace, Visual, Visual-line, Command. Shared by the **nvim** and **vim** backends (the `EditorMode` enum); the **textarea** backend has none. Distinct from the **editor backend**, which selects the engine, not the state within it. Replace (`R`) is engine-owned in the **vim** backend: keys overwrite in place and never reach the textarea's insert features.
+_Avoid_: vim mode (ambiguous — backend or state?), NvimMode (the superseded nvim-only name).
+
+### Vim emulation
+
+**Vim command**:
+The reified unit of work in the **vim** editor backend's engine (the `Command` enum): keys parse into a command value, and `apply` is the *only* door that mutates the buffer (adr/0011). Dot-repeat replays the recorded command (plus its captured insert delta) through that same door, so first press and replay cannot diverge; macros (v2) replay a longer log of them. Parsing (`parse_normal`) is pure pending-state accumulation and never touches the buffer.
+_Avoid_: action, keystroke handler (those describe the superseded imperative form).
+
+**Unnamed register**:
+The engine-owned register of the **vim** editor backend: text and its kind (charwise/linewise) stored together as one value, filled by every yank *and* every delete/change (vim rule — so `xp` swaps chars). Kept separate from the textarea's yank buffer (a transport only, never read at paste time) and from the OS clipboard (the Ctrl-c/v path). Named registers (v2) add a map alongside.
+_Avoid_: yank buffer (the textarea's, not the register), clipboard.
+
+**Span kind**:
+Vim's motion classification (`:h exclusive`) as carried by the engine: a motion consumed by an operator forms an **exclusive**, **inclusive**, or **linewise** range (`SpanKind`). j/k and gg/G are linewise (so `dj` deletes whole lines), e/f/t/%/$ are inclusive, the rest exclusive. `select_range` is the single home of the vim-inclusive → ratatui-half-open `+1` conversion.
+_Avoid_: motion type (too generic), inclusivity flag scattered per call-site (the pre-range-model shape).
+
 ### Editor parsing
 
 **Parse state**:

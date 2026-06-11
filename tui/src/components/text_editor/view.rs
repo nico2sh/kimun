@@ -11,6 +11,13 @@ use std::ops::Range;
 use std::sync::OnceLock;
 use unicode_width::UnicodeWidthStr;
 
+/// Terminal cursor shape the editor requests while focused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CursorShape {
+    Bar,
+    Block,
+}
+
 /// Describes how `view.update`'s Gate 1 modified the parse caches this
 /// frame. Read by Gate 2 to decide what subset of `rendered_cache` and
 /// `WordWrapLayout` needs to be rebuilt.
@@ -62,6 +69,12 @@ pub struct MarkdownEditorView {
     /// overlays like the autocomplete popup, which is drawn after the
     /// editor itself.
     pub last_cursor_screen: Option<(u16, u16)>,
+    /// Cursor style last written to the terminal, or `None` when the
+    /// terminal is on the user's default shape. The terminal cursor style
+    /// is global state, so on focus loss we must emit an explicit reset —
+    /// otherwise the editor's bar/block shape leaks into every other text
+    /// input (search sidebar, dialogs).
+    applied_cursor_style: Option<CursorShape>,
     /// Per-line parse cache built in `update()`. Eliminates redundant pulldown-cmark
     /// invocations across `render()`, cursor placement, and click mapping.
     /// Either a Real or Placeholder parse — see [`ParseState`].
@@ -194,6 +207,7 @@ impl MarkdownEditorView {
             code_box_width: Vec::new(),
             gutter_insets: Vec::new(),
             last_cursor_screen: None,
+            applied_cursor_style: None,
             // Empty buffer, spliceable — preserves the previous
             // `placeholder_active: false` initial state.
             parse_state: ParseState::Real(ParsedBuffer::placeholder(&[])),
@@ -865,7 +879,14 @@ impl MarkdownEditorView {
         Some((widened, slice, splice_path))
     }
 
-    pub fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
+    pub fn render(
+        &mut self,
+        f: &mut Frame,
+        rect: Rect,
+        theme: &Theme,
+        focused: bool,
+        cursor_shape: Option<CursorShape>,
+    ) {
         if rect.height == 0 {
             return;
         }
@@ -983,6 +1004,7 @@ impl MarkdownEditorView {
         // there to absorb stale Nvim snapshots where cursor outran
         // lines, which the snapshot invariant now rules out.
         self.last_cursor_screen = None;
+        let mut desired_style: Option<CursorShape> = None;
         if focused
             && !self.parse_state.buf().lines.is_empty()
             && !self.layout.visual_lines().is_empty()
@@ -1007,7 +1029,18 @@ impl MarkdownEditorView {
                 let cy = rect.y + (cursor_vrow - scroll) as u16;
                 f.set_cursor_position(Position { x: cx, y: cy });
                 self.last_cursor_screen = Some((cx, cy));
+                desired_style = cursor_shape;
             }
+        }
+        if desired_style != self.applied_cursor_style {
+            use ratatui::crossterm::cursor::SetCursorStyle;
+            let style = match desired_style {
+                Some(CursorShape::Block) => SetCursorStyle::SteadyBlock,
+                Some(CursorShape::Bar) => SetCursorStyle::SteadyBar,
+                None => SetCursorStyle::DefaultUserShape,
+            };
+            let _ = ratatui::crossterm::execute!(std::io::stdout(), style);
+            self.applied_cursor_style = desired_style;
         }
     }
 
@@ -1341,7 +1374,7 @@ mod tests {
         let mut view = make_view_for_lines(&lines, (3, 0), 40);
         let mut terminal = Terminal::new(TestBackend::new(40, 5)).unwrap();
         terminal
-            .draw(|f| view.render(f, f.area(), &theme, true))
+            .draw(|f| view.render(f, f.area(), &theme, true, Some(CursorShape::Bar)))
             .unwrap();
         let buf = terminal.backend().buffer().clone();
         let code_bg = theme.code_bg.to_ratatui();
@@ -1518,7 +1551,7 @@ mod tests {
         );
         // Render with focus so the cursor branch runs.
         terminal
-            .draw(|f| v.render(f, f.area(), &theme, true))
+            .draw(|f| v.render(f, f.area(), &theme, true, Some(CursorShape::Bar)))
             .expect("render must not panic on stale cursor");
     }
 
