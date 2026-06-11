@@ -61,6 +61,11 @@ pub enum LeaderAction {
     Palette,
     // help
     Help,
+    // +vim / universal
+    /// Flush the autosave immediately (vim `:w` / `:write`).
+    NoteSave,
+    /// Quit the application (vim `:q` / `:qa` / `:wq` / `:x`).
+    AppQuit,
 }
 
 impl LeaderAction {
@@ -111,11 +116,13 @@ impl LeaderAction {
             LeaderAction::NoteYankPath => "this.yank-path",
             LeaderAction::Palette => "palette",
             LeaderAction::Help => "help",
+            LeaderAction::NoteSave => "note.save",
+            LeaderAction::AppQuit => "app.quit",
         }
     }
 
     /// Every action, for id lookup and docs.
-    pub const ALL: [LeaderAction; 42] = [
+    pub const ALL: [LeaderAction; 44] = [
         LeaderAction::OpenDrawer(DrawerView::Files),
         LeaderAction::OpenDrawer(DrawerView::Find),
         LeaderAction::OpenDrawer(DrawerView::Tags),
@@ -158,6 +165,8 @@ impl LeaderAction {
         LeaderAction::NoteExport,
         LeaderAction::NoteYankPath,
         LeaderAction::Palette,
+        LeaderAction::NoteSave,
+        LeaderAction::AppQuit,
     ];
 
     /// Look an action up by its config id. `Help` is included via ALL? It is
@@ -215,6 +224,8 @@ impl LeaderAction {
             LeaderAction::NoteYankPath => "yank note path",
             LeaderAction::Palette => "command palette",
             LeaderAction::Help => "help / cheatsheet",
+            LeaderAction::NoteSave => "write (save now)",
+            LeaderAction::AppQuit => "quit kimün",
         }
     }
 }
@@ -300,6 +311,7 @@ pub fn leader_tree() -> LeaderNode {
                         ('r', leaf("rename", A::NoteRename)),
                         ('m', leaf("move", A::NoteMove)),
                         ('D', leaf("delete", A::NoteDelete)),
+                        ('w', leaf("write (save now)", A::NoteSave)),
                     ],
                 },
             ),
@@ -382,6 +394,7 @@ pub fn leader_tree() -> LeaderNode {
                 },
             ),
             ('p', leaf("command palette", A::Palette)),
+            ('q', leaf("quit kimün", A::AppQuit)),
             ('?', leaf("help / cheatsheet", A::Help)),
         ],
     }
@@ -714,7 +727,7 @@ mod tests {
         let groups: Vec<char> = tree.children().iter().map(|(k, _)| *k).collect();
         assert_eq!(
             groups,
-            vec!['f', 'n', 'l', 'o', 'g', 'v', 'w', 'm', 'p', '?']
+            vec!['f', 'n', 'l', 'o', 'g', 'v', 'w', 'm', 'p', 'q', '?']
         );
         // Doubled letters fire the group's most-common action.
         let mut e = LeaderEngine::new();
@@ -736,7 +749,7 @@ mod tests {
                 ("y z", "vault.theme"),   // add under a new on-demand group
                 ("g p", "none"),          // remove a leaf
                 ("bad seq!", "note.new"), // invalid (multi-char key) → skipped
-                ("q", "no.such.action"),  // unknown id → skipped
+                ("A", "no.such.action"),  // unknown id → skipped
             ],
         );
         let mut e = LeaderEngine::with_tree(tree);
@@ -757,7 +770,7 @@ mod tests {
         assert_eq!(e.feed('p'), LeaderOutcome::Invalid); // removed
 
         e.start();
-        assert_eq!(e.feed('q'), LeaderOutcome::Invalid); // unknown id skipped
+        assert_eq!(e.feed('A'), LeaderOutcome::Invalid); // unknown id skipped
     }
 
     #[test]
@@ -829,5 +842,19 @@ mod tests {
         e.start();
         e.feed('n');
         assert_eq!(e.feed('D'), LeaderOutcome::Fired(LeaderAction::NoteDelete));
+    }
+
+    #[test]
+    fn note_save_and_app_quit_round_trip_from_id() {
+        assert_eq!(
+            LeaderAction::from_id("note.save"),
+            Some(LeaderAction::NoteSave)
+        );
+        assert_eq!(
+            LeaderAction::from_id("app.quit"),
+            Some(LeaderAction::AppQuit)
+        );
+        assert_eq!(LeaderAction::NoteSave.id(), "note.save");
+        assert_eq!(LeaderAction::AppQuit.id(), "app.quit");
     }
 }

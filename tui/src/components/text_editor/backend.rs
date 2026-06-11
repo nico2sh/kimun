@@ -10,7 +10,8 @@ use nvim_rs::{Handler, Neovim, UiAttachOptions, create::tokio::new_child_cmd, er
 use ratatui_textarea::TextArea;
 
 use super::nvim_rpc::key_event_to_nvim_string;
-use super::snapshot::{NvimMode, NvimSnapshot};
+use super::snapshot::{EditorMode, NvimSnapshot};
+use super::vim::VimEngine;
 use crate::components::events::{AppEvent, AppTx};
 use crate::settings::EditorBackendSetting;
 
@@ -68,12 +69,50 @@ impl Handler for NvimHandler {
 }
 
 // ---------------------------------------------------------------------------
+// InputInterpreter + TextareaBackend
+// ---------------------------------------------------------------------------
+
+/// How key events are translated into edits on a `TextArea` (adr/0012).
+/// The engine is boxed so the `Direct` arm doesn't pay the engine's size
+/// (registers, dot-repeat state, replace stack — ~230 bytes).
+#[derive(Debug, Default)]
+pub enum InputInterpreter {
+    /// Today's behavior: keys go straight to the textarea.
+    #[default]
+    Direct,
+    /// Built-in vim emulation.
+    Vim(Box<VimEngine>),
+}
+
+/// The in-process textarea storage plus its input interpreter.
+#[derive(Debug)]
+pub struct TextareaBackend {
+    pub ta: TextArea<'static>,
+    pub input: InputInterpreter,
+}
+
+impl TextareaBackend {
+    pub fn direct(ta: TextArea<'static>) -> Self {
+        Self {
+            ta,
+            input: InputInterpreter::Direct,
+        }
+    }
+    pub fn vim(ta: TextArea<'static>) -> Self {
+        Self {
+            ta,
+            input: InputInterpreter::Vim(Box::default()),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // BackendState
 // ---------------------------------------------------------------------------
 
 #[allow(clippy::large_enum_variant)]
 pub enum BackendState {
-    Textarea(TextArea<'static>),
+    Textarea(TextareaBackend),
     Nvim(NvimBackend),
 }
 
@@ -84,18 +123,29 @@ impl BackendState {
         matches!(self, BackendState::Textarea(_))
     }
 
+    /// True when the active backend is the built-in vim interpreter (any mode).
+    pub fn is_vim(&self) -> bool {
+        matches!(
+            self,
+            BackendState::Textarea(TextareaBackend {
+                input: InputInterpreter::Vim(_),
+                ..
+            })
+        )
+    }
+
     /// The textarea, when it is the active backend. Textarea-only features
     /// (autocomplete, smart edits, mouse selection) guard on this.
     pub fn as_textarea(&self) -> Option<&TextArea<'static>> {
         match self {
-            BackendState::Textarea(ta) => Some(ta),
+            BackendState::Textarea(tb) => Some(&tb.ta),
             BackendState::Nvim(_) => None,
         }
     }
 
     pub fn as_textarea_mut(&mut self) -> Option<&mut TextArea<'static>> {
         match self {
-            BackendState::Textarea(ta) => Some(ta),
+            BackendState::Textarea(tb) => Some(&mut tb.ta),
             BackendState::Nvim(_) => None,
         }
     }
@@ -111,7 +161,7 @@ impl BackendState {
     /// The whole buffer as one string, whichever backend holds it.
     pub fn text(&self) -> String {
         match self {
-            BackendState::Textarea(ta) => ta.lines().join("\n"),
+            BackendState::Textarea(tb) => tb.ta.lines().join("\n"),
             BackendState::Nvim(nvim) => nvim.snapshot().lines.join("\n"),
         }
     }
@@ -121,7 +171,7 @@ impl BackendState {
     /// lag the real cursor for a frame), matching the snapshot path.
     pub fn cursor(&self) -> (usize, usize) {
         match self {
-            BackendState::Textarea(ta) => super::cursor_tuple(ta),
+            BackendState::Textarea(tb) => super::cursor_tuple(&tb.ta),
             BackendState::Nvim(nvim) => {
                 let snap = nvim.snapshot();
                 let max_row = snap.lines.len().saturating_sub(1);
@@ -139,8 +189,110 @@ impl BackendState {
             _ => return false,
         };
         tracing::warn!("nvim process died; falling back to textarea backend");
-        *self = BackendState::Textarea(TextArea::from(fallback_text.lines()));
+        *self = BackendState::Textarea(TextareaBackend::direct(TextArea::from(
+            fallback_text.lines(),
+        )));
         true
+    }
+
+    /// Reconcile the vim engine mode after a host-driven mouse selection change.
+    /// If a selection now exists and the engine is in Normal, enters Visual.
+    /// If the selection is gone and the engine is in Visual/VisualLine, returns
+    /// to Normal. No-op for Direct / Nvim backends.
+    pub fn vim_sync_mouse_selection(&mut self, has_selection: bool) {
+        if let BackendState::Textarea(TextareaBackend {
+            input: InputInterpreter::Vim(e),
+            ..
+        }) = self
+        {
+            e.sync_mouse_selection(has_selection);
+        }
+    }
+
+    /// True when a bare Space should start the leader: vim backend in Normal
+    /// mode with empty pending state. False for Direct / Nvim backends and for
+    /// vim Insert/Visual modes or any pending state.
+    pub fn vim_space_leads(&self) -> bool {
+        matches!(self,
+            BackendState::Textarea(TextareaBackend { input: InputInterpreter::Vim(e), .. })
+            if e.space_leads())
+    }
+
+    /// True when the active backend is the vim interpreter in charwise Visual
+    /// mode (not VisualLine). Used by the highlight path to extend the end col
+    /// by one so the char under the cursor is visually included.
+    pub fn vim_is_charwise_visual(&self) -> bool {
+        matches!(self,
+            BackendState::Textarea(TextareaBackend { input: InputInterpreter::Vim(e), .. })
+            if *e.mode() == EditorMode::Visual)
+    }
+
+    /// Reset the vim interpreter to Normal mode (called when a fresh note is
+    /// loaded). No-op for Direct / Nvim backends.
+    pub fn vim_reset_to_normal(&mut self) {
+        if let BackendState::Textarea(TextareaBackend {
+            input: InputInterpreter::Vim(engine),
+            ..
+        }) = self
+        {
+            engine.reset_to_normal();
+        }
+    }
+
+    /// If the active backend is the vim interpreter, run it for this key and
+    /// return the outcome. Returns `None` for Direct / Nvim backends.
+    pub fn vim_handle_key(
+        &mut self,
+        key: &ratatui::crossterm::event::KeyEvent,
+    ) -> Option<super::vim::VimKeyOutcome> {
+        match self {
+            BackendState::Textarea(TextareaBackend {
+                ta,
+                input: InputInterpreter::Vim(engine),
+            }) => Some(engine.handle_key(key, ta)),
+            _ => None,
+        }
+    }
+
+    /// The in-progress vim command sequence (count/operator/find/g), for the
+    /// footer hint. Returns `None` for Direct / Nvim backends, or when the
+    /// vim interpreter has no pending state.
+    pub fn vim_pending_hint(&self) -> Option<String> {
+        match self {
+            BackendState::Textarea(TextareaBackend {
+                input: InputInterpreter::Vim(e),
+                ..
+            }) => e.pending_hint(),
+            _ => None,
+        }
+    }
+
+    /// The footer modal-mode label, when the backend has one (nvim, or the
+    /// vim interpreter). `None` for the plain Direct textarea.
+    pub fn mode_label(&self) -> Option<String> {
+        match self {
+            BackendState::Textarea(TextareaBackend {
+                input: InputInterpreter::Vim(engine),
+                ..
+            }) => Some(engine.mode_label()),
+            BackendState::Textarea(_) => None,
+            BackendState::Nvim(nvim) => Some(nvim.snapshot().footer_label()),
+        }
+    }
+
+    /// Alloc-free cursor-shape classifier for the render path.
+    /// `None` = non-modal backend (Direct textarea — leave terminal cursor as-is).
+    /// `Some(true)` = Insert mode (bar cursor).
+    /// `Some(false)` = other modal mode (block cursor).
+    pub fn modal_is_insert(&self) -> Option<bool> {
+        match self {
+            BackendState::Textarea(TextareaBackend {
+                input: InputInterpreter::Vim(e),
+                ..
+            }) => Some(*e.mode() == EditorMode::Insert),
+            BackendState::Textarea(_) => None,
+            BackendState::Nvim(nvim) => Some(nvim.snapshot().mode == EditorMode::Insert),
+        }
     }
 
     pub fn from_settings(
@@ -155,7 +307,15 @@ impl BackendState {
                 }
             }
         }
-        BackendState::Textarea(TextArea::default())
+        let tb = match editor_backend {
+            EditorBackendSetting::Vim => TextareaBackend::vim(TextArea::default()),
+            // Nvim is handled by the early return above; Textarea and any
+            // future non-modal setting use the direct interpreter.
+            EditorBackendSetting::Textarea | EditorBackendSetting::Nvim => {
+                TextareaBackend::direct(TextArea::default())
+            }
+        };
+        BackendState::Textarea(tb)
     }
 }
 
@@ -488,11 +648,11 @@ fn apply_lua_state(
         Some(s) => s,
         None => return,
     };
-    let mode = NvimMode::from_nvim_str(mode_str);
+    let mode = EditorMode::from_nvim_str(mode_str);
 
     let mut snap = snapshot.lock().unwrap_or_else(|p| p.into_inner());
 
-    if mode == NvimMode::Command {
+    if mode == EditorMode::Command {
         let cmdtype = arr
             .get(1)
             .and_then(|v| v.as_str())
@@ -544,7 +704,7 @@ fn apply_lua_state(
 
     // Visual selection: getpos("v") → [bufnum, lnum(1-indexed), col(1-indexed byte offset), off].
     // Convert the 1-indexed byte col to a 0-indexed char index.
-    let visual_selection = if matches!(mode, NvimMode::Visual | NvimMode::VisualLine) {
+    let visual_selection = if matches!(mode, EditorMode::Visual | EditorMode::VisualLine) {
         arr.get(3)
             .and_then(|v| v.as_array())
             .and_then(|p| {
@@ -566,7 +726,7 @@ fn apply_lua_state(
                 } else {
                     (cursor, anchor)
                 };
-                if mode == NvimMode::VisualLine {
+                if mode == EditorMode::VisualLine {
                     start.1 = 0;
                     end.1 = usize::MAX;
                 }
@@ -585,4 +745,50 @@ fn apply_lua_state(
     snap.mode = mode;
     snap.cmdline = None;
     snap.visual_selection = visual_selection;
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui_textarea::TextArea;
+
+    #[test]
+    fn direct_backend_has_no_mode_label() {
+        let b = BackendState::Textarea(TextareaBackend::direct(TextArea::default()));
+        assert_eq!(b.mode_label(), None);
+    }
+
+    #[test]
+    fn vim_backend_reports_normal_label() {
+        let b = BackendState::Textarea(TextareaBackend::vim(TextArea::default()));
+        assert_eq!(b.mode_label().as_deref(), Some("NORMAL"));
+    }
+
+    #[test]
+    fn vim_space_leads_only_for_vim_backend() {
+        assert!(
+            !BackendState::Textarea(TextareaBackend::direct(TextArea::default())).vim_space_leads()
+        );
+        assert!(
+            BackendState::Textarea(TextareaBackend::vim(TextArea::default())).vim_space_leads()
+        );
+    }
+
+    #[test]
+    fn modal_is_insert_classifies_backends() {
+        // Direct textarea → None (non-modal, leave terminal cursor alone).
+        assert_eq!(
+            BackendState::Textarea(TextareaBackend::direct(TextArea::default())).modal_is_insert(),
+            None
+        );
+        // Vim backend starts in Normal mode → Some(false) (block cursor).
+        assert_eq!(
+            BackendState::Textarea(TextareaBackend::vim(TextArea::default())).modal_is_insert(),
+            Some(false)
+        );
+    }
 }

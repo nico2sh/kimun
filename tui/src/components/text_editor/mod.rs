@@ -5,6 +5,7 @@ pub mod nvim_rpc;
 pub mod parse_incremental;
 pub mod snapshot;
 pub mod view;
+mod vim;
 pub mod widener_metrics;
 pub mod word_wrap;
 
@@ -37,9 +38,9 @@ fn snapshot_from_backend(
     content_revision: NonZeroU64,
 ) -> EditorSnapshot<'_> {
     match backend {
-        BackendState::Textarea(ta) => {
-            let cursor = cursor_tuple(ta);
-            EditorSnapshot::borrowed(ta.lines(), cursor, content_revision)
+        BackendState::Textarea(tb) => {
+            let cursor = cursor_tuple(&tb.ta);
+            EditorSnapshot::borrowed(tb.ta.lines(), cursor, content_revision)
         }
         BackendState::Nvim(nvim) => {
             let snap = nvim.snapshot();
@@ -101,7 +102,7 @@ macro_rules! cursor_move {
 
 use self::backend::BackendState;
 use self::markdown::ParsedBuffer;
-use self::snapshot::{EditorSnapshot, NvimMode};
+use self::snapshot::{EditorMode, EditorSnapshot};
 use self::view::MarkdownEditorView;
 use crate::util::single_slot_task::SingleSlotTask;
 
@@ -650,7 +651,7 @@ impl TextEditorComponent {
     /// which reads from the snapshot.
     pub fn lines(&self) -> &[String] {
         match &self.backend {
-            BackendState::Textarea(ta) => ta.lines(),
+            BackendState::Textarea(tb) => tb.ta.lines(),
             BackendState::Nvim(_) => &[],
         }
     }
@@ -711,14 +712,15 @@ impl TextEditorComponent {
             return;
         }
         match &mut self.backend {
-            BackendState::Textarea(ta) => {
+            BackendState::Textarea(tb) => {
                 let lines = text.lines();
-                *ta = TextArea::from(lines);
+                tb.ta = TextArea::from(lines);
             }
             BackendState::Nvim(nvim) => {
                 nvim.set_text(&text);
             }
         }
+        self.backend.vim_reset_to_normal();
         self.bump_content();
         let reconstructed = self.get_text();
         self.mark_saved(reconstructed);
@@ -790,13 +792,20 @@ impl TextEditorComponent {
         }
     }
 
+    /// Whether a bare Space should start the leader (vim Normal mode only).
+    /// Returns `false` for the direct textarea backend, the nvim backend,
+    /// vim Insert/Visual modes, and any pending state.
+    pub fn vim_space_leads(&self) -> bool {
+        self.backend.vim_space_leads()
+    }
+
     /// Returns the link or label target under the cursor, or `None` if the
     /// cursor is not inside a wikilink, markdown link, or hashtag span.
     pub fn link_at_cursor(&self) -> Option<LinkTarget> {
         let (_row, col, line) = match &self.backend {
-            BackendState::Textarea(ta) => {
-                let (row, col) = cursor_tuple(ta);
-                let line = ta.lines().get(row)?.to_string();
+            BackendState::Textarea(tb) => {
+                let (row, col) = cursor_tuple(&tb.ta);
+                let line = tb.ta.lines().get(row)?.to_string();
                 (row, col, line)
             }
             BackendState::Nvim(nvim) => {
@@ -878,14 +887,14 @@ impl TextEditorComponent {
             return;
         }
         match &mut self.backend {
-            BackendState::Textarea(ta) => {
-                let selection = linkable_url(text).and_then(|_| selection_text(ta));
+            BackendState::Textarea(tb) => {
+                let selection = linkable_url(text).and_then(|_| selection_text(&tb.ta));
                 let wrapped = try_build_markdown_link(text, selection.as_deref());
-                if ta.selection_range().is_some() {
-                    ta.cut();
+                if tb.ta.selection_range().is_some() {
+                    tb.ta.cut();
                 }
-                ta.insert_str(wrapped.as_deref().unwrap_or(text));
-                self.selection = ta.selection_range();
+                tb.ta.insert_str(wrapped.as_deref().unwrap_or(text));
+                self.selection = tb.ta.selection_range();
                 self.bump_content();
             }
             BackendState::Nvim(nvim) => {
@@ -1300,7 +1309,7 @@ impl TextEditorComponent {
         } else if key.code == KeyCode::Char('Z') {
             let in_normal = {
                 let snap = nvim.snapshot();
-                snap.mode == NvimMode::Normal
+                snap.mode == EditorMode::Normal
             };
             if in_normal {
                 self.nvim_pending_z = true;
@@ -1313,7 +1322,7 @@ impl TextEditorComponent {
         if key.code == KeyCode::Enter {
             let (is_cmd, cmdline) = {
                 let snap = nvim.snapshot();
-                let cmd = if snap.mode == NvimMode::Command {
+                let cmd = if snap.mode == EditorMode::Command {
                     snap.cmdline
                         .as_deref()
                         .unwrap_or("")
@@ -1322,7 +1331,7 @@ impl TextEditorComponent {
                 } else {
                     String::new()
                 };
-                (snap.mode == NvimMode::Command, cmd)
+                (snap.mode == EditorMode::Command, cmd)
             };
             if is_cmd {
                 let saves = matches!(
@@ -1511,13 +1520,39 @@ impl TextEditorComponent {
             return false;
         };
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-        match state.input.handle_key(key) {
+        let outcome = state.input.handle_key(key);
+        match outcome {
             InputOutcome::Cancel => self.close_search(),
-            InputOutcome::Submit => self.search_advance(shift),
+            InputOutcome::Submit => {
+                if self.backend.is_vim() {
+                    // Vim confirm: keep the textarea search pattern so n/N can
+                    // use it, but close the find bar. Incremental search already
+                    // placed the cursor on the first match — do NOT advance again.
+                    self.search = None;
+                } else {
+                    self.search_advance(shift);
+                }
+            }
             InputOutcome::Changed => self.refresh_search_pattern(true),
             InputOutcome::Consumed | InputOutcome::NotConsumed => {}
         }
         true
+    }
+
+    /// Repeat the last search (vim `n`/`N`) using the textarea's persisted
+    /// pattern, even when the find bar is closed.
+    fn vim_search_repeat(&mut self, backward: bool) {
+        let found = {
+            let Some(ta) = self.backend.as_textarea_mut() else {
+                return;
+            };
+            if backward {
+                ta.search_back(false)
+            } else {
+                ta.search_forward(false)
+            }
+        };
+        self.highlight_current_match(found);
     }
 
     /// Handle a key event when using the Textarea backend.
@@ -1991,6 +2026,78 @@ impl Component for TextEditorComponent {
                         HandleKeyOutcome::NotHandled => {}
                     }
                 }
+                // Find bar intercepts all keys while active. Must run before the
+                // vim engine, which would otherwise consume keys in Normal mode
+                // (the textarea backend also intercepts inside handle_textarea_key,
+                // but the vim Normal-mode path never reaches that).
+                if self.search.is_some() && self.handle_search_key(key) {
+                    return EventState::Consumed;
+                }
+                // Vim interpreter: Normal/Visual consume the key here; Insert
+                // mode returns PassThrough and falls into the direct path below
+                // so typing, autocomplete, auto-surround and smart-Enter all
+                // keep working (adr/0012).
+                if let Some(outcome) = self.backend.vim_handle_key(key) {
+                    use self::vim::VimKeyOutcome;
+                    match outcome {
+                        VimKeyOutcome::TextMutated => {
+                            self.selection = None;
+                            self.bump_content();
+                            return EventState::Consumed;
+                        }
+                        VimKeyOutcome::CursorOnly => {
+                            // Mirror the textarea's selection into self.selection so
+                            // Visual mode renders through the existing selection pipeline.
+                            // For non-visual CursorOnly (plain motion), selection_range()
+                            // returns None → self.selection = None (no regression).
+                            self.selection = self
+                                .backend
+                                .as_textarea()
+                                .and_then(|ta| ta.selection_range());
+                            // Charwise Visual highlight: extend end col by 1 so the
+                            // char under the cursor is visually included (vim inclusive).
+                            // VisualLine uses a separate rendering path (full-line) and
+                            // is left unchanged.
+                            if self.backend.vim_is_charwise_visual()
+                                && let Some(((sr, sc), (er, ec))) = self.selection
+                            {
+                                let len = self
+                                    .backend
+                                    .as_textarea()
+                                    .and_then(|ta| ta.lines().get(er))
+                                    .map(|l| l.chars().count())
+                                    .unwrap_or(ec);
+                                self.selection = Some(((sr, sc), (er, (ec + 1).min(len))));
+                            }
+                            self.refresh_autocomplete_if_open();
+                            self.edit_generation = self.edit_generation.wrapping_add(1);
+                            return EventState::Consumed;
+                        }
+                        VimKeyOutcome::NoOp => return EventState::Consumed,
+                        VimKeyOutcome::PassThrough => { /* fall through to direct path */ }
+                        VimKeyOutcome::Host(action) => {
+                            use self::vim::VimHostAction;
+                            match action {
+                                VimHostAction::OpenPalette => {
+                                    // Reuse the existing palette gateway.
+                                    tx.send(AppEvent::ExecuteLeaderAction(
+                                        crate::keys::leader::LeaderAction::Palette,
+                                    ))
+                                    .ok();
+                                }
+                                VimHostAction::OpenSearch { forward: _ } => {
+                                    // `/` and `?` open the existing find bar.
+                                    // (`?` backward-first is a later refinement;
+                                    // n/N still navigate both directions.)
+                                    self.open_or_advance_search();
+                                }
+                                VimHostAction::SearchNext => self.vim_search_repeat(false),
+                                VimHostAction::SearchPrev => self.vim_search_repeat(true),
+                            }
+                            return EventState::Consumed;
+                        }
+                    }
+                }
                 if let Some(state) = self.handle_nvim_key(key, tx) {
                     return state;
                 }
@@ -2049,6 +2156,22 @@ impl Component for TextEditorComponent {
                         None => {}
                     }
                 }
+                // Plan 3 Task 5: reconcile the vim engine mode from whether the
+                // textarea selection is live after the mouse event. A drag that
+                // creates a selection enters Visual; a click that clears one
+                // returns to Normal. Insert mode is left untouched (the engine
+                // match arm is a no-op for all modes other than Normal/Visual).
+                // A bare click leaves a collapsed (zero-width) selection active
+                // because handle_mouse's Down arm calls start_selection().
+                // Only treat a NON-EMPTY selection as "real" to avoid flipping
+                // vim Normal→Visual on a plain click.  Mirrors the same guard
+                // at ~line 1014 which protects auto-indent from collapsed sel.
+                let has_sel = self
+                    .backend
+                    .as_textarea()
+                    .and_then(|ta| ta.selection_range())
+                    .is_some_and(|(s, e)| s != e);
+                self.backend.vim_sync_mouse_selection(has_sel);
                 result
             }
             // Bracketed paste is intercepted by EditorScreen so it can run the
@@ -2145,7 +2268,14 @@ impl Component for TextEditorComponent {
         // (set via set_cursor_position) wins over the editor's caret call.
         let bar_focused = self.search.is_some() && focused;
         let editor_focused = focused && !bar_focused;
-        self.view.render(f, editor_rect, theme, editor_focused);
+        use self::view::CursorShape;
+        let cursor_shape = match self.backend.modal_is_insert() {
+            None => None, // Direct textarea — leave terminal default
+            Some(true) => Some(CursorShape::Bar),
+            Some(false) => Some(CursorShape::Block),
+        };
+        self.view
+            .render(f, editor_rect, theme, editor_focused, cursor_shape);
 
         // Search-match emphasis (spec §5.1): paint needle matches and task
         // checkboxes over the rendered viewport. Buffer-level post-pass —
@@ -2224,9 +2354,14 @@ impl Component for TextEditorComponent {
     fn hint_shortcuts(&self) -> Vec<(String, String)> {
         use crate::keys::action_shortcuts::ActionShortcuts;
 
-        // For the Nvim backend, prepend the current mode as the first "hint".
-        if let Some(nvim) = self.backend.as_nvim() {
-            let label = nvim.snapshot().footer_label();
+        // Prepend the modal-mode label (nvim or vim) as the first "hint".
+        // When the vim interpreter has a pending command sequence (e.g. "2d",
+        // "f", ">"), append it to the label so the user can see what they have
+        // typed so far.
+        if let Some(mut label) = self.backend.mode_label() {
+            if let Some(p) = self.backend.vim_pending_hint() {
+                label = format!("{label}  {p}");
+            }
             let mut hints = vec![(String::new(), label)];
             hints.extend(
                 [
@@ -2297,7 +2432,7 @@ mod tests {
 
     fn get_ta(editor: &mut TextEditorComponent) -> &mut TextArea<'static> {
         match &mut editor.backend {
-            BackendState::Textarea(ta) => ta,
+            BackendState::Textarea(tb) => &mut tb.ta,
             _ => panic!("expected Textarea backend"),
         }
     }
@@ -2453,8 +2588,8 @@ mod tests {
         ta.move_cursor(ratatui_textarea::CursorMove::WordForward);
         assert!(ta.selection_range().is_some());
         ta.cancel_selection();
-        editor.selection = if let BackendState::Textarea(ta) = &editor.backend {
-            ta.selection_range()
+        editor.selection = if let BackendState::Textarea(tb) = &editor.backend {
+            tb.ta.selection_range()
         } else {
             None
         };
@@ -3389,5 +3524,200 @@ mod tests {
             matches!(result, Some(LinkTarget::Note(_))),
             "expected Note variant for markdown link fragment, got {result:?}"
         );
+    }
+
+    #[test]
+    fn vim_normal_i_then_typing_inserts_text() {
+        let mut settings = crate::settings::AppSettings::default();
+        settings.editor_backend = crate::settings::EditorBackendSetting::Vim;
+        let mut editor = TextEditorComponent::new(KeyBindings::empty(), &settings);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        // In Normal mode, 'x' is unmapped → no text change.
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('x'), KeyModifiers::NONE)),
+            &tx,
+        );
+        assert_eq!(editor.get_text(), "");
+        // 'i' enters Insert; then 'x' types a literal x via the direct path.
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('i'), KeyModifiers::NONE)),
+            &tx,
+        );
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('x'), KeyModifiers::NONE)),
+            &tx,
+        );
+        assert_eq!(editor.get_text(), "x");
+    }
+
+    /// Helper: construct a vim-backend editor.
+    fn make_vim_editor() -> TextEditorComponent {
+        let mut settings = crate::settings::AppSettings::default();
+        settings.editor_backend = crate::settings::EditorBackendSetting::Vim;
+        TextEditorComponent::new(KeyBindings::empty(), &settings)
+    }
+
+    /// Helper: extract the current vim EditorMode, panicking if the backend
+    /// is not a vim textarea (so test failures are obvious).
+    fn vim_mode(editor: &TextEditorComponent) -> EditorMode {
+        match &editor.backend {
+            BackendState::Textarea(tb) => match &tb.input {
+                backend::InputInterpreter::Vim(e) => e.mode().clone(),
+                _ => panic!("expected Vim input interpreter"),
+            },
+            _ => panic!("expected Textarea backend"),
+        }
+    }
+
+    /// Regression: a bare left click (Down with no Drag) must NOT flip
+    /// vim Normal → Visual.  The textarea's Down arm calls `start_selection()`
+    /// which leaves a collapsed (start==end) selection; the fix at ~line 2124
+    /// uses `.is_some_and(|(s, e)| s != e)` to require a non-empty selection
+    /// before treating it as "real" (mirrors the same guard at ~line 1014).
+    ///
+    /// We test `vim_sync_mouse_selection` directly (the exact code that was
+    /// broken) rather than routing through `handle_input` → `handle_mouse`,
+    /// which needs a fully rendered view to resolve screen→logical coordinates.
+    #[test]
+    fn vim_sync_collapsed_sel_stays_normal() {
+        let mut editor = make_vim_editor();
+        editor.set_text("hello world".to_string());
+
+        // Sanity: starts in Normal.
+        assert_eq!(vim_mode(&editor), EditorMode::Normal);
+
+        // A bare click leaves has_sel == false (collapsed selection filtered
+        // out by the is_some_and guard).  Sync with no selection must keep Normal.
+        editor.backend.vim_sync_mouse_selection(false);
+        assert_eq!(
+            vim_mode(&editor),
+            EditorMode::Normal,
+            "collapsed (bare click) selection must not enter Visual mode"
+        );
+    }
+
+    /// A drag that creates a real (non-empty) selection DOES enter Visual mode.
+    #[test]
+    fn vim_sync_real_sel_enters_visual() {
+        let mut editor = make_vim_editor();
+        editor.set_text("hello world".to_string());
+
+        // Sanity: starts in Normal.
+        assert_eq!(vim_mode(&editor), EditorMode::Normal);
+
+        // A drag with start != end yields has_sel == true.
+        editor.backend.vim_sync_mouse_selection(true);
+        assert_eq!(
+            vim_mode(&editor),
+            EditorMode::Visual,
+            "real drag selection must enter Visual mode"
+        );
+    }
+
+    /// Regression: with the find bar open in vim Normal mode, typed keys must
+    /// go into the find query, NOT be processed by the vim engine (which would
+    /// treat 'l'/'o' as motions and move the cursor).
+    #[test]
+    fn vim_find_bar_captures_typing_not_cursor() {
+        let mut editor = make_vim_editor();
+        editor.set_text("hello world\nsecond line".to_string());
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        // Open the find bar (same path as the '/' key: OpenSearch → open_or_advance_search).
+        editor.open_or_advance_search();
+        assert!(editor.search.is_some(), "find bar must be open");
+
+        // Type "lo" — should go into the find query, not be processed as vim motions.
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('l'), KeyModifiers::NONE)),
+            &tx,
+        );
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('o'), KeyModifiers::NONE)),
+            &tx,
+        );
+
+        // Find query must capture "lo". This proves keys went to the find bar
+        // and not the vim engine (which would treat 'l' as a rightward motion
+        // and 'o' as Open-line-below, mutating the buffer).
+        let q = editor
+            .search
+            .as_ref()
+            .map(|s| s.input.value().to_string())
+            .unwrap_or_default();
+        assert_eq!(q, "lo", "find query must capture typed characters");
+
+        // Buffer must be unchanged — 'o' in vim Normal mode inserts a new line,
+        // so a mutated buffer means the key escaped to the vim engine.
+        assert_eq!(
+            editor.get_text(),
+            "hello world\nsecond line",
+            "buffer must not be modified while find bar is open"
+        );
+
+        // The cursor is allowed to move to the first search match (that is
+        // correct search behaviour — refresh_search_pattern jumps to the hit).
+        // What must NOT happen is a vim motion: 'l' in Normal mode would leave
+        // the cursor at col 1 with no query update; here it must be at the
+        // "lo" match col instead (3 — the second 'l' in "hello").
+        assert_eq!(
+            editor.cursor_pos().1,
+            3,
+            "cursor must jump to the search match (col 3), not to a vim motion position"
+        );
+    }
+
+    /// Vim `/pattern` then Enter confirms the search: the find bar closes, the
+    /// cursor stays on the first match, and `n` / `N` navigate subsequent matches.
+    #[test]
+    fn vim_search_enter_confirms_and_n_navigates() {
+        let mut editor = make_vim_editor();
+        // Three "lo" at cols 0, 6, 12 on a single line.
+        editor.set_text("lo xx lo yy lo".to_string());
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        // Open the find bar (same path as the '/' key: OpenSearch → open_or_advance_search).
+        editor.open_or_advance_search();
+        assert!(editor.search.is_some(), "find bar must open");
+
+        // Type "lo" — keys go into the find query (incremental search).
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('l'), KeyModifiers::NONE)),
+            &tx,
+        );
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('o'), KeyModifiers::NONE)),
+            &tx,
+        );
+
+        // Enter confirms in vim mode: closes the bar, cursor stays on match.
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Enter, KeyModifiers::NONE)),
+            &tx,
+        );
+        assert!(
+            editor.search.is_none(),
+            "find bar must close after Enter in vim mode"
+        );
+
+        // After confirming, 'n' must navigate to the NEXT match, not type into
+        // the (now-closed) find bar. Incremental search left the cursor at the
+        // first "lo" (col 0); 'n' should jump to the second one (col 6).
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('n'), KeyModifiers::NONE)),
+            &tx,
+        );
+        let (_, c1) = editor.cursor_pos();
+        assert_eq!(c1, 6, "'n' must jump to the 2nd 'lo' at col 6");
+
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('n'), KeyModifiers::NONE)),
+            &tx,
+        );
+        let (_, c2) = editor.cursor_pos();
+        assert_eq!(c2, 12, "'n' must jump to the 3rd 'lo' at col 12");
+
+        // The buffer must never have been modified.
+        assert_eq!(editor.get_text(), "lo xx lo yy lo");
     }
 }

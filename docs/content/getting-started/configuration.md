@@ -51,7 +51,7 @@ Most edits are one of these:
 | Setting | What it does |
 |---|---|
 | `theme` | TUI theme name, e.g. `theme = "Nord"`. Empty = built-in default. See [Themes](@/using-kimun/themes.md). |
-| `editor_backend` | `"textarea"` (built-in editor) or `"nvim"` (embedded Neovim; see [Editor Backend](#editor-backend)). |
+| `editor_backend` | `"textarea"` (built-in editor), `"vim"` (built-in vim emulation), or `"nvim"` (embedded Neovim). See [Editor Backend](#editor-backend). |
 | `[workspaces.<name>].path` | Where your notes live. |
 | `autosave_interval_secs` | How often unsaved changes hit disk (seconds). |
 | `use_nerd_fonts` | Fancy glyphs, if your terminal font has Nerd Font patches. |
@@ -82,7 +82,7 @@ The file has five kinds of contents:
 | `autosave_interval_secs` | integer | `5` | How often unsaved changes are written to disk (seconds). |
 | `leader_timeout_ms` | integer | `400` | Hesitation (milliseconds) before the which-key panel reveals itself during a pending leader sequence. Sequences typed faster never wait. |
 | `use_nerd_fonts` | boolean | `false` | Enable Nerd Font glyphs in the TUI. Leave `false` if your terminal's font doesn't include Nerd Font patches. |
-| `editor_backend` | string | `"textarea"` | Editor engine. `"textarea"` = built-in editor. `"nvim"` = embedded Neovim. |
+| `editor_backend` | string | `"textarea"` | Editor engine. `"textarea"` = built-in editor. `"vim"` = built-in vim emulation. `"nvim"` = embedded Neovim. Also editable from the Preferences window (Editor section). |
 | `nvim_path` | string | *(unset)* | Absolute path to the `nvim` binary. Only needed when Neovim is not on `PATH`. |
 | `default_sort_field` | string | `"name"` | Sort field for the note browser. One of `"name"`, `"title"`. |
 | `default_sort_order` | string | `"ascending"` | Sort direction for the note browser. One of `"ascending"`, `"descending"`. |
@@ -151,7 +151,17 @@ The `path` field accepts three formats:
 
 ### Editor Backend
 
-By default, Kimün uses a built-in textarea for editing. Switch to [Neovim](https://neovim.io/) to get modal editing, custom keymaps, plugins, and whatever else your `init.lua` provides:
+By default, Kimün uses a built-in textarea for editing. Two alternatives exist, and you can also switch between them from the Preferences window (Editor section) — the change applies the next time you open a note.
+
+For modal editing without any external dependency, use the built-in vim emulation:
+
+```toml
+editor_backend = "vim"
+```
+
+It layers vim's Normal/Insert/Replace/Visual modes over the built-in editor: motions, counts, operators (`d`/`c`/`y`, case ops, text objects like `diw` and `ci"`), registers, dot-repeat, `f`/`t` finds, and more — while keeping every textarea feature (autocomplete, auto-surround, smart-Enter, the styled markdown view) in Insert mode. The full command table lives in [Vim Mode](@/using-kimun/vim-mode.md).
+
+Or switch to [Neovim](https://neovim.io/) to get modal editing, custom keymaps, plugins, and whatever else your `init.lua` provides:
 
 ```toml
 editor_backend = "nvim"
