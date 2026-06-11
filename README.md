@@ -42,7 +42,9 @@ Do you want to know more? ⭐️🚀 Check out our official documentation site f
   * **TUI (Terminal User Interface):** An elegant, interactive pane for capturing thoughts, browsing workspaces, and previewing files.
   * **CLI (Command Line Interface):** Fully scriptable. Pipe outputs, log entries via cron jobs, and manipulate entries using `jq` and shell tools.
 * 🗂️ **Workspaces in Context:** Effortlessly separate your notes into distinct contexts (e.g., `Personal` vs `Work`) using multiple independent vaults.
-* 🟢 **Embedded Neovim Mode:** Power users rejoice! Utilize standard `HJKL` navigation, native motions, and search-and-replace routines without breaking context.
+* 🟢 **Vim ready:** Power users rejoice! You can navigate with `HJKL` and more with either:
+  * Vim emulation: fully baked in in the app, you have Vim motions, vim Visual mode, even replace mode, and more! While having the rich editor capabilities.
+  * Embedded Neovim Mode: In case you want to use your own config from Neovim, you can use Neovim in embedded mode too.
 
 ---
 
