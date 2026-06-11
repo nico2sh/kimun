@@ -69,6 +69,12 @@ pub struct MarkdownEditorView {
     /// overlays like the autocomplete popup, which is drawn after the
     /// editor itself.
     pub last_cursor_screen: Option<(u16, u16)>,
+    /// Cursor style last written to the terminal, or `None` when the
+    /// terminal is on the user's default shape. The terminal cursor style
+    /// is global state, so on focus loss we must emit an explicit reset —
+    /// otherwise the editor's bar/block shape leaks into every other text
+    /// input (search sidebar, dialogs).
+    applied_cursor_style: Option<CursorShape>,
     /// Per-line parse cache built in `update()`. Eliminates redundant pulldown-cmark
     /// invocations across `render()`, cursor placement, and click mapping.
     /// Either a Real or Placeholder parse — see [`ParseState`].
@@ -201,6 +207,7 @@ impl MarkdownEditorView {
             code_box_width: Vec::new(),
             gutter_insets: Vec::new(),
             last_cursor_screen: None,
+            applied_cursor_style: None,
             // Empty buffer, spliceable — preserves the previous
             // `placeholder_active: false` initial state.
             parse_state: ParseState::Real(ParsedBuffer::placeholder(&[])),
@@ -997,6 +1004,7 @@ impl MarkdownEditorView {
         // there to absorb stale Nvim snapshots where cursor outran
         // lines, which the snapshot invariant now rules out.
         self.last_cursor_screen = None;
+        let mut desired_style: Option<CursorShape> = None;
         if focused
             && !self.parse_state.buf().lines.is_empty()
             && !self.layout.visual_lines().is_empty()
@@ -1021,18 +1029,18 @@ impl MarkdownEditorView {
                 let cy = rect.y + (cursor_vrow - scroll) as u16;
                 f.set_cursor_position(Position { x: cx, y: cy });
                 self.last_cursor_screen = Some((cx, cy));
-                // TODO(cursor-style): the requested style lingers in other UI
-                // surfaces when the editor loses focus; emit a reset on focus
-                // loss in a later focus-management cleanup task.
-                if let Some(shape) = cursor_shape {
-                    use ratatui::crossterm::cursor::SetCursorStyle;
-                    let style = match shape {
-                        CursorShape::Block => SetCursorStyle::SteadyBlock,
-                        CursorShape::Bar => SetCursorStyle::SteadyBar,
-                    };
-                    let _ = ratatui::crossterm::execute!(std::io::stdout(), style);
-                }
+                desired_style = cursor_shape;
             }
+        }
+        if desired_style != self.applied_cursor_style {
+            use ratatui::crossterm::cursor::SetCursorStyle;
+            let style = match desired_style {
+                Some(CursorShape::Block) => SetCursorStyle::SteadyBlock,
+                Some(CursorShape::Bar) => SetCursorStyle::SteadyBar,
+                None => SetCursorStyle::DefaultUserShape,
+            };
+            let _ = ratatui::crossterm::execute!(std::io::stdout(), style);
+            self.applied_cursor_style = desired_style;
         }
     }
 
