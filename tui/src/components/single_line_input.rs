@@ -40,6 +40,11 @@ pub struct SingleLineInput {
     /// `render` call. Used by overlays anchored on the caret (e.g. the
     /// hashtag autocomplete popup). `None` until the first render.
     last_caret_pos: Option<(u16, u16)>,
+    /// Horizontal scroll offset in display columns, updated on render so the
+    /// caret stays inside the visible window when the value overflows the
+    /// rect. Kept across renders so the cursor can move within the window
+    /// without the text shifting under it.
+    scroll_x: u16,
 }
 
 impl SingleLineInput {
@@ -54,6 +59,7 @@ impl SingleLineInput {
             value,
             cursor,
             last_caret_pos: None,
+            scroll_x: 0,
         }
     }
 
@@ -202,7 +208,13 @@ impl SingleLineInput {
             width: rect.width.saturating_sub(value_offset_x),
             ..rect
         };
-        f.render_widget(Paragraph::new(self.value.as_str()).style(style), inner);
+        let scroll_x = self.scroll_into_view(inner.width);
+        f.render_widget(
+            Paragraph::new(self.value.as_str())
+                .style(style)
+                .scroll((0, scroll_x)),
+            inner,
+        );
         self.place_caret(f, inner, focused);
     }
 
@@ -223,8 +235,36 @@ impl SingleLineInput {
             width: rect.width.saturating_sub(value_offset_x),
             ..rect
         };
-        f.render_widget(Paragraph::new(line).style(base_style), inner);
+        let scroll_x = self.scroll_into_view(inner.width);
+        f.render_widget(
+            Paragraph::new(line).style(base_style).scroll((0, scroll_x)),
+            inner,
+        );
         self.place_caret(f, inner, focused);
+    }
+
+    /// Adjust the horizontal scroll so the caret falls inside a window of
+    /// `width` display columns, and return the resulting offset. Scrolls only
+    /// when the caret crosses a window edge, so cursor movement inside the
+    /// window leaves the text in place.
+    fn scroll_into_view(&mut self, width: u16) -> u16 {
+        if width == 0 {
+            self.scroll_x = 0;
+            return 0;
+        }
+        // The caret can sit one column past the last char, so the maximum
+        // useful offset keeps that extra cell — not just the last char —
+        // inside the window. Also clamps stale offsets after the value shrank.
+        let total = u16::try_from(self.display_width()).unwrap_or(u16::MAX);
+        let max_scroll = total.saturating_add(1).saturating_sub(width);
+        self.scroll_x = self.scroll_x.min(max_scroll);
+        let cursor_col = u16::try_from(self.cursor_display_col()).unwrap_or(u16::MAX);
+        if cursor_col < self.scroll_x {
+            self.scroll_x = cursor_col;
+        } else if cursor_col >= self.scroll_x.saturating_add(width) {
+            self.scroll_x = cursor_col - (width - 1);
+        }
+        self.scroll_x
     }
 
     /// Shared caret placement for both render paths.
@@ -233,7 +273,7 @@ impl SingleLineInput {
         if focused {
             let caret_x = inner
                 .x
-                .saturating_add(self.cursor_display_col() as u16)
+                .saturating_add((self.cursor_display_col() as u16).saturating_sub(self.scroll_x))
                 .min(inner.x + inner.width.saturating_sub(1));
             f.set_cursor_position(Position {
                 x: caret_x,
@@ -405,5 +445,81 @@ mod tests {
         i.clear();
         assert!(i.is_empty());
         assert_eq!(i.cursor_char_offset(), 0);
+    }
+
+    mod rendering {
+        use super::*;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        fn draw(
+            i: &mut SingleLineInput,
+            width: u16,
+        ) -> (Terminal<TestBackend>, Option<(u16, u16)>) {
+            let mut terminal = Terminal::new(TestBackend::new(width, 1)).unwrap();
+            terminal
+                .draw(|f| {
+                    i.render(f, Rect::new(0, 0, width, 1), Style::default(), 0, true);
+                })
+                .unwrap();
+            let caret = i.last_caret_pos();
+            (terminal, caret)
+        }
+
+        fn row(terminal: &Terminal<TestBackend>, width: u16) -> String {
+            let buf = terminal.backend().buffer();
+            (0..width).map(|x| buf[(x, 0)].symbol()).collect()
+        }
+
+        #[test]
+        fn short_value_renders_from_start() {
+            let mut i = SingleLineInput::with_value("abc");
+            let (t, caret) = draw(&mut i, 10);
+            assert_eq!(row(&t, 10), "abc       ");
+            assert_eq!(caret, Some((3, 0)));
+        }
+
+        #[test]
+        fn long_value_scrolls_to_keep_caret_visible() {
+            // 15 chars in a 10-wide rect, cursor at end: scroll 6 cols so the
+            // caret cell after the last char is the rightmost column.
+            let mut i = SingleLineInput::with_value("abcdefghijklmno");
+            let (t, caret) = draw(&mut i, 10);
+            assert_eq!(row(&t, 10), "ghijklmno ");
+            assert_eq!(caret, Some((9, 0)));
+        }
+
+        #[test]
+        fn cursor_moves_inside_window_without_scrolling() {
+            let mut i = SingleLineInput::with_value("abcdefghijklmno");
+            draw(&mut i, 10); // establishes scroll = 6
+            for _ in 0..3 {
+                i.handle_key(&k(KeyCode::Left));
+            }
+            // Cursor col 12 still inside [6, 16) — window must not move.
+            let (t, caret) = draw(&mut i, 10);
+            assert_eq!(row(&t, 10), "ghijklmno ");
+            assert_eq!(caret, Some((6, 0)));
+        }
+
+        #[test]
+        fn cursor_past_left_edge_scrolls_back() {
+            let mut i = SingleLineInput::with_value("abcdefghijklmno");
+            draw(&mut i, 10); // scroll = 6
+            i.handle_key(&k(KeyCode::Home));
+            let (t, caret) = draw(&mut i, 10);
+            assert_eq!(row(&t, 10), "abcdefghij");
+            assert_eq!(caret, Some((0, 0)));
+        }
+
+        #[test]
+        fn shrinking_value_clamps_scroll() {
+            let mut i = SingleLineInput::with_value("abcdefghijklmno");
+            draw(&mut i, 10); // scroll = 6
+            i.set_value("abc");
+            let (t, caret) = draw(&mut i, 10);
+            assert_eq!(row(&t, 10), "abc       ");
+            assert_eq!(caret, Some((3, 0)));
+        }
     }
 }
