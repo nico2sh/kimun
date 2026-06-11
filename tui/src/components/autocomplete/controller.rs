@@ -792,10 +792,19 @@ mod tests {
     }
 
     async fn drain_results(controller: &mut AutocompleteController) {
-        // The spawned query task completes promptly on an in-memory DB;
-        // yield once to let it run and post the result.
-        tokio::task::yield_now().await;
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        // The query task hits SQLite on a real temp-dir vault, so its
+        // completion time varies with machine load — a fixed sleep is
+        // flaky on busy CI runners. The result is sent on the channel
+        // before the task future returns, so "task finished" guarantees
+        // the result is ready to poll.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        while controller.in_flight.is_in_flight() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "query task did not finish within 10s"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
         controller.poll_results();
     }
 
