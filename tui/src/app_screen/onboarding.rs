@@ -1,7 +1,8 @@
-//! The Onboarding screen — Kimün's guided setup. One screen, five steps
-//! (workspace → nerd fonts → theme → editor backend → summary), rendered as
-//! a centered dialog floating over a blank backdrop so it reads as a setup
-//! assistant running *for* the app rather than a screen *of* the app.
+//! The Onboarding screen — Kimün's guided setup. One screen, six steps
+//! (welcome → workspace → nerd fonts → theme → editor backend → summary),
+//! rendered as a centered dialog floating over a blank backdrop so it reads
+//! as a setup assistant running *for* the app rather than a screen *of* the
+//! app.
 //!
 //! Choices are staged in a local [`Draft`] and committed only when the user
 //! finishes the summary step (`AppEvent::OnboardingFinished`); Esc discards.
@@ -10,7 +11,7 @@
 use async_trait::async_trait;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 
@@ -28,6 +29,7 @@ use crate::settings::{AppSettings, EditorBackendSetting, SharedSettings};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OnbStep {
+    Welcome,
     Workspace,
     NerdFonts,
     Theme,
@@ -36,7 +38,8 @@ pub enum OnbStep {
 }
 
 impl OnbStep {
-    pub(crate) const ORDER: [OnbStep; 5] = [
+    pub(crate) const ORDER: [OnbStep; 6] = [
+        OnbStep::Welcome,
         OnbStep::Workspace,
         OnbStep::NerdFonts,
         OnbStep::Theme,
@@ -176,7 +179,7 @@ impl OnboardingScreen {
             settings,
             theme,
             icons,
-            step: OnbStep::Workspace,
+            step: OnbStep::Welcome,
             first_run,
             draft,
             themes,
@@ -304,11 +307,19 @@ impl OnboardingScreen {
 
     fn handle_step_key(&mut self, key: &KeyEvent, tx: &AppTx) {
         match self.step {
+            OnbStep::Welcome => self.welcome_step_key(key),
             OnbStep::Workspace => self.workspace_step_key(key),
             OnbStep::NerdFonts => self.nerd_fonts_step_key(key),
             OnbStep::Theme => self.theme_step_key(key),
             OnbStep::Backend => self.backend_step_key(key),
             OnbStep::Summary => self.summary_step_key(key, tx),
+        }
+    }
+
+    fn welcome_step_key(&mut self, key: &KeyEvent) {
+        // Only Enter advances; Left/Right/Esc are caught by handle_input.
+        if key.code == KeyCode::Enter {
+            self.go_next();
         }
     }
 
@@ -494,12 +505,24 @@ impl OnboardingScreen {
 // ── Rendering ─────────────────────────────────────────────────────────────────
 
 impl OnboardingScreen {
+    /// Dialog rect: percentage-sized but capped so big terminals don't get a
+    /// sparse, oversized box. Content is designed for ~66×24.
+    fn dialog_rect(area: Rect) -> Rect {
+        let w = (area.width as u32 * 62 / 100).min(66) as u16;
+        let h = (area.height as u32 * 75 / 100).min(24) as u16;
+        crate::components::fixed_centered_rect(
+            w.max(40).min(area.width),
+            h.max(14).min(area.height),
+            area,
+        )
+    }
+
     fn render_dialog(&mut self, f: &mut Frame) {
         // Backdrop: a flat, empty surface in the preview theme. Nothing of
         // the app shows through — the dialog is the only thing on screen.
         f.render_widget(Block::default().style(self.theme.base_style()), f.area());
 
-        let area = crate::components::centered_rect(62, 75, f.area());
+        let area = Self::dialog_rect(f.area());
         f.render_widget(Clear, area);
         let block = Block::default()
             .title(" Kimün Setup ")
@@ -515,19 +538,28 @@ impl OnboardingScreen {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(2), // header: step title + progress
-                Constraint::Min(0),    // step body
+                Constraint::Min(0),    // step body (inset)
                 Constraint::Length(1), // flash line
                 Constraint::Length(1), // key hints
             ])
             .split(inner);
 
         self.render_header(f, rows[0]);
+
+        // Add horizontal breathing room around the body.
+        let body_area = Rect {
+            x: rows[1].x + 2,
+            width: rows[1].width.saturating_sub(4),
+            ..rows[1]
+        };
+
         match self.step {
-            OnbStep::Workspace => self.render_workspace_step(f, rows[1]),
-            OnbStep::NerdFonts => self.render_nerd_fonts_step(f, rows[1]),
-            OnbStep::Theme => self.render_theme_step(f, rows[1]),
-            OnbStep::Backend => self.render_backend_step(f, rows[1]),
-            OnbStep::Summary => self.render_summary_step(f, rows[1]),
+            OnbStep::Welcome => self.render_welcome_step(f, body_area),
+            OnbStep::Workspace => self.render_workspace_step(f, body_area),
+            OnbStep::NerdFonts => self.render_nerd_fonts_step(f, body_area),
+            OnbStep::Theme => self.render_theme_step(f, body_area),
+            OnbStep::Backend => self.render_backend_step(f, body_area),
+            OnbStep::Summary => self.render_summary_step(f, body_area),
         }
         if let Some(msg) = &self.flash {
             f.render_widget(
@@ -548,29 +580,41 @@ impl OnboardingScreen {
             .collect::<Vec<_>>()
             .join(" ");
         let title = match self.step {
+            OnbStep::Welcome => "Welcome",
             OnbStep::Workspace => "Workspace",
             OnbStep::NerdFonts => "Nerd Fonts",
             OnbStep::Theme => "Theme",
             OnbStep::Backend => "Editor Backend",
             OnbStep::Summary => "Summary",
         };
+
+        // Split the 2-row header area into title line and progress line.
+        let header_rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Length(1)])
+            .split(area);
+
         f.render_widget(
-            Paragraph::new(format!(
-                " {title}   {dots}   {} / {}",
-                idx + 1,
-                OnbStep::ORDER.len()
-            ))
-            .style(
-                Style::default()
-                    .fg(self.theme.accent.to_ratatui())
-                    .add_modifier(Modifier::BOLD),
-            ),
-            area,
+            Paragraph::new(title)
+                .alignment(Alignment::Center)
+                .style(
+                    Style::default()
+                        .fg(self.theme.accent.to_ratatui())
+                        .add_modifier(Modifier::BOLD),
+                ),
+            header_rows[0],
+        );
+        f.render_widget(
+            Paragraph::new(format!("{dots}   {} / {}", idx + 1, OnbStep::ORDER.len()))
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(self.theme.fg_secondary.to_ratatui())),
+            header_rows[1],
         );
     }
 
     fn render_hints(&self, f: &mut Frame, area: Rect) {
         let hints = match self.step {
+            OnbStep::Welcome => " Enter: start  ←/→: steps  Esc: cancel",
             OnbStep::Workspace if self.first_run => {
                 " Enter: accept  b: browse  e: edit name  ←/→: steps  Esc: cancel"
             }
@@ -579,7 +623,29 @@ impl OnboardingScreen {
         };
         f.render_widget(
             Paragraph::new(hints)
+                .alignment(Alignment::Center)
                 .style(Style::default().fg(self.theme.fg_secondary.to_ratatui())),
+            area,
+        );
+    }
+
+    fn render_welcome_step(&mut self, f: &mut Frame, area: Rect) {
+        let text = "Welcome to Kimün!\n\
+            \n\
+            This guided setup walks you through the essentials —\n\
+            where your notes live, how the app looks, and which\n\
+            editor engine drives it. One setting per step, each\n\
+            explained as you go.\n\
+            \n\
+            Nothing is applied until you confirm the final summary,\n\
+            and everything stays adjustable later in Preferences.\n\
+            \n\
+            Press Enter to begin.";
+        f.render_widget(
+            Paragraph::new(text)
+                .style(self.theme.base_style())
+                .alignment(Alignment::Center)
+                .wrap(Wrap { trim: false }),
             area,
         );
     }
@@ -854,7 +920,10 @@ impl OnboardingScreen {
             self.draft.theme_name,
         );
         f.render_widget(
-            Paragraph::new(text).style(self.theme.base_style()).wrap(Wrap { trim: false }),
+            Paragraph::new(text)
+                .style(self.theme.base_style())
+                .alignment(Alignment::Center)
+                .wrap(Wrap { trim: false }),
             area,
         );
     }
@@ -996,24 +1065,24 @@ mod tests {
     }
 
     #[test]
-    fn kind_is_onboarding_and_starts_on_workspace_step() {
+    fn kind_is_onboarding_and_starts_on_welcome_step() {
         let screen = OnboardingScreen::new(shared_defaults());
         assert_eq!(screen.get_kind() as u8, ScreenKind::Onboarding as u8);
-        assert_eq!(screen.step, OnbStep::Workspace);
+        assert_eq!(screen.step, OnbStep::Welcome);
     }
 
     #[test]
     fn left_right_navigate_steps_within_bounds() {
         let (tx, _rx) = unbounded_channel();
-        // Rerun screen: workspace step is informational, so plain Right
-        // advances without needing a valid draft.
+        // Rerun screen starts at Welcome; Right advances to Workspace.
         let mut screen = OnboardingScreen::new(shared_with_workspace());
+        assert_eq!(screen.step, OnbStep::Welcome);
         screen.handle_input(&key_event(KeyCode::Right), &tx);
-        assert_eq!(screen.step, OnbStep::NerdFonts);
-        screen.handle_input(&key_event(KeyCode::Left), &tx);
         assert_eq!(screen.step, OnbStep::Workspace);
         screen.handle_input(&key_event(KeyCode::Left), &tx);
-        assert_eq!(screen.step, OnbStep::Workspace);
+        assert_eq!(screen.step, OnbStep::Welcome);
+        screen.handle_input(&key_event(KeyCode::Left), &tx);
+        assert_eq!(screen.step, OnbStep::Welcome);
     }
 
     #[test]
@@ -1030,7 +1099,7 @@ mod tests {
             .map(|c| c.symbol())
             .collect();
         assert!(flat.contains("Kimün Setup"));
-        assert!(flat.contains("1 / 5"));
+        assert!(flat.contains("1 / 6"));
     }
 
     #[test]
@@ -1045,6 +1114,8 @@ mod tests {
     fn first_run_enter_on_valid_workspace_advances() {
         let (tx, _rx) = unbounded_channel();
         let mut screen = OnboardingScreen::new(shared_defaults());
+        // Start at Welcome — advance past it first.
+        screen.step = OnbStep::Workspace;
         screen.handle_input(&key_event(KeyCode::Enter), &tx);
         assert_eq!(screen.step, OnbStep::NerdFonts);
     }
@@ -1053,6 +1124,7 @@ mod tests {
     fn first_run_right_blocked_without_workspace_draft() {
         let (tx, _rx) = unbounded_channel();
         let mut screen = OnboardingScreen::new(shared_defaults());
+        screen.step = OnbStep::Workspace;
         screen.draft.workspace = None;
         screen.handle_input(&key_event(KeyCode::Right), &tx);
         assert_eq!(screen.step, OnbStep::Workspace, "cannot advance without a workspace");
@@ -1064,6 +1136,7 @@ mod tests {
         let (tx, _rx) = unbounded_channel();
         let mut screen = OnboardingScreen::new(shared_with_workspace());
         assert!(screen.draft.workspace.is_none());
+        screen.step = OnbStep::Workspace;
         screen.handle_input(&key_event(KeyCode::Enter), &tx);
         assert_eq!(screen.step, OnbStep::NerdFonts);
 
@@ -1080,6 +1153,7 @@ mod tests {
     fn name_edit_mode_validates_and_lowercases() {
         let (tx, _rx) = unbounded_channel();
         let mut screen = OnboardingScreen::new(shared_defaults());
+        screen.step = OnbStep::Workspace;
         screen.handle_input(&key_event(KeyCode::Char('e')), &tx);
         assert!(screen.name_editing);
         screen.handle_input(&key_event(KeyCode::Char('X')), &tx);
@@ -1093,6 +1167,7 @@ mod tests {
     fn name_edit_rejects_invalid_name_and_stays_editing() {
         let (tx, _rx) = unbounded_channel();
         let mut screen = OnboardingScreen::new(shared_defaults());
+        screen.step = OnbStep::Workspace;
         screen.handle_input(&key_event(KeyCode::Char('e')), &tx);
         assert!(screen.name_editing);
         // "?" is invalid on at least one major filesystem.
@@ -1298,7 +1373,7 @@ mod tests {
         // Point the suggested workspace at a scratch dir.
         screen.draft.workspace = Some(("walkthrough".to_string(), tmp.clone()));
 
-        for _ in 0..5 {
+        for _ in 0..6 {
             screen.handle_input(&key_event(KeyCode::Enter), &tx);
         }
 
@@ -1313,8 +1388,23 @@ mod tests {
                 got_finished = true;
             }
         }
-        assert!(got_finished, "five Enters from first step must finish the flow");
+        assert!(got_finished, "six Enters from first step must finish the flow");
         std::fs::remove_dir_all(&tmp).ok();
         std::fs::remove_file(&cfg).ok();
+    }
+
+    #[test]
+    fn welcome_step_enter_advances_and_renders_intro() {
+        let (tx, _rx) = unbounded_channel();
+        let mut screen = OnboardingScreen::new(shared_with_workspace());
+        assert_eq!(screen.step, OnbStep::Welcome);
+        let backend = ratatui::backend::TestBackend::new(100, 32);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| screen.render(f)).unwrap();
+        let flat: String = terminal.backend().buffer().content.iter().map(|c| c.symbol()).collect();
+        assert!(flat.contains("Welcome"));
+        assert!(flat.contains("guided setup"));
+        screen.handle_input(&key_event(KeyCode::Enter), &tx);
+        assert_eq!(screen.step, OnbStep::Workspace);
     }
 }
