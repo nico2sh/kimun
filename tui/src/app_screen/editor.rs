@@ -1045,6 +1045,10 @@ impl EditorScreen {
                 tx.send(AppEvent::OpenScreen(ScreenEvent::OpenPreferences))
                     .ok();
             }
+            LeaderAction::AppOnboarding => {
+                tx.send(AppEvent::OpenScreen(ScreenEvent::OpenOnboarding))
+                    .ok();
+            }
 
             // +window
             LeaderAction::WindowZen => {

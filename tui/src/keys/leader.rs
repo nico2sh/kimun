@@ -66,6 +66,8 @@ pub enum LeaderAction {
     NoteSave,
     /// Quit the application (vim `:q` / `:qa` / `:wq` / `:x`).
     AppQuit,
+    /// Open the guided-setup (onboarding) flow.
+    AppOnboarding,
 }
 
 impl LeaderAction {
@@ -118,11 +120,12 @@ impl LeaderAction {
             LeaderAction::Help => "help",
             LeaderAction::NoteSave => "note.save",
             LeaderAction::AppQuit => "app.quit",
+            LeaderAction::AppOnboarding => "app.onboarding",
         }
     }
 
     /// Every action, for id lookup and docs.
-    pub const ALL: [LeaderAction; 44] = [
+    pub const ALL: [LeaderAction; 45] = [
         LeaderAction::OpenDrawer(DrawerView::Files),
         LeaderAction::OpenDrawer(DrawerView::Find),
         LeaderAction::OpenDrawer(DrawerView::Tags),
@@ -167,6 +170,7 @@ impl LeaderAction {
         LeaderAction::Palette,
         LeaderAction::NoteSave,
         LeaderAction::AppQuit,
+        LeaderAction::AppOnboarding,
     ];
 
     /// Look an action up by its config id. `Help` is included via ALL? It is
@@ -226,6 +230,7 @@ impl LeaderAction {
             LeaderAction::Help => "help / cheatsheet",
             LeaderAction::NoteSave => "write (save now)",
             LeaderAction::AppQuit => "quit kimün",
+            LeaderAction::AppOnboarding => "guided setup",
         }
     }
 }
@@ -362,6 +367,7 @@ pub fn leader_tree() -> LeaderNode {
                         ('c', leaf("config", A::VaultConfig)),
                         ('t', leaf("theme picker", A::VaultTheme)),
                         ('p', leaf("preferences", A::VaultPreferences)),
+                        ('o', leaf("guided setup", A::AppOnboarding)),
                     ],
                 },
             ),
@@ -842,6 +848,15 @@ mod tests {
         e.start();
         e.feed('n');
         assert_eq!(e.feed('D'), LeaderOutcome::Fired(LeaderAction::NoteDelete));
+    }
+
+    #[test]
+    fn app_onboarding_round_trip_from_id() {
+        assert_eq!(
+            LeaderAction::from_id("app.onboarding"),
+            Some(LeaderAction::AppOnboarding)
+        );
+        assert_eq!(LeaderAction::AppOnboarding.id(), "app.onboarding");
     }
 
     #[test]
