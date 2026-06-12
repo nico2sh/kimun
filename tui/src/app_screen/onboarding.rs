@@ -123,11 +123,31 @@ const KIMUN_BANNER: [&str; 5] = [
 /// Column span of the ü diaeresis `(_) (_)` in the banner (rows 0/1).
 const UMLAUT_COLS: std::ops::Range<usize> = 17..24;
 const UMLAUT_DOTS: &str = "(_) (_)";
+/// Elastic in-between frame: the dots compress before launch and on landing.
+const UMLAUT_SQUASH: &str = "<_> <_>";
 
-/// The ü dots hop up one row twice in a row ("boing-boing"), then rest.
-/// Phase advances every 150 ms over a 12-slot (1.8 s) cycle.
-fn umlaut_up(elapsed: std::time::Duration) -> bool {
-    matches!(elapsed.as_millis() / 150 % 12, 1 | 3)
+/// One animation frame of the ü diaeresis bounce.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum UmlautFrame {
+    /// Dots sit in their home cells on banner row 1.
+    Rest,
+    /// Dots squash on row 1 — anticipation before a hop, recoil after one.
+    Squash,
+    /// Dots are airborne on banner row 0.
+    Up,
+}
+
+/// The ü dots hop up one row once, with a squash frame before and after the
+/// hop, then rest. Frame durations are uneven to fake physics: squashes are
+/// short snaps (100 ms) while the airborne frame lingers (300 ms) so the dots
+/// seem to launch fast and hang at the apex. Timed in 50 ms micro-slots over
+/// a 36-slot (1.8 s) cycle.
+fn umlaut_frame(elapsed: std::time::Duration) -> UmlautFrame {
+    match elapsed.as_millis() / 50 % 36 {
+        0..=1 | 8..=9 => UmlautFrame::Squash,
+        2..=7 => UmlautFrame::Up,
+        _ => UmlautFrame::Rest,
+    }
 }
 
 // ── Screen struct ─────────────────────────────────────────────────────────────
@@ -145,6 +165,9 @@ pub struct OnboardingScreen {
     nvim_available: bool,
     name_input: SingleLineInput,
     name_editing: bool,
+    /// User explicitly committed a name edit — directory picks stop
+    /// overwriting the name with the basename suggestion.
+    name_edited: bool,
     overlay: OnbOverlay,
     flash: Option<String>,
     /// When the screen mounted — drives the umlaut bounce animation frame.
@@ -160,16 +183,12 @@ impl OnboardingScreen {
         let s = settings.read().unwrap();
         let first_run = s.resolve_workspace_path().is_none();
         let themes = s.theme_list();
-        let current_theme_name = if s.theme.is_empty() {
-            Theme::default().name.clone()
-        } else {
-            s.theme.clone()
-        };
+        let current_theme_name = s.effective_theme_name();
         let theme_idx = themes
             .iter()
             .position(|t| t.name == current_theme_name)
             .unwrap_or(0);
-        let mut draft = Draft {
+        let draft = Draft {
             workspace: if first_run {
                 AppSettings::default_workspace_suggestion()
                     .map(|p| (suggest_name(&p), p))
@@ -177,25 +196,21 @@ impl OnboardingScreen {
                 None
             },
             use_nerd_fonts: s.use_nerd_fonts,
-            theme_name: themes
-                .get(theme_idx)
-                .map(|t| t.name.clone())
-                .unwrap_or_default(),
+            // Keep the configured name even when its theme file is missing
+            // from theme_list() — the draft must never silently rewrite a
+            // setting the user didn't touch (dirty()/finish() would persist
+            // the substitution). Same for a configured-but-unavailable nvim
+            // backend below: the row renders disabled, the setting survives.
+            theme_name: current_theme_name,
             editor_backend: s.editor_backend,
         };
-        let mut backend_idx = BACKENDS
+        let backend_idx = BACKENDS
             .iter()
             .position(|(b, _, _)| *b == draft.editor_backend)
             .unwrap_or(0);
         let theme = s.get_theme();
         let icons = Icons::new(draft.use_nerd_fonts);
         let nvim_available = nvim_on_path(s.nvim_path.as_deref());
-        // A configured nvim backend whose binary has since vanished must not
-        // leave the selection on a disabled row.
-        if !nvim_available && BACKENDS[backend_idx].0 == EditorBackendSetting::Nvim {
-            backend_idx = 0;
-            draft.editor_backend = BACKENDS[0].0;
-        }
         let name_input = SingleLineInput::with_value(
             draft
                 .workspace
@@ -217,6 +232,7 @@ impl OnboardingScreen {
             nvim_available,
             name_input,
             name_editing: false,
+            name_edited: false,
             overlay: OnbOverlay::None,
             flash: None,
             started: std::time::Instant::now(),
@@ -258,15 +274,23 @@ fn nvim_on_path(configured: Option<&std::path::Path>) -> bool {
 #[async_trait(?Send)]
 impl AppScreen for OnboardingScreen {
     async fn on_enter(&mut self, tx: &AppTx) {
-        // ~7 fps ticker so the welcome banner's umlaut bounce animates;
-        // ratatui cell-diffs, so off-welcome redraws repaint nothing.
+        // 50 ms ticker matches umlaut_frame's micro-slots so short squash
+        // frames aren't skipped, but a Redraw is only sent when the frame
+        // actually changes (~4 per cycle) — the other steps don't animate
+        // and must not run the render pipeline 20×/s for identical frames.
         let tx2 = tx.clone();
+        let started = self.started;
         self.anim = Some(tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(std::time::Duration::from_millis(150));
+            let mut ticker = tokio::time::interval(std::time::Duration::from_millis(50));
+            let mut last = umlaut_frame(started.elapsed());
             loop {
                 ticker.tick().await;
-                if tx2.send(AppEvent::Redraw).is_err() {
-                    break;
+                let frame = umlaut_frame(started.elapsed());
+                if frame != last {
+                    last = frame;
+                    if tx2.send(AppEvent::Redraw).is_err() {
+                        break;
+                    }
                 }
             }
         }));
@@ -337,11 +361,7 @@ impl OnboardingScreen {
 
     fn dirty(&self) -> bool {
         let s = self.settings.read().unwrap();
-        let effective_theme = if s.theme.is_empty() {
-            Theme::default().name.clone()
-        } else {
-            s.theme.clone()
-        };
+        let effective_theme = s.effective_theme_name();
         s.use_nerd_fonts != self.draft.use_nerd_fonts
             || s.editor_backend != self.draft.editor_backend
             || (!self.draft.theme_name.is_empty() && effective_theme != self.draft.theme_name)
@@ -402,7 +422,12 @@ impl OnboardingScreen {
         }
         if self.name_editing {
             match key.code {
-                KeyCode::Enter | KeyCode::Esc => {
+                // Esc abandons the edit, keeping the previous name.
+                KeyCode::Esc => {
+                    self.name_editing = false;
+                    self.flash = None;
+                }
+                KeyCode::Enter => {
                     let name = self.name_input.value().trim().to_lowercase();
                     if name.is_empty()
                         || kimun_core::nfs::filename::validate_filename(&name).is_err()
@@ -412,6 +437,7 @@ impl OnboardingScreen {
                     }
                     if let Some((n, _)) = self.draft.workspace.as_mut() {
                         *n = name;
+                        self.name_edited = true;
                     }
                     self.name_editing = false;
                     self.flash = None;
@@ -444,14 +470,14 @@ impl OnboardingScreen {
                 self.overlay = OnbOverlay::Browser(FileBrowserState::load(start));
             }
             KeyCode::Char('e') => {
-                let current = self
-                    .draft
-                    .workspace
-                    .as_ref()
-                    .map(|(n, _)| n.clone())
-                    .unwrap_or_default();
-                self.name_input.set_value(current);
-                self.name_editing = true;
+                // Without a workspace entry there is nothing to write the
+                // name into — committing would silently discard it.
+                if let Some((n, _)) = self.draft.workspace.as_ref() {
+                    self.name_input.set_value(n.clone());
+                    self.name_editing = true;
+                } else {
+                    self.flash = Some("choose a directory first (b to browse)".to_string());
+                }
             }
             _ => {}
         }
@@ -493,13 +519,19 @@ impl OnboardingScreen {
                         }
                         self.overlay = OnbOverlay::Browser(fb);
                     }
-                    KeyCode::Char('c') => {
+                    KeyCode::Char('c') if key.modifiers.is_empty() => {
                         self.confirm_directory(fb.current_path.clone());
                     }
-                    KeyCode::Char('n') => {
+                    KeyCode::Char('n') if key.modifiers.is_empty() => {
                         self.overlay = OnbOverlay::NewDir(fb, SingleLineInput::new());
                     }
-                    KeyCode::Char(c) => {
+                    // Shift is fine (uppercase jump targets); Ctrl/Alt chords
+                    // must not be mistaken for plain letters.
+                    KeyCode::Char(c)
+                        if !key
+                            .modifiers
+                            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                    {
                         fb.jump_to_char(c);
                         self.overlay = OnbOverlay::Browser(fb);
                     }
@@ -548,7 +580,12 @@ impl OnboardingScreen {
     }
 
     fn confirm_directory(&mut self, chosen: std::path::PathBuf) {
-        let name = suggest_name(&chosen);
+        // A name the user explicitly edited survives re-picking the
+        // directory; only un-edited names follow the basename suggestion.
+        let name = match &self.draft.workspace {
+            Some((n, _)) if self.name_edited => n.clone(),
+            _ => suggest_name(&chosen),
+        };
         self.draft.workspace = Some((name, chosen));
         self.flash = None;
     }
@@ -621,8 +658,7 @@ impl OnboardingScreen {
             );
         }
         self.render_hints(f, rows[3]);
-        let dialog_area = area;
-        self.render_overlay(f, dialog_area);
+        self.render_overlay(f);
     }
 
     fn render_header(&self, f: &mut Frame, area: Rect) {
@@ -690,16 +726,25 @@ impl OnboardingScreen {
             ])
             .split(area);
 
-        // Bounce frame: hop the ü dots from row 1 up into row 0, clearing
-        // their home cells. All-ASCII rows, so byte-indexed ranges are safe.
-        let (row0, row1) = if umlaut_up(self.started.elapsed()) {
-            let mut row0 = KIMUN_BANNER[0].to_string();
-            row0.replace_range(UMLAUT_COLS, UMLAUT_DOTS);
-            let mut row1 = KIMUN_BANNER[1].to_string();
-            row1.replace_range(UMLAUT_COLS, "       ");
-            (row0, row1)
-        } else {
-            (KIMUN_BANNER[0].to_string(), KIMUN_BANNER[1].to_string())
+        // Bounce frame: squash the ü dots in place, or hop them from row 1 up
+        // into row 0, clearing their home cells. All-ASCII rows, so
+        // byte-indexed ranges are safe.
+        let (row0, row1) = match umlaut_frame(self.started.elapsed()) {
+            UmlautFrame::Rest => {
+                (KIMUN_BANNER[0].to_string(), KIMUN_BANNER[1].to_string())
+            }
+            UmlautFrame::Squash => {
+                let mut row1 = KIMUN_BANNER[1].to_string();
+                row1.replace_range(UMLAUT_COLS, UMLAUT_SQUASH);
+                (KIMUN_BANNER[0].to_string(), row1)
+            }
+            UmlautFrame::Up => {
+                let mut row0 = KIMUN_BANNER[0].to_string();
+                row0.replace_range(UMLAUT_COLS, UMLAUT_DOTS);
+                let mut row1 = KIMUN_BANNER[1].to_string();
+                row1.replace_range(UMLAUT_COLS, "       ");
+                (row0, row1)
+            }
         };
         let banner: Vec<ratatui::text::Line> = std::iter::once(row0)
             .chain(std::iter::once(row1))
@@ -958,24 +1003,35 @@ impl OnboardingScreen {
     /// Commit the draft: create + register the workspace (first run only),
     /// apply fonts/theme/backend, persist, and hand off to main.rs.
     fn finish(&mut self, tx: &AppTx) {
-        let mut s = self.settings.write().unwrap();
-        if self.first_run {
+        // Filesystem work happens before the settings lock is taken — a slow
+        // mount must not stall settings readers for its duration.
+        let workspace = if self.first_run {
             let Some((name, path)) = self.draft.workspace.clone() else {
-                drop(s);
                 self.flash = Some("no workspace configured".to_string());
                 self.step = OnbStep::Workspace;
                 return;
             };
+            let existed = path.is_dir();
             if let Err(e) = std::fs::create_dir_all(&path) {
-                drop(s);
                 self.flash = Some(format!("cannot create {}: {e}", path.display()));
                 self.step = OnbStep::Workspace;
                 return;
             }
+            Some((name, path, existed))
+        } else {
+            None
+        };
+        let mut s = self.settings.write().unwrap();
+        if let Some((name, path, existed)) = workspace {
             let wc = s.workspace_config
                 .get_or_insert_with(crate::settings::workspace_config::WorkspaceConfig::new_empty);
-            if let Err(e) = wc.add_workspace(name, path) {
+            if let Err(e) = wc.add_workspace(name, path.clone()) {
                 drop(s);
+                // Roll back a directory this run created. Non-recursive, so a
+                // pre-existing or non-empty directory is never touched.
+                if !existed {
+                    std::fs::remove_dir(&path).ok();
+                }
                 self.flash = Some(e.to_string());
                 self.step = OnbStep::Workspace;
                 return;
@@ -1040,7 +1096,7 @@ impl OnboardingScreen {
         );
     }
 
-    fn render_overlay(&mut self, f: &mut Frame, _dialog_area: Rect) {
+    fn render_overlay(&mut self, f: &mut Frame) {
         match &mut self.overlay {
             OnbOverlay::None => {}
             OnbOverlay::Browser(fb) | OnbOverlay::NewDir(fb, _) => {
@@ -1508,15 +1564,21 @@ mod tests {
     #[test]
     fn umlaut_bounce_phases_and_columns() {
         use std::time::Duration;
-        // Boing-boing on slots 1 and 3 of the 12-slot cycle, rest elsewhere.
-        assert!(!umlaut_up(Duration::from_millis(0)));
-        assert!(umlaut_up(Duration::from_millis(160)));
-        assert!(!umlaut_up(Duration::from_millis(310)));
-        assert!(umlaut_up(Duration::from_millis(460)));
-        assert!(!umlaut_up(Duration::from_millis(700)));
+        // Uneven frame timing: 100 ms squash, 300 ms hop, 100 ms land,
+        // rest until the 1.8 s cycle repeats.
+        assert_eq!(umlaut_frame(Duration::from_millis(0)), UmlautFrame::Squash);
+        assert_eq!(umlaut_frame(Duration::from_millis(110)), UmlautFrame::Up);
+        assert_eq!(umlaut_frame(Duration::from_millis(390)), UmlautFrame::Up);
+        assert_eq!(umlaut_frame(Duration::from_millis(410)), UmlautFrame::Squash);
+        assert_eq!(umlaut_frame(Duration::from_millis(510)), UmlautFrame::Rest);
+        assert_eq!(umlaut_frame(Duration::from_millis(1790)), UmlautFrame::Rest);
+        // Cycle wraps at 1.8 s back into the anticipation squash.
+        assert_eq!(umlaut_frame(Duration::from_millis(1810)), UmlautFrame::Squash);
         // The hop rewrites exactly the diaeresis columns — guard the range
         // against future banner edits.
         assert_eq!(&KIMUN_BANNER[1][UMLAUT_COLS], UMLAUT_DOTS);
+        // Squash glyph must fill the same span exactly.
+        assert_eq!(UMLAUT_SQUASH.len(), UMLAUT_DOTS.len());
     }
 
     #[test]
@@ -1532,5 +1594,114 @@ mod tests {
         assert!(flat.contains("guided setup"));
         screen.handle_input(&key_event(KeyCode::Enter), &tx);
         assert_eq!(screen.step, OnbStep::Workspace);
+    }
+
+    #[test]
+    fn esc_in_name_edit_cancels_without_committing() {
+        let (tx, _rx) = unbounded_channel();
+        let mut screen = OnboardingScreen::new(shared_defaults());
+        screen.step = OnbStep::Workspace;
+        screen.handle_input(&key_event(KeyCode::Char('e')), &tx);
+        screen.handle_input(&key_event(KeyCode::Char('?')), &tx);
+        screen.handle_input(&key_event(KeyCode::Esc), &tx);
+        assert!(!screen.name_editing, "Esc must always exit edit mode");
+        let (name, _) = screen.draft.workspace.clone().unwrap();
+        assert_eq!(name, "kimun-notes", "Esc must not commit the buffer");
+        assert!(matches!(screen.overlay, OnbOverlay::None), "Esc consumed by the edit must not open quit confirm");
+    }
+
+    #[test]
+    fn edited_name_survives_browser_confirm() {
+        let tmp = std::env::temp_dir().join(format!("kimun_onb_keepname_{}", std::process::id()));
+        std::fs::create_dir_all(tmp.join("My-Vault")).unwrap();
+        let (tx, _rx) = unbounded_channel();
+        let mut screen = OnboardingScreen::new(shared_defaults());
+        screen.step = OnbStep::Workspace;
+        screen.handle_input(&key_event(KeyCode::Char('e')), &tx);
+        screen.handle_input(&key_event(KeyCode::Char('z')), &tx);
+        screen.handle_input(&key_event(KeyCode::Enter), &tx);
+        screen.overlay = OnbOverlay::Browser(FileBrowserState::load(tmp.join("My-Vault")));
+        screen.handle_input(&key_event(KeyCode::Char('c')), &tx);
+        let (name, path) = screen.draft.workspace.clone().unwrap();
+        assert_eq!(path, tmp.join("My-Vault"));
+        assert_eq!(name, "kimun-notesz", "explicit edit must survive directory pick");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn ctrl_chords_in_browser_do_not_confirm_or_jump() {
+        use ratatui::crossterm::event::{KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+        let (tx, _rx) = unbounded_channel();
+        let mut screen = OnboardingScreen::new(shared_defaults());
+        screen.step = OnbStep::Workspace;
+        screen.draft.workspace = None;
+        screen.overlay = OnbOverlay::Browser(FileBrowserState::load(std::env::temp_dir()));
+        let ctrl_c = InputEvent::Key(KeyEvent {
+            code: KeyCode::Char('c'),
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        });
+        screen.handle_input(&ctrl_c, &tx);
+        assert!(screen.draft.workspace.is_none(), "Ctrl+C must not confirm the directory");
+        assert!(matches!(screen.overlay, OnbOverlay::Browser(_)), "browser must stay open");
+    }
+
+    #[test]
+    fn missing_theme_keeps_configured_name_and_stays_clean() {
+        let shared = shared_with_workspace();
+        shared.write().unwrap().theme = "ghost-theme".to_string();
+        let screen = OnboardingScreen::new(shared);
+        assert_eq!(
+            screen.draft.theme_name, "ghost-theme",
+            "draft must not substitute a fallback for a missing theme"
+        );
+        assert!(!screen.dirty(), "untouched screen must not report changes");
+    }
+
+    #[test]
+    fn unavailable_nvim_keeps_configured_backend_and_stays_clean() {
+        let shared = shared_with_workspace();
+        {
+            let mut s = shared.write().unwrap();
+            s.editor_backend = EditorBackendSetting::Nvim;
+            s.nvim_path = Some(std::path::PathBuf::from("/nonexistent/nvim-binary"));
+        }
+        let screen = OnboardingScreen::new(shared);
+        assert!(!screen.nvim_available);
+        assert_eq!(
+            screen.draft.editor_backend,
+            EditorBackendSetting::Nvim,
+            "constructor must not rewrite the configured backend"
+        );
+        assert!(!screen.dirty(), "untouched screen must not report changes");
+    }
+
+    #[tokio::test]
+    async fn finish_rolls_back_created_dir_when_registration_fails() {
+        let tmp = std::env::temp_dir().join(format!("kimun_onb_rollback_{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        // A leftover workspace entry named "notes" with no current workspace:
+        // first_run is true, but registering another "notes" must fail.
+        let shared = {
+            use crate::settings::workspace_config::WorkspaceConfig;
+            let mut s = AppSettings::default();
+            let mut wc = WorkspaceConfig::new_empty();
+            wc.add_workspace("notes".to_string(), tmp.join("other")).unwrap();
+            wc.global.current_workspace = String::new();
+            s.workspace_config = Some(wc);
+            Arc::new(RwLock::new(s))
+        };
+        let (tx, _rx) = unbounded_channel();
+        let mut screen = OnboardingScreen::new(shared);
+        assert!(screen.first_run);
+        let new_dir = tmp.join("fresh");
+        screen.draft.workspace = Some(("notes".to_string(), new_dir.clone()));
+        screen.step = OnbStep::Summary;
+        screen.finish(&tx);
+        assert!(screen.flash.is_some(), "duplicate name must flash an error");
+        assert_eq!(screen.step, OnbStep::Workspace);
+        assert!(!new_dir.exists(), "directory created by finish must be rolled back");
+        std::fs::remove_dir_all(&tmp).ok();
     }
 }

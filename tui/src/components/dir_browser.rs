@@ -88,9 +88,9 @@ impl FileBrowserState {
         if name.is_empty() {
             return Err("directory name is empty".to_string());
         }
-        if name.contains(['/', '\\', '\0']) {
-            return Err("directory name must not contain path separators".to_string());
-        }
+        // Same cross-platform rules as workspace and note names — rejects
+        // separators, '..', Windows-reserved names, trailing dots, etc.
+        kimun_core::nfs::filename::validate_filename(name).map_err(|e| e.to_string())?;
         let target = self.current_path.join(name);
         std::fs::create_dir_all(&target).map_err(|e| e.to_string())?;
         self.navigate_into(target.clone());
@@ -128,6 +128,22 @@ mod tests {
         assert!(fb.create_dir("   ").is_err());
         assert!(fb.create_dir("a/b").is_err());
         assert!(fb.create_dir("a\\b").is_err());
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn create_dir_rejects_cross_platform_invalid_names() {
+        let tmp = std::env::temp_dir().join(format!("kimun_dirbrowser_x_{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let mut fb = FileBrowserState::load(tmp.clone());
+        // '..' would "create" the parent and navigate up a level.
+        assert!(fb.create_dir("..").is_err());
+        assert!(fb.create_dir(".").is_err());
+        // Windows-invalid even though Linux would accept them.
+        assert!(fb.create_dir("notes:").is_err());
+        assert!(fb.create_dir("con").is_err());
+        assert!(fb.create_dir("notes.").is_err());
+        assert_eq!(fb.current_path, tmp, "rejected names must not navigate");
         std::fs::remove_dir_all(&tmp).ok();
     }
 }
