@@ -263,6 +263,7 @@ impl OnboardingScreen {
         if let Some(n) = self.step.next() {
             self.step = n;
             self.name_editing = false;
+            self.flash = None;
         }
     }
 
@@ -270,6 +271,7 @@ impl OnboardingScreen {
         if let Some(p) = self.step.prev() {
             self.step = p;
             self.name_editing = false;
+            self.flash = None;
         }
     }
 
