@@ -122,6 +122,8 @@ const UMLAUT_COLS: std::ops::Range<usize> = 17..24;
 const UMLAUT_DOTS: &str = "(_) (_)";
 /// Elastic in-between frame: the dots compress before launch and on landing.
 const UMLAUT_SQUASH: &str = "<_> <_>";
+/// Deepest compression: flattened circles at the bottom of the bounce.
+const UMLAUT_SQUASH_FULL: &str = "-=- -=-";
 
 /// One animation frame of the ü diaeresis bounce.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -130,19 +132,23 @@ enum UmlautFrame {
     Rest,
     /// Dots squash on row 1 — anticipation before a hop, recoil after one.
     Squash,
+    /// Dots fully squashed on row 1 — peak compression at launch and impact.
+    SquashFull,
     /// Dots are airborne on banner row 0.
     Up,
 }
 
-/// The ü dots hop up one row once, with a squash frame before and after the
-/// hop, then rest. Frame durations are uneven to fake physics: squashes are
-/// short snaps (100 ms) while the airborne frame lingers (300 ms) so the dots
-/// seem to launch fast and hang at the apex. Timed in 50 ms micro-slots over
-/// a 36-slot (1.8 s) cycle.
+/// The ü dots hop up one row once, compressing through a squash frame into a
+/// fully-squashed frame before launch, and back through both on landing, then
+/// rest. Frame durations are uneven to fake physics: squashes are short snaps
+/// (50–100 ms) while the airborne frame lingers (300 ms) so the dots seem to
+/// launch fast and hang at the apex. Timed in 50 ms micro-slots over a
+/// 36-slot (1.8 s) cycle.
 fn umlaut_frame(elapsed: std::time::Duration) -> UmlautFrame {
     match elapsed.as_millis() / 50 % 36 {
-        0..=1 | 8..=9 => UmlautFrame::Squash,
-        2..=7 => UmlautFrame::Up,
+        0 | 10 => UmlautFrame::Squash,
+        1..=2 | 8..=9 => UmlautFrame::SquashFull,
+        3..=7 => UmlautFrame::Up,
         _ => UmlautFrame::Rest,
     }
 }
@@ -728,6 +734,15 @@ impl OnboardingScreen {
                 row1.replace_range(UMLAUT_COLS, UMLAUT_SQUASH);
                 (KIMUN_BANNER[0].to_string(), row1)
             }
+            UmlautFrame::SquashFull => {
+                // The flattened dots draw their own top border with `=`, so
+                // the row-0 `_` caps above them disappear too.
+                let mut row0 = KIMUN_BANNER[0].to_string();
+                row0.replace_range(UMLAUT_COLS, "       ");
+                let mut row1 = KIMUN_BANNER[1].to_string();
+                row1.replace_range(UMLAUT_COLS, UMLAUT_SQUASH_FULL);
+                (row0, row1)
+            }
             UmlautFrame::Up => {
                 let mut row0 = KIMUN_BANNER[0].to_string();
                 row0.replace_range(UMLAUT_COLS, UMLAUT_DOTS);
@@ -757,7 +772,7 @@ impl OnboardingScreen {
             \n\
             This guided setup walks you through the essentials —\n\
             where your notes live, how the app looks, and which\n\
-            editor engine drives it. One setting per step, each\n\
+            editor setup drives it. One setting per step, each\n\
             explained as you go.\n\
             \n\
             Nothing is applied until you confirm the final summary,\n\
