@@ -767,6 +767,17 @@ impl AppSettings {
         icons::Icons::new(self.use_nerd_fonts)
     }
 
+    /// Name of the theme the app is effectively using: the configured name,
+    /// or the default theme's name when none is configured. Single owner of
+    /// the empty-name fallback rule — use this instead of re-deriving it.
+    pub fn effective_theme_name(&self) -> String {
+        if self.theme.is_empty() {
+            Theme::default().name
+        } else {
+            self.theme.clone()
+        }
+    }
+
     /// Resolve the active theme by name, falling back to the default.
     ///
     /// The resolved theme is adapted to the terminal's color depth (truecolor

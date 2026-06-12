@@ -306,11 +306,17 @@ impl AppScreen for PreferencesScreen {
                             }
                         }
                     }
-                    KeyCode::Char('c') => {
+                    KeyCode::Char('c') if key.modifiers.is_empty() => {
                         let chosen = fb.current_path.clone();
                         self.confirm_file_browser(chosen, tx);
                     }
-                    KeyCode::Char(c) => {
+                    // Shift is fine (uppercase jump targets); Ctrl/Alt chords
+                    // must not be mistaken for plain letters.
+                    KeyCode::Char(c)
+                        if !key
+                            .modifiers
+                            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                    {
                         fb.jump_to_char(c);
                     }
                     _ => {}
