@@ -120,6 +120,16 @@ const KIMUN_BANNER: [&str; 5] = [
     r#"|_|\_\_|_| |_| |_|\__,_|_| |_|"#,
 ];
 
+/// Column span of the ü diaeresis `(_) (_)` in the banner (rows 0/1).
+const UMLAUT_COLS: std::ops::Range<usize> = 17..24;
+const UMLAUT_DOTS: &str = "(_) (_)";
+
+/// The ü dots hop up one row twice in a row ("boing-boing"), then rest.
+/// Phase advances every 150 ms over a 12-slot (1.8 s) cycle.
+fn umlaut_up(elapsed: std::time::Duration) -> bool {
+    matches!(elapsed.as_millis() / 150 % 12, 1 | 3)
+}
+
 // ── Screen struct ─────────────────────────────────────────────────────────────
 
 pub struct OnboardingScreen {
@@ -137,6 +147,10 @@ pub struct OnboardingScreen {
     name_editing: bool,
     overlay: OnbOverlay,
     flash: Option<String>,
+    /// When the screen mounted — drives the umlaut bounce animation frame.
+    started: std::time::Instant,
+    /// Redraw ticker for the welcome-step animation; aborted on exit.
+    anim: Option<tokio::task::JoinHandle<()>>,
 }
 
 // ── Constructor ───────────────────────────────────────────────────────────────
@@ -205,6 +219,8 @@ impl OnboardingScreen {
             name_editing: false,
             overlay: OnbOverlay::None,
             flash: None,
+            started: std::time::Instant::now(),
+            anim: None,
         }
     }
 }
@@ -241,6 +257,27 @@ fn nvim_on_path(configured: Option<&std::path::Path>) -> bool {
 
 #[async_trait(?Send)]
 impl AppScreen for OnboardingScreen {
+    async fn on_enter(&mut self, tx: &AppTx) {
+        // ~7 fps ticker so the welcome banner's umlaut bounce animates;
+        // ratatui cell-diffs, so off-welcome redraws repaint nothing.
+        let tx2 = tx.clone();
+        self.anim = Some(tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_millis(150));
+            loop {
+                ticker.tick().await;
+                if tx2.send(AppEvent::Redraw).is_err() {
+                    break;
+                }
+            }
+        }));
+    }
+
+    async fn on_exit(&mut self, _tx: &AppTx) {
+        if let Some(handle) = self.anim.take() {
+            handle.abort();
+        }
+    }
+
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
         let InputEvent::Key(key) = event else {
             return EventState::NotConsumed;
@@ -653,11 +690,23 @@ impl OnboardingScreen {
             ])
             .split(area);
 
-        let banner: Vec<ratatui::text::Line> = KIMUN_BANNER
-            .iter()
+        // Bounce frame: hop the ü dots from row 1 up into row 0, clearing
+        // their home cells. All-ASCII rows, so byte-indexed ranges are safe.
+        let (row0, row1) = if umlaut_up(self.started.elapsed()) {
+            let mut row0 = KIMUN_BANNER[0].to_string();
+            row0.replace_range(UMLAUT_COLS, UMLAUT_DOTS);
+            let mut row1 = KIMUN_BANNER[1].to_string();
+            row1.replace_range(UMLAUT_COLS, "       ");
+            (row0, row1)
+        } else {
+            (KIMUN_BANNER[0].to_string(), KIMUN_BANNER[1].to_string())
+        };
+        let banner: Vec<ratatui::text::Line> = std::iter::once(row0)
+            .chain(std::iter::once(row1))
+            .chain(KIMUN_BANNER[2..].iter().map(|r| r.to_string()))
             .map(|row| {
                 ratatui::text::Line::styled(
-                    *row,
+                    row,
                     Style::default().fg(self.theme.accent.to_ratatui()),
                 )
             })
@@ -1454,6 +1503,20 @@ mod tests {
         assert!(got_finished, "six Enters from first step must finish the flow");
         std::fs::remove_dir_all(&tmp).ok();
         std::fs::remove_file(&cfg).ok();
+    }
+
+    #[test]
+    fn umlaut_bounce_phases_and_columns() {
+        use std::time::Duration;
+        // Boing-boing on slots 1 and 3 of the 12-slot cycle, rest elsewhere.
+        assert!(!umlaut_up(Duration::from_millis(0)));
+        assert!(umlaut_up(Duration::from_millis(160)));
+        assert!(!umlaut_up(Duration::from_millis(310)));
+        assert!(umlaut_up(Duration::from_millis(460)));
+        assert!(!umlaut_up(Duration::from_millis(700)));
+        // The hop rewrites exactly the diaeresis columns — guard the range
+        // against future banner edits.
+        assert_eq!(&KIMUN_BANNER[1][UMLAUT_COLS], UMLAUT_DOTS);
     }
 
     #[test]
