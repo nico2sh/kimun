@@ -295,14 +295,33 @@ impl OnboardingScreen {
     fn handle_step_key(&mut self, key: &KeyEvent, tx: &AppTx) {
         match self.step {
             OnbStep::Workspace => self.workspace_step_key(key),
+            OnbStep::NerdFonts => self.nerd_fonts_step_key(key),
             _ => {
-                // Steps land in Tasks 6-8; Enter advances as a placeholder.
+                // Steps land in Tasks 7-8; Enter advances as a placeholder.
                 if key.code == KeyCode::Enter {
                     self.go_next();
                 }
             }
         }
         let _ = tx;
+    }
+
+    fn nerd_fonts_step_key(&mut self, key: &KeyEvent) {
+        match key.code {
+            KeyCode::Up => self.set_nerd_fonts(false),
+            KeyCode::Down => self.set_nerd_fonts(true),
+            KeyCode::Char(' ') => {
+                let next = !self.draft.use_nerd_fonts;
+                self.set_nerd_fonts(next);
+            }
+            KeyCode::Enter => self.go_next(),
+            _ => {}
+        }
+    }
+
+    fn set_nerd_fonts(&mut self, on: bool) {
+        self.draft.use_nerd_fonts = on;
+        self.icons = Icons::new(on); // live preview
     }
 
     fn workspace_step_key(&mut self, key: &KeyEvent) {
@@ -630,7 +649,35 @@ impl OnboardingScreen {
     }
 
     // Step renderers land in Tasks 6-8.
-    fn render_nerd_fonts_step(&mut self, _f: &mut Frame, _area: Rect) {}
+    fn render_nerd_fonts_step(&mut self, f: &mut Frame, area: Rect) {
+        let nerd = Icons::new(true);
+        let ascii = Icons::new(false);
+        let sample = |i: &Icons| {
+            format!(
+                "{}  {}  {}  {}  {}",
+                i.directory, i.note, i.journal, i.info, i.rail_find
+            )
+        };
+        let selected = self.draft.use_nerd_fonts;
+        let mark = |sel: bool| if sel { "▶" } else { " " };
+        let text = format!(
+            "Nerd Fonts are patched terminal fonts with extra icons. If the\n\
+             bottom sample row below shows icons (not boxes or question marks),\n\
+             your terminal supports them.\n\n\
+             {} Plain ASCII      {}\n\
+             {} Nerd Fonts       {}\n",
+            mark(!selected),
+            sample(&ascii),
+            mark(selected),
+            sample(&nerd),
+        );
+        f.render_widget(
+            Paragraph::new(text)
+                .style(self.theme.base_style())
+                .wrap(Wrap { trim: true }),
+            area,
+        );
+    }
     fn render_theme_step(&mut self, _f: &mut Frame, _area: Rect) {}
     fn render_backend_step(&mut self, _f: &mut Frame, _area: Rect) {}
     fn render_summary_step(&mut self, _f: &mut Frame, _area: Rect) {}
@@ -878,6 +925,32 @@ mod tests {
         assert!(screen.flash.is_some(), "invalid name must flash");
         let (name, _) = screen.draft.workspace.clone().unwrap();
         assert_eq!(name, "kimun-notes", "draft name unchanged on invalid input");
+    }
+
+    #[test]
+    fn nerd_fonts_toggle_updates_draft_and_preview_icons() {
+        let (tx, _rx) = unbounded_channel();
+        let mut screen = OnboardingScreen::new(shared_with_workspace());
+        screen.step = OnbStep::NerdFonts;
+        assert!(!screen.draft.use_nerd_fonts);
+        screen.handle_input(&key_event(KeyCode::Down), &tx); // select "nerd fonts"
+        assert!(screen.draft.use_nerd_fonts);
+        assert!(!screen.icons.info.is_ascii(), "preview icons follow draft");
+        screen.handle_input(&key_event(KeyCode::Up), &tx);
+        assert!(!screen.draft.use_nerd_fonts);
+        assert!(screen.icons.info.is_ascii());
+    }
+
+    #[test]
+    fn nerd_fonts_step_renders_both_sample_rows() {
+        let mut screen = OnboardingScreen::new(shared_with_workspace());
+        screen.step = OnbStep::NerdFonts;
+        let backend = ratatui::backend::TestBackend::new(100, 32);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| screen.render(f)).unwrap();
+        let flat: String = terminal.backend().buffer().content.iter().map(|c| c.symbol()).collect();
+        assert!(flat.contains("ASCII"), "ascii row labeled");
+        assert!(flat.contains("Nerd Fonts"), "nerd row labeled");
     }
 
     #[test]
