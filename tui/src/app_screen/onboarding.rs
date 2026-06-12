@@ -1185,8 +1185,8 @@ mod tests {
         std::fs::remove_dir_all(&tmp).ok();
         let (tx, mut rx) = unbounded_channel();
         let settings = shared_defaults();
-        settings.write().unwrap().config_file =
-            Some(std::env::temp_dir().join(format!("kimun_onb_cfg_{}.toml", std::process::id())));
+        let cfg = std::env::temp_dir().join(format!("kimun_onb_cfg_{}.toml", std::process::id()));
+        settings.write().unwrap().config_file = Some(cfg.clone());
         let mut screen = OnboardingScreen::new(settings.clone());
         screen.draft.workspace = Some(("myws".to_string(), tmp.clone()));
         screen.draft.use_nerd_fonts = true;
@@ -1210,14 +1210,15 @@ mod tests {
         }
         assert!(got_finished);
         std::fs::remove_dir_all(&tmp).ok();
+        std::fs::remove_file(&cfg).ok();
     }
 
     #[tokio::test]
     async fn rerun_finish_never_touches_workspaces() {
         let (tx, _rx) = unbounded_channel();
         let settings = shared_with_workspace();
-        settings.write().unwrap().config_file =
-            Some(std::env::temp_dir().join(format!("kimun_onb_cfg_r_{}.toml", std::process::id())));
+        let cfg = std::env::temp_dir().join(format!("kimun_onb_cfg_r_{}.toml", std::process::id()));
+        settings.write().unwrap().config_file = Some(cfg.clone());
         let names_before: Vec<String> = settings.read().unwrap()
             .workspace_config.as_ref().unwrap().workspaces.keys().cloned().collect();
         let mut screen = OnboardingScreen::new(settings.clone());
@@ -1228,6 +1229,7 @@ mod tests {
             .workspace_config.as_ref().unwrap().workspaces.keys().cloned().collect();
         assert_eq!(names_before, names_after);
         assert!(settings.read().unwrap().use_nerd_fonts, "fonts applied on rerun finish");
+        std::fs::remove_file(&cfg).ok();
     }
 
     #[test]
