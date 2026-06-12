@@ -48,6 +48,7 @@ use std::io;
 use crate::app::App;
 use crate::app_screen::browse::BrowseScreen;
 use crate::app_screen::editor::EditorScreen;
+use crate::app_screen::onboarding::OnboardingScreen;
 use crate::app_screen::preferences::PreferencesScreen;
 use crate::app_screen::start::StartScreen;
 use crate::app_screen::{AppScreen, ScreenKind};
@@ -283,8 +284,7 @@ async fn switch_screen(app: &mut App, tx: &AppTx, new_screen: ScreenEvent) {
             vault_path,
             app.settings.clone(),
         )),
-        // Placeholder until OnboardingScreen is implemented (Task 4).
-        ScreenEvent::OpenOnboarding => Box::new(StartScreen::new(app.settings.clone(), app.vault.clone())),
+        ScreenEvent::OpenOnboarding => Box::new(OnboardingScreen::new(app.settings.clone())),
     };
 
     screen.on_enter(tx).await;
@@ -459,7 +459,10 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
                             .ok();
                     }
                 } else {
-                    tx.send(AppEvent::OpenScreen(ScreenEvent::OpenPreferences))
+                    // No vault → the app is unconfigured. Route to the guided
+                    // setup, not Preferences (onboarding replaces the
+                    // preferences fallthrough as the no-workspace path).
+                    tx.send(AppEvent::OpenScreen(ScreenEvent::OpenOnboarding))
                         .ok();
                 }
             }
@@ -477,7 +480,7 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
                 tx.announce_and_open(details.path, created);
             }
         }
-        AppEvent::PreferencesSaved => {
+        AppEvent::PreferencesSaved | AppEvent::OnboardingFinished => {
             // Rebuild the vault so workspace path and inbox_path changes take effect.
             app.vault = rebuild_vault(&app.settings).await;
             tx.send(AppEvent::OpenScreen(ScreenEvent::Start)).ok();
