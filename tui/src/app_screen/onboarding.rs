@@ -12,7 +12,7 @@ use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 
 use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::dir_browser::FileBrowserState;
@@ -231,7 +231,16 @@ impl AppScreen for OnboardingScreen {
             // (handled by workspace_step_key in Task 5), not cancel the flow.
             KeyCode::Esc if !self.name_editing => self.on_cancel(tx),
             KeyCode::Left | KeyCode::BackTab if !self.name_editing => self.go_prev(),
-            KeyCode::Right | KeyCode::Tab if !self.name_editing => self.go_next(),
+            KeyCode::Right | KeyCode::Tab if !self.name_editing => {
+                if self.step == OnbStep::Workspace
+                    && self.first_run
+                    && self.draft.workspace.is_none()
+                {
+                    self.flash = Some("choose a directory first (b to browse)".to_string());
+                } else {
+                    self.go_next();
+                }
+            }
             _ => self.handle_step_key(key, tx),
         }
         tx.send(AppEvent::Redraw).ok();
@@ -281,10 +290,177 @@ impl OnboardingScreen {
         }
     }
 
-    // Step content lands in Tasks 5-8; stubs keep the skeleton compiling.
-    fn handle_step_key(&mut self, _key: &KeyEvent, _tx: &AppTx) {}
-    fn handle_overlay_key(&mut self, _key: &KeyEvent, _tx: &AppTx) -> bool {
-        false
+    fn handle_step_key(&mut self, key: &KeyEvent, tx: &AppTx) {
+        match self.step {
+            OnbStep::Workspace => self.workspace_step_key(key),
+            _ => {
+                // Steps land in Tasks 6-8; Enter advances as a placeholder.
+                if key.code == KeyCode::Enter {
+                    self.go_next();
+                }
+            }
+        }
+        let _ = tx;
+    }
+
+    fn workspace_step_key(&mut self, key: &KeyEvent) {
+        if !self.first_run {
+            if key.code == KeyCode::Enter {
+                self.go_next();
+            }
+            return;
+        }
+        if self.name_editing {
+            match key.code {
+                KeyCode::Enter | KeyCode::Esc => {
+                    let name = self.name_input.value().trim().to_lowercase();
+                    if name.is_empty()
+                        || kimun_core::nfs::filename::validate_filename(&name).is_err()
+                    {
+                        self.flash = Some("invalid workspace name".to_string());
+                        return;
+                    }
+                    if let Some((n, _)) = self.draft.workspace.as_mut() {
+                        *n = name;
+                    }
+                    self.name_editing = false;
+                    self.flash = None;
+                }
+                _ => {
+                    let _ = self.name_input.handle_key(key);
+                }
+            }
+            return;
+        }
+        match key.code {
+            KeyCode::Enter => {
+                if self.draft.workspace.is_some() {
+                    self.go_next();
+                } else {
+                    self.flash = Some("choose a directory first (b to browse)".to_string());
+                }
+            }
+            KeyCode::Char('b') => {
+                let start = self
+                    .draft
+                    .workspace
+                    .as_ref()
+                    .and_then(|(_, p)| p.parent().map(|p| p.to_path_buf()))
+                    .or_else(|| {
+                        AppSettings::default_workspace_suggestion()
+                            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+                    })
+                    .unwrap_or_else(|| std::path::PathBuf::from("/"));
+                self.overlay = OnbOverlay::Browser(FileBrowserState::load(start));
+            }
+            KeyCode::Char('e') => {
+                let current = self
+                    .draft
+                    .workspace
+                    .as_ref()
+                    .map(|(n, _)| n.clone())
+                    .unwrap_or_default();
+                self.name_input.set_value(current);
+                self.name_editing = true;
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_overlay_key(&mut self, key: &KeyEvent, tx: &AppTx) -> bool {
+        use ratatui::crossterm::event::KeyModifiers;
+        match std::mem::replace(&mut self.overlay, OnbOverlay::None) {
+            OnbOverlay::None => false,
+            OnbOverlay::Browser(mut fb) => {
+                let offset = if fb.has_parent { 1 } else { 0 };
+                let total = fb.entries.len() + offset;
+                match key.code {
+                    KeyCode::Esc => {}
+                    KeyCode::Up if total > 0 => {
+                        let cur = fb.list_state.selected().unwrap_or(0);
+                        fb.list_state.select(Some((cur + total - 1) % total));
+                        self.overlay = OnbOverlay::Browser(fb);
+                    }
+                    KeyCode::Down if total > 0 => {
+                        let cur = fb.list_state.selected().unwrap_or(0);
+                        fb.list_state.select(Some((cur + 1) % total));
+                        self.overlay = OnbOverlay::Browser(fb);
+                    }
+                    KeyCode::Left => {
+                        fb.go_up();
+                        self.overlay = OnbOverlay::Browser(fb);
+                    }
+                    KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        self.confirm_directory(fb.current_path.clone());
+                    }
+                    KeyCode::Right | KeyCode::Enter => {
+                        if let Some(idx) = fb.list_state.selected() {
+                            if fb.has_parent && idx == 0 {
+                                fb.go_up();
+                            } else if let Some(entry) = fb.entries.get(idx - offset).cloned() {
+                                fb.navigate_into(entry);
+                            }
+                        }
+                        self.overlay = OnbOverlay::Browser(fb);
+                    }
+                    KeyCode::Char('c') => {
+                        self.confirm_directory(fb.current_path.clone());
+                    }
+                    KeyCode::Char('n') => {
+                        self.overlay = OnbOverlay::NewDir(fb, SingleLineInput::new());
+                    }
+                    KeyCode::Char(c) => {
+                        fb.jump_to_char(c);
+                        self.overlay = OnbOverlay::Browser(fb);
+                    }
+                    _ => self.overlay = OnbOverlay::Browser(fb),
+                }
+                true
+            }
+            OnbOverlay::NewDir(mut fb, mut input) => {
+                match key.code {
+                    KeyCode::Esc => self.overlay = OnbOverlay::Browser(fb),
+                    KeyCode::Enter => match fb.create_dir(input.value()) {
+                        Ok(_) => self.overlay = OnbOverlay::Browser(fb),
+                        Err(e) => {
+                            self.flash = Some(format!("cannot create directory: {e}"));
+                            self.overlay = OnbOverlay::NewDir(fb, input);
+                        }
+                    },
+                    _ => {
+                        let _ = input.handle_key(key);
+                        self.overlay = OnbOverlay::NewDir(fb, input);
+                    }
+                }
+                true
+            }
+            OnbOverlay::ConfirmQuit => {
+                match key.code {
+                    KeyCode::Enter => {
+                        tx.send(AppEvent::Quit).ok();
+                    }
+                    KeyCode::Esc => {}
+                    _ => self.overlay = OnbOverlay::ConfirmQuit,
+                }
+                true
+            }
+            OnbOverlay::ConfirmDiscard => {
+                match key.code {
+                    KeyCode::Enter => {
+                        tx.send(AppEvent::OpenScreen(ScreenEvent::Start)).ok();
+                    }
+                    KeyCode::Esc => {}
+                    _ => self.overlay = OnbOverlay::ConfirmDiscard,
+                }
+                true
+            }
+        }
+    }
+
+    fn confirm_directory(&mut self, chosen: std::path::PathBuf) {
+        let name = suggest_name(&chosen);
+        self.draft.workspace = Some((name, chosen));
+        self.flash = None;
     }
 }
 
@@ -381,13 +557,180 @@ impl OnboardingScreen {
         );
     }
 
-    // Step renderers land in Tasks 5-8.
-    fn render_workspace_step(&mut self, _f: &mut Frame, _area: Rect) {}
+    fn render_workspace_step(&mut self, f: &mut Frame, area: Rect) {
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(5), Constraint::Min(0)])
+            .split(area);
+
+        let desc = if self.first_run {
+            "A workspace is where your notes live: one directory on disk,\n\
+             holding plain Markdown files. Kimün indexes it for search and\n\
+             links. You can add more workspaces later in Preferences."
+        } else {
+            "Your workspaces. This step is informational — add, rename or\n\
+             remove workspaces in Preferences (palette: \"preferences\")."
+        };
+        f.render_widget(
+            Paragraph::new(desc).style(self.theme.base_style()).wrap(Wrap { trim: true }),
+            rows[0],
+        );
+
+        if self.first_run {
+            let (name, path) = match &self.draft.workspace {
+                Some((n, p)) => (n.clone(), p.display().to_string()),
+                None => ("—".to_string(), "no directory chosen (press b)".to_string()),
+            };
+            let body = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(1), Constraint::Length(1)])
+                .split(rows[1]);
+            f.render_widget(
+                Paragraph::new(format!("  Directory:  {path}")).style(self.theme.base_style()),
+                body[0],
+            );
+            if self.name_editing {
+                f.render_widget(
+                    Paragraph::new("  Name:       ").style(self.theme.base_style()),
+                    body[1],
+                );
+                self.name_input.render(
+                    f,
+                    body[1],
+                    Style::default()
+                        .fg(self.theme.accent.to_ratatui())
+                        .add_modifier(Modifier::BOLD),
+                    14,
+                    true,
+                );
+            } else {
+                f.render_widget(
+                    Paragraph::new(format!("  Name:       {name}")).style(self.theme.base_style()),
+                    body[1],
+                );
+            }
+        } else {
+            let s = self.settings.read().unwrap();
+            let current = s.current_workspace_name().unwrap_or_default();
+            let mut items: Vec<ListItem> = Vec::new();
+            if let Some(wc) = s.workspace_config.as_ref() {
+                for (name, entry) in &wc.workspaces {
+                    let marker = if *name == current { "●" } else { " " };
+                    items.push(ListItem::new(format!(
+                        " {marker} {name}  —  {}",
+                        entry.effective_path().display()
+                    )));
+                }
+            }
+            drop(s);
+            f.render_widget(List::new(items).style(self.theme.base_style()), rows[1]);
+        }
+    }
+
+    // Step renderers land in Tasks 6-8.
     fn render_nerd_fonts_step(&mut self, _f: &mut Frame, _area: Rect) {}
     fn render_theme_step(&mut self, _f: &mut Frame, _area: Rect) {}
     fn render_backend_step(&mut self, _f: &mut Frame, _area: Rect) {}
     fn render_summary_step(&mut self, _f: &mut Frame, _area: Rect) {}
-    fn render_overlay(&mut self, _f: &mut Frame, _dialog_area: Rect) {}
+
+    fn render_overlay(&mut self, f: &mut Frame, _dialog_area: Rect) {
+        match &mut self.overlay {
+            OnbOverlay::None => {}
+            OnbOverlay::Browser(fb) | OnbOverlay::NewDir(fb, _) => {
+                let area = crate::components::centered_rect(55, 70, f.area());
+                f.render_widget(Clear, area);
+                let block = Block::default()
+                    .title(" Choose Notes Directory ")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(self.theme.accent.to_ratatui()))
+                    .style(self.theme.base_style());
+                let inner = block.inner(area);
+                f.render_widget(block, area);
+                let rows = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Length(1),
+                        Constraint::Min(0),
+                        Constraint::Length(1),
+                    ])
+                    .split(inner);
+                f.render_widget(
+                    Paragraph::new(fb.current_path.to_string_lossy().into_owned())
+                        .style(self.theme.base_style()),
+                    rows[0],
+                );
+                let mut items: Vec<ListItem> = Vec::new();
+                if fb.has_parent {
+                    items.push(ListItem::new("  ../"));
+                }
+                for e in &fb.entries {
+                    items.push(ListItem::new(format!(
+                        "  {}/",
+                        e.file_name().unwrap_or_default().to_string_lossy()
+                    )));
+                }
+                let list = List::new(items)
+                    .highlight_symbol("▶ ")
+                    .highlight_style(Style::default().add_modifier(Modifier::BOLD));
+                f.render_stateful_widget(list, rows[1], &mut fb.list_state);
+                f.render_widget(
+                    Paragraph::new("Enter: open  c: choose  n: new dir  Esc: back")
+                        .style(self.theme.base_style()),
+                    rows[2],
+                );
+            }
+            OnbOverlay::ConfirmQuit => {
+                render_confirm_box(
+                    f,
+                    &self.theme,
+                    " Quit Setup? ",
+                    "No workspace is configured — Kimün cannot run\nwithout one. Quit anyway?\n\n  Enter: quit    Esc: back to setup",
+                );
+            }
+            OnbOverlay::ConfirmDiscard => {
+                render_confirm_box(
+                    f,
+                    &self.theme,
+                    " Discard Changes? ",
+                    "Your setup changes have not been applied.\n\n  Enter: discard    Esc: back to setup",
+                );
+            }
+        }
+        // NewDir input prompt floats over the browser — second borrow scope.
+        if let OnbOverlay::NewDir(_, input) = &mut self.overlay {
+            let prompt = crate::components::fixed_centered_rect(40, 3, f.area());
+            f.render_widget(Clear, prompt);
+            let theme = &self.theme;
+            let pblock = Block::default()
+                .title(" New Directory ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme.accent.to_ratatui()))
+                .style(theme.base_style());
+            let pinner = pblock.inner(prompt);
+            f.render_widget(pblock, prompt);
+            input.render(f, pinner, theme.base_style(), 0, true);
+        }
+    }
+}
+
+// ── Free rendering helpers ────────────────────────────────────────────────────
+
+fn render_confirm_box(f: &mut Frame, theme: &Theme, title: &str, body: &str) {
+    let area = crate::components::fixed_centered_rect(52, 7, f.area());
+    f.render_widget(Clear, area);
+    let block = Block::default()
+        .title(title.to_string())
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.accent.to_ratatui()))
+        .style(theme.base_style());
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    f.render_widget(
+        Paragraph::new(body.to_string())
+            .style(theme.base_style())
+            .wrap(Wrap { trim: false }),
+        inner,
+    );
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -462,5 +805,76 @@ mod tests {
             .collect();
         assert!(flat.contains("Kimün Setup"));
         assert!(flat.contains("1 / 5"));
+    }
+
+    #[test]
+    fn first_run_workspace_step_prefills_suggestion() {
+        let screen = OnboardingScreen::new(shared_defaults());
+        let (name, path) = screen.draft.workspace.clone().expect("suggestion expected");
+        assert!(path.ends_with("kimun-notes"));
+        assert_eq!(name, "kimun-notes");
+    }
+
+    #[test]
+    fn first_run_enter_on_valid_workspace_advances() {
+        let (tx, _rx) = unbounded_channel();
+        let mut screen = OnboardingScreen::new(shared_defaults());
+        screen.handle_input(&key_event(KeyCode::Enter), &tx);
+        assert_eq!(screen.step, OnbStep::NerdFonts);
+    }
+
+    #[test]
+    fn first_run_right_blocked_without_workspace_draft() {
+        let (tx, _rx) = unbounded_channel();
+        let mut screen = OnboardingScreen::new(shared_defaults());
+        screen.draft.workspace = None;
+        screen.handle_input(&key_event(KeyCode::Right), &tx);
+        assert_eq!(screen.step, OnbStep::Workspace, "cannot advance without a workspace");
+        assert!(screen.flash.is_some());
+    }
+
+    #[test]
+    fn rerun_workspace_step_is_informational_and_lists_workspaces() {
+        let (tx, _rx) = unbounded_channel();
+        let mut screen = OnboardingScreen::new(shared_with_workspace());
+        assert!(screen.draft.workspace.is_none());
+        screen.handle_input(&key_event(KeyCode::Enter), &tx);
+        assert_eq!(screen.step, OnbStep::NerdFonts);
+
+        let backend = ratatui::backend::TestBackend::new(100, 32);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        screen.step = OnbStep::Workspace;
+        terminal.draw(|f| screen.render(f)).unwrap();
+        let flat: String = terminal.backend().buffer().content.iter().map(|c| c.symbol()).collect();
+        assert!(flat.contains("notes"), "workspace list should show the entry name");
+        assert!(flat.contains("Preferences"), "should point at Preferences for management");
+    }
+
+    #[test]
+    fn name_edit_mode_validates_and_lowercases() {
+        let (tx, _rx) = unbounded_channel();
+        let mut screen = OnboardingScreen::new(shared_defaults());
+        screen.handle_input(&key_event(KeyCode::Char('e')), &tx);
+        assert!(screen.name_editing);
+        screen.handle_input(&key_event(KeyCode::Char('X')), &tx);
+        screen.handle_input(&key_event(KeyCode::Enter), &tx);
+        assert!(!screen.name_editing);
+        let (name, _) = screen.draft.workspace.clone().unwrap();
+        assert_eq!(name, "kimun-notesx");
+    }
+
+    #[test]
+    fn browser_confirm_updates_draft_and_suggested_name() {
+        let tmp = std::env::temp_dir().join(format!("kimun_onb_browse_{}", std::process::id()));
+        std::fs::create_dir_all(tmp.join("My-Vault")).unwrap();
+        let (tx, _rx) = unbounded_channel();
+        let mut screen = OnboardingScreen::new(shared_defaults());
+        screen.overlay = OnbOverlay::Browser(FileBrowserState::load(tmp.join("My-Vault")));
+        screen.handle_input(&key_event(KeyCode::Char('c')), &tx);
+        let (name, path) = screen.draft.workspace.clone().unwrap();
+        assert_eq!(path, tmp.join("My-Vault"));
+        assert_eq!(name, "my-vault");
+        assert!(matches!(screen.overlay, OnbOverlay::None));
+        std::fs::remove_dir_all(&tmp).ok();
     }
 }
