@@ -864,6 +864,21 @@ mod tests {
     }
 
     #[test]
+    fn name_edit_rejects_invalid_name_and_stays_editing() {
+        let (tx, _rx) = unbounded_channel();
+        let mut screen = OnboardingScreen::new(shared_defaults());
+        screen.handle_input(&key_event(KeyCode::Char('e')), &tx);
+        assert!(screen.name_editing);
+        // "?" is invalid on at least one major filesystem.
+        screen.handle_input(&key_event(KeyCode::Char('?')), &tx);
+        screen.handle_input(&key_event(KeyCode::Enter), &tx);
+        assert!(screen.name_editing, "invalid name must keep edit mode open");
+        assert!(screen.flash.is_some(), "invalid name must flash");
+        let (name, _) = screen.draft.workspace.clone().unwrap();
+        assert_eq!(name, "kimun-notes", "draft name unchanged on invalid input");
+    }
+
+    #[test]
     fn browser_confirm_updates_draft_and_suggested_name() {
         let tmp = std::env::temp_dir().join(format!("kimun_onb_browse_{}", std::process::id()));
         std::fs::create_dir_all(tmp.join("My-Vault")).unwrap();
