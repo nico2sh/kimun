@@ -19,23 +19,25 @@ The first time you launch Kimün with no workspace configured, a centered setup 
 
 ### Steps
 
-**1. Workspace** — choose where your notes live. Kimün suggests `~/kimun-notes` as a starting point. From here:
+**1. Welcome** — a brief introduction explaining what the setup covers. Press `Enter` to begin.
+
+**2. Workspace** — choose where your notes live. Kimün suggests `~/kimun-notes` as a starting point. From here:
 
 - Press `b` to open a directory browser and navigate to an existing folder.
 - Inside the browser, press `n` to create a new directory on the spot.
 - Press `e` to edit the workspace name — the label Kimün uses for the workspace, not its directory path.
 
-**2. Nerd Fonts** — two sample rows of glyphs let you check whether your terminal font includes Nerd Font patches. If the symbols look broken, leave `use_nerd_fonts` off; if they look sharp, turn it on.
+**3. Nerd Fonts** — two sample rows of glyphs let you check whether your terminal font includes Nerd Font patches. If the symbols look broken, leave `use_nerd_fonts` off; if they look sharp, turn it on.
 
-**3. Theme** — scroll through available themes with a live preview. You can change your mind later via `Ctrl+,`.
+**4. Theme** — scroll through available themes with a live preview. You can change your mind later via `Ctrl+,`.
 
-**4. Editor Backend** — choose how you edit notes:
+**5. Editor Backend** — choose how you edit notes:
 
 - `textarea` — Kimün's built-in editor (always available).
 - `vim` — built-in Vim emulation.
 - `nvim` — embedded Neovim (only selectable when `nvim` is found on `PATH`).
 
-**5. Summary** — a recap of every choice. Press `Enter` to apply them all atomically (the config file is written once, here). Press `Esc` to discard everything and leave your config unchanged.
+**6. Summary** — a recap of every choice. Press `Enter` to apply them all atomically (the config file is written once, here). Press `Esc` to discard everything and leave your config unchanged.
 
 ### Running It Again
 
