@@ -13,6 +13,41 @@ All of Kimün's settings live in one `config.toml`:
 
 You rarely need to edit it by hand: Kimün creates it on first run, and the TUI's Preferences screen (`Ctrl+,`) writes changes for you. This page is for when you want to get your hands dirty anyway.
 
+## Guided Setup
+
+The first time you launch Kimün with no workspace configured, a centered setup dialog walks you through the essentials. Nothing is written until the final step — you can bail at any point with `Esc`.
+
+### Steps
+
+**1. Workspace** — choose where your notes live. Kimün suggests `~/kimun-notes` as a starting point. From here:
+
+- Press `b` to open a directory browser and navigate to an existing folder.
+- Inside the browser, press `n` to create a new directory on the spot.
+- Press `e` to edit the workspace path by hand.
+
+**2. Nerd Fonts** — two sample rows of glyphs let you check whether your terminal font includes Nerd Font patches. If the symbols look broken, leave `use_nerd_fonts` off; if they look sharp, turn it on.
+
+**3. Theme** — scroll through available themes with a live preview. You can change your mind later via `Ctrl+,`.
+
+**4. Editor Backend** — choose how you edit notes:
+
+- `textarea` — Kimün's built-in editor (always available).
+- `vim` — built-in Vim emulation.
+- `nvim` — embedded Neovim (only selectable when `nvim` is found on `PATH`).
+
+**5. Summary** — a recap of every choice. Press `Enter` to apply them all atomically (the config file is written once, here). Press `Esc` to discard everything and leave your config unchanged.
+
+### Running It Again
+
+You can reopen the guided setup any time:
+
+- **Command palette** (`Ctrl+P` inside the editor) → type "guided setup".
+- **Leader sequence** `v o` (default leader is `ctrl&G`, so: `ctrl&G` then `v` then `o`).
+
+On rerun, the Workspace step is informational — it lists your current workspaces rather than prompting you to set one up. To add, rename, or remove workspaces, use the Preferences screen (`Ctrl+,`) or the `kimun workspace` CLI commands (see [Workspaces](@/getting-started/workspaces.md)).
+
+---
+
 ## A Complete Config
 
 This is a full, working config file. Everything else on this page is optional detail:
