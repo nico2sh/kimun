@@ -98,6 +98,10 @@ pub enum AppEvent {
     /// Sent by PreferencesScreen when user confirms Save. The shared settings
     /// reference already contains the updated values.
     PreferencesSaved,
+    /// Sent by OnboardingScreen when the user confirms Finish on the summary
+    /// step. The shared settings already contain the committed draft; main.rs
+    /// rebuilds the vault and navigates to Start (same as PreferencesSaved).
+    OnboardingFinished,
     /// Sent by PreferencesScreen when user discards or closes unchanged.
     ClosePreferences,
     /// Sent by VaultSection; PreferencesScreen::handle_app_message intercepts.
@@ -253,6 +257,8 @@ pub enum InputEvent {
 pub enum ScreenEvent {
     Start,
     OpenPreferences,
+    /// Open the guided-setup (onboarding) screen.
+    OpenOnboarding,
     /// Open the settings screen with an error overlay already shown.
     OpenPreferencesWithError(String),
     /// Navigate to the editor for the given vault root path.

@@ -282,6 +282,12 @@ pub struct LeaderConfig {
 }
 
 impl AppSettings {
+    /// Suggested directory for a first workspace (`~/kimun-notes`). `None`
+    /// when the home directory cannot be determined.
+    pub fn default_workspace_suggestion() -> Option<PathBuf> {
+        config_dir::get_home_dir().ok().map(|h| h.join("kimun-notes"))
+    }
+
     /// The leader tree with this config's `[leader]` overrides applied — the
     /// ONE constructor every surface (engine, which-key, cheatsheet, palette)
     /// must use, so they can never disagree.
@@ -783,6 +789,16 @@ impl AppSettings {
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_workspace_suggestion_is_under_home() {
+        let suggestion = AppSettings::default_workspace_suggestion();
+        if let Some(p) = suggestion {
+            assert!(p.ends_with("kimun-notes"));
+            assert!(p.is_absolute());
+        }
+        // None is acceptable only when the platform has no home dir.
+    }
 
     #[test]
     fn load_theme_from_nonexistent_path_returns_err_without_creating_file() {
