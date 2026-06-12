@@ -296,8 +296,10 @@ impl OnboardingScreen {
         match self.step {
             OnbStep::Workspace => self.workspace_step_key(key),
             OnbStep::NerdFonts => self.nerd_fonts_step_key(key),
-            _ => {
-                // Steps land in Tasks 7-8; Enter advances as a placeholder.
+            OnbStep::Theme => self.theme_step_key(key),
+            OnbStep::Backend => self.backend_step_key(key),
+            OnbStep::Summary => {
+                // Summary step lands in Task 8; Enter advances as a placeholder.
                 if key.code == KeyCode::Enter {
                     self.go_next();
                 }
@@ -678,8 +680,108 @@ impl OnboardingScreen {
             area,
         );
     }
-    fn render_theme_step(&mut self, _f: &mut Frame, _area: Rect) {}
-    fn render_backend_step(&mut self, _f: &mut Frame, _area: Rect) {}
+    fn theme_step_key(&mut self, key: &KeyEvent) {
+        match key.code {
+            KeyCode::Up if self.theme_idx > 0 => {
+                self.theme_idx -= 1;
+                self.apply_theme_preview();
+            }
+            KeyCode::Down if self.theme_idx + 1 < self.themes.len() => {
+                self.theme_idx += 1;
+                self.apply_theme_preview();
+            }
+            KeyCode::Enter => self.go_next(),
+            _ => {}
+        }
+    }
+
+    fn apply_theme_preview(&mut self) {
+        if let Some(t) = self.themes.get(self.theme_idx) {
+            self.draft.theme_name = t.name.clone();
+            self.theme = t.clone().adapt_to_terminal();
+        }
+    }
+
+    fn render_theme_step(&mut self, f: &mut Frame, area: Rect) {
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(3), Constraint::Min(0)])
+            .split(area);
+        f.render_widget(
+            Paragraph::new(
+                "The color theme for the whole app. The dialog previews your\n\
+                 selection live. Custom themes: ~/.config/kimun/themes/*.toml",
+            )
+            .style(self.theme.base_style())
+            .wrap(Wrap { trim: true }),
+            rows[0],
+        );
+        let items: Vec<ListItem> = self
+            .themes
+            .iter()
+            .map(|t| ListItem::new(format!("  {}", t.name)))
+            .collect();
+        let mut state = ratatui::widgets::ListState::default();
+        state.select(Some(self.theme_idx));
+        let list = List::new(items)
+            .style(self.theme.base_style())
+            .highlight_symbol("▶ ")
+            .highlight_style(Style::default().add_modifier(Modifier::BOLD));
+        f.render_stateful_widget(list, rows[1], &mut state);
+    }
+
+    fn backend_step_key(&mut self, key: &KeyEvent) {
+        match key.code {
+            KeyCode::Up => self.move_backend(-1),
+            KeyCode::Down => self.move_backend(1),
+            KeyCode::Enter => self.go_next(),
+            _ => {}
+        }
+    }
+
+    fn move_backend(&mut self, delta: isize) {
+        let len = BACKENDS.len() as isize;
+        let mut idx = self.backend_idx as isize;
+        loop {
+            idx += delta;
+            if idx < 0 || idx >= len {
+                return; // stay at the edges
+            }
+            let (backend, _, _) = BACKENDS[idx as usize];
+            if backend == EditorBackendSetting::Nvim && !self.nvim_available {
+                continue; // hop over the disabled entry
+            }
+            self.backend_idx = idx as usize;
+            self.draft.editor_backend = backend;
+            return;
+        }
+    }
+
+    fn render_backend_step(&mut self, f: &mut Frame, area: Rect) {
+        let mut lines = vec![
+            "Which engine drives the note editor. One config axis, three".to_string(),
+            "values — changeable anytime in Preferences.".to_string(),
+            String::new(),
+        ];
+        for (i, (backend, name, desc)) in BACKENDS.iter().enumerate() {
+            let mark = if i == self.backend_idx { "▶" } else { " " };
+            let disabled = *backend == EditorBackendSetting::Nvim && !self.nvim_available;
+            if disabled {
+                lines.push(format!(
+                    "{mark} {name}  (nvim not found — install it or set its path in Preferences)"
+                ));
+            } else {
+                lines.push(format!("{mark} {name}  —  {desc}"));
+            }
+        }
+        f.render_widget(
+            Paragraph::new(lines.join("\n"))
+                .style(self.theme.base_style())
+                .wrap(Wrap { trim: false }),
+            area,
+        );
+    }
+
     fn render_summary_step(&mut self, _f: &mut Frame, _area: Rect) {}
 
     fn render_overlay(&mut self, f: &mut Frame, _dialog_area: Rect) {
@@ -951,6 +1053,45 @@ mod tests {
         let flat: String = terminal.backend().buffer().content.iter().map(|c| c.symbol()).collect();
         assert!(flat.contains("ASCII"), "ascii row labeled");
         assert!(flat.contains("Nerd Fonts"), "nerd row labeled");
+    }
+
+    #[test]
+    fn theme_selection_updates_draft_and_live_preview() {
+        let (tx, _rx) = unbounded_channel();
+        let mut screen = OnboardingScreen::new(shared_with_workspace());
+        screen.step = OnbStep::Theme;
+        assert!(screen.themes.len() >= 2, "need at least two builtin themes");
+        screen.theme_idx = 0;
+        if let Some(t) = screen.themes.first() {
+            screen.draft.theme_name = t.name.clone();
+        }
+        let before = screen.draft.theme_name.clone();
+        screen.handle_input(&key_event(KeyCode::Down), &tx);
+        assert_ne!(screen.draft.theme_name, before);
+        assert_eq!(
+            screen.theme.name,
+            screen.draft.theme_name,
+            "dialog restyles live"
+        );
+    }
+
+    #[test]
+    fn backend_selection_skips_unavailable_nvim() {
+        let (tx, _rx) = unbounded_channel();
+        let mut screen = OnboardingScreen::new(shared_with_workspace());
+        screen.step = OnbStep::Backend;
+        screen.nvim_available = false;
+        screen.backend_idx = 1; // vim
+        screen.draft.editor_backend = EditorBackendSetting::Vim;
+        screen.handle_input(&key_event(KeyCode::Down), &tx);
+        assert_eq!(
+            screen.draft.editor_backend,
+            EditorBackendSetting::Vim,
+            "selection must not land on disabled nvim"
+        );
+        screen.nvim_available = true;
+        screen.handle_input(&key_event(KeyCode::Down), &tx);
+        assert_eq!(screen.draft.editor_backend, EditorBackendSetting::Nvim);
     }
 
     #[test]
