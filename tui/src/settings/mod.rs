@@ -285,7 +285,9 @@ impl AppSettings {
     /// Suggested directory for a first workspace (`~/kimun-notes`). `None`
     /// when the home directory cannot be determined.
     pub fn default_workspace_suggestion() -> Option<PathBuf> {
-        config_dir::get_home_dir().ok().map(|h| h.join("kimun-notes"))
+        config_dir::get_home_dir()
+            .ok()
+            .map(|h| h.join("kimun-notes"))
     }
 
     /// The leader tree with this config's `[leader]` overrides applied — the
