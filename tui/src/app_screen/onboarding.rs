@@ -74,8 +74,6 @@ struct Draft {
 // ── Overlay ───────────────────────────────────────────────────────────────────
 
 /// Modal sub-states layered over the current step.
-// used from Task 5 on
-#[allow(dead_code)]
 enum OnbOverlay {
     None,
     Browser(FileBrowserState),
@@ -139,7 +137,7 @@ impl OnboardingScreen {
             .iter()
             .position(|t| t.name == current_theme_name)
             .unwrap_or(0);
-        let draft = Draft {
+        let mut draft = Draft {
             workspace: if first_run {
                 AppSettings::default_workspace_suggestion()
                     .map(|p| (suggest_name(&p), p))
@@ -153,13 +151,19 @@ impl OnboardingScreen {
                 .unwrap_or_default(),
             editor_backend: s.editor_backend,
         };
-        let backend_idx = BACKENDS
+        let mut backend_idx = BACKENDS
             .iter()
             .position(|(b, _, _)| *b == draft.editor_backend)
             .unwrap_or(0);
         let theme = s.get_theme();
         let icons = Icons::new(draft.use_nerd_fonts);
         let nvim_available = nvim_on_path(s.nvim_path.as_deref());
+        // A configured nvim backend whose binary has since vanished must not
+        // leave the selection on a disabled row.
+        if !nvim_available && BACKENDS[backend_idx].0 == EditorBackendSetting::Nvim {
+            backend_idx = 0;
+            draft.editor_backend = BACKENDS[0].0;
+        }
         let name_input = SingleLineInput::with_value(
             draft
                 .workspace
@@ -1280,5 +1284,37 @@ mod tests {
             }
         }
         assert!(got_start);
+    }
+
+    #[test]
+    fn full_first_run_walkthrough_with_enter_commits_defaults() {
+        let tmp = std::env::temp_dir().join(format!("kimun_onb_walk_{}", std::process::id()));
+        std::fs::remove_dir_all(&tmp).ok();
+        let cfg = std::env::temp_dir().join(format!("kimun_onb_walk_cfg_{}.toml", std::process::id()));
+        let (tx, mut rx) = unbounded_channel();
+        let settings = shared_defaults();
+        settings.write().unwrap().config_file = Some(cfg.clone());
+        let mut screen = OnboardingScreen::new(settings.clone());
+        // Point the suggested workspace at a scratch dir.
+        screen.draft.workspace = Some(("walkthrough".to_string(), tmp.clone()));
+
+        for _ in 0..5 {
+            screen.handle_input(&key_event(KeyCode::Enter), &tx);
+        }
+
+        assert!(tmp.is_dir(), "workspace dir created");
+        let s = settings.read().unwrap();
+        assert_eq!(s.current_workspace_name().as_deref(), Some("walkthrough"));
+        assert!(!s.use_nerd_fonts, "default kept");
+        drop(s);
+        let mut got_finished = false;
+        while let Ok(msg) = rx.try_recv() {
+            if matches!(msg, AppEvent::OnboardingFinished) {
+                got_finished = true;
+            }
+        }
+        assert!(got_finished, "five Enters from first step must finish the flow");
+        std::fs::remove_dir_all(&tmp).ok();
+        std::fs::remove_file(&cfg).ok();
     }
 }
