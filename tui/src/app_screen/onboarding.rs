@@ -764,18 +764,24 @@ impl OnboardingScreen {
     fn render_nerd_fonts_step(&mut self, f: &mut Frame, area: Rect) {
         let nerd = Icons::new(true);
         let ascii = Icons::new(false);
+        // Each icon sits in a fixed display-width cell so the nerd glyphs
+        // line up column-for-column with their ASCII counterparts.
+        const CELL: usize = 6;
         let sample = |i: &Icons| {
-            format!(
-                "{}  {}  {}  {}  {}",
-                i.directory, i.note, i.journal, i.info, i.rail_find
-            )
+            [i.directory, i.note, i.journal, i.info, i.rail_find]
+                .iter()
+                .map(|icon| {
+                    let w = unicode_width::UnicodeWidthStr::width(*icon);
+                    format!("{icon}{}", " ".repeat(CELL.saturating_sub(w)))
+                })
+                .collect::<String>()
         };
         let selected = self.draft.use_nerd_fonts;
         let mark = |sel: bool| if sel { "▶" } else { " " };
         let text = format!(
-            "Nerd Fonts are patched terminal fonts with extra icons. If the\n\
-             bottom sample row below shows icons (not boxes or question marks),\n\
-             your terminal supports them.\n\n\
+            "Nerd Fonts are patched terminal fonts with extra icons. If the \
+             bottom sample row below shows icons (not boxes or question \
+             marks), your terminal supports them.\n\n\
              {} Plain ASCII      {}\n\
              {} Nerd Fonts       {}\n",
             mark(!selected),
