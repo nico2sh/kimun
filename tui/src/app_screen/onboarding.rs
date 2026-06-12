@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 
 use crate::app_screen::{AppScreen, ScreenKind};
@@ -107,21 +107,18 @@ const BACKENDS: [(EditorBackendSetting, &str, &str); 3] = [
     ),
 ];
 
-// ── Logo ──────────────────────────────────────────────────────────────────────
+// ── Banner ────────────────────────────────────────────────────────────────────
 
-/// Block-art rendition of assets/logo.png: a blue folded page with a red
-/// triangle on a yellow base. Rows are (blue span, red span) pairs padded to
-/// equal width so per-line centering keeps the shape intact. Indexed colors
-/// only — must render on non-truecolor terminals.
-const LOGO_ROWS: [(&str, &str); 6] = [
-    ("        ▟▛", "     "),
-    ("      ▟██▛", "     "),
-    ("     ▟███▛", "     "),
-    ("    ▟████▘", "     "),
-    ("    ████▙", " ▗▖   "),
-    ("    ███▛", " ▟██▙  "),
+/// ASCII-art "Kimün" wordmark for the welcome step. All rows are the same
+/// width so per-line centering keeps the letters aligned as one block; the
+/// double quote in the top row is the u's diaeresis.
+const KIMUN_BANNER: [&str; 5] = [
+    r#" _  ___           _   _       "#,
+    r#"| |/ (_)_ __ ___ (_) (_)_ __  "#,
+    r#"| ' /| | '_ ` _ \| | | | '_ \ "#,
+    r#"| . \| | | | | | | |_| | | | |"#,
+    r#"|_|\_\_|_| |_| |_|\__,_|_| |_|"#,
 ];
-const LOGO_BASE: &str = "  ▂▂▂▂▂▂▂▂▂▂▂  ";
 
 // ── Screen struct ─────────────────────────────────────────────────────────────
 
@@ -651,25 +648,22 @@ impl OnboardingScreen {
         let rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(LOGO_ROWS.len() as u16 + 1),
+                Constraint::Length(KIMUN_BANNER.len() as u16 + 1),
                 Constraint::Min(0),
             ])
             .split(area);
 
-        let logo: Vec<ratatui::text::Line> = LOGO_ROWS
+        let banner: Vec<ratatui::text::Line> = KIMUN_BANNER
             .iter()
-            .map(|(blue, red)| {
-                ratatui::text::Line::from(vec![
-                    ratatui::text::Span::styled(*blue, Style::default().fg(Color::Blue)),
-                    ratatui::text::Span::styled(*red, Style::default().fg(Color::Red)),
-                ])
+            .map(|row| {
+                ratatui::text::Line::styled(
+                    *row,
+                    Style::default().fg(self.theme.accent.to_ratatui()),
+                )
             })
-            .chain(std::iter::once(ratatui::text::Line::from(
-                ratatui::text::Span::styled(LOGO_BASE, Style::default().fg(Color::Yellow)),
-            )))
             .collect();
         f.render_widget(
-            Paragraph::new(logo)
+            Paragraph::new(banner)
                 .style(self.theme.base_style())
                 .alignment(Alignment::Center),
             rows[0],
