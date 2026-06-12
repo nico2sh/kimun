@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 
 use crate::app_screen::{AppScreen, ScreenKind};
@@ -87,23 +87,41 @@ enum OnbOverlay {
 
 // ── BACKENDS constant ─────────────────────────────────────────────────────────
 
+// Descriptions stay short enough for one dialog row — wrapped continuation
+// lines would break out of the marker column.
 const BACKENDS: [(EditorBackendSetting, &str, &str); 3] = [
     (
         EditorBackendSetting::Textarea,
         "textarea",
-        "Simple editing, no modes. The default — pick this if unsure.",
+        "simple editing, no modes (the default)",
     ),
     (
         EditorBackendSetting::Vim,
         "vim",
-        "Built-in vim emulation (modal editing). No external programs needed.",
+        "built-in vim emulation, no external programs",
     ),
     (
         EditorBackendSetting::Nvim,
         "nvim",
-        "Embeds your real Neovim: your config, your plugins. Requires nvim installed.",
+        "your real Neovim embedded; requires nvim",
     ),
 ];
+
+// ── Logo ──────────────────────────────────────────────────────────────────────
+
+/// Block-art rendition of assets/logo.png: a blue folded page with a red
+/// triangle on a yellow base. Rows are (blue span, red span) pairs padded to
+/// equal width so per-line centering keeps the shape intact. Indexed colors
+/// only — must render on non-truecolor terminals.
+const LOGO_ROWS: [(&str, &str); 6] = [
+    ("        ▟▛", "     "),
+    ("      ▟██▛", "     "),
+    ("     ▟███▛", "     "),
+    ("    ▟████▘", "     "),
+    ("    ████▙", " ▗▖   "),
+    ("    ███▛", " ▟██▙  "),
+];
+const LOGO_BASE: &str = "  ▂▂▂▂▂▂▂▂▂▂▂  ";
 
 // ── Screen struct ─────────────────────────────────────────────────────────────
 
@@ -630,6 +648,33 @@ impl OnboardingScreen {
     }
 
     fn render_welcome_step(&mut self, f: &mut Frame, area: Rect) {
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(LOGO_ROWS.len() as u16 + 1),
+                Constraint::Min(0),
+            ])
+            .split(area);
+
+        let logo: Vec<ratatui::text::Line> = LOGO_ROWS
+            .iter()
+            .map(|(blue, red)| {
+                ratatui::text::Line::from(vec![
+                    ratatui::text::Span::styled(*blue, Style::default().fg(Color::Blue)),
+                    ratatui::text::Span::styled(*red, Style::default().fg(Color::Red)),
+                ])
+            })
+            .chain(std::iter::once(ratatui::text::Line::from(
+                ratatui::text::Span::styled(LOGO_BASE, Style::default().fg(Color::Yellow)),
+            )))
+            .collect();
+        f.render_widget(
+            Paragraph::new(logo)
+                .style(self.theme.base_style())
+                .alignment(Alignment::Center),
+            rows[0],
+        );
+
         let text = "Welcome to Kimün!\n\
             \n\
             This guided setup walks you through the essentials —\n\
@@ -646,7 +691,7 @@ impl OnboardingScreen {
                 .style(self.theme.base_style())
                 .alignment(Alignment::Center)
                 .wrap(Wrap { trim: false }),
-            area,
+            rows[1],
         );
     }
 
@@ -656,12 +701,14 @@ impl OnboardingScreen {
             .constraints([Constraint::Length(5), Constraint::Min(0)])
             .split(area);
 
+        // No hard line breaks — the dialog width varies with the terminal,
+        // so wrapping is left to the Paragraph.
         let desc = if self.first_run {
-            "A workspace is where your notes live: one directory on disk,\n\
-             holding plain Markdown files. Kimün indexes it for search and\n\
+            "A workspace is where your notes live: one directory on disk, \
+             holding plain Markdown files. Kimün indexes it for search and \
              links. You can add more workspaces later in Preferences."
         } else {
-            "Your workspaces. This step is informational — add, rename or\n\
+            "Your workspaces. This step is informational — add, rename or \
              remove workspaces in Preferences (palette: \"preferences\")."
         };
         f.render_widget(
@@ -908,17 +955,33 @@ impl OnboardingScreen {
         };
         drop(s);
         let (_, backend_name, _) = BACKENDS[self.backend_idx];
-        let text = format!(
+        let kv_rows = [
+            format!("Workspace:       {workspace_line}"),
+            format!(
+                "Nerd fonts:      {}",
+                if self.draft.use_nerd_fonts { "on" } else { "off" }
+            ),
+            format!("Theme:           {}", self.draft.theme_name),
+            format!("Editor backend:  {backend_name}"),
+        ];
+        // Pad the key-value rows to a common width so per-line centering
+        // keeps their columns aligned as one block.
+        let block_width = kv_rows
+            .iter()
+            .map(|l| l.chars().count())
+            .max()
+            .unwrap_or(0);
+        let mut text = String::from(
             "Review your choices. Enter applies them all at once;\n\
-             everything stays adjustable in Preferences.\n\n\
-             Workspace:       {workspace_line}\n\
-             Nerd fonts:      {}\n\
-             Theme:           {}\n\
-             Editor backend:  {backend_name}\n\n\
-             [ Press Enter to finish ]",
-            if self.draft.use_nerd_fonts { "on" } else { "off" },
-            self.draft.theme_name,
+             everything stays adjustable in Preferences.\n\n",
         );
+        for row in &kv_rows {
+            let pad = block_width - row.chars().count();
+            text.push_str(row);
+            text.extend(std::iter::repeat_n(' ', pad));
+            text.push('\n');
+        }
+        text.push_str("\n[ Press Enter to finish ]");
         f.render_widget(
             Paragraph::new(text)
                 .style(self.theme.base_style())
