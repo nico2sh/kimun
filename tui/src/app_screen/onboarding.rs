@@ -20,9 +20,9 @@ use crate::components::dir_browser::FileBrowserState;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, ScreenEvent};
 use crate::components::single_line_input::SingleLineInput;
+use crate::settings::config_migration::CURRENT_CONFIG_VERSION;
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
-use crate::settings::config_migration::CURRENT_CONFIG_VERSION;
 use crate::settings::{AppSettings, EditorBackendSetting, SharedSettings};
 
 // ── Step enum ────────────────────────────────────────────────────────────────
@@ -48,10 +48,7 @@ impl OnbStep {
     ];
 
     pub(crate) fn index(self) -> usize {
-        Self::ORDER
-            .iter()
-            .position(|s| *s == self)
-            .unwrap_or(0)
+        Self::ORDER.iter().position(|s| *s == self).unwrap_or(0)
     }
 
     fn next(self) -> Option<OnbStep> {
@@ -190,8 +187,7 @@ impl OnboardingScreen {
             .unwrap_or(0);
         let draft = Draft {
             workspace: if first_run {
-                AppSettings::default_workspace_suggestion()
-                    .map(|p| (suggest_name(&p), p))
+                AppSettings::default_workspace_suggestion().map(|p| (suggest_name(&p), p))
             } else {
                 None
             },
@@ -616,9 +612,7 @@ impl OnboardingScreen {
         let block = Block::default()
             .title(" Kimün Setup ")
             .borders(Borders::ALL)
-            .border_style(
-                Style::default().fg(self.theme.accent.to_ratatui()),
-            )
+            .border_style(Style::default().fg(self.theme.accent.to_ratatui()))
             .style(self.theme.base_style());
         let inner = block.inner(area);
         f.render_widget(block, area);
@@ -683,13 +677,11 @@ impl OnboardingScreen {
             .split(area);
 
         f.render_widget(
-            Paragraph::new(title)
-                .alignment(Alignment::Center)
-                .style(
-                    Style::default()
-                        .fg(self.theme.accent.to_ratatui())
-                        .add_modifier(Modifier::BOLD),
-                ),
+            Paragraph::new(title).alignment(Alignment::Center).style(
+                Style::default()
+                    .fg(self.theme.accent.to_ratatui())
+                    .add_modifier(Modifier::BOLD),
+            ),
             header_rows[0],
         );
         f.render_widget(
@@ -730,9 +722,7 @@ impl OnboardingScreen {
         // into row 0, clearing their home cells. All-ASCII rows, so
         // byte-indexed ranges are safe.
         let (row0, row1) = match umlaut_frame(self.started.elapsed()) {
-            UmlautFrame::Rest => {
-                (KIMUN_BANNER[0].to_string(), KIMUN_BANNER[1].to_string())
-            }
+            UmlautFrame::Rest => (KIMUN_BANNER[0].to_string(), KIMUN_BANNER[1].to_string()),
             UmlautFrame::Squash => {
                 let mut row1 = KIMUN_BANNER[1].to_string();
                 row1.replace_range(UMLAUT_COLS, UMLAUT_SQUASH);
@@ -800,7 +790,9 @@ impl OnboardingScreen {
              remove workspaces in Preferences (palette: \"preferences\")."
         };
         f.render_widget(
-            Paragraph::new(desc).style(self.theme.base_style()).wrap(Wrap { trim: true }),
+            Paragraph::new(desc)
+                .style(self.theme.base_style())
+                .wrap(Wrap { trim: true }),
             rows[0],
         );
 
@@ -1023,7 +1015,8 @@ impl OnboardingScreen {
         };
         let mut s = self.settings.write().unwrap();
         if let Some((name, path, existed)) = workspace {
-            let wc = s.workspace_config
+            let wc = s
+                .workspace_config
                 .get_or_insert_with(crate::settings::workspace_config::WorkspaceConfig::new_empty);
             if let Err(e) = wc.add_workspace(name, path.clone()) {
                 drop(s);
@@ -1064,18 +1057,18 @@ impl OnboardingScreen {
             format!("Workspace:       {workspace_line}"),
             format!(
                 "Nerd fonts:      {}",
-                if self.draft.use_nerd_fonts { "on" } else { "off" }
+                if self.draft.use_nerd_fonts {
+                    "on"
+                } else {
+                    "off"
+                }
             ),
             format!("Theme:           {}", self.draft.theme_name),
             format!("Editor backend:  {backend_name}"),
         ];
         // Pad the key-value rows to a common width so per-line centering
         // keeps their columns aligned as one block.
-        let block_width = kv_rows
-            .iter()
-            .map(|l| l.chars().count())
-            .max()
-            .unwrap_or(0);
+        let block_width = kv_rows.iter().map(|l| l.chars().count()).max().unwrap_or(0);
         let mut text = String::from(
             "Review your choices. Enter applies them all at once;\n\
              everything stays adjustable in Preferences.\n\n",
@@ -1295,7 +1288,11 @@ mod tests {
         screen.step = OnbStep::Workspace;
         screen.draft.workspace = None;
         screen.handle_input(&key_event(KeyCode::Right), &tx);
-        assert_eq!(screen.step, OnbStep::Workspace, "cannot advance without a workspace");
+        assert_eq!(
+            screen.step,
+            OnbStep::Workspace,
+            "cannot advance without a workspace"
+        );
         assert!(screen.flash.is_some());
     }
 
@@ -1312,9 +1309,21 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         screen.step = OnbStep::Workspace;
         terminal.draw(|f| screen.render(f)).unwrap();
-        let flat: String = terminal.backend().buffer().content.iter().map(|c| c.symbol()).collect();
-        assert!(flat.contains("notes"), "workspace list should show the entry name");
-        assert!(flat.contains("Preferences"), "should point at Preferences for management");
+        let flat: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            flat.contains("notes"),
+            "workspace list should show the entry name"
+        );
+        assert!(
+            flat.contains("Preferences"),
+            "should point at Preferences for management"
+        );
     }
 
     #[test]
@@ -1368,7 +1377,13 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(100, 32);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| screen.render(f)).unwrap();
-        let flat: String = terminal.backend().buffer().content.iter().map(|c| c.symbol()).collect();
+        let flat: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
         assert!(flat.contains("ASCII"), "ascii row labeled");
         assert!(flat.contains("Nerd Fonts"), "nerd row labeled");
     }
@@ -1387,8 +1402,7 @@ mod tests {
         screen.handle_input(&key_event(KeyCode::Down), &tx);
         assert_ne!(screen.draft.theme_name, before);
         assert_eq!(
-            screen.theme.name,
-            screen.draft.theme_name,
+            screen.theme.name, screen.draft.theme_name,
             "dialog restyles live"
         );
     }
@@ -1467,16 +1481,35 @@ mod tests {
         let settings = shared_with_workspace();
         let cfg = std::env::temp_dir().join(format!("kimun_onb_cfg_r_{}.toml", std::process::id()));
         settings.write().unwrap().config_file = Some(cfg.clone());
-        let names_before: Vec<String> = settings.read().unwrap()
-            .workspace_config.as_ref().unwrap().workspaces.keys().cloned().collect();
+        let names_before: Vec<String> = settings
+            .read()
+            .unwrap()
+            .workspace_config
+            .as_ref()
+            .unwrap()
+            .workspaces
+            .keys()
+            .cloned()
+            .collect();
         let mut screen = OnboardingScreen::new(settings.clone());
         screen.draft.use_nerd_fonts = true;
         screen.step = OnbStep::Summary;
         screen.handle_input(&key_event(KeyCode::Enter), &tx);
-        let names_after: Vec<String> = settings.read().unwrap()
-            .workspace_config.as_ref().unwrap().workspaces.keys().cloned().collect();
+        let names_after: Vec<String> = settings
+            .read()
+            .unwrap()
+            .workspace_config
+            .as_ref()
+            .unwrap()
+            .workspaces
+            .keys()
+            .cloned()
+            .collect();
         assert_eq!(names_before, names_after);
-        assert!(settings.read().unwrap().use_nerd_fonts, "fonts applied on rerun finish");
+        assert!(
+            settings.read().unwrap().use_nerd_fonts,
+            "fonts applied on rerun finish"
+        );
         std::fs::remove_file(&cfg).ok();
     }
 
@@ -1533,7 +1566,8 @@ mod tests {
     fn full_first_run_walkthrough_with_enter_commits_defaults() {
         let tmp = std::env::temp_dir().join(format!("kimun_onb_walk_{}", std::process::id()));
         std::fs::remove_dir_all(&tmp).ok();
-        let cfg = std::env::temp_dir().join(format!("kimun_onb_walk_cfg_{}.toml", std::process::id()));
+        let cfg =
+            std::env::temp_dir().join(format!("kimun_onb_walk_cfg_{}.toml", std::process::id()));
         let (tx, mut rx) = unbounded_channel();
         let settings = shared_defaults();
         settings.write().unwrap().config_file = Some(cfg.clone());
@@ -1556,7 +1590,10 @@ mod tests {
                 got_finished = true;
             }
         }
-        assert!(got_finished, "six Enters from first step must finish the flow");
+        assert!(
+            got_finished,
+            "six Enters from first step must finish the flow"
+        );
         std::fs::remove_dir_all(&tmp).ok();
         std::fs::remove_file(&cfg).ok();
     }
@@ -1569,11 +1606,17 @@ mod tests {
         assert_eq!(umlaut_frame(Duration::from_millis(0)), UmlautFrame::Squash);
         assert_eq!(umlaut_frame(Duration::from_millis(110)), UmlautFrame::Up);
         assert_eq!(umlaut_frame(Duration::from_millis(390)), UmlautFrame::Up);
-        assert_eq!(umlaut_frame(Duration::from_millis(410)), UmlautFrame::Squash);
+        assert_eq!(
+            umlaut_frame(Duration::from_millis(410)),
+            UmlautFrame::Squash
+        );
         assert_eq!(umlaut_frame(Duration::from_millis(510)), UmlautFrame::Rest);
         assert_eq!(umlaut_frame(Duration::from_millis(1790)), UmlautFrame::Rest);
         // Cycle wraps at 1.8 s back into the anticipation squash.
-        assert_eq!(umlaut_frame(Duration::from_millis(1810)), UmlautFrame::Squash);
+        assert_eq!(
+            umlaut_frame(Duration::from_millis(1810)),
+            UmlautFrame::Squash
+        );
         // The hop rewrites exactly the diaeresis columns — guard the range
         // against future banner edits.
         assert_eq!(&KIMUN_BANNER[1][UMLAUT_COLS], UMLAUT_DOTS);
@@ -1589,7 +1632,13 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(100, 32);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| screen.render(f)).unwrap();
-        let flat: String = terminal.backend().buffer().content.iter().map(|c| c.symbol()).collect();
+        let flat: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
         assert!(flat.contains("Welcome"));
         assert!(flat.contains("guided setup"));
         screen.handle_input(&key_event(KeyCode::Enter), &tx);
@@ -1607,7 +1656,10 @@ mod tests {
         assert!(!screen.name_editing, "Esc must always exit edit mode");
         let (name, _) = screen.draft.workspace.clone().unwrap();
         assert_eq!(name, "kimun-notes", "Esc must not commit the buffer");
-        assert!(matches!(screen.overlay, OnbOverlay::None), "Esc consumed by the edit must not open quit confirm");
+        assert!(
+            matches!(screen.overlay, OnbOverlay::None),
+            "Esc consumed by the edit must not open quit confirm"
+        );
     }
 
     #[test]
@@ -1624,7 +1676,10 @@ mod tests {
         screen.handle_input(&key_event(KeyCode::Char('c')), &tx);
         let (name, path) = screen.draft.workspace.clone().unwrap();
         assert_eq!(path, tmp.join("My-Vault"));
-        assert_eq!(name, "kimun-notesz", "explicit edit must survive directory pick");
+        assert_eq!(
+            name, "kimun-notesz",
+            "explicit edit must survive directory pick"
+        );
         std::fs::remove_dir_all(&tmp).ok();
     }
 
@@ -1643,8 +1698,14 @@ mod tests {
             state: KeyEventState::NONE,
         });
         screen.handle_input(&ctrl_c, &tx);
-        assert!(screen.draft.workspace.is_none(), "Ctrl+C must not confirm the directory");
-        assert!(matches!(screen.overlay, OnbOverlay::Browser(_)), "browser must stay open");
+        assert!(
+            screen.draft.workspace.is_none(),
+            "Ctrl+C must not confirm the directory"
+        );
+        assert!(
+            matches!(screen.overlay, OnbOverlay::Browser(_)),
+            "browser must stay open"
+        );
     }
 
     #[test]
@@ -1687,7 +1748,8 @@ mod tests {
             use crate::settings::workspace_config::WorkspaceConfig;
             let mut s = AppSettings::default();
             let mut wc = WorkspaceConfig::new_empty();
-            wc.add_workspace("notes".to_string(), tmp.join("other")).unwrap();
+            wc.add_workspace("notes".to_string(), tmp.join("other"))
+                .unwrap();
             wc.global.current_workspace = String::new();
             s.workspace_config = Some(wc);
             Arc::new(RwLock::new(s))
@@ -1701,7 +1763,10 @@ mod tests {
         screen.finish(&tx);
         assert!(screen.flash.is_some(), "duplicate name must flash an error");
         assert_eq!(screen.step, OnbStep::Workspace);
-        assert!(!new_dir.exists(), "directory created by finish must be rolled back");
+        assert!(
+            !new_dir.exists(),
+            "directory created by finish must be rolled back"
+        );
         std::fs::remove_dir_all(&tmp).ok();
     }
 }
