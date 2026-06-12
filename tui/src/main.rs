@@ -283,6 +283,8 @@ async fn switch_screen(app: &mut App, tx: &AppTx, new_screen: ScreenEvent) {
             vault_path,
             app.settings.clone(),
         )),
+        // Placeholder until OnboardingScreen is implemented (Task 4).
+        ScreenEvent::OpenOnboarding => Box::new(StartScreen::new(app.settings.clone(), app.vault.clone())),
     };
 
     screen.on_enter(tx).await;
