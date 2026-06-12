@@ -21,6 +21,7 @@ use crate::components::events::{AppEvent, AppTx, InputEvent, ScreenEvent};
 use crate::components::single_line_input::SingleLineInput;
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
+use crate::settings::config_migration::CURRENT_CONFIG_VERSION;
 use crate::settings::{AppSettings, EditorBackendSetting, SharedSettings};
 
 // ── Step enum ────────────────────────────────────────────────────────────────
@@ -277,9 +278,14 @@ impl OnboardingScreen {
 
     fn dirty(&self) -> bool {
         let s = self.settings.read().unwrap();
+        let effective_theme = if s.theme.is_empty() {
+            Theme::default().name.clone()
+        } else {
+            s.theme.clone()
+        };
         s.use_nerd_fonts != self.draft.use_nerd_fonts
             || s.editor_backend != self.draft.editor_backend
-            || (!self.draft.theme_name.is_empty() && s.theme != self.draft.theme_name)
+            || (!self.draft.theme_name.is_empty() && effective_theme != self.draft.theme_name)
     }
 
     fn on_cancel(&mut self, tx: &AppTx) {
@@ -298,14 +304,8 @@ impl OnboardingScreen {
             OnbStep::NerdFonts => self.nerd_fonts_step_key(key),
             OnbStep::Theme => self.theme_step_key(key),
             OnbStep::Backend => self.backend_step_key(key),
-            OnbStep::Summary => {
-                // Summary step lands in Task 8; Enter advances as a placeholder.
-                if key.code == KeyCode::Enter {
-                    self.go_next();
-                }
-            }
+            OnbStep::Summary => self.summary_step_key(key, tx),
         }
-        let _ = tx;
     }
 
     fn nerd_fonts_step_key(&mut self, key: &KeyEvent) {
@@ -782,7 +782,77 @@ impl OnboardingScreen {
         );
     }
 
-    fn render_summary_step(&mut self, _f: &mut Frame, _area: Rect) {}
+    fn summary_step_key(&mut self, key: &KeyEvent, tx: &AppTx) {
+        if key.code == KeyCode::Enter {
+            self.finish(tx);
+        }
+    }
+
+    /// Commit the draft: create + register the workspace (first run only),
+    /// apply fonts/theme/backend, persist, and hand off to main.rs.
+    fn finish(&mut self, tx: &AppTx) {
+        let mut s = self.settings.write().unwrap();
+        if self.first_run {
+            let Some((name, path)) = self.draft.workspace.clone() else {
+                drop(s);
+                self.flash = Some("no workspace configured".to_string());
+                self.step = OnbStep::Workspace;
+                return;
+            };
+            if let Err(e) = std::fs::create_dir_all(&path) {
+                drop(s);
+                self.flash = Some(format!("cannot create {}: {e}", path.display()));
+                self.step = OnbStep::Workspace;
+                return;
+            }
+            let wc = s.workspace_config
+                .get_or_insert_with(crate::settings::workspace_config::WorkspaceConfig::new_empty);
+            if let Err(e) = wc.add_workspace(name, path) {
+                drop(s);
+                self.flash = Some(e.to_string());
+                self.step = OnbStep::Workspace;
+                return;
+            }
+            s.config_version = CURRENT_CONFIG_VERSION;
+        }
+        s.use_nerd_fonts = self.draft.use_nerd_fonts;
+        s.editor_backend = self.draft.editor_backend;
+        s.set_theme(self.draft.theme_name.clone());
+        if let Err(e) = s.save_to_disk() {
+            tracing::error!("failed to save settings after onboarding: {e}");
+        }
+        drop(s);
+        tx.send(AppEvent::OnboardingFinished).ok();
+    }
+
+    fn render_summary_step(&mut self, f: &mut Frame, area: Rect) {
+        let s = self.settings.read().unwrap();
+        let workspace_line = match (&self.draft.workspace, self.first_run) {
+            (Some((name, path)), _) => format!("{name}  —  {}", path.display()),
+            (None, false) => {
+                let n = s.current_workspace_name().unwrap_or_default();
+                format!("{n}  (unchanged)")
+            }
+            (None, true) => "NOT CONFIGURED — go back to step 1".to_string(),
+        };
+        drop(s);
+        let (_, backend_name, _) = BACKENDS[self.backend_idx];
+        let text = format!(
+            "Review your choices. Enter applies them all at once;\n\
+             everything stays adjustable in Preferences.\n\n\
+             Workspace:       {workspace_line}\n\
+             Nerd fonts:      {}\n\
+             Theme:           {}\n\
+             Editor backend:  {backend_name}\n\n\
+             [ Press Enter to finish ]",
+            if self.draft.use_nerd_fonts { "on" } else { "off" },
+            self.draft.theme_name,
+        );
+        f.render_widget(
+            Paragraph::new(text).style(self.theme.base_style()).wrap(Wrap { trim: false }),
+            area,
+        );
+    }
 
     fn render_overlay(&mut self, f: &mut Frame, _dialog_area: Rect) {
         match &mut self.overlay {
@@ -1107,5 +1177,105 @@ mod tests {
         assert_eq!(name, "my-vault");
         assert!(matches!(screen.overlay, OnbOverlay::None));
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[tokio::test]
+    async fn finish_commits_draft_creates_dir_and_emits_finished() {
+        let tmp = std::env::temp_dir().join(format!("kimun_onb_fin_{}", std::process::id()));
+        std::fs::remove_dir_all(&tmp).ok();
+        let (tx, mut rx) = unbounded_channel();
+        let settings = shared_defaults();
+        settings.write().unwrap().config_file =
+            Some(std::env::temp_dir().join(format!("kimun_onb_cfg_{}.toml", std::process::id())));
+        let mut screen = OnboardingScreen::new(settings.clone());
+        screen.draft.workspace = Some(("myws".to_string(), tmp.clone()));
+        screen.draft.use_nerd_fonts = true;
+        screen.draft.editor_backend = EditorBackendSetting::Vim;
+        screen.step = OnbStep::Summary;
+
+        screen.handle_input(&key_event(KeyCode::Enter), &tx);
+
+        assert!(tmp.is_dir(), "workspace directory created at finish");
+        let s = settings.read().unwrap();
+        assert!(s.use_nerd_fonts);
+        assert_eq!(s.editor_backend, EditorBackendSetting::Vim);
+        assert_eq!(s.current_workspace_name().as_deref(), Some("myws"));
+        assert_eq!(s.theme, screen.draft.theme_name);
+        drop(s);
+        let mut got_finished = false;
+        while let Ok(msg) = rx.try_recv() {
+            if matches!(msg, AppEvent::OnboardingFinished) {
+                got_finished = true;
+            }
+        }
+        assert!(got_finished);
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[tokio::test]
+    async fn rerun_finish_never_touches_workspaces() {
+        let (tx, _rx) = unbounded_channel();
+        let settings = shared_with_workspace();
+        settings.write().unwrap().config_file =
+            Some(std::env::temp_dir().join(format!("kimun_onb_cfg_r_{}.toml", std::process::id())));
+        let names_before: Vec<String> = settings.read().unwrap()
+            .workspace_config.as_ref().unwrap().workspaces.keys().cloned().collect();
+        let mut screen = OnboardingScreen::new(settings.clone());
+        screen.draft.use_nerd_fonts = true;
+        screen.step = OnbStep::Summary;
+        screen.handle_input(&key_event(KeyCode::Enter), &tx);
+        let names_after: Vec<String> = settings.read().unwrap()
+            .workspace_config.as_ref().unwrap().workspaces.keys().cloned().collect();
+        assert_eq!(names_before, names_after);
+        assert!(settings.read().unwrap().use_nerd_fonts, "fonts applied on rerun finish");
+    }
+
+    #[test]
+    fn esc_first_run_opens_quit_confirm_then_quits() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut screen = OnboardingScreen::new(shared_defaults());
+        screen.handle_input(&key_event(KeyCode::Esc), &tx);
+        assert!(matches!(screen.overlay, OnbOverlay::ConfirmQuit));
+        screen.handle_input(&key_event(KeyCode::Enter), &tx);
+        let mut got_quit = false;
+        while let Ok(msg) = rx.try_recv() {
+            if matches!(msg, AppEvent::Quit) {
+                got_quit = true;
+            }
+        }
+        assert!(got_quit);
+    }
+
+    #[test]
+    fn esc_rerun_clean_goes_straight_to_start() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut screen = OnboardingScreen::new(shared_with_workspace());
+        screen.handle_input(&key_event(KeyCode::Esc), &tx);
+        let mut got_start = false;
+        while let Ok(msg) = rx.try_recv() {
+            if matches!(msg, AppEvent::OpenScreen(ScreenEvent::Start)) {
+                got_start = true;
+            }
+        }
+        assert!(got_start, "clean rerun Esc leaves without confirmation");
+    }
+
+    #[test]
+    fn esc_rerun_dirty_asks_discard_and_settings_stay_untouched() {
+        let (tx, mut rx) = unbounded_channel();
+        let settings = shared_with_workspace();
+        let mut screen = OnboardingScreen::new(settings.clone());
+        screen.set_nerd_fonts(true); // dirty the draft
+        screen.handle_input(&key_event(KeyCode::Esc), &tx);
+        assert!(matches!(screen.overlay, OnbOverlay::ConfirmDiscard));
+        screen.handle_input(&key_event(KeyCode::Enter), &tx);
+        assert!(!settings.read().unwrap().use_nerd_fonts, "draft discarded");
+        let mut got_start = false;
+        while let Ok(msg) = rx.try_recv() {
+            if matches!(msg, AppEvent::OpenScreen(ScreenEvent::Start)) {
+                got_start = true;
+            }
+        }
+        assert!(got_start);
     }
 }
