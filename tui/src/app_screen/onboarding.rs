@@ -650,7 +650,6 @@ impl OnboardingScreen {
         }
     }
 
-    // Step renderers land in Tasks 6-8.
     fn render_nerd_fonts_step(&mut self, f: &mut Frame, area: Rect) {
         let nerd = Icons::new(true);
         let ascii = Icons::new(false);
@@ -674,9 +673,11 @@ impl OnboardingScreen {
             sample(&nerd),
         );
         f.render_widget(
+            // trim: false — the sample rows align on a leading marker column
+            // that trimming would eat for the unselected row.
             Paragraph::new(text)
                 .style(self.theme.base_style())
-                .wrap(Wrap { trim: true }),
+                .wrap(Wrap { trim: false }),
             area,
         );
     }
