@@ -23,7 +23,7 @@ The first time you launch Kimün with no workspace configured, a centered setup 
 
 - Press `b` to open a directory browser and navigate to an existing folder.
 - Inside the browser, press `n` to create a new directory on the spot.
-- Press `e` to edit the workspace path by hand.
+- Press `e` to edit the workspace name — the label Kimün uses for the workspace, not its directory path.
 
 **2. Nerd Fonts** — two sample rows of glyphs let you check whether your terminal font includes Nerd Font patches. If the symbols look broken, leave `use_nerd_fonts` off; if they look sharp, turn it on.
 
@@ -42,7 +42,7 @@ The first time you launch Kimün with no workspace configured, a centered setup 
 You can reopen the guided setup any time:
 
 - **Command palette** (`Ctrl+P` inside the editor) → type "guided setup".
-- **Leader sequence** `v o` (default leader is `ctrl&G`, so: `ctrl&G` then `v` then `o`).
+- **Leader sequence** `v o` (default leader is `Ctrl+G`, so: `Ctrl+G` then `v` then `o`).
 
 On rerun, the Workspace step is informational — it lists your current workspaces rather than prompting you to set one up. To add, rename, or remove workspaces, use the Preferences screen (`Ctrl+,`) or the `kimun workspace` CLI commands (see [Workspaces](@/getting-started/workspaces.md)).
 
