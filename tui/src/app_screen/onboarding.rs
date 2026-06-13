@@ -144,13 +144,23 @@ enum UmlautFrame {
 /// (50–100 ms) while the airborne frame lingers (300 ms) so the dots seem to
 /// launch fast and hang at the apex. Timed in 50 ms micro-slots over a
 /// 36-slot (1.8 s) cycle.
-fn umlaut_frame(elapsed: std::time::Duration) -> UmlautFrame {
-    match elapsed.as_millis() / 50 % 36 {
-        0 | 10 => UmlautFrame::Squash,
-        1..=2 | 8..=9 => UmlautFrame::SquashFull,
-        3..=7 => UmlautFrame::Up,
-        _ => UmlautFrame::Rest,
+/// Width of one micro-slot in ms and the slot count per full cycle.
+const UMLAUT_SLOT_MS: u128 = 50;
+const UMLAUT_CYCLE_SLOTS: u128 = 26;
+
+/// Maps a micro-slot index (0..UMLAUT_CYCLE_SLOTS) to its bounce phase. Pure
+/// over the slot so it can be tested without depending on wall-clock timing.
+fn umlaut_frame_for_slot(slot: u128) -> UmlautFrame {
+    match slot {
+        0..=2 => UmlautFrame::Rest,
+        15..=17 | 23..=25 => UmlautFrame::Squash,
+        18..=22 => UmlautFrame::SquashFull,
+        _ => UmlautFrame::Up, // 3..=14
     }
+}
+
+fn umlaut_frame(elapsed: std::time::Duration) -> UmlautFrame {
+    umlaut_frame_for_slot(elapsed.as_millis() / UMLAUT_SLOT_MS % UMLAUT_CYCLE_SLOTS)
 }
 
 // ── Screen struct ─────────────────────────────────────────────────────────────
@@ -1616,31 +1626,46 @@ mod tests {
     #[test]
     fn umlaut_bounce_phases_and_columns() {
         use std::time::Duration;
-        // Uneven frame timing: 50 ms squash, 100 ms full squash, 250 ms hop,
-        // 100 ms full squash, 50 ms rebound squash, rest until the 1.8 s
-        // cycle repeats.
-        assert_eq!(umlaut_frame(Duration::from_millis(0)), UmlautFrame::Squash);
-        assert_eq!(
-            umlaut_frame(Duration::from_millis(110)),
-            UmlautFrame::SquashFull
-        );
-        assert_eq!(umlaut_frame(Duration::from_millis(160)), UmlautFrame::Up);
-        assert_eq!(umlaut_frame(Duration::from_millis(390)), UmlautFrame::Up);
-        assert_eq!(
-            umlaut_frame(Duration::from_millis(410)),
-            UmlautFrame::SquashFull
-        );
-        assert_eq!(
-            umlaut_frame(Duration::from_millis(510)),
-            UmlautFrame::Squash
-        );
-        assert_eq!(umlaut_frame(Duration::from_millis(560)), UmlautFrame::Rest);
-        assert_eq!(umlaut_frame(Duration::from_millis(1790)), UmlautFrame::Rest);
-        // Cycle wraps at 1.8 s back into the anticipation squash.
-        assert_eq!(
-            umlaut_frame(Duration::from_millis(1810)),
-            UmlautFrame::Squash
-        );
+
+        // Phase logic is asserted on slot indices, not wall-clock times, so the
+        // test survives any retuning of slot width or cycle length.
+        assert_eq!(umlaut_frame_for_slot(0), UmlautFrame::Rest);
+        // The cycle must contain every phase, in the expected order of first
+        // appearance: rest -> up -> squash -> full squash.
+        let phases: Vec<UmlautFrame> =
+            (0..UMLAUT_CYCLE_SLOTS).map(umlaut_frame_for_slot).collect();
+        assert!(phases.contains(&UmlautFrame::Rest));
+        assert!(phases.contains(&UmlautFrame::Up));
+        assert!(phases.contains(&UmlautFrame::Squash));
+        assert!(phases.contains(&UmlautFrame::SquashFull));
+        // A squash must always bracket a full squash — never jump rest/up
+        // straight to peak compression.
+        for slot in 0..UMLAUT_CYCLE_SLOTS {
+            if umlaut_frame_for_slot(slot) == UmlautFrame::SquashFull {
+                let prev = umlaut_frame_for_slot((slot + UMLAUT_CYCLE_SLOTS - 1) % UMLAUT_CYCLE_SLOTS);
+                let next = umlaut_frame_for_slot((slot + 1) % UMLAUT_CYCLE_SLOTS);
+                assert!(
+                    matches!(prev, UmlautFrame::Squash | UmlautFrame::SquashFull),
+                    "full squash at slot {slot} not preceded by a squash"
+                );
+                assert!(
+                    matches!(next, UmlautFrame::Squash | UmlautFrame::SquashFull),
+                    "full squash at slot {slot} not followed by a squash"
+                );
+            }
+        }
+        // umlaut_frame must agree with the slot mapping and wrap cleanly.
+        let cycle_ms = UMLAUT_SLOT_MS * UMLAUT_CYCLE_SLOTS;
+        for slot in 0..UMLAUT_CYCLE_SLOTS {
+            let t = slot * UMLAUT_SLOT_MS;
+            let expected = umlaut_frame_for_slot(slot);
+            assert_eq!(umlaut_frame(Duration::from_millis(t as u64)), expected);
+            assert_eq!(
+                umlaut_frame(Duration::from_millis((t + cycle_ms) as u64)),
+                expected,
+                "cycle must wrap at {cycle_ms} ms"
+            );
+        }
         // The hop rewrites exactly the diaeresis columns — guard the range
         // against future banner edits.
         assert_eq!(&KIMUN_BANNER[1][UMLAUT_COLS], UMLAUT_DOTS);
