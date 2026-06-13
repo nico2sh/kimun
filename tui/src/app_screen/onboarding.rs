@@ -1632,8 +1632,7 @@ mod tests {
         assert_eq!(umlaut_frame_for_slot(0), UmlautFrame::Rest);
         // The cycle must contain every phase, in the expected order of first
         // appearance: rest -> up -> squash -> full squash.
-        let phases: Vec<UmlautFrame> =
-            (0..UMLAUT_CYCLE_SLOTS).map(umlaut_frame_for_slot).collect();
+        let phases: Vec<UmlautFrame> = (0..UMLAUT_CYCLE_SLOTS).map(umlaut_frame_for_slot).collect();
         assert!(phases.contains(&UmlautFrame::Rest));
         assert!(phases.contains(&UmlautFrame::Up));
         assert!(phases.contains(&UmlautFrame::Squash));
@@ -1642,7 +1641,8 @@ mod tests {
         // straight to peak compression.
         for slot in 0..UMLAUT_CYCLE_SLOTS {
             if umlaut_frame_for_slot(slot) == UmlautFrame::SquashFull {
-                let prev = umlaut_frame_for_slot((slot + UMLAUT_CYCLE_SLOTS - 1) % UMLAUT_CYCLE_SLOTS);
+                let prev =
+                    umlaut_frame_for_slot((slot + UMLAUT_CYCLE_SLOTS - 1) % UMLAUT_CYCLE_SLOTS);
                 let next = umlaut_frame_for_slot((slot + 1) % UMLAUT_CYCLE_SLOTS);
                 assert!(
                     matches!(prev, UmlautFrame::Squash | UmlautFrame::SquashFull),
