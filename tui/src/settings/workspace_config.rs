@@ -126,8 +126,9 @@ impl WorkspaceConfig {
 
         self.workspaces.insert(name.clone(), entry);
 
-        // Set as current if it's the first workspace
-        if self.workspaces.len() == 1 {
+        // Set as current if there is no valid current workspace (first
+        // workspace, or the previous current was removed/cleared)
+        if !self.workspaces.contains_key(&self.global.current_workspace) {
             self.global.current_workspace = name.clone();
         }
 
@@ -193,5 +194,37 @@ mod validate_tests {
             wc.add_workspace("notes".to_string(), PathBuf::from("/tmp/x"))
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn add_workspace_sets_current_when_first() {
+        let mut wc = WorkspaceConfig::new_empty();
+        wc.add_workspace("notes".to_string(), PathBuf::from("/tmp/x"))
+            .unwrap();
+        assert_eq!(wc.global.current_workspace, "notes");
+    }
+
+    #[test]
+    fn add_workspace_keeps_valid_current() {
+        let mut wc = WorkspaceConfig::new_empty();
+        wc.add_workspace("first".to_string(), PathBuf::from("/tmp/a"))
+            .unwrap();
+        wc.add_workspace("second".to_string(), PathBuf::from("/tmp/b"))
+            .unwrap();
+        assert_eq!(wc.global.current_workspace, "first");
+    }
+
+    #[test]
+    fn add_workspace_repairs_dangling_current() {
+        // After clear_workspace the current entry is removed but other
+        // workspaces remain; the next add must become current or the
+        // app can never activate a workspace again.
+        let mut wc = WorkspaceConfig::new_empty();
+        wc.add_workspace("other".to_string(), PathBuf::from("/tmp/a"))
+            .unwrap();
+        wc.global.current_workspace = String::new();
+        wc.add_workspace("fresh".to_string(), PathBuf::from("/tmp/b"))
+            .unwrap();
+        assert_eq!(wc.global.current_workspace, "fresh");
     }
 }

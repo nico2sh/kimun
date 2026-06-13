@@ -28,11 +28,7 @@ pub struct ThemePickerDialog {
 impl ThemePickerDialog {
     pub fn new(settings: &AppSettings) -> Self {
         let themes = settings.theme_list();
-        let current = if settings.theme.is_empty() {
-            Theme::default().name
-        } else {
-            settings.theme.clone()
-        };
+        let current = settings.effective_theme_name();
         let selected = themes.iter().position(|t| t.name == current).unwrap_or(0);
         Self {
             themes,

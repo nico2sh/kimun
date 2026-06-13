@@ -4,6 +4,26 @@ Domain language for kimün — a note-taking app split into **core** (file ops, 
 
 ## Language
 
+### Vault and workspace
+
+**Workspace**:
+A named config entry pointing at a directory of notes — the TUI's unit of "which notes am I working in". Stored in the global config with a current-workspace pointer; the name must be a valid filename. Configuration, not content: deleting a workspace entry never touches the notes on disk.
+_Avoid_: vault (that is core's view of the opened directory), profile.
+
+**Vault**:
+Core's view of a **Workspace**'s directory once opened — the notes, their index, and the file operations over them (`NoteVault`). The TUI selects a workspace; core opens its directory as a vault. One workspace ↔ one vault at a time.
+_Avoid_: workspace (the config entry that points here), folder/directory (the OS path, not the opened thing).
+
+### Onboarding
+
+**Onboarding**:
+The guided setup flow that walks through the essential configuration one **step** at a time, each step explaining what its setting does. Shown automatically when no **Workspace** is configured; can be rerun on demand at any time. Choices are staged as a draft and take effect only when the flow finishes; leaving early discards them, though appearance choices preview live inside the flow.
+_Avoid_: wizard (fine informally, not in code), setup screen (it is one screen with many steps), first-run (a trigger for it, not the thing itself).
+
+**Step**:
+One page of the **Onboarding** flow, dedicated to a single setting and its explanation. Steps live inside the onboarding screen; they are not screens themselves.
+_Avoid_: screen (collides with the app's top-level screen concept), page.
+
 ### Editor backend
 
 **Editor backend**:

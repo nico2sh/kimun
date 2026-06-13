@@ -7,7 +7,7 @@ use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Modifier, Style};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use throbber_widgets_tui::ThrobberState;
 
 use crate::app_screen::{AppScreen, ScreenKind};
@@ -30,81 +30,7 @@ use crate::settings::SharedSettings;
 use crate::settings::config_migration::CURRENT_CONFIG_VERSION;
 use crate::settings::themes::Theme;
 
-// ── FileBrowserState ─────────────────────────────────────────────────────────
-
-pub struct FileBrowserState {
-    pub current_path: PathBuf,
-    pub entries: Vec<PathBuf>,
-    pub list_state: ListState,
-    pub has_parent: bool,
-    last_jump_char: Option<char>,
-}
-
-impl FileBrowserState {
-    pub fn load(path: PathBuf) -> Self {
-        let has_parent = path.parent().is_some();
-        let mut entries: Vec<PathBuf> = std::fs::read_dir(&path)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.is_dir())
-            .collect();
-        entries.sort();
-        let total = entries.len() + if has_parent { 1 } else { 0 };
-        let mut list_state = ListState::default();
-        if total > 0 {
-            list_state.select(Some(0));
-        }
-        Self {
-            current_path: path,
-            entries,
-            list_state,
-            has_parent,
-            last_jump_char: None,
-        }
-    }
-
-    pub fn navigate_into(&mut self, entry: PathBuf) {
-        *self = Self::load(entry);
-    }
-
-    pub fn go_up(&mut self) {
-        if let Some(parent) = self.current_path.parent() {
-            *self = Self::load(parent.to_path_buf());
-        }
-    }
-
-    pub fn jump_to_char(&mut self, c: char) {
-        let c_lower = c.to_lowercase().next().unwrap_or(c);
-        let offset = if self.has_parent { 1 } else { 0 };
-        let total = self.entries.len();
-        if total == 0 {
-            return;
-        }
-
-        // If same char as last jump, cycle to next match.
-        let start = if self.last_jump_char == Some(c_lower) {
-            let cur = self.list_state.selected().unwrap_or(0);
-            if cur >= offset { cur - offset + 1 } else { 0 }
-        } else {
-            0
-        };
-
-        // Search from start, wrapping around.
-        for i in 0..total {
-            let idx = (start + i) % total;
-            if let Some(name) = self.entries[idx].file_name().and_then(|n| n.to_str())
-                && name.to_lowercase().starts_with(c_lower)
-            {
-                self.list_state.select(Some(idx + offset));
-                self.last_jump_char = Some(c_lower);
-                return;
-            }
-        }
-        self.last_jump_char = None;
-    }
-}
+use crate::components::dir_browser::FileBrowserState;
 
 // ── Overlay types ─────────────────────────────────────────────────────────────
 
@@ -380,11 +306,17 @@ impl AppScreen for PreferencesScreen {
                             }
                         }
                     }
-                    KeyCode::Char('c') => {
+                    KeyCode::Char('c') if key.modifiers.is_empty() => {
                         let chosen = fb.current_path.clone();
                         self.confirm_file_browser(chosen, tx);
                     }
-                    KeyCode::Char(c) => {
+                    // Shift is fine (uppercase jump targets); Ctrl/Alt chords
+                    // must not be mistaken for plain letters.
+                    KeyCode::Char(c)
+                        if !key
+                            .modifiers
+                            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                    {
                         fb.jump_to_char(c);
                     }
                     _ => {}
