@@ -1616,16 +1616,25 @@ mod tests {
     #[test]
     fn umlaut_bounce_phases_and_columns() {
         use std::time::Duration;
-        // Uneven frame timing: 100 ms squash, 300 ms hop, 100 ms land,
-        // rest until the 1.8 s cycle repeats.
+        // Uneven frame timing: 50 ms squash, 100 ms full squash, 250 ms hop,
+        // 100 ms full squash, 50 ms rebound squash, rest until the 1.8 s
+        // cycle repeats.
         assert_eq!(umlaut_frame(Duration::from_millis(0)), UmlautFrame::Squash);
-        assert_eq!(umlaut_frame(Duration::from_millis(110)), UmlautFrame::Up);
+        assert_eq!(
+            umlaut_frame(Duration::from_millis(110)),
+            UmlautFrame::SquashFull
+        );
+        assert_eq!(umlaut_frame(Duration::from_millis(160)), UmlautFrame::Up);
         assert_eq!(umlaut_frame(Duration::from_millis(390)), UmlautFrame::Up);
         assert_eq!(
             umlaut_frame(Duration::from_millis(410)),
+            UmlautFrame::SquashFull
+        );
+        assert_eq!(
+            umlaut_frame(Duration::from_millis(510)),
             UmlautFrame::Squash
         );
-        assert_eq!(umlaut_frame(Duration::from_millis(510)), UmlautFrame::Rest);
+        assert_eq!(umlaut_frame(Duration::from_millis(560)), UmlautFrame::Rest);
         assert_eq!(umlaut_frame(Duration::from_millis(1790)), UmlautFrame::Rest);
         // Cycle wraps at 1.8 s back into the anticipation squash.
         assert_eq!(
@@ -1635,8 +1644,9 @@ mod tests {
         // The hop rewrites exactly the diaeresis columns — guard the range
         // against future banner edits.
         assert_eq!(&KIMUN_BANNER[1][UMLAUT_COLS], UMLAUT_DOTS);
-        // Squash glyph must fill the same span exactly.
+        // Squash glyphs must fill the same span exactly.
         assert_eq!(UMLAUT_SQUASH.len(), UMLAUT_DOTS.len());
+        assert_eq!(UMLAUT_SQUASH_FULL.len(), UMLAUT_DOTS.len());
     }
 
     #[test]
