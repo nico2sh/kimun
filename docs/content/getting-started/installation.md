@@ -22,11 +22,13 @@ cargo install kimun-notes
 
 ## First Run
 
-When you launch Kimün for the first time, it opens the Preferences screen. Here you can set your notes directory — this becomes your **workspace** where all your notes will be stored.
+When you launch Kimün for the first time with no workspace configured, a **guided setup** dialog walks you through choosing a notes directory, Nerd Fonts, a theme, and an editor. Everything is applied in one shot at the end — nothing is written until you confirm.
 
 ```sh
 kimun
 ```
+
+See [Guided Setup](@/getting-started/configuration.md#guided-setup) for a step-by-step breakdown.
 
 ## Configuration File
 
