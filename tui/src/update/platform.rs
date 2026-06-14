@@ -1,5 +1,5 @@
 //! Compile-time release-platform identity, matching the asset names produced by
-//! `release.yml` (see adr/0014). Returns `None` on a target kimün does not
+//! `build.yml` (see adr/0014). Returns `None` on a target kimün does not
 //! publish binaries for, which forces notify-only with no self-update path.
 
 /// The release platform string for this build (`linux-x64`, `macos-x64`,
@@ -21,7 +21,7 @@ pub fn platform() -> Option<&'static str> {
 
 /// Name of the raw binary release asset for `version` on this platform, e.g.
 /// `kimun-0.18.0-linux-x64` (or `…-windows-x64.exe`). `None` on unsupported
-/// platforms. Must match what `release.yml` uploads.
+/// platforms. Must match what `build.yml` uploads.
 pub fn binary_asset_name(version: &str) -> Option<String> {
     let platform = platform()?;
     let ext = if cfg!(target_os = "windows") { ".exe" } else { "" };

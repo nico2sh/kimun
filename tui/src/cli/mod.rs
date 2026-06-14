@@ -51,6 +51,12 @@ pub enum CliCommand {
         #[arg(long, value_enum, default_value = "text")]
         format: OutputFormat,
     },
+    /// Check for a newer release and, where possible, self-update
+    Update {
+        /// Only check and report; do not download or install
+        #[arg(long)]
+        check: bool,
+    },
 }
 
 pub async fn run_cli(command: CliCommand, config_path: Option<std::path::PathBuf>) -> Result<()> {
@@ -97,5 +103,8 @@ pub async fn run_cli(command: CliCommand, config_path: Option<std::path::PathBuf
             let (vault, workspace_name) = create_and_init_vault(config_path).await?;
             commands::labels::run(&vault, format, &workspace_name).await
         }
+        // Update is vault-independent: it talks to GitHub and the app config
+        // dir, not a workspace.
+        CliCommand::Update { check } => commands::update::run(check).await,
     }
 }
