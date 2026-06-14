@@ -22,8 +22,6 @@ pub struct Asset {
 pub struct LatestRelease {
     /// Version without any tag prefix, e.g. `0.18.0`.
     pub version: String,
-    /// Release notes, if the backend supplies them.
-    pub notes: Option<String>,
     /// Downloadable assets (raw binaries, archives, checksums).
     pub assets: Vec<Asset>,
 }

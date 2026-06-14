@@ -20,9 +20,15 @@ pub use channel::InstallChannel;
 pub use provider::{LatestRelease, ReleaseProvider};
 pub use state::UpdateState;
 
-/// The active release backend. **Single switch point**: implement
-/// [`ReleaseProvider`] elsewhere and return it here to change where the
-/// self-updater fetches releases from — no caller changes needed.
+/// The active release backend. **Single switch point** for *where* releases are
+/// fetched from: implement [`ReleaseProvider`] elsewhere and return it here.
+///
+/// Scope: the trait covers release discovery and the human releases URL only.
+/// Asset *naming* — the raw-binary filename ([`platform::binary_asset_name`])
+/// and the `checksums-sha256.txt` name in [`apply`] — is a property of this
+/// project's CI (`build.yml`), constant across providers, and is intentionally
+/// not part of the trait. A provider for a different repo layout would also
+/// adjust those.
 fn provider() -> impl ReleaseProvider {
     github::GitHubProvider
 }
@@ -85,8 +91,14 @@ impl UpdateStatus {
 ///
 /// Returns `Ok(None)` only when throttled with no cached version yet.
 pub fn check(config_dir: &Path, force: bool) -> Result<Option<UpdateStatus>, UpdateError> {
+    // Force path queries immediately — no state load needed here (status_for
+    // loads + persists it).
+    if force {
+        let release = provider().latest_stable()?;
+        return Ok(Some(status_for(config_dir, &release)));
+    }
     let st = UpdateState::load(config_dir);
-    if force || st.is_stale(Utc::now(), Duration::hours(CHECK_INTERVAL_HOURS)) {
+    if st.is_stale(Utc::now(), Duration::hours(CHECK_INTERVAL_HOURS)) {
         let release = provider().latest_stable()?;
         Ok(Some(status_for(config_dir, &release)))
     } else {
