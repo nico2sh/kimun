@@ -12,8 +12,6 @@ const TAG_PREFIX: &str = "kimun-notes-v";
 struct Release {
     tag_name: String,
     #[serde(default)]
-    prerelease: bool,
-    #[serde(default)]
     body: Option<String>,
     #[serde(default)]
     assets: Vec<Asset>,
@@ -50,6 +48,12 @@ impl LatestRelease {
 /// "latest" is the newest of either — frequently a core release with no
 /// binaries (see adr/0014). Instead the releases list (newest-first) is scanned
 /// for the first `kimun-notes-v*` tag with no pre-release suffix.
+///
+/// Pre-release status is determined by the **tag hyphen** (e.g.
+/// `…-v0.18.0-beta.1`), not GitHub's `prerelease` boolean: that flag is
+/// unreliable here — release-plz marks some plain stable releases (0.17.0,
+/// 0.18.0) as prerelease — and the tag convention is the project's actual
+/// policy, shared with `install.sh`.
 pub fn latest_stable() -> Result<LatestRelease, UpdateError> {
     let body = super::http_get(RELEASES_URL)?.into_string()?;
 
@@ -59,8 +63,8 @@ pub fn latest_stable() -> Result<LatestRelease, UpdateError> {
         .into_iter()
         .find_map(|release| {
             let version = release.tag_name.strip_prefix(TAG_PREFIX)?;
-            // Skip pre-releases (flagged, or a hyphenated semver suffix).
-            if release.prerelease || version.contains('-') {
+            // Skip pre-releases: a hyphenated semver suffix on the tag.
+            if version.contains('-') {
                 return None;
             }
             Some(LatestRelease {

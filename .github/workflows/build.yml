@@ -132,9 +132,18 @@ jobs:
               ARCHIVE_NAME="kimun-${VERSION}-${PLATFORM}.tar.gz"
               tar -czf "${ARCHIVE_NAME}" -C "$dirname" .
             fi
+
+            # Raw, uncompressed binary asset for in-app self-update (adr/0014).
+            # The running app downloads this directly, checksum-verifies it, and
+            # swaps it in place — no client-side archive extraction needed.
+            if [[ "$dirname" == *"windows"* ]]; then
+              cp "$dirname/kimun.exe" "kimun-${VERSION}-${PLATFORM}.exe"
+            else
+              cp "$dirname/kimun" "kimun-${VERSION}-${PLATFORM}"
+            fi
           done
 
-          ls -lh *.zip *.tar.gz 2>/dev/null || true
+          ls -lh kimun-* 2>/dev/null || true
         shell: bash
 
       - name: Generate checksums
@@ -142,7 +151,11 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
           cd release-artifacts
-          files=(kimun-*.zip kimun-*.tar.gz)
+          # Archives + the raw self-update binaries (nullglob drops any absent).
+          files=(
+            kimun-*.zip kimun-*.tar.gz
+            kimun-*-linux-x64 kimun-*-macos-x64 kimun-*-macos-arm64 kimun-*-windows-x64.exe
+          )
           if [[ ${#files[@]} -eq 0 ]]; then
             echo "::error::No archives found to checksum"
             exit 1
@@ -169,6 +182,10 @@ jobs:
           files: |
             release-artifacts/kimun-*.zip
             release-artifacts/kimun-*.tar.gz
+            release-artifacts/kimun-*-linux-x64
+            release-artifacts/kimun-*-macos-x64
+            release-artifacts/kimun-*-macos-arm64
+            release-artifacts/kimun-*-windows-x64.exe
             release-artifacts/checksums-sha256.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
