@@ -25,8 +25,20 @@ use std::path::Path;
 /// The version compiled into this binary.
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// User-Agent sent on every GitHub request (the API rejects requests without
+/// one). Shared by the releases query and the asset downloads.
+pub(crate) const USER_AGENT: &str = concat!("kimun/", env!("CARGO_PKG_VERSION"));
+
 /// How long a check result is reused before the next launch re-queries GitHub.
 const CHECK_INTERVAL_HOURS: i64 = 24;
+
+/// Issue a GET with kimün's standard headers. Blocking.
+pub(crate) fn http_get(url: &str) -> Result<ureq::Response, UpdateError> {
+    Ok(ureq::get(url)
+        .set("User-Agent", USER_AGENT)
+        .set("Accept", "application/vnd.github+json")
+        .call()?)
+}
 
 /// The outcome of an update check, ready to drive the UI.
 #[derive(Debug, Clone)]
