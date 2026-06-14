@@ -16,8 +16,6 @@ const TAG_PREFIX: &str = "kimun-notes-v";
 struct GhRelease {
     tag_name: String,
     #[serde(default)]
-    body: Option<String>,
-    #[serde(default)]
     assets: Vec<GhAsset>,
 }
 
@@ -59,7 +57,6 @@ impl ReleaseProvider for GitHubProvider {
                 }
                 Some(LatestRelease {
                     version: version.to_string(),
-                    notes: release.body.filter(|b| !b.trim().is_empty()),
                     assets: release
                         .assets
                         .into_iter()
