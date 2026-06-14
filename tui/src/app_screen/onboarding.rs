@@ -34,16 +34,18 @@ pub enum OnbStep {
     NerdFonts,
     Theme,
     Backend,
+    Updates,
     Summary,
 }
 
 impl OnbStep {
-    pub(crate) const ORDER: [OnbStep; 6] = [
+    pub(crate) const ORDER: [OnbStep; 7] = [
         OnbStep::Welcome,
         OnbStep::Workspace,
         OnbStep::NerdFonts,
         OnbStep::Theme,
         OnbStep::Backend,
+        OnbStep::Updates,
         OnbStep::Summary,
     ];
 
@@ -67,6 +69,7 @@ struct Draft {
     /// `Some((name, path))` only on first run; rerun never mutates workspaces.
     workspace: Option<(String, std::path::PathBuf)>,
     use_nerd_fonts: bool,
+    update_check: bool,
     theme_name: String,
     editor_backend: EditorBackendSetting,
 }
@@ -208,6 +211,11 @@ impl OnboardingScreen {
                 None
             },
             use_nerd_fonts: s.use_nerd_fonts,
+            update_check: s
+                .workspace_config
+                .as_ref()
+                .map(|wc| wc.global.update_check)
+                .unwrap_or(true),
             // Keep the configured name even when its theme file is missing
             // from theme_list() — the draft must never silently rewrite a
             // setting the user didn't touch (dirty()/finish() would persist
@@ -374,8 +382,14 @@ impl OnboardingScreen {
     fn dirty(&self) -> bool {
         let s = self.settings.read().unwrap();
         let effective_theme = s.effective_theme_name();
+        let update_check = s
+            .workspace_config
+            .as_ref()
+            .map(|wc| wc.global.update_check)
+            .unwrap_or(true);
         s.use_nerd_fonts != self.draft.use_nerd_fonts
             || s.editor_backend != self.draft.editor_backend
+            || update_check != self.draft.update_check
             || (!self.draft.theme_name.is_empty() && effective_theme != self.draft.theme_name)
     }
 
@@ -396,6 +410,7 @@ impl OnboardingScreen {
             OnbStep::NerdFonts => self.nerd_fonts_step_key(key),
             OnbStep::Theme => self.theme_step_key(key),
             OnbStep::Backend => self.backend_step_key(key),
+            OnbStep::Updates => self.updates_step_key(key),
             OnbStep::Summary => self.summary_step_key(key, tx),
         }
     }
@@ -423,6 +438,17 @@ impl OnboardingScreen {
     fn set_nerd_fonts(&mut self, on: bool) {
         self.draft.use_nerd_fonts = on;
         self.icons = Icons::new(on); // live preview
+    }
+
+    fn updates_step_key(&mut self, key: &KeyEvent) {
+        // Mirrors the Nerd Fonts step: Up/Down pick, Space toggles, Enter advances.
+        match key.code {
+            KeyCode::Up => self.draft.update_check = true,
+            KeyCode::Down => self.draft.update_check = false,
+            KeyCode::Char(' ') => self.draft.update_check = !self.draft.update_check,
+            KeyCode::Enter => self.go_next(),
+            _ => {}
+        }
     }
 
     fn workspace_step_key(&mut self, key: &KeyEvent) {
@@ -658,6 +684,7 @@ impl OnboardingScreen {
             OnbStep::NerdFonts => self.render_nerd_fonts_step(f, body_area),
             OnbStep::Theme => self.render_theme_step(f, body_area),
             OnbStep::Backend => self.render_backend_step(f, body_area),
+            OnbStep::Updates => self.render_updates_step(f, body_area),
             OnbStep::Summary => self.render_summary_step(f, body_area),
         }
         if let Some(msg) = &self.flash {
@@ -683,6 +710,7 @@ impl OnboardingScreen {
             OnbStep::NerdFonts => "Nerd Fonts",
             OnbStep::Theme => "Theme",
             OnbStep::Backend => "Editor Backend",
+            OnbStep::Updates => "Updates",
             OnbStep::Summary => "Summary",
         };
 
@@ -909,6 +937,27 @@ impl OnboardingScreen {
             area,
         );
     }
+    fn render_updates_step(&mut self, f: &mut Frame, area: Rect) {
+        let selected = self.draft.update_check;
+        let mark = |sel: bool| if sel { "▶" } else { " " };
+        let text = format!(
+            "kimün can check GitHub for a newer release on startup and show a \
+             small notice in the editor footer. Nothing is sent — it only reads \
+             the public releases list. You can change this anytime in \
+             Preferences.\n\n\
+             {} On   — check for updates on startup\n\
+             {} Off  — never check\n",
+            mark(selected),
+            mark(!selected),
+        );
+        f.render_widget(
+            Paragraph::new(text)
+                .style(self.theme.base_style())
+                .wrap(Wrap { trim: false }),
+            area,
+        );
+    }
+
     fn theme_step_key(&mut self, key: &KeyEvent) {
         match key.code {
             KeyCode::Up if self.theme_idx > 0 => {
@@ -1058,6 +1107,10 @@ impl OnboardingScreen {
         }
         s.use_nerd_fonts = self.draft.use_nerd_fonts;
         s.editor_backend = self.draft.editor_backend;
+        s.workspace_config
+            .get_or_insert_with(crate::settings::workspace_config::WorkspaceConfig::new_empty)
+            .global
+            .update_check = self.draft.update_check;
         s.set_theme(self.draft.theme_name.clone());
         if let Err(e) = s.save_to_disk() {
             tracing::error!("failed to save settings after onboarding: {e}");
@@ -1285,7 +1338,7 @@ mod tests {
             .map(|c| c.symbol())
             .collect();
         assert!(flat.contains("Kimün Setup"));
-        assert!(flat.contains("1 / 6"));
+        assert!(flat.contains("1 / 7"));
     }
 
     #[test]
@@ -1600,7 +1653,7 @@ mod tests {
         // Point the suggested workspace at a scratch dir.
         screen.draft.workspace = Some(("walkthrough".to_string(), tmp.clone()));
 
-        for _ in 0..6 {
+        for _ in 0..7 {
             screen.handle_input(&key_event(KeyCode::Enter), &tx);
         }
 
