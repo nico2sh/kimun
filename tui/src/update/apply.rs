@@ -10,7 +10,6 @@ use super::github::LatestRelease;
 use super::{UpdateError, platform};
 
 const CHECKSUMS_ASSET: &str = "checksums-sha256.txt";
-const USER_AGENT: &str = concat!("kimun/", env!("CARGO_PKG_VERSION"));
 
 /// Download the raw binary for `latest`, verify it against
 /// `checksums-sha256.txt`, and replace the currently running executable.
@@ -29,7 +28,8 @@ pub fn self_update(latest: &LatestRelease) -> Result<(), UpdateError> {
         .ok_or_else(|| UpdateError::MissingAsset(CHECKSUMS_ASSET.to_string()))?;
 
     // Resolve the expected digest before downloading the (larger) binary.
-    let checksums = download_string(&checksums_asset.browser_download_url)?;
+    let checksums_bytes = download_bytes(&checksums_asset.browser_download_url)?;
+    let checksums = String::from_utf8_lossy(&checksums_bytes);
     let expected = checksum_for(&checksums, &asset_name)
         .ok_or_else(|| UpdateError::NoChecksum(asset_name.clone()))?;
 
@@ -50,26 +50,15 @@ pub fn self_update(latest: &LatestRelease) -> Result<(), UpdateError> {
     std::fs::write(&staged, &bytes)?;
     set_executable(&staged)?;
 
-    let result = self_replace::self_replace(&staged).map_err(UpdateError::from);
+    let result = self_replace::self_replace(&staged).map_err(UpdateError::Replace);
     // Clean up the staging file regardless of outcome.
     let _ = std::fs::remove_file(&staged);
     result
 }
 
-fn download_string(url: &str) -> Result<String, UpdateError> {
-    Ok(ureq::get(url)
-        .set("User-Agent", USER_AGENT)
-        .call()?
-        .into_string()?)
-}
-
 fn download_bytes(url: &str) -> Result<Vec<u8>, UpdateError> {
     let mut buf = Vec::new();
-    ureq::get(url)
-        .set("User-Agent", USER_AGENT)
-        .call()?
-        .into_reader()
-        .read_to_end(&mut buf)?;
+    super::http_get(url)?.into_reader().read_to_end(&mut buf)?;
     Ok(buf)
 }
 

@@ -94,9 +94,12 @@ main() {
   info "Resolving latest release..."
   api_json="$(fetch_stdout "https://api.github.com/repos/$REPO/releases?per_page=100")" \
     || err "could not reach the GitHub releases API"
+  # grep -o extracts each "tag_name":"..." token individually, so this works
+  # even if the API returns the JSON minified onto a single line (a plain
+  # line-based grep+greedy-sed would then capture the wrong tag).
   VERSION="$(printf '%s' "$api_json" \
-    | grep '"tag_name"' \
-    | sed -E 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/' \
+    | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' \
+    | sed -E 's/.*"([^"]*)"[[:space:]]*$/\1/' \
     | sed -n "s/^${TAG_PREFIX}//p" \
     | grep -v '[-]' \
     | head -n1)"
@@ -118,7 +121,9 @@ main() {
   info "Verifying checksum..."
   download "$BASE_URL/checksums-sha256.txt" "$tmp/checksums-sha256.txt" \
     || err "failed to download checksums-sha256.txt"
-  expected="$(grep " $ARCHIVE\$" "$tmp/checksums-sha256.txt" | awk '{print $1}')"
+  # Exact filename match (field 2), not a regex — the archive name contains '.'
+  # which would otherwise act as a wildcard.
+  expected="$(awk -v f="$ARCHIVE" '$2 == f { print $1 }' "$tmp/checksums-sha256.txt")"
   [ -n "$expected" ] || err "no checksum found for $ARCHIVE"
   actual="$(sha256_of "$tmp/$ARCHIVE")"
   [ "$expected" = "$actual" ] \

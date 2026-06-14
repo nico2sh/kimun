@@ -7,7 +7,6 @@ use super::UpdateError;
 const RELEASES_URL: &str =
     "https://api.github.com/repos/nico2sh/kimun/releases?per_page=100";
 const TAG_PREFIX: &str = "kimun-notes-v";
-const USER_AGENT: &str = concat!("kimun/", env!("CARGO_PKG_VERSION"));
 
 #[derive(Debug, Clone, Deserialize)]
 struct Release {
@@ -52,11 +51,7 @@ impl LatestRelease {
 /// binaries (see adr/0014). Instead the releases list (newest-first) is scanned
 /// for the first `kimun-notes-v*` tag with no pre-release suffix.
 pub fn latest_stable() -> Result<LatestRelease, UpdateError> {
-    let body = ureq::get(RELEASES_URL)
-        .set("User-Agent", USER_AGENT)
-        .set("Accept", "application/vnd.github+json")
-        .call()?
-        .into_string()?;
+    let body = super::http_get(RELEASES_URL)?.into_string()?;
 
     let releases: Vec<Release> = serde_json::from_str(&body)?;
 

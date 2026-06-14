@@ -652,7 +652,7 @@ impl AppScreen for PreferencesScreen {
                     .read()
                     .unwrap()
                     .resolve_workspace_path()
-                    .or_else(|| std::env::var("HOME").ok().map(PathBuf::from))
+                    .or_else(|| crate::settings::get_home_dir().ok())
                     .unwrap_or_else(|| PathBuf::from("/"));
                 self.overlay = Overlay::FileBrowser(FileBrowserState::load(starting_dir));
             }

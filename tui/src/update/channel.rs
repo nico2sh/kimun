@@ -7,7 +7,8 @@
 //! Anything that cannot be classified fails safe to notify-only.
 
 use std::env;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::sync::OnceLock;
 
 const MARKER_FILE: &str = "install.toml";
 
@@ -49,11 +50,15 @@ struct InstallMarker {
 
 /// Detect how the running binary was installed. `config_dir` is kimün's config
 /// directory (where `install.sh` writes the marker).
+///
+/// The result is cached for the process lifetime — the install location cannot
+/// change while kimün runs, so the marker read and the `current_exe`
+/// canonicalisation happen only once.
 pub fn detect(config_dir: &Path) -> InstallChannel {
-    if let Some(channel) = channel_from_marker(config_dir) {
-        return channel;
-    }
-    channel_from_exe_path()
+    static CACHE: OnceLock<InstallChannel> = OnceLock::new();
+    *CACHE.get_or_init(|| {
+        channel_from_marker(config_dir).unwrap_or_else(channel_from_exe_path)
+    })
 }
 
 fn channel_from_marker(config_dir: &Path) -> Option<InstallChannel> {
@@ -94,18 +99,33 @@ fn channel_from_exe_path() -> InstallChannel {
             return InstallChannel::Cargo;
         }
     }
-    if let Some(home) = home_dir() {
+    if let Ok(home) = crate::settings::get_home_dir() {
         if exe.starts_with(home.join(".cargo").join("bin")) {
             return InstallChannel::Cargo;
         }
     }
 
-    // Otherwise it is a binary the user placed themselves — self-update safe.
-    InstallChannel::Direct
+    // Otherwise the user placed this binary themselves. Only call it
+    // self-update eligible if its directory is actually writable: a binary in a
+    // root-owned/system location (e.g. /usr/bin, a distro package, the Nix
+    // store) must stay notify-only and never be overwritten in place, even
+    // though it is neither brew nor cargo.
+    match exe.parent() {
+        Some(dir) if dir_is_writable(dir) => InstallChannel::Direct,
+        _ => InstallChannel::Unknown,
+    }
 }
 
-fn home_dir() -> Option<PathBuf> {
-    env::var_os("HOME")
-        .or_else(|| env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
+/// Whether a probe file can be created in `dir` (i.e. the current user may
+/// write there). Cleans up the probe. A best-effort check used only to gate
+/// self-update eligibility; on any error it returns false (fail safe).
+fn dir_is_writable(dir: &Path) -> bool {
+    let probe = dir.join(format!(".kimun-write-probe-{}", std::process::id()));
+    match std::fs::File::create(&probe) {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
 }
