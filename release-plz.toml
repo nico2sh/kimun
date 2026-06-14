@@ -1,3 +1,12 @@
+[workspace]
+# release-plz's default `git_release_type = "auto"` marks any 0.x.y version as a
+# GitHub pre-release. kimün is pre-1.0 but ships these as stable, so `auto` wrongly
+# flagged 0.17.0/0.18.0 as pre-releases (breaking the "Latest release" badge and
+# the API `prerelease` flag the update checker would otherwise trust). Force prod:
+# release-plz only ever produces plain versions from conventional commits. Real
+# pre-releases are tagged with a hyphenated version (…-beta.N) outside release-plz.
+git_release_type = "prod"
+
 [[package]]
 name = "kimun_core"
 git_tag_name = "kimun_core-v{{ version }}"

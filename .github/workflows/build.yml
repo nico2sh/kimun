@@ -115,12 +115,16 @@ jobs:
 
       - name: Create compressed archives with consistent naming
         run: |
+          set -euo pipefail
           cd release-artifacts
           VERSION="${GITHUB_REF_NAME#kimun-notes-v}"
 
           for dir in */; do
             dirname="${dir%/}"
 
+            # Reset per iteration so an unclassified dir can never reuse the
+            # previous iteration's PLATFORM for the raw-binary copy below.
+            PLATFORM=""
             if [[ "$dirname" == *"windows"* ]]; then
               PLATFORM="windows-x64"
               ARCHIVE_NAME="kimun-${VERSION}-${PLATFORM}.zip"
@@ -142,6 +146,9 @@ jobs:
               PLATFORM="linux-x64"
               ARCHIVE_NAME="kimun-${VERSION}-${PLATFORM}.tar.gz"
               tar -czf "${ARCHIVE_NAME}" -C "$dirname" .
+            else
+              echo "::error::unclassified artifact directory: $dirname"
+              exit 1
             fi
 
             # Raw, uncompressed binary asset for in-app self-update (adr/0014).
