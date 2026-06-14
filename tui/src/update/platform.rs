@@ -8,6 +8,8 @@
 pub fn platform() -> Option<&'static str> {
     if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         Some("linux-x64")
+    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+        Some("linux-arm64")
     } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
         Some("macos-x64")
     } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
