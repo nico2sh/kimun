@@ -229,12 +229,14 @@ jobs:
           SHA256_MACOS_ARM64=$(grep "macos-arm64.tar.gz" checksums-sha256.txt | awk '{print $1}')
           SHA256_MACOS_X64=$(grep "macos-x64.tar.gz"    checksums-sha256.txt | awk '{print $1}')
           SHA256_LINUX_X64=$(grep "linux-x64.tar.gz"    checksums-sha256.txt | awk '{print $1}')
+          SHA256_LINUX_ARM64=$(grep "linux-arm64.tar.gz" checksums-sha256.txt | awk '{print $1}')
 
           sed \
             -e "s/{{VERSION}}/${VERSION}/g" \
             -e "s/{{SHA256_MACOS_ARM64}}/${SHA256_MACOS_ARM64}/g" \
             -e "s/{{SHA256_MACOS_X64}}/${SHA256_MACOS_X64}/g" \
             -e "s/{{SHA256_LINUX_X64}}/${SHA256_LINUX_X64}/g" \
+            -e "s/{{SHA256_LINUX_ARM64}}/${SHA256_LINUX_ARM64}/g" \
             .github/homebrew/formula.rb.tmpl > kimun.rb
 
           echo "Generated formula:"
