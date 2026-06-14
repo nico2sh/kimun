@@ -48,8 +48,11 @@ pub async fn run(check_only: bool) -> Result<()> {
     }
 
     println!("Downloading and installing {}...", status.latest);
-    let latest = tokio::task::spawn_blocking(update::fetch_latest).await??;
-    tokio::task::spawn_blocking(move || update::apply(&latest)).await??;
+    tokio::task::spawn_blocking(|| {
+        let latest = update::fetch_latest()?;
+        update::apply(&latest)
+    })
+    .await??;
     println!(
         "Updated to {}. Restart kimün to use the new version.",
         status.latest

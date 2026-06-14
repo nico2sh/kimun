@@ -56,9 +56,17 @@ pub fn self_update(latest: &LatestRelease) -> Result<(), UpdateError> {
     result
 }
 
+/// Upper bound on any single download, guarding against an unbounded read from
+/// a rogue redirect or misconfigured asset. A truncated body simply fails the
+/// later checksum comparison and is rejected.
+const MAX_DOWNLOAD_BYTES: u64 = 256 * 1024 * 1024;
+
 fn download_bytes(url: &str) -> Result<Vec<u8>, UpdateError> {
     let mut buf = Vec::new();
-    super::http_get(url)?.into_reader().read_to_end(&mut buf)?;
+    super::http_get(url)?
+        .into_reader()
+        .take(MAX_DOWNLOAD_BYTES)
+        .read_to_end(&mut buf)?;
     Ok(buf)
 }
 

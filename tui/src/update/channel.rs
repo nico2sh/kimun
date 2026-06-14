@@ -51,14 +51,17 @@ struct InstallMarker {
 /// Detect how the running binary was installed. `config_dir` is kimün's config
 /// directory (where `install.sh` writes the marker).
 ///
-/// The result is cached for the process lifetime — the install location cannot
-/// change while kimün runs, so the marker read and the `current_exe`
-/// canonicalisation happen only once.
+/// The marker (cheap file read, depends on `config_dir`) is consulted first.
+/// The fallback path heuristic — `current_exe` canonicalisation plus a
+/// filesystem writability probe — is the expensive part and is invariant for
+/// the process, so only *it* is cached. Caching keyed on the result of an
+/// argument would let the first caller's `config_dir` win forever.
 pub fn detect(config_dir: &Path) -> InstallChannel {
-    static CACHE: OnceLock<InstallChannel> = OnceLock::new();
-    *CACHE.get_or_init(|| {
-        channel_from_marker(config_dir).unwrap_or_else(channel_from_exe_path)
-    })
+    if let Some(channel) = channel_from_marker(config_dir) {
+        return channel;
+    }
+    static EXE_CHANNEL: OnceLock<InstallChannel> = OnceLock::new();
+    *EXE_CHANNEL.get_or_init(channel_from_exe_path)
 }
 
 fn channel_from_marker(config_dir: &Path) -> Option<InstallChannel> {

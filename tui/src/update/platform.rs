@@ -2,8 +2,8 @@
 //! `build.yml` (see adr/0014). Returns `None` on a target kimün does not
 //! publish binaries for, which forces notify-only with no self-update path.
 
-/// The release platform string for this build (`linux-x64`, `macos-x64`,
-/// `macos-arm64`, `windows-x64`), or `None` if kimün publishes no binary for
+/// The release platform string for this build (`linux-x64`, `linux-arm64`,
+/// `macos-x64`, `macos-arm64`, `windows-x64`), or `None` if kimün publishes no binary for
 /// this target.
 pub fn platform() -> Option<&'static str> {
     if cfg!(all(target_os = "linux", target_arch = "x86_64")) {

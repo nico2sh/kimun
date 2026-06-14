@@ -192,6 +192,8 @@ async fn main() -> Result<()> {
     let mut events = EventHandler::new();
     let mut app = App::new(cli.config).await?;
 
+    spawn_update_check(&app, events.app_sender());
+
     if let Err(e) = run_app(&mut terminal, &mut app, &mut events).await {
         tracing::error!("fatal error: {e}");
         return Err(e.into());
@@ -289,6 +291,14 @@ async fn switch_screen(app: &mut App, tx: &AppTx, new_screen: ScreenEvent) {
     };
 
     screen.on_enter(tx).await;
+    // Seed the freshly-created screen with any pending update notice, so the
+    // editor footer shows it even though the check finished before this screen
+    // existed. Non-editor screens ignore the event.
+    if let Some(status) = app.update.clone() {
+        screen
+            .handle_app_message(AppEvent::UpdateAvailable(status), tx)
+            .await;
+    }
     app.current_screen = Some(screen);
     // Bumped here (not at every swap site) because every swap goes through
     // this function. The main loop watches this counter to break its inner
@@ -305,6 +315,39 @@ async fn switch_screen(app: &mut App, tx: &AppTx, new_screen: ScreenEvent) {
 //     screen.on_enter(tx).await;
 //     app.current_screen = Some(screen);
 // }
+
+/// Kick off the background update check (gated on the user's `update_check`
+/// preference). All network/filesystem work runs on `spawn_blocking`; a found
+/// update is surfaced via `AppEvent::UpdateAvailable`. Failures are logged and
+/// swallowed — the check never blocks startup or interaction.
+fn spawn_update_check(app: &App, tx: AppTx) {
+    let enabled = app
+        .settings
+        .read()
+        .unwrap()
+        .workspace_config
+        .as_ref()
+        .map(|wc| wc.global.update_check)
+        .unwrap_or(true);
+    if !enabled {
+        return;
+    }
+    let Ok(config_dir) = crate::settings::config_dir() else {
+        return;
+    };
+    tokio::spawn(async move {
+        let result =
+            tokio::task::spawn_blocking(move || crate::update::check(&config_dir, false)).await;
+        match result {
+            Ok(Ok(Some(status))) if status.should_notify() => {
+                let _ = tx.send(AppEvent::UpdateAvailable(status));
+            }
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => tracing::debug!("update check failed: {e}"),
+            Err(e) => tracing::debug!("update check task panicked: {e}"),
+        }
+    });
+}
 
 async fn run_app<B: Backend>(
     terminal: &mut Terminal<B>,
@@ -511,6 +554,17 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
             }
             app.vault = rebuild_vault(&app.settings).await;
             tx.send(AppEvent::OpenScreen(ScreenEvent::Start)).ok();
+        }
+        AppEvent::UpdateAvailable(status) => {
+            // Remember app-globally (so a later-opened editor can be seeded in
+            // switch_screen) and forward to the current screen for immediate
+            // display. Non-editor screens ignore it.
+            app.update = Some(status.clone());
+            if let Some(screen) = app.current_screen.as_mut() {
+                screen
+                    .handle_app_message(AppEvent::UpdateAvailable(status), tx)
+                    .await;
+            }
         }
         other => {
             if let Some(screen) = app.current_screen.as_mut() {

@@ -74,6 +74,9 @@ pub enum AppEvent {
     ExecuteLeaderAction(crate::keys::leader::LeaderAction),
     /// Show a transient footer flash — async tasks report results with it.
     FlashMessage(String),
+    /// A newer release was found by the background update check. Stored on
+    /// `App` and surfaced as a footer indicator on the editor screen.
+    UpdateAvailable(crate::update::UpdateStatus),
     /// Apply (and optionally persist) a resolved theme — sent by the theme
     /// picker: previews on selection move, persists on Enter. Carries the
     /// full `Theme` so applying never re-reads the themes directory.

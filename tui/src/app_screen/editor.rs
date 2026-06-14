@@ -60,6 +60,9 @@ pub struct EditorScreen {
     /// Async document/status state: backlink count, git summary, link
     /// affordance cache, pending emphasis needles (see `doc_meta.rs`).
     doc_meta: crate::app_screen::doc_meta::DocMeta,
+    /// App-global update notice, seeded by `AppEvent::UpdateAvailable`. Drives
+    /// the footer indicator; `None` when up to date or the check found nothing.
+    update: Option<crate::update::UpdateStatus>,
     /// The leader-key sequence state machine (Ctrl-G gateway, spec §8a).
     leader: LeaderEngine,
     /// App event sender, captured on enter — render-side async kicks (the
@@ -105,6 +108,7 @@ impl EditorScreen {
             theme,
             panels: PanelSet::from_panels(drawer, editor, rail_icons, rail_kb),
             doc_meta: crate::app_screen::doc_meta::DocMeta::new(vault.clone()),
+            update: None,
             vault,
             path,
             footer,
@@ -1632,6 +1636,10 @@ impl AppScreen for EditorScreen {
                 git: self.doc_meta.git().cloned(),
                 matches,
                 link: link_segment,
+                update: self
+                    .update
+                    .as_ref()
+                    .map(|u| format!("⬆ {} available", u.latest)),
             },
         };
         self.footer.render(f, rows[2], theme, &ctx);
@@ -1672,6 +1680,9 @@ impl AppScreen for EditorScreen {
         };
 
         match msg {
+            AppEvent::UpdateAvailable(status) => {
+                self.update = Some(status);
+            }
             AppEvent::ShowFileOpsMenu(path) => {
                 self.present_overlay(Box::new(ActiveDialog::file_ops_menu(path)));
             }
