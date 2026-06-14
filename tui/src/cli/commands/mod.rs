@@ -5,6 +5,7 @@ pub mod mcp;
 pub mod note_ops;
 pub mod notes;
 pub mod search;
+pub mod update;
 pub mod workspace;
 
 // Re-export for convenience

@@ -17,6 +17,7 @@ use kimun_core::nfs::VaultPath;
 
 use crate::keys::KeyBindings;
 mod config_dir;
+pub(crate) use config_dir::get_home_dir;
 pub mod config_migration;
 pub mod history;
 pub mod icons;
@@ -56,6 +57,14 @@ pub enum EditorBackendSetting {
 const CONFIG_DIR: &str = "kimun_debug";
 #[cfg(not(debug_assertions))]
 const CONFIG_DIR: &str = "kimun";
+
+/// Path to kimün's config directory (`~/.config/kimun`, or `kimun_debug` in
+/// debug builds), creating it if needed. Single source of truth for the
+/// debug/release directory name — used by the update module for the install
+/// marker and update-state file.
+pub fn config_dir() -> std::io::Result<PathBuf> {
+    get_or_create_config_dir(CONFIG_DIR)
+}
 
 const BASE_CONFIG_FILE: &str = "config.toml";
 const THEMES_DIR: &str = "themes";
@@ -461,6 +470,16 @@ impl AppSettings {
         }
 
         themes
+    }
+
+    /// Whether the startup update check is enabled. Lives in `GlobalConfig`;
+    /// defaults to on when no workspace config exists yet. Single source for
+    /// the four read sites (startup, preferences, onboarding).
+    pub fn update_check(&self) -> bool {
+        self.workspace_config
+            .as_ref()
+            .map(|wc| wc.global.update_check)
+            .unwrap_or(true)
     }
 
     pub fn save_to_disk(&self) -> eyre::Result<()> {

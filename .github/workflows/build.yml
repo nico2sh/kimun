@@ -40,6 +40,12 @@ jobs:
             artifact: linux
             artifact_suffix: ""
             binary: kimun
+          - name: Linux Build arm64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            artifact: linux
+            artifact_suffix: _arm64
+            binary: kimun
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -109,12 +115,16 @@ jobs:
 
       - name: Create compressed archives with consistent naming
         run: |
+          set -euo pipefail
           cd release-artifacts
           VERSION="${GITHUB_REF_NAME#kimun-notes-v}"
 
           for dir in */; do
             dirname="${dir%/}"
 
+            # Reset per iteration so an unclassified dir can never reuse the
+            # previous iteration's PLATFORM for the raw-binary copy below.
+            PLATFORM=""
             if [[ "$dirname" == *"windows"* ]]; then
               PLATFORM="windows-x64"
               ARCHIVE_NAME="kimun-${VERSION}-${PLATFORM}.zip"
@@ -127,14 +137,31 @@ jobs:
               PLATFORM="macos-arm64"
               ARCHIVE_NAME="kimun-${VERSION}-${PLATFORM}.tar.gz"
               tar -czf "${ARCHIVE_NAME}" -C "$dirname" .
+            elif [[ "$dirname" == *"linux"* && "$dirname" == *"arm64"* ]]; then
+              # Must precede the generic linux branch — arm64 dirs also match *linux*.
+              PLATFORM="linux-arm64"
+              ARCHIVE_NAME="kimun-${VERSION}-${PLATFORM}.tar.gz"
+              tar -czf "${ARCHIVE_NAME}" -C "$dirname" .
             elif [[ "$dirname" == *"linux"* ]]; then
               PLATFORM="linux-x64"
               ARCHIVE_NAME="kimun-${VERSION}-${PLATFORM}.tar.gz"
               tar -czf "${ARCHIVE_NAME}" -C "$dirname" .
+            else
+              echo "::error::unclassified artifact directory: $dirname"
+              exit 1
+            fi
+
+            # Raw, uncompressed binary asset for in-app self-update (adr/0014).
+            # The running app downloads this directly, checksum-verifies it, and
+            # swaps it in place — no client-side archive extraction needed.
+            if [[ "$dirname" == *"windows"* ]]; then
+              cp "$dirname/kimun.exe" "kimun-${VERSION}-${PLATFORM}.exe"
+            else
+              cp "$dirname/kimun" "kimun-${VERSION}-${PLATFORM}"
             fi
           done
 
-          ls -lh *.zip *.tar.gz 2>/dev/null || true
+          ls -lh kimun-* 2>/dev/null || true
         shell: bash
 
       - name: Generate checksums
@@ -142,7 +169,12 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
           cd release-artifacts
-          files=(kimun-*.zip kimun-*.tar.gz)
+          # Archives + the raw self-update binaries (nullglob drops any absent).
+          files=(
+            kimun-*.zip kimun-*.tar.gz
+            kimun-*-linux-x64 kimun-*-linux-arm64
+            kimun-*-macos-x64 kimun-*-macos-arm64 kimun-*-windows-x64.exe
+          )
           if [[ ${#files[@]} -eq 0 ]]; then
             echo "::error::No archives found to checksum"
             exit 1
@@ -169,6 +201,11 @@ jobs:
           files: |
             release-artifacts/kimun-*.zip
             release-artifacts/kimun-*.tar.gz
+            release-artifacts/kimun-*-linux-x64
+            release-artifacts/kimun-*-linux-arm64
+            release-artifacts/kimun-*-macos-x64
+            release-artifacts/kimun-*-macos-arm64
+            release-artifacts/kimun-*-windows-x64.exe
             release-artifacts/checksums-sha256.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -199,12 +236,14 @@ jobs:
           SHA256_MACOS_ARM64=$(grep "macos-arm64.tar.gz" checksums-sha256.txt | awk '{print $1}')
           SHA256_MACOS_X64=$(grep "macos-x64.tar.gz"    checksums-sha256.txt | awk '{print $1}')
           SHA256_LINUX_X64=$(grep "linux-x64.tar.gz"    checksums-sha256.txt | awk '{print $1}')
+          SHA256_LINUX_ARM64=$(grep "linux-arm64.tar.gz" checksums-sha256.txt | awk '{print $1}')
 
           sed \
             -e "s/{{VERSION}}/${VERSION}/g" \
             -e "s/{{SHA256_MACOS_ARM64}}/${SHA256_MACOS_ARM64}/g" \
             -e "s/{{SHA256_MACOS_X64}}/${SHA256_MACOS_X64}/g" \
             -e "s/{{SHA256_LINUX_X64}}/${SHA256_LINUX_X64}/g" \
+            -e "s/{{SHA256_LINUX_ARM64}}/${SHA256_LINUX_ARM64}/g" \
             .github/homebrew/formula.rb.tmpl > kimun.rb
 
           echo "Generated formula:"

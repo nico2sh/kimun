@@ -41,6 +41,15 @@ impl std::error::Error for WorkspaceConfigError {}
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct GlobalConfig {
     pub current_workspace: String,
+    /// Whether kimün may contact GitHub to check for a newer release. User-owned
+    /// (toggled in onboarding and preferences); defaults on. All machine-managed
+    /// update state lives separately in `update_state.toml`, never here.
+    #[serde(default = "default_update_check")]
+    pub update_check: bool,
+}
+
+fn default_update_check() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -92,6 +101,7 @@ impl WorkspaceConfig {
         Self {
             global: GlobalConfig {
                 current_workspace: String::new(),
+                update_check: true,
             },
             workspaces: BTreeMap::new(),
         }

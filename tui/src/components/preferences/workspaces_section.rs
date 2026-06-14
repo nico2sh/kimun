@@ -364,6 +364,7 @@ mod tests {
         settings.workspace_config = Some(WorkspaceConfig {
             global: GlobalConfig {
                 current_workspace: current.to_string(),
+                update_check: true,
             },
             workspaces: ws_map,
         });

@@ -53,6 +53,12 @@ jobs:
         run: zola build
         working-directory: docs/
 
+      # Publish the canonical install script (repo root) at the site root so
+      # https://kimun.2co.dev/install.sh serves it. Single source — not copied
+      # into docs/, just into the build output.
+      - name: Publish install.sh
+        run: cp install.sh docs/public/install.sh
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
