@@ -10,6 +10,7 @@ fn workspace_config_serializes_to_toml() {
     let config = WorkspaceConfig {
         global: GlobalConfig {
             current_workspace: "default".to_string(),
+            update_check: true,
         },
         workspaces: BTreeMap::from([(
             "default".to_string(),
@@ -51,6 +52,7 @@ fn workspace_serialization_order_is_deterministic() {
     let make = || WorkspaceConfig {
         global: GlobalConfig {
             current_workspace: "personal".to_string(),
+            update_check: true,
         },
         // Inserted out of alphabetical order on purpose.
         workspaces: BTreeMap::from([

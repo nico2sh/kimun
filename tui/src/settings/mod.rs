@@ -57,6 +57,14 @@ const CONFIG_DIR: &str = "kimun_debug";
 #[cfg(not(debug_assertions))]
 const CONFIG_DIR: &str = "kimun";
 
+/// Path to kimün's config directory (`~/.config/kimun`, or `kimun_debug` in
+/// debug builds), creating it if needed. Single source of truth for the
+/// debug/release directory name — used by the update module for the install
+/// marker and update-state file.
+pub fn config_dir() -> std::io::Result<PathBuf> {
+    get_or_create_config_dir(CONFIG_DIR)
+}
+
 const BASE_CONFIG_FILE: &str = "config.toml";
 const THEMES_DIR: &str = "themes";
 const CACHE_FILE_EXT: &str = "kimuncache";
