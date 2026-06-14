@@ -27,6 +27,10 @@ pub struct App {
     /// → EditorScreen(B)) and leak A's InsertAtCursor / dialog-result
     /// payloads into B.
     pub screen_generation: u64,
+
+    /// A newer release found by the background update check at startup, if any.
+    /// Seeded into each editor screen so the footer can show the indicator.
+    pub update: Option<crate::update::UpdateStatus>,
 }
 
 impl App {
@@ -83,6 +87,7 @@ impl App {
             settings,
             vault,
             screen_generation: 0,
+            update: None,
         })
     }
 }

@@ -68,6 +68,8 @@ pub enum LeaderAction {
     AppQuit,
     /// Open the guided-setup (onboarding) flow.
     AppOnboarding,
+    /// Open the update dialog (or report up-to-date / check now).
+    AppCheckUpdates,
 }
 
 impl LeaderAction {
@@ -121,11 +123,12 @@ impl LeaderAction {
             LeaderAction::NoteSave => "note.save",
             LeaderAction::AppQuit => "app.quit",
             LeaderAction::AppOnboarding => "app.onboarding",
+            LeaderAction::AppCheckUpdates => "app.check-updates",
         }
     }
 
     /// Every action, for id lookup and docs.
-    pub const ALL: [LeaderAction; 45] = [
+    pub const ALL: [LeaderAction; 46] = [
         LeaderAction::OpenDrawer(DrawerView::Files),
         LeaderAction::OpenDrawer(DrawerView::Find),
         LeaderAction::OpenDrawer(DrawerView::Tags),
@@ -171,6 +174,7 @@ impl LeaderAction {
         LeaderAction::NoteSave,
         LeaderAction::AppQuit,
         LeaderAction::AppOnboarding,
+        LeaderAction::AppCheckUpdates,
     ];
 
     /// Look an action up by its config id. `Help` is included via ALL? It is
@@ -231,6 +235,7 @@ impl LeaderAction {
             LeaderAction::NoteSave => "write (save now)",
             LeaderAction::AppQuit => "quit kimün",
             LeaderAction::AppOnboarding => "guided setup",
+            LeaderAction::AppCheckUpdates => "check for updates",
         }
     }
 }
@@ -368,6 +373,7 @@ pub fn leader_tree() -> LeaderNode {
                         ('t', leaf("theme picker", A::VaultTheme)),
                         ('p', leaf("preferences", A::VaultPreferences)),
                         ('o', leaf("guided setup", A::AppOnboarding)),
+                        ('u', leaf("check for updates", A::AppCheckUpdates)),
                     ],
                 },
             ),

@@ -60,6 +60,9 @@ pub struct EditorScreen {
     /// Async document/status state: backlink count, git summary, link
     /// affordance cache, pending emphasis needles (see `doc_meta.rs`).
     doc_meta: crate::app_screen::doc_meta::DocMeta,
+    /// App-global update notice, seeded by `AppEvent::UpdateAvailable`. Drives
+    /// the footer indicator; `None` when up to date or the check found nothing.
+    update: Option<crate::update::UpdateStatus>,
     /// The leader-key sequence state machine (Ctrl-G gateway, spec §8a).
     leader: LeaderEngine,
     /// App event sender, captured on enter — render-side async kicks (the
@@ -105,6 +108,7 @@ impl EditorScreen {
             theme,
             panels: PanelSet::from_panels(drawer, editor, rail_icons, rail_kb),
             doc_meta: crate::app_screen::doc_meta::DocMeta::new(vault.clone()),
+            update: None,
             vault,
             path,
             footer,
@@ -956,6 +960,41 @@ impl EditorScreen {
         match action {
             LeaderAction::OpenDrawer(view) => self.open_drawer_view(view, tx),
 
+            LeaderAction::AppCheckUpdates => {
+                if let Some(status) = self.update.clone() {
+                    self.present_overlay(Box::new(ActiveDialog::update(&status)));
+                } else {
+                    // No cached notice — run a forced check and report the result.
+                    let tx2 = tx.clone();
+                    tx.send(AppEvent::FlashMessage("Checking for updates…".into()))
+                        .ok();
+                    tokio::spawn(async move {
+                        let Ok(config_dir) = crate::settings::config_dir() else {
+                            return;
+                        };
+                        match crate::update::check_now(config_dir, true).await {
+                            Ok(Some(status)) if status.update_available => {
+                                // Manual check: surface the notice AND open the
+                                // dialog the user explicitly asked for (shown even
+                                // if previously skipped — they asked).
+                                tx2.send(AppEvent::UpdateAvailable(status)).ok();
+                                tx2.send(AppEvent::ShowUpdateDialog).ok();
+                            }
+                            Ok(_) => {
+                                tx2.send(AppEvent::FlashMessage("kimün is up to date".into()))
+                                    .ok();
+                            }
+                            Err(e) => {
+                                tx2.send(AppEvent::FlashMessage(format!(
+                                    "Update check failed: {e}"
+                                )))
+                                .ok();
+                            }
+                        }
+                    });
+                }
+            }
+
             // +find — list-style leaves route to today's pickers; the
             // telescope modal takes them over in phase 08.
             LeaderAction::FindFiles => self.open_file_finder(tx),
@@ -1632,6 +1671,10 @@ impl AppScreen for EditorScreen {
                 git: self.doc_meta.git().cloned(),
                 matches,
                 link: link_segment,
+                update: self
+                    .update
+                    .as_ref()
+                    .map(|u| format!("⬆ {} available", u.latest)),
             },
         };
         self.footer.render(f, rows[2], theme, &ctx);
@@ -1672,6 +1715,43 @@ impl AppScreen for EditorScreen {
         };
 
         match msg {
+            AppEvent::UpdateAvailable(status) => {
+                self.update = Some(status);
+            }
+            AppEvent::ShowUpdateDialog => {
+                if let Some(status) = self.update.clone() {
+                    self.present_overlay(Box::new(ActiveDialog::update(&status)));
+                }
+            }
+            AppEvent::DismissUpdate(_) => {
+                // Persistence happens in main; here we just drop the indicator.
+                self.update = None;
+            }
+            AppEvent::UpdateApplied => {
+                // Installed — drop the notice so the footer/dialog stop offering
+                // the version we just wrote (restart still required to run it).
+                self.update = None;
+            }
+            AppEvent::ApplyUpdate => {
+                let tx2 = tx.clone();
+                tx.send(AppEvent::FlashMessage("Downloading update…".into()))
+                    .ok();
+                tokio::spawn(async move {
+                    let result = async {
+                        let latest = crate::update::latest_release().await?;
+                        crate::update::install(latest).await
+                    }
+                    .await;
+                    let msg = match result {
+                        Ok(()) => {
+                            tx2.send(AppEvent::UpdateApplied).ok();
+                            "Update installed — restart kimün to apply".to_string()
+                        }
+                        Err(e) => format!("Update failed: {e}"),
+                    };
+                    tx2.send(AppEvent::FlashMessage(msg)).ok();
+                });
+            }
             AppEvent::ShowFileOpsMenu(path) => {
                 self.present_overlay(Box::new(ActiveDialog::file_ops_menu(path)));
             }

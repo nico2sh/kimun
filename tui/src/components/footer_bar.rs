@@ -43,6 +43,8 @@ pub struct DocState<'a> {
     pub matches: Option<usize>,
     /// Link-under-cursor affordance: `→ target · N backlinks` (spec §5.2).
     pub link: Option<String>,
+    /// Newer release available, e.g. `⬆ 0.18.0` — opens the update dialog.
+    pub update: Option<String>,
 }
 
 /// Everything the status bar shows for the current frame.
@@ -196,6 +198,9 @@ impl FooterBar {
             if let Some(matches) = doc.matches {
                 w += format!(" · {matches} matches").width();
             }
+            if let Some(update) = &doc.update {
+                w += " · ".width() + update.width();
+            }
             w
         };
         let path_budget = (rect.width as usize).saturating_sub(tail_width + 1);
@@ -255,6 +260,17 @@ impl FooterBar {
             push(
                 &mut segments,
                 Span::styled(link.clone(), Style::default().fg(theme.blue.to_ratatui())),
+            );
+        }
+        if let Some(update) = &doc.update {
+            push(
+                &mut segments,
+                Span::styled(
+                    update.clone(),
+                    Style::default()
+                        .fg(theme.accent.to_ratatui())
+                        .add_modifier(Modifier::BOLD),
+                ),
             );
         }
         f.render_widget(Paragraph::new(Line::from(segments)), rows[1]);

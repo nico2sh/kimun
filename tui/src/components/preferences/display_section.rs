@@ -8,19 +8,40 @@ use crate::components::event_state::EventState;
 use crate::components::events::{AppTx, InputEvent};
 use crate::settings::themes::Theme;
 
+/// Number of selectable rows in this section.
+const ROW_COUNT: usize = 2;
+
 pub struct DisplaySection {
     pub use_nerd_fonts: bool,
+    /// Whether kimün checks GitHub for a newer release on startup.
+    pub update_check: bool,
     list_state: ListState,
 }
 
 impl DisplaySection {
-    pub fn new(use_nerd_fonts: bool) -> Self {
+    pub fn new(use_nerd_fonts: bool, update_check: bool) -> Self {
         let mut list_state = ListState::default();
         list_state.select(Some(0));
         Self {
             use_nerd_fonts,
+            update_check,
             list_state,
         }
+    }
+
+    /// Toggle the currently selected row.
+    fn toggle_selected(&mut self) {
+        match self.list_state.selected() {
+            Some(0) => self.use_nerd_fonts = !self.use_nerd_fonts,
+            Some(1) => self.update_check = !self.update_check,
+            _ => {}
+        }
+    }
+
+    fn move_selection(&mut self, delta: isize) {
+        let current = self.list_state.selected().unwrap_or(0) as isize;
+        let next = (current + delta).rem_euclid(ROW_COUNT as isize);
+        self.list_state.select(Some(next as usize));
     }
 }
 
@@ -29,10 +50,18 @@ impl Component for DisplaySection {
         let InputEvent::Key(key) = event else {
             return EventState::NotConsumed;
         };
+        use ratatui::crossterm::event::KeyCode;
         match key.code {
-            ratatui::crossterm::event::KeyCode::Enter
-            | ratatui::crossterm::event::KeyCode::Char(' ') => {
-                self.use_nerd_fonts = !self.use_nerd_fonts;
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                self.toggle_selected();
+                EventState::Consumed
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.move_selection(-1);
+                EventState::Consumed
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.move_selection(1);
                 EventState::Consumed
             }
             _ => EventState::NotConsumed,
@@ -47,10 +76,19 @@ impl Component for DisplaySection {
             .border_style(border_style)
             .style(theme.base_style());
 
-        let check = if self.use_nerd_fonts { "[x]" } else { "[ ]" };
+        let checkbox = |on: bool| if on { "[x]" } else { "[ ]" };
+        let fg = Style::default().fg(theme.fg.to_ratatui());
         let items = vec![
-            ListItem::new(format!("  Use Nerd Fonts  {}", check))
-                .style(Style::default().fg(theme.fg.to_ratatui())),
+            ListItem::new(format!(
+                "  Use Nerd Fonts  {}",
+                checkbox(self.use_nerd_fonts)
+            ))
+            .style(fg),
+            ListItem::new(format!(
+                "  Check for updates on startup  {}",
+                checkbox(self.update_check)
+            ))
+            .style(fg),
         ];
 
         let list = List::new(items)
@@ -83,7 +121,7 @@ mod tests {
     #[test]
     fn enter_toggles_nerd_fonts() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut section = DisplaySection::new(true);
+        let mut section = DisplaySection::new(true, true);
         section.handle_input(&key(KeyCode::Enter), &tx);
         assert!(!section.use_nerd_fonts);
         section.handle_input(&key(KeyCode::Enter), &tx);
@@ -93,9 +131,19 @@ mod tests {
     #[test]
     fn space_toggles_nerd_fonts() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut section = DisplaySection::new(false);
+        let mut section = DisplaySection::new(false, true);
         section.handle_input(&key(KeyCode::Char(' ')), &tx);
         assert!(section.use_nerd_fonts);
+    }
+
+    #[test]
+    fn down_then_toggle_flips_update_check_only() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut section = DisplaySection::new(true, true);
+        section.handle_input(&key(KeyCode::Down), &tx);
+        section.handle_input(&key(KeyCode::Enter), &tx);
+        assert!(!section.update_check, "update_check should toggle off");
+        assert!(section.use_nerd_fonts, "nerd fonts should be untouched");
     }
 
     #[test]
@@ -104,7 +152,7 @@ mod tests {
         use ratatui::backend::TestBackend;
         let backend = TestBackend::new(40, 10);
         let mut terminal = Terminal::new(backend).unwrap();
-        let mut section = DisplaySection::new(true);
+        let mut section = DisplaySection::new(true, true);
         let theme = Theme::gruvbox_dark();
         terminal
             .draw(|f| section.render(f, f.area(), &theme, false))
@@ -120,7 +168,7 @@ mod tests {
         use ratatui::backend::TestBackend;
         let backend = TestBackend::new(40, 10);
         let mut terminal = Terminal::new(backend).unwrap();
-        let mut section = DisplaySection::new(false);
+        let mut section = DisplaySection::new(false, true);
         let theme = Theme::gruvbox_dark();
         terminal
             .draw(|f| section.render(f, f.area(), &theme, false))

@@ -74,6 +74,19 @@ pub enum AppEvent {
     ExecuteLeaderAction(crate::keys::leader::LeaderAction),
     /// Show a transient footer flash — async tasks report results with it.
     FlashMessage(String),
+    /// A newer release was found by the background update check. Stored on
+    /// `App` and surfaced as a footer indicator on the editor screen.
+    UpdateAvailable(crate::update::UpdateStatus),
+    /// User chose "Update now" in the update dialog → run the self-update.
+    ApplyUpdate,
+    /// User skipped a version in the update dialog → persist the dismissal and
+    /// clear the indicator. Carries the version being skipped.
+    DismissUpdate(String),
+    /// Open the update dialog for the currently-known update (manual check).
+    ShowUpdateDialog,
+    /// Self-update finished installing → clear the pending notice (restart still
+    /// required to run the new binary).
+    UpdateApplied,
     /// Apply (and optionally persist) a resolved theme — sent by the theme
     /// picker: previews on selection move, persists on Enter. Carries the
     /// full `Theme` so applying never re-reads the themes directory.

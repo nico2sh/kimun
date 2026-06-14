@@ -119,6 +119,7 @@ impl PreferencesScreen {
         let autosave_interval_secs = s.autosave_interval_secs;
         let editor_backend = s.editor_backend;
         let use_nerd_fonts = s.use_nerd_fonts;
+        let update_check = s.update_check();
         let initial_settings = s.clone();
         let workspaces_section = WorkspacesSection::new(&s);
         let sorting_section = SortingSection::new(
@@ -130,7 +131,7 @@ impl PreferencesScreen {
         drop(s);
         Self {
             appearance_section: AppearanceSection::new(themes, &active_name),
-            display_section: DisplaySection::new(use_nerd_fonts),
+            display_section: DisplaySection::new(use_nerd_fonts, update_check),
             sorting_section,
             workspaces_section,
             pending_create_name: None,
@@ -512,8 +513,16 @@ impl AppScreen for PreferencesScreen {
                         }
                         PreferencesSection::Display => {
                             let r = self.display_section.handle_input(&app_event, tx);
-                            self.settings.write().unwrap().use_nerd_fonts =
-                                self.display_section.use_nerd_fonts;
+                            {
+                                let mut s = self.settings.write().unwrap();
+                                s.use_nerd_fonts = self.display_section.use_nerd_fonts;
+                                s.workspace_config
+                                    .get_or_insert_with(
+                                        crate::settings::workspace_config::WorkspaceConfig::new_empty,
+                                    )
+                                    .global
+                                    .update_check = self.display_section.update_check;
+                            }
                             r
                         }
                         PreferencesSection::Sorting => {
@@ -652,7 +661,7 @@ impl AppScreen for PreferencesScreen {
                     .read()
                     .unwrap()
                     .resolve_workspace_path()
-                    .or_else(|| std::env::var("HOME").ok().map(PathBuf::from))
+                    .or_else(|| crate::settings::get_home_dir().ok())
                     .unwrap_or_else(|| PathBuf::from("/"));
                 self.overlay = Overlay::FileBrowser(FileBrowserState::load(starting_dir));
             }
