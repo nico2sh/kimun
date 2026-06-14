@@ -7,17 +7,59 @@ weight = 2
 
 ## Install Kimün
 
-**Homebrew (macOS and Linux):**
+### Install script (recommended — macOS & Linux)
+
+```sh
+curl -fsSL https://kimun.2co.dev/install.sh | sh
+```
+
+This is the preferred way to install Kimün. The script downloads the latest
+stable release, verifies its SHA-256 checksum before installing, and drops the
+binary into `~/.local/bin` (override with the `KIMUN_INSTALL_DIR` environment
+variable). It also records an install marker that enables **in-app
+self-update**, so you can upgrade from inside Kimün rather than re-running the
+installer.
+
+Prefer to read the script before running it? Download and inspect it first:
+
+```sh
+curl -fsSLO https://kimun.2co.dev/install.sh && less install.sh && sh install.sh
+```
+
+If `~/.local/bin` isn't on your `PATH`, the script tells you how to add it.
+
+> **Windows:** the install script is Unix-only. Use the release archive from the
+> [GitHub releases page](https://github.com/nico2sh/kimun/releases), or install
+> with Cargo (below).
+
+### Homebrew (macOS & Linux)
 
 ```sh
 brew tap nico2sh/kimun
 brew install kimun
 ```
 
-**Cargo:**
+### Cargo (Rust ecosystem)
 
 ```sh
 cargo install kimun-notes
+```
+
+## Updating
+
+If you installed with the **install script**, Kimün can update itself in place —
+the install marker tells the app it's on the `script` channel. Just re-run the
+install command at any time to pull the latest stable release:
+
+```sh
+curl -fsSL https://kimun.2co.dev/install.sh | sh
+```
+
+Installed via **Homebrew** or **Cargo**? Update through the same tool you used:
+
+```sh
+brew upgrade kimun        # Homebrew
+cargo install kimun-notes # Cargo (reinstalls the latest)
 ```
 
 ## First Run
