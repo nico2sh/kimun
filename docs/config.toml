@@ -1,4 +1,4 @@
-base_url = "https://nico2sh.github.io/kimun"
+base_url = "https://kimun.2co.dev"
 title = "Kimün"
 theme = "easydocs"
 compile_sass = true
