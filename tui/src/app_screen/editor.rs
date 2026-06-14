@@ -960,6 +960,42 @@ impl EditorScreen {
         match action {
             LeaderAction::OpenDrawer(view) => self.open_drawer_view(view, tx),
 
+            LeaderAction::AppCheckUpdates => {
+                if let Some(status) = self.update.clone() {
+                    self.present_overlay(Box::new(ActiveDialog::update(&status)));
+                } else {
+                    // No cached notice — run a forced check and report the result.
+                    let tx2 = tx.clone();
+                    tx.send(AppEvent::FlashMessage("Checking for updates…".into()))
+                        .ok();
+                    tokio::spawn(async move {
+                        let Ok(config_dir) = crate::settings::config_dir() else {
+                            return;
+                        };
+                        match tokio::task::spawn_blocking(move || {
+                            crate::update::check(&config_dir, true)
+                        })
+                        .await
+                        {
+                            Ok(Ok(Some(status))) if status.update_available => {
+                                tx2.send(AppEvent::UpdateAvailable(status)).ok();
+                            }
+                            Ok(Ok(_)) => {
+                                tx2.send(AppEvent::FlashMessage("kimün is up to date".into()))
+                                    .ok();
+                            }
+                            Ok(Err(e)) => {
+                                tx2.send(AppEvent::FlashMessage(format!(
+                                    "Update check failed: {e}"
+                                )))
+                                .ok();
+                            }
+                            Err(_) => {}
+                        }
+                    });
+                }
+            }
+
             // +find — list-style leaves route to today's pickers; the
             // telescope modal takes them over in phase 08.
             LeaderAction::FindFiles => self.open_file_finder(tx),
@@ -1682,6 +1718,30 @@ impl AppScreen for EditorScreen {
         match msg {
             AppEvent::UpdateAvailable(status) => {
                 self.update = Some(status);
+            }
+            AppEvent::DismissUpdate(_) => {
+                // Persistence happens in main; here we just drop the indicator.
+                self.update = None;
+            }
+            AppEvent::ApplyUpdate => {
+                let tx2 = tx.clone();
+                tx.send(AppEvent::FlashMessage("Downloading update…".into()))
+                    .ok();
+                tokio::spawn(async move {
+                    let result = tokio::task::spawn_blocking(|| {
+                        let latest = crate::update::fetch_latest()?;
+                        crate::update::apply(&latest)
+                    })
+                    .await;
+                    let msg = match result {
+                        Ok(Ok(())) => {
+                            "Update installed — restart kimün to apply".to_string()
+                        }
+                        Ok(Err(e)) => format!("Update failed: {e}"),
+                        Err(_) => "Update failed: task panicked".to_string(),
+                    };
+                    tx2.send(AppEvent::FlashMessage(msg)).ok();
+                });
             }
             AppEvent::ShowFileOpsMenu(path) => {
                 self.present_overlay(Box::new(ActiveDialog::file_ops_menu(path)));

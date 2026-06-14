@@ -8,6 +8,7 @@ pub use rename_dialog::RenameDialog;
 pub use save_search_dialog::SaveSearchDialog;
 pub use sort_dialog::SortDialog;
 pub use theme_picker::ThemePickerDialog;
+pub use update_dialog::UpdateAvailableDialog;
 pub use workspace_switcher::WorkspaceSwitcherModal;
 
 use std::sync::Arc;
@@ -52,6 +53,7 @@ pub mod rename_dialog;
 pub mod save_search_dialog;
 pub mod sort_dialog;
 pub mod theme_picker;
+pub mod update_dialog;
 pub mod workspace_switcher;
 
 pub enum ActiveDialog {
@@ -66,6 +68,7 @@ pub enum ActiveDialog {
     SaveSearch(SaveSearchDialog),
     Sort(SortDialog),
     ThemePicker(ThemePickerDialog),
+    UpdateAvailable(UpdateAvailableDialog),
 }
 
 impl ActiveDialog {
@@ -82,6 +85,7 @@ impl ActiveDialog {
             ActiveDialog::SaveSearch(_) => {}        // no error state
             ActiveDialog::Sort(_) => {}              // no error state
             ActiveDialog::ThemePicker(_) => {}       // no error state
+            ActiveDialog::UpdateAvailable(_) => {}   // no error state
         }
     }
 
@@ -103,6 +107,11 @@ impl ActiveDialog {
     /// The live theme picker (leader `v c`).
     pub fn theme_picker(settings: &crate::settings::AppSettings) -> Self {
         ActiveDialog::ThemePicker(ThemePickerDialog::new(settings))
+    }
+
+    /// The update-available dialog.
+    pub fn update(status: &crate::update::UpdateStatus) -> Self {
+        ActiveDialog::UpdateAvailable(UpdateAvailableDialog::new(status))
     }
 
     pub fn quick_note(vault: Arc<NoteVault>) -> Self {
@@ -263,6 +272,7 @@ impl Component for ActiveDialog {
             ActiveDialog::SaveSearch(d) => d.handle_input(event, tx),
             ActiveDialog::Sort(d) => d.handle_input(event, tx),
             ActiveDialog::ThemePicker(d) => d.handle_key(*key, tx),
+            ActiveDialog::UpdateAvailable(d) => d.handle_key(*key, tx),
         }
     }
 
@@ -279,6 +289,7 @@ impl Component for ActiveDialog {
             ActiveDialog::SaveSearch(d) => d.render(f, rect, theme, focused),
             ActiveDialog::Sort(d) => d.render(f, rect, theme, focused),
             ActiveDialog::ThemePicker(d) => d.render(f, rect, theme, focused),
+            ActiveDialog::UpdateAvailable(d) => d.render(f, rect, theme, focused),
         }
     }
 }
