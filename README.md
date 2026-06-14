@@ -59,6 +59,17 @@ Do you want to know more? ⭐️🚀 Check out our official documentation site f
 
 ### Installation
 
+#### Install script (macOS & Linux)
+```bash
+curl -fsSL https://kimun.2co.dev/install.sh | sh
+```
+Installs the latest release into `~/.local/bin` (override with `KIMUN_INSTALL_DIR`)
+and enables in-app self-update. The script verifies the download's SHA-256 before
+installing. Prefer to inspect first:
+```bash
+curl -fsSLO https://kimun.2co.dev/install.sh && less install.sh && sh install.sh
+```
+
 #### Homebrew (macOS & Linux)
 ```bash
 brew tap nico2sh/kimun
