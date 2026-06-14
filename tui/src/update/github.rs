@@ -6,8 +6,7 @@ use serde::Deserialize;
 use super::UpdateError;
 use super::provider::{Asset, LatestRelease, ReleaseProvider};
 
-const RELEASES_API: &str =
-    "https://api.github.com/repos/nico2sh/kimun/releases?per_page=100";
+const RELEASES_API: &str = "https://api.github.com/repos/nico2sh/kimun/releases?per_page=100";
 const RELEASES_PAGE: &str = "https://github.com/nico2sh/kimun/releases";
 const TAG_PREFIX: &str = "kimun-notes-v";
 

@@ -43,10 +43,7 @@ impl UpdateState {
     /// Persist to `config_dir`, prefixed with the do-not-edit header.
     pub fn save(&self, config_dir: &Path) -> io::Result<()> {
         let body = toml::to_string(self).map_err(io::Error::other)?;
-        std::fs::write(
-            config_dir.join(STATE_FILE),
-            format!("{STATE_HEADER}{body}"),
-        )
+        std::fs::write(config_dir.join(STATE_FILE), format!("{STATE_HEADER}{body}"))
     }
 
     /// Whether the last check is older than `max_age` (or never happened).
