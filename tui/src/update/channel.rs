@@ -4,6 +4,7 @@
 //! Order of precedence:
 //!   1. The install marker (`install.toml`) written by `install.sh` — deterministic.
 //!   2. A heuristic on the canonicalised executable path.
+//!
 //! Anything that cannot be classified fails safe to notify-only.
 
 use std::env;
@@ -87,25 +88,27 @@ fn channel_from_exe_path() -> InstallChannel {
     // Homebrew: an explicit prefix env var, or the Cellar layout the formula
     // installs into (current_exe is canonicalised, so brew's bin symlink is
     // already resolved into the Cellar path).
-    if let Ok(prefix) = env::var("HOMEBREW_PREFIX") {
-        if !prefix.is_empty() && path.starts_with(prefix.as_str()) {
-            return InstallChannel::Brew;
-        }
+    if let Ok(prefix) = env::var("HOMEBREW_PREFIX")
+        && !prefix.is_empty()
+        && path.starts_with(prefix.as_str())
+    {
+        return InstallChannel::Brew;
     }
     if path.contains("/Cellar/") || path.contains("/homebrew/") {
         return InstallChannel::Brew;
     }
 
     // cargo install: under CARGO_HOME/bin or ~/.cargo/bin.
-    if let Ok(cargo_home) = env::var("CARGO_HOME") {
-        if !cargo_home.is_empty() && exe.starts_with(&cargo_home) {
-            return InstallChannel::Cargo;
-        }
+    if let Ok(cargo_home) = env::var("CARGO_HOME")
+        && !cargo_home.is_empty()
+        && exe.starts_with(&cargo_home)
+    {
+        return InstallChannel::Cargo;
     }
-    if let Ok(home) = crate::settings::get_home_dir() {
-        if exe.starts_with(home.join(".cargo").join("bin")) {
-            return InstallChannel::Cargo;
-        }
+    if let Ok(home) = crate::settings::get_home_dir()
+        && exe.starts_with(home.join(".cargo").join("bin"))
+    {
+        return InstallChannel::Cargo;
     }
 
     // Otherwise the user placed this binary themselves. Only call it

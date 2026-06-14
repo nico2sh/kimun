@@ -558,10 +558,10 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
         AppEvent::DismissUpdate(version) => {
             // Persist the skip and clear the app-global notice, then forward so
             // the current screen drops its indicator copy.
-            if let Ok(config_dir) = crate::settings::config_dir() {
-                if let Err(e) = crate::update::dismiss(&config_dir, &version) {
-                    tracing::debug!("could not persist update dismissal: {e}");
-                }
+            if let Ok(config_dir) = crate::settings::config_dir()
+                && let Err(e) = crate::update::dismiss(&config_dir, &version)
+            {
+                tracing::debug!("could not persist update dismissal: {e}");
             }
             app.update = None;
             if let Some(screen) = app.current_screen.as_mut() {
