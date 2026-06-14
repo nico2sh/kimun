@@ -82,6 +82,11 @@ pub enum AppEvent {
     /// User skipped a version in the update dialog → persist the dismissal and
     /// clear the indicator. Carries the version being skipped.
     DismissUpdate(String),
+    /// Open the update dialog for the currently-known update (manual check).
+    ShowUpdateDialog,
+    /// Self-update finished installing → clear the pending notice (restart still
+    /// required to run the new binary).
+    UpdateApplied,
     /// Apply (and optionally persist) a resolved theme — sent by the theme
     /// picker: previews on selection move, persists on Enter. Carries the
     /// full `Theme` so applying never re-reads the themes directory.

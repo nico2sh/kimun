@@ -11,8 +11,6 @@ use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::settings::themes::Theme;
 use crate::update::UpdateStatus;
 
-const RELEASES_URL: &str = "https://github.com/nico2sh/kimun/releases";
-
 /// Dialog shown when a newer release is available. On self-update-eligible
 /// channels it offers an in-place update; otherwise it shows the package
 /// manager's upgrade command. Either way the user can skip the version.
@@ -156,7 +154,7 @@ impl Component for UpdateAvailableDialog {
 
         // Row 5: release notes URL.
         f.render_widget(
-            Paragraph::new(format!("  Release notes: {RELEASES_URL}"))
+            Paragraph::new(format!("  Releases: {}", crate::update::releases_url()))
                 .style(Style::default().fg(gray).bg(bg)),
             rows[5],
         );

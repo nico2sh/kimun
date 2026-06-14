@@ -9,18 +9,10 @@ use crate::update;
 pub async fn run(check_only: bool) -> Result<()> {
     let config_dir = crate::settings::config_dir()?;
 
-    // The update check is blocking (ureq) — run it off the async runtime.
-    let status = {
-        let dir = config_dir.clone();
-        tokio::task::spawn_blocking(move || update::check(&dir, true)).await??
-    };
-
-    // With force = true the check always queries GitHub, so `None` only means a
-    // genuine absence of any stable release.
-    let Some(status) = status else {
-        println!("Could not determine the latest version.");
-        return Ok(());
-    };
+    // One GitHub round-trip: fetch the release once, derive the status from it,
+    // and (if applying) reuse the very same release — no second fetch.
+    let latest = update::latest_release().await?;
+    let status = update::status_for(&config_dir, &latest);
 
     println!("Current version: {}", status.current);
     println!("Latest version:  {}", status.latest);
@@ -40,19 +32,15 @@ pub async fn run(check_only: bool) -> Result<()> {
         match status.channel.upgrade_hint() {
             Some(cmd) => println!("To upgrade, run: {cmd}"),
             None => println!(
-                "This install cannot self-update. Download the latest release from \
-                 https://github.com/nico2sh/kimun/releases"
+                "This install cannot self-update. Download the latest release from {}",
+                update::releases_url()
             ),
         }
         return Ok(());
     }
 
     println!("Downloading and installing {}...", status.latest);
-    tokio::task::spawn_blocking(|| {
-        let latest = update::fetch_latest()?;
-        update::apply(&latest)
-    })
-    .await??;
+    update::install(latest).await?;
     println!(
         "Updated to {}. Restart kimün to use the new version.",
         status.latest

@@ -472,6 +472,16 @@ impl AppSettings {
         themes
     }
 
+    /// Whether the startup update check is enabled. Lives in `GlobalConfig`;
+    /// defaults to on when no workspace config exists yet. Single source for
+    /// the four read sites (startup, preferences, onboarding).
+    pub fn update_check(&self) -> bool {
+        self.workspace_config
+            .as_ref()
+            .map(|wc| wc.global.update_check)
+            .unwrap_or(true)
+    }
+
     pub fn save_to_disk(&self) -> eyre::Result<()> {
         tracing::debug!("Saving settings to disk");
         let settings_file_path = self.get_config_file_path()?;

@@ -13,11 +13,25 @@ mod apply;
 mod channel;
 mod github;
 mod platform;
+mod provider;
 mod state;
 
-pub use channel::{InstallChannel, detect as detect_channel};
-pub use github::LatestRelease;
+pub use channel::InstallChannel;
+pub use provider::{LatestRelease, ReleaseProvider};
 pub use state::UpdateState;
+
+/// The active release backend. **Single switch point**: implement
+/// [`ReleaseProvider`] elsewhere and return it here to change where the
+/// self-updater fetches releases from — no caller changes needed.
+fn provider() -> impl ReleaseProvider {
+    github::GitHubProvider
+}
+
+/// Human-facing releases page for the active provider (shown when self-update
+/// isn't available on the current install channel).
+pub fn releases_url() -> &'static str {
+    provider().releases_url()
+}
 
 use chrono::{Duration, Utc};
 use std::path::Path;
@@ -63,54 +77,97 @@ impl UpdateStatus {
     }
 }
 
-/// Check for an update.
+/// Check for an update (blocking — prefer the async [`check_now`]).
 ///
 /// When `force` is false the check is throttled: if the cached result is fresh
 /// (< [`CHECK_INTERVAL_HOURS`]) no network call is made and the cached version
 /// is reused. `force` (manual check / `kimun update`) always queries GitHub.
 ///
-/// Returns `Ok(None)` only when throttled with no cached version yet. Blocking.
+/// Returns `Ok(None)` only when throttled with no cached version yet.
 pub fn check(config_dir: &Path, force: bool) -> Result<Option<UpdateStatus>, UpdateError> {
-    let mut st = UpdateState::load(config_dir);
-    let now = Utc::now();
-
-    let latest = if force || st.is_stale(now, Duration::hours(CHECK_INTERVAL_HOURS)) {
-        let release = github::latest_stable()?;
-        st.last_check = Some(now);
-        st.latest_version = Some(release.version.clone());
-        // Best-effort persist; a write failure must not fail the check.
-        if let Err(e) = st.save(config_dir) {
-            tracing::warn!("could not save update state: {e}");
-        }
-        release.version
+    let st = UpdateState::load(config_dir);
+    if force || st.is_stale(Utc::now(), Duration::hours(CHECK_INTERVAL_HOURS)) {
+        let release = provider().latest_stable()?;
+        Ok(Some(status_for(config_dir, &release)))
     } else {
-        match &st.latest_version {
-            Some(v) => v.clone(),
-            None => return Ok(None),
-        }
-    };
+        Ok(st
+            .latest_version
+            .as_deref()
+            .map(|v| build_status(config_dir, &st, v)))
+    }
+}
 
-    Ok(Some(UpdateStatus {
+/// Build an [`UpdateStatus`] for an already-known `version` using cached state —
+/// no network, no writes.
+fn build_status(config_dir: &Path, st: &UpdateState, version: &str) -> UpdateStatus {
+    UpdateStatus {
         current: CURRENT_VERSION.to_string(),
-        update_available: is_newer(&latest, CURRENT_VERSION),
-        dismissed: st.dismissed_version.as_deref() == Some(latest.as_str()),
+        update_available: is_newer(version, CURRENT_VERSION),
+        dismissed: st.dismissed_version.as_deref() == Some(version),
         channel: channel::detect(config_dir),
-        latest,
-    }))
+        latest: version.to_string(),
+    }
+}
+
+/// Compute the [`UpdateStatus`] for an already-fetched `latest` release and
+/// persist the check timestamp/version. Lets a caller that already holds a
+/// [`LatestRelease`] (the apply path) avoid a second GitHub round-trip.
+pub fn status_for(config_dir: &Path, latest: &LatestRelease) -> UpdateStatus {
+    let mut st = UpdateState::load(config_dir);
+    st.last_check = Some(Utc::now());
+    st.latest_version = Some(latest.version.clone());
+    // Best-effort persist; a write failure must not fail the status.
+    if let Err(e) = st.save(config_dir) {
+        tracing::warn!("could not save update state: {e}");
+    }
+    build_status(config_dir, &st, &latest.version)
 }
 
 /// Fetch the full latest release (with downloadable assets), needed before
-/// [`apply`]. Blocking.
+/// [`apply`]. Blocking — prefer the async [`latest_release`].
 pub fn fetch_latest() -> Result<LatestRelease, UpdateError> {
-    github::latest_stable()
+    provider().latest_stable()
 }
 
 /// Download, verify, and install `latest`, replacing the running binary.
+/// Blocking — prefer the async [`install`].
 ///
 /// The caller must gate on [`InstallChannel::self_update_eligible`] first.
-/// Blocking.
 pub fn apply(latest: &LatestRelease) -> Result<(), UpdateError> {
     apply::self_update(latest)
+}
+
+/// Run a blocking update operation on the blocking pool, flattening the
+/// `JoinError` into [`UpdateError::Task`]. The single home for the
+/// `spawn_blocking` + join-error handling shared by every async caller.
+async fn run_blocking<T, F>(f: F) -> Result<T, UpdateError>
+where
+    F: FnOnce() -> Result<T, UpdateError> + Send + 'static,
+    T: Send + 'static,
+{
+    match tokio::task::spawn_blocking(f).await {
+        Ok(result) => result,
+        Err(e) => Err(UpdateError::Task(e.to_string())),
+    }
+}
+
+/// Async [`check`] — runs on the blocking pool so the caller's runtime is never
+/// stalled.
+pub async fn check_now(
+    config_dir: std::path::PathBuf,
+    force: bool,
+) -> Result<Option<UpdateStatus>, UpdateError> {
+    run_blocking(move || check(&config_dir, force)).await
+}
+
+/// Async [`fetch_latest`].
+pub async fn latest_release() -> Result<LatestRelease, UpdateError> {
+    run_blocking(fetch_latest).await
+}
+
+/// Async [`apply`] — consumes `latest` so it can move onto the blocking pool.
+pub async fn install(latest: LatestRelease) -> Result<(), UpdateError> {
+    run_blocking(move || apply(&latest)).await
 }
 
 /// Record that the user dismissed `version`, suppressing the notification until
@@ -165,6 +222,8 @@ pub enum UpdateError {
     ChecksumMismatch { expected: String, actual: String },
     /// The in-place binary swap failed.
     Replace(std::io::Error),
+    /// The blocking update task panicked or was cancelled.
+    Task(String),
 }
 
 impl std::fmt::Display for UpdateError {
@@ -183,6 +242,7 @@ impl std::fmt::Display for UpdateError {
                 write!(f, "checksum mismatch (expected {expected}, got {actual})")
             }
             Self::Replace(e) => write!(f, "could not replace the running binary: {e}"),
+            Self::Task(e) => write!(f, "update task failed: {e}"),
         }
     }
 }
