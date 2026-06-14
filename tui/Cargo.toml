@@ -50,6 +50,12 @@ rmpv = "1"
 unicode-width = "0.2"
 unicode-segmentation = "1"
 png = "0.18"
+# Update check + self-update. ureq is a small blocking HTTP client (rustls TLS,
+# no OpenSSL) run on spawn_blocking; sha2 verifies downloads; self-replace
+# performs the cross-platform live-binary swap. See adr/0014.
+ureq = "2"
+sha2 = "0.10"
+self-replace = "1"
 
 [dev-dependencies]
 tempfile = "3"
