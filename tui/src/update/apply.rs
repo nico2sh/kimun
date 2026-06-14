@@ -6,7 +6,7 @@ use std::io::Read;
 
 use sha2::{Digest, Sha256};
 
-use super::github::LatestRelease;
+use super::provider::LatestRelease;
 use super::{UpdateError, platform};
 
 const CHECKSUMS_ASSET: &str = "checksums-sha256.txt";
@@ -28,12 +28,12 @@ pub fn self_update(latest: &LatestRelease) -> Result<(), UpdateError> {
         .ok_or_else(|| UpdateError::MissingAsset(CHECKSUMS_ASSET.to_string()))?;
 
     // Resolve the expected digest before downloading the (larger) binary.
-    let checksums_bytes = download_bytes(&checksums_asset.browser_download_url)?;
+    let checksums_bytes = download_bytes(&checksums_asset.url)?;
     let checksums = String::from_utf8_lossy(&checksums_bytes);
     let expected = checksum_for(&checksums, &asset_name)
         .ok_or_else(|| UpdateError::NoChecksum(asset_name.clone()))?;
 
-    let bytes = download_bytes(&binary_asset.browser_download_url)?;
+    let bytes = download_bytes(&binary_asset.url)?;
     let actual = hex_sha256(&bytes);
     if !actual.eq_ignore_ascii_case(&expected) {
         return Err(UpdateError::ChecksumMismatch {

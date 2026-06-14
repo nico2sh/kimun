@@ -321,30 +321,19 @@ async fn switch_screen(app: &mut App, tx: &AppTx, new_screen: ScreenEvent) {
 /// update is surfaced via `AppEvent::UpdateAvailable`. Failures are logged and
 /// swallowed — the check never blocks startup or interaction.
 fn spawn_update_check(app: &App, tx: AppTx) {
-    let enabled = app
-        .settings
-        .read()
-        .unwrap()
-        .workspace_config
-        .as_ref()
-        .map(|wc| wc.global.update_check)
-        .unwrap_or(true);
-    if !enabled {
+    if !app.settings.read().unwrap().update_check() {
         return;
     }
     let Ok(config_dir) = crate::settings::config_dir() else {
         return;
     };
     tokio::spawn(async move {
-        let result =
-            tokio::task::spawn_blocking(move || crate::update::check(&config_dir, false)).await;
-        match result {
-            Ok(Ok(Some(status))) if status.should_notify() => {
+        match crate::update::check_now(config_dir, false).await {
+            Ok(Some(status)) if status.should_notify() => {
                 let _ = tx.send(AppEvent::UpdateAvailable(status));
             }
-            Ok(Ok(_)) => {}
-            Ok(Err(e)) => tracing::debug!("update check failed: {e}"),
-            Err(e) => tracing::debug!("update check task panicked: {e}"),
+            Ok(_) => {}
+            Err(e) => tracing::debug!("update check failed: {e}"),
         }
     });
 }
@@ -579,6 +568,14 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
                 screen
                     .handle_app_message(AppEvent::DismissUpdate(version), tx)
                     .await;
+            }
+        }
+        AppEvent::UpdateApplied => {
+            // Self-update installed: clear the app-global notice so no
+            // later-opened screen is re-seeded with the now-installed version.
+            app.update = None;
+            if let Some(screen) = app.current_screen.as_mut() {
+                screen.handle_app_message(AppEvent::UpdateApplied, tx).await;
             }
         }
         other => {

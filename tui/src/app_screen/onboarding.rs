@@ -211,11 +211,7 @@ impl OnboardingScreen {
                 None
             },
             use_nerd_fonts: s.use_nerd_fonts,
-            update_check: s
-                .workspace_config
-                .as_ref()
-                .map(|wc| wc.global.update_check)
-                .unwrap_or(true),
+            update_check: s.update_check(),
             // Keep the configured name even when its theme file is missing
             // from theme_list() — the draft must never silently rewrite a
             // setting the user didn't touch (dirty()/finish() would persist
@@ -382,14 +378,9 @@ impl OnboardingScreen {
     fn dirty(&self) -> bool {
         let s = self.settings.read().unwrap();
         let effective_theme = s.effective_theme_name();
-        let update_check = s
-            .workspace_config
-            .as_ref()
-            .map(|wc| wc.global.update_check)
-            .unwrap_or(true);
         s.use_nerd_fonts != self.draft.use_nerd_fonts
             || s.editor_backend != self.draft.editor_backend
-            || update_check != self.draft.update_check
+            || s.update_check() != self.draft.update_check
             || (!self.draft.theme_name.is_empty() && effective_theme != self.draft.theme_name)
     }
 

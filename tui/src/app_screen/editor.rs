@@ -972,25 +972,24 @@ impl EditorScreen {
                         let Ok(config_dir) = crate::settings::config_dir() else {
                             return;
                         };
-                        match tokio::task::spawn_blocking(move || {
-                            crate::update::check(&config_dir, true)
-                        })
-                        .await
-                        {
-                            Ok(Ok(Some(status))) if status.update_available => {
+                        match crate::update::check_now(config_dir, true).await {
+                            Ok(Some(status)) if status.update_available => {
+                                // Manual check: surface the notice AND open the
+                                // dialog the user explicitly asked for (shown even
+                                // if previously skipped — they asked).
                                 tx2.send(AppEvent::UpdateAvailable(status)).ok();
+                                tx2.send(AppEvent::ShowUpdateDialog).ok();
                             }
-                            Ok(Ok(_)) => {
+                            Ok(_) => {
                                 tx2.send(AppEvent::FlashMessage("kimün is up to date".into()))
                                     .ok();
                             }
-                            Ok(Err(e)) => {
+                            Err(e) => {
                                 tx2.send(AppEvent::FlashMessage(format!(
                                     "Update check failed: {e}"
                                 )))
                                 .ok();
                             }
-                            Err(_) => {}
                         }
                     });
                 }
@@ -1719,8 +1718,18 @@ impl AppScreen for EditorScreen {
             AppEvent::UpdateAvailable(status) => {
                 self.update = Some(status);
             }
+            AppEvent::ShowUpdateDialog => {
+                if let Some(status) = self.update.clone() {
+                    self.present_overlay(Box::new(ActiveDialog::update(&status)));
+                }
+            }
             AppEvent::DismissUpdate(_) => {
                 // Persistence happens in main; here we just drop the indicator.
+                self.update = None;
+            }
+            AppEvent::UpdateApplied => {
+                // Installed — drop the notice so the footer/dialog stop offering
+                // the version we just wrote (restart still required to run it).
                 self.update = None;
             }
             AppEvent::ApplyUpdate => {
@@ -1728,17 +1737,17 @@ impl AppScreen for EditorScreen {
                 tx.send(AppEvent::FlashMessage("Downloading update…".into()))
                     .ok();
                 tokio::spawn(async move {
-                    let result = tokio::task::spawn_blocking(|| {
-                        let latest = crate::update::fetch_latest()?;
-                        crate::update::apply(&latest)
-                    })
+                    let result = async {
+                        let latest = crate::update::latest_release().await?;
+                        crate::update::install(latest).await
+                    }
                     .await;
                     let msg = match result {
-                        Ok(Ok(())) => {
+                        Ok(()) => {
+                            tx2.send(AppEvent::UpdateApplied).ok();
                             "Update installed — restart kimün to apply".to_string()
                         }
-                        Ok(Err(e)) => format!("Update failed: {e}"),
-                        Err(_) => "Update failed: task panicked".to_string(),
+                        Err(e) => format!("Update failed: {e}"),
                     };
                     tx2.send(AppEvent::FlashMessage(msg)).ok();
                 });
