@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.17.0...kimun-notes-v0.18.0) - 2026-06-13
+
+### Added
+
+- bouncing umlaut dots in welcome banner
+- replace welcome logo with Kimün ascii wordmark
+- block-art logo on welcome step, natural text wrapping, aligned summary block
+- onboarding welcome step, capped dialog size, centered layout
+- route first run (no workspace) to onboarding; handle OnboardingFinished
+- onboarding summary step, atomic finish commit, quit/discard flows
+- onboarding theme step (live preview) and editor-backend step (nvim probe)
+- onboarding nerd-fonts step with glyph self-test and live icon preview
+- onboarding workspace step — suggestion, browser with mkdir, rerun list
+- OnboardingScreen skeleton — dialog frame, step state machine, navigation
+- app.onboarding leader action (guided setup) under +vault, palette-visible
+- OpenOnboarding/OnboardingFinished events, default workspace suggestion
+
+### Fixed
+
+- final intro animation
+- small bugfixes
+- column-align nerd-font glyphs with ascii counterparts
+- keep marker-column alignment in nerd-fonts sample rows
+- clear stale flash message on onboarding step transitions
+- reject path separators in create_dir, honest test name
+- hints for focus
+
+### Other
+
+- fmt
+- bouncing times fixed and final
+- bouncing times
+- fmt
+- drop stale allow, snap selection off disabled nvim, e2e walkthrough test
+- clean up scratch config files in onboarding finish tests
+- cover invalid workspace name rejection in onboarding name edit
+- extract FileBrowserState into components::dir_browser, add create_dir
+- Merge pull request #139 from nico2sh/hints
+
 ## [0.17.0](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.16.1...kimun-notes-v0.17.0) - 2026-06-11
 
 ### Added
