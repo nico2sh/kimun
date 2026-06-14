@@ -26,6 +26,10 @@ pub fn platform() -> Option<&'static str> {
 /// platforms. Must match what `build.yml` uploads.
 pub fn binary_asset_name(version: &str) -> Option<String> {
     let platform = platform()?;
-    let ext = if cfg!(target_os = "windows") { ".exe" } else { "" };
+    let ext = if cfg!(target_os = "windows") {
+        ".exe"
+    } else {
+        ""
+    };
     Some(format!("kimun-{version}-{platform}{ext}"))
 }

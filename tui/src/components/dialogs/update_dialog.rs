@@ -131,7 +131,14 @@ impl Component for UpdateAvailableDialog {
                 .constraints([Constraint::Length(24), Constraint::Min(1)])
                 .split(rows[3]);
             render_action(f, cols[0], "  [U]", " Update now", key_style, label_style);
-            render_action(f, cols[1], "[S]", " Skip this version", key_style, label_style);
+            render_action(
+                f,
+                cols[1],
+                "[S]",
+                " Skip this version",
+                key_style,
+                label_style,
+            );
         } else {
             // Package-manager channel: show the upgrade command instead.
             let hint = self
@@ -177,13 +184,13 @@ fn render_action(
 ) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(key.len() as u16),
-            Constraint::Min(1),
-        ])
+        .constraints([Constraint::Length(key.len() as u16), Constraint::Min(1)])
         .split(area);
     f.render_widget(Paragraph::new(key.to_string()).style(key_style), chunks[0]);
-    f.render_widget(Paragraph::new(label.to_string()).style(label_style), chunks[1]);
+    f.render_widget(
+        Paragraph::new(label.to_string()).style(label_style),
+        chunks[1],
+    );
 }
 
 #[cfg(test)]

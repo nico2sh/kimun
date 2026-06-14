@@ -17,8 +17,8 @@ const CHECKSUMS_ASSET: &str = "checksums-sha256.txt";
 /// The caller must ensure self-update is permitted for the install channel; the
 /// channel gate lives in [`super::InstallChannel`], not here.
 pub fn self_update(latest: &LatestRelease) -> Result<(), UpdateError> {
-    let asset_name = platform::binary_asset_name(&latest.version)
-        .ok_or(UpdateError::UnsupportedPlatform)?;
+    let asset_name =
+        platform::binary_asset_name(&latest.version).ok_or(UpdateError::UnsupportedPlatform)?;
 
     let binary_asset = latest
         .asset(&asset_name)
@@ -36,10 +36,7 @@ pub fn self_update(latest: &LatestRelease) -> Result<(), UpdateError> {
     let bytes = download_bytes(&binary_asset.url)?;
     let actual = hex_sha256(&bytes);
     if !actual.eq_ignore_ascii_case(&expected) {
-        return Err(UpdateError::ChecksumMismatch {
-            expected,
-            actual,
-        });
+        return Err(UpdateError::ChecksumMismatch { expected, actual });
     }
 
     // Stage the verified binary next to the target so the swap is same-volume,

@@ -79,8 +79,11 @@ impl Component for DisplaySection {
         let checkbox = |on: bool| if on { "[x]" } else { "[ ]" };
         let fg = Style::default().fg(theme.fg.to_ratatui());
         let items = vec![
-            ListItem::new(format!("  Use Nerd Fonts  {}", checkbox(self.use_nerd_fonts)))
-                .style(fg),
+            ListItem::new(format!(
+                "  Use Nerd Fonts  {}",
+                checkbox(self.use_nerd_fonts)
+            ))
+            .style(fg),
             ListItem::new(format!(
                 "  Check for updates on startup  {}",
                 checkbox(self.update_check)
