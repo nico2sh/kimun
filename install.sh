@@ -31,7 +31,8 @@ detect_platform() {
     Linux)
       case "$arch" in
         x86_64 | amd64) echo "linux-x64" ;;
-        *) err "unsupported Linux architecture: $arch (only x86_64 is published)" ;;
+        aarch64 | arm64) echo "linux-arm64" ;;
+        *) err "unsupported Linux architecture: $arch" ;;
       esac
       ;;
     Darwin)

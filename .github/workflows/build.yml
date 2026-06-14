@@ -40,6 +40,12 @@ jobs:
             artifact: linux
             artifact_suffix: ""
             binary: kimun
+          - name: Linux Build arm64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            artifact: linux
+            artifact_suffix: _arm64
+            binary: kimun
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -127,6 +133,11 @@ jobs:
               PLATFORM="macos-arm64"
               ARCHIVE_NAME="kimun-${VERSION}-${PLATFORM}.tar.gz"
               tar -czf "${ARCHIVE_NAME}" -C "$dirname" .
+            elif [[ "$dirname" == *"linux"* && "$dirname" == *"arm64"* ]]; then
+              # Must precede the generic linux branch — arm64 dirs also match *linux*.
+              PLATFORM="linux-arm64"
+              ARCHIVE_NAME="kimun-${VERSION}-${PLATFORM}.tar.gz"
+              tar -czf "${ARCHIVE_NAME}" -C "$dirname" .
             elif [[ "$dirname" == *"linux"* ]]; then
               PLATFORM="linux-x64"
               ARCHIVE_NAME="kimun-${VERSION}-${PLATFORM}.tar.gz"
@@ -154,7 +165,8 @@ jobs:
           # Archives + the raw self-update binaries (nullglob drops any absent).
           files=(
             kimun-*.zip kimun-*.tar.gz
-            kimun-*-linux-x64 kimun-*-macos-x64 kimun-*-macos-arm64 kimun-*-windows-x64.exe
+            kimun-*-linux-x64 kimun-*-linux-arm64
+            kimun-*-macos-x64 kimun-*-macos-arm64 kimun-*-windows-x64.exe
           )
           if [[ ${#files[@]} -eq 0 ]]; then
             echo "::error::No archives found to checksum"
@@ -183,6 +195,7 @@ jobs:
             release-artifacts/kimun-*.zip
             release-artifacts/kimun-*.tar.gz
             release-artifacts/kimun-*-linux-x64
+            release-artifacts/kimun-*-linux-arm64
             release-artifacts/kimun-*-macos-x64
             release-artifacts/kimun-*-macos-arm64
             release-artifacts/kimun-*-windows-x64.exe
