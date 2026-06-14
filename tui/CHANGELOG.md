@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.18.0...kimun-notes-v0.19.0) - 2026-06-14
+
+### Added
+
+- generic update provider
+- update preference
+- update dialog
+- update notif
+- arm linux builds
+- build with correct version
+- version check module
+
+### Fixed
+
+- cr
+
+### Other
+
+- Merge pull request #143 from nico2sh/auto-update
+- clippy
+- fmt
+- cleanup for updates
+
 ## [0.18.0](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.17.0...kimun-notes-v0.18.0) - 2026-06-13
 
 ### Added
