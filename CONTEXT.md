@@ -219,3 +219,24 @@ _Avoid_: find-and-replace (implies regex/global semantics by default), edit
 **Backup**:
 A pre-change copy of a note, taken automatically before an automated edit overwrites or removes its content, retained for later recovery and reclaimed once it ages out. Kept in a hidden directory inside the vault, so it is excluded from the index but travels with the notes when the vault is copied.
 _Avoid_: snapshot, version (those imply the TUI's own history, which is separate)
+
+### Updates
+
+**Install channel**:
+How a running kimün binary got onto the machine, which decides whether it may self-update. Four channels: **brew** (Homebrew tap), **cargo** (`cargo install`, built from source), **script** (the official `install.sh`), and **direct** (a manually downloaded release archive). brew and cargo are package-manager-owned — kimün never replaces those binaries, only notifies. script and direct are self-update eligible. The channel is read from an **install marker** when present, otherwise inferred from the canonicalised executable path.
+_Avoid_: install method (interchangeable, but pick one — the glossary term is _channel_), distribution
+
+**Install marker**:
+A small file written by `install.sh` recording the install channel and install directory, so channel detection is deterministic for script installs rather than path-guessing. Absent for brew, cargo, and manual direct downloads, where the path heuristic decides.
+
+**Update check**:
+A query to the GitHub releases API comparing the latest non-prerelease `kimun-notes-v{version}` tag against the compiled-in version. Read-only and side-effect-free — it never modifies the binary; it only yields "up to date" or "update available".
+_Avoid_: version check (too narrow — the check also resolves the downloadable asset)
+
+**Self-update**:
+Replacing the running binary in place with a newer release: download the platform archive, verify it against `checksums-sha256.txt`, swap the executable, then prompt to restart. Only ever offered on self-update-eligible channels (script, direct).
+_Avoid_: auto-update (reserve that for the unattended variant, if it ever exists — today self-update is always user-confirmed)
+
+**Update notification**:
+The non-blocking signal that an **update check** found a newer release, surfaced in the TUI. On package-manager channels it carries the upgrade command to run; on self-update-eligible channels it offers to **self-update**.
+_Avoid_: update prompt (notification is passive; it does not steal focus)
