@@ -22,16 +22,44 @@ use crate::components::events::{AppEvent, AppTx};
 /// Logical (row, char-col) selection span, as carried on the snapshot.
 type Selection = ((usize, usize), (usize, usize));
 
+/// Where a quit came from. Both side effects the host performs — whether to
+/// autosave, and whether to `<Esc>` nvim out of its current mode first — are
+/// *derived* from this, so a caller never has to coordinate two booleans.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuitKind {
+    /// `ZZ` from Normal mode: write + quit. No `<Esc>` (nvim never left Normal —
+    /// the first `Z` was buffered, not forwarded).
+    WriteQuit,
+    /// `ZQ` from Normal mode: quit without saving. No `<Esc>`.
+    DiscardQuit,
+    /// A `:`-command quit (`:wq`, `:q`, …). Nvim is in command-line mode, so it
+    /// must be `<Esc>`-ed out first. `save` is whether the command writes.
+    Command { save: bool },
+}
+
+impl QuitKind {
+    /// Whether to autosave before leaving the editor.
+    pub fn saves(self) -> bool {
+        match self {
+            QuitKind::WriteQuit => true,
+            QuitKind::DiscardQuit => false,
+            QuitKind::Command { save } => save,
+        }
+    }
+
+    /// Whether nvim must be `<Esc>`-ed out of its current mode before quitting.
+    pub fn needs_escape(self) -> bool {
+        matches!(self, QuitKind::Command { .. })
+    }
+}
+
 /// What a single key should do on the Nvim backend. Pure data — no I/O.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NvimKeyDecision {
     /// First `Z` of a possible `ZZ`/`ZQ` in Normal mode: swallow and wait.
     BufferZ,
-    /// A quit/write-quit command. `save` → autosave first; `esc_nvim` →
-    /// send `<Esc>` to nvim first (true for `:`-command quits, which must
-    /// leave command-line mode; false for `ZZ`/`ZQ`, where no key was
-    /// forwarded so nvim is still in Normal mode).
-    Quit { save: bool, esc_nvim: bool },
+    /// A quit/write-quit. The side effects are derived from the [`QuitKind`].
+    Quit(QuitKind),
     /// A buffered `Z` was not followed by `Z`/`Q`: replay the `Z`, then
     /// forward the current key.
     ReplayZThenForward,
@@ -50,14 +78,8 @@ pub fn classify_nvim_key(
     // Second key after a buffered `Z`.
     if pending_z {
         return match key.code {
-            KeyCode::Char('Z') => NvimKeyDecision::Quit {
-                save: true,
-                esc_nvim: false,
-            },
-            KeyCode::Char('Q') => NvimKeyDecision::Quit {
-                save: false,
-                esc_nvim: false,
-            },
+            KeyCode::Char('Z') => NvimKeyDecision::Quit(QuitKind::WriteQuit),
+            KeyCode::Char('Q') => NvimKeyDecision::Quit(QuitKind::DiscardQuit),
             _ => NvimKeyDecision::ReplayZThenForward,
         };
     }
@@ -81,10 +103,7 @@ pub fn classify_nvim_key(
         );
         let quits = saves || matches!(word, "q" | "q!" | "qa" | "qa!" | "cq" | "cq!");
         if quits {
-            return NvimKeyDecision::Quit {
-                save: saves,
-                esc_nvim: true,
-            };
+            return NvimKeyDecision::Quit(QuitKind::Command { save: saves });
         }
     }
 
@@ -152,8 +171,8 @@ impl NvimHost {
 
         match decision {
             NvimKeyDecision::BufferZ => NvimKeyResult::Consumed,
-            NvimKeyDecision::Quit { save, esc_nvim } => {
-                if esc_nvim {
+            NvimKeyDecision::Quit(kind) => {
+                if kind.needs_escape() {
                     // Leave command-line mode so the intercept doesn't strand
                     // nvim mid-command.
                     nvim.handle_key(
@@ -161,7 +180,7 @@ impl NvimHost {
                         tx.clone(),
                     );
                 }
-                if save {
+                if kind.saves() {
                     tx.send(AppEvent::Autosave).ok();
                 }
                 tx.send(AppEvent::FocusSidebar).ok();
@@ -183,10 +202,18 @@ impl NvimHost {
     }
 
     /// Per-frame sync: resize nvim to the editor area, then read the snapshot's
-    /// `content_gen` (mirrored into the host's `content_revision`) and the
-    /// active visual selection. The refresh task only bumps `content_gen` when
-    /// `lines` actually diffs, so navigation keystrokes leave an in-flight
-    /// autosave's revision token valid.
+    /// `content_gen` and active visual selection.
+    ///
+    /// Canonical explanation of the revision mirror (referenced from the host's
+    /// key handler): the editor tracks two independent counters. `edit_generation`
+    /// (bumped by every forwarded key) invalidates the view cache; `content_gen`
+    /// is owned by the reverse-refresh task in `backend.rs`, which bumps it *only*
+    /// when `snap.lines` actually diffs. We mirror `content_gen` into the host's
+    /// `content_revision` here. Because navigation keystrokes don't change `lines`,
+    /// they don't bump `content_gen`, so an in-flight autosave's revision token
+    /// stays valid across cursor movement. `NonZeroU64::new(gen + 1)` maps the
+    /// initial `gen == 0` to "no change yet" (`None` leaves the host's revision
+    /// untouched).
     pub fn frame_sync(&self, nvim: &NvimBackend, width: u16, height: u16) -> FrameSync {
         nvim.maybe_resize(width, height);
         let snap = nvim.snapshot();
@@ -215,10 +242,7 @@ mod tests {
     fn pending_z_then_z_is_write_quit_no_esc() {
         assert_eq!(
             classify_nvim_key(true, &key('Z'), &EditorMode::Normal, None),
-            NvimKeyDecision::Quit {
-                save: true,
-                esc_nvim: false
-            }
+            NvimKeyDecision::Quit(QuitKind::WriteQuit)
         );
     }
 
@@ -226,10 +250,7 @@ mod tests {
     fn pending_z_then_q_is_quit_no_save() {
         assert_eq!(
             classify_nvim_key(true, &key('Q'), &EditorMode::Normal, None),
-            NvimKeyDecision::Quit {
-                save: false,
-                esc_nvim: false
-            }
+            NvimKeyDecision::Quit(QuitKind::DiscardQuit)
         );
     }
 
@@ -261,10 +282,7 @@ mod tests {
     fn command_wq_saves_and_quits_with_esc() {
         assert_eq!(
             classify_nvim_key(false, &enter(), &EditorMode::Command, Some(":wq")),
-            NvimKeyDecision::Quit {
-                save: true,
-                esc_nvim: true
-            }
+            NvimKeyDecision::Quit(QuitKind::Command { save: true })
         );
     }
 
@@ -272,10 +290,7 @@ mod tests {
     fn command_q_quits_no_save_with_esc() {
         assert_eq!(
             classify_nvim_key(false, &enter(), &EditorMode::Command, Some(":q")),
-            NvimKeyDecision::Quit {
-                save: false,
-                esc_nvim: true
-            }
+            NvimKeyDecision::Quit(QuitKind::Command { save: false })
         );
     }
 
@@ -283,10 +298,7 @@ mod tests {
     fn command_q_bang_quits() {
         assert_eq!(
             classify_nvim_key(false, &enter(), &EditorMode::Command, Some(":q!")),
-            NvimKeyDecision::Quit {
-                save: false,
-                esc_nvim: true
-            }
+            NvimKeyDecision::Quit(QuitKind::Command { save: false })
         );
     }
 
@@ -297,10 +309,7 @@ mod tests {
         // editor. (Not changed by this refactor.)
         assert_eq!(
             classify_nvim_key(false, &enter(), &EditorMode::Command, Some(":w")),
-            NvimKeyDecision::Quit {
-                save: true,
-                esc_nvim: true
-            }
+            NvimKeyDecision::Quit(QuitKind::Command { save: true })
         );
     }
 
@@ -309,10 +318,7 @@ mod tests {
         // `:w report.md` — leading verb `w` is matched, the argument ignored.
         assert_eq!(
             classify_nvim_key(false, &enter(), &EditorMode::Command, Some(":w report.md")),
-            NvimKeyDecision::Quit {
-                save: true,
-                esc_nvim: true
-            }
+            NvimKeyDecision::Quit(QuitKind::Command { save: true })
         );
     }
 
@@ -320,17 +326,11 @@ mod tests {
     fn command_wq_with_bar_and_trailing_space() {
         assert_eq!(
             classify_nvim_key(false, &enter(), &EditorMode::Command, Some(":wq | echo hi")),
-            NvimKeyDecision::Quit {
-                save: true,
-                esc_nvim: true
-            }
+            NvimKeyDecision::Quit(QuitKind::Command { save: true })
         );
         assert_eq!(
             classify_nvim_key(false, &enter(), &EditorMode::Command, Some(":q  ")),
-            NvimKeyDecision::Quit {
-                save: false,
-                esc_nvim: true
-            }
+            NvimKeyDecision::Quit(QuitKind::Command { save: false })
         );
     }
 
@@ -338,10 +338,7 @@ mod tests {
     fn command_space_after_colon() {
         assert_eq!(
             classify_nvim_key(false, &enter(), &EditorMode::Command, Some(": wq")),
-            NvimKeyDecision::Quit {
-                save: true,
-                esc_nvim: true
-            }
+            NvimKeyDecision::Quit(QuitKind::Command { save: true })
         );
     }
 

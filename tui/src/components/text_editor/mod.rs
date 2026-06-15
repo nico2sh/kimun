@@ -1283,13 +1283,10 @@ impl TextEditorComponent {
         let nvim = self.backend.as_nvim()?;
         let result = self.nvim_host.handle_key(nvim, key, tx);
 
-        // Nvim handle_key only bumps `edit_generation` (any-input counter for
-        // view-cache invalidation). `content_revision` is owned by the
-        // reverse-refresh task in `backend.rs`, which bumps `snap.content_gen`
-        // only when `snap.lines` actually diffs — mirrored into
-        // `content_revision` at the next render sync point. So navigation keys
-        // never invalidate an in-flight save's revision token. Bump only when a
-        // key was actually forwarded to nvim.
+        // `bump_cursor` bumps only `edit_generation` (the any-input view-cache
+        // counter), and only when a key was actually forwarded. `content_revision`
+        // is mirrored separately in `NvimHost::frame_sync` — see there for why
+        // navigation keys don't invalidate an in-flight save's revision token.
         if result == NvimKeyResult::Forwarded {
             self.bump_cursor();
         }
