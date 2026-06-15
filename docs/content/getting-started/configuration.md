@@ -271,12 +271,12 @@ Use these names exactly as shown. For the default shortcuts each one ships with,
 - `Quit` — Exit Kimün
 - `Leader` — The leader gateway (default `Ctrl+G`) — starts a key sequence; see the [leader key](@/using-kimun/tui.md#the-leader-key)
 - `OpenCommandPalette` — The command palette (default `Ctrl+P`)
-- `OpenSettings` — Open the Preferences screen (default `Ctrl+,`)
+- `OpenSettings` — Open the Preferences screen (default `F4`; `Ctrl+,` is an alias — `Ctrl+,` doesn't transmit on every terminal, so `F4` is the dependable default)
 - `ToggleSidebar` — Show/hide the drawer (default `Ctrl+T`)
 - `OpenFileBrowser` — Open (or switch the drawer to) the file browser (default `Ctrl+E`)
 - `ToggleQueryPanel` — Toggle the FIND drawer view (no default binding; `ToggleBacklinks` still parses as an alias)
 - `FocusEditor` / `FocusSidebar` — Move focus right / left across the visible panels
-- `SwitchWorkspace` — Open the workspace switcher
+- `SwitchWorkspace` — Open the workspace switcher (default `F5`)
 - `OpenSavedSearches` — Open the saved-searches picker (default `F3`)
 
 **Notes**
