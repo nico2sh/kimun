@@ -73,6 +73,10 @@ current_workspace = "default"
 path = "~/Documents/Notes"
 inbox_path = "/inbox"
 
+# A [key_bindings] section REPLACES the whole default keymap — it does not
+# merge. Anything you omit ends up unbound (except Quit, which is restored).
+# The five lines below are illustrative; a real override should list every
+# binding you want to keep. See "Key Bindings → Replace, Not Merge" below.
 [key_bindings]
 Quit = ["ctrl&Q"]
 SearchNotes = ["ctrl&K"]
@@ -246,6 +250,32 @@ SearchNotes = ["ctrl&K"]
 FileOperations = ["F2"]
 TextEditor-Bold = ["ctrl&B"]
 ```
+
+#### Replace, Not Merge
+
+**A `[key_bindings]` section replaces the entire default keymap — it does not merge with it.** Kimün binds *only* the actions you list; every action you leave out ends up with **no shortcut at all**. So the short snippet above, taken literally, would unbind everything except those six actions — Preferences, the leader key, focus movement, and the rest would stop responding.
+
+The one exception is `Quit`: if you omit it, Kimün restores the default `Ctrl+Q` (and refuses to load a config where `Ctrl+Q` is already mapped to something else, so you can never lock yourself out).
+
+This means there are two safe ways to customise:
+
+- **Change nothing structurally** — leave the `[key_bindings]` section out entirely and keep every default. (To tweak just one or two keys, this is *not* enough on its own; see below.)
+- **List every binding you want** — when the section is present, treat it as the complete keymap. Copy the full default set (see the [Keybindings cheat-sheet](@/using-kimun/keybindings.md)) and edit the lines you care about, leaving the rest as-is so they keep working.
+
+To remap a single action like Preferences, the smallest correct config still lists all the others you rely on:
+
+```toml
+[key_bindings]
+OpenSettings = ["ctrl&."]   # your new Preferences key
+# …plus every other binding you want to keep, e.g.:
+Quit               = ["ctrl&Q"]
+Leader             = ["ctrl&G"]
+OpenCommandPalette = ["ctrl&P"]
+SearchNotes        = ["ctrl&K"]
+# …and so on for the rest of the defaults
+```
+
+(`OpenSettings` is the on-disk action name for the Preferences screen; `OpenPreferences` is accepted as an alias.)
 
 #### Format
 
