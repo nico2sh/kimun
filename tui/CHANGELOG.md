@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.1](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.19.0...kimun-notes-v0.19.1) - 2026-06-15
+
+### Fixed
+
+- cleanup nvim
+- cleanup
+
+### Other
+
+- Merge pull request #146 from nico2sh/nvim_indent
+- fmt
+- ctrl R in nvim
+- extract nvim core
+- update instructions on script
+
 ## [0.19.0](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.18.0...kimun-notes-v0.19.0) - 2026-06-14
 
 ### Added
