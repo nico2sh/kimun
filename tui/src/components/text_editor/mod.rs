@@ -1,9 +1,12 @@
 pub mod autocomplete_glue;
 pub mod backend;
 pub mod markdown;
+pub mod nvim_decode;
+pub mod nvim_host;
 pub mod nvim_rpc;
 pub mod parse_incremental;
 pub mod snapshot;
+pub mod text_coords;
 pub mod view;
 mod vim;
 pub mod widener_metrics;
@@ -102,7 +105,8 @@ macro_rules! cursor_move {
 
 use self::backend::BackendState;
 use self::markdown::ParsedBuffer;
-use self::snapshot::{EditorMode, EditorSnapshot};
+use self::nvim_host::{NvimHost, NvimKeyResult};
+use self::snapshot::EditorSnapshot;
 use self::view::MarkdownEditorView;
 use crate::util::single_slot_task::SingleSlotTask;
 
@@ -433,9 +437,9 @@ pub struct TextEditorComponent {
     selection: Option<((usize, usize), (usize, usize))>,
     /// System clipboard handle. `None` if the clipboard is unavailable (e.g. headless CI).
     clipboard: Option<Clipboard>,
-    /// `true` after a `Z` keypress in Normal mode; cleared on the next key.
-    /// Lets us intercept `ZZ` (write+quit) and `ZQ` (quit) without forwarding them to nvim.
-    nvim_pending_z: bool,
+    /// Host-side state and policy for the Nvim backend (pending-Z intercept,
+    /// frame sync). See [`nvim_host`].
+    nvim_host: NvimHost,
     /// Active Ctrl+F find bar; `None` when not searching.
     search: Option<SearchState>,
     /// Wikilink/hashtag autocomplete. Only populated for the textarea
@@ -491,7 +495,7 @@ impl TextEditorComponent {
             content_revision: NonZeroU64::new(1).unwrap(),
             selection: None,
             clipboard: Clipboard::new().ok(),
-            nvim_pending_z: false,
+            nvim_host: NvimHost::new(),
             search: None,
             autocomplete: None,
             autocomplete_vault: None,
@@ -1273,98 +1277,19 @@ impl TextEditorComponent {
         key: &ratatui::crossterm::event::KeyEvent,
         tx: &AppTx,
     ) -> Option<EventState> {
-        let nvim = self.backend.as_nvim()?;
-
         // FocusSidebar / FocusEditor shortcuts are intercepted at the
-        // EditorScreen level for directional navigation.
+        // EditorScreen level for directional navigation. The pending-Z
+        // intercept and quit-command policy live in `nvim_host`.
+        let nvim = self.backend.as_nvim()?;
+        let result = self.nvim_host.handle_key(nvim, key, tx);
 
-        // Intercept ZZ / ZQ in Normal mode: buffer the first Z, then
-        // decide on the second key without forwarding either to nvim.
-        if self.nvim_pending_z {
-            self.nvim_pending_z = false;
-            match key.code {
-                KeyCode::Char('Z') => {
-                    // ZZ — write + quit
-                    tx.send(AppEvent::Autosave).ok();
-                    tx.send(AppEvent::FocusSidebar).ok();
-                    return Some(EventState::Consumed);
-                }
-                KeyCode::Char('Q') => {
-                    // ZQ — quit without saving
-                    tx.send(AppEvent::FocusSidebar).ok();
-                    return Some(EventState::Consumed);
-                }
-                _ => {
-                    // Not a quit sequence — replay the buffered Z first.
-                    nvim.handle_key(
-                        &ratatui::crossterm::event::KeyEvent::new(
-                            KeyCode::Char('Z'),
-                            KeyModifiers::NONE,
-                        ),
-                        tx.clone(),
-                    );
-                    // Then fall through to forward the current key normally.
-                }
-            }
-        } else if key.code == KeyCode::Char('Z') {
-            let in_normal = {
-                let snap = nvim.snapshot();
-                snap.mode == EditorMode::Normal
-            };
-            if in_normal {
-                self.nvim_pending_z = true;
-                return Some(EventState::Consumed);
-            }
+        // `bump_cursor` bumps only `edit_generation` (the any-input view-cache
+        // counter), and only when a key was actually forwarded. `content_revision`
+        // is mirrored separately in `NvimHost::frame_sync` — see there for why
+        // navigation keys don't invalidate an in-flight save's revision token.
+        if result == NvimKeyResult::Forwarded {
+            self.bump_cursor();
         }
-
-        // Intercept vim quit/write-quit commands so they don't kill the
-        // embedded nvim process.
-        if key.code == KeyCode::Enter {
-            let (is_cmd, cmdline) = {
-                let snap = nvim.snapshot();
-                let cmd = if snap.mode == EditorMode::Command {
-                    snap.cmdline
-                        .as_deref()
-                        .unwrap_or("")
-                        .trim_start_matches(':')
-                        .to_string()
-                } else {
-                    String::new()
-                };
-                (snap.mode == EditorMode::Command, cmd)
-            };
-            if is_cmd {
-                let saves = matches!(
-                    cmdline.as_str(),
-                    "w" | "wq" | "wq!" | "wqa" | "wqa!" | "x" | "xa" | "x!"
-                );
-                let quits =
-                    saves || matches!(cmdline.as_str(), "q" | "q!" | "qa" | "qa!" | "cq" | "cq!");
-                if quits {
-                    nvim.handle_key(
-                        &ratatui::crossterm::event::KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-                        tx.clone(),
-                    );
-                    if saves {
-                        tx.send(AppEvent::Autosave).ok();
-                    }
-                    tx.send(AppEvent::FocusSidebar).ok();
-                    return Some(EventState::Consumed);
-                }
-            }
-        }
-
-        nvim.handle_key(key, tx.clone());
-        // Nvim handle_key only bumps `edit_generation` (any-input
-        // counter for view-cache invalidation). `content_revision` is
-        // owned by the reverse-refresh task in `backend.rs`, which
-        // bumps `snap.content_gen` only when `snap.lines` actually
-        // diffs — that value is mirrored into `content_revision` at
-        // the next render sync point. Result: navigation keys never
-        // invalidate an in-flight save's revision token, and the
-        // autocomplete cache (when wired up on Nvim in a future
-        // revision) survives navigation.
-        self.bump_cursor();
         Some(EventState::Consumed)
     }
 
@@ -2207,21 +2132,10 @@ impl Component for TextEditorComponent {
         let (selection, nvim_rev_to_mirror) = match &self.backend {
             BackendState::Textarea(_) => (self.selection, None),
             BackendState::Nvim(nvim) => {
-                nvim.maybe_resize(editor_rect.width, editor_rect.height);
-                let snap = nvim.snapshot();
-                let visual_selection = snap.visual_selection;
-                let content_gen = snap.content_gen;
-                drop(snap);
-                // Mirror the refresh task's view of "did content
-                // change" into our own `content_revision`. The
-                // refresh task only bumps `snap.content_gen` when
-                // `snap.lines` actually diffs (backend.rs:497) so
-                // navigation keystrokes leave the value alone, and
-                // an in-flight autosave's revision token stays valid
-                // across navigation. Skip-zero is handled by
-                // `NonZeroU64::new(0) == None`.
-                let rev = NonZeroU64::new(content_gen.saturating_add(1));
-                (visual_selection, rev)
+                let fs = self
+                    .nvim_host
+                    .frame_sync(nvim, editor_rect.width, editor_rect.height);
+                (fs.selection, fs.rev)
             }
         };
         if let Some(rev) = nvim_rev_to_mirror {
@@ -2416,6 +2330,7 @@ impl Component for TextEditorComponent {
 
 #[cfg(test)]
 mod tests {
+    use super::snapshot::EditorMode;
     use super::*;
     use crate::keys::KeyBindings;
 
