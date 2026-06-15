@@ -40,7 +40,6 @@ pub enum DecodedState {
     },
 }
 
-
 /// Decode one `STATE_QUERY_LUA` response. Returns `None` when the value is not
 /// the expected array or the leading mode element is missing — the caller
 /// leaves the snapshot untouched in that case.
@@ -287,8 +286,8 @@ mod tests {
         let v = arr(vec![
             s("v"),
             arr(vec![s("abcdef")]),
-            arr(vec![u(1), u(3)]),                 // cursor → (0, 3)
-            arr(vec![u(0), u(1), u(1), u(0)]),     // getpos('v') anchor → (0, 0)
+            arr(vec![u(1), u(3)]),             // cursor → (0, 3)
+            arr(vec![u(0), u(1), u(1), u(0)]), // getpos('v') anchor → (0, 0)
         ]);
         match decode(&v).unwrap() {
             DecodedState::Content {
@@ -304,8 +303,8 @@ mod tests {
         let v = arr(vec![
             s("v"),
             arr(vec![s("abcdef")]),
-            arr(vec![u(1), u(1)]),                 // cursor → (0, 1)
-            arr(vec![u(0), u(1), u(5), u(0)]),     // anchor → (0, 4)
+            arr(vec![u(1), u(1)]),             // cursor → (0, 1)
+            arr(vec![u(0), u(1), u(5), u(0)]), // anchor → (0, 4)
         ]);
         match decode(&v).unwrap() {
             DecodedState::Content {
@@ -320,8 +319,8 @@ mod tests {
         let v = arr(vec![
             s("V"),
             arr(vec![s("abc"), s("defgh")]),
-            arr(vec![u(2), u(2)]),                 // cursor row2 → (1, 2)
-            arr(vec![u(0), u(1), u(1), u(0)]),     // anchor row1 → (0, 0)
+            arr(vec![u(2), u(2)]),             // cursor row2 → (1, 2)
+            arr(vec![u(0), u(1), u(1), u(0)]), // anchor row1 → (0, 0)
         ]);
         match decode(&v).unwrap() {
             DecodedState::Content {

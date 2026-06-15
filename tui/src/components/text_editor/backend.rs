@@ -636,7 +636,9 @@ fn apply_lua_state(
     in_flight: &Arc<AtomicBool>,
     value: nvim_rs::Value,
 ) {
-    let Some(decoded) = decode(&value) else { return };
+    let Some(decoded) = decode(&value) else {
+        return;
+    };
 
     let mut snap = snapshot.lock().unwrap_or_else(|p| p.into_inner());
 
