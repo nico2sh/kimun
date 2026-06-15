@@ -11,8 +11,11 @@ strip = true      # strip debug symbols from the final binary
 panic = "abort"   # drop unwinding machinery (~10 % size reduction)
 
 [workspace.dependencies]
-kimun_core = { path = "core", version = "0.2.23" }
-
+# NOTE: kimun_core is intentionally NOT pinned here. release-plz rewrites this
+# version on every core release; when the pin lives in [workspace.dependencies],
+# that rewrite is attributed to core (which inherits serde/toml/log from this
+# table), retriggering an endless "update Cargo.toml dependencies" patch loop.
+# The pin lives on tui's dependency instead. See tui/Cargo.toml.
 serde = { version = "1.0", features = ["derive"] }
 toml = "1.1.2"
 log = "0.4"
