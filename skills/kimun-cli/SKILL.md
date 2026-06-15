@@ -24,6 +24,7 @@ Kimün is a local-first, terminal notes app. Notes are plain Markdown files inde
 | Search notes | `kimun search "query"` |
 | List notes | `kimun notes` |
 | List all labels | `kimun labels` |
+| Reindex after external edits | `kimun workspace reindex` |
 
 ## Writing Notes
 
@@ -115,6 +116,32 @@ kimun journal show --format json                 # JSON output
 - Defaults to today; `--date YYYY-MM-DD` targets any date
 - Creates the entry if it doesn't exist
 - `show` supports `--format text` (default) and `--format json`
+
+## Reindexing After External Edits
+
+Kimün serves search, listing, labels, backlinks, and forward links from an
+**index**, not by reading every file on each query. Every write through the CLI
+(or MCP, or the TUI) updates that index automatically. But if a note file is
+changed **outside Kimün** — edited with `sed`, `vim`, another editor, a sync
+tool, or any direct filesystem write — the index goes stale: search and metadata
+keep reflecting the old content until you rebuild it.
+
+After any out-of-band change to vault files, reindex:
+
+```sh
+kimun workspace reindex            # current workspace
+kimun workspace reindex myvault    # a named workspace
+```
+
+```sh
+# Typical pattern: bulk-edit on disk, then reindex
+sed -i 's/old-tag/new-tag/g' "$VAULT"/**/*.md
+kimun workspace reindex
+```
+
+Until you reindex, results from `search`, `notes`, `labels`, and link filters may
+be wrong. Stick to the `note` write commands above and you never need this — they
+keep the index in sync for you.
 
 ## Path Rules
 

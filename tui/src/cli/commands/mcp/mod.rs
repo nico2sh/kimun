@@ -630,7 +630,14 @@ impl ServerHandler for KimunHandler {
                 .enable_prompts()
                 .build(),
         )
-        .with_instructions("Kimun notes MCP server — read and write vault notes via tools.")
+        .with_instructions(
+            "Kimun notes MCP server — read and write vault notes via tools. \
+             Search, listing, backlinks, and labels are served from an index that \
+             these tools keep in sync automatically. If vault files are modified \
+             outside Kimün (e.g. edited directly with sed, another editor, or a sync \
+             tool), the index goes stale and results may be wrong until the workspace \
+             is reindexed — run `kimun workspace reindex` and reconnect to this server.",
+        )
     }
 
     async fn list_resources(
