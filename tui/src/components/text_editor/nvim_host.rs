@@ -68,14 +68,18 @@ pub fn classify_nvim_key(
     }
 
     // `<CR>` while in command-line mode: intercept quit/write-quit so they
-    // don't kill the embedded nvim process.
+    // don't kill the embedded nvim process. Match the leading command *word*
+    // so `:w report.md`, `:wq | echo`, `: wq` and trailing whitespace are all
+    // recognised. The app has no save-as, so any write/quit verb — with or
+    // without arguments — means "save and leave"; the arguments are ignored.
     if key.code == KeyCode::Enter && *mode == EditorMode::Command {
-        let cmd = cmdline.unwrap_or("").trim_start_matches(':');
+        let cmd = cmdline.unwrap_or("").trim_start_matches(':').trim();
+        let word = cmd.split([' ', '\t', '|']).next().unwrap_or("");
         let saves = matches!(
-            cmd,
+            word,
             "w" | "wq" | "wq!" | "wqa" | "wqa!" | "x" | "xa" | "x!"
         );
-        let quits = saves || matches!(cmd, "q" | "q!" | "qa" | "qa!" | "cq" | "cq!");
+        let quits = saves || matches!(word, "q" | "q!" | "qa" | "qa!" | "cq" | "cq!");
         if quits {
             return NvimKeyDecision::Quit {
                 save: saves,
@@ -85,6 +89,14 @@ pub fn classify_nvim_key(
     }
 
     NvimKeyDecision::Forward
+}
+
+/// Whether [`classify_nvim_key`] consults `mode`/`cmdline` for this input. When
+/// `false`, the caller may skip locking the snapshot entirely: the pending-Z
+/// branch decides on `key.code` alone, and any non-`Z`/non-`Enter` key in the
+/// non-pending case short-circuits to `Forward` before `mode` is read.
+fn needs_snapshot(pending_z: bool, key: &KeyEvent) -> bool {
+    !pending_z && matches!(key.code, KeyCode::Char('Z') | KeyCode::Enter)
 }
 
 /// Outcome of applying a key on the Nvim backend. The host bumps the cursor
@@ -119,15 +131,23 @@ impl NvimHost {
         Self::default()
     }
 
-    /// Apply one key to the Nvim backend. Reads the snapshot for mode/cmdline,
-    /// classifies, updates the pending-Z flag, then forwards / emits as the
-    /// decision dictates.
+    /// Apply one key to the Nvim backend: classify, update the pending-Z flag,
+    /// then forward / emit as the decision dictates.
+    ///
+    /// The snapshot Mutex (shared with the reverse-refresh task) is locked only
+    /// when the decision actually consults mode/cmdline — see [`needs_snapshot`].
+    /// Ordinary keystrokes (insert-mode typing, the pending-Z second key) take
+    /// the lock-free path: no lock, no clone.
     pub fn handle_key(&mut self, nvim: &NvimBackend, key: &KeyEvent, tx: &AppTx) -> NvimKeyResult {
-        let (mode, cmdline) = {
+        let decision = if needs_snapshot(self.pending_z, key) {
             let snap = nvim.snapshot();
-            (snap.mode.clone(), snap.cmdline.clone())
+            classify_nvim_key(self.pending_z, key, &snap.mode, snap.cmdline.as_deref())
+        } else {
+            // classify ignores mode/cmdline on this path (that is exactly what
+            // `needs_snapshot` returning false means), so the placeholders are
+            // never read.
+            classify_nvim_key(self.pending_z, key, &EditorMode::Normal, None)
         };
-        let decision = classify_nvim_key(self.pending_z, key, &mode, cmdline.as_deref());
         self.pending_z = matches!(decision, NvimKeyDecision::BufferZ);
 
         match decision {
@@ -285,6 +305,47 @@ mod tests {
     }
 
     #[test]
+    fn command_write_with_filename_saves_and_quits() {
+        // `:w report.md` — leading verb `w` is matched, the argument ignored.
+        assert_eq!(
+            classify_nvim_key(false, &enter(), &EditorMode::Command, Some(":w report.md")),
+            NvimKeyDecision::Quit {
+                save: true,
+                esc_nvim: true
+            }
+        );
+    }
+
+    #[test]
+    fn command_wq_with_bar_and_trailing_space() {
+        assert_eq!(
+            classify_nvim_key(false, &enter(), &EditorMode::Command, Some(":wq | echo hi")),
+            NvimKeyDecision::Quit {
+                save: true,
+                esc_nvim: true
+            }
+        );
+        assert_eq!(
+            classify_nvim_key(false, &enter(), &EditorMode::Command, Some(":q  ")),
+            NvimKeyDecision::Quit {
+                save: false,
+                esc_nvim: true
+            }
+        );
+    }
+
+    #[test]
+    fn command_space_after_colon() {
+        assert_eq!(
+            classify_nvim_key(false, &enter(), &EditorMode::Command, Some(": wq")),
+            NvimKeyDecision::Quit {
+                save: true,
+                esc_nvim: true
+            }
+        );
+    }
+
+    #[test]
     fn command_unknown_forwards() {
         assert_eq!(
             classify_nvim_key(false, &enter(), &EditorMode::Command, Some(":noh")),
@@ -298,6 +359,19 @@ mod tests {
             classify_nvim_key(false, &enter(), &EditorMode::Normal, None),
             NvimKeyDecision::Forward
         );
+    }
+
+    #[test]
+    fn needs_snapshot_only_for_z_and_enter_when_not_pending() {
+        assert!(needs_snapshot(false, &key('Z')));
+        assert!(needs_snapshot(false, &enter()));
+        // Ordinary keys: lock-free path.
+        assert!(!needs_snapshot(false, &key('a')));
+        assert!(!needs_snapshot(false, &key('Q')));
+        // Pending-Z second key never needs the snapshot.
+        assert!(!needs_snapshot(true, &key('Z')));
+        assert!(!needs_snapshot(true, &enter()));
+        assert!(!needs_snapshot(true, &key('x')));
     }
 
     #[test]

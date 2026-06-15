@@ -5,6 +5,7 @@ pub mod nvim_decode;
 pub mod nvim_host;
 pub mod nvim_rpc;
 pub mod parse_incremental;
+pub mod text_coords;
 pub mod snapshot;
 pub mod view;
 mod vim;

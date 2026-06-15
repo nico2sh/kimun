@@ -12,6 +12,7 @@
 //! `backend.rs`, because that is stateful backend bookkeeping, not decoding.
 
 use super::snapshot::EditorMode;
+use super::text_coords::byte_col_to_char_col;
 
 /// One decoded `STATE_QUERY_LUA` response.
 ///
@@ -39,21 +40,6 @@ pub enum DecodedState {
     },
 }
 
-/// Convert a UTF-8 byte offset to a Unicode scalar (char) index.
-///
-/// `nvim_win_get_cursor` and `getpos()` return byte offsets. This converts them
-/// to char indices so the rest of the rendering pipeline can use char-indexed
-/// operations consistently. If the offset falls in the middle of a multi-byte
-/// sequence it is snapped to the nearest valid char boundary.
-pub fn byte_offset_to_char_idx(line: &str, byte_offset: usize) -> usize {
-    // Walk backward from the offset to the nearest valid char boundary, then
-    // count chars up to that point. Handles mid-codepoint offsets safely.
-    let safe = (0..=byte_offset.min(line.len()))
-        .rev()
-        .find(|&i| line.is_char_boundary(i))
-        .unwrap_or(0);
-    line[..safe].chars().count()
-}
 
 /// Decode one `STATE_QUERY_LUA` response. Returns `None` when the value is not
 /// the expected array or the leading mode element is missing — the caller
@@ -100,11 +86,11 @@ pub fn decode(value: &nvim_rs::Value) -> Option<DecodedState> {
         .and_then(|c| {
             let row = c.first()?.as_u64()? as usize;
             let byte_col = c.get(1)?.as_u64()? as usize;
-            let row0 = row.saturating_sub(1);
-            let char_col = lines
-                .get(row0)
-                .map(|line| byte_offset_to_char_idx(line, byte_col))
-                .unwrap_or(byte_col);
+            // Clamp the row into bounds (`lines` is never empty) so the result
+            // is always a real char index, never a stray byte offset, and the
+            // cursor stays in-bounds for the snapshot invariant.
+            let row0 = row.saturating_sub(1).min(lines.len() - 1);
+            let char_col = byte_col_to_char_col(&lines[row0], byte_col);
             Some((row0, char_col))
         })
         .unwrap_or((0, 0));
@@ -120,11 +106,8 @@ pub fn decode(value: &nvim_rs::Value) -> Option<DecodedState> {
                 if lnum == 0 {
                     return None;
                 }
-                let row0 = lnum.saturating_sub(1);
-                let char_col = lines
-                    .get(row0)
-                    .map(|line| byte_offset_to_char_idx(line, vcol_byte.saturating_sub(1)))
-                    .unwrap_or(vcol_byte.saturating_sub(1));
+                let row0 = lnum.saturating_sub(1).min(lines.len() - 1);
+                let char_col = byte_col_to_char_col(&lines[row0], vcol_byte.saturating_sub(1));
                 Some((row0, char_col))
             })
             .map(|anchor| {
@@ -166,29 +149,7 @@ mod tests {
         Value::Array(items)
     }
 
-    // --- byte_offset_to_char_idx ------------------------------------------
-
-    #[test]
-    fn byte_to_char_ascii() {
-        assert_eq!(byte_offset_to_char_idx("hello", 3), 3);
-    }
-
-    #[test]
-    fn byte_to_char_multibyte() {
-        // "wørld": w=1 byte, ø=2 bytes. Byte offset 3 is after "wø" → char idx 2.
-        assert_eq!(byte_offset_to_char_idx("wørld", 3), 2);
-    }
-
-    #[test]
-    fn byte_to_char_snaps_mid_codepoint() {
-        // Byte offset 2 lands inside ø (bytes 1..3) → snaps back to boundary 1 → char idx 1.
-        assert_eq!(byte_offset_to_char_idx("wørld", 2), 1);
-    }
-
-    #[test]
-    fn byte_to_char_past_end_clamps() {
-        assert_eq!(byte_offset_to_char_idx("ab", 99), 2);
-    }
+    // Per-line byte→char conversion is tested in `super::text_coords`.
 
     // --- decode: non-array / malformed ------------------------------------
 
@@ -252,6 +213,25 @@ mod tests {
             DecodedState::Content { lines, cursor, .. } => {
                 assert_eq!(lines, vec![String::new()]);
                 assert_eq!(cursor, (0, 0));
+            }
+            other => panic!("expected Content, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_cursor_row_out_of_bounds_clamps_to_last_line() {
+        // Cursor row 5 but only one line: clamp row into bounds and convert the
+        // byte col against the clamped line — never a stray byte offset.
+        let v = arr(vec![
+            s("n"),
+            arr(vec![s("wørld")]),
+            arr(vec![u(5), u(4)]), // row 5 (OOB), byte col 4
+            arr(vec![u(0), u(0), u(0), u(0)]),
+        ]);
+        match decode(&v).unwrap() {
+            DecodedState::Content { cursor, .. } => {
+                // row clamped to 0; byte 4 in "wørld" → char idx 3.
+                assert_eq!(cursor, (0, 3));
             }
             other => panic!("expected Content, got {other:?}"),
         }

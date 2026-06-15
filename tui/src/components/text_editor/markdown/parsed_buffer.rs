@@ -7,6 +7,7 @@
 //! `parse-reset-boundaries-v2` for the design.
 
 use super::super::parse_incremental::LineConstructKind;
+use super::super::text_coords::byte_col_to_char_col;
 use super::detect::{detect_image_placeholders, detect_wikilinks};
 use super::{
     Element, ElementKind, PARSER_OPTIONS, ParsedLine, leading_ws_byte_len, list_marker_len,
@@ -900,10 +901,9 @@ fn byte_to_row_col(byte_offset: usize, lines: &[String], line_starts: &[usize]) 
     };
     let row = row.min(lines.len().saturating_sub(1));
     let within = byte_offset - line_starts[row];
-    let line = &lines[row];
-    // Clamp: if `byte_offset` is the trailing '\n', treat as end-of-line.
-    let byte_in_line = within.min(line.len());
-    let char_col = line[..byte_in_line].chars().count();
+    // Shared per-line kernel: clamps a trailing-'\n' offset to end-of-line and
+    // snaps any mid-codepoint offset to a boundary.
+    let char_col = byte_col_to_char_col(&lines[row], within);
     (row, char_col)
 }
 
