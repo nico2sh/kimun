@@ -5,8 +5,8 @@ pub mod nvim_decode;
 pub mod nvim_host;
 pub mod nvim_rpc;
 pub mod parse_incremental;
-pub mod text_coords;
 pub mod snapshot;
+pub mod text_coords;
 pub mod view;
 mod vim;
 pub mod widener_metrics;
@@ -2330,8 +2330,8 @@ impl Component for TextEditorComponent {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::snapshot::EditorMode;
+    use super::*;
     use crate::keys::KeyBindings;
 
     fn make_editor() -> TextEditorComponent {

@@ -175,10 +175,7 @@ impl NvimHost {
                 if kind.needs_escape() {
                     // Leave command-line mode so the intercept doesn't strand
                     // nvim mid-command.
-                    nvim.handle_key(
-                        &KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-                        tx.clone(),
-                    );
+                    nvim.handle_key(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), tx.clone());
                 }
                 if kind.saves() {
                     tx.send(AppEvent::Autosave).ok();
