@@ -16,7 +16,7 @@ name = "kimun_notes"
 path = "src/lib.rs"
 
 [dependencies]
-kimun_core = { workspace = true }
+kimun_core = { path = "../core", version = "0.2.23" }
 
 clap = { version = "4", features = ["derive"] }
 color-eyre = "0.6.5"
