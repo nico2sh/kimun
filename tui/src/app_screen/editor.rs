@@ -1356,18 +1356,16 @@ impl AppScreen for EditorScreen {
                     return EventState::Consumed;
                 }
                 Some(ActionShortcuts::OpenSortDialog) => {
-                    if !self.overlays.is_open() {
-                        let target = match self.panels.focused() {
-                            PanelKind::Drawer => match self.panels.active_drawer_view() {
-                                DrawerView::Find => Some(SortTarget::Query),
-                                DrawerView::Files => Some(SortTarget::Sidebar),
-                                _ => None,
-                            },
-                            _ if self.panels.is_visible(PanelKind::Drawer)
-                                && self.panels.active_drawer_view() == DrawerView::Files =>
-                            {
-                                Some(SortTarget::Sidebar)
-                            }
+                    // Sort applies only when a list is focused (the drawer's
+                    // Find / Files views). When the editor is focused, do NOT
+                    // consume — fall through so the key reaches it (e.g. Ctrl+R
+                    // is redo in the nvim editor).
+                    if matches!(self.panels.focused(), PanelKind::Drawer)
+                        && !self.overlays.is_open()
+                    {
+                        let target = match self.panels.active_drawer_view() {
+                            DrawerView::Find => Some(SortTarget::Query),
+                            DrawerView::Files => Some(SortTarget::Sidebar),
                             _ => None,
                         };
                         if let Some(target) = target {
@@ -1388,8 +1386,8 @@ impl AppScreen for EditorScreen {
                             };
                             self.present_overlay(Box::new(dialog));
                         }
+                        return EventState::Consumed;
                     }
-                    return EventState::Consumed;
                 }
                 Some(ActionShortcuts::SaveCurrentQuery) => {
                     if let Some((query, provenance, source)) = self.save_query_source() {
