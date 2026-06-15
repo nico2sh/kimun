@@ -90,7 +90,7 @@ const CONFIG_HEADER: &str = "\
 #   Quit         = [\"ctrl&Q\"]            # Ctrl+Q
 #   SearchNotes  = [\"ctrl&K\"]            # Ctrl+K
 #   OpenNote     = [\"ctrl&O\"]            # Ctrl+O  (fuzzy file finder)
-#   OpenSettings = [\"ctrl&,\"]            # Ctrl+,
+#   OpenSettings = [\"F4\", \"ctrl&,\"]     # F4 (Ctrl+, alias)
 #   NewJournal   = [\"ctrl&J\"]            # Ctrl+J
 #   FileOperations = [\"F2\"]              # F2  (open file-ops menu: delete/rename/move)
 #   Leader       = [\"ctrl&G\"]            # Ctrl+G  (leader gateway: Ctrl+G f f, ...)
@@ -238,8 +238,13 @@ fn default_keybindings() -> KeyBindings {
         .add(KeyStrike::KeyE, ActionShortcuts::OpenFileBrowser)
         .add(KeyStrike::KeyF, ActionShortcuts::FindInBuffer);
 
-    // Settings — the classic Ctrl+, (Ctrl+Shift+P collides with kitty's
-    // default hints-kitten chord prefix, which holds the screen mid-chord).
+    // Settings — F4 (no modifier, reliable in all terminals) plus the classic
+    // Ctrl+, kept as an alias. Ctrl+, doesn't transmit a distinct code on many
+    // terminals outside the kitty protocol, so F4 is the dependable default.
+    // (Ctrl+Shift+P collides with kitty's default hints-kitten chord prefix,
+    // which holds the screen mid-chord, so it isn't used.)
+    kb.batch_add()
+        .add(KeyStrike::F4, ActionShortcuts::OpenPreferences);
     kb.batch_add()
         .with_ctrl()
         .add(KeyStrike::Comma, ActionShortcuts::OpenPreferences);
@@ -251,8 +256,9 @@ fn default_keybindings() -> KeyBindings {
     kb.batch_add()
         .add(KeyStrike::F3, ActionShortcuts::OpenSavedSearches);
 
+    // Workspace switcher — F5 (moved off F4, which is now Settings).
     kb.batch_add()
-        .add(KeyStrike::F4, ActionShortcuts::SwitchWorkspace);
+        .add(KeyStrike::F5, ActionShortcuts::SwitchWorkspace);
 
     // Ctrl+D — save the current query to saved searches. Ctrl-only by design:
     // Ctrl+Shift is unreliable on some terminals, Ctrl+S is taken by

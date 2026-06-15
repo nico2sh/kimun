@@ -16,7 +16,7 @@ Everything on one screen. Looking for how to *change* a binding? That's in [Conf
 | Quit | `Ctrl+Q` |
 | **Leader** (command sequences) | `Ctrl+G` |
 | Command palette | `Ctrl+P` |
-| Preferences | `Ctrl+,` |
+| Preferences | `F4` / `Ctrl+,` |
 | Query search (telescope) | `Ctrl+K` |
 | Open note (fuzzy finder) | `Ctrl+O` |
 | Toggle drawer | `Ctrl+T` |
@@ -29,7 +29,7 @@ Everything on one screen. Looking for how to *change* a binding? That's in [Conf
 | Saved searches | `F3` |
 | Sort dialog | `Ctrl+R` |
 | File operations | `F2` |
-| Switch workspace | `F4` |
+| Switch workspace | `F5` |
 | Focus right / left | `Ctrl+L` / `Ctrl+H` |
 | Bold / Italic / Strikethrough | `Ctrl+B` / `Ctrl+I` / `Ctrl+S` |
 | Help | `F1` (cheatsheet: `Ctrl+G ?`) |
