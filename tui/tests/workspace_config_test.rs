@@ -104,7 +104,10 @@ fn mouse_false_round_trips() {
     };
     let toml = toml::to_string(&config).unwrap();
     let parsed: WorkspaceConfig = toml::from_str(&toml).unwrap();
-    assert!(!parsed.global.mouse, "mouse = false should survive a round trip");
+    assert!(
+        !parsed.global.mouse,
+        "mouse = false should survive a round trip"
+    );
 }
 
 #[test]
