@@ -365,6 +365,7 @@ mod tests {
             global: GlobalConfig {
                 current_workspace: current.to_string(),
                 update_check: true,
+                mouse: true,
             },
             workspaces: ws_map,
         });
