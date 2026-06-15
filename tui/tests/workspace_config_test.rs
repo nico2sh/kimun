@@ -11,6 +11,7 @@ fn workspace_config_serializes_to_toml() {
         global: GlobalConfig {
             current_workspace: "default".to_string(),
             update_check: true,
+            mouse: true,
         },
         workspaces: BTreeMap::from([(
             "default".to_string(),
@@ -53,6 +54,7 @@ fn workspace_serialization_order_is_deterministic() {
         global: GlobalConfig {
             current_workspace: "personal".to_string(),
             update_check: true,
+            mouse: true,
         },
         // Inserted out of alphabetical order on purpose.
         workspaces: BTreeMap::from([
@@ -74,6 +76,35 @@ fn workspace_serialization_order_is_deterministic() {
 
     // Re-serializing an equal config yields byte-identical output (no churn).
     assert_eq!(toml, toml::to_string(&make()).unwrap());
+}
+
+#[test]
+fn mouse_defaults_on_when_absent() {
+    // A [global] table written before the mouse setting existed must still load,
+    // with mouse capture enabled (today's behavior) — no silent regression.
+    let toml = r#"
+[global]
+current_workspace = "default"
+
+[workspaces]
+"#;
+    let config: WorkspaceConfig = toml::from_str(toml).unwrap();
+    assert!(config.global.mouse, "mouse should default on when absent");
+}
+
+#[test]
+fn mouse_false_round_trips() {
+    let config = WorkspaceConfig {
+        global: GlobalConfig {
+            current_workspace: "default".to_string(),
+            update_check: true,
+            mouse: false,
+        },
+        workspaces: BTreeMap::new(),
+    };
+    let toml = toml::to_string(&config).unwrap();
+    let parsed: WorkspaceConfig = toml::from_str(&toml).unwrap();
+    assert!(!parsed.global.mouse, "mouse = false should survive a round trip");
 }
 
 #[test]

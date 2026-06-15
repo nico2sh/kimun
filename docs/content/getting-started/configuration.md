@@ -139,8 +139,27 @@ current_workspace = "default"
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `current_workspace` | string | *(unset)* | Workspace Kimün loads at startup. Must match a `[workspaces.<name>]` key. |
+| `update_check` | boolean | `true` | Check GitHub for a newer release on launch. Read only at startup. |
+| `mouse` | boolean | `true` | Capture the mouse for in-app use (divider drag, list scroll, click-to-focus). Set `false` to hand the mouse back to your terminal — see [Mouse](#mouse). Read only at startup; also a checkbox in Preferences (`Ctrl+,` → Display). |
 
 (Theme lives at the top level, not here.)
+
+### Mouse
+
+By default Kimün captures the mouse so you can drag panel dividers, scroll lists, and click to focus. Capturing is **all-or-nothing**: a terminal either reports every button to the application or handles the mouse itself — there is no middle ground. While Kimün is capturing, your terminal's own mouse gestures are suppressed, most notably **middle-click paste** (the X11 PRIMARY selection) and drag-to-select-and-copy.
+
+Two ways to get the terminal's native mouse behaviour back:
+
+- **Per-gesture, no config:** most terminals (xterm, and many others) let you **hold `Shift`** to bypass an application's mouse capture for one action. `Shift`+middle-click pastes the primary selection; `Shift`+drag selects text to copy. Nothing to configure — try it first.
+- **Permanently:** set `mouse = false` in `[global]` (or untick it in Preferences → Display). Kimün then never captures the mouse, so the terminal keeps full control of selection, copy, and paste.
+
+```toml
+[global]
+current_workspace = "default"
+mouse = false
+```
+
+With `mouse = false` you lose Kimün's in-app mouse gestures, but nothing becomes unreachable — every one has a keyboard equivalent: resize the drawer with the leader `Window` actions, move and scroll lists with the arrow keys, and cycle panel focus from the keyboard. The setting is read once at startup, so changing it (in the file or in Preferences) takes effect on the **next launch**.
 
 ### `[workspaces.<name>]` Sections
 

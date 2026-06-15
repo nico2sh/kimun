@@ -482,6 +482,15 @@ impl AppSettings {
             .unwrap_or(true)
     }
 
+    /// Whether kimün captures the mouse for in-app use; defaults on when no
+    /// workspace config exists yet. Read at startup (main.rs) and in preferences.
+    pub fn mouse(&self) -> bool {
+        self.workspace_config
+            .as_ref()
+            .map(|wc| wc.global.mouse)
+            .unwrap_or(true)
+    }
+
     pub fn save_to_disk(&self) -> eyre::Result<()> {
         tracing::debug!("Saving settings to disk");
         let settings_file_path = self.get_config_file_path()?;

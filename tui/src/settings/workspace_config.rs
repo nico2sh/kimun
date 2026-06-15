@@ -46,9 +46,20 @@ pub struct GlobalConfig {
     /// update state lives separately in `update_state.toml`, never here.
     #[serde(default = "default_update_check")]
     pub update_check: bool,
+    /// Whether kimün captures the mouse for in-app use (divider drag, list
+    /// scroll, click-to-focus). When off, the mouse is left to the terminal so
+    /// its native selection and middle-click paste work; mouse reporting is
+    /// all-or-nothing, so there is no per-button middle ground (see adr/0015).
+    /// Read only at startup. Defaults on (today's behavior).
+    #[serde(default = "default_mouse")]
+    pub mouse: bool,
 }
 
 fn default_update_check() -> bool {
+    true
+}
+
+fn default_mouse() -> bool {
     true
 }
 
@@ -102,6 +113,7 @@ impl WorkspaceConfig {
             global: GlobalConfig {
                 current_workspace: String::new(),
                 update_check: true,
+                mouse: true,
             },
             workspaces: BTreeMap::new(),
         }
