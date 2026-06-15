@@ -16,8 +16,10 @@ pub use spanner::MarkdownSpanner;
 /// Shared parser options used by all pulldown-cmark call sites in this module.
 pub(super) const PARSER_OPTIONS: Options = Options::ENABLE_STRIKETHROUGH;
 
-/// Visual columns per tab stop. Must match the `tabstop` setting in the nvim backend.
-const TAB_STOP: usize = 4;
+/// Visual columns per tab stop. Single source of truth: the nvim backend sets
+/// nvim's `tabstop` from this constant (see `backend.rs`), so the renderer's tab
+/// expansion and nvim's own column math can never diverge.
+pub(super) const TAB_STOP: usize = 4;
 
 /// Compute the display width of a tab character at the given visual column.
 pub(super) fn tab_width_at(col: usize) -> usize {

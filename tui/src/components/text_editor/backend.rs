@@ -9,6 +9,7 @@ use tokio_util::compat::Compat;
 use nvim_rs::{Handler, Neovim, UiAttachOptions, create::tokio::new_child_cmd, error::LoopError};
 use ratatui_textarea::TextArea;
 
+use super::nvim_decode::{DecodedState, decode};
 use super::nvim_rpc::key_event_to_nvim_string;
 use super::snapshot::{EditorMode, NvimSnapshot};
 use super::vim::VimEngine;
@@ -406,7 +407,11 @@ impl NvimBackend {
         let _ = nvim.command("set buftype=nofile").await;
         let _ = nvim.command("set nomodeline").await;
         let _ = nvim.command("set expandtab").await;
-        let _ = nvim.command("set tabstop=4").await;
+        // Pin nvim's tabstop to the renderer's TAB_STOP so tab-column math and
+        // cursor placement can never desync.
+        let _ = nvim
+            .command(&format!("set tabstop={}", super::markdown::TAB_STOP))
+            .await;
 
         Ok(Self {
             nvim,
@@ -622,129 +627,41 @@ impl NvimBackend {
 // Parse the Lua state bundle and apply it to the snapshot.
 // ---------------------------------------------------------------------------
 
-/// Convert a UTF-8 byte offset to a Unicode scalar (char) index.
-///
-/// `nvim_win_get_cursor` and `getpos()` return byte offsets. This converts them
-/// to char indices so the rest of the rendering pipeline can use char-indexed
-/// operations consistently. If the offset falls in the middle of a multi-byte
-/// sequence it is snapped to the nearest valid char boundary.
-fn byte_offset_to_char_idx(line: &str, byte_offset: usize) -> usize {
-    // Walk backward from the offset to the nearest valid char boundary, then
-    // count chars up to that point. Handles mid-codepoint offsets safely.
-    let safe = (0..=byte_offset.min(line.len()))
-        .rev()
-        .find(|&i| line.is_char_boundary(i))
-        .unwrap_or(0);
-    line[..safe].chars().count()
-}
-
+/// Decode the Lua state bundle (pure, in [`super::nvim_decode`]) and merge it
+/// into the live snapshot. Decoding owns the wire-format facts; this function
+/// owns the stateful bookkeeping that decoding cannot: the `in_flight` gate and
+/// the `content_gen`/`dirty` revision counters.
 fn apply_lua_state(
     snapshot: &Arc<Mutex<NvimSnapshot>>,
     in_flight: &Arc<AtomicBool>,
     value: nvim_rs::Value,
 ) {
-    let Some(arr) = value.as_array() else { return };
-    let mode_str = match arr.first().and_then(|v| v.as_str()) {
-        Some(s) => s,
-        None => return,
-    };
-    let mode = EditorMode::from_nvim_str(mode_str);
+    let Some(decoded) = decode(&value) else { return };
 
     let mut snap = snapshot.lock().unwrap_or_else(|p| p.into_inner());
 
-    if mode == EditorMode::Command {
-        let cmdtype = arr
-            .get(1)
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let cmdline = arr
-            .get(2)
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        snap.mode = mode;
-        snap.cmdline = Some(format!("{cmdtype}{cmdline}"));
-        return;
+    match decoded {
+        DecodedState::Command { cmdline } => {
+            snap.mode = EditorMode::Command;
+            snap.cmdline = Some(cmdline);
+        }
+        DecodedState::Content {
+            mode,
+            lines,
+            cursor,
+            visual_selection,
+        } => {
+            if lines != snap.lines && !in_flight.load(Ordering::SeqCst) {
+                snap.dirty = true;
+                snap.lines = lines;
+                snap.content_gen = snap.content_gen.wrapping_add(1);
+            }
+            snap.cursor = cursor;
+            snap.mode = mode;
+            snap.cmdline = None;
+            snap.visual_selection = visual_selection;
+        }
     }
-
-    // Lines.
-    let new_lines: Vec<String> = arr
-        .get(1)
-        .and_then(|v| v.as_array())
-        .map(|ls| {
-            ls.iter()
-                .filter_map(|l| l.as_str().map(|s| s.to_string()))
-                .collect()
-        })
-        .unwrap_or_default();
-    let new_lines = if new_lines.is_empty() {
-        vec![String::new()]
-    } else {
-        new_lines
-    };
-
-    // Cursor: nvim_win_get_cursor → [row(1-indexed), col(0-indexed byte offset)].
-    // Convert the byte offset to a char index so all downstream code works in
-    // char-index space uniformly (independent of multi-byte character widths).
-    let cursor = arr
-        .get(2)
-        .and_then(|v| v.as_array())
-        .and_then(|c| {
-            let row = c.first()?.as_u64()? as usize;
-            let byte_col = c.get(1)?.as_u64()? as usize;
-            let row0 = row.saturating_sub(1);
-            let char_col = new_lines
-                .get(row0)
-                .map(|line| byte_offset_to_char_idx(line, byte_col))
-                .unwrap_or(byte_col);
-            Some((row0, char_col))
-        })
-        .unwrap_or((0, 0));
-
-    // Visual selection: getpos("v") → [bufnum, lnum(1-indexed), col(1-indexed byte offset), off].
-    // Convert the 1-indexed byte col to a 0-indexed char index.
-    let visual_selection = if matches!(mode, EditorMode::Visual | EditorMode::VisualLine) {
-        arr.get(3)
-            .and_then(|v| v.as_array())
-            .and_then(|p| {
-                let lnum = p.get(1)?.as_u64()? as usize;
-                let vcol_byte = p.get(2)?.as_u64()? as usize;
-                if lnum == 0 {
-                    return None;
-                }
-                let row0 = lnum.saturating_sub(1);
-                let char_col = new_lines
-                    .get(row0)
-                    .map(|line| byte_offset_to_char_idx(line, vcol_byte.saturating_sub(1)))
-                    .unwrap_or(vcol_byte.saturating_sub(1));
-                Some((row0, char_col))
-            })
-            .map(|anchor| {
-                let (mut start, mut end) = if anchor <= cursor {
-                    (anchor, cursor)
-                } else {
-                    (cursor, anchor)
-                };
-                if mode == EditorMode::VisualLine {
-                    start.1 = 0;
-                    end.1 = usize::MAX;
-                }
-                (start, end)
-            })
-    } else {
-        None
-    };
-
-    if new_lines != snap.lines && !in_flight.load(Ordering::SeqCst) {
-        snap.dirty = true;
-        snap.lines = new_lines;
-        snap.content_gen = snap.content_gen.wrapping_add(1);
-    }
-    snap.cursor = cursor;
-    snap.mode = mode;
-    snap.cmdline = None;
-    snap.visual_selection = visual_selection;
 }
 
 // ---------------------------------------------------------------------------
