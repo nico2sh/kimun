@@ -10,6 +10,11 @@ use crate::components::autocomplete::AcceptAction;
 /// Convert a byte offset in `lines.join("\n")` to `(row, char_col)`.
 /// Returns `None` if the offset is past the end of the joined text or
 /// lands inside a multi-byte char boundary.
+///
+/// Note: this intentionally has a *rejection* contract (`None` on a bad
+/// offset) — callers use it to bail on malformed input. For the defensive
+/// snap-and-clamp per-line kernel, see
+/// [`super::text_coords::byte_col_to_char_col`].
 pub fn byte_to_row_char_col(lines: &[String], byte_offset: usize) -> Option<(usize, usize)> {
     let mut byte_running = 0;
     for (row, line) in lines.iter().enumerate() {
