@@ -154,6 +154,8 @@ Full parity with the keyboard:
 | Click a rail cell / LINKS tab | switch view |
 | Scroll | scroll the pane under the cursor |
 
+Capturing the mouse means your terminal's own gestures — middle-click paste, drag-to-select — are suppressed while Kimün runs. Hold `Shift` to borrow them back for one action, or set `mouse = false` to hand the mouse to your terminal entirely (every gesture above has a keyboard equivalent). See [Configuration → Mouse](@/getting-started/configuration.md#mouse).
+
 ## Saved Searches
 
 `Ctrl+D` saves the active query (from FIND, the query modal, or the panel) under a name; queries are stored as *templates*, so `{note}` re-resolves against whichever note is open when run. Open the picker with **`F3`** or **`Ctrl+G f s`**: type to filter, `1`–`9` quick-select, Enter runs it in FIND, Delete removes it. Or type `?name` directly in any query field.
