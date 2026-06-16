@@ -9,22 +9,26 @@ use crate::components::events::{AppTx, InputEvent};
 use crate::settings::themes::Theme;
 
 /// Number of selectable rows in this section.
-const ROW_COUNT: usize = 2;
+const ROW_COUNT: usize = 3;
 
 pub struct DisplaySection {
     pub use_nerd_fonts: bool,
     /// Whether kimün checks GitHub for a newer release on startup.
     pub update_check: bool,
+    /// Whether kimün captures the mouse for in-app use. Read only at startup, so
+    /// toggling here applies on the next launch (the row says so).
+    pub mouse: bool,
     list_state: ListState,
 }
 
 impl DisplaySection {
-    pub fn new(use_nerd_fonts: bool, update_check: bool) -> Self {
+    pub fn new(use_nerd_fonts: bool, update_check: bool, mouse: bool) -> Self {
         let mut list_state = ListState::default();
         list_state.select(Some(0));
         Self {
             use_nerd_fonts,
             update_check,
+            mouse,
             list_state,
         }
     }
@@ -34,6 +38,7 @@ impl DisplaySection {
         match self.list_state.selected() {
             Some(0) => self.use_nerd_fonts = !self.use_nerd_fonts,
             Some(1) => self.update_check = !self.update_check,
+            Some(2) => self.mouse = !self.mouse,
             _ => {}
         }
     }
@@ -89,6 +94,11 @@ impl Component for DisplaySection {
                 checkbox(self.update_check)
             ))
             .style(fg),
+            ListItem::new(format!(
+                "  Capture mouse (restart to apply)  {}",
+                checkbox(self.mouse)
+            ))
+            .style(fg),
         ];
 
         let list = List::new(items)
@@ -121,7 +131,7 @@ mod tests {
     #[test]
     fn enter_toggles_nerd_fonts() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut section = DisplaySection::new(true, true);
+        let mut section = DisplaySection::new(true, true, true);
         section.handle_input(&key(KeyCode::Enter), &tx);
         assert!(!section.use_nerd_fonts);
         section.handle_input(&key(KeyCode::Enter), &tx);
@@ -131,7 +141,7 @@ mod tests {
     #[test]
     fn space_toggles_nerd_fonts() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut section = DisplaySection::new(false, true);
+        let mut section = DisplaySection::new(false, true, true);
         section.handle_input(&key(KeyCode::Char(' ')), &tx);
         assert!(section.use_nerd_fonts);
     }
@@ -139,11 +149,23 @@ mod tests {
     #[test]
     fn down_then_toggle_flips_update_check_only() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut section = DisplaySection::new(true, true);
+        let mut section = DisplaySection::new(true, true, true);
         section.handle_input(&key(KeyCode::Down), &tx);
         section.handle_input(&key(KeyCode::Enter), &tx);
         assert!(!section.update_check, "update_check should toggle off");
         assert!(section.use_nerd_fonts, "nerd fonts should be untouched");
+    }
+
+    #[test]
+    fn down_twice_then_toggle_flips_mouse_only() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut section = DisplaySection::new(true, true, true);
+        section.handle_input(&key(KeyCode::Down), &tx);
+        section.handle_input(&key(KeyCode::Down), &tx);
+        section.handle_input(&key(KeyCode::Enter), &tx);
+        assert!(!section.mouse, "mouse should toggle off");
+        assert!(section.use_nerd_fonts, "nerd fonts should be untouched");
+        assert!(section.update_check, "update_check should be untouched");
     }
 
     #[test]
@@ -152,7 +174,7 @@ mod tests {
         use ratatui::backend::TestBackend;
         let backend = TestBackend::new(40, 10);
         let mut terminal = Terminal::new(backend).unwrap();
-        let mut section = DisplaySection::new(true, true);
+        let mut section = DisplaySection::new(true, true, true);
         let theme = Theme::gruvbox_dark();
         terminal
             .draw(|f| section.render(f, f.area(), &theme, false))
@@ -168,7 +190,7 @@ mod tests {
         use ratatui::backend::TestBackend;
         let backend = TestBackend::new(40, 10);
         let mut terminal = Terminal::new(backend).unwrap();
-        let mut section = DisplaySection::new(false, true);
+        let mut section = DisplaySection::new(false, true, true);
         let theme = Theme::gruvbox_dark();
         terminal
             .draw(|f| section.render(f, f.area(), &theme, false))

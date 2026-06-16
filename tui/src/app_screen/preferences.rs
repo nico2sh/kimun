@@ -120,6 +120,7 @@ impl PreferencesScreen {
         let editor_backend = s.editor_backend;
         let use_nerd_fonts = s.use_nerd_fonts;
         let update_check = s.update_check();
+        let mouse = s.mouse();
         let initial_settings = s.clone();
         let workspaces_section = WorkspacesSection::new(&s);
         let sorting_section = SortingSection::new(
@@ -131,7 +132,7 @@ impl PreferencesScreen {
         drop(s);
         Self {
             appearance_section: AppearanceSection::new(themes, &active_name),
-            display_section: DisplaySection::new(use_nerd_fonts, update_check),
+            display_section: DisplaySection::new(use_nerd_fonts, update_check, mouse),
             sorting_section,
             workspaces_section,
             pending_create_name: None,
@@ -516,12 +517,14 @@ impl AppScreen for PreferencesScreen {
                             {
                                 let mut s = self.settings.write().unwrap();
                                 s.use_nerd_fonts = self.display_section.use_nerd_fonts;
-                                s.workspace_config
+                                let global = &mut s
+                                    .workspace_config
                                     .get_or_insert_with(
                                         crate::settings::workspace_config::WorkspaceConfig::new_empty,
                                     )
-                                    .global
-                                    .update_check = self.display_section.update_check;
+                                    .global;
+                                global.update_check = self.display_section.update_check;
+                                global.mouse = self.display_section.mouse;
                             }
                             r
                         }

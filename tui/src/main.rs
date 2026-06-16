@@ -173,12 +173,7 @@ async fn main() -> Result<()> {
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(
-        stdout,
-        EnterAlternateScreen,
-        EnableMouseCapture,
-        EnableBracketedPaste
-    )?;
+    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
     // Enable enhanced keyboard protocol when the terminal supports it (e.g. Kitty, WezTerm).
     // This is required to correctly receive F-keys and other special keys in those terminals.
     if supports_keyboard_enhancement().unwrap_or(false) {
@@ -191,6 +186,13 @@ async fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
     let mut events = EventHandler::new();
     let mut app = App::new(cli.config).await?;
+
+    // Mouse reporting is all-or-nothing: enabling it suppresses the terminal's
+    // native selection and middle-click paste. Honor the user's opt-out (see
+    // adr/0015). Read after App::new since the setting lives in its settings.
+    if app.settings.read().unwrap().mouse() {
+        let _ = execute!(terminal.backend_mut(), EnableMouseCapture);
+    }
 
     spawn_update_check(&app, events.app_sender());
 

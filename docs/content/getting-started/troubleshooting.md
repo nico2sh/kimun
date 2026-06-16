@@ -20,6 +20,13 @@ Most terminals can't tell `Ctrl+Enter` from `Enter` unless the [kitty keyboard p
 - **Kitty, Ghostty, foot** support it out of the box.
 - On terminals that can't be taught, use `Ctrl+N` — it follows links exactly like `Ctrl+Enter`.
 
+## Middle-Click Paste or Drag-to-Select Doesn't Work
+
+Kimün captures the mouse so it can drive panel dividers, list scroll, and click-to-focus. While it captures, your terminal's own mouse gestures are suppressed — including middle-click paste and drag-to-select-and-copy. This is unavoidable: a terminal either reports the mouse to the application or handles it itself, never both at once.
+
+- **Quick fix, no config:** hold `Shift` to borrow the gesture back for one action — `Shift`+middle-click pastes, `Shift`+drag selects. Works in most terminals (xterm and friends).
+- **Permanent:** set `mouse = false` under `[global]` (or untick Preferences → Display → mouse) to hand the mouse fully back to your terminal. Takes effect on the next launch. See [Configuration → Mouse](@/getting-started/configuration.md#mouse).
+
 ## Log Files
 
 Kimün writes a log file on every run. In release builds only warnings and errors are recorded, keeping the file small. Debug builds log everything.
