@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.2](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.19.1...kimun-notes-v0.19.2) - 2026-06-16
+
+### Added
+
+- mouse option to disable mouse interactions
+
+### Fixed
+
+- preferences with F4
+
+### Other
+
+- fmt
+- added instructions to reindex in skills and mcp if a note has been changed externally
+- better interdependency definition with core
+
 ## [0.19.1](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.19.0...kimun-notes-v0.19.1) - 2026-06-15
 
 ### Fixed
