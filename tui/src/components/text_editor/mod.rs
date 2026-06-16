@@ -134,7 +134,17 @@ fn char_col_to_byte(line: &str, char_col: usize) -> usize {
 /// `selection_range()` returns char-column coordinates, so they must be
 /// converted to byte offsets before slicing to support multi-byte UTF-8 text.
 fn selection_text(ta: &TextArea<'_>) -> Option<String> {
-    let ((sr, sc), (er, ec)) = ta.selection_range()?;
+    selection_text_in(ta, ta.selection_range()?)
+}
+
+/// Like [`selection_text`] but over an explicit char-column `range` rather than
+/// the textarea's live selection — lets read-only callers apply the vim
+/// charwise-Visual inclusive `+1` without mutating the live selection/cursor.
+fn selection_text_in(
+    ta: &TextArea<'_>,
+    range: ((usize, usize), (usize, usize)),
+) -> Option<String> {
+    let ((sr, sc), (er, ec)) = range;
     if sr == er && sc == ec {
         return None;
     }
@@ -852,16 +862,23 @@ impl TextEditorComponent {
 
     /// Copy selected text to the system clipboard.
     fn copy_selection_to_clipboard(&mut self) {
-        // Match the highlighted range in vim charwise Visual mode: the textarea
-        // selection is half-open, but the cursor's char is part of the visual
-        // selection, so copy it too (right-click copy reaches here after a mouse
-        // drag that flipped the engine into Visual). No-op otherwise.
-        self.extend_visual_selection_inclusive();
         let text = {
+            // Match the highlighted range in vim charwise Visual mode: the
+            // textarea selection is half-open, but the cursor's char is part of
+            // the visual selection, so copy it too (right-click copy reaches
+            // here after a mouse drag that flipped the engine into Visual).
+            // Read-only — must NOT move the cursor or grow the live selection,
+            // since copy leaves the selection active (repeated copy would drift
+            // wider). `extend_visual_selection_inclusive` is for one-shot
+            // consumers (paste/wrap) that collapse the selection afterwards.
+            let range = match self.inclusive_visual_range() {
+                Some(r) => r,
+                None => return,
+            };
             let Some(ta) = self.backend.as_textarea() else {
                 return;
             };
-            match selection_text(ta) {
+            match selection_text_in(ta, range) {
                 Some(t) => t,
                 None => return,
             }
@@ -869,6 +886,24 @@ impl TextEditorComponent {
         if let Some(cb) = &mut self.clipboard {
             let _ = cb.set_text(text);
         }
+    }
+
+    /// The live selection range, with the end extended by one char when in vim
+    /// charwise Visual mode (vim treats the selection as inclusive of the char
+    /// under the cursor; ratatui's range is half-open). Read-only: computes the
+    /// range without touching the cursor or live selection. `None` when there
+    /// is no selection or no textarea backend.
+    fn inclusive_visual_range(&self) -> Option<((usize, usize), (usize, usize))> {
+        let charwise = self.backend.vim_is_charwise_visual();
+        let ta = self.backend.as_textarea()?;
+        let (start, (er, ec)) = ta.selection_range()?;
+        let end = if charwise {
+            let len = ta.lines().get(er).map(|l| l.chars().count()).unwrap_or(ec);
+            (er, (ec + 1).min(len))
+        } else {
+            (er, ec)
+        };
+        Some((start, end))
     }
 
     /// Paste text from the system clipboard at the cursor, replacing any active selection.
@@ -903,11 +938,10 @@ impl TextEditorComponent {
         if !self.backend.vim_is_charwise_visual() {
             return;
         }
-        if let Some(ta) = self.backend.as_textarea_mut()
-            && let Some((start, (er, ec))) = ta.selection_range()
+        if let Some((start, end)) = self.inclusive_visual_range()
+            && let Some(ta) = self.backend.as_textarea_mut()
         {
-            let len = ta.lines().get(er).map(|l| l.chars().count()).unwrap_or(ec);
-            set_selection(ta, start, (er, (ec + 1).min(len)));
+            set_selection(ta, start, end);
         }
     }
 
@@ -3567,6 +3601,42 @@ mod tests {
             editor.get_text(),
             "**hello** world",
             "the whole selected word (including the char under the cursor) must be wrapped"
+        );
+    }
+
+    /// Regression: copy is read-only over a vim charwise Visual selection.
+    /// It must include the char under the cursor (matching the highlight), but
+    /// must NOT mutate the live selection — otherwise repeated right-click copy
+    /// drifts the selection one char wider each time (`((0,0),(0,4))` →
+    /// `(0,5)` → `(0,6)` …).
+    #[test]
+    fn vim_visual_copy_is_read_only_and_does_not_grow_selection() {
+        let mut editor = make_vim_editor();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        editor.set_text("hello world".to_string());
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('v'), KeyModifiers::NONE)),
+            &tx,
+        );
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('e'), KeyModifiers::NONE)),
+            &tx,
+        );
+        let before = get_ta(&mut editor).selection_range();
+        assert_eq!(before, Some(((0, 0), (0, 4))));
+        // The text copied must cover the inclusive range "hello".
+        assert_eq!(
+            editor.inclusive_visual_range(),
+            Some(((0, 0), (0, 5))),
+            "copy must read the inclusive range including the cursor char"
+        );
+        // Repeated copy must leave the live selection untouched.
+        editor.copy_selection_to_clipboard();
+        editor.copy_selection_to_clipboard();
+        assert_eq!(
+            get_ta(&mut editor).selection_range(),
+            before,
+            "copy must not move the cursor or grow the live selection"
         );
     }
 
