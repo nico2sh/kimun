@@ -75,16 +75,20 @@ pub(super) fn cluster_width_at(cluster: &str, col: usize) -> usize {
 
 /// Display width of a grapheme cluster.
 ///
-/// For multi-codepoint clusters (ZWJ sequences like 👨‍👩‍👧‍👦, variation selectors,
-/// skin-tone modifiers) the width is determined by the first codepoint. The
-/// combining codepoints that follow contribute 0 additional columns, which
-/// matches the rendering behaviour of modern terminal emulators.
+/// Measures the whole cluster via [`UnicodeWidthStr`], so emoji presentation
+/// sequences match what terminals draw: a flag (🇪🇸, two regional indicators),
+/// a VS16 sequence (❤️ = U+2764 + U+FE0F), and a keycap (1️⃣) all render as 2
+/// columns even though their first codepoint is narrow. ZWJ sequences (👨‍👩‍👧‍👦)
+/// collapse to a single 2-column glyph and combining marks (e + U+0301)
+/// contribute 0, both of which `width()` already reports correctly.
+///
+/// Genuinely zero-width clusters (ZWSP, soft hyphen, BOM, a lone combining
+/// mark) measure 0 — matching what the terminal draws. The wrap loop's
+/// forward-progress guard (`word_wrap::wrap_one_row`) handles a zero-width
+/// start cluster, so no `.max(1)` floor is needed here.
 pub(super) fn cluster_display_width(cluster: &str) -> usize {
-    cluster
-        .chars()
-        .next()
-        .and_then(unicode_width::UnicodeWidthChar::width)
-        .unwrap_or(1)
+    use unicode_width::UnicodeWidthStr;
+    cluster.width()
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -457,6 +461,35 @@ mod tests {
     }
     fn text(spans: &[Span]) -> String {
         spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn cluster_display_width_emoji_presentation_sequences() {
+        // These grapheme clusters render as 2 columns in modern terminals, but
+        // their FIRST codepoint is narrow (width 1). Measuring only the first
+        // codepoint undercounts them — wrap, cursor, and click math then drift.
+        assert_eq!(cluster_display_width("\u{1F1EA}\u{1F1F8}"), 2, "flag 🇪🇸");
+        assert_eq!(
+            cluster_display_width("\u{2764}\u{FE0F}"),
+            2,
+            "heart ❤️ (VS16)"
+        );
+        assert_eq!(cluster_display_width("1\u{FE0F}\u{20E3}"), 2, "keycap 1️⃣");
+        // Sanity: clusters already correct must stay correct.
+        assert_eq!(cluster_display_width("\u{3042}"), 2, "CJK あ");
+        assert_eq!(cluster_display_width("a"), 1, "ascii");
+        assert_eq!(cluster_display_width("e\u{0301}"), 1, "e + combining acute");
+    }
+
+    #[test]
+    fn cluster_display_width_zero_width_clusters_are_zero() {
+        // Genuinely zero-width clusters render as 0 columns in terminals. Counting
+        // them as 1 drifts wrap, cursor, and selection math by one column each.
+        assert_eq!(cluster_display_width("\u{200B}"), 0, "ZWSP");
+        assert_eq!(cluster_display_width("\u{00AD}"), 0, "soft hyphen");
+        assert_eq!(cluster_display_width("\u{200C}"), 0, "ZWNJ");
+        assert_eq!(cluster_display_width("\u{FEFF}"), 0, "BOM");
+        assert_eq!(cluster_display_width("\u{0301}"), 0, "lone combining acute");
     }
 
     #[test]

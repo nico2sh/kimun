@@ -514,6 +514,19 @@ mod tests {
     }
 
     #[test]
+    fn emoji_presentation_sequence_counts_as_two_columns() {
+        // "❤️❤️" — each ❤️ is U+2764 + VS16, one grapheme cluster rendered as 2
+        // display columns. At width=2 each fills a visual line on its own; a
+        // first-codepoint width (1) would wrongly fit both on one line.
+        let heart = "\u{2764}\u{FE0F}";
+        let lines = vec![format!("{heart}{heart}")];
+        let layout = WordWrapLayout::compute(&lines, 2, &[], &[0]);
+        assert_eq!(layout.total_visual_lines(), 2);
+        assert_eq!(content_of(&layout.visual_lines()[0], &lines[0]), heart);
+        assert_eq!(content_of(&layout.visual_lines()[1], &lines[0]), heart);
+    }
+
+    #[test]
     fn logical_to_visual_start_of_line() {
         let layout = WordWrapLayout::compute(&ls("hello world"), 40, &[], &[]);
         assert_eq!(layout.logical_to_visual(0, 0), (0, 0));

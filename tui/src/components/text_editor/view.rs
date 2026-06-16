@@ -9,7 +9,6 @@ use ratatui::text::{Line, Text};
 use ratatui::widgets::Paragraph;
 use std::ops::Range;
 use std::sync::OnceLock;
-use unicode_width::UnicodeWidthStr;
 
 /// Terminal cursor shape the editor requests while focused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1192,13 +1191,21 @@ impl Default for MarkdownEditorView {
 
 /// Returns the byte offset into `s` after consuming exactly `target_width` display columns.
 /// If `target_width` exceeds the string's display width, returns `s.len()`.
+///
+/// Walks whole grapheme clusters (not codepoints) and measures each with
+/// [`cluster_display_width`], so the result never lands mid-cluster (which would
+/// split an emoji across two styled spans) and stays consistent with the width
+/// model used by wrap and cursor math — an emoji presentation sequence (flag,
+/// VS16 heart, keycap) counts as its full rendered width, not its first codepoint.
 fn byte_offset_for_display_width(s: &str, target_width: usize) -> usize {
+    use super::markdown::cluster_display_width;
+    use unicode_segmentation::UnicodeSegmentation;
     let mut consumed = 0usize;
-    for (byte_pos, ch) in s.char_indices() {
+    for (byte_pos, g) in s.grapheme_indices(true) {
         if consumed >= target_width {
             return byte_pos;
         }
-        consumed += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        consumed += cluster_display_width(g);
     }
     s.len()
 }
@@ -1223,7 +1230,10 @@ fn apply_selection_highlight<'a>(
 
     for span in spans {
         let content: &str = &span.content;
-        let span_width = content.width();
+        // Same cluster-based width model as `byte_offset_for_display_width`
+        // below, so column accounting and the byte boundaries it computes can
+        // never disagree on emoji presentation sequences.
+        let span_width = super::markdown::string_display_width(content);
         let span_end = col + span_width;
 
         let overlap_start = sel_cols.start.max(col);
@@ -1279,12 +1289,19 @@ fn apply_code_box<'a>(
     theme: &Theme,
 ) -> Vec<ratatui::text::Span<'a>> {
     use ratatui::text::Span;
+    use unicode_segmentation::UnicodeSegmentation;
     let bg = theme.code_bg.to_ratatui();
+    // Measure with the same cluster + tab-aware model as `raw_display_width`
+    // (which sizes `box_width` in `rebuild_code_box_width`), so the padding
+    // can never disagree with the target on emoji presentation sequences or
+    // tabs. `cluster_width_at` needs the running column for tab stops.
     let mut width = 0usize;
     let mut out: Vec<Span<'a>> = spans
         .into_iter()
         .map(|s| {
-            width += s.content.width();
+            for g in s.content.graphemes(true) {
+                width += super::markdown::cluster_width_at(g, width);
+            }
             let style = s.style.bg(bg);
             Span::styled(s.content, style)
         })
@@ -1358,6 +1375,36 @@ mod tests {
         };
         update_view(&mut v, lines, cursor, r, 1, None);
         v
+    }
+
+    #[test]
+    fn selection_highlight_respects_emoji_cluster_width() {
+        // Span "a❤️b" where ❤️ = U+2764 + VS16 renders as 2 display columns:
+        // a=col0, ❤️=cols1..3, b=col3. Selecting cols 1..3 must highlight
+        // exactly the heart cluster — not split it, and not bleed into 'b'.
+        let theme = Theme::default();
+        let sel_bg = theme.selection_bg.to_ratatui();
+        let heart = "\u{2764}\u{FE0F}";
+        let content = format!("a{heart}b");
+        let spans = vec![ratatui::text::Span::raw(content)];
+        let out = apply_selection_highlight(spans, 1..3, &theme);
+
+        let highlighted: String = out
+            .iter()
+            .filter(|s| s.style.bg == Some(sel_bg))
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(highlighted, heart, "selection must cover exactly the heart");
+
+        // No output span may split the cluster: every span's content must
+        // recluster identically (the heart stays whole within one span).
+        for s in &out {
+            let c = s.content.as_ref();
+            assert!(
+                !c.contains('\u{2764}') || c.contains(heart),
+                "emoji cluster split across spans: {c:?}"
+            );
+        }
     }
 
     #[test]
@@ -2452,6 +2499,23 @@ mod tests {
         assert_eq!(total, 5); // padded to box width
         let bg = theme.code_bg.to_ratatui();
         assert!(out.iter().all(|s| s.style.bg == Some(bg)));
+    }
+
+    #[test]
+    fn apply_code_box_measures_emoji_cluster_at_full_width() {
+        // Regression: padding must use the same cluster model as
+        // `raw_display_width` (which sizes the box). "a❤️" = 'a' (1) + VS16 heart
+        // (2) = 3 rendered cols. Per-codepoint width undercounts the heart as 1,
+        // over-padding the box and overshooting box_width. With cluster width the
+        // content already fills 3 cols, so a box_width of 3 needs zero padding.
+        use ratatui::text::Span;
+        let theme = crate::settings::themes::Theme::gruvbox_dark();
+        let content = "a\u{2764}\u{FE0F}";
+        assert_eq!(super::super::markdown::raw_display_width(content), 3);
+        let out = super::apply_code_box(vec![Span::raw(content)], 3, &theme);
+        // No padding span appended — content already 3 cols.
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].content.as_ref(), content);
     }
 
     #[test]
