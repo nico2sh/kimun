@@ -196,7 +196,7 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           draft: false
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          prerelease: ${{ contains(steps.extract_version.outputs.version, '-') }}
           append_body: false
           files: |
             release-artifacts/kimun-*.zip
