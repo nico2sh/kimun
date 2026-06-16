@@ -140,10 +140,7 @@ fn selection_text(ta: &TextArea<'_>) -> Option<String> {
 /// Like [`selection_text`] but over an explicit char-column `range` rather than
 /// the textarea's live selection — lets read-only callers apply the vim
 /// charwise-Visual inclusive `+1` without mutating the live selection/cursor.
-fn selection_text_in(
-    ta: &TextArea<'_>,
-    range: ((usize, usize), (usize, usize)),
-) -> Option<String> {
+fn selection_text_in(ta: &TextArea<'_>, range: ((usize, usize), (usize, usize))) -> Option<String> {
     let ((sr, sc), (er, ec)) = range;
     if sr == er && sc == ec {
         return None;
