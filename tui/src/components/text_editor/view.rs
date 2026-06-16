@@ -1192,13 +1192,21 @@ impl Default for MarkdownEditorView {
 
 /// Returns the byte offset into `s` after consuming exactly `target_width` display columns.
 /// If `target_width` exceeds the string's display width, returns `s.len()`.
+///
+/// Walks whole grapheme clusters (not codepoints) and measures each with
+/// [`cluster_display_width`], so the result never lands mid-cluster (which would
+/// split an emoji across two styled spans) and stays consistent with the width
+/// model used by wrap and cursor math — an emoji presentation sequence (flag,
+/// VS16 heart, keycap) counts as its full rendered width, not its first codepoint.
 fn byte_offset_for_display_width(s: &str, target_width: usize) -> usize {
+    use super::markdown::cluster_display_width;
+    use unicode_segmentation::UnicodeSegmentation;
     let mut consumed = 0usize;
-    for (byte_pos, ch) in s.char_indices() {
+    for (byte_pos, g) in s.grapheme_indices(true) {
         if consumed >= target_width {
             return byte_pos;
         }
-        consumed += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        consumed += cluster_display_width(g);
     }
     s.len()
 }
@@ -1223,7 +1231,10 @@ fn apply_selection_highlight<'a>(
 
     for span in spans {
         let content: &str = &span.content;
-        let span_width = content.width();
+        // Same cluster-based width model as `byte_offset_for_display_width`
+        // below, so column accounting and the byte boundaries it computes can
+        // never disagree on emoji presentation sequences.
+        let span_width = super::markdown::string_display_width(content);
         let span_end = col + span_width;
 
         let overlap_start = sel_cols.start.max(col);
@@ -1358,6 +1369,36 @@ mod tests {
         };
         update_view(&mut v, lines, cursor, r, 1, None);
         v
+    }
+
+    #[test]
+    fn selection_highlight_respects_emoji_cluster_width() {
+        // Span "a❤️b" where ❤️ = U+2764 + VS16 renders as 2 display columns:
+        // a=col0, ❤️=cols1..3, b=col3. Selecting cols 1..3 must highlight
+        // exactly the heart cluster — not split it, and not bleed into 'b'.
+        let theme = Theme::default();
+        let sel_bg = theme.selection_bg.to_ratatui();
+        let heart = "\u{2764}\u{FE0F}";
+        let content = format!("a{heart}b");
+        let spans = vec![ratatui::text::Span::raw(content)];
+        let out = apply_selection_highlight(spans, 1..3, &theme);
+
+        let highlighted: String = out
+            .iter()
+            .filter(|s| s.style.bg == Some(sel_bg))
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(highlighted, heart, "selection must cover exactly the heart");
+
+        // No output span may split the cluster: every span's content must
+        // recluster identically (the heart stays whole within one span).
+        for s in &out {
+            let c = s.content.as_ref();
+            assert!(
+                !c.contains('\u{2764}') || c.contains(heart),
+                "emoji cluster split across spans: {c:?}"
+            );
+        }
     }
 
     #[test]
