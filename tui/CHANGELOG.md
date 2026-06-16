@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.3](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.19.2...kimun-notes-v0.19.3) - 2026-06-16
+
+### Fixed
+
+- reuse function
+- bug for zero width clusters
+- emoji proof footer
+- emoji proof text area
+- include selection without changing selection
+- more cases excluding cursor on selection
+- in vim mode, cursor position is included in selection
+
+### Other
+
+- Merge pull request #154 from nico2sh/cursor_vim
+- fmt
+
 ## [0.19.2](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.19.1...kimun-notes-v0.19.2) - 2026-06-16
 
 ### Added
