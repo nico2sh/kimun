@@ -9,7 +9,6 @@ use ratatui::text::{Line, Text};
 use ratatui::widgets::Paragraph;
 use std::ops::Range;
 use std::sync::OnceLock;
-use unicode_width::UnicodeWidthStr;
 
 /// Terminal cursor shape the editor requests while focused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1290,12 +1289,19 @@ fn apply_code_box<'a>(
     theme: &Theme,
 ) -> Vec<ratatui::text::Span<'a>> {
     use ratatui::text::Span;
+    use unicode_segmentation::UnicodeSegmentation;
     let bg = theme.code_bg.to_ratatui();
+    // Measure with the same cluster + tab-aware model as `raw_display_width`
+    // (which sizes `box_width` in `rebuild_code_box_width`), so the padding
+    // can never disagree with the target on emoji presentation sequences or
+    // tabs. `cluster_width_at` needs the running column for tab stops.
     let mut width = 0usize;
     let mut out: Vec<Span<'a>> = spans
         .into_iter()
         .map(|s| {
-            width += s.content.width();
+            for g in s.content.graphemes(true) {
+                width += super::markdown::cluster_width_at(g, width);
+            }
             let style = s.style.bg(bg);
             Span::styled(s.content, style)
         })
@@ -2493,6 +2499,23 @@ mod tests {
         assert_eq!(total, 5); // padded to box width
         let bg = theme.code_bg.to_ratatui();
         assert!(out.iter().all(|s| s.style.bg == Some(bg)));
+    }
+
+    #[test]
+    fn apply_code_box_measures_emoji_cluster_at_full_width() {
+        // Regression: padding must use the same cluster model as
+        // `raw_display_width` (which sizes the box). "a❤️" = 'a' (1) + VS16 heart
+        // (2) = 3 rendered cols. Per-codepoint width undercounts the heart as 1,
+        // over-padding the box and overshooting box_width. With cluster width the
+        // content already fills 3 cols, so a box_width of 3 needs zero padding.
+        use ratatui::text::Span;
+        let theme = crate::settings::themes::Theme::gruvbox_dark();
+        let content = "a\u{2764}\u{FE0F}";
+        assert_eq!(super::super::markdown::raw_display_width(content), 3);
+        let out = super::apply_code_box(vec![Span::raw(content)], 3, &theme);
+        // No padding span appended — content already 3 cols.
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].content.as_ref(), content);
     }
 
     #[test]
