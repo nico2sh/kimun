@@ -1,6 +1,6 @@
 [package]
 name = "kimun_core"
-version = "0.2.23"
+version = "0.2.24"
 authors = ["Nico Hormazábal <mail@nico2sh.com>"]
 edition = "2021"
 description = "Core library for the Kimün notes application"
