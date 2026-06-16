@@ -16,6 +16,7 @@ use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use crate::components::events::{AppEvent, AppTx};
@@ -204,23 +205,7 @@ impl FooterBar {
             w
         };
         let path_budget = (rect.width as usize).saturating_sub(tail_width + 1);
-        let path_display = if doc.path.width() > path_budget {
-            let keep: String = doc
-                .path
-                .chars()
-                .rev()
-                .scan(0usize, |acc, c| {
-                    *acc += unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
-                    (*acc < path_budget).then_some(c)
-                })
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect();
-            format!("…{keep}")
-        } else {
-            doc.path.to_string()
-        };
+        let path_display = fit_path(doc.path, path_budget);
         let mut segments: Vec<Span> = vec![Span::styled(format!(" {path_display}"), muted)];
         let push = |segments: &mut Vec<Span>, span: Span<'static>| {
             segments.push(Span::styled(" · ", muted));
@@ -280,5 +265,71 @@ impl FooterBar {
 impl Default for FooterBar {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Fit `path` into `budget` display columns for the footer. When it overflows,
+/// keep the trailing portion (the note-name end is the most useful part) and
+/// prefix it with `…`. Truncation lands on grapheme-cluster boundaries and
+/// measures by rendered width, so a multi-codepoint cluster (emoji presentation
+/// sequence, combining mark) is never split or reordered.
+fn fit_path(path: &str, budget: usize) -> String {
+    if path.width() <= budget {
+        return path.to_string();
+    }
+    let mut acc = 0usize;
+    let keep: String = path
+        .graphemes(true)
+        .rev()
+        .take_while(|g| {
+            acc += g.width();
+            acc < budget
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("…{keep}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_path_returned_whole() {
+        assert_eq!(fit_path("notes/foo", 20), "notes/foo");
+    }
+
+    #[test]
+    fn overflowing_ascii_path_keeps_trailing_with_ellipsis() {
+        // "abcdefghij" (10 cols) into budget 5: keep trailing clusters while
+        // cumulative width stays strictly < 5 → "ghij" (4 cols); "f" would
+        // reach 5 and stop. Matches the pre-extraction truncation behavior.
+        assert_eq!(fit_path("abcdefghij", 5), "…ghij");
+    }
+
+    #[test]
+    fn cjk_width_counted_as_two_columns() {
+        // "猫猫猫" is 6 display cols; budget 6 fits whole (no ellipsis).
+        assert_eq!(fit_path("猫猫猫", 6), "猫猫猫");
+    }
+
+    #[test]
+    fn emoji_cluster_not_split_or_reordered() {
+        // Flag 🇪🇸 = two regional indicators, one cluster (2 cols). Budget 2 on
+        // "z🇪🇸" forces the cut to land *inside* the flag. A per-codepoint
+        // truncation would keep a lone regional indicator (🇸 — half a flag);
+        // grapheme-aware truncation must never emit a partial cluster, so the
+        // flag is kept whole or dropped entirely (here: dropped → just "…").
+        let es = "\u{1F1F8}"; // ES regional indicator (the 2nd half)
+        let flag = "\u{1F1EA}\u{1F1F8}";
+        let path = format!("z{flag}");
+        let out = fit_path(&path, 2);
+        assert!(out.starts_with('…'), "expected ellipsis prefix: {out:?}");
+        assert!(
+            !out.contains(es) || out.contains(flag),
+            "regional indicator emitted without its full flag cluster: {out:?}"
+        );
     }
 }
