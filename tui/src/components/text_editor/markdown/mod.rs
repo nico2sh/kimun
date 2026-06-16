@@ -82,11 +82,13 @@ pub(super) fn cluster_width_at(cluster: &str, col: usize) -> usize {
 /// collapse to a single 2-column glyph and combining marks (e + U+0301)
 /// contribute 0, both of which `width()` already reports correctly.
 ///
-/// `.max(1)` guards a cluster whose scalars are all zero-width/unknown (e.g. a
-/// lone combining mark): it still occupies one cell as the renderer emits it.
+/// Genuinely zero-width clusters (ZWSP, soft hyphen, BOM, a lone combining
+/// mark) measure 0 — matching what the terminal draws. The wrap loop's
+/// forward-progress guard (`word_wrap::wrap_one_row`) handles a zero-width
+/// start cluster, so no `.max(1)` floor is needed here.
 pub(super) fn cluster_display_width(cluster: &str) -> usize {
     use unicode_width::UnicodeWidthStr;
-    cluster.width().max(1)
+    cluster.width()
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -477,6 +479,17 @@ mod tests {
         assert_eq!(cluster_display_width("\u{3042}"), 2, "CJK あ");
         assert_eq!(cluster_display_width("a"), 1, "ascii");
         assert_eq!(cluster_display_width("e\u{0301}"), 1, "e + combining acute");
+    }
+
+    #[test]
+    fn cluster_display_width_zero_width_clusters_are_zero() {
+        // Genuinely zero-width clusters render as 0 columns in terminals. Counting
+        // them as 1 drifts wrap, cursor, and selection math by one column each.
+        assert_eq!(cluster_display_width("\u{200B}"), 0, "ZWSP");
+        assert_eq!(cluster_display_width("\u{00AD}"), 0, "soft hyphen");
+        assert_eq!(cluster_display_width("\u{200C}"), 0, "ZWNJ");
+        assert_eq!(cluster_display_width("\u{FEFF}"), 0, "BOM");
+        assert_eq!(cluster_display_width("\u{0301}"), 0, "lone combining acute");
     }
 
     #[test]
