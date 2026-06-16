@@ -73,6 +73,10 @@ current_workspace = "default"
 path = "~/Documents/Notes"
 inbox_path = "/inbox"
 
+# A [key_bindings] section REPLACES the whole default keymap — it does not
+# merge. Anything you omit ends up unbound (except Quit, which is restored).
+# The five lines below are illustrative; a real override should list every
+# binding you want to keep. See "Key Bindings → Replace, Not Merge" below.
 [key_bindings]
 Quit = ["ctrl&Q"]
 SearchNotes = ["ctrl&K"]
@@ -139,8 +143,27 @@ current_workspace = "default"
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `current_workspace` | string | *(unset)* | Workspace Kimün loads at startup. Must match a `[workspaces.<name>]` key. |
+| `update_check` | boolean | `true` | Check GitHub for a newer release on launch. Read only at startup. |
+| `mouse` | boolean | `true` | Capture the mouse for in-app use (divider drag, list scroll, click-to-focus). Set `false` to hand the mouse back to your terminal — see [Mouse](#mouse). Read only at startup; also a checkbox in Preferences (`Ctrl+,` → Display). |
 
 (Theme lives at the top level, not here.)
+
+### Mouse
+
+By default Kimün captures the mouse so you can drag panel dividers, scroll lists, and click to focus. Capturing is **all-or-nothing**: a terminal either reports every button to the application or handles the mouse itself — there is no middle ground. While Kimün is capturing, your terminal's own mouse gestures are suppressed, most notably **middle-click paste** (the X11 PRIMARY selection) and drag-to-select-and-copy.
+
+Two ways to get the terminal's native mouse behaviour back:
+
+- **Per-gesture, no config:** most terminals (xterm, and many others) let you **hold `Shift`** to bypass an application's mouse capture for one action. `Shift`+middle-click pastes the primary selection; `Shift`+drag selects text to copy. Nothing to configure — try it first.
+- **Permanently:** set `mouse = false` in `[global]` (or untick it in Preferences → Display). Kimün then never captures the mouse, so the terminal keeps full control of selection, copy, and paste.
+
+```toml
+[global]
+current_workspace = "default"
+mouse = false
+```
+
+With `mouse = false` you lose Kimün's in-app mouse gestures, but nothing becomes unreachable — every one has a keyboard equivalent: resize the drawer with the leader `Window` actions, move and scroll lists with the arrow keys, and cycle panel focus from the keyboard. The setting is read once at startup, so changing it (in the file or in Preferences) takes effect on the **next launch**.
 
 ### `[workspaces.<name>]` Sections
 
@@ -228,6 +251,32 @@ FileOperations = ["F2"]
 TextEditor-Bold = ["ctrl&B"]
 ```
 
+#### Replace, Not Merge
+
+**A `[key_bindings]` section replaces the entire default keymap — it does not merge with it.** Kimün binds *only* the actions you list; every action you leave out ends up with **no shortcut at all**. So the short snippet above, taken literally, would unbind everything except those six actions — Preferences, the leader key, focus movement, and the rest would stop responding.
+
+The one exception is `Quit`: if you omit it, Kimün restores the default `Ctrl+Q` (and refuses to load a config where `Ctrl+Q` is already mapped to something else, so you can never lock yourself out).
+
+This means there are two safe ways to customise:
+
+- **Change nothing structurally** — leave the `[key_bindings]` section out entirely and keep every default. (To tweak just one or two keys, this is *not* enough on its own; see below.)
+- **List every binding you want** — when the section is present, treat it as the complete keymap. Copy the full default set (see the [Keybindings cheat-sheet](@/using-kimun/keybindings.md)) and edit the lines you care about, leaving the rest as-is so they keep working.
+
+To remap a single action like Preferences, the smallest correct config still lists all the others you rely on:
+
+```toml
+[key_bindings]
+OpenSettings = ["ctrl&."]   # your new Preferences key
+# …plus every other binding you want to keep, e.g.:
+Quit               = ["ctrl&Q"]
+Leader             = ["ctrl&G"]
+OpenCommandPalette = ["ctrl&P"]
+SearchNotes        = ["ctrl&K"]
+# …and so on for the rest of the defaults
+```
+
+(`OpenSettings` is the on-disk action name for the Preferences screen; `OpenPreferences` is accepted as an alias.)
+
 #### Format
 
 Each action takes a list of one or more key combinations:
@@ -252,12 +301,12 @@ Use these names exactly as shown. For the default shortcuts each one ships with,
 - `Quit` — Exit Kimün
 - `Leader` — The leader gateway (default `Ctrl+G`) — starts a key sequence; see the [leader key](@/using-kimun/tui.md#the-leader-key)
 - `OpenCommandPalette` — The command palette (default `Ctrl+P`)
-- `OpenSettings` — Open the Preferences screen (default `Ctrl+,`)
+- `OpenSettings` — Open the Preferences screen (default `F4`; `Ctrl+,` is an alias — `Ctrl+,` doesn't transmit on every terminal, so `F4` is the dependable default)
 - `ToggleSidebar` — Show/hide the drawer (default `Ctrl+T`)
 - `OpenFileBrowser` — Open (or switch the drawer to) the file browser (default `Ctrl+E`)
 - `ToggleQueryPanel` — Toggle the FIND drawer view (no default binding; `ToggleBacklinks` still parses as an alias)
 - `FocusEditor` / `FocusSidebar` — Move focus right / left across the visible panels
-- `SwitchWorkspace` — Open the workspace switcher
+- `SwitchWorkspace` — Open the workspace switcher (default `F5`)
 - `OpenSavedSearches` — Open the saved-searches picker (default `F3`)
 
 **Notes**
