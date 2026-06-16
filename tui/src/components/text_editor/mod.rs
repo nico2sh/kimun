@@ -890,8 +890,25 @@ impl TextEditorComponent {
         if text.is_empty() {
             return;
         }
+        // In vim charwise Visual mode the selection is inclusive of the char
+        // under the cursor, but ratatui's `selection_range()` is half-open and
+        // stops *before* it. Extend the end col by one so the last selected
+        // char is wrapped/replaced too — mirrors the highlight path (see
+        // `vim_is_charwise_visual`). VisualLine is left untouched.
+        let charwise_visual = self.backend.vim_is_charwise_visual();
         match &mut self.backend {
             BackendState::Textarea(tb) => {
+                if charwise_visual
+                    && let Some((start, (er, ec))) = tb.ta.selection_range()
+                {
+                    let len = tb
+                        .ta
+                        .lines()
+                        .get(er)
+                        .map(|l| l.chars().count())
+                        .unwrap_or(ec);
+                    set_selection(&mut tb.ta, start, (er, (ec + 1).min(len)));
+                }
                 let selection = linkable_url(text).and_then(|_| selection_text(&tb.ta));
                 let wrapped = try_build_markdown_link(text, selection.as_deref());
                 if tb.ta.selection_range().is_some() {
@@ -3482,6 +3499,35 @@ mod tests {
             },
             _ => panic!("expected Textarea backend"),
         }
+    }
+
+    /// Regression: pasting a URL over a vim charwise Visual selection made with
+    /// `ve` (cursor lands ON the last char) must wrap the WHOLE word as a
+    /// markdown link. ratatui's `selection_range()` is half-open and stops
+    /// before the char under the cursor, so without the inclusive extension in
+    /// `paste_text` the last letter was left dangling (`[hell](url)o`).
+    #[test]
+    fn vim_visual_paste_url_wraps_whole_selected_word() {
+        let mut editor = make_vim_editor();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        editor.set_text("hello world".to_string());
+        // `v` enters charwise Visual at col 0, `e` extends to the end of the
+        // word — cursor ends ON the 'o' of "hello".
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('v'), KeyModifiers::NONE)),
+            &tx,
+        );
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('e'), KeyModifiers::NONE)),
+            &tx,
+        );
+        assert_eq!(vim_mode(&editor), EditorMode::Visual);
+        editor.paste_text("https://example.com", &tx);
+        assert_eq!(
+            editor.get_text(),
+            "[hello](https://example.com) world",
+            "the whole selected word (including the char under the cursor) must be wrapped"
+        );
     }
 
     /// Regression: a bare left click (Down with no Drag) must NOT flip
