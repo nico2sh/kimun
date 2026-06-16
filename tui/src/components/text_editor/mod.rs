@@ -852,6 +852,11 @@ impl TextEditorComponent {
 
     /// Copy selected text to the system clipboard.
     fn copy_selection_to_clipboard(&mut self) {
+        // Match the highlighted range in vim charwise Visual mode: the textarea
+        // selection is half-open, but the cursor's char is part of the visual
+        // selection, so copy it too (right-click copy reaches here after a mouse
+        // drag that flipped the engine into Visual). No-op otherwise.
+        self.extend_visual_selection_inclusive();
         let text = {
             let Some(ta) = self.backend.as_textarea() else {
                 return;
@@ -886,29 +891,33 @@ impl TextEditorComponent {
     /// On the Nvim backend the URL-wrap shortcut is skipped (would require
     /// reading the visual selection from nvim) — `text` is forwarded via
     /// `nvim_paste`, which honours the current mode (insert/normal/visual).
+    /// In vim charwise Visual mode the live textarea selection is half-open and
+    /// excludes the char under the cursor, but vim treats the selection as
+    /// inclusive. Extend the selection end by one so out-of-engine consumers
+    /// (paste-over-selection, bold/italic/strikethrough wrap) act on the WHOLE
+    /// visual range — mirrors the highlight path (see `vim_is_charwise_visual`)
+    /// and the vim engine's own `select_range(.., inclusive=true)`. No-op
+    /// outside charwise Visual (Direct/Insert/VisualLine/Nvim), where the
+    /// half-open range is already what callers want.
+    fn extend_visual_selection_inclusive(&mut self) {
+        if !self.backend.vim_is_charwise_visual() {
+            return;
+        }
+        if let Some(ta) = self.backend.as_textarea_mut()
+            && let Some((start, (er, ec))) = ta.selection_range()
+        {
+            let len = ta.lines().get(er).map(|l| l.chars().count()).unwrap_or(ec);
+            set_selection(ta, start, (er, (ec + 1).min(len)));
+        }
+    }
+
     pub fn paste_text(&mut self, text: &str, tx: &AppTx) {
         if text.is_empty() {
             return;
         }
-        // In vim charwise Visual mode the selection is inclusive of the char
-        // under the cursor, but ratatui's `selection_range()` is half-open and
-        // stops *before* it. Extend the end col by one so the last selected
-        // char is wrapped/replaced too — mirrors the highlight path (see
-        // `vim_is_charwise_visual`). VisualLine is left untouched.
-        let charwise_visual = self.backend.vim_is_charwise_visual();
+        self.extend_visual_selection_inclusive();
         match &mut self.backend {
             BackendState::Textarea(tb) => {
-                if charwise_visual
-                    && let Some((start, (er, ec))) = tb.ta.selection_range()
-                {
-                    let len = tb
-                        .ta
-                        .lines()
-                        .get(er)
-                        .map(|l| l.chars().count())
-                        .unwrap_or(ec);
-                    set_selection(&mut tb.ta, start, (er, (ec + 1).min(len)));
-                }
                 let selection = linkable_url(text).and_then(|_| selection_text(&tb.ta));
                 let wrapped = try_build_markdown_link(text, selection.as_deref());
                 if tb.ta.selection_range().is_some() {
@@ -972,6 +981,10 @@ impl TextEditorComponent {
     /// on the Nvim backend. Callers on the key path don't reconcile the
     /// autocomplete popup — `handle_input` re-syncs on any content bump.
     fn wrap_selection(&mut self, open: &str, close: &str) -> bool {
+        // Vim charwise Visual selections are inclusive; extend the half-open
+        // range so the char under the cursor is wrapped too (otherwise `ve`
+        // then Bold yields `**hell**o`). No-op outside charwise Visual.
+        self.extend_visual_selection_inclusive();
         let Some(ta) = self.backend.as_textarea_mut() else {
             return false;
         };
@@ -3526,6 +3539,33 @@ mod tests {
         assert_eq!(
             editor.get_text(),
             "[hello](https://example.com) world",
+            "the whole selected word (including the char under the cursor) must be wrapped"
+        );
+    }
+
+    /// Regression: applying Bold over a vim charwise Visual selection made with
+    /// `ve` must wrap the WHOLE word. The formatting action is dispatched at the
+    /// app-screen keybinding layer (before the vim engine), so it reads the
+    /// half-open textarea selection directly — without the inclusive extension
+    /// the last letter was left outside the markers (`**hell**o`).
+    #[test]
+    fn vim_visual_bold_wraps_whole_selected_word() {
+        let mut editor = make_vim_editor();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        editor.set_text("hello world".to_string());
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('v'), KeyModifiers::NONE)),
+            &tx,
+        );
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('e'), KeyModifiers::NONE)),
+            &tx,
+        );
+        assert_eq!(vim_mode(&editor), EditorMode::Visual);
+        editor.apply_text_action(TextAction::Bold);
+        assert_eq!(
+            editor.get_text(),
+            "**hello** world",
             "the whole selected word (including the char under the cursor) must be wrapped"
         );
     }
