@@ -33,29 +33,29 @@ Do you want to know more? ⭐️🚀 Check out our official documentation site f
 
 ---
 
-## ✨ Key Features
+## Key Features
 
-* ⚡ **Blazing Fast Search:** Local Markdown files are automatically indexed into a local SQLite database for (_almost_) instantaneous full-text, structured, and fuzzy search.
-* 🗺️ **Zettelkasten-Ready Linkages:** Seamlessly navigate your knowledge base using `[[wikilinks]]` and standard Markdown links with intuitive keyboard shortcuts. Includes backlink support with interactive previews!
-* 🧠 **AI & MCP Native:** Equipped with a dedicated **Model Context Protocol (MCP) Server** and LLM tools. Let your local or cloud AI models (like Claude Code) scan your notes, run daily reviews, update journals, or synthesize concepts directly.
-* 🤖 **Two Interfaces:**
+* **Blazing Fast Search:** Local Markdown files are automatically indexed into a local SQLite database for (_almost_) instantaneous full-text, structured, and fuzzy search.
+* **Zettelkasten-Ready Linkages:** Seamlessly navigate your knowledge base using `[[wikilinks]]` and standard Markdown links with intuitive keyboard shortcuts. Includes backlink support with interactive previews!
+* **AI & MCP Native:** Equipped with a dedicated **Model Context Protocol (MCP) Server** and LLM tools. Let your local or cloud AI models (like Claude Code) scan your notes, run daily reviews, update journals, or synthesize concepts directly.
+* **Two Interfaces:**
   * **TUI (Terminal User Interface):** An elegant, interactive pane for capturing thoughts, browsing workspaces, and previewing files.
   * **CLI (Command Line Interface):** Fully scriptable. Pipe outputs, log entries via cron jobs, and manipulate entries using `jq` and shell tools.
-* 🗂️ **Workspaces in Context:** Effortlessly separate your notes into distinct contexts (e.g., `Personal` vs `Work`) using multiple independent vaults.
-* 🟢 **Vim ready:** Power users rejoice! You can navigate with `HJKL` and more with either:
+* **Workspaces in Context:** Effortlessly separate your notes into distinct contexts (e.g., `Personal` vs `Work`) using multiple independent vaults.
+* **Vim ready:** Power users rejoice! You can navigate with `HJKL` and more with either:
   * Vim emulation: fully baked in in the app, you have Vim motions, vim Visual mode, even replace mode, and more! While having the rich editor capabilities.
   * Embedded Neovim Mode: In case you want to use your own config from Neovim, you can use Neovim in embedded mode too.
 
 ---
 
-### 📸 How the TUI looks
+### How the TUI looks
 <div align="center">
   <img src="assets/screenshot.png" alt="Kimün Notes Preview and Search Panel Screenshot" width="100%" />
 </div>
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Installation
 
@@ -84,13 +84,13 @@ cargo install kimun-notes
 
 ```
 
-### Try It Out!
+### Try It Out
 
 Explore Kimün immediately using the pre-configured environments located inside the `example/` directory. It comes loaded with interconnected personal and work notes, journals, and incoming inboxes:
 
 ```bash
 # Launch Kimün in the sample workspace
-kimun --vault ./example
+kimun --config ./example/config.toml
 
 ```
 
@@ -151,25 +151,25 @@ cp -r skills/kimun-cli ~/.claude/skills
 
 ---
 
-## 🤝 Contributing
+## Contributing
 
 Who doesn't love open-source contributions! Whether you want to submit a bug fix, optimize the SQLite indexing, polish the text layout engine, or share an LLM Prompt template/Skill, you are welcome here.
 
 1. Fork the repository.
 2. Create your feature branch (`git checkout -b feature/amazing-idea`).
-3. Commit your changes (`git commit -m 'Add amazing feature'`).
+3. Commit your changes (`git commit -m 'feat: Add amazing feature'`).
 4. Push to the branch (`git push origin feature/amazing-idea`).
 5. Open a Pull Request.
 
 ---
 
-## 🏆 Credits & Inspirations
+## Credits
 
 Kimün stands on the shoulders of giants in the terminal and note-taking ecosystem:
 
-* **UI/UX Foundations:** Built with [Ratatui](https://github.com/ratatui/ratatui) & `ratatui-textarea`.
-* **Search Mechanics:** Powered by [Nucleo](https://www.google.com/search?q=https://github.com/0x0ac/nucleo) for ultra-fast fuzzy matching, and `ignore` for rapid directory walking.
-* **Editor Integration:** Leverages `nvim-rs` for Neovim synchronization workflows.
-* **Inspiration:** Heavily inspired by Obsidian, Logseq, and QOwnNotes.
+* **UI/UX:** Built with [Ratatui](https://github.com/ratatui/ratatui) & [Ratatui-textarea](https://github.com/ratatui/ratatui-textarea).
+* **Search:** Powered by [Nucleo](https://www.google.com/search?q=https://github.com/0x0ac/nucleo) for ultra-fast fuzzy matching, and [ignore](https://github.com/BurntSushi/ripgrep/tree/master/crates/ignore) for fast directory walking.
+* **Editor Integration:** Leverages [nvim-rs](https://github.com/KillTheMule/nvim-rs) for Neovim synchronization and integration.
+* **Inspiration:** Heavily inspired by [Obsidian](https://obsidian.md/), [Logseq](https://logseq.com/), and [QOwnNotes](https://www.qownnotes.org/).
 
 ---
