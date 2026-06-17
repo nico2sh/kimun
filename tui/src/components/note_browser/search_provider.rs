@@ -27,13 +27,16 @@ pub fn resolving_search_source(
     )
 }
 
-pub struct SearchNotesProvider {
+/// The unwrapped vault-backed search source. Private: build it only through
+/// [`resolving_search_source`], so every browser source carries the
+/// variable-resolution policy and none can bypass it.
+struct SearchNotesProvider {
     vault: Arc<NoteVault>,
     last_paths: Vec<VaultPath>,
 }
 
 impl SearchNotesProvider {
-    pub fn new(vault: Arc<NoteVault>, last_paths: Vec<VaultPath>) -> Self {
+    fn new(vault: Arc<NoteVault>, last_paths: Vec<VaultPath>) -> Self {
         Self { vault, last_paths }
     }
 

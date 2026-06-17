@@ -16,6 +16,7 @@ use crate::components::autocomplete::AutocompleteMode;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx};
 use crate::components::file_list::{SortField, SortOrder};
+use crate::components::preview_highlight;
 use crate::components::query_vars::{QueryContext, query_has_variables, resolve_query};
 use crate::components::saved_search_breadcrumb::SavedSearchBreadcrumb;
 use crate::components::search_list::{
@@ -443,8 +444,7 @@ impl QueryPanel {
     fn cached_needles(&mut self) -> &[String] {
         let note = self.current_note();
         if self.needles_cache_key.0 != self.list.query() || self.needles_cache_key.1 != note {
-            let resolved =
-                resolve_query(self.list.query(), &QueryContext::with_note(Some(note.clone())));
+            let resolved = resolve_query(self.list.query(), &self.query_ctx());
             self.needles_cache = query_needles(&resolved);
             self.needles_cache_key = (self.list.query().to_string(), note);
         }
@@ -916,7 +916,7 @@ impl QueryPanel {
 
                 let mut lines = Vec::new();
                 for line in text.lines() {
-                    let wrapped = wrap_line(line, wrap_width);
+                    let wrapped = preview_highlight::wrap_line(line, wrap_width);
                     for wline in wrapped {
                         let spans = highlight_needles(&wline, needles, gray, bg, theme);
                         let mut indented =
@@ -1031,13 +1031,11 @@ impl QueryPanel {
             let mut link_line: Option<usize> = None;
 
             for line in text.lines() {
-                let wrapped = wrap_line(line, wrap_width);
+                let wrapped = preview_highlight::wrap_line(line, wrap_width);
                 for wline in wrapped {
                     if anchored
                         && link_line.is_none()
-                        && needles
-                            .iter()
-                            .any(|n| !n.is_empty() && find_case_insensitive(&wline, n).is_some())
+                        && !preview_highlight::match_ranges(&wline, needles).is_empty()
                     {
                         link_line = Some(lines.len());
                     }
@@ -1140,74 +1138,6 @@ fn split_paragraphs(text: &str) -> Vec<String> {
 // Rendering helpers
 // ---------------------------------------------------------------------------
 
-/// Wrap a single line into multiple lines that fit within `max_width` characters.
-/// Uses character count (not byte length) for width. Wraps at word boundaries
-/// when possible, hard-breaks otherwise.
-fn wrap_line(line: &str, max_width: usize) -> Vec<String> {
-    if max_width == 0 || line.chars().count() <= max_width {
-        return vec![line.to_string()];
-    }
-
-    let mut result = Vec::new();
-    let mut remaining = line;
-
-    while remaining.chars().count() > max_width {
-        // Find the byte index of the max_width-th character.
-        let byte_limit = remaining
-            .char_indices()
-            .nth(max_width)
-            .map(|(i, _)| i)
-            .unwrap_or(remaining.len());
-
-        // Try to find a space to break at (within the allowed character range).
-        let break_at = remaining[..byte_limit]
-            .rfind(' ')
-            .map(|i| i + 1) // include the space on the current line
-            .unwrap_or(byte_limit); // hard break if no space
-        result.push(remaining[..break_at].trim_end().to_string());
-        remaining = &remaining[break_at..];
-    }
-    if !remaining.is_empty() {
-        result.push(remaining.to_string());
-    }
-    result
-}
-
-/// Case-insensitive search for `needle` in `haystack`, returning the byte
-/// range `(start, end)` in `haystack` where the match occurs. Compares
-/// char-by-char via `to_lowercase()` so byte lengths are always derived from
-/// the original string, avoiding the case-folding byte-mismatch problem.
-fn find_case_insensitive(haystack: &str, needle: &str) -> Option<(usize, usize)> {
-    let needle_chars: Vec<char> = needle.chars().collect();
-    if needle_chars.is_empty() {
-        return None;
-    }
-    let hay_indices: Vec<(usize, char)> = haystack.char_indices().collect();
-    'outer: for start_idx in 0..hay_indices.len() {
-        if start_idx + needle_chars.len() > hay_indices.len() {
-            break;
-        }
-        for (j, &nc) in needle_chars.iter().enumerate() {
-            let hc = hay_indices[start_idx + j].1;
-            // Compare lowercased chars.
-            let mut h_lower = hc.to_lowercase();
-            let mut n_lower = nc.to_lowercase();
-            if h_lower.next() != n_lower.next() {
-                continue 'outer;
-            }
-        }
-        // Match found — compute byte range from haystack char indices.
-        let byte_start = hay_indices[start_idx].0;
-        let byte_end = if start_idx + needle_chars.len() < hay_indices.len() {
-            hay_indices[start_idx + needle_chars.len()].0
-        } else {
-            haystack.len()
-        };
-        return Some((byte_start, byte_end));
-    }
-    None
-}
-
 /// Find the first paragraph containing any of `needles` (case-insensitive);
 /// fall back to the first non-blank line.
 fn extract_context_multi(text: &str, needles: &[String]) -> String {
@@ -1224,7 +1154,8 @@ fn extract_context_multi(text: &str, needles: &[String]) -> String {
         .to_string()
 }
 
-/// Highlight the earliest occurrence of any needle in `line` (bold accent).
+/// Highlight every occurrence of any needle in `line` (bold accent), the rest
+/// muted. Matching is byte-safe via [`preview_highlight::match_ranges`].
 fn highlight_needles(
     line: &str,
     needles: &[String],
@@ -1237,27 +1168,21 @@ fn highlight_needles(
         .fg(theme.accent.to_ratatui())
         .bg(bg)
         .add_modifier(Modifier::BOLD);
-    let mut best: Option<(usize, usize)> = None;
-    for needle in needles {
-        if needle.is_empty() {
-            continue;
-        }
-        if let Some((s, e)) = find_case_insensitive(line, needle)
-            && (best.is_none() || s < best.unwrap().0)
-        {
-            best = Some((s, e));
-        }
-    }
-    let Some((start, end)) = best else {
+    let ranges = preview_highlight::match_ranges(line, needles);
+    if ranges.is_empty() {
         return vec![Span::styled(line.to_string(), normal)];
-    };
-    let mut spans = Vec::new();
-    if start > 0 {
-        spans.push(Span::styled(line[..start].to_string(), normal));
     }
-    spans.push(Span::styled(line[start..end].to_string(), bold));
-    if end < line.len() {
-        spans.push(Span::styled(line[end..].to_string(), normal));
+    let mut spans = Vec::new();
+    let mut pos = 0;
+    for (start, end) in ranges {
+        if start > pos {
+            spans.push(Span::styled(line[pos..start].to_string(), normal));
+        }
+        spans.push(Span::styled(line[start..end].to_string(), bold));
+        pos = end;
+    }
+    if pos < line.len() {
+        spans.push(Span::styled(line[pos..].to_string(), normal));
     }
     spans
 }
@@ -1281,37 +1206,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn wrap_line_fits_within_width() {
-        let result = wrap_line("short", 20);
-        assert_eq!(result, vec!["short"]);
-    }
-
-    #[test]
-    fn wrap_line_breaks_at_word_boundary() {
-        let result = wrap_line("hello world foo bar", 12);
-        assert_eq!(result, vec!["hello world", "foo bar"]);
-    }
-
-    #[test]
-    fn wrap_line_hard_breaks_long_word() {
-        let result = wrap_line("abcdefghij", 5);
-        assert_eq!(result, vec!["abcde", "fghij"]);
-    }
-
-    #[test]
-    fn wrap_line_handles_multibyte_chars() {
-        // 5 CJK characters — each is 1 char, should wrap at char boundary
-        let result = wrap_line("日本語テスト", 3);
-        assert_eq!(result, vec!["日本語", "テスト"]);
-    }
-
-    #[test]
-    fn wrap_line_empty_string() {
-        let result = wrap_line("", 10);
-        assert_eq!(result, vec![""]);
-    }
-
-    #[test]
     fn extract_context_matches_any_needle() {
         let text = "# Title\n\nIntro line.\n\nA paragraph mentioning widget here.\n";
         let result = extract_context_multi(text, &["widget".to_string()]);
@@ -1319,14 +1213,21 @@ mod tests {
     }
 
     #[test]
-    fn highlight_needles_highlights_first_match() {
+    fn highlight_needles_bolds_every_match() {
         let spans = highlight_needles(
             "see widget and gadget",
-            &["gadget".to_string()],
+            &["widget".to_string(), "gadget".to_string()],
             ratatui::style::Color::Gray,
             ratatui::style::Color::Black,
             &crate::settings::themes::Theme::default(),
         );
+        let bolded: Vec<&str> = spans
+            .iter()
+            .filter(|s| s.style.add_modifier.contains(Modifier::BOLD))
+            .map(|s| s.content.as_ref())
+            .collect();
+        // Both needles are bolded, not just the earliest one.
+        assert!(bolded.contains(&"widget"), "widget should be bold: {bolded:?}");
         assert!(
             spans
                 .iter()
