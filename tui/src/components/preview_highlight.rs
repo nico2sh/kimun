@@ -16,9 +16,11 @@
 /// `str::match_indices`); across needles, a later range that overlaps one
 /// already kept is dropped, with the longest range at each start winning.
 pub fn match_ranges(haystack: &str, needles: &[String]) -> Vec<(usize, usize)> {
+    // Built once and shared across all needles — the haystack is the same.
+    let hay: Vec<(usize, char)> = haystack.char_indices().collect();
     let mut ranges: Vec<(usize, usize)> = Vec::new();
     for needle in needles {
-        collect_needle(haystack, needle, &mut ranges);
+        collect_needle(&hay, haystack.len(), needle, &mut ranges);
     }
     // Longest match first at each start, so an overlapping shorter needle never
     // truncates a longer one.
@@ -37,23 +39,25 @@ pub fn match_ranges(haystack: &str, needles: &[String]) -> Vec<(usize, usize)> {
     kept
 }
 
-/// Append every non-overlapping case-insensitive occurrence of `needle` in
-/// `haystack` to `out`, as byte ranges derived from character indices.
-fn collect_needle(haystack: &str, needle: &str, out: &mut Vec<(usize, usize)>) {
+/// Append every non-overlapping case-insensitive occurrence of `needle` to
+/// `out`, as byte ranges into the original string. `hay` is its precomputed
+/// `char_indices`, `hay_len` its byte length (the tail boundary).
+fn collect_needle(
+    hay: &[(usize, char)],
+    hay_len: usize,
+    needle: &str,
+    out: &mut Vec<(usize, usize)>,
+) {
     let needle_chars: Vec<char> = needle.chars().collect();
     if needle_chars.is_empty() {
         return;
     }
-    let hay: Vec<(usize, char)> = haystack.char_indices().collect();
     let n = needle_chars.len();
     let mut i = 0;
     while i + n <= hay.len() {
         if (0..n).all(|j| chars_eq_ignore_case(hay[i + j].1, needle_chars[j])) {
             let start = hay[i].0;
-            let end = hay
-                .get(i + n)
-                .map(|(b, _)| *b)
-                .unwrap_or_else(|| haystack.len());
+            let end = hay.get(i + n).map(|(b, _)| *b).unwrap_or(hay_len);
             out.push((start, end));
             i += n; // non-overlapping, matching `str::match_indices`
         } else {
