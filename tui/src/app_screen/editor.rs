@@ -22,7 +22,7 @@ use crate::components::events::{AppEvent, AppTx, InputEvent, SaveSource, ScreenE
 use crate::components::file_list::FileListEntry;
 use crate::components::footer_bar::FooterBar;
 use crate::components::note_browser::file_finder_provider::FileFinderProvider;
-use crate::components::note_browser::search_provider::SearchNotesProvider;
+use crate::components::note_browser::search_provider::resolving_search_source;
 use crate::components::note_browser::{BrowserScope, NoteBrowserModal};
 use crate::components::overlay::{Overlay, OverlayKind, OverlayMsg};
 use crate::components::panel::PanelKind;
@@ -848,7 +848,7 @@ impl EditorScreen {
             return;
         }
         let s = self.settings.read().unwrap();
-        let provider = SearchNotesProvider::new(
+        let provider = resolving_search_source(
             self.vault.clone(),
             s.current_last_paths(),
             Some(self.path.clone()),
@@ -1915,7 +1915,7 @@ impl AppScreen for EditorScreen {
             AppEvent::FollowLabel(name) => {
                 let initial = format!("#{name}");
                 let s = self.settings.read().unwrap();
-                let provider = SearchNotesProvider::new(
+                let provider = resolving_search_source(
                     self.vault.clone(),
                     s.current_last_paths(),
                     Some(self.path.clone()),
@@ -2594,7 +2594,7 @@ mod tests {
         // Open a note browser carrying a query, as if the user typed "#todo".
         {
             let s = settings.read().unwrap();
-            let provider = SearchNotesProvider::new(vault.clone(), s.current_last_paths(), None);
+            let provider = resolving_search_source(vault.clone(), s.current_last_paths(), None);
             let modal = NoteBrowserModal::with_initial_query(
                 "Note Browser",
                 BrowserScope::Query,

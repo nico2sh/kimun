@@ -5,8 +5,10 @@
 mod adapters;
 mod host;
 mod load;
+mod resolving;
 mod seams;
 
+pub use resolving::{ResolvingRowSource, Unresolvable};
 pub use seams::{
     Emit, Filter, Loaded, RowSource, SearchRow, SuggestionItem, SuggestionSource, VaultSuggestions,
 };

@@ -94,6 +94,10 @@ _Avoid_: backlink search (names only one direction), `>`/`@` (the pre-ADR-0005 c
 A `{name}` placeholder inside a query that the TUI resolves to a runtime value before handing a plain query string to core. Core's query language has no notion of these — substitution happens entirely in the presentation layer. The first variable is `{note}`, the **clean name** of the note currently open in the editor; a bare `<` typed in the query panel is sugar that expands to `<{note}`. Backlinks of the current note are therefore just the query `<{note}`.
 _Avoid_: macro, token (too generic), current-note placeholder (only describes one variable)
 
+**Query context**:
+The runtime values a query template resolves a **query variable** against, as `QueryContext` — today just the open note, but the single place future variables (`{date}`, `{selection}`, …) extend. `resolve_query`/`query_is_unresolvable` take a `&QueryContext`, and a **resolving row source** reads a fresh one per load, so adding a variable touches this struct and the resolver only — never the row sources or call sites.
+_Avoid_: resolution scope, query env, current-note (only one of its fields).
+
 **Saved search**:
 A named query persisted in the vault under `.kimun/`, so it travels with the notes when the vault is copied (same rationale as **Backup**). The query string is stored verbatim, including any **query variable** like `{note}`, and re-resolved each time it runs. Core owns reading and writing them; the TUI only presents and resolves them.
 _Avoid_: bookmark, smart folder, filter (too generic)
@@ -119,6 +123,10 @@ _Avoid_: list widget, search box (each names only a part)
 **Row source**:
 The seam that supplies a **SearchList** with the rows for a query. Vault-backed in the app (search, backlinks, saved searches, directory listing), in-memory in tests — so a SearchList is exercised without a real vault. Streaming and one-shot delivery are the same source, not different seams.
 _Avoid_: provider (too generic), repository
+
+**Resolving row source**:
+The one **row source** adapter that resolves a **query variable** against a **query context** before any inner row source sees the query (`ResolvingRowSource`). It reads a fresh context per load (so a panel whose open note changes resolves against the current note), substitutes `{note}`, and applies a fallback when a note-dependent query has no note — either show nothing (`Unresolvable::Empty`, the **Query panel**) or run the inner source as an empty query (`Unresolvable::AsEmptyQuery`, the **note browser**'s recent-notes view). Inner sources speak only resolved queries and never import the variable logic.
+_Avoid_: query resolver (names the function, not the seam), template source.
 
 **Search row**:
 What a single row must tell its **SearchList** to be listed, filtered, navigated, and drawn — the only thing that varies with the row's type (a note, a saved search, a directory entry). Anything richer is read back by the caller from the selected row.
