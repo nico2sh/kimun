@@ -1,6 +1,9 @@
 # kimun_core
 
-Core library for [Kimün](https://github.com/nico2sh/kimun) — note vault management, cross-platform filesystem abstraction, and SQLite-based indexing and search.
+[![crates.io](https://img.shields.io/crates/v/kimun_core.svg)](https://crates.io/crates/kimun_core)
+[![docs.rs](https://img.shields.io/docsrs/kimun_core)](https://docs.rs/kimun_core)
+
+Core library for [Kimün](https://github.com/nico2sh/kimun) for indexing and managing Obsidian-like Markdown vaults — note vault management, cross-platform filesystem abstraction, and SQLite-based indexing and search.
 
 [API documentation on docs.rs](https://docs.rs/kimun_core)
 
@@ -70,10 +73,10 @@ Mutating operations take per-note async locks internally, so concurrent in-proce
 The only module that touches the OS filesystem directly; everything else goes through it.
 
 - **`VaultPath`** — a vault-relative path (always uses `/` as separator). Use this instead of raw `PathBuf` for all vault operations.
-- **`VaultEntry`** — an entry found at a `VaultPath`. The `data` field is one of:
-  - `EntryData::Note(NoteEntryData)` — a Markdown file
-  - `EntryData::Directory(DirectoryEntryData)` — a subdirectory
-  - `EntryData::Attachment` — any other file
+- **`NoteEntryData`** — a note (Markdown file) at a `VaultPath`; browse and listing methods return it paired with `NoteContentData`.
+- **`DirectoryEntryData`** — a subdirectory at a `VaultPath`.
+
+Other files in the vault are treated as attachments.
 
 #### Path case handling
 
