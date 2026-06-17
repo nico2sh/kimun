@@ -2714,6 +2714,136 @@ mod tests {
         TextArea::from(["hello world", "second line"])
     }
 
+    // ── Parse-contract tests ─────────────────────────────────────────────────
+    //
+    // These exercise the parser directly (`parse_normal`), with no `TextArea`:
+    // they pin the grammar — counts, the operator×motion count multiply, the
+    // g-grammar, pending cancel, text objects, find targets — as `Parsed`/
+    // `Command` values. The 173 handle_key tests below cover parse+apply
+    // end-to-end; these document the command contract in isolation (adr/0011,
+    // adr/0016).
+
+    /// Unwrap the `Command` a key parsed into, or fail loudly.
+    fn cmd(p: Parsed) -> Command {
+        match p {
+            Parsed::Cmd(c) => c,
+            _ => panic!("expected Parsed::Cmd"),
+        }
+    }
+
+    /// Feed a sequence, returning the final key's parse result.
+    fn parse_seq(e: &mut VimEngine, keys: &str) -> Parsed {
+        let mut last = Parsed::Nothing;
+        for c in keys.chars() {
+            last = e.parse_normal(&key(c));
+        }
+        last
+    }
+
+    #[test]
+    fn count_accumulates_into_motion() {
+        let mut e = VimEngine::default();
+        assert!(matches!(e.parse_normal(&key('1')), Parsed::Pending));
+        assert!(matches!(e.parse_normal(&key('2')), Parsed::Pending));
+        match cmd(e.parse_normal(&key('l'))) {
+            Command::Move(Motion::Right, n) => assert_eq!(n, 12),
+            c => panic!("got {c:?}"),
+        }
+    }
+
+    #[test]
+    fn operator_motion_multiplies_the_two_counts() {
+        // vim: `2d3w` deletes 6 words (pre-operator count × motion count).
+        let mut e = VimEngine::default();
+        match cmd(parse_seq(&mut e, "2d3w")) {
+            Command::OperateMotion(Operator::Delete, Motion::WordForward, n) => {
+                assert_eq!(n, 6, "2 × 3 = 6")
+            }
+            c => panic!("got {c:?}"),
+        }
+    }
+
+    #[test]
+    fn doubled_operator_is_linewise() {
+        let mut e = VimEngine::default();
+        match cmd(parse_seq(&mut e, "2dd")) {
+            Command::OperateLine(Operator::Delete, n) => assert_eq!(n, 2),
+            c => panic!("got {c:?}"),
+        }
+    }
+
+    #[test]
+    fn gg_is_file_start_and_count_makes_it_a_line() {
+        let mut e = VimEngine::default();
+        match cmd(parse_seq(&mut e, "gg")) {
+            Command::Move(Motion::FileStart, 1) => {}
+            c => panic!("gg: got {c:?}"),
+        }
+        let mut e = VimEngine::default();
+        match cmd(parse_seq(&mut e, "5gg")) {
+            Command::Move(Motion::GotoLine(5), 1) => {}
+            c => panic!("5gg: got {c:?}"),
+        }
+    }
+
+    #[test]
+    fn esc_clears_a_pending_operator() {
+        let mut e = VimEngine::default();
+        assert!(matches!(e.parse_normal(&key('d')), Parsed::Pending));
+        assert!(matches!(e.parse_normal(&esc()), Parsed::Cancel));
+        // The pending `d` is gone — `w` is now a plain motion, not a delete.
+        match cmd(e.parse_normal(&key('w'))) {
+            Command::Move(Motion::WordForward, 1) => {}
+            c => panic!("pending operator survived esc: {c:?}"),
+        }
+    }
+
+    #[test]
+    fn operator_plus_text_object_awaits_then_completes() {
+        let mut e = VimEngine::default();
+        assert!(matches!(e.parse_normal(&key('d')), Parsed::Pending));
+        // `i` after an operator awaits the object key — it must NOT enter Insert.
+        assert!(matches!(e.parse_normal(&key('i')), Parsed::Pending));
+        match cmd(e.parse_normal(&key('w'))) {
+            Command::OperateObject(Operator::Delete, TextObject::Word { around: false }) => {}
+            c => panic!("diw: got {c:?}"),
+        }
+    }
+
+    #[test]
+    fn find_target_is_captured_with_the_operator() {
+        let mut e = VimEngine::default();
+        assert!(matches!(e.parse_normal(&key('d')), Parsed::Pending));
+        assert!(matches!(e.parse_normal(&key('f')), Parsed::Pending));
+        match cmd(e.parse_normal(&key(','))) {
+            Command::OperateMotion(
+                Operator::Delete,
+                Motion::FindChar {
+                    ch: ',',
+                    till: false,
+                    forward: true,
+                },
+                1,
+            ) => {}
+            c => panic!("df,: got {c:?}"),
+        }
+    }
+
+    #[test]
+    fn bare_zero_is_line_start_but_zero_extends_a_count() {
+        let mut e = VimEngine::default();
+        match cmd(e.parse_normal(&key('0'))) {
+            Command::Move(Motion::LineStart, 1) => {}
+            c => panic!("bare 0: got {c:?}"),
+        }
+        // With a count pending, `0` is a digit: `10l` moves 10 right.
+        let mut e = VimEngine::default();
+        match cmd(parse_seq(&mut e, "10l")) {
+            Command::Move(Motion::Right, n) => assert_eq!(n, 10),
+            c => panic!("10l: got {c:?}"),
+        }
+    }
+
     // ── Mode-entry + basic motion tests ──────────────────────────────────────
 
     #[test]
