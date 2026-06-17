@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.4](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.19.3...kimun-notes-v0.19.4) - 2026-06-17
+
+### Fixed
+
+- better error messages in cli
+- small bugs found
+- proper count of matches in preview
+- clean
+
+### Other
+
+- fmt
+- consolidate error messages from mcp and skills/cli
+- extract the preview from the query
+- added tests for normal mode parsing
+- unified highlighting
+- single query resolution path
+
 ## [0.19.3](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.19.2...kimun-notes-v0.19.3) - 2026-06-16
 
 ### Fixed
