@@ -561,20 +561,16 @@ pub(super) fn format_journal_date(date: NaiveDate) -> String {
 // Tests
 // ---------------------------------------------------------------------------
 
-/// Total needle occurrences in `text` (case-insensitive), or `None` when
-/// there are no needles — the preview header shows a count only for queries
-/// with text terms.
+/// The number of highlighted matches in `text`, or `None` when there are no
+/// needles (the preview header shows a count only for queries with text terms).
+/// Counts the same ranges [`highlight_matches`] bolds — via the shared
+/// [`preview_highlight::match_ranges`] — so the header never disagrees with the
+/// visible highlights (overlapping needles are deduped, folds counted).
 fn count_matches(text: &str, needles: &[String]) -> Option<usize> {
     if needles.is_empty() {
         return None;
     }
-    let lower = text.to_lowercase();
-    Some(
-        needles
-            .iter()
-            .map(|n| lower.match_indices(n.as_str()).count())
-            .sum(),
-    )
+    Some(preview_highlight::match_ranges(text, needles).len())
 }
 
 /// The preview text with needle matches emphasized in `yellow` (spec §6).
@@ -628,6 +624,21 @@ mod tests {
     use async_trait::async_trait;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use tokio::sync::mpsc::unbounded_channel;
+
+    #[test]
+    fn count_matches_matches_highlighted_ranges() {
+        // No needles → no header count.
+        assert_eq!(count_matches("anything", &[]), None);
+        // Overlapping needles count once (deduped, longest-first) — the header
+        // must equal the number of bolded ranges, not the raw per-needle sum.
+        let needles = vec!["foo".to_string(), "foobar".to_string()];
+        assert_eq!(count_matches("foobar", &needles), Some(1));
+        // Distinct occurrences each count.
+        assert_eq!(
+            count_matches("foo and foo", &["foo".to_string()]),
+            Some(2)
+        );
+    }
 
     /// A one-shot source that yields a single existing note so submit has
     /// something to open.
