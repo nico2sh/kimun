@@ -332,7 +332,6 @@ async fn run_show(
     use crate::cli::metadata_extractor::{extract_headers, extract_links, extract_tags};
     use crate::cli::output::OutputFormat;
     use chrono::Utc;
-    use kimun_core::error::{FSError, VaultError};
     use kimun_core::nfs::NoteEntryData;
     use std::time::UNIX_EPOCH;
 
@@ -367,8 +366,11 @@ async fn run_show(
 
         let note_details = match vault.load_note(&vault_path).await {
             Ok(nd) => nd,
-            Err(VaultError::FSError(FSError::VaultPathNotFound { .. })) => {
-                eprintln!("Error: Note not found: {}", vault_path);
+            // A missing note is a per-note miss (record, keep going); any other
+            // user error prints the same core message; internal errors abort.
+            // Same wording as the single-note path and the MCP server.
+            Err(e) if e.is_not_found() => {
+                eprintln!("Error: {}", e.user_message().unwrap_or_else(|| e.to_string()));
                 had_errors = true;
                 continue;
             }
