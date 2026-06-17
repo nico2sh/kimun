@@ -80,6 +80,44 @@ impl From<sqlx::Error> for VaultError {
     }
 }
 
+impl VaultError {
+    /// `true` when the failure means the requested note/path was not found.
+    pub fn is_not_found(&self) -> bool {
+        match self {
+            VaultError::VaultPathNotFound { .. } => true,
+            VaultError::FSError(e) => e.is_not_found(),
+            _ => false,
+        }
+    }
+
+    /// `true` when the failure is the caller's fault and actionable — a missing
+    /// or already-existing note/directory, an absent or non-unique replacement
+    /// target, an invalid regex or path — rather than an internal failure (DB,
+    /// raw I/O, decoding, a panicked task).
+    ///
+    /// Surfaces decide presentation, not classification: the MCP server returns
+    /// a user error as a tool error the model can react to (an internal one as a
+    /// protocol error); the CLI prints a user error as a clean message with a
+    /// distinct exit code (an internal one as a full report). One place to
+    /// update when a variant is added — the exhaustive match below makes the
+    /// decision compiler-enforced.
+    pub fn is_user_error(&self) -> bool {
+        match self {
+            VaultError::VaultPathNotFound { .. }
+            | VaultError::PathIsNotDirectory { .. }
+            | VaultError::NoteExists { .. }
+            | VaultError::DirectoryExists { .. }
+            | VaultError::ReplaceTextNotFound { .. }
+            | VaultError::ReplaceTextNotUnique { .. }
+            | VaultError::InvalidRegex { .. } => true,
+            VaultError::FSError(e) => e.is_user_error(),
+            VaultError::DBError(_) | VaultError::CaseConflict { .. } | VaultError::TaskJoin(_) => {
+                false
+            }
+        }
+    }
+}
+
 /// Error at the filesystem boundary, raised by the `nfs` module.
 ///
 /// Covers raw I/O failures, path validation, and on-disk note/directory
@@ -134,6 +172,19 @@ impl FSError {
             FSError::VaultPathNotFound { .. } | FSError::NoFileOrDirectoryFound { .. }
         )
     }
+
+    /// `true` when the failure stems from the caller's path input (missing,
+    /// already-existing, or invalid) rather than an internal I/O, decoding, or
+    /// serialization fault.
+    pub fn is_user_error(&self) -> bool {
+        matches!(
+            self,
+            FSError::NoFileOrDirectoryFound { .. }
+                | FSError::VaultPathNotFound { .. }
+                | FSError::AlreadyExists { .. }
+                | FSError::InvalidPath { .. }
+        )
+    }
 }
 
 /// Error at the index boundary, raised when interacting with the SQLite store.
@@ -162,4 +213,34 @@ pub enum DBError {
     /// Acquiring or managing a connection from the connection pool failed.
     #[error("Pool error: {0}")]
     PoolError(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::nfs::VaultPath;
+
+    #[test]
+    fn user_errors_are_actionable_not_internal() {
+        // Caller's fault → user error.
+        assert!(VaultError::NoteExists { path: VaultPath::note_path_from("a") }.is_user_error());
+        assert!(VaultError::ReplaceTextNotFound { path: VaultPath::note_path_from("a") }.is_user_error());
+        assert!(VaultError::ReplaceTextNotUnique { path: VaultPath::note_path_from("a") }.is_user_error());
+        assert!(
+            VaultError::InvalidRegex { pattern: "(".into(), message: "x".into() }.is_user_error()
+        );
+        assert!(VaultError::FSError(FSError::VaultPathNotFound { path: VaultPath::note_path_from("a") }).is_user_error());
+
+        // Internal failures → not user errors.
+        assert!(!VaultError::DBError(DBError::DBConnectionClosed).is_user_error());
+        assert!(!VaultError::TaskJoin("boom".into()).is_user_error());
+        assert!(!VaultError::FSError(FSError::EncodingError(String::from_utf8(vec![0xff]).unwrap_err())).is_user_error());
+    }
+
+    #[test]
+    fn not_found_recognized_through_the_fs_layer() {
+        assert!(VaultError::FSError(FSError::VaultPathNotFound { path: VaultPath::note_path_from("a") }).is_not_found());
+        assert!(VaultError::FSError(FSError::NoFileOrDirectoryFound { path: "a".into() }).is_not_found());
+        assert!(!VaultError::NoteExists { path: VaultPath::note_path_from("a") }.is_not_found());
+    }
 }

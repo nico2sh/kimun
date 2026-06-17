@@ -4,7 +4,7 @@
 
 use clap::Subcommand;
 use color_eyre::eyre::Result;
-use kimun_core::{NoteVault, error::VaultError};
+use kimun_core::NoteVault;
 
 const NOTE_SEPARATOR: &str =
     "================================================================================";
@@ -155,10 +155,10 @@ async fn run_overwrite(
         ));
     }
 
-    vault
-        .save_note(&vault_path, &text)
-        .await
-        .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
+    // Propagate the typed `VaultError` so the boundary in `main` can classify
+    // it (user error → clean message + exit 2). `?` wraps it preserving the
+    // concrete type for `downcast_ref`; stringifying here would lose it.
+    vault.save_note(&vault_path, &text).await?;
 
     println!("Note saved: {}", vault_path);
     Ok(())
@@ -182,8 +182,7 @@ async fn run_replace(
     if preview {
         let pv = vault
             .preview_replace(&vault_path, old, new, all, regex)
-            .await
-            .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
+            .await?;
         // Report the count on stderr so stdout is just the resulting content
         // (pipe-friendly, e.g. into a diff).
         eprintln!(
@@ -194,10 +193,7 @@ async fn run_replace(
         return Ok(());
     }
 
-    let count = vault
-        .replace_in_note(&vault_path, old, new, all, regex)
-        .await
-        .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
+    let count = vault.replace_in_note(&vault_path, old, new, all, regex).await?;
 
     println!("Replaced {} occurrence(s) in {}", count, vault_path);
     Ok(())
@@ -218,10 +214,7 @@ async fn run_delete(
     }
     let vault_path = resolve_note_path(path_input, quick_note_path)?;
 
-    vault
-        .delete_note(&vault_path)
-        .await
-        .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
+    vault.delete_note(&vault_path).await?;
 
     println!("Note deleted: {}", vault_path);
     Ok(())
@@ -238,15 +231,7 @@ async fn run_create(
     let vault_path = resolve_note_path(path_input, quick_note_path)?;
     let text = resolve_content(content)?;
 
-    vault
-        .create_note(&vault_path, &text)
-        .await
-        .map_err(|e| match &e {
-            VaultError::NoteExists { path } => {
-                color_eyre::eyre::eyre!("Note already exists: {}", path)
-            }
-            _ => color_eyre::eyre::eyre!("{}", e),
-        })?;
+    vault.create_note(&vault_path, &text).await?;
 
     println!("Note saved: {}", vault_path);
     Ok(())
@@ -267,10 +252,7 @@ async fn run_append(
         return Ok(());
     }
 
-    vault
-        .append_to_note(&vault_path, &text, None)
-        .await
-        .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
+    vault.append_to_note(&vault_path, &text, None).await?;
 
     println!("Note saved: {}", vault_path);
     Ok(())
