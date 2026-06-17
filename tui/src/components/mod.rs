@@ -1,7 +1,6 @@
 pub mod activity_rail;
 pub mod autocomplete;
 pub mod autosave_timer;
-pub mod backlinks_panel;
 pub mod command_palette;
 pub mod dialogs;
 pub mod dir_browser;
@@ -18,7 +17,9 @@ pub mod overlay;
 pub mod panel;
 pub mod preferences;
 pub mod preview_highlight;
+pub mod preview_pane;
 pub mod query_highlight;
+pub mod query_panel;
 pub mod query_list_panel;
 pub mod query_vars;
 pub mod rich_row;

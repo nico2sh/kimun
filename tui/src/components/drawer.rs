@@ -9,7 +9,7 @@ use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
 
 use crate::components::Component;
-use crate::components::backlinks_panel::QueryPanel;
+use crate::components::query_panel::QueryPanel;
 use crate::components::drawer_views::{LinksPanel, OutlinePanel, TagsPanel};
 use crate::components::event_state::EventState;
 use crate::components::events::{AppTx, InputEvent};
