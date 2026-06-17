@@ -16,10 +16,11 @@ use crate::components::autocomplete::AutocompleteMode;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx};
 use crate::components::file_list::{SortField, SortOrder};
-use crate::components::query_vars::{query_has_variables, query_is_unresolvable, resolve_query};
+use crate::components::query_vars::{QueryContext, query_has_variables, resolve_query};
 use crate::components::saved_search_breadcrumb::SavedSearchBreadcrumb;
 use crate::components::search_list::{
-    Emit, KeyReaction, RowSource, SearchList, SearchMouse, SearchRow, VaultSuggestions,
+    Emit, KeyReaction, ResolvingRowSource, RowSource, SearchList, SearchMouse, SearchRow,
+    Unresolvable, VaultSuggestions,
 };
 use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::ActionShortcuts;
@@ -99,33 +100,20 @@ impl SearchRow for BacklinkEntry {
 // BacklinkSource
 // ---------------------------------------------------------------------------
 
-/// Row source for the Query panel. The engine holds the query TEMPLATE verbatim
-/// (e.g. `<{note}`, so the input shows the template); this source resolves
-/// `{note}` against the shared current note at load time, preserving the exact
-/// "input shows the template, results are backlinks of the current note" UX.
-/// Result ordering comes from the query string's order directive, applied by
-/// the vault DB — the source no longer sorts in memory.
+/// Row source for the Query panel. It receives an already-resolved query
+/// string — [`ResolvingRowSource`] substitutes `{note}` and short-circuits the
+/// purely-note-dependent-but-no-note case to an empty list ([`Unresolvable::Empty`])
+/// before this source is asked to load. Result ordering comes from the query
+/// string's order directive, applied by the vault DB — the source no longer
+/// sorts in memory beyond the no-directive default.
 struct BacklinkSource {
     vault: Arc<NoteVault>,
-    current_note: Arc<Mutex<VaultPath>>,
 }
 
 #[async_trait]
 impl RowSource<BacklinkEntry> for BacklinkSource {
     async fn load(&self, query: &str, emit: Emit<BacklinkEntry>) {
-        // Clone the note out of the lock, then drop the guard before awaiting.
-        let note = self.current_note.lock().unwrap().clone();
-        // Skip the search when the query is purely note-dependent but no note
-        // is open yet (startup state). Running `load_query(vault, "<")`
-        // against an empty note is a wasted DB round-trip that returns
-        // nothing; once `set_note` provides a real note the normal reload
-        // fires. Mixed queries keep their concrete terms and still search.
-        if query_is_unresolvable(query, Some(&note)) {
-            emit.replace(Vec::new());
-            return;
-        }
-        let q = resolve_query(query, Some(&note));
-        let mut entries = load_query(&self.vault, &q).await;
+        let mut entries = load_query(&self.vault, query).await;
         // The DB orders results only when the query carries an `or:` directive
         // (core applies the sort iff `order_by` is non-empty). Keep that
         // directive as the source of truth, but fall back to a stable
@@ -304,10 +292,19 @@ impl QueryPanel {
                 }
             })
         };
-        let source = BacklinkSource {
-            vault: vault.clone(),
-            current_note: current_note.clone(),
-        };
+        // Resolve `{note}` against the shared (live) current note at load time;
+        // a purely note-dependent query with no note open yet shows nothing
+        // (the panel has no recent-notes fallback). See [`ResolvingRowSource`].
+        let source = ResolvingRowSource::new(
+            Arc::new(BacklinkSource {
+                vault: vault.clone(),
+            }),
+            {
+                let note = current_note.clone();
+                move || QueryContext::with_note(Some(note.lock().unwrap().clone()))
+            },
+            Unresolvable::Empty,
+        );
         let combos = |action: &ActionShortcuts| -> Vec<KeyCombo> {
             key_bindings
                 .to_hashmap()
@@ -364,7 +361,7 @@ impl QueryPanel {
     /// query's needles (spec §5.1) — resolved, not the template, so `{note}`
     /// never leaks.
     fn emphasis(&self) -> Option<Vec<String>> {
-        let resolved = resolve_query(self.list.query(), Some(&self.current_note()));
+        let resolved = resolve_query(self.list.query(), &self.query_ctx());
         let needles = crate::components::query_highlight::emphasis_needles(&resolved);
         (!needles.is_empty()).then_some(needles)
     }
@@ -423,6 +420,13 @@ impl QueryPanel {
         self.current_note.lock().unwrap().clone()
     }
 
+    /// The query-resolution context for this panel: the open note. Mirrors what
+    /// the panel's [`ResolvingRowSource`] reads at load time, so the panel's own
+    /// `{note}` resolutions (emphasis, needles) match the loaded results.
+    fn query_ctx(&self) -> QueryContext {
+        QueryContext::with_note(Some(self.current_note()))
+    }
+
     /// Fill the shared redraw slot so the engine's async loads / autocomplete
     /// wake the render loop. Idempotent.
     fn ensure_redraw_tx(&self, tx: &AppTx) {
@@ -439,7 +443,9 @@ impl QueryPanel {
     fn cached_needles(&mut self) -> &[String] {
         let note = self.current_note();
         if self.needles_cache_key.0 != self.list.query() || self.needles_cache_key.1 != note {
-            self.needles_cache = query_needles(&resolve_query(self.list.query(), Some(&note)));
+            let resolved =
+                resolve_query(self.list.query(), &QueryContext::with_note(Some(note.clone())));
+            self.needles_cache = query_needles(&resolved);
             self.needles_cache_key = (self.list.query().to_string(), note);
         }
         &self.needles_cache
