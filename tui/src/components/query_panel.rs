@@ -1297,7 +1297,11 @@ mod tests {
             .unwrap();
         let preview = panel.list.content_rect();
         assert!(!preview.is_empty(), "preview rect recorded");
-        assert_eq!(panel.preview.scroll_offset(), 0, "auto-anchor at the top needle");
+        assert_eq!(
+            panel.preview.scroll_offset(),
+            0,
+            "auto-anchor at the top needle"
+        );
         assert!(panel.preview.scroll_max() > 0, "content overflows viewport");
 
         let wheel = move |y: u16| MouseEvent {
@@ -1310,13 +1314,21 @@ mod tests {
         // Wheel over the LIST area: list scroll path, preview untouched.
         let over_list = wheel(preview.y.saturating_sub(3));
         panel.handle_mouse(&over_list, &tx);
-        assert_eq!(panel.preview.scroll_offset(), 0, "list wheel must not move preview");
+        assert_eq!(
+            panel.preview.scroll_offset(),
+            0,
+            "list wheel must not move preview"
+        );
         assert!(panel.preview.is_anchored(), "anchor stays armed");
 
         // Wheel over the PREVIEW area: preview scrolls, anchor hands over.
         let over_preview = wheel(preview.y + 1);
         panel.handle_mouse(&over_preview, &tx);
-        assert_eq!(panel.preview.scroll_offset(), 1, "preview wheel scrolls content");
+        assert_eq!(
+            panel.preview.scroll_offset(),
+            1,
+            "preview wheel scrolls content"
+        );
         assert!(!panel.preview.is_anchored(), "user owns the scroll now");
 
         // Re-render keeps the user position (no re-anchor) and clamps.

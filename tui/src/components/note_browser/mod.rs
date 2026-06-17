@@ -626,10 +626,7 @@ mod tests {
         let needles = vec!["foo".to_string(), "foobar".to_string()];
         assert_eq!(count_matches("foobar", &needles), Some(1));
         // Distinct occurrences each count.
-        assert_eq!(
-            count_matches("foo and foo", &["foo".to_string()]),
-            Some(2)
-        );
+        assert_eq!(count_matches("foo and foo", &["foo".to_string()]), Some(2));
     }
 
     /// A one-shot source that yields a single existing note so submit has

@@ -370,9 +370,11 @@ fn build_lines(
                 link_line = Some(lines.len());
             }
             let mut indented = vec![Span::styled(" ".repeat(indent), Style::default().bg(bg))];
-            indented.extend(preview_highlight::style_ranges(&wline, &ranges, |s, hit| {
-                Span::styled(s.to_string(), if hit { bold } else { normal })
-            }));
+            indented.extend(preview_highlight::style_ranges(
+                &wline,
+                &ranges,
+                |s, hit| Span::styled(s.to_string(), if hit { bold } else { normal }),
+            ));
             lines.push(Line::from(indented));
         }
     }
