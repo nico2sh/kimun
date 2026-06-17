@@ -15,6 +15,7 @@ use crate::components::events::{AppEvent, AppTx, AppTxExt, InputEvent, redraw_ca
 use crate::components::file_list::FileListEntry;
 use crate::components::overlay::{Overlay, OverlayKind, OverlayMsg};
 use crate::components::panel::{ModalBg, ModalSpec, modal_chrome};
+use crate::components::preview_highlight;
 use crate::components::saved_search_breadcrumb::SavedSearchBreadcrumb;
 use crate::components::search_list::{
     KeyReaction, RowSource, SearchList, SearchMouse, VaultSuggestions,
@@ -577,8 +578,8 @@ fn count_matches(text: &str, needles: &[String]) -> Option<usize> {
 }
 
 /// The preview text with needle matches emphasized in `yellow` (spec §6).
-/// Lines whose lowercase form changes byte length (rare non-ASCII case
-/// folds) are rendered unhighlighted rather than risking misaligned spans.
+/// Matching is byte-safe via [`preview_highlight::match_ranges`], so non-ASCII
+/// case folds (e.g. `İ`, `ẞ`) are highlighted too, not dropped.
 fn highlight_matches<'a>(
     text: &'a str,
     needles: &[String],
@@ -596,36 +597,14 @@ fn highlight_matches<'a>(
     );
     let mut lines = Vec::new();
     for line in text.lines() {
-        let lower = line.to_lowercase();
-        if lower.len() != line.len() {
+        let ranges = preview_highlight::match_ranges(line, needles);
+        if ranges.is_empty() {
             lines.push(Line::styled(line, base));
             continue;
         }
-        // Collect non-overlapping match ranges across all needles.
-        let mut ranges: Vec<(usize, usize)> = needles
-            .iter()
-            .flat_map(|n| {
-                lower
-                    .match_indices(n.as_str())
-                    .map(|(i, m)| (i, i + m.len()))
-            })
-            .collect();
-        // Longest match first at each start, so an overlapping shorter
-        // needle never truncates a longer one.
-        ranges.sort_unstable_by_key(|(s, e)| (*s, std::cmp::Reverse(*e)));
-        ranges.dedup();
         let mut spans = Vec::new();
         let mut pos = 0;
         for (start, end) in ranges {
-            if start < pos {
-                continue; // overlapping with a previous needle — skip
-            }
-            // Length-preserving case folds can still SHIFT char boundaries
-            // (e.g. İ + ẞ); offsets from the lowered line must land on real
-            // boundaries of the original or the slice would panic.
-            if !line.is_char_boundary(start) || !line.is_char_boundary(end) {
-                continue;
-            }
             if start > pos {
                 spans.push(Span::styled(&line[pos..start], base));
             }
