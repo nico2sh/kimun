@@ -140,23 +140,15 @@ pub struct KimunHandler {
 // Tool implementations
 // ---------------------------------------------------------------------------
 
-/// Map a vault error to the result a note-operation handler returns: a tool
-/// error the model can react to for user-actionable failures — a friendly "Note
-/// not found" for the not-found case — or an internal protocol error. The
-/// recoverable/internal split is core's (`VaultError::is_user_error`), so every
-/// handler classifies the same way and a new error variant flows automatically.
-fn vault_err(
-    e: kimun_core::error::VaultError,
-    vault_path: &VaultPath,
-) -> Result<CallToolResult, McpError> {
-    if e.is_not_found() {
-        Ok(CallToolResult::error(vec![Content::text(format!(
-            "Note not found: {vault_path}"
-        ))]))
-    } else if e.is_user_error() {
-        Ok(CallToolResult::error(vec![Content::text(e.to_string())]))
-    } else {
-        Err(McpError::internal_error(e.to_string(), None))
+/// Map a vault error to the result a note-operation handler returns: the core
+/// user-facing message as a tool error the model can react to, or an internal
+/// protocol error. The message and the recoverable/internal split both come from
+/// core (`VaultError::user_message`), so the MCP server and the CLI render
+/// identical wording and a new error variant flows automatically.
+fn vault_err(e: kimun_core::error::VaultError) -> Result<CallToolResult, McpError> {
+    match e.user_message() {
+        Some(msg) => Ok(CallToolResult::error(vec![Content::text(msg)])),
+        None => Err(McpError::internal_error(e.to_string(), None)),
     }
 }
 
@@ -187,7 +179,7 @@ impl KimunHandler {
                 "Note created: {}",
                 vault_path
             ))])),
-            Err(e) => vault_err(e, &vault_path),
+            Err(e) => vault_err(e),
         }
     }
 
@@ -226,7 +218,7 @@ impl KimunHandler {
                 "Note saved: {}",
                 vault_path
             ))])),
-            Err(e) => vault_err(e, &vault_path),
+            Err(e) => vault_err(e),
         }
     }
 
@@ -252,7 +244,7 @@ impl KimunHandler {
                     "{} occurrence(s) would be replaced in {} (preview — not written). Resulting content:\n\n{}",
                     pv.count, vault_path, pv.content
                 ))])),
-                Err(e) => vault_err(e, &vault_path),
+                Err(e) => vault_err(e),
             };
         }
 
@@ -265,7 +257,7 @@ impl KimunHandler {
                 "Replaced {} occurrence(s) in {}",
                 n, vault_path
             ))])),
-            Err(e) => vault_err(e, &vault_path),
+            Err(e) => vault_err(e),
         }
     }
 
@@ -283,7 +275,7 @@ impl KimunHandler {
                 "Note deleted: {}",
                 vault_path
             ))])),
-            Err(e) => vault_err(e, &vault_path),
+            Err(e) => vault_err(e),
         }
     }
 
@@ -295,7 +287,7 @@ impl KimunHandler {
         let vault_path = Self::resolve_path(&p.path);
         match self.vault.get_note_text(&vault_path).await {
             Ok(text) => Ok(CallToolResult::success(vec![Content::text(text)])),
-            Err(e) => vault_err(e, &vault_path),
+            Err(e) => vault_err(e),
         }
     }
 
@@ -469,7 +461,7 @@ impl KimunHandler {
 
         let md_note = match self.vault.get_markdown_and_links(&vault_path).await {
             Ok(n) => n,
-            Err(e) => return vault_err(e, &vault_path),
+            Err(e) => return vault_err(e),
         };
 
         let note_links: Vec<_> = md_note

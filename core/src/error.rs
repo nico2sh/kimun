@@ -90,30 +90,54 @@ impl VaultError {
         }
     }
 
-    /// `true` when the failure is the caller's fault and actionable — a missing
-    /// or already-existing note/directory, an absent or non-unique replacement
-    /// target, an invalid regex or path — rather than an internal failure (DB,
-    /// raw I/O, decoding, a panicked task).
-    ///
-    /// Surfaces decide presentation, not classification: the MCP server returns
-    /// a user error as a tool error the model can react to (an internal one as a
-    /// protocol error); the CLI prints a user error as a clean message with a
-    /// distinct exit code (an internal one as a full report). One place to
-    /// update when a variant is added — the exhaustive match below makes the
-    /// decision compiler-enforced.
+    /// `true` when the failure is the caller's fault and actionable rather than
+    /// an internal failure. Equivalent to `user_message().is_some()`.
     pub fn is_user_error(&self) -> bool {
+        self.user_message().is_some()
+    }
+
+    /// The message to show a human or an LLM when this error is the caller's
+    /// fault — a missing or already-existing note/directory, an absent or
+    /// non-unique replacement target, an invalid regex or path — or `None` for
+    /// an internal failure (DB, raw I/O, decoding, a panicked task).
+    ///
+    /// The single source of truth for user-facing error wording: the CLI prints
+    /// it (clean message, distinct exit code) and the MCP server returns it as a
+    /// tool error the model can react to, so both surfaces read identically.
+    /// LLM skills consume these strings, so keep them clear and stable. The
+    /// exhaustive match makes the classification compiler-enforced when a
+    /// variant is added.
+    pub fn user_message(&self) -> Option<String> {
         match self {
-            VaultError::VaultPathNotFound { .. }
-            | VaultError::PathIsNotDirectory { .. }
-            | VaultError::NoteExists { .. }
-            | VaultError::DirectoryExists { .. }
-            | VaultError::ReplaceTextNotFound { .. }
-            | VaultError::ReplaceTextNotUnique { .. }
-            | VaultError::InvalidRegex { .. } => true,
-            VaultError::FSError(e) => e.is_user_error(),
-            VaultError::DBError(_) | VaultError::CaseConflict { .. } | VaultError::TaskJoin(_) => {
-                false
+            VaultError::VaultPathNotFound { path } => Some(format!("Note not found: {path}")),
+            VaultError::FSError(FSError::VaultPathNotFound { path }) => {
+                Some(format!("Note not found: {path}"))
             }
+            VaultError::FSError(FSError::NoFileOrDirectoryFound { path }) => {
+                Some(format!("Note not found: {path}"))
+            }
+            VaultError::NoteExists { path } => Some(format!("Note already exists: {path}")),
+            VaultError::DirectoryExists { path } => {
+                Some(format!("Directory already exists: {path}"))
+            }
+            VaultError::FSError(FSError::AlreadyExists { path }) => {
+                Some(format!("Already exists: {path}"))
+            }
+            VaultError::FSError(FSError::InvalidPath { path, message }) => {
+                Some(format!("Invalid path '{path}': {message}"))
+            }
+            VaultError::PathIsNotDirectory { path } => Some(format!("Not a directory: {path}")),
+            // These error Displays are already clear, single-path messages.
+            VaultError::ReplaceTextNotFound { .. }
+            | VaultError::ReplaceTextNotUnique { .. }
+            | VaultError::InvalidRegex { .. } => Some(self.to_string()),
+            // Internal failures — no actionable user message.
+            VaultError::DBError(_)
+            | VaultError::CaseConflict { .. }
+            | VaultError::TaskJoin(_)
+            | VaultError::FSError(FSError::ReadFileError(_))
+            | VaultError::FSError(FSError::EncodingError(_))
+            | VaultError::FSError(FSError::SerializationError(_)) => None,
         }
     }
 }
@@ -172,19 +196,6 @@ impl FSError {
             FSError::VaultPathNotFound { .. } | FSError::NoFileOrDirectoryFound { .. }
         )
     }
-
-    /// `true` when the failure stems from the caller's path input (missing,
-    /// already-existing, or invalid) rather than an internal I/O, decoding, or
-    /// serialization fault.
-    pub fn is_user_error(&self) -> bool {
-        matches!(
-            self,
-            FSError::NoFileOrDirectoryFound { .. }
-                | FSError::VaultPathNotFound { .. }
-                | FSError::AlreadyExists { .. }
-                | FSError::InvalidPath { .. }
-        )
-    }
 }
 
 /// Error at the index boundary, raised when interacting with the SQLite store.
@@ -221,20 +232,50 @@ mod tests {
     use crate::nfs::VaultPath;
 
     #[test]
-    fn user_errors_are_actionable_not_internal() {
-        // Caller's fault → user error.
-        assert!(VaultError::NoteExists { path: VaultPath::note_path_from("a") }.is_user_error());
-        assert!(VaultError::ReplaceTextNotFound { path: VaultPath::note_path_from("a") }.is_user_error());
-        assert!(VaultError::ReplaceTextNotUnique { path: VaultPath::note_path_from("a") }.is_user_error());
-        assert!(
-            VaultError::InvalidRegex { pattern: "(".into(), message: "x".into() }.is_user_error()
+    fn user_messages_are_clean_and_llm_facing() {
+        // Friendly wording — no "File System Error:" wrapper — for the messages
+        // CLI and MCP both surface to an LLM.
+        assert_eq!(
+            VaultError::FSError(FSError::VaultPathNotFound {
+                path: VaultPath::note_path_from("a")
+            })
+            .user_message()
+            .as_deref(),
+            Some("Note not found: a.md")
         );
-        assert!(VaultError::FSError(FSError::VaultPathNotFound { path: VaultPath::note_path_from("a") }).is_user_error());
+        assert_eq!(
+            VaultError::NoteExists {
+                path: VaultPath::note_path_from("a")
+            }
+            .user_message()
+            .as_deref(),
+            Some("Note already exists: a.md")
+        );
+        // Replace/regex Displays are already good single-path messages.
+        assert!(
+            VaultError::ReplaceTextNotUnique {
+                path: VaultPath::note_path_from("a")
+            }
+            .user_message()
+            .unwrap()
+            .contains("not unique")
+        );
+    }
 
-        // Internal failures → not user errors.
+    #[test]
+    fn internal_failures_have_no_user_message() {
+        assert!(VaultError::DBError(DBError::DBConnectionClosed).user_message().is_none());
+        assert!(VaultError::TaskJoin("boom".into()).user_message().is_none());
+        assert!(
+            VaultError::FSError(FSError::EncodingError(
+                String::from_utf8(vec![0xff]).unwrap_err()
+            ))
+            .user_message()
+            .is_none()
+        );
+        // is_user_error is the bool view of user_message.
+        assert!(VaultError::NoteExists { path: VaultPath::note_path_from("a") }.is_user_error());
         assert!(!VaultError::DBError(DBError::DBConnectionClosed).is_user_error());
-        assert!(!VaultError::TaskJoin("boom".into()).is_user_error());
-        assert!(!VaultError::FSError(FSError::EncodingError(String::from_utf8(vec![0xff]).unwrap_err())).is_user_error());
     }
 
     #[test]

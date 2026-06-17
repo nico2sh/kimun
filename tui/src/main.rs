@@ -177,10 +177,11 @@ async fn main() -> Result<()> {
         return match crate::cli::run_cli(command, cli.config).await {
             Ok(()) => Ok(()),
             Err(report) => {
-                if let Some(ve) = report.downcast_ref::<kimun_core::error::VaultError>()
-                    && ve.is_user_error()
+                if let Some(msg) = report
+                    .downcast_ref::<kimun_core::error::VaultError>()
+                    .and_then(|ve| ve.user_message())
                 {
-                    eprintln!("Error: {ve}");
+                    eprintln!("Error: {msg}");
                     std::process::exit(2);
                 }
                 Err(report)
