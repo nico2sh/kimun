@@ -72,6 +72,33 @@ fn chars_eq_ignore_case(a: char, b: char) -> bool {
     a == b || a.to_lowercase().eq(b.to_lowercase())
 }
 
+/// Walk `line` against precomputed non-overlapping `ranges` (from
+/// [`match_ranges`], ascending) and emit one item per segment via
+/// `mk(slice, is_match)` — alternating non-match gaps and matched spans, plus
+/// the trailing gap. Empty `ranges` yields the whole line as a single non-match
+/// segment. Shared so the gap/match/tail splitting lives in one place; each
+/// caller supplies its own constructor (owned `'static` spans vs borrowed `'a`
+/// spans, with its own styles).
+pub fn style_ranges<'a, T>(
+    line: &'a str,
+    ranges: &[(usize, usize)],
+    mut mk: impl FnMut(&'a str, bool) -> T,
+) -> Vec<T> {
+    let mut out = Vec::new();
+    let mut pos = 0;
+    for &(start, end) in ranges {
+        if start > pos {
+            out.push(mk(&line[pos..start], false));
+        }
+        out.push(mk(&line[start..end], true));
+        pos = end;
+    }
+    if pos < line.len() {
+        out.push(mk(&line[pos..], false));
+    }
+    out
+}
+
 /// Wrap `line` into pieces that each fit within `max_width` *characters* (not
 /// bytes). Breaks at word boundaries when possible, hard-breaks an
 /// over-long word otherwise. A `max_width` of 0 returns the line unchanged.
@@ -160,6 +187,31 @@ mod tests {
         assert_eq!(r.len(), 1);
         let (s, e) = r[0];
         assert_eq!(&hay[s..e], "テスト");
+    }
+
+    #[test]
+    fn style_ranges_alternates_gaps_and_matches() {
+        let line = "see widget and gadget";
+        let ranges = match_ranges(line, &needles(&["widget", "gadget"]));
+        let segs: Vec<(String, bool)> =
+            style_ranges(line, &ranges, |s, hit| (s.to_string(), hit));
+        // Every match becomes a `true` segment, gaps `false` — not just the first.
+        assert_eq!(
+            segs,
+            vec![
+                ("see ".to_string(), false),
+                ("widget".to_string(), true),
+                (" and ".to_string(), false),
+                ("gadget".to_string(), true),
+            ]
+        );
+    }
+
+    #[test]
+    fn style_ranges_empty_is_one_non_match_segment() {
+        let segs: Vec<(String, bool)> =
+            style_ranges("no matches here", &[], |s, hit| (s.to_string(), hit));
+        assert_eq!(segs, vec![("no matches here".to_string(), false)]);
     }
 
     #[test]

@@ -342,7 +342,10 @@ impl QueryPanel {
         let note = self.current_note();
         if self.needles_cache_key.0 != self.list.query() || self.needles_cache_key.1 != note {
             let resolved = resolve_query(self.list.query(), &self.query_ctx());
-            self.needles_cache = query_needles(&resolved);
+            // Same needle source as the editor handoff (`emphasis`) and the note
+            // browser preview: terms, labels (`#tag`), and link targets. Keeps
+            // the preview highlight consistent with what the editor emphasizes.
+            self.needles_cache = crate::components::query_highlight::emphasis_needles(&resolved);
             self.needles_cache_key = (self.list.query().to_string(), note);
         }
         &self.needles_cache
@@ -841,7 +844,7 @@ impl QueryPanel {
 /// Run `query` (already a resolved plain query string) and build entries.
 /// Sources from full-text / query search via `vault.search_notes`.
 async fn load_query(vault: &NoteVault, query: &str) -> Vec<BacklinkEntry> {
-    let needles = query_needles(query);
+    let needles = crate::components::query_highlight::emphasis_needles(query);
     let results = vault.search_notes(query).await.unwrap_or_default();
     let mut entries = Vec::with_capacity(results.len());
     for (entry_data, content_data) in results {
@@ -905,16 +908,6 @@ fn extract_context_multi(text: &str, needles: &[String]) -> String {
         .to_string()
 }
 
-/// Needles to highlight for a query: its free-text terms + link targets
-/// (both backlink and forward-link targets).
-fn query_needles(query: &str) -> Vec<String> {
-    let st = kimun_core::SearchTerms::from_query_string(query);
-    let mut needles = st.terms.clone();
-    needles.extend(st.links.clone());
-    needles.extend(st.forward_links.clone());
-    needles
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -943,21 +936,6 @@ mod tests {
         assert!(!is_default_query("<projects"));
         assert!(!is_default_query(">"));
         assert!(!is_default_query(""));
-    }
-
-    #[test]
-    fn query_needles_extracts_terms_and_links() {
-        let n = query_needles("widget <spec");
-        assert!(n.iter().any(|x| x == "widget"));
-        assert!(n.iter().any(|x| x == "spec"));
-    }
-
-    #[test]
-    fn query_needles_extracts_forward_links() {
-        // A forward-link query (`>target`) must contribute its target as a
-        // highlight needle, just like a backlink query (`<target`).
-        let n = query_needles(">spec");
-        assert!(n.iter().any(|x| x == "spec"));
     }
 
     #[tokio::test]
@@ -1045,6 +1023,14 @@ mod tests {
         let needles = panel.cached_needles();
         assert!(needles.iter().any(|n| n == "widget"));
         assert!(!needles.iter().any(|n| n == "other"));
+
+        // Labels are highlight needles too (consistent with the editor handoff
+        // and the note-browser preview): `#todo` → needle `#todo`.
+        panel.list.set_query("#todo".to_string());
+        assert!(
+            panel.cached_needles().iter().any(|n| n == "#todo"),
+            "preview needles must include labels"
+        );
     }
 
     /// Drive the engine until its async load settles. Unlike the engine's

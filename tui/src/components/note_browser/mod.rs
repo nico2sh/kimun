@@ -598,18 +598,10 @@ fn highlight_matches<'a>(
             lines.push(Line::styled(line, base));
             continue;
         }
-        let mut spans = Vec::new();
-        let mut pos = 0;
-        for (start, end) in ranges {
-            if start > pos {
-                spans.push(Span::styled(&line[pos..start], base));
-            }
-            spans.push(Span::styled(&line[start..end], emphasis));
-            pos = end;
-        }
-        if pos < line.len() {
-            spans.push(Span::styled(&line[pos..], base));
-        }
+        // Borrowed spans into `text` ('a) — zero-copy; shared segment walk.
+        let spans = preview_highlight::style_ranges(line, &ranges, |s, hit| {
+            Span::styled(s, if hit { emphasis } else { base })
+        });
         lines.push(Line::from(spans));
     }
     ratatui::text::Text::from(lines)
