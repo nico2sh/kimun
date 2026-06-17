@@ -138,6 +138,10 @@ The seam that supplies the query input's autocomplete with candidates (note name
 The right-hand panel of the editor. Shows the list of notes matching an active query, with the same expandable list/preview affordances as the rest of the app. Backlinks are not a distinct feature here — they are the default query `<{note}`, so a freshly opened panel shows the current note's backlinks. The panel title reflects the active query (reads "Backlinks" when the query is `<{note}`).
 _Avoid_: backlinks panel (now only the default state), search panel / search sidebar (collide with Ctrl+K and the left-sidebar search box)
 
+**Preview pane**:
+The note-preview surface the **Query panel** shows for its selected result, owning one expand state — **Collapsed** (list only), **Context** (half-height preview below the list), **Full** (preview takes the whole panel) — and the content scroll. The scroll is either *anchored* (the render places it on the first needle match each frame) or *user-owned* once a wheel/key tick moves it; a query edit re-arms the anchor. Context sticks across selection moves (re-anchoring on the new row); Full and a vanished selection collapse. Composed by the panel (which keeps the result list and the engine's wheel-routing region), so the scroll/anchor state machine is testable without a vault.
+_Avoid_: expand state (names one field), content view, preview widget.
+
 ### TUI surfaces
 
 **Panel**:

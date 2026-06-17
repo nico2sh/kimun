@@ -9,7 +9,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 
 use crate::components::Component;
 use crate::components::activity_rail::{ActivityRail, RAIL_WIDTH};
-use crate::components::backlinks_panel::QueryPanel;
+use crate::components::query_panel::QueryPanel;
 use crate::components::drawer::{DrawerHost, DrawerView};
 use crate::components::event_state::EventState;
 use crate::components::events::{AppTx, InputEvent};
