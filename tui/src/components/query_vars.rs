@@ -11,6 +11,41 @@ use kimun_core::{expand_bare_note_prefixes, quote_query_term, strip_order_direct
 /// resolution so the DSL's tokenization is never re-implemented here.
 pub const VAR_NOTE: &str = "{note}";
 
+/// The runtime context a query template resolves against. Today it carries
+/// only the open note, but it is the single place future query variables
+/// (`{date}`, `{selection}`, …) extend: row sources and call sites resolve
+/// through a `QueryContext`, so adding a variable touches this struct and the
+/// resolver below — never the sources. See CONTEXT.md "Query context".
+#[derive(Clone, Default)]
+pub struct QueryContext {
+    /// The note open when the query runs. `{note}` and the bare-operator sugar
+    /// resolve against its clean name. `None`, or a root/empty path, means no
+    /// note is available to resolve against.
+    pub current_note: Option<VaultPath>,
+}
+
+impl QueryContext {
+    /// Context with just the open note — the only field today.
+    pub fn with_note(current_note: Option<VaultPath>) -> Self {
+        Self { current_note }
+    }
+
+    /// True when a note is available to resolve `{note}` against (present and
+    /// not the root/empty path).
+    fn has_note(&self) -> bool {
+        self.current_note
+            .as_ref()
+            .is_some_and(|p| !p.is_root_or_empty())
+    }
+
+    fn note_term(&self) -> String {
+        self.current_note
+            .as_ref()
+            .map(|p| quote_query_term(&p.get_clean_name()))
+            .unwrap_or_default()
+    }
+}
+
 /// True if `template` contains any query variable (including the bare-operator
 /// sugar forms). The query panel uses this to decide whether to re-run on note
 /// navigation.
@@ -26,8 +61,8 @@ pub fn query_has_variables(template: &str) -> bool {
 /// Purely note-dependent queries (`<`, `<{note} or:title`) would reach core
 /// as dropped bare prefixes: a wasted round-trip that returns nothing, so
 /// callers should skip the search (and pick their own fallback).
-pub fn query_is_unresolvable(template: &str, current_note: Option<&VaultPath>) -> bool {
-    if current_note.is_some_and(|p| !p.is_root_or_empty()) {
+pub fn query_is_unresolvable(template: &str, ctx: &QueryContext) -> bool {
+    if ctx.has_note() {
         return false;
     }
     let expanded = expand_bare_note_prefixes(template, VAR_NOTE);
@@ -44,16 +79,23 @@ pub fn query_is_unresolvable(template: &str, current_note: Option<&VaultPath>) -
 /// matched), quoted when it contains whitespace so a multi-word name
 /// stays a single query token. When no note is open, `{note}` resolves
 /// to the empty string.
-pub fn resolve_query(template: &str, current_note: Option<&VaultPath>) -> String {
-    let note_name = current_note
-        .map(|p| quote_query_term(&p.get_clean_name()))
-        .unwrap_or_default();
-    expand_bare_note_prefixes(template, VAR_NOTE).replace(VAR_NOTE, &note_name)
+pub fn resolve_query(template: &str, ctx: &QueryContext) -> String {
+    expand_bare_note_prefixes(template, VAR_NOTE).replace(VAR_NOTE, &ctx.note_term())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Context with the given note open.
+    fn with(p: &VaultPath) -> QueryContext {
+        QueryContext::with_note(Some(p.clone()))
+    }
+
+    /// Context with no note open.
+    fn none() -> QueryContext {
+        QueryContext::default()
+    }
 
     #[test]
     fn detects_variables() {
@@ -65,8 +107,8 @@ mod tests {
     #[test]
     fn resolves_note_variable() {
         let p = VaultPath::note_path_from("work/spec.md");
-        assert_eq!(resolve_query("<{note}", Some(&p)), "<spec");
-        assert_eq!(resolve_query("#todo <{note}", Some(&p)), "#todo <spec");
+        assert_eq!(resolve_query("<{note}", &with(&p)), "<spec");
+        assert_eq!(resolve_query("#todo <{note}", &with(&p)), "#todo <spec");
     }
 
     #[test]
@@ -74,32 +116,32 @@ mod tests {
         let p = VaultPath::note_path_from("work/my note.md");
         // Multi-word name must be quoted so the parser sees one link target,
         // not `<my` plus a stray `note` term.
-        assert_eq!(resolve_query("<{note}", Some(&p)), "<\"my note\"");
+        assert_eq!(resolve_query("<{note}", &with(&p)), "<\"my note\"");
     }
 
     #[test]
     fn resolves_to_empty_without_note() {
-        assert_eq!(resolve_query("<{note}", None), "<");
-        assert_eq!(resolve_query("#todo", None), "#todo");
+        assert_eq!(resolve_query("<{note}", &none()), "<");
+        assert_eq!(resolve_query("#todo", &none()), "#todo");
     }
 
     #[test]
     fn bare_operators_expand_to_note_variable() {
         let p = VaultPath::note_path_from("work/spec.md");
-        assert_eq!(resolve_query("<", Some(&p)), "<spec");
-        assert_eq!(resolve_query(">", Some(&p)), ">spec");
-        assert_eq!(resolve_query("=", Some(&p)), "=spec");
-        assert_eq!(resolve_query("#todo <", Some(&p)), "#todo <spec");
-        assert_eq!(resolve_query("< #todo", Some(&p)), "<spec #todo");
+        assert_eq!(resolve_query("<", &with(&p)), "<spec");
+        assert_eq!(resolve_query(">", &with(&p)), ">spec");
+        assert_eq!(resolve_query("=", &with(&p)), "=spec");
+        assert_eq!(resolve_query("#todo <", &with(&p)), "#todo <spec");
+        assert_eq!(resolve_query("< #todo", &with(&p)), "<spec #todo");
     }
 
     #[test]
     fn bare_long_forms_and_exclusions_expand_too() {
         let p = VaultPath::note_path_from("work/spec.md");
-        assert_eq!(resolve_query("lk:", Some(&p)), "lk:spec");
-        assert_eq!(resolve_query("fwd:", Some(&p)), "fwd:spec");
-        assert_eq!(resolve_query("name:", Some(&p)), "name:spec");
-        assert_eq!(resolve_query("-<", Some(&p)), "-<spec");
+        assert_eq!(resolve_query("lk:", &with(&p)), "lk:spec");
+        assert_eq!(resolve_query("fwd:", &with(&p)), "fwd:spec");
+        assert_eq!(resolve_query("name:", &with(&p)), "name:spec");
+        assert_eq!(resolve_query("-<", &with(&p)), "-<spec");
     }
 
     #[test]
@@ -108,43 +150,43 @@ mod tests {
         // parser), not a quote opener, so sugar after a contraction still
         // expands.
         let p = VaultPath::note_path_from("work/spec.md");
-        assert_eq!(resolve_query("don't <", Some(&p)), "don't <spec");
-        assert_eq!(resolve_query("= don't <", Some(&p)), "=spec don't <spec");
+        assert_eq!(resolve_query("don't <", &with(&p)), "don't <spec");
+        assert_eq!(resolve_query("= don't <", &with(&p)), "=spec don't <spec");
     }
 
     #[test]
     fn operators_with_targets_stay_untouched() {
         let p = VaultPath::note_path_from("work/spec.md");
-        assert_eq!(resolve_query("<projects", Some(&p)), "<projects");
-        assert_eq!(resolve_query(">projects", Some(&p)), ">projects");
-        assert_eq!(resolve_query("=projects", Some(&p)), "=projects");
+        assert_eq!(resolve_query("<projects", &with(&p)), "<projects");
+        assert_eq!(resolve_query(">projects", &with(&p)), ">projects");
+        assert_eq!(resolve_query("=projects", &with(&p)), "=projects");
     }
 
     #[test]
     fn bare_operator_inside_quotes_stays_untouched() {
         let p = VaultPath::note_path_from("work/spec.md");
-        assert_eq!(resolve_query("\"a < b\"", Some(&p)), "\"a < b\"");
-        assert_eq!(resolve_query("'a = b'", Some(&p)), "'a = b'");
+        assert_eq!(resolve_query("\"a < b\"", &with(&p)), "\"a < b\"");
+        assert_eq!(resolve_query("'a = b'", &with(&p)), "'a = b'");
     }
 
     #[test]
     fn unresolvable_only_when_purely_note_dependent() {
         let p = VaultPath::note_path_from("work/spec.md");
         // A real note resolves everything.
-        assert!(!query_is_unresolvable("<", Some(&p)));
-        assert!(!query_is_unresolvable("<{note}", Some(&p)));
+        assert!(!query_is_unresolvable("<", &with(&p)));
+        assert!(!query_is_unresolvable("<{note}", &with(&p)));
         // No note (or the empty root path): purely note-dependent queries
         // cannot produce results.
-        assert!(query_is_unresolvable("<", None));
-        assert!(query_is_unresolvable("<{note}", None));
-        assert!(query_is_unresolvable("< or:title", None));
-        assert!(query_is_unresolvable("<", Some(&VaultPath::empty())));
+        assert!(query_is_unresolvable("<", &none()));
+        assert!(query_is_unresolvable("<{note}", &none()));
+        assert!(query_is_unresolvable("< or:title", &none()));
+        assert!(query_is_unresolvable("<", &with(&VaultPath::empty())));
         // Mixed queries keep concrete terms and must still run.
-        assert!(!query_is_unresolvable("widget <", None));
-        assert!(!query_is_unresolvable("#todo <{note}", None));
+        assert!(!query_is_unresolvable("widget <", &none()));
+        assert!(!query_is_unresolvable("#todo <{note}", &none()));
         // No variables at all: always resolvable.
-        assert!(!query_is_unresolvable("widget", None));
-        assert!(!query_is_unresolvable("", None));
+        assert!(!query_is_unresolvable("widget", &none()));
+        assert!(!query_is_unresolvable("", &none()));
     }
 
     #[test]

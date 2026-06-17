@@ -7,7 +7,7 @@ use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::Span;
 use ratatui::widgets::{Block, Borders, ListItem, Paragraph};
 
 use kimun_core::{OrderBy, OrderField, with_order_directive};
@@ -16,10 +16,12 @@ use crate::components::autocomplete::AutocompleteMode;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx};
 use crate::components::file_list::{SortField, SortOrder};
-use crate::components::query_vars::{query_has_variables, query_is_unresolvable, resolve_query};
+use crate::components::preview_pane::PreviewPane;
+use crate::components::query_vars::{QueryContext, query_has_variables, resolve_query};
 use crate::components::saved_search_breadcrumb::SavedSearchBreadcrumb;
 use crate::components::search_list::{
-    Emit, KeyReaction, RowSource, SearchList, SearchMouse, SearchRow, VaultSuggestions,
+    Emit, KeyReaction, ResolvingRowSource, RowSource, SearchList, SearchMouse, SearchRow,
+    Unresolvable, VaultSuggestions,
 };
 use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::ActionShortcuts;
@@ -99,33 +101,20 @@ impl SearchRow for BacklinkEntry {
 // BacklinkSource
 // ---------------------------------------------------------------------------
 
-/// Row source for the Query panel. The engine holds the query TEMPLATE verbatim
-/// (e.g. `<{note}`, so the input shows the template); this source resolves
-/// `{note}` against the shared current note at load time, preserving the exact
-/// "input shows the template, results are backlinks of the current note" UX.
-/// Result ordering comes from the query string's order directive, applied by
-/// the vault DB — the source no longer sorts in memory.
+/// Row source for the Query panel. It receives an already-resolved query
+/// string — [`ResolvingRowSource`] substitutes `{note}` and short-circuits the
+/// purely-note-dependent-but-no-note case to an empty list ([`Unresolvable::Empty`])
+/// before this source is asked to load. Result ordering comes from the query
+/// string's order directive, applied by the vault DB — the source no longer
+/// sorts in memory beyond the no-directive default.
 struct BacklinkSource {
     vault: Arc<NoteVault>,
-    current_note: Arc<Mutex<VaultPath>>,
 }
 
 #[async_trait]
 impl RowSource<BacklinkEntry> for BacklinkSource {
     async fn load(&self, query: &str, emit: Emit<BacklinkEntry>) {
-        // Clone the note out of the lock, then drop the guard before awaiting.
-        let note = self.current_note.lock().unwrap().clone();
-        // Skip the search when the query is purely note-dependent but no note
-        // is open yet (startup state). Running `load_query(vault, "<")`
-        // against an empty note is a wasted DB round-trip that returns
-        // nothing; once `set_note` provides a real note the normal reload
-        // fires. Mixed queries keep their concrete terms and still search.
-        if query_is_unresolvable(query, Some(&note)) {
-            emit.replace(Vec::new());
-            return;
-        }
-        let q = resolve_query(query, Some(&note));
-        let mut entries = load_query(&self.vault, &q).await;
+        let mut entries = load_query(&self.vault, query).await;
         // The DB orders results only when the query carries an `or:` directive
         // (core applies the sort iff `order_by` is non-empty). Keep that
         // directive as the source of truth, but fall back to a stable
@@ -139,96 +128,6 @@ impl RowSource<BacklinkEntry> for BacklinkSource {
             entries.sort_by_key(|e| e.filename.to_lowercase());
         }
         emit.replace(entries);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// ExpandState (private)
-// ---------------------------------------------------------------------------
-
-#[derive(Clone, Copy, PartialEq)]
-enum ExpandState {
-    Collapsed,
-    Context,
-    Full,
-}
-
-// ---------------------------------------------------------------------------
-// ContentScroll (private)
-// ---------------------------------------------------------------------------
-
-/// Scroll state shared by the expanded content views (Full mode and the
-/// half-height Context preview). The offset is either *anchored* — the
-/// Context render recomputes it from the first needle match each frame — or
-/// user-owned after a scroll. Every transition (take-over, re-anchor, clamp)
-/// lives here, so paths that should re-anchor have one decision point and
-/// the offset is never out of range between events.
-#[derive(Clone, Copy)]
-struct ContentScroll {
-    /// True while the render owns the offset (anchor on the first needle
-    /// match). The first tick that actually moves the view flips it;
-    /// re-anchoring events set it back.
-    anchored: bool,
-    /// The rendered scroll offset (first visible content line).
-    offset: usize,
-    /// Maximum offset, recorded by render from content/viewport size.
-    max: usize,
-}
-
-impl ContentScroll {
-    fn new() -> Self {
-        Self {
-            anchored: true,
-            offset: 0,
-            max: 0,
-        }
-    }
-
-    /// Back to the top, offset handed back to the auto-anchor.
-    fn reset(&mut self) {
-        *self = Self::new();
-    }
-
-    /// Re-arm the auto-anchor without touching the offset (the next anchored
-    /// render overwrites it).
-    fn re_anchor(&mut self) {
-        self.anchored = true;
-    }
-
-    /// One wheel/key tick up, clamped at the top. Only a tick that moves the
-    /// view takes the offset over from the anchor — a saturated no-op must
-    /// not silently disarm it.
-    fn scroll_up(&mut self) {
-        if self.offset > 0 {
-            self.offset -= 1;
-            self.anchored = false;
-        }
-    }
-
-    /// One wheel/key tick down, clamped at `max` at mutation time so the
-    /// offset is never out of range. Same no-op rule as [`scroll_up`].
-    ///
-    /// [`scroll_up`]: Self::scroll_up
-    fn scroll_down(&mut self) {
-        if self.offset < self.max {
-            self.offset += 1;
-            self.anchored = false;
-        }
-    }
-
-    /// Render-time sync: record the current max offset and clamp — a resize
-    /// can shrink the content below the held offset.
-    fn set_max(&mut self, max: usize) {
-        self.max = max;
-        self.offset = self.offset.min(max);
-    }
-
-    /// Render-time anchor: while anchored, place the offset (clamped). A
-    /// user-owned offset is left alone.
-    fn anchor_to(&mut self, offset: usize) {
-        if self.anchored {
-            self.offset = offset.min(self.max);
-        }
     }
 }
 
@@ -247,21 +146,11 @@ pub struct QueryPanel {
     /// its own sticky/clear/edited state machine; this panel only forwards
     /// query events to it. See [`SavedSearchBreadcrumb`].
     saved_search: SavedSearchBreadcrumb,
-    /// Expand state of the currently-selected row. `Context` sticks across
-    /// navigation (re-anchored on the new row); `Full` and query changes reset
-    /// to `Collapsed`.
-    expand: ExpandState,
-    /// The path the `expand` state belongs to, used to detect selection changes
-    /// (the engine owns the list, so we re-anchor expand on the selected row).
-    expand_path: Option<VaultPath>,
-    /// Scroll state for the expanded content views (Full takes the whole
-    /// panel; Context is the half-height preview below the list). See
-    /// [`ContentScroll`] for the anchored/user-owned life cycle.
-    scroll: ContentScroll,
-    /// The full-expand header's screen area (the fixed title line), recorded
-    /// each render so a click on it collapses the view, mirroring Enter.
-    /// Empty whenever full mode is not on screen.
-    full_header_rect: Rect,
+    /// The note-preview surface (expand state machine + content scroll +
+    /// content render). The panel feeds it the selected note's text and the
+    /// highlight needles; it owns where the preview is and how far it scrolls.
+    /// See [`PreviewPane`].
+    preview: PreviewPane,
     key_bindings: KeyBindings,
     /// Shared sender filled the first time a `tx` arrives. The engine's redraw
     /// callback reads this slot, so async loads/autocomplete wake the render
@@ -304,10 +193,19 @@ impl QueryPanel {
                 }
             })
         };
-        let source = BacklinkSource {
-            vault: vault.clone(),
-            current_note: current_note.clone(),
-        };
+        // Resolve `{note}` against the shared (live) current note at load time;
+        // a purely note-dependent query with no note open yet shows nothing
+        // (the panel has no recent-notes fallback). See [`ResolvingRowSource`].
+        let source = ResolvingRowSource::new(
+            Arc::new(BacklinkSource {
+                vault: vault.clone(),
+            }),
+            {
+                let note = current_note.clone();
+                move || QueryContext::with_note(Some(note.lock().unwrap().clone()))
+            },
+            Unresolvable::Empty,
+        );
         let combos = |action: &ActionShortcuts| -> Vec<KeyCombo> {
             key_bindings
                 .to_hashmap()
@@ -336,10 +234,7 @@ impl QueryPanel {
             list,
             current_note,
             saved_search: SavedSearchBreadcrumb::default(),
-            expand: ExpandState::Collapsed,
-            expand_path: None,
-            scroll: ContentScroll::new(),
-            full_header_rect: Rect::default(),
+            preview: PreviewPane::new(),
             key_bindings,
             redraw_tx,
             follow_link_combos,
@@ -364,7 +259,7 @@ impl QueryPanel {
     /// query's needles (spec §5.1) — resolved, not the template, so `{note}`
     /// never leaks.
     fn emphasis(&self) -> Option<Vec<String>> {
-        let resolved = resolve_query(self.list.query(), Some(&self.current_note()));
+        let resolved = resolve_query(self.list.query(), &self.query_ctx());
         let needles = crate::components::query_highlight::emphasis_needles(&resolved);
         (!needles.is_empty()).then_some(needles)
     }
@@ -423,6 +318,13 @@ impl QueryPanel {
         self.current_note.lock().unwrap().clone()
     }
 
+    /// The query-resolution context for this panel: the open note. Mirrors what
+    /// the panel's [`ResolvingRowSource`] reads at load time, so the panel's own
+    /// `{note}` resolutions (emphasis, needles) match the loaded results.
+    fn query_ctx(&self) -> QueryContext {
+        QueryContext::with_note(Some(self.current_note()))
+    }
+
     /// Fill the shared redraw slot so the engine's async loads / autocomplete
     /// wake the render loop. Idempotent.
     fn ensure_redraw_tx(&self, tx: &AppTx) {
@@ -439,7 +341,11 @@ impl QueryPanel {
     fn cached_needles(&mut self) -> &[String] {
         let note = self.current_note();
         if self.needles_cache_key.0 != self.list.query() || self.needles_cache_key.1 != note {
-            self.needles_cache = query_needles(&resolve_query(self.list.query(), Some(&note)));
+            let resolved = resolve_query(self.list.query(), &self.query_ctx());
+            // Same needle source as the editor handoff (`emphasis`) and the note
+            // browser preview: terms, labels (`#tag`), and link targets. Keeps
+            // the preview highlight consistent with what the editor emphasizes.
+            self.needles_cache = crate::components::query_highlight::emphasis_needles(&resolved);
             self.needles_cache_key = (self.list.query().to_string(), note);
         }
         &self.needles_cache
@@ -448,7 +354,7 @@ impl QueryPanel {
     /// Returns true if the selected entry is in full-expand mode (content takes
     /// the whole panel, up/down scrolls content).
     fn is_full_expanded(&self) -> bool {
-        self.list.selected_row().is_some() && self.expand == ExpandState::Full
+        self.list.selected_row().is_some() && self.preview.is_full()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -459,37 +365,18 @@ impl QueryPanel {
         self.list.selected_row().map(|e| &e.path)
     }
 
-    /// Drop the engine's content sub-region and the full-expand header rect.
-    /// Every path that changes the expand state calls this: the recorded
-    /// regions describe the PREVIOUS frame's content view, and the event
-    /// loop drains queued events between renders — a mouse event arriving in
-    /// the same batch as the state change must not be routed against a rect
-    /// that no longer matches what is on screen.
-    fn clear_content_regions(&mut self) {
-        self.list.set_content_rect(Rect::default());
-        self.full_header_rect = Rect::default();
-    }
-
     fn reset_expand(&mut self) {
-        self.expand = ExpandState::Collapsed;
-        self.expand_path = None;
-        self.scroll.reset();
-        self.clear_content_regions();
+        self.preview.reset();
+        self.list.set_content_rect(Rect::default());
     }
 
-    /// Re-anchor the expand state on the currently-selected row. The Context
-    /// (half-height) preview sticks across selection moves: it stays open and
-    /// re-anchors on the new row, so Down/Up browse previews in place. Full
-    /// collapses, and a vanished selection always collapses.
+    /// Re-anchor the preview on the currently-selected row (see
+    /// [`PreviewPane::sync`]); drop the stale wheel-routing region when it
+    /// changed.
     fn sync_expand_anchor(&mut self) {
         let sel = self.list.selected_row().map(|e| e.path.clone());
-        if sel != self.expand_path {
-            if self.expand != ExpandState::Context || sel.is_none() {
-                self.expand = ExpandState::Collapsed;
-            }
-            self.expand_path = sel;
-            self.scroll.reset();
-            self.clear_content_regions();
+        if self.preview.sync(sel) {
+            self.list.set_content_rect(Rect::default());
         }
     }
 
@@ -609,7 +496,7 @@ impl QueryPanel {
                 // position is stale against the new matches. (Programmatic
                 // query changes re-arm via `reset_expand`.)
                 if self.list.query() != prev_query {
-                    self.scroll.re_anchor();
+                    self.preview.re_anchor();
                 }
                 self.sync_expand_anchor();
                 EventState::Consumed
@@ -663,7 +550,7 @@ impl QueryPanel {
                 // (A sync collapse above already cleared the header rect, so
                 // this cannot toggle a no-longer-full view.)
                 MouseEventKind::Down(MouseButton::Left)
-                    if self.full_header_rect.contains(Position {
+                    if self.preview.full_header_rect().contains(Position {
                         x: mouse.column,
                         y: mouse.row,
                     }) =>
@@ -680,11 +567,11 @@ impl QueryPanel {
         }
         match self.list.handle_mouse(mouse) {
             SearchMouse::ContentScrollUp => {
-                self.scroll.scroll_up();
+                self.preview.scroll_up();
                 EventState::Consumed
             }
             SearchMouse::ContentScrollDown => {
-                self.scroll.scroll_down();
+                self.preview.scroll_down();
                 EventState::Consumed
             }
             SearchMouse::Activated(_) => {
@@ -708,32 +595,19 @@ impl QueryPanel {
 
     fn scroll_content(&mut self, key: &KeyEvent) {
         match key.code {
-            KeyCode::Up => self.scroll.scroll_up(),
-            KeyCode::Down => self.scroll.scroll_down(),
+            KeyCode::Up => self.preview.scroll_up(),
+            KeyCode::Down => self.preview.scroll_down(),
             _ => {}
         }
     }
 
     fn toggle_expand(&mut self) {
-        if self.list.selected_row().is_none() {
+        let sel = self.list.selected_row().map(|e| e.path.clone());
+        if sel.is_none() {
             return;
         }
-        self.expand_path = self.list.selected_row().map(|e| e.path.clone());
-        match self.expand {
-            ExpandState::Collapsed => {
-                self.expand = ExpandState::Context;
-                self.scroll.re_anchor();
-            }
-            ExpandState::Context => {
-                self.scroll.reset();
-                self.expand = ExpandState::Full;
-            }
-            ExpandState::Full => {
-                self.scroll.reset();
-                self.expand = ExpandState::Collapsed;
-            }
-        }
-        self.clear_content_regions();
+        self.preview.toggle(sel);
+        self.list.set_content_rect(Rect::default());
     }
 
     pub fn hint_shortcuts(&self) -> Vec<(String, String)> {
@@ -762,7 +636,7 @@ impl QueryPanel {
         // routing never sees a stale sub-region from a frame where no
         // content view was drawn. Same life cycle for the full-expand header.
         self.list.set_content_rect(Rect::default());
-        self.full_header_rect = Rect::default();
+        self.preview.clear_header();
 
         let border_style = theme.border_style(focused);
         let gray = theme.gray.to_ratatui();
@@ -848,87 +722,26 @@ impl QueryPanel {
             return;
         }
 
-        let selected_state = self.expand;
-
         // Full mode: content takes the entire panel, no list visible. The
         // wheel scrolls the content from anywhere in the panel, so the whole
         // panel is the engine's content sub-region.
-        if selected_state == ExpandState::Full {
+        if self.preview.is_full() {
             self.list.set_content_rect(rect);
             if let Some(entry) = self.list.selected_row() {
                 let entry = entry.clone();
-                let text = entry.full_text.as_deref().unwrap_or(&entry.context);
-
-                // Split into fixed header (title + divider) and scrollable content.
-                let title_display = if entry.title.is_empty() {
-                    &entry.filename
-                } else {
-                    &entry.title
-                };
-
-                let parts = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([
-                        Constraint::Length(1), // title
-                        Constraint::Length(1), // divider
-                        Constraint::Min(0),    // content
-                    ])
-                    .split(inner);
-
-                // Fixed title header. Clicking it collapses the view
-                // (mirroring Enter) — record where it was drawn.
-                self.full_header_rect = parts[0];
-                f.render_widget(
-                    Paragraph::new(Line::from(vec![
-                        Span::styled(
-                            format!("\u{25BC} {} ", title_display),
-                            Style::default()
-                                .fg(theme.selection_fg.to_ratatui())
-                                .bg(bg)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                        Span::styled(
-                            format!(" {}", entry.filename),
-                            Style::default().fg(gray).bg(bg),
-                        ),
-                    ]))
-                    .style(Style::default().bg(bg)),
-                    parts[0],
-                );
-
-                // Fixed divider.
-                f.render_widget(
-                    Paragraph::new("\u{2500}".repeat(parts[1].width as usize))
-                        .style(Style::default().fg(gray).bg(bg)),
-                    parts[1],
-                );
-
-                // Scrollable content.
-                let indent = 2usize;
-                let wrap_width = parts[2].width.saturating_sub(indent as u16 + 1) as usize;
-                let needles = self.cached_needles();
-
-                let mut lines = Vec::new();
-                for line in text.lines() {
-                    let wrapped = wrap_line(line, wrap_width);
-                    for wline in wrapped {
-                        let spans = highlight_needles(&wline, needles, gray, bg, theme);
-                        let mut indented =
-                            vec![Span::styled(" ".repeat(indent), Style::default().bg(bg))];
-                        indented.extend(spans);
-                        lines.push(Line::from(indented));
-                    }
-                }
-
-                let total_lines = lines.len();
-                let viewport = parts[2].height as usize;
-                self.scroll.set_max(total_lines.saturating_sub(viewport));
-
-                f.render_widget(
-                    Paragraph::new(lines)
-                        .scroll((self.scroll.offset as u16, 0))
-                        .style(Style::default().bg(bg)),
-                    parts[2],
+                let text = entry
+                    .full_text
+                    .clone()
+                    .unwrap_or_else(|| entry.context.clone());
+                let needles = self.cached_needles().to_vec();
+                self.preview.render_full(
+                    f,
+                    inner,
+                    &entry.title,
+                    &entry.filename,
+                    &text,
+                    &needles,
+                    theme,
                 );
             }
             self.list.render_autocomplete(f, rect, theme);
@@ -936,7 +749,7 @@ impl QueryPanel {
         }
 
         // Context or Collapsed: show the list, optionally with preview below.
-        let has_context = selected_state == ExpandState::Context;
+        let has_context = self.preview.is_context();
 
         let (list_area, divider_area, content_area) = if has_context {
             let max_list = inner.height / 2;
@@ -1004,71 +817,16 @@ impl QueryPanel {
         // Render context preview below the list: show the full note text
         // scrolled so the first link occurrence is visible with context above.
         if let Some(area) = content_area
-            && selected_state == ExpandState::Context
+            && self.preview.is_context()
             && let Some(entry) = self.list.selected_row()
         {
             let entry = entry.clone();
-            let text = entry.full_text.as_deref().unwrap_or(&entry.context);
-            let indent = 2usize;
-            let wrap_width = area.width.saturating_sub(indent as u16 + 1) as usize;
-            // Copied out before `cached_needles` borrows self; gates the
-            // link-line scan below, whose result is only consumed while the
-            // anchor owns the offset.
-            let anchored = self.scroll.anchored;
-            let needles = self.cached_needles();
-
-            let mut lines = Vec::new();
-
-            // Track which rendered line contains the first needle match —
-            // only while anchored: a user-owned scroll never reads it, so
-            // the per-line needle scan would be wasted work.
-            let mut link_line: Option<usize> = None;
-
-            for line in text.lines() {
-                let wrapped = wrap_line(line, wrap_width);
-                for wline in wrapped {
-                    if anchored
-                        && link_line.is_none()
-                        && needles
-                            .iter()
-                            .any(|n| !n.is_empty() && find_case_insensitive(&wline, n).is_some())
-                    {
-                        link_line = Some(lines.len());
-                    }
-                    let spans = highlight_needles(&wline, needles, gray, bg, theme);
-                    let mut indented =
-                        vec![Span::styled(" ".repeat(indent), Style::default().bg(bg))];
-                    indented.extend(spans);
-                    lines.push(Line::from(indented));
-                }
-            }
-
-            // Anchor scroll: show the link with context above. If the content
-            // from the link to the end fits within the viewport, scroll back
-            // further to fill the available space. A user-owned offset is
-            // left where it is (anchor_to is a no-op), just clamped by
-            // set_max.
-            let viewport = area.height as usize;
-            let total = lines.len();
-            self.scroll.set_max(total.saturating_sub(viewport));
-            let link_pos = link_line.unwrap_or(0);
-            let lines_after_link = total.saturating_sub(link_pos);
-            self.scroll.anchor_to(if lines_after_link <= viewport {
-                // Content from link to end fits — scroll back to fill the
-                // viewport.
-                self.scroll.max
-            } else {
-                // More content below the link — show 2 lines of context
-                // above.
-                link_pos.saturating_sub(2)
-            });
-
-            f.render_widget(
-                Paragraph::new(lines)
-                    .scroll((self.scroll.offset as u16, 0))
-                    .style(Style::default().bg(bg)),
-                area,
-            );
+            let text = entry
+                .full_text
+                .clone()
+                .unwrap_or_else(|| entry.context.clone());
+            let needles = self.cached_needles().to_vec();
+            self.preview.render_context(f, area, &text, &needles, theme);
             // The preview is the engine's content sub-region: wheel events
             // inside it come back as ContentScroll* instead of moving the
             // list.
@@ -1086,7 +844,7 @@ impl QueryPanel {
 /// Run `query` (already a resolved plain query string) and build entries.
 /// Sources from full-text / query search via `vault.search_notes`.
 async fn load_query(vault: &NoteVault, query: &str) -> Vec<BacklinkEntry> {
-    let needles = query_needles(query);
+    let needles = crate::components::query_highlight::emphasis_needles(query);
     let results = vault.search_notes(query).await.unwrap_or_default();
     let mut entries = Vec::with_capacity(results.len());
     for (entry_data, content_data) in results {
@@ -1134,74 +892,6 @@ fn split_paragraphs(text: &str) -> Vec<String> {
 // Rendering helpers
 // ---------------------------------------------------------------------------
 
-/// Wrap a single line into multiple lines that fit within `max_width` characters.
-/// Uses character count (not byte length) for width. Wraps at word boundaries
-/// when possible, hard-breaks otherwise.
-fn wrap_line(line: &str, max_width: usize) -> Vec<String> {
-    if max_width == 0 || line.chars().count() <= max_width {
-        return vec![line.to_string()];
-    }
-
-    let mut result = Vec::new();
-    let mut remaining = line;
-
-    while remaining.chars().count() > max_width {
-        // Find the byte index of the max_width-th character.
-        let byte_limit = remaining
-            .char_indices()
-            .nth(max_width)
-            .map(|(i, _)| i)
-            .unwrap_or(remaining.len());
-
-        // Try to find a space to break at (within the allowed character range).
-        let break_at = remaining[..byte_limit]
-            .rfind(' ')
-            .map(|i| i + 1) // include the space on the current line
-            .unwrap_or(byte_limit); // hard break if no space
-        result.push(remaining[..break_at].trim_end().to_string());
-        remaining = &remaining[break_at..];
-    }
-    if !remaining.is_empty() {
-        result.push(remaining.to_string());
-    }
-    result
-}
-
-/// Case-insensitive search for `needle` in `haystack`, returning the byte
-/// range `(start, end)` in `haystack` where the match occurs. Compares
-/// char-by-char via `to_lowercase()` so byte lengths are always derived from
-/// the original string, avoiding the case-folding byte-mismatch problem.
-fn find_case_insensitive(haystack: &str, needle: &str) -> Option<(usize, usize)> {
-    let needle_chars: Vec<char> = needle.chars().collect();
-    if needle_chars.is_empty() {
-        return None;
-    }
-    let hay_indices: Vec<(usize, char)> = haystack.char_indices().collect();
-    'outer: for start_idx in 0..hay_indices.len() {
-        if start_idx + needle_chars.len() > hay_indices.len() {
-            break;
-        }
-        for (j, &nc) in needle_chars.iter().enumerate() {
-            let hc = hay_indices[start_idx + j].1;
-            // Compare lowercased chars.
-            let mut h_lower = hc.to_lowercase();
-            let mut n_lower = nc.to_lowercase();
-            if h_lower.next() != n_lower.next() {
-                continue 'outer;
-            }
-        }
-        // Match found — compute byte range from haystack char indices.
-        let byte_start = hay_indices[start_idx].0;
-        let byte_end = if start_idx + needle_chars.len() < hay_indices.len() {
-            hay_indices[start_idx + needle_chars.len()].0
-        } else {
-            haystack.len()
-        };
-        return Some((byte_start, byte_end));
-    }
-    None
-}
-
 /// Find the first paragraph containing any of `needles` (case-insensitive);
 /// fall back to the first non-blank line.
 fn extract_context_multi(text: &str, needles: &[String]) -> String {
@@ -1218,54 +908,6 @@ fn extract_context_multi(text: &str, needles: &[String]) -> String {
         .to_string()
 }
 
-/// Highlight the earliest occurrence of any needle in `line` (bold accent).
-fn highlight_needles(
-    line: &str,
-    needles: &[String],
-    gray: ratatui::style::Color,
-    bg: ratatui::style::Color,
-    theme: &Theme,
-) -> Vec<Span<'static>> {
-    let normal = Style::default().fg(gray).bg(bg);
-    let bold = Style::default()
-        .fg(theme.accent.to_ratatui())
-        .bg(bg)
-        .add_modifier(Modifier::BOLD);
-    let mut best: Option<(usize, usize)> = None;
-    for needle in needles {
-        if needle.is_empty() {
-            continue;
-        }
-        if let Some((s, e)) = find_case_insensitive(line, needle)
-            && (best.is_none() || s < best.unwrap().0)
-        {
-            best = Some((s, e));
-        }
-    }
-    let Some((start, end)) = best else {
-        return vec![Span::styled(line.to_string(), normal)];
-    };
-    let mut spans = Vec::new();
-    if start > 0 {
-        spans.push(Span::styled(line[..start].to_string(), normal));
-    }
-    spans.push(Span::styled(line[start..end].to_string(), bold));
-    if end < line.len() {
-        spans.push(Span::styled(line[end..].to_string(), normal));
-    }
-    spans
-}
-
-/// Needles to highlight for a query: its free-text terms + link targets
-/// (both backlink and forward-link targets).
-fn query_needles(query: &str) -> Vec<String> {
-    let st = kimun_core::SearchTerms::from_query_string(query);
-    let mut needles = st.terms.clone();
-    needles.extend(st.links.clone());
-    needles.extend(st.forward_links.clone());
-    needles
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1275,58 +917,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn wrap_line_fits_within_width() {
-        let result = wrap_line("short", 20);
-        assert_eq!(result, vec!["short"]);
-    }
-
-    #[test]
-    fn wrap_line_breaks_at_word_boundary() {
-        let result = wrap_line("hello world foo bar", 12);
-        assert_eq!(result, vec!["hello world", "foo bar"]);
-    }
-
-    #[test]
-    fn wrap_line_hard_breaks_long_word() {
-        let result = wrap_line("abcdefghij", 5);
-        assert_eq!(result, vec!["abcde", "fghij"]);
-    }
-
-    #[test]
-    fn wrap_line_handles_multibyte_chars() {
-        // 5 CJK characters — each is 1 char, should wrap at char boundary
-        let result = wrap_line("日本語テスト", 3);
-        assert_eq!(result, vec!["日本語", "テスト"]);
-    }
-
-    #[test]
-    fn wrap_line_empty_string() {
-        let result = wrap_line("", 10);
-        assert_eq!(result, vec![""]);
-    }
-
-    #[test]
     fn extract_context_matches_any_needle() {
         let text = "# Title\n\nIntro line.\n\nA paragraph mentioning widget here.\n";
         let result = extract_context_multi(text, &["widget".to_string()]);
         assert!(result.contains("widget"));
-    }
-
-    #[test]
-    fn highlight_needles_highlights_first_match() {
-        let spans = highlight_needles(
-            "see widget and gadget",
-            &["gadget".to_string()],
-            ratatui::style::Color::Gray,
-            ratatui::style::Color::Black,
-            &crate::settings::themes::Theme::default(),
-        );
-        assert!(
-            spans
-                .iter()
-                .any(|s| s.content.contains("gadget")
-                    && s.style.add_modifier.contains(Modifier::BOLD))
-        );
     }
 
     #[test]
@@ -1342,21 +936,6 @@ mod tests {
         assert!(!is_default_query("<projects"));
         assert!(!is_default_query(">"));
         assert!(!is_default_query(""));
-    }
-
-    #[test]
-    fn query_needles_extracts_terms_and_links() {
-        let n = query_needles("widget <spec");
-        assert!(n.iter().any(|x| x == "widget"));
-        assert!(n.iter().any(|x| x == "spec"));
-    }
-
-    #[test]
-    fn query_needles_extracts_forward_links() {
-        // A forward-link query (`>target`) must contribute its target as a
-        // highlight needle, just like a backlink query (`<target`).
-        let n = query_needles(">spec");
-        assert!(n.iter().any(|x| x == "spec"));
     }
 
     #[tokio::test]
@@ -1444,6 +1023,14 @@ mod tests {
         let needles = panel.cached_needles();
         assert!(needles.iter().any(|n| n == "widget"));
         assert!(!needles.iter().any(|n| n == "other"));
+
+        // Labels are highlight needles too (consistent with the editor handoff
+        // and the note-browser preview): `#todo` → needle `#todo`.
+        panel.list.set_query("#todo".to_string());
+        assert!(
+            panel.cached_needles().iter().any(|n| n == "#todo"),
+            "preview needles must include labels"
+        );
     }
 
     /// Drive the engine until its async load settles. Unlike the engine's
@@ -1702,7 +1289,7 @@ mod tests {
         // Open the half-height Context preview and render once to record the
         // list/preview rects.
         panel.toggle_expand();
-        assert!(panel.expand == ExpandState::Context);
+        assert!(panel.preview.is_context());
         let theme = crate::settings::themes::Theme::default();
         let mut terminal = Terminal::new(TestBackend::new(40, 30)).unwrap();
         terminal
@@ -1710,8 +1297,12 @@ mod tests {
             .unwrap();
         let preview = panel.list.content_rect();
         assert!(!preview.is_empty(), "preview rect recorded");
-        assert_eq!(panel.scroll.offset, 0, "auto-anchor at the top needle");
-        assert!(panel.scroll.max > 0, "content overflows viewport");
+        assert_eq!(
+            panel.preview.scroll_offset(),
+            0,
+            "auto-anchor at the top needle"
+        );
+        assert!(panel.preview.scroll_max() > 0, "content overflows viewport");
 
         let wheel = move |y: u16| MouseEvent {
             kind: MouseEventKind::ScrollDown,
@@ -1723,20 +1314,28 @@ mod tests {
         // Wheel over the LIST area: list scroll path, preview untouched.
         let over_list = wheel(preview.y.saturating_sub(3));
         panel.handle_mouse(&over_list, &tx);
-        assert_eq!(panel.scroll.offset, 0, "list wheel must not move preview");
-        assert!(panel.scroll.anchored, "anchor stays armed");
+        assert_eq!(
+            panel.preview.scroll_offset(),
+            0,
+            "list wheel must not move preview"
+        );
+        assert!(panel.preview.is_anchored(), "anchor stays armed");
 
         // Wheel over the PREVIEW area: preview scrolls, anchor hands over.
         let over_preview = wheel(preview.y + 1);
         panel.handle_mouse(&over_preview, &tx);
-        assert_eq!(panel.scroll.offset, 1, "preview wheel scrolls content");
-        assert!(!panel.scroll.anchored, "user owns the scroll now");
+        assert_eq!(
+            panel.preview.scroll_offset(),
+            1,
+            "preview wheel scrolls content"
+        );
+        assert!(!panel.preview.is_anchored(), "user owns the scroll now");
 
         // Re-render keeps the user position (no re-anchor) and clamps.
         terminal
             .draw(|f| panel.render(f, f.area(), &theme, true))
             .unwrap();
-        assert_eq!(panel.scroll.offset, 1);
+        assert_eq!(panel.preview.scroll_offset(), 1);
 
         // Scrolling up past the top saturates at 0.
         let up = MouseEvent {
@@ -1747,7 +1346,7 @@ mod tests {
         };
         panel.handle_mouse(&up, &tx);
         panel.handle_mouse(&up, &tx);
-        assert_eq!(panel.scroll.offset, 0);
+        assert_eq!(panel.preview.scroll_offset(), 0);
     }
 
     /// A wheel tick that cannot move the preview (content fits the viewport,
@@ -1776,7 +1375,7 @@ mod tests {
         terminal
             .draw(|f| panel.render(f, f.area(), &theme, true))
             .unwrap();
-        assert_eq!(panel.scroll.max, 0, "content fits the viewport");
+        assert_eq!(panel.preview.scroll_max(), 0, "content fits the viewport");
 
         let preview = panel.list.content_rect();
         let down = MouseEvent {
@@ -1787,7 +1386,7 @@ mod tests {
         };
         panel.handle_mouse(&down, &tx);
         assert!(
-            panel.scroll.anchored,
+            panel.preview.is_anchored(),
             "no-op wheel tick must not disarm the auto-anchor"
         );
     }
@@ -1815,12 +1414,12 @@ mod tests {
         settle(&mut panel).await;
         panel.toggle_expand();
         // Simulate a user-owned scroll.
-        panel.scroll.anchored = false;
+        panel.preview.force_user_scrolled();
 
         panel.handle_key(&KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE), &tx);
         assert_eq!(panel.active_query(), "#todox");
         assert!(
-            panel.scroll.anchored,
+            panel.preview.is_anchored(),
             "a query edit must re-arm the preview auto-anchor"
         );
     }
@@ -1911,7 +1510,7 @@ mod tests {
         terminal
             .draw(|f| panel.render(f, f.area(), &theme, true))
             .unwrap();
-        let header = panel.full_header_rect;
+        let header = panel.preview.full_header_rect();
         assert!(!header.is_empty(), "header rect recorded in full mode");
 
         let click = |x: u16, y: u16| MouseEvent {
@@ -1928,7 +1527,7 @@ mod tests {
         // A click on the header collapses, like Enter.
         panel.handle_mouse(&click(header.x + 1, header.y), &tx);
         assert!(!panel.is_full_expanded());
-        assert!(panel.expand == ExpandState::Collapsed);
+        assert!(panel.preview.is_collapsed());
     }
 
     /// Every expand-state change must drop the recorded content regions: the
@@ -1959,7 +1558,7 @@ mod tests {
             .draw(|f| panel.render(f, f.area(), &theme, true))
             .unwrap();
         assert!(!panel.list.content_rect().is_empty());
-        assert!(!panel.full_header_rect.is_empty());
+        assert!(!panel.preview.full_header_rect().is_empty());
 
         // Toggle (Full -> Collapsed) WITHOUT a render in between — as when
         // Enter and a mouse event are drained in the same batch.
@@ -1969,7 +1568,7 @@ mod tests {
             "stale content rect must not survive a state change"
         );
         assert!(
-            panel.full_header_rect.is_empty(),
+            panel.preview.full_header_rect().is_empty(),
             "stale header rect must not survive a state change"
         );
     }
