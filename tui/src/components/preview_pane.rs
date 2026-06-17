@@ -354,52 +354,29 @@ fn build_lines(
     indent: usize,
 ) -> (Vec<Line<'static>>, Option<usize>) {
     let bg = theme.bg_panel.to_ratatui();
-    let mut lines = Vec::new();
-    let mut link_line = None;
-    for line in text.lines() {
-        for wline in preview_highlight::wrap_line(line, wrap_width) {
-            if find_link
-                && link_line.is_none()
-                && !preview_highlight::match_ranges(&wline, needles).is_empty()
-            {
-                link_line = Some(lines.len());
-            }
-            let spans = highlight_needles(&wline, needles, theme);
-            let mut indented = vec![Span::styled(" ".repeat(indent), Style::default().bg(bg))];
-            indented.extend(spans);
-            lines.push(Line::from(indented));
-        }
-    }
-    (lines, link_line)
-}
-
-/// Highlight every occurrence of any needle in `line` (bold accent), the rest
-/// muted. Byte-safe via [`preview_highlight::match_ranges`].
-fn highlight_needles(line: &str, needles: &[String], theme: &Theme) -> Vec<Span<'static>> {
-    let gray = theme.gray.to_ratatui();
-    let bg = theme.bg_panel.to_ratatui();
-    let normal = Style::default().fg(gray).bg(bg);
+    let normal = Style::default().fg(theme.gray.to_ratatui()).bg(bg);
     let bold = Style::default()
         .fg(theme.accent.to_ratatui())
         .bg(bg)
         .add_modifier(Modifier::BOLD);
-    let ranges = preview_highlight::match_ranges(line, needles);
-    if ranges.is_empty() {
-        return vec![Span::styled(line.to_string(), normal)];
-    }
-    let mut spans = Vec::new();
-    let mut pos = 0;
-    for (start, end) in ranges {
-        if start > pos {
-            spans.push(Span::styled(line[pos..start].to_string(), normal));
+    let mut lines = Vec::new();
+    let mut link_line = None;
+    for line in text.lines() {
+        for wline in preview_highlight::wrap_line(line, wrap_width) {
+            // One scan per wrapped line: the link-line probe and the span
+            // styling share it.
+            let ranges = preview_highlight::match_ranges(&wline, needles);
+            if find_link && link_line.is_none() && !ranges.is_empty() {
+                link_line = Some(lines.len());
+            }
+            let mut indented = vec![Span::styled(" ".repeat(indent), Style::default().bg(bg))];
+            indented.extend(preview_highlight::style_ranges(&wline, &ranges, |s, hit| {
+                Span::styled(s.to_string(), if hit { bold } else { normal })
+            }));
+            lines.push(Line::from(indented));
         }
-        spans.push(Span::styled(line[start..end].to_string(), bold));
-        pos = end;
     }
-    if pos < line.len() {
-        spans.push(Span::styled(line[pos..].to_string(), normal));
-    }
-    spans
+    (lines, link_line)
 }
 
 #[cfg(test)]
