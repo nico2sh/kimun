@@ -13,7 +13,6 @@ use crate::app_screen::overlay_host::OverlayHost;
 use crate::app_screen::panel_set::PanelSet;
 use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::autosave_timer::AutosaveTimer;
-use crate::components::backlinks_panel::QueryPanel;
 use crate::components::dialogs::ActiveDialog;
 use crate::components::drawer::{DrawerHost, DrawerView};
 use crate::components::drawer_views::{LinksPanel, OutlinePanel, TagsPanel};
@@ -22,10 +21,11 @@ use crate::components::events::{AppEvent, AppTx, InputEvent, SaveSource, ScreenE
 use crate::components::file_list::FileListEntry;
 use crate::components::footer_bar::FooterBar;
 use crate::components::note_browser::file_finder_provider::FileFinderProvider;
-use crate::components::note_browser::search_provider::SearchNotesProvider;
+use crate::components::note_browser::search_provider::resolving_search_source;
 use crate::components::note_browser::{BrowserScope, NoteBrowserModal};
 use crate::components::overlay::{Overlay, OverlayKind, OverlayMsg};
 use crate::components::panel::PanelKind;
+use crate::components::query_panel::QueryPanel;
 use crate::components::saved_searches_modal::SavedSearchesModal;
 use crate::components::sidebar::SidebarComponent;
 use crate::components::text_editor::TextEditorComponent;
@@ -91,11 +91,11 @@ impl EditorScreen {
         let footer = FooterBar::new();
         let icons = s.icons();
         let sidebar = SidebarComponent::from_settings(vault.clone(), &s);
-        let backlinks_panel = QueryPanel::new(vault.clone(), kb.clone(), icons.clone());
+        let query_panel = QueryPanel::new(vault.clone(), kb.clone(), icons.clone());
         let tags = TagsPanel::new(vault.clone(), s.icons());
         let links = LinksPanel::new(vault.clone(), s.icons());
         let outline = OutlinePanel::new(vault.clone(), s.icons());
-        let drawer = DrawerHost::new(sidebar, backlinks_panel, tags, links, outline);
+        let drawer = DrawerHost::new(sidebar, query_panel, tags, links, outline);
         let rail_kb = kb.clone();
         let mut editor = TextEditorComponent::new(kb, &s);
         editor.set_vault(vault.clone());
@@ -848,7 +848,7 @@ impl EditorScreen {
             return;
         }
         let s = self.settings.read().unwrap();
-        let provider = SearchNotesProvider::new(
+        let provider = resolving_search_source(
             self.vault.clone(),
             s.current_last_paths(),
             Some(self.path.clone()),
@@ -1915,7 +1915,7 @@ impl AppScreen for EditorScreen {
             AppEvent::FollowLabel(name) => {
                 let initial = format!("#{name}");
                 let s = self.settings.read().unwrap();
-                let provider = SearchNotesProvider::new(
+                let provider = resolving_search_source(
                     self.vault.clone(),
                     s.current_last_paths(),
                     Some(self.path.clone()),
@@ -2594,7 +2594,7 @@ mod tests {
         // Open a note browser carrying a query, as if the user typed "#todo".
         {
             let s = settings.read().unwrap();
-            let provider = SearchNotesProvider::new(vault.clone(), s.current_last_paths(), None);
+            let provider = resolving_search_source(vault.clone(), s.current_last_paths(), None);
             let modal = NoteBrowserModal::with_initial_query(
                 "Note Browser",
                 BrowserScope::Query,

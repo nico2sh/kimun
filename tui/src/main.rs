@@ -168,7 +168,25 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     if let Some(command) = cli.command {
-        return crate::cli::run_cli(command, cli.config).await;
+        // A user error (missing/existing note, bad input) prints a clean message
+        // and exits with code 2 — distinct from an internal failure, which keeps
+        // the full color_eyre report (exit 1). The recoverable/internal split is
+        // core's `VaultError::is_user_error`; the boundary lives here so every
+        // CLI command propagates the typed `VaultError` (via `?`) and renders
+        // identically.
+        return match crate::cli::run_cli(command, cli.config).await {
+            Ok(()) => Ok(()),
+            Err(report) => {
+                if let Some(msg) = report
+                    .downcast_ref::<kimun_core::error::VaultError>()
+                    .and_then(|ve| ve.user_message())
+                {
+                    eprintln!("Error: {msg}");
+                    std::process::exit(2);
+                }
+                Err(report)
+            }
+        };
     }
 
     enable_raw_mode()?;

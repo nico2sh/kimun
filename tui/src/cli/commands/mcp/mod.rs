@@ -140,6 +140,18 @@ pub struct KimunHandler {
 // Tool implementations
 // ---------------------------------------------------------------------------
 
+/// Map a vault error to the result a note-operation handler returns: the core
+/// user-facing message as a tool error the model can react to, or an internal
+/// protocol error. The message and the recoverable/internal split both come from
+/// core (`VaultError::user_message`), so the MCP server and the CLI render
+/// identical wording and a new error variant flows automatically.
+fn vault_err(e: kimun_core::error::VaultError) -> Result<CallToolResult, McpError> {
+    match e.user_message() {
+        Some(msg) => Ok(CallToolResult::error(vec![Content::text(msg)])),
+        None => Err(McpError::internal_error(e.to_string(), None)),
+    }
+}
+
 #[tool_router]
 impl KimunHandler {
     pub fn new(vault: NoteVault) -> Self {
@@ -167,13 +179,7 @@ impl KimunHandler {
                 "Note created: {}",
                 vault_path
             ))])),
-            Err(kimun_core::error::VaultError::NoteExists { .. }) => {
-                Ok(CallToolResult::error(vec![Content::text(format!(
-                    "Note already exists: {}",
-                    vault_path
-                ))]))
-            }
-            Err(e) => Err(McpError::internal_error(e.to_string(), None)),
+            Err(e) => vault_err(e),
         }
     }
 
@@ -212,7 +218,7 @@ impl KimunHandler {
                 "Note saved: {}",
                 vault_path
             ))])),
-            Err(e) => Err(McpError::internal_error(e.to_string(), None)),
+            Err(e) => vault_err(e),
         }
     }
 
@@ -238,12 +244,7 @@ impl KimunHandler {
                     "{} occurrence(s) would be replaced in {} (preview — not written). Resulting content:\n\n{}",
                     pv.count, vault_path, pv.content
                 ))])),
-                Err(
-                    e @ (kimun_core::error::VaultError::ReplaceTextNotFound { .. }
-                    | kimun_core::error::VaultError::ReplaceTextNotUnique { .. }
-                    | kimun_core::error::VaultError::InvalidRegex { .. }),
-                ) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
-                Err(e) => Err(McpError::internal_error(e.to_string(), None)),
+                Err(e) => vault_err(e),
             };
         }
 
@@ -256,12 +257,7 @@ impl KimunHandler {
                 "Replaced {} occurrence(s) in {}",
                 n, vault_path
             ))])),
-            Err(
-                e @ (kimun_core::error::VaultError::ReplaceTextNotFound { .. }
-                | kimun_core::error::VaultError::ReplaceTextNotUnique { .. }
-                | kimun_core::error::VaultError::InvalidRegex { .. }),
-            ) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
-            Err(e) => Err(McpError::internal_error(e.to_string(), None)),
+            Err(e) => vault_err(e),
         }
     }
 
@@ -279,13 +275,7 @@ impl KimunHandler {
                 "Note deleted: {}",
                 vault_path
             ))])),
-            Err(kimun_core::error::VaultError::FSError(
-                kimun_core::error::FSError::VaultPathNotFound { .. },
-            )) => Ok(CallToolResult::error(vec![Content::text(format!(
-                "Note not found: {}",
-                vault_path
-            ))])),
-            Err(e) => Err(McpError::internal_error(e.to_string(), None)),
+            Err(e) => vault_err(e),
         }
     }
 
@@ -297,13 +287,7 @@ impl KimunHandler {
         let vault_path = Self::resolve_path(&p.path);
         match self.vault.get_note_text(&vault_path).await {
             Ok(text) => Ok(CallToolResult::success(vec![Content::text(text)])),
-            Err(kimun_core::error::VaultError::FSError(
-                kimun_core::error::FSError::VaultPathNotFound { .. },
-            )) => Ok(CallToolResult::error(vec![Content::text(format!(
-                "Note not found: {}",
-                vault_path
-            ))])),
-            Err(e) => Err(McpError::internal_error(e.to_string(), None)),
+            Err(e) => vault_err(e),
         }
     }
 
@@ -471,20 +455,13 @@ impl KimunHandler {
         &self,
         Parameters(p): Parameters<OutlinksParams>,
     ) -> Result<CallToolResult, McpError> {
-        use kimun_core::error::{FSError, VaultError};
         use kimun_core::note::{LinkType, NoteDetails};
 
         let vault_path = Self::resolve_path(&p.path);
 
         let md_note = match self.vault.get_markdown_and_links(&vault_path).await {
             Ok(n) => n,
-            Err(VaultError::FSError(FSError::VaultPathNotFound { .. })) => {
-                return Ok(CallToolResult::error(vec![Content::text(format!(
-                    "Note not found: {}",
-                    vault_path
-                ))]));
-            }
-            Err(e) => return Err(McpError::internal_error(e.to_string(), None)),
+            Err(e) => return vault_err(e),
         };
 
         let note_links: Vec<_> = md_note
@@ -550,13 +527,7 @@ impl KimunHandler {
                 "Note renamed: {} → {}",
                 from, to
             ))])),
-            Err(
-                kimun_core::error::VaultError::NoteExists { .. }
-                | kimun_core::error::VaultError::FSError(
-                    kimun_core::error::FSError::VaultPathNotFound { .. }
-                    | kimun_core::error::FSError::InvalidPath { .. },
-                ),
-            ) => Ok(CallToolResult::error(vec![Content::text(format!(
+            Err(e) if e.is_user_error() => Ok(CallToolResult::error(vec![Content::text(format!(
                 "Note not found or destination already exists: {} → {}",
                 from, to
             ))])),
@@ -579,13 +550,7 @@ impl KimunHandler {
                 "Note moved: {} → {}",
                 from, to
             ))])),
-            Err(
-                kimun_core::error::VaultError::NoteExists { .. }
-                | kimun_core::error::VaultError::FSError(
-                    kimun_core::error::FSError::VaultPathNotFound { .. }
-                    | kimun_core::error::FSError::InvalidPath { .. },
-                ),
-            ) => Ok(CallToolResult::error(vec![Content::text(format!(
+            Err(e) if e.is_user_error() => Ok(CallToolResult::error(vec![Content::text(format!(
                 "Note not found or destination already exists: {} → {}",
                 from, to
             ))])),

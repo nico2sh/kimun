@@ -99,6 +99,21 @@ Backups are kept for 30 days, then purged automatically. This covers `overwrite`
 back up (the editor has its own history). If a backup can't be written, the edit
 is aborted (fail-closed) — the note is left untouched.
 
+## Errors
+
+Failed operations print a one-line message to **stderr** and exit non-zero:
+
+- **Exit 2 — user/input error you can act on.** The message is clean and stable,
+  e.g. `Error: Note not found: inbox/x.md`, `Error: Note already exists: inbox/x.md`,
+  `Error: Text to replace is not unique in note: …`,
+  `Error: Text to replace not found in note: …`, `Error: Invalid path '…': …`.
+  Read it and adjust (fix the path, use `--all`, etc.) — don't retry unchanged.
+- **Exit 1 — internal failure** (database, filesystem, unexpected). Treat as a
+  real fault, not something to retry blindly; the full report goes to stderr.
+
+The MCP server returns the same wording as a tool error, so both surfaces report
+note problems identically.
+
 ## Journal
 
 `kimun journal` appends to a journal entry (today by default). `kimun journal show` displays one.

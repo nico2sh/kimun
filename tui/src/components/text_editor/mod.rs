@@ -243,6 +243,7 @@ use crate::components::events::AppEvent;
 use crate::components::events::AppTx;
 use crate::components::events::InputEvent;
 use crate::components::events::redraw_callback;
+use crate::components::preview_highlight;
 use crate::components::single_line_input::{InputOutcome, SingleLineInput};
 use crate::components::text_editor::autocomplete_glue::apply_accept_to_textarea;
 use crate::keys::KeyBindings;
@@ -1924,8 +1925,6 @@ fn paint_viewport_extras(
         if row_text.trim().is_empty() {
             continue;
         }
-        let lower = row_text.to_lowercase();
-        let fold_safe = lower.len() == row_text.len();
 
         let mut restyle =
             |from_byte: usize, to_byte: usize, f: &mut dyn FnMut(&mut ratatui::buffer::Cell)| {
@@ -1960,16 +1959,15 @@ fn paint_viewport_extras(
             }
         }
 
-        // Needle emphasis (skip rows whose case-fold changes length).
-        if fold_safe {
-            for needle in needles {
-                for (start, m) in lower.match_indices(needle.as_str()) {
-                    restyle(start, start + m.len(), &mut |cell| {
-                        let style = cell.style().fg(match_fg).add_modifier(Modifier::BOLD);
-                        cell.set_style(style);
-                    });
-                }
-            }
+        // Needle emphasis. Byte-safe via preview_highlight::match_ranges, whose
+        // offsets are real char boundaries of `row_text` (so non-ASCII case
+        // folds are highlighted too, not dropped — same matcher as the preview
+        // panes).
+        for (start, end) in preview_highlight::match_ranges(&row_text, needles) {
+            restyle(start, end, &mut |cell| {
+                let style = cell.style().fg(match_fg).add_modifier(Modifier::BOLD);
+                cell.set_style(style);
+            });
         }
     }
 }

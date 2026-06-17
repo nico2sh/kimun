@@ -7,29 +7,37 @@ use kimun_core::note::NoteContentData;
 
 use super::format_journal_date;
 use crate::components::file_list::FileListEntry;
-use crate::components::query_vars::{query_is_unresolvable, resolve_query};
-use crate::components::search_list::{Emit, RowSource};
+use crate::components::query_vars::QueryContext;
+use crate::components::search_list::{Emit, ResolvingRowSource, RowSource, Unresolvable};
 
-pub struct SearchNotesProvider {
+/// Build the note-browser search source: a [`SearchNotesProvider`] wrapped so it
+/// resolves `{note}` against `current_note` and falls back to the recent-notes
+/// (empty-query) view when a note-dependent query has no note to resolve
+/// against. The single place the browser's resolution policy lives — the app
+/// and the tests both construct the source through here.
+pub fn resolving_search_source(
     vault: Arc<NoteVault>,
     last_paths: Vec<VaultPath>,
-    /// The note open when the browser was launched, used to resolve query
-    /// variables like `{note}` before the query reaches core. `None` when no
-    /// note is open (e.g. launched from the root browse view).
     current_note: Option<VaultPath>,
+) -> ResolvingRowSource<FileListEntry> {
+    ResolvingRowSource::new(
+        Arc::new(SearchNotesProvider::new(vault, last_paths)),
+        move || QueryContext::with_note(current_note.clone()),
+        Unresolvable::AsEmptyQuery,
+    )
+}
+
+/// The unwrapped vault-backed search source. Private: build it only through
+/// [`resolving_search_source`], so every browser source carries the
+/// variable-resolution policy and none can bypass it.
+struct SearchNotesProvider {
+    vault: Arc<NoteVault>,
+    last_paths: Vec<VaultPath>,
 }
 
 impl SearchNotesProvider {
-    pub fn new(
-        vault: Arc<NoteVault>,
-        last_paths: Vec<VaultPath>,
-        current_note: Option<VaultPath>,
-    ) -> Self {
-        Self {
-            vault,
-            last_paths,
-            current_note,
-        }
+    fn new(vault: Arc<NoteVault>, last_paths: Vec<VaultPath>) -> Self {
+        Self { vault, last_paths }
     }
 
     fn to_entry(&self, entry: NoteEntryData, content: NoteContentData) -> FileListEntry {
@@ -56,13 +64,11 @@ impl SearchNotesProvider {
 #[async_trait]
 impl RowSource<FileListEntry> for SearchNotesProvider {
     async fn load(&self, query: &str, emit: Emit<FileListEntry>) {
-        // A purely note-dependent query ({note} or bare-operator sugar) with
-        // no note to resolve against would reach core as a bare prefix and be
-        // dropped — a dead-end empty list. Treat it like an empty query
-        // instead, so the browser keeps showing the recent notes. Mixed
-        // queries keep their concrete terms and still search.
-        let unresolvable = query_is_unresolvable(query, self.current_note.as_ref());
-        let entries: Vec<FileListEntry> = if query.is_empty() || unresolvable {
+        // The query arrives already resolved: [`ResolvingRowSource`] substitutes
+        // `{note}` and maps the purely-note-dependent-but-no-note case to the
+        // empty query ([`Unresolvable::AsEmptyQuery`]), which falls here into
+        // the recent-notes branch — a dead-end core search is never run.
+        let entries: Vec<FileListEntry> = if query.is_empty() {
             // Build a lookup map from all indexed notes so we can resolve each
             // last_path to its full metadata in O(1).
             let all_notes = self.vault.get_all_notes().await.unwrap_or_default();
@@ -78,13 +84,8 @@ impl RowSource<FileListEntry> for SearchNotesProvider {
                 .map(|(entry, content)| self.to_entry(entry, content))
                 .collect()
         } else {
-            // Resolve query variables ({note}, …) against the open note before
-            // handing a plain query to core — the same presentation-layer step
-            // the Query panel does. Without this, `{note}` reaches core
-            // literally and matches nothing.
-            let resolved = resolve_query(query, self.current_note.as_ref());
             self.vault
-                .search_notes(&resolved)
+                .search_notes(query)
                 .await
                 .unwrap_or_default()
                 .into_iter()
@@ -111,7 +112,7 @@ mod tests {
     }
 
     /// `{note}` must be resolved against the open note before the query reaches
-    /// core — the same presentation-layer step the Query panel performs.
+    /// core — the resolution is the wrapper's job, the provider only searches.
     #[tokio::test]
     async fn resolves_note_variable_before_search() {
         let vault = temp_vault("search_provider_note_var").await;
@@ -125,12 +126,12 @@ mod tests {
         // With the open note = "spec", "={note}" resolves to "=spec" and the
         // name filter matches the note.
         let (tx, _rx) = unbounded_channel();
-        let provider = SearchNotesProvider::new(
+        let source = resolving_search_source(
             vault.clone(),
             vec![],
             Some(VaultPath::note_path_from("spec")),
         );
-        let mut list = SearchList::builder(provider, redraw_callback(tx))
+        let mut list = SearchList::builder(source, redraw_callback(tx))
             .initial_query("={note}")
             .build();
         list.poll_until_idle().await;
@@ -139,11 +140,12 @@ mod tests {
             "expected the 'spec' note via resolved {{note}}"
         );
 
-        // Without an open note, "={note}" resolves to bare "=" and must NOT
-        // match "spec" — proving the literal `{note}` was substituted away.
+        // Without an open note, "={note}" is purely note-dependent → the
+        // wrapper falls back to the (empty) recent-notes view and must NOT
+        // match "spec".
         let (tx2, _rx2) = unbounded_channel();
-        let provider_none = SearchNotesProvider::new(vault.clone(), vec![], None);
-        let mut list_none = SearchList::builder(provider_none, redraw_callback(tx2))
+        let source_none = resolving_search_source(vault.clone(), vec![], None);
+        let mut list_none = SearchList::builder(source_none, redraw_callback(tx2))
             .initial_query("={note}")
             .build();
         list_none.poll_until_idle().await;
@@ -168,9 +170,9 @@ mod tests {
         // No note open, bare `<` typed: the sugar can't resolve, so the
         // browser shows the recent notes (here: "spec") rather than nothing.
         let (tx, _rx) = unbounded_channel();
-        let provider =
-            SearchNotesProvider::new(vault.clone(), vec![VaultPath::note_path_from("spec")], None);
-        let mut list = SearchList::builder(provider, redraw_callback(tx))
+        let source =
+            resolving_search_source(vault.clone(), vec![VaultPath::note_path_from("spec")], None);
+        let mut list = SearchList::builder(source, redraw_callback(tx))
             .initial_query("<")
             .build();
         list.poll_until_idle().await;
@@ -200,12 +202,12 @@ mod tests {
         // filter; "other" is the most recent note and must NOT appear (that
         // would mean the recent-notes fallback swallowed the query).
         let (tx, _rx) = unbounded_channel();
-        let provider = SearchNotesProvider::new(
+        let source = resolving_search_source(
             vault.clone(),
             vec![VaultPath::note_path_from("other")],
             None,
         );
-        let mut list = SearchList::builder(provider, redraw_callback(tx))
+        let mut list = SearchList::builder(source, redraw_callback(tx))
             .initial_query("widget <")
             .build();
         list.poll_until_idle().await;
