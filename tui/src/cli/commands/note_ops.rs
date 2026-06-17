@@ -193,7 +193,9 @@ async fn run_replace(
         return Ok(());
     }
 
-    let count = vault.replace_in_note(&vault_path, old, new, all, regex).await?;
+    let count = vault
+        .replace_in_note(&vault_path, old, new, all, regex)
+        .await?;
 
     println!("Replaced {} occurrence(s) in {}", count, vault_path);
     Ok(())
@@ -370,7 +372,10 @@ async fn run_show(
             // user error prints the same core message; internal errors abort.
             // Same wording as the single-note path and the MCP server.
             Err(e) if e.is_not_found() => {
-                eprintln!("Error: {}", e.user_message().unwrap_or_else(|| e.to_string()));
+                eprintln!(
+                    "Error: {}",
+                    e.user_message().unwrap_or_else(|| e.to_string())
+                );
                 had_errors = true;
                 continue;
             }

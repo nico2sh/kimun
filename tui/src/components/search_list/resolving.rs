@@ -165,7 +165,11 @@ mod tests {
         // Same query, AsEmptyQuery policy: the inner source IS loaded, with the
         // empty query (its recent-notes fallback).
         let (_rows, seen) = run("<", QueryContext::default(), Unresolvable::AsEmptyQuery).await;
-        assert_eq!(seen, vec!["".to_string()], "inner should be loaded with \"\"");
+        assert_eq!(
+            seen,
+            vec!["".to_string()],
+            "inner should be loaded with \"\""
+        );
     }
 
     #[tokio::test]

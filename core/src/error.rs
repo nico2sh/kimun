@@ -252,36 +252,46 @@ mod tests {
             Some("Note already exists: a.md")
         );
         // Replace/regex Displays are already good single-path messages.
-        assert!(
-            VaultError::ReplaceTextNotUnique {
-                path: VaultPath::note_path_from("a")
-            }
-            .user_message()
-            .unwrap()
-            .contains("not unique")
-        );
+        assert!(VaultError::ReplaceTextNotUnique {
+            path: VaultPath::note_path_from("a")
+        }
+        .user_message()
+        .unwrap()
+        .contains("not unique"));
     }
 
     #[test]
     fn internal_failures_have_no_user_message() {
-        assert!(VaultError::DBError(DBError::DBConnectionClosed).user_message().is_none());
-        assert!(VaultError::TaskJoin("boom".into()).user_message().is_none());
-        assert!(
-            VaultError::FSError(FSError::EncodingError(
-                String::from_utf8(vec![0xff]).unwrap_err()
-            ))
+        assert!(VaultError::DBError(DBError::DBConnectionClosed)
             .user_message()
-            .is_none()
-        );
+            .is_none());
+        assert!(VaultError::TaskJoin("boom".into()).user_message().is_none());
+        assert!(VaultError::FSError(FSError::EncodingError(
+            String::from_utf8(vec![0xff]).unwrap_err()
+        ))
+        .user_message()
+        .is_none());
         // is_user_error is the bool view of user_message.
-        assert!(VaultError::NoteExists { path: VaultPath::note_path_from("a") }.is_user_error());
+        assert!(VaultError::NoteExists {
+            path: VaultPath::note_path_from("a")
+        }
+        .is_user_error());
         assert!(!VaultError::DBError(DBError::DBConnectionClosed).is_user_error());
     }
 
     #[test]
     fn not_found_recognized_through_the_fs_layer() {
-        assert!(VaultError::FSError(FSError::VaultPathNotFound { path: VaultPath::note_path_from("a") }).is_not_found());
-        assert!(VaultError::FSError(FSError::NoFileOrDirectoryFound { path: "a".into() }).is_not_found());
-        assert!(!VaultError::NoteExists { path: VaultPath::note_path_from("a") }.is_not_found());
+        assert!(VaultError::FSError(FSError::VaultPathNotFound {
+            path: VaultPath::note_path_from("a")
+        })
+        .is_not_found());
+        assert!(
+            VaultError::FSError(FSError::NoFileOrDirectoryFound { path: "a".into() })
+                .is_not_found()
+        );
+        assert!(!VaultError::NoteExists {
+            path: VaultPath::note_path_from("a")
+        }
+        .is_not_found());
     }
 }

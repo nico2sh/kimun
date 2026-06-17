@@ -9,11 +9,11 @@ use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
 
 use crate::components::Component;
-use crate::components::query_panel::QueryPanel;
 use crate::components::drawer_views::{LinksPanel, OutlinePanel, TagsPanel};
 use crate::components::event_state::EventState;
 use crate::components::events::{AppTx, InputEvent};
 use crate::components::panel::panel_block;
+use crate::components::query_panel::QueryPanel;
 use crate::components::sidebar::SidebarComponent;
 use crate::settings::themes::Theme;
 

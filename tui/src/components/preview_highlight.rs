@@ -193,8 +193,7 @@ mod tests {
     fn style_ranges_alternates_gaps_and_matches() {
         let line = "see widget and gadget";
         let ranges = match_ranges(line, &needles(&["widget", "gadget"]));
-        let segs: Vec<(String, bool)> =
-            style_ranges(line, &ranges, |s, hit| (s.to_string(), hit));
+        let segs: Vec<(String, bool)> = style_ranges(line, &ranges, |s, hit| (s.to_string(), hit));
         // Every match becomes a `true` segment, gaps `false` — not just the first.
         assert_eq!(
             segs,
