@@ -61,6 +61,14 @@ pub trait AppScreen {
         Some(path)
     }
 
+    /// Try to open the attachment at `path` within this screen (the editor
+    /// screen shows it in its read-only attachment view; see ADR-0017). Return
+    /// `Some(path)` if the screen does not handle it, in which case the main
+    /// loop routes it to the editor screen. Default: not handled.
+    async fn try_open_attachment(&mut self, path: VaultPath, _tx: &AppTx) -> Option<VaultPath> {
+        Some(path)
+    }
+
     fn get_kind(&self) -> ScreenKind;
 
     /// Called once just before the screen is removed from the app (quit or screen transition).

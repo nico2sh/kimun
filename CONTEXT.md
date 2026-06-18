@@ -197,6 +197,16 @@ _Avoid_: backlink rewriting (names one half; self-links are the other), rename h
 The one core module that brings the **NoteIndex** in step with the vault on disk. One call runs the whole pipeline — read the cached entries, walk the subtree in parallel, diff against the cache under a validation mode, apply the **IndexDiff**, optionally streaming discovered entries to the caller as they are found. The parallel walker, its thread-state plumbing, and the async/blocking bridge are implementation and never cross the interface.
 _Avoid_: visitor, walker, indexer (each names an internal part, not the module)
 
+### Vault content kinds
+
+**Attachment**:
+A visible vault file that is not a **note** — any entry the walker finds that is neither a directory nor a `.md` note, with hidden dotfiles (`.git`, `.kimun`) already excluded. Extension-agnostic: images, PDFs, archives, and extension-less files (`LICENSE`) are all attachments. Attachments are listed, openable (with the OS default program), and support the same file operations as notes — move, rename, delete (as plain filesystem operations: renaming or moving an attachment does **not** rewrite the embed/link references to it in notes). They are never indexed and never participate in **note links**. Core models them as `EntryData::Attachment` / `ResultType::Attachment`.
+_Avoid_: asset (the `/assets` directory is one storage location, not the kind), media (too narrow — not every attachment is media), file (every note is also a file).
+
+**Attachment view**:
+The read-only surface the editor area shows when an **Attachment** is opened, in place of the text editor — metadata (name, vault path, size, modified) plus, for text files, a scrollable preview of the content; binary files show metadata only. Never editable: the file's verb is *open externally* (**FollowLink**, default Ctrl+N), not edit. The editor area thus shows one of two contents — the text editor for a **note**, the attachment view for an attachment.
+_Avoid_: attachment editor (it never edits), preview pane (names only the text half; binary attachments have none).
+
 ### Note content
 
 **Note details**:

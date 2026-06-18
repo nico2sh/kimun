@@ -120,11 +120,9 @@ impl RenameDialog {
                     let vault = Arc::clone(&self.vault);
                     let tx2 = tx.clone();
                     tokio::spawn(async move {
-                        let result = if from.is_note() {
-                            vault.rename_note(&from, &new_path).await
-                        } else {
-                            vault.rename_directory(&from, &new_path).await
-                        };
+                        // Core classifies the entry and routes to the right
+                        // rename (note / directory / attachment); see ADR-0017.
+                        let result = vault.rename_entry(&from, &new_path).await;
                         match result {
                             Ok(()) => {
                                 tx2.send(AppEvent::EntryRenamed { from, to: new_path }).ok();

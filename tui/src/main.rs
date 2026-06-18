@@ -520,6 +520,22 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
                 }
             }
         }
+        AppEvent::OpenAttachment(path) => {
+            // The editor screen shows it in its attachment view; any other
+            // screen routes through OpenEditor first, then the attachment opens
+            // there. (In practice this is sent from the editor's FILES drawer.)
+            let unhandled = if let Some(screen) = app.current_screen.as_mut() {
+                screen.try_open_attachment(path, tx).await
+            } else {
+                Some(path)
+            };
+            if let Some(path) = unhandled
+                && let Some(vault) = app.vault.clone()
+            {
+                tx.send(AppEvent::OpenScreen(ScreenEvent::OpenEditor(vault, path)))
+                    .ok();
+            }
+        }
         AppEvent::OpenJournal => {
             // Resolve today's journal entry (creating it if needed) once, then
             // route it like any other note via OpenPath so it works from every

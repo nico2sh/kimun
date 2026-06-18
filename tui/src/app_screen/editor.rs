@@ -12,6 +12,7 @@ use ratatui::widgets::Paragraph;
 use crate::app_screen::overlay_host::OverlayHost;
 use crate::app_screen::panel_set::PanelSet;
 use crate::app_screen::{AppScreen, ScreenKind};
+use crate::components::attachment_view::AttachmentView;
 use crate::components::autosave_timer::AutosaveTimer;
 use crate::components::dialogs::ActiveDialog;
 use crate::components::drawer::{DrawerHost, DrawerView};
@@ -148,7 +149,10 @@ impl EditorScreen {
     /// `false` if the clipboard contained no image, so the caller can fall
     /// through to a regular text paste.
     fn try_paste_image(&mut self, tx: &AppTx) -> bool {
-        let img = match self.panels.editor_mut().take_clipboard_image() {
+        let Some(editor) = self.panels.editor_mut() else {
+            return false;
+        };
+        let img = match editor.take_clipboard_image() {
             Some(i) if !i.rgba.is_empty() && i.width > 0 && i.height > 0 => i,
             _ => return false,
         };
@@ -279,6 +283,14 @@ impl EditorScreen {
 
     pub async fn open_path(&mut self, path: VaultPath, emphasis: Option<Vec<String>>, tx: &AppTx) {
         if !path.is_note() {
+            // A non-note path is either an attachment (show it in place of the
+            // editor) or a directory (browse it). Classify so a stray
+            // attachment open here still lands in the attachment view rather
+            // than the directory browser (ADR-0017).
+            if let Ok(kimun_core::EntryKind::Attachment) = self.vault.entry_kind(&path).await {
+                self.open_attachment(path, tx).await;
+                return;
+            }
             tx.send(AppEvent::OpenScreen(ScreenEvent::OpenBrowse(
                 self.vault.clone(),
                 path,
@@ -300,6 +312,8 @@ impl EditorScreen {
         });
 
         self.path = path.clone();
+        // Returning to a note swaps the editor area back from any attachment.
+        self.panels.clear_attachment();
         // Mark this note's row in the sidebar (clears the previous one).
         self.panels
             .sidebar_mut()
@@ -307,13 +321,15 @@ impl EditorScreen {
         match self.vault.get_note_text(&self.path).await {
             Ok(content) => {
                 self.doc_meta.note_opened(&self.path, tx);
-                self.panels.editor_mut().set_text(content);
-                // Arrive-from-query emphasis: apply after the load so the
-                // buffer's new revision owns the needles.
-                if let Some(needles) = emphasis {
-                    self.panels.editor_mut().set_search_needles(needles);
+                if let Some(ed) = self.panels.editor_mut() {
+                    ed.set_text(content);
+                    // Arrive-from-query emphasis: apply after the load so the
+                    // buffer's new revision owns the needles.
+                    if let Some(needles) = emphasis {
+                        ed.set_search_needles(needles);
+                    }
+                    ed.set_redraw_tx(tx);
                 }
-                self.panels.editor_mut().set_redraw_tx(tx);
                 tx.send(AppEvent::Redraw).ok();
                 // FIND / LINKS / OUTLINE reflect the open note; keep them in
                 // step. Shared with `on_note_renamed` via the helper.
@@ -348,6 +364,35 @@ impl EditorScreen {
         // Abort any existing timer and spawn a fresh one for the new note.
         let interval = self.settings.read().unwrap().autosave_interval_secs;
         self.autosave.restart(interval, tx.clone());
+    }
+
+    /// Show the attachment at `path` in the editor area's read-only attachment
+    /// view (ADR-0017). Saves and unmounts the open note first; while an
+    /// attachment is shown there is no open note, so the autosave task is
+    /// aborted and the sidebar's open-note marker cleared. The next periodic
+    /// autosave tick no-ops because the note editor is absent.
+    async fn open_attachment(&mut self, path: VaultPath, tx: &AppTx) {
+        // Persist the current note before swapping the editor area away from it.
+        self.try_save().await;
+        self.autosave_task.abort();
+
+        match self.vault.get_attachment_details(&path).await {
+            Ok(details) => {
+                let (icons, kb) = {
+                    let s = self.settings.read().unwrap();
+                    (s.icons(), s.key_bindings.clone())
+                };
+                let view = AttachmentView::new(details, icons, kb);
+                self.path = path;
+                self.panels.show_attachment(view);
+                self.panels.sidebar_mut().set_open_note(None);
+                tx.send(AppEvent::Redraw).ok();
+            }
+            Err(e) => {
+                self.footer
+                    .flash(format!("Cannot open attachment: {e}"), tx);
+            }
+        }
     }
 
     fn navigate_sidebar(&mut self, dir: VaultPath, tx: &AppTx) {
@@ -401,17 +446,25 @@ impl EditorScreen {
                 }
             }
         }
-        if self.panels.editor().is_dirty() {
-            let text = self.panels.editor().get_text();
-            // Same cap on our own save so quit cannot hang on a stuck
-            // disk. A timeout returns Err(_); we skip mark_saved so the
-            // editor stays dirty for any subsequent retry.
-            let save = self.vault.save_note(&self.path, &text);
-            if let Ok(Ok((_, content))) = tokio::time::timeout(SAVE_TIMEOUT, save).await {
-                self.panels.editor_mut().mark_saved(text);
-                let path = self.path.clone();
-                self.note_saved(&path, content.title);
+        // No note editor mounted (an attachment is shown) → nothing to save.
+        let Some(text) = self
+            .panels
+            .editor()
+            .filter(|e| e.is_dirty())
+            .map(|e| e.get_text())
+        else {
+            return;
+        };
+        // Same cap on our own save so quit cannot hang on a stuck
+        // disk. A timeout returns Err(_); we skip mark_saved so the
+        // editor stays dirty for any subsequent retry.
+        let save = self.vault.save_note(&self.path, &text);
+        if let Ok(Ok((_, content))) = tokio::time::timeout(SAVE_TIMEOUT, save).await {
+            if let Some(ed) = self.panels.editor_mut() {
+                ed.mark_saved(text);
             }
+            let path = self.path.clone();
+            self.note_saved(&path, content.title);
         }
     }
 
@@ -429,11 +482,14 @@ impl EditorScreen {
         if self.autosave_task.is_in_flight() {
             return;
         }
-        if !self.panels.editor().is_dirty() {
+        let Some(ed) = self.panels.editor() else {
+            return;
+        };
+        if !ed.is_dirty() {
             return;
         }
-        let text = self.panels.editor().get_text();
-        let revision = self.panels.editor().content_revision();
+        let text = ed.get_text();
+        let revision = ed.content_revision();
         let vault = self.vault.clone();
         let path = self.path.clone();
         let tx = tx.clone();
@@ -512,8 +568,10 @@ impl EditorScreen {
             match self.vault.get_note_text(&to).await {
                 Ok(text) => {
                     self.path = to.clone();
-                    self.panels.editor_mut().set_text(text.clone());
-                    self.panels.editor_mut().mark_saved(text);
+                    if let Some(ed) = self.panels.editor_mut() {
+                        ed.set_text(text.clone());
+                        ed.mark_saved(text);
+                    }
                     self.panels
                         .sidebar_mut()
                         .set_open_note(Some(self.path.clone()));
@@ -892,7 +950,16 @@ impl EditorScreen {
     /// Ctrl+Enter on kitty-protocol terminals).
     fn follow_link_at_cursor(&mut self, tx: &AppTx) {
         use crate::components::text_editor::LinkTarget;
-        match self.panels.editor_mut().link_at_cursor() {
+        // In the attachment view, FollowLink (Ctrl+N) opens the attachment with
+        // the OS default program rather than following a link (there is none).
+        if self.panels.is_showing_attachment() {
+            self.open_attachment_externally(tx);
+            return;
+        }
+        let Some(editor) = self.panels.editor_mut() else {
+            return;
+        };
+        match editor.link_at_cursor() {
             Some(LinkTarget::Note(target)) => {
                 tx.send(AppEvent::FollowLink(target)).ok();
             }
@@ -900,6 +967,21 @@ impl EditorScreen {
                 tx.send(AppEvent::FollowLabel(name)).ok();
             }
             None => {}
+        }
+    }
+
+    /// Opens the attachment currently shown in the editor area with the OS
+    /// default program (the same handoff `follow_link` uses for image links).
+    fn open_attachment_externally(&mut self, tx: &AppTx) {
+        let Some(path) = self.panels.attachment_path() else {
+            return;
+        };
+        let os_path = self.vault.path_to_pathbuf(path);
+        match open::that_detached(&os_path) {
+            Ok(()) => self
+                .footer
+                .flash(format!("Opening {}", os_path.display()), tx),
+            Err(e) => self.footer.flash(format!("Cannot open: {e}"), tx),
         }
     }
 
@@ -1187,8 +1269,11 @@ impl AppScreen for EditorScreen {
         if self.editor_active()
             && let InputEvent::Paste(text) = event
         {
-            if !self.try_paste_image(tx) && !text.is_empty() {
-                self.panels.editor_mut().paste_text(text, tx);
+            if !self.try_paste_image(tx)
+                && !text.is_empty()
+                && let Some(ed) = self.panels.editor_mut()
+            {
+                ed.paste_text(text, tx);
             }
             return EventState::Consumed;
         }
@@ -1417,13 +1502,17 @@ impl AppScreen for EditorScreen {
                     return EventState::Consumed;
                 }
                 Some(ActionShortcuts::FindInBuffer) if self.editor_active() => {
-                    self.panels.editor_mut().open_or_advance_search();
+                    if let Some(ed) = self.panels.editor_mut() {
+                        ed.open_or_advance_search();
+                    }
                     return EventState::Consumed;
                 }
                 Some(ActionShortcuts::Text(
                     action @ (TextAction::Bold | TextAction::Italic | TextAction::Strikethrough),
                 )) if self.editor_active() => {
-                    self.panels.editor_mut().apply_text_action(action);
+                    if let Some(ed) = self.panels.editor_mut() {
+                        ed.apply_text_action(action);
+                    }
                     return EventState::Consumed;
                 }
                 _ => {
@@ -1458,8 +1547,10 @@ impl AppScreen for EditorScreen {
             let state = self.panels.handle_mouse(event, tx);
             // A selectionless right-click in the editor asks for the note's
             // context menu — the screen owns the path, so it opens it here.
-            if self.panels.editor().wants_context_menu {
-                self.panels.editor_mut().wants_context_menu = false;
+            if self.panels.editor().is_some_and(|e| e.wants_context_menu) {
+                if let Some(ed) = self.panels.editor_mut() {
+                    ed.wants_context_menu = false;
+                }
                 tx.send(AppEvent::ShowFileOpsMenu(self.path.clone())).ok();
             }
             return state;
@@ -1481,7 +1572,7 @@ impl AppScreen for EditorScreen {
             && let InputEvent::Key(key) = event
             && key.code == ratatui::crossterm::event::KeyCode::Char(' ')
             && key.modifiers.is_empty()
-            && self.panels.editor().vim_space_leads()
+            && self.panels.editor().is_some_and(|e| e.vim_space_leads())
         {
             self.leader.start();
             self.schedule_whichkey_reveal(tx);
@@ -1630,18 +1721,22 @@ impl AppScreen for EditorScreen {
         // The backlink count loads async, cached per target.
         let link_segment = if self.panels.focused() == PanelKind::Editor && !self.overlays.is_open()
         {
-            let link = self.panels.editor().link_at_cursor();
+            let link = self.panels.editor().and_then(|e| e.link_at_cursor());
             self.doc_meta
                 .link_segment(link.as_ref(), &self.path, self.app_tx.as_ref())
         } else {
             None
         };
-        // ln/col only when the editor buffer holds the cursor.
-        let ln_col =
-            (self.panels.focused() == PanelKind::Editor && !self.overlays.is_open()).then(|| {
-                let (row, col) = self.panels.editor().cursor_pos();
-                (row + 1, col + 1)
-            });
+        // ln/col only when the editor buffer holds the cursor (not the
+        // attachment view, which has none).
+        let ln_col = (self.panels.focused() == PanelKind::Editor && !self.overlays.is_open())
+            .then(|| {
+                self.panels.editor().map(|e| {
+                    let (row, col) = e.cursor_pos();
+                    (row + 1, col + 1)
+                })
+            })
+            .flatten();
         // Match count when the FIND drawer is the focused query context.
         let matches = (self.panels.focused() == PanelKind::Drawer
             && self.panels.active_drawer_view() == DrawerView::Find)
@@ -1663,7 +1758,7 @@ impl AppScreen for EditorScreen {
             global_hints: &global_hints,
             doc: crate::components::footer_bar::DocState {
                 path: &path_str,
-                dirty: self.panels.editor().is_dirty(),
+                dirty: self.panels.editor().is_some_and(|e| e.is_dirty()),
                 ln_col,
                 backlinks: self.doc_meta.backlinks(),
                 git: self.doc_meta.git().cloned(),
@@ -1802,7 +1897,9 @@ impl AppScreen for EditorScreen {
                 self.open_find_with_query(format!("#{label}"), None, tx);
             }
             AppEvent::JumpToHeading(heading) if !self.overlays.is_open() => {
-                self.panels.editor_mut().jump_to_heading(&heading);
+                if let Some(ed) = self.panels.editor_mut() {
+                    ed.jump_to_heading(&heading);
+                }
                 self.focus_editor();
             }
             AppEvent::OpenDrawerView(view) => {
@@ -1881,8 +1978,9 @@ impl AppScreen for EditorScreen {
             } => {
                 if path == self.path
                     && let Some(rev) = saved_revision
+                    && let Some(ed) = self.panels.editor_mut()
                 {
-                    self.panels.editor_mut().mark_saved_at_revision(rev);
+                    ed.mark_saved_at_revision(rev);
                 }
                 if let Some(raw_title) = title {
                     self.note_saved(&path, raw_title);
@@ -1999,7 +2097,9 @@ impl AppScreen for EditorScreen {
                     .flash(format!("Failed to save search '{name}'"), tx);
             }
             AppEvent::InsertAtCursor(text) if self.panels.focused() == PanelKind::Editor => {
-                self.panels.editor_mut().insert_at_cursor(&text, tx);
+                if let Some(ed) = self.panels.editor_mut() {
+                    ed.insert_at_cursor(&text, tx);
+                }
             }
             _ => {}
         }
@@ -2020,6 +2120,12 @@ impl AppScreen for EditorScreen {
         } else {
             self.navigate_sidebar(path, tx);
         }
+        None
+    }
+
+    async fn try_open_attachment(&mut self, path: VaultPath, tx: &AppTx) -> Option<VaultPath> {
+        self.dismiss_overlay();
+        self.open_attachment(path, tx).await;
         None
     }
 
@@ -2155,7 +2261,7 @@ mod tests {
         let (mut screen, _, _, _dir) = test_screen().await;
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
 
-        screen.panels.editor_mut().set_text(String::new());
+        screen.panels.editor_mut().unwrap().set_text(String::new());
         assert_eq!(screen.panels.focused(), PanelKind::Editor);
 
         screen.handle_input(&ctrl_key('g'), &tx);
@@ -2163,7 +2269,7 @@ mod tests {
         // 'w' is a group key; it must not land in the buffer.
         screen.handle_input(&chr('w'), &tx);
         screen.handle_input(&chr('z'), &tx); // zen: hides the drawer
-        assert_eq!(screen.panels.editor().get_text(), "");
+        assert_eq!(screen.panels.editor().unwrap().get_text(), "");
         assert!(!screen.panels.is_visible(PanelKind::Drawer));
     }
 
@@ -2191,10 +2297,10 @@ mod tests {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
 
         // Editor focused: Space must insert a space.
-        screen.panels.editor_mut().set_text(String::new());
+        screen.panels.editor_mut().unwrap().set_text(String::new());
         screen.handle_input(&chr(' '), &tx);
         assert!(!screen.leader.is_pending());
-        assert_eq!(screen.panels.editor().get_text(), " ");
+        assert_eq!(screen.panels.editor().unwrap().get_text(), " ");
 
         // Rail focused: Space must NOT lead.
         screen.panels.focus(PanelKind::Rail);
@@ -2577,6 +2683,53 @@ mod tests {
         );
     }
 
+    /// Opening an attachment swaps the editor area to the read-only attachment
+    /// view: the note editor accessor reports absent, and FollowLink in that
+    /// state opens externally rather than touching the (absent) editor.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn opening_attachment_shows_attachment_view() {
+        let vault = crate::test_support::temp_vault("editor-attachment").await;
+        vault.validate_and_init().await.unwrap();
+        vault
+            .save_attachment(&VaultPath::new("assets/diagram.png"), &[1, 2, 3])
+            .await
+            .unwrap();
+        let settings = std::sync::Arc::new(std::sync::RwLock::new(
+            crate::settings::AppSettings::default(),
+        ));
+        let mut screen = EditorScreen::new(vault.clone(), VaultPath::root(), settings);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        // Precondition: a note editor is mounted.
+        assert!(screen.panels.editor().is_some());
+
+        screen
+            .try_open_attachment(VaultPath::new("assets/diagram.png"), &tx)
+            .await;
+
+        assert!(
+            screen.panels.is_showing_attachment(),
+            "the editor area shows the attachment view"
+        );
+        assert!(
+            screen.panels.editor().is_none(),
+            "no note editor is mounted while an attachment is shown"
+        );
+        assert_eq!(
+            screen.panels.attachment_path(),
+            Some(&VaultPath::new("assets/diagram.png"))
+        );
+
+        // Returning to a note swaps the editor area back.
+        vault
+            .create_note(&VaultPath::new("note.md"), "hi")
+            .await
+            .unwrap();
+        screen.open_path(VaultPath::new("note.md"), None, &tx).await;
+        assert!(!screen.panels.is_showing_attachment());
+        assert!(screen.panels.editor().is_some());
+    }
+
     #[tokio::test]
     async fn save_query_from_note_browser_opens_save_dialog() {
         use crate::settings::AppSettings;
@@ -2666,7 +2819,7 @@ mod tests {
 
         assert_eq!(screen.path, to, "editor retargets to the new path");
         assert!(
-            !screen.panels.editor().is_dirty(),
+            !screen.panels.editor().unwrap().is_dirty(),
             "reloaded buffer is clean (won't clobber the renamed file)"
         );
     }

@@ -42,11 +42,9 @@ impl DeleteConfirmDialog {
                 let vault = Arc::clone(&self.vault);
                 let tx_clone = tx.clone();
                 tokio::spawn(async move {
-                    let result = if path.is_note() {
-                        vault.delete_note(&path).await
-                    } else {
-                        vault.delete_directory(&path).await
-                    };
+                    // Core classifies the entry and routes to the right delete
+                    // (note / directory / attachment); see ADR-0017.
+                    let result = vault.delete_entry(&path).await;
                     match result {
                         Ok(()) => {
                             tx_clone.send(AppEvent::EntryDeleted(path)).ok();
