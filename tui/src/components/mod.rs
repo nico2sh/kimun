@@ -1,4 +1,5 @@
 pub mod activity_rail;
+pub mod attachment_view;
 pub mod autocomplete;
 pub mod autosave_timer;
 pub mod command_palette;
