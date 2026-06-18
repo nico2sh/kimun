@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.5](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.19.4...kimun-notes-v0.19.5) - 2026-06-18
+
+### Added
+
+- attachments are a first class file in the browser now
+
+### Fixed
+
+- removed duplication
+
 ## [0.19.4](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.19.3...kimun-notes-v0.19.4) - 2026-06-17
 
 ### Fixed

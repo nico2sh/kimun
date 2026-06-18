@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.27](https://github.com/nico2sh/kimun/compare/kimun_core-v0.2.26...kimun_core-v0.2.27) - 2026-06-18
+
+### Added
+
+- attachments are a first class file in the browser now
+
+### Fixed
+
+- removed duplication
+
+### Other
+
+- updated core readme
+
 ## [0.2.26](https://github.com/nico2sh/kimun/compare/kimun_core-v0.2.25...kimun_core-v0.2.26) - 2026-06-17
 
 ### Fixed
