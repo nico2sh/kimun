@@ -1,0 +1,23 @@
+Garden Bed Layout — South Fence
+================================
+
+         N
+         ^
+         |
+  +--------------+  +--------------+  +--------------+
+  |   BED 1      |  |   BED 2      |  |   BED 3      |
+  |  4 x 8 ft    |  |  4 x 8 ft    |  |  4 x 8 ft    |
+  |              |  |              |  |              |
+  |  Tomatoes    |  |  Lettuce     |  |  Carrots     |
+  |  + Herbs     |  |  Spinach     |  |  Radishes    |
+  |  (Basil,     |  |  Kale        |  |  Beets       |
+  |   Rosemary)  |  |  Arugula     |  |  Onions      |
+  +--------------+  +--------------+  +--------------+
+        ||                ||                ||
+     drip line         drip line         drip line
+  ----------------------------------------------------
+                  SOUTH FENCE (full sun)
+
+Spacing: 18 in between beds for the wheelbarrow.
+Watering: 7am, deep water twice a week (see garden-plan).
+Sun: 6+ hours direct, south-facing.

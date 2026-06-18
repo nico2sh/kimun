@@ -32,4 +32,6 @@ Three raised beds along the south fence (4x8 each):
 
 See [[companion-planting]] for plant pairings.
 
+Bed layout sketch: [garden-layout.txt](../assets/garden-layout.txt)
+
 Labels: #idea
