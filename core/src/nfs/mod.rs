@@ -62,6 +62,32 @@ pub(crate) enum EntryData {
     Attachment,
 }
 
+/// The kind of entry at a vault path, resolved by a filesystem stat. The single
+/// discriminator callers switch on to choose the matching file operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryKind {
+    /// A `.md` note.
+    Note,
+    /// A directory.
+    Directory,
+    /// Any other (non-note) file.
+    Attachment,
+}
+
+/// The one classification rule for a vault entry: a directory, a `.md` note, or
+/// any other file (an attachment). Shared by the index walk ([`VaultEntry`])
+/// and the public `entry_kind` door so the two can never disagree on what a
+/// path is.
+pub(crate) fn classify(metadata: &std::fs::Metadata, path: &VaultPath) -> EntryKind {
+    if metadata.is_dir() {
+        EntryKind::Directory
+    } else if path.is_note() {
+        EntryKind::Note
+    } else {
+        EntryKind::Attachment
+    }
+}
+
 /// Lightweight metadata for an indexed note: enough to detect changes without
 /// reading the note's contents. Produced from filesystem metadata as the vault
 /// is walked.
@@ -100,17 +126,26 @@ impl NoteEntryData {
     }
 
     fn from_metadata(path: &VaultPath, metadata: &std::fs::Metadata) -> NoteEntryData {
-        let size = metadata.len();
-        let modified_secs = metadata
-            .modified()
-            .map(|t| t.duration_since(UNIX_EPOCH).unwrap().as_secs())
-            .unwrap_or(0);
+        let (size, modified_secs) = size_and_mtime(metadata);
         NoteEntryData {
             path: path.flatten(),
             size,
             modified_secs,
         }
     }
+}
+
+/// Extracts `(size_bytes, modified_unix_secs)` from filesystem metadata. A
+/// missing or pre-epoch mtime yields `0` (rather than panicking). Shared by
+/// note and attachment reads so the two never drift on how size/mtime are read.
+fn size_and_mtime(metadata: &std::fs::Metadata) -> (u64, u64) {
+    let modified_secs = metadata
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    (metadata.len(), modified_secs)
 }
 
 /// Metadata for an indexed directory. A directory carries no content of its
@@ -195,12 +230,10 @@ impl VaultEntry {
     }
 
     fn assemble(path: VaultPath, metadata: &std::fs::Metadata) -> Result<Self, FSError> {
-        let data = if metadata.is_dir() {
-            EntryData::Directory(DirectoryEntryData { path: path.clone() })
-        } else if path.is_note() {
-            EntryData::Note(NoteEntryData::from_metadata(&path, metadata))
-        } else {
-            EntryData::Attachment
+        let data = match classify(metadata, &path) {
+            EntryKind::Directory => EntryData::Directory(DirectoryEntryData { path: path.clone() }),
+            EntryKind::Note => EntryData::Note(NoteEntryData::from_metadata(&path, metadata)),
+            EntryKind::Attachment => EntryData::Attachment,
         };
         let path_string = path.to_string();
         Ok(VaultEntry {
@@ -406,6 +439,166 @@ pub(crate) async fn save_attachment<P: AsRef<Path>>(
     }
     tokio::fs::write(&full_path, bytes).await?;
     Ok(())
+}
+
+/// Largest text-attachment preview read into memory. Files past this are
+/// truncated to a prefix; binary detection still only ever reads this far, so a
+/// multi-GB file can never blow the heap.
+pub(crate) const ATTACHMENT_PREVIEW_CAP: usize = 10 * 1024 * 1024;
+
+/// First-pass read used to classify text vs binary. A binary file almost
+/// always reveals a NUL byte or invalid UTF-8 within this window, so we can
+/// reject it without reading the rest — a multi-GB binary costs one 64 KiB
+/// read, not a full [`ATTACHMENT_PREVIEW_CAP`] read.
+const ATTACHMENT_SNIFF_BYTES: usize = 64 * 1024;
+
+/// Decoded content of an attachment read from disk.
+pub(crate) enum FileText {
+    /// Valid UTF-8, no NUL bytes. `truncated` when the file exceeded the cap.
+    Text { text: String, truncated: bool },
+    /// Binary (NUL byte or invalid UTF-8). No preview.
+    Binary,
+}
+
+/// Raw read of an attachment: its size/mtime plus the decoded preview content.
+pub(crate) struct AttachmentRead {
+    pub size: u64,
+    pub modified_secs: u64,
+    pub content: FileText,
+}
+
+/// Text-vs-binary heuristic, the same call git/ripgrep make: a buffer is text
+/// iff it holds no NUL byte and is valid UTF-8. A buffer that is valid UTF-8 up
+/// to a final incomplete multi-byte char (the cap split it mid-character) is
+/// still text — we keep the valid prefix; a genuine invalid byte means binary.
+fn decode_attachment_text(buf: &[u8]) -> Option<String> {
+    if buf.contains(&0) {
+        return None;
+    }
+    match std::str::from_utf8(buf) {
+        Ok(s) => Some(s.to_owned()),
+        // `error_len() == None` means the error is a truncated trailing char.
+        Err(e) if e.error_len().is_none() => Some(
+            std::str::from_utf8(&buf[..e.valid_up_to()])
+                .unwrap()
+                .to_owned(),
+        ),
+        Err(_) => None,
+    }
+}
+
+/// Whether a sniff window looks binary: a NUL byte, or invalid UTF-8 that is a
+/// genuine bad byte rather than a multi-byte char the window split. Unlike
+/// [`decode_attachment_text`], a trailing-truncated char here is NOT binary —
+/// the window may simply have cut mid-character, and the rest is read next.
+fn sniff_is_binary(buf: &[u8]) -> bool {
+    if buf.contains(&0) {
+        return true;
+    }
+    match std::str::from_utf8(buf) {
+        Ok(_) => false,
+        Err(e) => e.error_len().is_some(),
+    }
+}
+
+/// Stats an attachment and reads up to [`ATTACHMENT_PREVIEW_CAP`] bytes,
+/// classifying the content as text (with the decoded preview) or binary.
+pub(crate) async fn read_attachment<P: AsRef<Path>>(
+    workspace_path: P,
+    path: &VaultPath,
+) -> Result<AttachmentRead, FSError> {
+    use tokio::io::AsyncReadExt;
+
+    let os_path = resolve_path_on_disk(&workspace_path, path).await;
+    let meta = match tokio::fs::metadata(&os_path).await {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(FSError::VaultPathNotFound {
+                path: path.to_owned(),
+            });
+        }
+        Err(e) => return Err(FSError::ReadFileError(e)),
+    };
+    let (size, modified_secs) = size_and_mtime(&meta);
+
+    let file = tokio::fs::File::open(&os_path)
+        .await
+        .map_err(FSError::ReadFileError)?;
+
+    // Phase 1: sniff the first window. A binary file reveals itself here, so we
+    // never read the full cap just to reject it.
+    let mut reader = file.take(ATTACHMENT_SNIFF_BYTES as u64);
+    let mut buf = Vec::new();
+    reader
+        .read_to_end(&mut buf)
+        .await
+        .map_err(FSError::ReadFileError)?;
+    if sniff_is_binary(&buf) {
+        return Ok(AttachmentRead {
+            size,
+            modified_secs,
+            content: FileText::Binary,
+        });
+    }
+
+    // Phase 2: text so far — read the remainder up to one byte past the cap, so
+    // a file exactly at the cap is not flagged truncated and anything larger is.
+    let remaining = (ATTACHMENT_PREVIEW_CAP + 1).saturating_sub(buf.len());
+    reader
+        .into_inner()
+        .take(remaining as u64)
+        .read_to_end(&mut buf)
+        .await
+        .map_err(FSError::ReadFileError)?;
+    let truncated = buf.len() > ATTACHMENT_PREVIEW_CAP;
+    buf.truncate(ATTACHMENT_PREVIEW_CAP);
+
+    // Decode the whole buffer: a NUL only appearing past the sniff window still
+    // makes it binary.
+    let content = match decode_attachment_text(&buf) {
+        Some(text) => FileText::Text { text, truncated },
+        None => FileText::Binary,
+    };
+    Ok(AttachmentRead {
+        size,
+        modified_secs,
+        content,
+    })
+}
+
+/// Resolves `path` and returns its filesystem metadata, mapping a missing file
+/// to [`FSError::VaultPathNotFound`]. Used to classify an entry's kind.
+pub(crate) async fn metadata_at<P: AsRef<Path>>(
+    workspace_path: P,
+    path: &VaultPath,
+) -> Result<std::fs::Metadata, FSError> {
+    let os_path = resolve_path_on_disk(&workspace_path, path).await;
+    match tokio::fs::metadata(&os_path).await {
+        Ok(m) => Ok(m),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(FSError::VaultPathNotFound {
+            path: path.to_owned(),
+        }),
+        Err(e) => Err(FSError::ReadFileError(e)),
+    }
+}
+
+/// Renames/moves an attachment (any non-note file) on disk. Plain filesystem
+/// rename — no index or link rewriting, since attachments are not indexed and
+/// not part of the note-link graph.
+pub(crate) async fn rename_attachment<P: AsRef<Path>>(
+    workspace_path: P,
+    from: &VaultPath,
+    to: &VaultPath,
+) -> Result<(), FSError> {
+    rename_path(workspace_path, from, to).await
+}
+
+/// Deletes an attachment file. Plain `remove_file` — no index cleanup.
+pub(crate) async fn delete_attachment<P: AsRef<Path>>(
+    workspace_path: P,
+    path: &VaultPath,
+) -> Result<(), FSError> {
+    remove_file_at(workspace_path, path).await
 }
 
 pub(crate) async fn save_note<P: AsRef<Path>, S: AsRef<str>>(
@@ -626,6 +819,16 @@ pub(crate) async fn backup_note<P: AsRef<Path>>(
 }
 
 pub(crate) async fn delete_note<P: AsRef<Path>>(
+    workspace_path: P,
+    path: &VaultPath,
+) -> Result<(), FSError> {
+    remove_file_at(workspace_path, path).await
+}
+
+/// Resolves `path` and removes the single file there. Shared by note and
+/// attachment deletion, which differ only in their lib-level index/backup
+/// handling, not in the filesystem step.
+async fn remove_file_at<P: AsRef<Path>>(
     workspace_path: P,
     path: &VaultPath,
 ) -> Result<(), FSError> {
@@ -1392,11 +1595,57 @@ pub(crate) fn get_file_walker<P: AsRef<Path>>(
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::{save_attachment, with_note_extension};
+    use super::{decode_attachment_text, save_attachment, sniff_is_binary, with_note_extension};
 
     #[test]
     fn with_note_extension_appends_when_missing() {
         assert_eq!(with_note_extension("projects"), "projects.md");
+    }
+
+    #[test]
+    fn decode_attachment_text_accepts_plain_utf8() {
+        assert_eq!(
+            decode_attachment_text("héllo".as_bytes()),
+            Some("héllo".to_string())
+        );
+    }
+
+    #[test]
+    fn decode_attachment_text_rejects_nul_byte() {
+        assert_eq!(decode_attachment_text(&[b'a', 0, b'b']), None);
+    }
+
+    #[test]
+    fn decode_attachment_text_rejects_invalid_utf8() {
+        // 0xFF is never valid UTF-8 and is not a truncated trailing char.
+        assert_eq!(decode_attachment_text(&[b'a', 0xFF, b'b']), None);
+    }
+
+    #[test]
+    fn sniff_is_binary_flags_nul_and_invalid_utf8_but_not_split_char() {
+        assert!(!sniff_is_binary(b"plain ascii text"));
+        assert!(sniff_is_binary(&[b'a', 0, b'b']), "NUL byte is binary");
+        assert!(
+            sniff_is_binary(&[b'a', 0xFF, b'b']),
+            "a genuine invalid byte is binary"
+        );
+        // "é" = 0xC3 0xA9; a window cut after 0xC3 is a split char, not binary.
+        assert!(
+            !sniff_is_binary(&[b'a', b'b', 0xC3]),
+            "a trailing truncated multi-byte char is still text"
+        );
+    }
+
+    #[test]
+    fn decode_attachment_text_keeps_prefix_when_split_mid_char() {
+        // "é" is 0xC3 0xA9; cut after 0xC3 simulates the cap splitting a char.
+        let mut bytes = b"ab".to_vec();
+        bytes.push(0xC3);
+        assert_eq!(
+            decode_attachment_text(&bytes),
+            Some("ab".to_string()),
+            "a truncated trailing multi-byte char keeps the valid prefix as text"
+        );
     }
 
     #[test]
