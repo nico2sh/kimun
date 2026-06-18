@@ -408,6 +408,133 @@ pub(crate) async fn save_attachment<P: AsRef<Path>>(
     Ok(())
 }
 
+/// Largest text-attachment preview read into memory. Files past this are
+/// truncated to a prefix; binary detection still only ever reads this far, so a
+/// multi-GB file can never blow the heap.
+pub(crate) const ATTACHMENT_PREVIEW_CAP: usize = 10 * 1024 * 1024;
+
+/// Decoded content of an attachment read from disk.
+pub(crate) enum FileText {
+    /// Valid UTF-8, no NUL bytes. `truncated` when the file exceeded the cap.
+    Text { text: String, truncated: bool },
+    /// Binary (NUL byte or invalid UTF-8). No preview.
+    Binary,
+}
+
+/// Raw read of an attachment: its size/mtime plus the decoded preview content.
+pub(crate) struct AttachmentRead {
+    pub size: u64,
+    pub modified_secs: u64,
+    pub content: FileText,
+}
+
+/// Text-vs-binary heuristic, the same call git/ripgrep make: a buffer is text
+/// iff it holds no NUL byte and is valid UTF-8. A buffer that is valid UTF-8 up
+/// to a final incomplete multi-byte char (the cap split it mid-character) is
+/// still text — we keep the valid prefix; a genuine invalid byte means binary.
+fn decode_attachment_text(buf: &[u8]) -> Option<String> {
+    if buf.contains(&0) {
+        return None;
+    }
+    match std::str::from_utf8(buf) {
+        Ok(s) => Some(s.to_owned()),
+        // `error_len() == None` means the error is a truncated trailing char.
+        Err(e) if e.error_len().is_none() => Some(
+            std::str::from_utf8(&buf[..e.valid_up_to()])
+                .unwrap()
+                .to_owned(),
+        ),
+        Err(_) => None,
+    }
+}
+
+/// Stats an attachment and reads up to [`ATTACHMENT_PREVIEW_CAP`] bytes,
+/// classifying the content as text (with the decoded preview) or binary.
+pub(crate) async fn read_attachment<P: AsRef<Path>>(
+    workspace_path: P,
+    path: &VaultPath,
+) -> Result<AttachmentRead, FSError> {
+    use tokio::io::AsyncReadExt;
+
+    let os_path = resolve_path_on_disk(&workspace_path, path).await;
+    let meta = match tokio::fs::metadata(&os_path).await {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(FSError::VaultPathNotFound {
+                path: path.to_owned(),
+            });
+        }
+        Err(e) => return Err(FSError::ReadFileError(e)),
+    };
+    let size = meta.len();
+    let modified_secs = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    // Read one byte past the cap so a file exactly at the cap is not flagged
+    // truncated, and anything larger is.
+    let file = tokio::fs::File::open(&os_path)
+        .await
+        .map_err(FSError::ReadFileError)?;
+    let mut buf = Vec::new();
+    file.take((ATTACHMENT_PREVIEW_CAP + 1) as u64)
+        .read_to_end(&mut buf)
+        .await
+        .map_err(FSError::ReadFileError)?;
+    let truncated = buf.len() > ATTACHMENT_PREVIEW_CAP;
+    buf.truncate(ATTACHMENT_PREVIEW_CAP);
+
+    let content = match decode_attachment_text(&buf) {
+        Some(text) => FileText::Text { text, truncated },
+        None => FileText::Binary,
+    };
+    Ok(AttachmentRead {
+        size,
+        modified_secs,
+        content,
+    })
+}
+
+/// Resolves `path` and returns its filesystem metadata, mapping a missing file
+/// to [`FSError::VaultPathNotFound`]. Used to classify an entry's kind.
+pub(crate) async fn metadata_at<P: AsRef<Path>>(
+    workspace_path: P,
+    path: &VaultPath,
+) -> Result<std::fs::Metadata, FSError> {
+    let os_path = resolve_path_on_disk(&workspace_path, path).await;
+    match tokio::fs::metadata(&os_path).await {
+        Ok(m) => Ok(m),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(FSError::VaultPathNotFound {
+            path: path.to_owned(),
+        }),
+        Err(e) => Err(FSError::ReadFileError(e)),
+    }
+}
+
+/// Renames/moves an attachment (any non-note file) on disk. Plain filesystem
+/// rename — no index or link rewriting, since attachments are not indexed and
+/// not part of the note-link graph.
+pub(crate) async fn rename_attachment<P: AsRef<Path>>(
+    workspace_path: P,
+    from: &VaultPath,
+    to: &VaultPath,
+) -> Result<(), FSError> {
+    rename_path(workspace_path, from, to).await
+}
+
+/// Deletes an attachment file. Plain `remove_file` — no index cleanup.
+pub(crate) async fn delete_attachment<P: AsRef<Path>>(
+    workspace_path: P,
+    path: &VaultPath,
+) -> Result<(), FSError> {
+    let full_path = resolve_path_on_disk(&workspace_path, path).await;
+    tokio::fs::remove_file(full_path).await?;
+    Ok(())
+}
+
 pub(crate) async fn save_note<P: AsRef<Path>, S: AsRef<str>>(
     workspace_path: P,
     path: &VaultPath,
@@ -1392,11 +1519,42 @@ pub(crate) fn get_file_walker<P: AsRef<Path>>(
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::{save_attachment, with_note_extension};
+    use super::{decode_attachment_text, save_attachment, with_note_extension};
 
     #[test]
     fn with_note_extension_appends_when_missing() {
         assert_eq!(with_note_extension("projects"), "projects.md");
+    }
+
+    #[test]
+    fn decode_attachment_text_accepts_plain_utf8() {
+        assert_eq!(
+            decode_attachment_text("héllo".as_bytes()),
+            Some("héllo".to_string())
+        );
+    }
+
+    #[test]
+    fn decode_attachment_text_rejects_nul_byte() {
+        assert_eq!(decode_attachment_text(&[b'a', 0, b'b']), None);
+    }
+
+    #[test]
+    fn decode_attachment_text_rejects_invalid_utf8() {
+        // 0xFF is never valid UTF-8 and is not a truncated trailing char.
+        assert_eq!(decode_attachment_text(&[b'a', 0xFF, b'b']), None);
+    }
+
+    #[test]
+    fn decode_attachment_text_keeps_prefix_when_split_mid_char() {
+        // "é" is 0xC3 0xA9; cut after 0xC3 simulates the cap splitting a char.
+        let mut bytes = b"ab".to_vec();
+        bytes.push(0xC3);
+        assert_eq!(
+            decode_attachment_text(&bytes),
+            Some("ab".to_string()),
+            "a truncated trailing multi-byte char keeps the valid prefix as text"
+        );
     }
 
     #[test]

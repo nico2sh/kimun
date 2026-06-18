@@ -262,13 +262,22 @@ impl MoveDialog {
                     let vault = Arc::clone(&self.vault);
                     let tx2 = tx.clone();
                     tokio::spawn(async move {
-                        // The vault has no dedicated move API; rename_note /
-                        // rename_directory accept paths in different directories,
-                        // so a cross-directory rename is equivalent to a move.
-                        let result = if from.is_note() {
-                            vault.rename_note(&from, &new_path).await
-                        } else {
-                            vault.rename_directory(&from, &new_path).await
+                        // The vault has no dedicated move API; the rename_* ops
+                        // accept paths in different directories, so a
+                        // cross-directory rename is equivalent to a move.
+                        // Classify by a stat so an attachment routes to the
+                        // plain-file rename, not the directory path (ADR-0017).
+                        let result = match vault.entry_kind(&from).await {
+                            Ok(kimun_core::EntryKind::Note) => {
+                                vault.rename_note(&from, &new_path).await
+                            }
+                            Ok(kimun_core::EntryKind::Directory) => {
+                                vault.rename_directory(&from, &new_path).await
+                            }
+                            Ok(kimun_core::EntryKind::Attachment) => {
+                                vault.rename_attachment(&from, &new_path).await
+                            }
+                            Err(e) => Err(e),
                         };
                         match result {
                             Ok(()) => {

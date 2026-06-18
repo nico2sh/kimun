@@ -9,6 +9,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 
 use crate::components::Component;
 use crate::components::activity_rail::{ActivityRail, RAIL_WIDTH};
+use crate::components::attachment_view::AttachmentView;
 use crate::components::drawer::{DrawerHost, DrawerView};
 use crate::components::event_state::EventState;
 use crate::components::events::{AppTx, InputEvent};
@@ -203,7 +204,14 @@ pub struct PanelSet {
     order: PanelOrder,
     rail: ActivityRail,
     drawer: DrawerHost,
+    /// The note editor. Retained for the whole screen lifetime — including
+    /// while an attachment is shown — so its backend (e.g. a live nvim
+    /// process) and undo history survive the round trip. See ADR-0017.
     editor: TextEditorComponent,
+    /// When `Some`, the editor *area* shows this read-only attachment view in
+    /// place of the note editor (which stays dormant underneath). This `Option`
+    /// is the editor area's sum type: Text (`None`) xor Attachment (`Some`).
+    attachment: Option<AttachmentView>,
     /// Current drawer width in columns (divider-draggable).
     drawer_width: u16,
     /// Whether a divider drag is in progress.
@@ -226,6 +234,7 @@ impl PanelSet {
             rail: ActivityRail::new(key_bindings, icons),
             drawer,
             editor,
+            attachment: None,
             drawer_width: DEFAULT_DRAWER_WIDTH,
             dragging_divider: false,
             column_rects: Vec::new(),
@@ -317,11 +326,43 @@ impl PanelSet {
     pub fn sidebar_mut(&mut self) -> &mut SidebarComponent {
         self.drawer.sidebar_mut()
     }
-    pub fn editor(&self) -> &TextEditorComponent {
-        &self.editor
+    /// The note editor, or `None` while an attachment is shown in its place.
+    /// Callers reaching for the editor cross a mode boundary and must handle
+    /// the attachment case (see ADR-0017).
+    pub fn editor(&self) -> Option<&TextEditorComponent> {
+        self.attachment.is_none().then_some(&self.editor)
     }
-    pub fn editor_mut(&mut self) -> &mut TextEditorComponent {
-        &mut self.editor
+    pub fn editor_mut(&mut self) -> Option<&mut TextEditorComponent> {
+        if self.attachment.is_some() {
+            return None;
+        }
+        Some(&mut self.editor)
+    }
+
+    /// Show `view` in the editor area, replacing any prior attachment and
+    /// hiding the note editor. Closes the editor's autocomplete so it can't
+    /// linger under the attachment, and focuses the editor panel.
+    pub fn show_attachment(&mut self, view: AttachmentView) {
+        self.editor.close_autocomplete();
+        self.attachment = Some(view);
+        self.order.focus(PanelKind::Editor);
+    }
+
+    /// Return the editor area to the note editor, discarding any attachment.
+    /// No-op when already showing the editor.
+    pub fn clear_attachment(&mut self) {
+        self.attachment = None;
+    }
+
+    /// Whether the editor area is currently showing an attachment.
+    pub fn is_showing_attachment(&self) -> bool {
+        self.attachment.is_some()
+    }
+
+    /// The vault path of the attachment on show, if any — used to open it with
+    /// the OS default program.
+    pub fn attachment_path(&self) -> Option<&kimun_core::nfs::VaultPath> {
+        self.attachment.as_ref().map(|v| v.path())
     }
     pub fn query(&self) -> &QueryPanel {
         self.drawer.query()
@@ -349,7 +390,10 @@ impl PanelSet {
         match self.order.focused() {
             PanelKind::Rail => self.rail.hint_shortcuts(),
             PanelKind::Drawer => self.drawer.hint_shortcuts(),
-            PanelKind::Editor => self.editor.hint_shortcuts(),
+            PanelKind::Editor => match &self.attachment {
+                Some(view) => view.hint_shortcuts(),
+                None => self.editor.hint_shortcuts(),
+            },
         }
     }
 
@@ -358,7 +402,10 @@ impl PanelSet {
         match self.order.focused() {
             PanelKind::Rail => self.rail.handle_input(event, tx),
             PanelKind::Drawer => self.drawer.handle_input(event, tx),
-            PanelKind::Editor => self.editor.handle_input(event, tx),
+            PanelKind::Editor => match &mut self.attachment {
+                Some(view) => view.handle_input(event, tx),
+                None => self.editor.handle_input(event, tx),
+            },
         }
     }
 
@@ -441,9 +488,14 @@ impl PanelSet {
             PanelKind::Drawer => {
                 self.drawer.handle_mouse(event, tx);
             }
-            PanelKind::Editor => {
-                self.editor.handle_input(event, tx);
-            }
+            PanelKind::Editor => match &mut self.attachment {
+                Some(view) => {
+                    view.handle_input(event, tx);
+                }
+                None => {
+                    self.editor.handle_input(event, tx);
+                }
+            },
         }
         EventState::Consumed
     }
@@ -470,17 +522,29 @@ impl PanelSet {
                 PanelKind::Rail => self.rail.render(f, rect, theme, is_focused, drawer_view),
                 PanelKind::Drawer => self.drawer.render(f, rect, theme, is_focused),
                 PanelKind::Editor => {
-                    // The editor's frame is drawn here (not by the component) so
-                    // the dirty marker and focus border live with the layout.
-                    let title = if self.editor.is_dirty() {
-                        "Editor [+]"
-                    } else {
-                        "Editor"
-                    };
-                    let block = panel_block(title, theme, is_focused);
-                    let inner = block.inner(rect);
-                    f.render_widget(block, rect);
-                    self.editor.render(f, inner, theme, is_focused);
+                    // The editor area's frame is drawn here (not by the
+                    // component) so the dirty marker and focus border live with
+                    // the layout. The frame title reflects which content the
+                    // area is showing — the note editor or an attachment.
+                    match &mut self.attachment {
+                        Some(view) => {
+                            let block = panel_block("Attachment", theme, is_focused);
+                            let inner = block.inner(rect);
+                            f.render_widget(block, rect);
+                            view.render(f, inner, theme, is_focused);
+                        }
+                        None => {
+                            let title = if self.editor.is_dirty() {
+                                "Editor [+]"
+                            } else {
+                                "Editor"
+                            };
+                            let block = panel_block(title, theme, is_focused);
+                            let inner = block.inner(rect);
+                            f.render_widget(block, rect);
+                            self.editor.render(f, inner, theme, is_focused);
+                        }
+                    }
                 }
             }
         }

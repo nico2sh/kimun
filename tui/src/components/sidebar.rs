@@ -412,6 +412,9 @@ impl SidebarComponent {
                     }
                 });
             }
+            FileListEntry::Attachment { path, .. } => {
+                tx.send(AppEvent::OpenAttachment(path.clone())).ok();
+            }
             other => {
                 tx.send(AppEvent::open(other.path().clone())).ok();
             }

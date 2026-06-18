@@ -60,6 +60,10 @@ pub enum AppEvent {
         path: VaultPath,
         emphasis: Option<Vec<String>>,
     },
+    /// Open an attachment (a non-note file) in the editor area's read-only
+    /// attachment view (see ADR-0017). Sent by the file browser when an
+    /// attachment row is activated.
+    OpenAttachment(VaultPath),
     FocusSidebar,
     /// Switch the drawer to the given view and reveal it (sent by the
     /// activity rail and, later, by leader paths / mouse clicks).
