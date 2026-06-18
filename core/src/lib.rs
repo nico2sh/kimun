@@ -56,6 +56,7 @@ pub use index::search_terms::{
 };
 pub use index::{IndexDiff, NoteSuggestion, TagSuggestion};
 pub use nfs::saved_searches::{saved_search_name_matches, SavedSearch};
+pub use nfs::EntryKind;
 pub use utilities::{app_log_dir, ensure_dir_exists};
 
 use std::{
@@ -1103,13 +1104,7 @@ impl NoteVault {
     pub async fn entry_kind(&self, path: &VaultPath) -> Result<EntryKind, VaultError> {
         let path = path.flatten();
         let meta = nfs::metadata_at(self.workspace_path(), &path).await?;
-        Ok(if meta.is_dir() {
-            EntryKind::Directory
-        } else if path.is_note() {
-            EntryKind::Note
-        } else {
-            EntryKind::Attachment
-        })
+        Ok(nfs::classify(&meta, &path))
     }
 
     /// Reads an attachment's [`AttachmentDetails`] — size, last-modified, file
@@ -1158,6 +1153,31 @@ impl NoteVault {
         let path = path.flatten();
         nfs::delete_attachment(self.workspace_path(), &path).await?;
         Ok(())
+    }
+
+    /// Deletes the entry at `path`, dispatching on its [`EntryKind`]: a note
+    /// (index- and backup-aware), a directory (recursive, reindexed), or an
+    /// attachment (plain file). The one door the UI uses to delete any entry
+    /// without classifying it itself.
+    pub async fn delete_entry(&self, path: &VaultPath) -> Result<(), VaultError> {
+        match self.entry_kind(path).await? {
+            EntryKind::Note => self.delete_note(path).await,
+            EntryKind::Directory => self.delete_directory(path).await,
+            EntryKind::Attachment => self.delete_attachment(path).await,
+        }
+    }
+
+    /// Renames or moves the entry at `from` to `to`, dispatching on `from`'s
+    /// [`EntryKind`]: a note (rewrites backlinks), a directory (reindexes the
+    /// notes beneath it), or an attachment (plain file rename — references to it
+    /// are not rewritten). A move is just a cross-directory rename. The one door
+    /// the UI uses to rename or move any entry without classifying it itself.
+    pub async fn rename_entry(&self, from: &VaultPath, to: &VaultPath) -> Result<(), VaultError> {
+        match self.entry_kind(from).await? {
+            EntryKind::Note => self.rename_note(from, to).await,
+            EntryKind::Directory => self.rename_directory(from, to).await,
+            EntryKind::Attachment => self.rename_attachment(from, to).await,
+        }
     }
 }
 
@@ -1229,18 +1249,6 @@ pub enum ResultType {
     /// A directory.
     Directory,
     /// An attachment (non-note file).
-    Attachment,
-}
-
-/// The kind of entry at a vault path, resolved by a filesystem stat. The single
-/// discriminator callers switch on to choose the matching file operation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EntryKind {
-    /// A `.md` note.
-    Note,
-    /// A directory.
-    Directory,
-    /// Any other (non-note) file.
     Attachment,
 }
 
@@ -1464,6 +1472,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn attachment_details_reads_text_larger_than_sniff_window() {
+        // Exercises the two-phase read: a text file bigger than the 64 KiB
+        // sniff window must be read in full (phase 1 sniff + phase 2 remainder),
+        // not truncated at the sniff boundary.
+        let dir = TempDir::new().unwrap();
+        let vault = make_vault(dir.path()).await;
+        let body = "abcd\n".repeat(40_000); // ~200 KB, 40k lines
+        vault
+            .save_attachment(&VaultPath::new("big.txt"), body.as_bytes())
+            .await
+            .unwrap();
+
+        let d = vault
+            .get_attachment_details(&VaultPath::new("big.txt"))
+            .await
+            .unwrap();
+        assert_eq!(
+            d.content,
+            AttachmentContent::Text {
+                text: body.clone(),
+                truncated: false,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn attachment_details_detects_nul_past_sniff_window() {
+        // A file that is text through the 64 KiB sniff window but holds a NUL
+        // later must still classify as binary (phase-2 full-buffer decode).
+        let dir = TempDir::new().unwrap();
+        let vault = make_vault(dir.path()).await;
+        let mut bytes = vec![b'a'; 100_000];
+        bytes.push(0); // NUL well past the 64 KiB sniff window
+        vault
+            .save_attachment(&VaultPath::new("late.bin"), &bytes)
+            .await
+            .unwrap();
+
+        let d = vault
+            .get_attachment_details(&VaultPath::new("late.bin"))
+            .await
+            .unwrap();
+        assert_eq!(d.content, AttachmentContent::Binary);
+    }
+
+    #[tokio::test]
     async fn attachment_details_flags_binary_content() {
         let dir = TempDir::new().unwrap();
         let vault = make_vault(dir.path()).await;
@@ -1556,6 +1610,73 @@ mod tests {
             .await
             .unwrap();
         assert!(vault.entry_kind(&VaultPath::new("gone.png")).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn delete_entry_dispatches_by_kind() {
+        let dir = TempDir::new().unwrap();
+        let vault = make_vault(dir.path()).await;
+        vault
+            .create_note(&VaultPath::new("note.md"), "hi")
+            .await
+            .unwrap();
+        vault
+            .create_directory(&VaultPath::new("sub"))
+            .await
+            .unwrap();
+        vault
+            .save_attachment(&VaultPath::new("pic.png"), &[1])
+            .await
+            .unwrap();
+
+        for p in ["note.md", "sub", "pic.png"] {
+            vault.delete_entry(&VaultPath::new(p)).await.unwrap();
+            assert!(
+                vault.entry_kind(&VaultPath::new(p)).await.is_err(),
+                "{p} should be gone"
+            );
+        }
+        // Missing entry surfaces an error rather than silently succeeding.
+        assert!(vault.delete_entry(&VaultPath::new("nope")).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn rename_entry_dispatches_by_kind() {
+        let dir = TempDir::new().unwrap();
+        let vault = make_vault(dir.path()).await;
+        vault
+            .create_note(&VaultPath::new("note.md"), "hi")
+            .await
+            .unwrap();
+        vault
+            .save_attachment(&VaultPath::new("pic.png"), &[1, 2])
+            .await
+            .unwrap();
+
+        vault
+            .rename_entry(&VaultPath::new("note.md"), &VaultPath::new("renamed.md"))
+            .await
+            .unwrap();
+        vault
+            .rename_entry(&VaultPath::new("pic.png"), &VaultPath::new("img/photo.png"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            vault
+                .entry_kind(&VaultPath::new("renamed.md"))
+                .await
+                .unwrap(),
+            EntryKind::Note
+        );
+        assert_eq!(
+            vault
+                .entry_kind(&VaultPath::new("img/photo.png"))
+                .await
+                .unwrap(),
+            EntryKind::Attachment
+        );
+        assert!(vault.entry_kind(&VaultPath::new("pic.png")).await.is_err());
     }
 
     #[tokio::test]

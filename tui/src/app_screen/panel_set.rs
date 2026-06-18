@@ -364,6 +364,23 @@ impl PanelSet {
     pub fn attachment_path(&self) -> Option<&kimun_core::nfs::VaultPath> {
         self.attachment.as_ref().map(|v| v.path())
     }
+
+    /// The active editor-area content as a `Component` — the attachment view
+    /// when one is shown, otherwise the note editor. Lets input/hint routing
+    /// dispatch once instead of branching on `self.attachment` at each site.
+    /// (Render stays separate: it wraps the editor in its own dirty-title block.)
+    fn editor_area(&self) -> &dyn Component {
+        match &self.attachment {
+            Some(view) => view,
+            None => &self.editor,
+        }
+    }
+    fn editor_area_mut(&mut self) -> &mut dyn Component {
+        match &mut self.attachment {
+            Some(view) => view,
+            None => &mut self.editor,
+        }
+    }
     pub fn query(&self) -> &QueryPanel {
         self.drawer.query()
     }
@@ -390,10 +407,7 @@ impl PanelSet {
         match self.order.focused() {
             PanelKind::Rail => self.rail.hint_shortcuts(),
             PanelKind::Drawer => self.drawer.hint_shortcuts(),
-            PanelKind::Editor => match &self.attachment {
-                Some(view) => view.hint_shortcuts(),
-                None => self.editor.hint_shortcuts(),
-            },
+            PanelKind::Editor => self.editor_area().hint_shortcuts(),
         }
     }
 
@@ -402,10 +416,7 @@ impl PanelSet {
         match self.order.focused() {
             PanelKind::Rail => self.rail.handle_input(event, tx),
             PanelKind::Drawer => self.drawer.handle_input(event, tx),
-            PanelKind::Editor => match &mut self.attachment {
-                Some(view) => view.handle_input(event, tx),
-                None => self.editor.handle_input(event, tx),
-            },
+            PanelKind::Editor => self.editor_area_mut().handle_input(event, tx),
         }
     }
 
@@ -488,14 +499,9 @@ impl PanelSet {
             PanelKind::Drawer => {
                 self.drawer.handle_mouse(event, tx);
             }
-            PanelKind::Editor => match &mut self.attachment {
-                Some(view) => {
-                    view.handle_input(event, tx);
-                }
-                None => {
-                    self.editor.handle_input(event, tx);
-                }
-            },
+            PanelKind::Editor => {
+                self.editor_area_mut().handle_input(event, tx);
+            }
         }
         EventState::Consumed
     }
