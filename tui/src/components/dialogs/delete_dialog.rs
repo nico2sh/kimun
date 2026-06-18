@@ -42,16 +42,9 @@ impl DeleteConfirmDialog {
                 let vault = Arc::clone(&self.vault);
                 let tx_clone = tx.clone();
                 tokio::spawn(async move {
-                    // Classify by a stat so an attachment isn't mistaken for a
-                    // directory (both are non-notes); see ADR-0017.
-                    let result = match vault.entry_kind(&path).await {
-                        Ok(kimun_core::EntryKind::Note) => vault.delete_note(&path).await,
-                        Ok(kimun_core::EntryKind::Directory) => vault.delete_directory(&path).await,
-                        Ok(kimun_core::EntryKind::Attachment) => {
-                            vault.delete_attachment(&path).await
-                        }
-                        Err(e) => Err(e),
-                    };
+                    // Core classifies the entry and routes to the right delete
+                    // (note / directory / attachment); see ADR-0017.
+                    let result = vault.delete_entry(&path).await;
                     match result {
                         Ok(()) => {
                             tx_clone.send(AppEvent::EntryDeleted(path)).ok();

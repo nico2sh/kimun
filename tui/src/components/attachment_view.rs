@@ -43,8 +43,12 @@ impl AttachmentView {
         let total_lines = match &details.content {
             AttachmentContent::Text { text, .. } => {
                 // `lines()` drops a trailing newline; count at least 1 so an
-                // empty file still occupies a row.
-                text.lines().count().max(1) as u16
+                // empty file still occupies a row. Saturate rather than `as u16`
+                // truncate — a file with >65535 lines would otherwise wrap to a
+                // tiny count and strand the scroll near the top. (ratatui's own
+                // scroll offset is u16, so past 65535 lines the tail isn't
+                // reachable anyway — open externally for the full file.)
+                text.lines().count().clamp(1, u16::MAX as usize) as u16
             }
             AttachmentContent::Binary => 0,
         };
@@ -173,7 +177,10 @@ impl Component for AttachmentView {
                 // scroll past the new bottom.
                 self.scroll = self.scroll.min(self.max_scroll());
                 f.render_widget(
-                    Paragraph::new(text.clone())
+                    // Borrow the preview — ratatui renders from the scroll
+                    // offset, so cloning the whole (≤10 MiB) string every frame
+                    // is pure waste.
+                    Paragraph::new(text.as_str())
                         .style(Style::default().fg(theme.fg.to_ratatui()))
                         .scroll((self.scroll, 0)),
                     inner,
@@ -285,6 +292,14 @@ mod tests {
         });
         assert_eq!(v.handle_input(&ev, &tx), EventState::Consumed);
         assert_eq!(v.scroll, 1);
+    }
+
+    #[test]
+    fn total_lines_saturates_instead_of_wrapping() {
+        // >65535 lines must clamp to u16::MAX, not wrap via `as u16` to a tiny
+        // value that would strand the scroll near the top.
+        let v = text_view(&"x\n".repeat(70_000));
+        assert_eq!(v.total_lines, u16::MAX);
     }
 
     #[test]

@@ -120,20 +120,9 @@ impl RenameDialog {
                     let vault = Arc::clone(&self.vault);
                     let tx2 = tx.clone();
                     tokio::spawn(async move {
-                        // Classify by a stat so an attachment routes to the
-                        // plain-file rename, not the directory path (ADR-0017).
-                        let result = match vault.entry_kind(&from).await {
-                            Ok(kimun_core::EntryKind::Note) => {
-                                vault.rename_note(&from, &new_path).await
-                            }
-                            Ok(kimun_core::EntryKind::Directory) => {
-                                vault.rename_directory(&from, &new_path).await
-                            }
-                            Ok(kimun_core::EntryKind::Attachment) => {
-                                vault.rename_attachment(&from, &new_path).await
-                            }
-                            Err(e) => Err(e),
-                        };
+                        // Core classifies the entry and routes to the right
+                        // rename (note / directory / attachment); see ADR-0017.
+                        let result = vault.rename_entry(&from, &new_path).await;
                         match result {
                             Ok(()) => {
                                 tx2.send(AppEvent::EntryRenamed { from, to: new_path }).ok();
