@@ -21,8 +21,8 @@ kimun_core = { path = "../core", version = "0.2.27" }
 clap = { version = "4", features = ["derive"] }
 color-eyre = "0.6.5"
 crossterm = { version = "0.29.0", features = ["event-stream"] }
-ratatui = { version = "0.30.1", features = ["serde"] }
-ratatui-widgets = "0.3.1"
+ratatui = { version = "0.30.2", features = ["serde"] }
+ratatui-widgets = "0.3.2"
 rmcp = { version = "1.7", features = ["server", "transport-io"] }
 serde = { workspace = true }
 toml = { workspace = true }
@@ -35,7 +35,7 @@ tracing-log = "0.2"
 tokio = { workspace = true }
 async-trait = "0.1"
 futures = "0.3"
-ratatui-textarea = { version = "0.9.1", features = ["search"] }
+ratatui-textarea = { version = "0.9.2", features = ["search"] }
 nucleo = "0.5"
 throbber-widgets-tui = "0.11"
 chrono = { workspace = true }
