@@ -9,7 +9,10 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use kimun_rag::{
     KimunRag,
     config::RagConfig,
-    handlers::{answer_handler, get_embeddings_handler, index_docs_handler, job_status_handler},
+    handlers::{
+        answer_handler, collection_hashes_handler, get_embeddings_handler, index_delete_handler,
+        index_docs_handler, job_status_handler,
+    },
     server_state::AppState,
 };
 
@@ -61,13 +64,48 @@ async fn main() -> anyhow::Result<()> {
     // Create application state
     let state = Arc::new(AppState::new(rag, config.clone()));
 
-    // Build router
-    let app = Router::new()
-        .route("/health", get(health_handler))
+    // Periodically drop completed/old jobs so the tracker doesn't grow for the
+    // life of the process.
+    {
+        let sweep = state.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                sweep.job_tracker.lock().await.cleanup_old_jobs();
+            }
+        });
+    }
+
+    if state.config.auth.token.is_some() {
+        tracing::info!("Bearer-token auth enabled on /api routes");
+    } else if config.server.host != "127.0.0.1" && config.server.host != "localhost" {
+        tracing::warn!(
+            "No [auth] token set and bound to {} — the API is OPEN to the network",
+            config.server.host
+        );
+    }
+
+    // `/api` routes require the bearer token (when configured); `/health` is
+    // always open for liveness probes.
+    let api = Router::new()
         .route("/api/index/docs", post(index_docs_handler))
+        .route("/api/index/delete", post(index_delete_handler))
         .route("/api/embeddings", post(get_embeddings_handler))
         .route("/api/answer", post(answer_handler))
+        .route(
+            "/api/collections/{vault_id}/hashes",
+            get(collection_hashes_handler),
+        )
         .route("/api/job/{job_id}", get(job_status_handler))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            kimun_rag::auth::auth_middleware,
+        ));
+
+    let app = Router::new()
+        .route("/health", get(health_handler))
+        .merge(api)
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state);
 
@@ -100,6 +138,28 @@ async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<KimunRag> 
         llmclients::mistral::MistralClient,
         llmclients::openai::OpenAIClient,
     };
+
+    // Resolve the LLM API key BEFORE any async/network work spawns, so exporting
+    // it can't race another thread's getenv. When config carries the key, export
+    // it (the provider client reads its env var); then require a key to be
+    // present, failing with a clean error instead of a panic deep in the client.
+    fn ensure_llm_key(var: &str, key: &Option<String>) -> anyhow::Result<()> {
+        if let Some(key) = key {
+            // SAFETY: called at startup before the embedder/clients are built,
+            // i.e. before any spawned worker reads the environment.
+            unsafe { std::env::set_var(var, key) };
+        }
+        if std::env::var(var).is_err() {
+            anyhow::bail!("Missing API key: set [llm] api_key in config or export {var}");
+        }
+        Ok(())
+    }
+    match &config.llm {
+        LlmConfig::Gemini { api_key, .. } => ensure_llm_key("GEMINI_API_KEY", api_key)?,
+        LlmConfig::Mistral { api_key, .. } => ensure_llm_key("MISTRAL_API_KEY", api_key)?,
+        LlmConfig::Claude { api_key, .. } => ensure_llm_key("ANTHROPIC_API_KEY", api_key)?,
+        LlmConfig::OpenAI { api_key, .. } => ensure_llm_key("OPENAI_API_KEY", api_key)?,
+    }
 
     // Build the embedder (shared by every collection on this server)
     let embedder: Arc<dyn Embedder> = match &config.embedder {
@@ -166,7 +226,7 @@ async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<KimunRag> 
             }
         };
 
-    // Create LLM client based on config
+    // Create LLM client based on config (keys already exported above).
     let llm_client: Arc<dyn kimun_rag::llmclients::LLMClient + Send + Sync> = match &config.llm {
         LlmConfig::Gemini { model, .. } => {
             tracing::info!("Using Gemini LLM with model: {}", model);
@@ -199,7 +259,21 @@ async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<KimunRag> 
     Ok(rag)
 }
 
-/// Health check endpoint
-async fn health_handler() -> &'static str {
-    "OK"
+/// Health + capability probe. The client hits this to decide which features to
+/// light up (adr: additive surfaces appear only when the server is reachable).
+async fn health_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> axum::Json<serde_json::Value> {
+    let llm_provider = match &state.config.llm {
+        kimun_rag::config::LlmConfig::Gemini { .. } => "gemini",
+        kimun_rag::config::LlmConfig::Mistral { .. } => "mistral",
+        kimun_rag::config::LlmConfig::Claude { .. } => "claude",
+        kimun_rag::config::LlmConfig::OpenAI { .. } => "openai",
+    };
+    axum::Json(serde_json::json!({
+        "status": "ok",
+        "reranker": state.config.reranker.enabled,
+        "llm_provider": llm_provider,
+        "auth_required": state.config.auth.token.is_some(),
+    }))
 }

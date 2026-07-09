@@ -38,12 +38,17 @@ impl VecSQLite {
         Ok(connection)
     }
 
-    fn insert_vec(&self, docs: Vec<(&FlattenedChunk, &Vec<f32>)>) -> anyhow::Result<()> {
+    fn insert_vec(
+        &self,
+        collection: &str,
+        docs: Vec<(&FlattenedChunk, &Vec<f32>)>,
+    ) -> anyhow::Result<()> {
         let mut conn = self.connection()?;
         let tx = conn.transaction()?;
-        let doc_sql = "INSERT INTO docs (path, title, date, text) VALUES (?1, ?2, ?3, ?4)";
-        let vec_sql = "INSERT INTO vec_items(rowid, embedding) VALUES (?1, ?2)";
-        let index_sql = "INSERT OR REPLACE INTO indexed_notes (path, content_hash, last_indexed) VALUES (?1, ?2, ?3)";
+        let doc_sql =
+            "INSERT INTO docs (collection, path, title, date, text) VALUES (?1, ?2, ?3, ?4, ?5)";
+        let vec_sql = "INSERT INTO vec_items(rowid, collection, embedding) VALUES (?1, ?2, ?3)";
+        let index_sql = "INSERT OR REPLACE INTO indexed_notes (collection, path, content_hash, last_indexed) VALUES (?1, ?2, ?3, ?4)";
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs() as i64;
@@ -51,6 +56,7 @@ impl VecSQLite {
             tx.execute(
                 doc_sql,
                 params![
+                    collection,
                     doc.doc_path,
                     doc.title,
                     doc.date
@@ -60,17 +66,38 @@ impl VecSQLite {
                 ],
             )?;
             let row_id = tx.last_insert_rowid();
-            tx.execute(vec_sql, params![row_id, vec.as_bytes()])?;
+            tx.execute(vec_sql, params![row_id, collection, vec.as_bytes()])?;
             tx.execute(
                 index_sql,
-                [doc.doc_path.clone(), doc.doc_hash.clone(), now.to_string()],
+                params![collection, doc.doc_path, doc.doc_hash, now],
             )?;
         }
         tx.commit()?;
         Ok(())
     }
 
-    fn get_docs(&self, vec: &[f32]) -> anyhow::Result<Vec<(f64, FlattenedChunk)>> {
+    /// Upserts the `indexed_notes` hash row for every note, independent of how
+    /// many chunks it produced — so an empty note is still recorded and the
+    /// reconcile hash set converges.
+    fn mark_notes_indexed(&self, collection: &str, docs: &[KimunDoc]) -> anyhow::Result<()> {
+        let mut conn = self.connection()?;
+        let tx = conn.transaction()?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs() as i64;
+        let sql = "INSERT OR REPLACE INTO indexed_notes (collection, path, content_hash, last_indexed) VALUES (?1, ?2, ?3, ?4)";
+        for doc in docs {
+            tx.execute(sql, params![collection, doc.path, doc.hash, now])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn get_docs(
+        &self,
+        collection: &str,
+        vec: &[f32],
+    ) -> anyhow::Result<Vec<(f64, FlattenedChunk)>> {
         let start = SystemTime::now();
         let conn = self.connection()?;
         let mut max_distance = f64::MIN;
@@ -88,15 +115,16 @@ impl VecSQLite {
             indexed_notes.content_hash
           FROM vec_items
           JOIN docs ON vec_items.rowid = docs.rowid
-          JOIN indexed_notes ON docs.path = indexed_notes.path
-          WHERE vec_items.embedding MATCH ?1
+          JOIN indexed_notes ON docs.collection = indexed_notes.collection AND docs.path = indexed_notes.path
+          WHERE vec_items.collection = ?2
+          AND vec_items.embedding MATCH ?1
           AND k = {TOP_RESULTS}
           ORDER BY vec_items.distance
         "
                 )
                 .as_str(),
             )?
-            .query_map([vec.as_bytes()], |r| {
+            .query_map(params![vec.as_bytes(), collection], |r| {
                 let distance: f64 = r.get(0)?;
                 if distance > max_distance {
                     max_distance = distance;
@@ -119,11 +147,19 @@ impl VecSQLite {
                         Err(_) => None,
                     },
                 };
-                Ok((distance, kimun_chunk))
+                // Return a similarity (higher = better) so the score has the
+                // same orientation as the Qdrant backend and downstream
+                // dedup/rerank/take all agree. Rows already arrive ordered by
+                // ascending distance (best first).
+                let similarity = 1.0 / (1.0 + distance);
+                Ok((similarity, kimun_chunk))
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
-        let duration = SystemTime::now().duration_since(start).unwrap().as_millis();
+        let duration = SystemTime::now()
+            .duration_since(start)
+            .unwrap_or_default()
+            .as_millis();
         debug!(
             "Retrieved {} chunks in {} milliseconds",
             result.len(),
@@ -178,7 +214,11 @@ impl VecSQLite {
         // Verify docs table schema
         let docs_schema_query = "SELECT sql FROM sqlite_master WHERE type='table' AND name='docs'";
         let docs_schema: String = conn.query_row(docs_schema_query, [], |row| row.get(0))?;
+        // `collection` gates the pre-multi-vault schema: an older store lacks it,
+        // so every scoped insert/query would fail at runtime with "no such
+        // column" — treat it as invalid and rebuild.
         if !docs_schema.contains("rowid")
+            || !docs_schema.contains("collection")
             || !docs_schema.contains("path")
             || !docs_schema.contains("title")
             || !docs_schema.contains("date")
@@ -191,7 +231,8 @@ impl VecSQLite {
         let indexed_schema_query =
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='indexed_notes'";
         let indexed_schema: String = conn.query_row(indexed_schema_query, [], |row| row.get(0))?;
-        if !indexed_schema.contains("path")
+        if !indexed_schema.contains("collection")
+            || !indexed_schema.contains("path")
             || !indexed_schema.contains("content_hash")
             || !indexed_schema.contains("last_indexed")
         {
@@ -235,7 +276,7 @@ impl Embeddings for VecSQLite {
         let tx = conn.transaction()?;
         tx.execute(
             &format!(
-                "CREATE VIRTUAL TABLE vec_items USING vec0(embedding float[{}])",
+                "CREATE VIRTUAL TABLE vec_items USING vec0(collection text partition key, embedding float[{}])",
                 self.embedder.dimension()
             ),
             [],
@@ -243,6 +284,7 @@ impl Embeddings for VecSQLite {
         tx.execute(
             "CREATE TABLE docs (
             rowid INTEGER PRIMARY KEY,
+            collection TEXT NOT NULL,
             path TEXT,
             title TEXT,
             date TEXT,
@@ -250,13 +292,20 @@ impl Embeddings for VecSQLite {
         )",
             (), // empty list of parameters.
         )?;
+        tx.execute(
+            "CREATE INDEX docs_collection_path ON docs (collection, path)",
+            (),
+        )?;
 
-        // Create index tracking table
+        // Create index tracking table, keyed per collection so one vault's
+        // hashes never collide with another's.
         tx.execute(
             "CREATE TABLE indexed_notes (
-            path TEXT PRIMARY KEY,
+            collection TEXT NOT NULL,
+            path TEXT NOT NULL,
             content_hash TEXT NOT NULL,
-            last_indexed INTEGER NOT NULL
+            last_indexed INTEGER NOT NULL,
+            PRIMARY KEY (collection, path)
         )",
             (),
         )?;
@@ -266,9 +315,26 @@ impl Embeddings for VecSQLite {
         Ok(())
     }
 
-    async fn store_embeddings(&self, content: &[KimunDoc]) -> anyhow::Result<()> {
-        let chunks = FlattenedChunk::from_chunks(content);
+    async fn store_embeddings(&self, collection: &str, content: &[KimunDoc]) -> anyhow::Result<()> {
+        // Sub-split sections to the embedding window (same as the qdrant backend)
+        // so long sections aren't truncated by the model.
+        let chunks = FlattenedChunk::from_chunks_split(content, 800, 1536);
+        // Record every pushed note's hash even when it produced no chunks (empty
+        // note), so the reconcile `/hashes` set includes it and the client
+        // stops re-pushing it every pass.
+        self.mark_notes_indexed(collection, content)?;
+        if chunks.is_empty() {
+            return Ok(());
+        }
         let embeddings = self.embedder.generate_embeddings(&chunks).await?;
+        if embeddings.len() != chunks.len() {
+            anyhow::bail!(
+                "embedder returned {} vectors for {} chunks; refusing to index a \
+                 misaligned batch",
+                embeddings.len(),
+                chunks.len()
+            );
+        }
         let embed_chunks = embeddings.chunks(100);
         let mut i = 0;
         for batch in embed_chunks {
@@ -277,12 +343,12 @@ impl Embeddings for VecSQLite {
                 insert_batch.push((chunks.get(i).unwrap(), c));
                 i += 1;
             }
-            self.insert_vec(insert_batch)?;
+            self.insert_vec(collection, insert_batch)?;
         }
         Ok(())
     }
 
-    async fn delete_embeddings(&self, paths: Vec<&String>) -> anyhow::Result<()> {
+    async fn delete_embeddings(&self, collection: &str, paths: Vec<&String>) -> anyhow::Result<()> {
         if paths.is_empty() {
             return Ok(());
         }
@@ -290,12 +356,12 @@ impl Embeddings for VecSQLite {
         let mut conn = self.connection()?;
         let tx = conn.transaction()?;
 
-        // Process each path
+        // Process each path, scoped to the collection
         for path in paths {
             // First, get all rowids for docs with this path to delete from vec_items
             let rowids: Vec<i64> = tx
-                .prepare("SELECT rowid FROM docs WHERE path = ?1")?
-                .query_map([path.as_str()], |row| row.get(0))?
+                .prepare("SELECT rowid FROM docs WHERE collection = ?1 AND path = ?2")?
+                .query_map(params![collection, path.as_str()], |row| row.get(0))?
                 .collect::<Result<Vec<_>, _>>()?;
 
             // Delete from vec_items for each rowid
@@ -304,32 +370,44 @@ impl Embeddings for VecSQLite {
             }
 
             // Delete from docs table
-            tx.execute("DELETE FROM docs WHERE path = ?1", [path.as_str()])?;
+            tx.execute(
+                "DELETE FROM docs WHERE collection = ?1 AND path = ?2",
+                params![collection, path.as_str()],
+            )?;
 
             // Delete from indexed_notes table
-            tx.execute("DELETE FROM indexed_notes WHERE path = ?1", [path.as_str()])?;
+            tx.execute(
+                "DELETE FROM indexed_notes WHERE collection = ?1 AND path = ?2",
+                params![collection, path.as_str()],
+            )?;
         }
 
         tx.commit()?;
         Ok(())
     }
 
-    async fn query_embedding(&self, query: &str) -> anyhow::Result<Vec<(f64, FlattenedChunk)>> {
+    async fn query_embedding(
+        &self,
+        collection: &str,
+        query: &str,
+    ) -> anyhow::Result<Vec<(f64, FlattenedChunk)>> {
         let query_embed = self.embedder.prompt_embedding(query).await?;
-        self.get_docs(&query_embed)
+        self.get_docs(collection, &query_embed)
     }
 
     async fn get_indexed_notes(
         &self,
+        collection: &str,
     ) -> anyhow::Result<std::collections::HashMap<String, crate::dbembeddings::IndexedNote>> {
         use std::collections::HashMap;
 
         let conn = self.connection()?;
-        let mut stmt =
-            conn.prepare("SELECT path, content_hash, last_indexed FROM indexed_notes")?;
+        let mut stmt = conn.prepare(
+            "SELECT path, content_hash, last_indexed FROM indexed_notes WHERE collection = ?1",
+        )?;
 
         let notes = stmt
-            .query_map([], |row| {
+            .query_map(params![collection], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     crate::dbembeddings::IndexedNote {
@@ -344,9 +422,12 @@ impl Embeddings for VecSQLite {
         Ok(notes)
     }
 
-    async fn remove_indexed_note(&self, path: &str) -> anyhow::Result<()> {
+    async fn remove_indexed_note(&self, collection: &str, path: &str) -> anyhow::Result<()> {
         let conn = self.connection()?;
-        conn.execute("DELETE FROM indexed_notes WHERE path = ?1", [path])?;
+        conn.execute(
+            "DELETE FROM indexed_notes WHERE collection = ?1 AND path = ?2",
+            params![collection, path],
+        )?;
         Ok(())
     }
 }
@@ -378,6 +459,98 @@ mod tests {
         async fn prompt_embedding(&self, _content: &str) -> anyhow::Result<Vec<f32>> {
             Ok(vec![0.0; self.dim])
         }
+    }
+
+    /// Embedder that returns one more vector than it was given — simulates a
+    /// misbehaving external endpoint.
+    #[derive(Debug)]
+    struct MiscountEmbedder;
+
+    #[async_trait]
+    impl Embedder for MiscountEmbedder {
+        fn dimension(&self) -> usize {
+            4
+        }
+        async fn generate_embeddings(
+            &self,
+            content: &[FlattenedChunk],
+        ) -> anyhow::Result<Vec<Vec<f32>>> {
+            Ok((0..content.len() + 1).map(|_| vec![0.0; 4]).collect())
+        }
+        async fn prompt_embedding(&self, _content: &str) -> anyhow::Result<Vec<f32>> {
+            Ok(vec![0.0; 4])
+        }
+    }
+
+    #[tokio::test]
+    async fn store_rejects_misaligned_embedding_count() {
+        use crate::document::{KimunDoc, KimunSection};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rag_index.sqlite");
+        let store = VecSQLite::new(&path, Arc::new(MiscountEmbedder));
+        store.init().await.unwrap();
+
+        let doc = KimunDoc {
+            path: "n.md".to_string(),
+            hash: "h".to_string(),
+            sections: vec![KimunSection {
+                title: "t".to_string(),
+                text: "x".to_string(),
+            }],
+        };
+        // Embedder returns 2 vectors for 1 chunk → must be rejected, not panic
+        // or silently drop.
+        assert!(store.store_embeddings("v", &[doc]).await.is_err());
+    }
+
+    fn doc(path: &str, hash: &str, text: &str) -> crate::document::KimunDoc {
+        use crate::document::{KimunDoc, KimunSection};
+        KimunDoc {
+            path: path.to_string(),
+            hash: hash.to_string(),
+            sections: vec![KimunSection {
+                title: "t".to_string(),
+                text: text.to_string(),
+            }],
+        }
+    }
+
+    #[tokio::test]
+    async fn collections_are_isolated() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rag_index.sqlite");
+        let store = VecSQLite::new(&path, Arc::new(FakeEmbedder { dim: 4 }));
+        store.init().await.unwrap();
+
+        store
+            .store_embeddings("vaultA", &[doc("a.md", "ha", "alpha")])
+            .await
+            .unwrap();
+        store
+            .store_embeddings("vaultB", &[doc("b.md", "hb", "beta")])
+            .await
+            .unwrap();
+
+        // Indexed-note hash sets are per collection.
+        let a = store.get_indexed_notes("vaultA").await.unwrap();
+        assert_eq!(a.len(), 1);
+        assert_eq!(a.get("a.md").unwrap().content_hash, "ha");
+        let b = store.get_indexed_notes("vaultB").await.unwrap();
+        assert_eq!(b.len(), 1);
+        assert!(b.contains_key("b.md"));
+
+        // Queries only see their own collection's chunks.
+        let res_a = store.query_embedding("vaultA", "q").await.unwrap();
+        assert!(!res_a.is_empty());
+        assert!(res_a.iter().all(|(_, c)| c.doc_path == "a.md"));
+
+        // Deleting in one collection leaves the other intact.
+        store
+            .delete_embeddings("vaultA", vec![&"a.md".to_string()])
+            .await
+            .unwrap();
+        assert!(store.get_indexed_notes("vaultA").await.unwrap().is_empty());
+        assert_eq!(store.get_indexed_notes("vaultB").await.unwrap().len(), 1);
     }
 
     #[tokio::test]

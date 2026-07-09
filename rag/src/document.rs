@@ -56,6 +56,36 @@ impl FlattenedChunk {
         result
     }
 
+    /// Like [`from_chunks`](Self::from_chunks) but further splits each section's
+    /// text to the embedding window (`target`/`max` chars). This is what every
+    /// backend should store: one embedding per sub-chunk, with the sub-chunk's
+    /// own text as payload — so a section longer than the model's token limit is
+    /// not silently truncated, and every stored vector matches its stored text.
+    pub fn from_chunks_split(
+        chunks: &[KimunDoc],
+        target: usize,
+        max: usize,
+    ) -> Vec<FlattenedChunk> {
+        let mut result = vec![];
+        for doc in chunks {
+            let filename = doc.path.rsplit('/').next().unwrap_or("");
+            let filename_without_ext = filename.strip_suffix(".md").unwrap_or(filename);
+            let date = chrono::NaiveDate::parse_from_str(filename_without_ext, "%Y-%m-%d").ok();
+            for section in &doc.sections {
+                for piece in crate::split_chunks_for_rag(&section.text, target, max) {
+                    result.push(FlattenedChunk {
+                        doc_path: doc.path.to_owned(),
+                        doc_hash: doc.hash.to_owned(),
+                        title: section.title.to_owned(),
+                        text: piece,
+                        date,
+                    });
+                }
+            }
+        }
+        result
+    }
+
     pub fn get_date_string(&self) -> Option<String> {
         self.date.map(|d| d.format("%Y-%m-%d").to_string())
     }

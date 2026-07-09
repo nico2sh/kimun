@@ -43,21 +43,76 @@ pub async fn read_or_create_vault_id(workspace_path: &Path) -> Result<VaultId, F
     let path = vault_id_path(workspace_path);
     match tokio::fs::read_to_string(&path).await {
         Ok(body) => {
-            if let Ok(uuid) = Uuid::from_str(body.trim()) {
+            let trimmed = body.trim();
+            if let Ok(uuid) = Uuid::from_str(trimmed) {
                 return Ok(VaultId(uuid));
             }
-            // Corrupt/empty file — fall through and rewrite a fresh id.
+            if trimmed.is_empty() {
+                // Empty file means a concurrent creator is mid-write (create_new
+                // makes the file before write_all fills it). Don't overwrite —
+                // that would reopen the split-id race. Go through the exclusive
+                // path, which reads the winner's id back.
+                return create_vault_id_exclusive(&path).await;
+            }
+            // Non-empty but unparseable — genuinely corrupt; overwrite in place.
+            if let Some(parent) = path.parent() {
+                tokio::fs::create_dir_all(parent).await?;
+            }
+            let id = VaultId::new_random();
+            tokio::fs::write(&path, id.to_string()).await?;
+            Ok(id)
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(FSError::ReadFileError(e)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            create_vault_id_exclusive(&path).await
+        }
+        Err(e) => Err(FSError::ReadFileError(e)),
     }
+}
 
-    let id = VaultId::new_random();
+/// Creates the vault-id file exclusively so two concurrent first-openers can't
+/// each persist a different id (a split id would orphan a RAG collection).
+/// Whoever wins the create writes theirs; anyone who loses the race reads the
+/// winner's id back.
+async fn create_vault_id_exclusive(path: &Path) -> Result<VaultId, FSError> {
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
-    tokio::fs::write(&path, id.to_string()).await?;
-    Ok(id)
+    let id = VaultId::new_random();
+    match tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .await
+    {
+        Ok(mut file) => {
+            use tokio::io::AsyncWriteExt;
+            file.write_all(id.to_string().as_bytes()).await?;
+            file.flush().await?;
+            Ok(id)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            // Lost the create race. Read the winner's id back, tolerating a
+            // brief window where the file exists but the winner has not written
+            // yet (empty).
+            for attempt in 0..50 {
+                let body = tokio::fs::read_to_string(path).await?;
+                let trimmed = body.trim();
+                if let Ok(uuid) = Uuid::from_str(trimmed) {
+                    return Ok(VaultId(uuid));
+                }
+                if !trimmed.is_empty() {
+                    break; // non-empty & invalid → genuinely corrupt
+                }
+                if attempt < 49 {
+                    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+                }
+            }
+            Err(FSError::SerializationError(format!(
+                "invalid vault id at {path:?}"
+            )))
+        }
+        Err(e) => Err(FSError::ReadFileError(e)),
+    }
 }
 
 #[cfg(test)]

@@ -25,15 +25,25 @@ impl Display for IndexedNote {
     }
 }
 
+/// Storage + retrieval of chunk embeddings, scoped per **collection** — one
+/// collection per vault, keyed by the vault's id (adr/0020). Every operation
+/// takes the collection so one server can serve many vaults in isolation.
 #[async_trait]
 pub trait Embeddings: Send + Sync {
     async fn init(&self) -> anyhow::Result<()>;
-    async fn store_embeddings(&self, content: &[KimunDoc]) -> anyhow::Result<()>;
-    async fn delete_embeddings(&self, paths: Vec<&String>) -> anyhow::Result<()>;
-    async fn query_embedding(&self, content: &str) -> anyhow::Result<Vec<(f64, FlattenedChunk)>>;
+    async fn store_embeddings(&self, collection: &str, content: &[KimunDoc]) -> anyhow::Result<()>;
+    async fn delete_embeddings(&self, collection: &str, paths: Vec<&String>) -> anyhow::Result<()>;
+    async fn query_embedding(
+        &self,
+        collection: &str,
+        content: &str,
+    ) -> anyhow::Result<Vec<(f64, FlattenedChunk)>>;
 
-    // Index tracking methods
-    async fn get_indexed_notes(&self) -> anyhow::Result<HashMap<String, IndexedNote>>;
-    // async fn mark_as_indexed(&self, path: &str, content_hash: &str) -> anyhow::Result<()>;
-    async fn remove_indexed_note(&self, path: &str) -> anyhow::Result<()>;
+    /// The `{note path → IndexedNote}` map for one collection — the authoritative
+    /// server-side hash set the client reconciles against.
+    async fn get_indexed_notes(
+        &self,
+        collection: &str,
+    ) -> anyhow::Result<HashMap<String, IndexedNote>>;
+    async fn remove_indexed_note(&self, collection: &str, path: &str) -> anyhow::Result<()>;
 }

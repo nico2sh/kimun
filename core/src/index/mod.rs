@@ -109,7 +109,12 @@ use super::{
 //      of each link destination) so the `>`/`lk:` link filter matches notes
 //      by name with an indexed lookup instead of a leading-`%` scan. Bump
 //      forces a clean reindex so the column is populated for existing vaults.
-const VERSION: &str = "0.10";
+// 0.11: Note paths are now stored in one canonical (vault-absolute) form
+//       (adr/0021). Existing vaults may hold rows written in relative form (or
+//       relative+absolute duplicates) that canonical reads no longer match.
+//       Bump forces a clean reindex so every row is rewritten canonical and
+//       stale duplicates are dropped.
+const VERSION: &str = "0.11";
 pub(crate) const DB_FILE: &str = "kimun.sqlite";
 
 /// The diff a vault sync walk produces and `NoteIndex::apply` consumes in

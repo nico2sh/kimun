@@ -33,6 +33,13 @@ struct EmbedResponse {
 
 #[derive(Deserialize)]
 struct EmbedDatum {
+    /// Position in the input batch. Not every OpenAI-compatible server returns
+    /// `data` in input order, so we sort by this before dropping it — the
+    /// caller pairs vectors to chunks positionally. Defaults to 0 when the
+    /// server omits it (then the sort is a stable no-op, preserving array order
+    /// as before).
+    #[serde(default)]
+    index: usize,
     embedding: Vec<f32>,
 }
 
@@ -81,7 +88,9 @@ impl OpenAiEmbedder {
             .error_for_status()?
             .json::<EmbedResponse>()
             .await?;
-        Ok(response.data.into_iter().map(|d| d.embedding).collect())
+        let mut data = response.data;
+        data.sort_by_key(|d| d.index);
+        Ok(data.into_iter().map(|d| d.embedding).collect())
     }
 }
 

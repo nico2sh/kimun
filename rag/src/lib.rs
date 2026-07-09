@@ -20,6 +20,7 @@ pub mod llmclients;
 pub mod reranker;
 
 // Public modules for server
+pub mod auth;
 pub mod config;
 pub mod handlers;
 pub mod server_state;
@@ -46,6 +47,12 @@ impl KimunRag {
     /// Get a clone of the LLM client
     pub fn get_llm_client(&self) -> Arc<dyn LLMClient + Send + Sync> {
         self.llm_client.clone()
+    }
+
+    /// Clone the embeddings handle so a caller can do slow I/O (network scroll,
+    /// external embed) without holding the shared `KimunRag` lock.
+    pub fn embeddings(&self) -> Arc<dyn Embeddings + Send + Sync> {
+        self.embeddings.clone()
     }
 
     /// Enable reranking with the given top_k parameter
@@ -77,9 +84,10 @@ impl KimunRag {
     /// Use this when you need to minimize lock time
     pub async fn query_embeddings_raw(
         &self,
+        collection: &str,
         query: &str,
     ) -> anyhow::Result<Vec<(f64, document::FlattenedChunk)>> {
-        self.embeddings.query_embedding(query).await
+        self.embeddings.query_embedding(collection, query).await
     }
 
     /// Get reranker if enabled (returns Arc so it can be used without lock)
@@ -108,10 +116,11 @@ impl KimunRag {
     /// Applies reranking if enabled
     pub async fn query_embeddings(
         &self,
+        collection: &str,
         query: &str,
         top_k: usize,
     ) -> anyhow::Result<Vec<(f64, document::FlattenedChunk)>> {
-        let results = self.embeddings.query_embedding(query).await?;
+        let results = self.embeddings.query_embedding(collection, query).await?;
 
         // Apply reranking if enabled
         if let Some(reranker) = &self.reranker {
@@ -127,20 +136,22 @@ impl KimunRag {
     /// Uses reranked results if reranking is enabled
     pub async fn ask(
         &self,
+        collection: &str,
         query: &str,
         top_k: usize,
     ) -> anyhow::Result<(String, Vec<(f64, FlattenedChunk)>)> {
-        self.ask_with_llm(query, self.llm_client.clone(), top_k)
+        self.ask_with_llm(collection, query, self.llm_client.clone(), top_k)
             .await
     }
 
     pub async fn ask_with_llm(
         &self,
+        collection: &str,
         query: &str,
         llm: Arc<dyn LLMClient + Send + Sync>,
         top_k: usize,
     ) -> anyhow::Result<(String, Vec<(f64, FlattenedChunk)>)> {
-        let context = self.query_embeddings(query, top_k).await?;
+        let context = self.query_embeddings(collection, query, top_k).await?;
         let answer = llm.ask(query, &context).await?;
         Ok((answer, context))
     }
