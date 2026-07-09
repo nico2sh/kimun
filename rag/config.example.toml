@@ -31,6 +31,9 @@ db_path = "./rag_index.sqlite"
 # Uncomment and configure if using Qdrant:
 # type = "qdrant"
 # url = "http://localhost:6333"
+# `collection` is a namespace PREFIX: each vault gets its own Qdrant collection
+# named "<collection>-<vault-id>". Leave empty to name collections by vault-id
+# alone.
 # collection = "kimun_embeddings"
 
 [embedder]

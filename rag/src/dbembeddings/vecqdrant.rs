@@ -12,10 +12,7 @@ use serde_json::json;
 use std::collections::HashMap;
 use uuid::Uuid;
 
-use crate::{
-    document::{FlattenedChunk, KimunDoc},
-    split_chunks_for_rag,
-};
+use crate::document::{FlattenedChunk, KimunDoc};
 
 use std::sync::Arc;
 
@@ -26,7 +23,10 @@ const TOP_RESULTS: u64 = 80;
 pub struct VecQdrant {
     embedder: Arc<dyn Embedder>,
     client: Qdrant,
-    collection: String,
+    /// Namespace prefix; the effective Qdrant collection for a vault is
+    /// `<prefix>-<vault-id>` (or just the vault-id when the prefix is empty).
+    /// One vault ↔ one Qdrant collection (adr/0020).
+    collection_prefix: String,
 }
 
 impl VecQdrant {
@@ -40,46 +40,75 @@ impl VecQdrant {
         Ok(Self {
             embedder,
             client,
-            collection,
+            collection_prefix: collection,
         })
     }
 
-    async fn ensure_collection(&self) -> anyhow::Result<()> {
-        // Check if collection exists
+    /// The Qdrant collection name for a vault id.
+    fn collection_name(&self, collection: &str) -> String {
+        if self.collection_prefix.is_empty() {
+            collection.to_string()
+        } else {
+            format!("{}-{}", self.collection_prefix, collection)
+        }
+    }
+
+    /// Ensures the vault's collection exists at the embedder's dimension. If it
+    /// already exists at a *different* dimension (embedder/model changed),
+    /// fails loudly rather than letting later upserts be rejected — the
+    /// operator must drop the collection and re-index (adr: dimension change is
+    /// destructive).
+    async fn ensure_collection(&self, collection: &str) -> anyhow::Result<()> {
+        let name = self.collection_name(collection);
+        let dim = self.embedder.dimension() as u64;
+
         let collections = self.client.list_collections().await?;
-        let exists = collections
-            .collections
-            .iter()
-            .any(|c| c.name == self.collection);
+        let exists = collections.collections.iter().any(|c| c.name == name);
 
-        if !exists {
-            // Create collection at the embedder's output dimension.
-            self.client
-                .create_collection(
-                    CreateCollectionBuilder::new(&self.collection).vectors_config(
-                        VectorParamsBuilder::new(
-                            self.embedder.dimension() as u64,
-                            Distance::Cosine,
-                        ),
-                    ),
-                )
-                .await?;
-
-            self.client
-                .create_field_index(
-                    CreateFieldIndexCollectionBuilder::new(
-                        self.collection.as_str(),
-                        "path",
-                        FieldType::Keyword,
-                    )
-                    .wait(true),
-                )
-                .await?;
-
-            debug!("Created Qdrant collection: {}", self.collection);
+        if exists {
+            if let Some(existing) = self.collection_dimension(&name).await? {
+                if existing != dim {
+                    anyhow::bail!(
+                        "Qdrant collection `{name}` has dimension {existing} but the \
+                         embedder produces {dim}. The embedder or model changed; drop \
+                         the collection and re-index."
+                    );
+                }
+            }
+            return Ok(());
         }
 
+        self.client
+            .create_collection(
+                CreateCollectionBuilder::new(&name)
+                    .vectors_config(VectorParamsBuilder::new(dim, Distance::Cosine)),
+            )
+            .await?;
+        self.client
+            .create_field_index(
+                CreateFieldIndexCollectionBuilder::new(&name, "path", FieldType::Keyword)
+                    .wait(true),
+            )
+            .await?;
+        debug!("Created Qdrant collection: {}", name);
         Ok(())
+    }
+
+    /// Reads an existing collection's single-vector dimension, if available.
+    async fn collection_dimension(&self, name: &str) -> anyhow::Result<Option<u64>> {
+        use qdrant_client::qdrant::vectors_config::Config;
+        let info = self.client.collection_info(name).await?;
+        let dim = info
+            .result
+            .and_then(|r| r.config)
+            .and_then(|c| c.params)
+            .and_then(|p| p.vectors_config)
+            .and_then(|vc| vc.config)
+            .and_then(|cfg| match cfg {
+                Config::Params(vp) => Some(vp.size),
+                _ => None,
+            });
+        Ok(dim)
     }
 
     fn chunk_to_point(chunk: &FlattenedChunk, embedding: Vec<f32>) -> PointStruct {
@@ -175,73 +204,49 @@ impl From<Option<PointId>> for PaginationStatus {
 #[async_trait::async_trait]
 impl Embeddings for VecQdrant {
     async fn init(&self) -> anyhow::Result<()> {
-        // Qdrant initialization is async, so we can't do it here
-        // Collection will be created on first use
-        self.ensure_collection().await?;
+        // Collections are per-vault and created lazily on first store, so there
+        // is nothing to do at server start.
         Ok(())
     }
 
-    async fn store_embeddings(&self, content: &[KimunDoc]) -> anyhow::Result<()> {
-        // Create points in batches of 100
+    async fn store_embeddings(&self, collection: &str, content: &[KimunDoc]) -> anyhow::Result<()> {
+        self.ensure_collection(collection).await?;
+        let name = self.collection_name(collection);
         const BATCH_SIZE: usize = 100;
 
-        let chunks = FlattenedChunk::from_chunks(content);
-        debug!(
-            "{} docs flattened to {} chunks",
-            content.len(),
-            chunks.len()
-        );
-        // Generate embeddings
+        // Sub-split sections to the embedding window, then embed and store each
+        // sub-chunk 1:1 — so a point's stored text is exactly the text that
+        // produced its vector (mismatched otherwise).
+        let chunks = FlattenedChunk::from_chunks_split(content, 800, 1536);
+        debug!("{} docs split to {} chunks", content.len(), chunks.len());
 
-        let mut batch_count = 0;
         for batch in chunks.chunks(BATCH_SIZE) {
-            debug!("Starting batch #{} with size {}", batch_count, BATCH_SIZE);
-            let mut points_count = 0;
-            for flchunk in batch {
-                let chunks = split_chunks_for_rag(&flchunk.text, 800, 1536)
-                    .iter()
-                    .map(|c| FlattenedChunk {
-                        doc_path: flchunk.doc_path.clone(),
-                        doc_hash: flchunk.doc_hash.clone(),
-                        title: flchunk.title.clone(),
-                        text: c.to_owned(),
-                        date: flchunk.date.clone(),
-                    })
-                    .collect::<Vec<FlattenedChunk>>();
-                // debug!("chunk: {:?}, chunks: {:?}", flchunk, chunks);
-
-                let embeddings = self.embedder.generate_embeddings(&chunks).await?;
-                let points = embeddings
-                    .iter()
-                    .map(|e| VecQdrant::chunk_to_point(flchunk, e.clone()))
-                    .collect::<Vec<PointStruct>>();
-                // let points: Vec<PointStruct> = batch
-                //     .iter()
-                //     .zip(embeddings)
-                //     .map(|(chunk, embedding)| VecQdrant::chunk_to_point(chunk, embedding.clone()))
-                //     .collect();
-                points_count += points.len();
-
-                // Upsert points using the builder API
-                self.client
-                    .upsert_points(UpsertPointsBuilder::new(&self.collection, points))
-                    .await?;
+            let embeddings = self.embedder.generate_embeddings(batch).await?;
+            if embeddings.len() != batch.len() {
+                anyhow::bail!(
+                    "embedder returned {} vectors for {} chunks",
+                    embeddings.len(),
+                    batch.len()
+                );
             }
-            debug!(
-                "Finished batch #{} with {} embeddings",
-                batch_count, points_count
-            );
-            batch_count += 1;
+            let points = batch
+                .iter()
+                .zip(embeddings)
+                .map(|(chunk, embedding)| VecQdrant::chunk_to_point(chunk, embedding))
+                .collect::<Vec<PointStruct>>();
+            self.client
+                .upsert_points(UpsertPointsBuilder::new(&name, points))
+                .await?;
         }
 
         Ok(())
     }
 
-    async fn delete_embeddings(&self, paths: Vec<&String>) -> anyhow::Result<()> {
+    async fn delete_embeddings(&self, collection: &str, paths: Vec<&String>) -> anyhow::Result<()> {
         // For each path in paths, delete all points where payload.path matches
         self.client
             .delete_points(
-                DeletePointsBuilder::new(&self.collection)
+                DeletePointsBuilder::new(self.collection_name(collection))
                     .points(Filter::must([Condition::matches(
                         "path",
                         paths
@@ -255,7 +260,11 @@ impl Embeddings for VecQdrant {
         Ok(())
     }
 
-    async fn query_embedding(&self, query: &str) -> anyhow::Result<Vec<(f64, FlattenedChunk)>> {
+    async fn query_embedding(
+        &self,
+        collection: &str,
+        query: &str,
+    ) -> anyhow::Result<Vec<(f64, FlattenedChunk)>> {
         // Generate query embedding
         let query_vec = self.embedder.prompt_embedding(query).await?;
 
@@ -263,7 +272,7 @@ impl Embeddings for VecQdrant {
         let search_result = self
             .client
             .search_points(
-                SearchPointsBuilder::new(&self.collection, query_vec, TOP_RESULTS)
+                SearchPointsBuilder::new(self.collection_name(collection), query_vec, TOP_RESULTS)
                     .with_payload(true),
             )
             .await?;
@@ -288,19 +297,31 @@ impl Embeddings for VecQdrant {
         Ok(results)
     }
 
-    async fn get_indexed_notes(&self) -> anyhow::Result<HashMap<String, IndexedNote>> {
+    async fn get_indexed_notes(
+        &self,
+        collection: &str,
+    ) -> anyhow::Result<HashMap<String, IndexedNote>> {
+        let name = self.collection_name(collection);
+        // A vault never indexed yet has no collection. Reconcile starts by
+        // reading the server's hash set, so return an empty map rather than
+        // erroring on the missing collection — the client then pushes everything.
+        let collections = self.client.list_collections().await?;
+        if !collections.collections.iter().any(|c| c.name == name) {
+            return Ok(HashMap::new());
+        }
+
         let page_size = 200;
         let mut result = HashMap::new();
         let mut pagination = PaginationStatus::First;
 
         while pagination.has_more() {
             let spb = match pagination {
-                PaginationStatus::Next(point_id) => ScrollPointsBuilder::new(&self.collection)
+                PaginationStatus::Next(point_id) => ScrollPointsBuilder::new(&name)
                     .with_payload(true)
                     .with_vectors(false)
                     .offset(point_id)
                     .limit(page_size),
-                _ => ScrollPointsBuilder::new(&self.collection)
+                _ => ScrollPointsBuilder::new(&name)
                     .with_payload(true)
                     .with_vectors(false)
                     .limit(page_size),
@@ -326,12 +347,12 @@ impl Embeddings for VecQdrant {
         Ok(result)
     }
 
-    async fn remove_indexed_note(&self, path: &str) -> anyhow::Result<()> {
+    async fn remove_indexed_note(&self, collection: &str, path: &str) -> anyhow::Result<()> {
         // Delete all points with this path
         self.client
             .set_payload(
                 SetPayloadPointsBuilder::new(
-                    &self.collection,
+                    self.collection_name(collection),
                     Payload::try_from(json!({
                         "hash": "",
                     }))

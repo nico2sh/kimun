@@ -16,11 +16,33 @@ use crate::{
 // Request/Response Types
 // ============================================================================
 
+/// Push a vault's documents (adr/0018). `vault_id` selects the collection.
+#[derive(Debug, Deserialize)]
+pub struct IndexDocsRequest {
+    pub vault_id: String,
+    pub docs: Vec<KimunDoc>,
+}
+
+/// Delete a vault's notes by path from its collection.
+#[derive(Debug, Deserialize)]
+pub struct DeleteRequest {
+    pub vault_id: String,
+    pub paths: Vec<String>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct QueryRequest {
+    pub vault_id: String,
     pub query: String,
+    /// Overrides the server's default result count when set; otherwise
+    /// `reranker.top_k` from config is used.
     #[serde(default)]
-    pub context_size: ContextSize,
+    pub context_size: Option<ContextSize>,
+}
+
+/// Result count: the per-request `context_size` override, or the server default.
+fn resolve_top_k(context_size: Option<ContextSize>, default: usize) -> usize {
+    context_size.map(|c| c.to_top_k()).unwrap_or(default)
 }
 
 #[derive(Debug, Deserialize, Clone, Copy)]
@@ -43,19 +65,31 @@ impl ContextSize {
     }
 }
 
-impl Default for ContextSize {
-    fn default() -> Self {
-        ContextSize::Medium
+fn bad_request(msg: &str) -> (StatusCode, Json<ErrorResponse>) {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ErrorResponse {
+            error: msg.to_string(),
+        }),
+    )
+}
+
+/// Rejects a missing/blank vault id — it is the collection key, and an empty
+/// one would cross-mix every blank-id vault into a single collection.
+fn require_vault_id(vault_id: &str) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    if vault_id.trim().is_empty() {
+        Err(bad_request("vault_id is required"))
+    } else {
+        Ok(())
     }
 }
 
 #[derive(Debug, Deserialize)]
 pub struct AnswerRequest {
+    pub vault_id: String,
     pub query: String,
-    pub llm_provider: Option<String>, // "claude", "openai", "gemini", "mistral"
-    pub llm_model: Option<String>,
     #[serde(default)]
-    pub context_size: ContextSize,
+    pub context_size: Option<ContextSize>,
 }
 
 #[derive(Debug, Serialize)]
@@ -110,8 +144,9 @@ pub struct ErrorResponse {
 
 pub async fn index_docs_handler(
     State(state): State<Arc<AppState>>,
-    Json(request): Json<Vec<KimunDoc>>,
+    Json(request): Json<IndexDocsRequest>,
 ) -> Result<Json<IndexResponse>, (StatusCode, Json<ErrorResponse>)> {
+    require_vault_id(&request.vault_id)?;
     let job_id = Uuid::new_v4();
 
     // Mark job as queued
@@ -132,7 +167,14 @@ pub async fn index_docs_handler(
             .update_status(&job_id, JobStatus::Processing);
 
         // Perform indexing
-        match index_docs_impl(&request, None, state_clone.rag.clone()).await {
+        match index_docs_impl(
+            &request.vault_id,
+            &request.docs,
+            None,
+            state_clone.rag.clone(),
+        )
+        .await
+        {
             Ok(stats) => {
                 let result = serde_json::json!({
                     "indexed": stats.indexed,
@@ -168,59 +210,63 @@ pub async fn get_embeddings_handler(
     State(state): State<Arc<AppState>>,
     Json(request): Json<QueryRequest>,
 ) -> Result<Json<EmbeddingsResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let rag = state.rag.lock().await;
+    require_vault_id(&request.vault_id)?;
+    // Take clones of the embeddings + reranker, then release the lock so the
+    // (possibly network-bound) embed/search/rerank does not serialize other
+    // requests.
+    let (embeddings, reranker) = {
+        let rag = state.rag.lock().await;
+        (rag.embeddings(), rag.get_reranker())
+    };
+    let top_k = resolve_top_k(request.context_size, state.config.reranker.top_k);
 
-    match rag
-        .query_embeddings(&request.query, request.context_size.to_top_k())
-        .await
-    {
-        Ok(results) => {
-            // Deduplicate by FlattenedChunk, keeping the highest score for each unique chunk
-            let results = deduplicate_chunks(results);
-
-            let chunks: Vec<ChunkResult> = results
-                .into_iter()
-                .map(|(score, chunk)| {
-                    let source_path = chunk.doc_path.clone();
-                    let title = chunk.title.clone();
-                    let date = chunk.get_date_string();
-                    let hash = chunk.doc_hash.clone();
-                    ChunkResult {
-                        path: source_path,
-                        title,
-                        date,
-                        content: chunk.text,
-                        similarity_score: score,
-                        hash,
-                    }
-                })
-                .collect();
-
-            Ok(Json(EmbeddingsResponse { chunks }))
-        }
-        Err(e) => Err((
+    let fail = |e: anyhow::Error| {
+        (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
                 error: format!("Query failed: {}", e),
             }),
-        )),
-    }
+        )
+    };
+
+    let raw = embeddings
+        .query_embedding(&request.vault_id, &request.query)
+        .await
+        .map_err(&fail)?;
+    let raw = deduplicate_chunks(raw);
+    let results = match reranker {
+        Some(reranker) => reranker
+            .rerank(&request.query, raw, top_k)
+            .await
+            .map_err(&fail)?,
+        None => raw.into_iter().take(top_k).collect(),
+    };
+
+    let chunks: Vec<ChunkResult> = results
+        .into_iter()
+        .map(|(score, chunk)| ChunkResult {
+            path: chunk.doc_path.clone(),
+            title: chunk.title.clone(),
+            date: chunk.get_date_string(),
+            hash: chunk.doc_hash.clone(),
+            content: chunk.text,
+            similarity_score: score,
+        })
+        .collect();
+
+    Ok(Json(EmbeddingsResponse { chunks }))
 }
 
-/// Answer - Query text → LLM answer with context (queued)
-/// Supports dynamic LLM selection via request body and X-API-Key header
+/// Answer - Query text → LLM answer with context (queued). The LLM is the one
+/// configured on the server (adr: server-owned LLM config); the request carries
+/// no provider/model/key.
 pub async fn answer_handler(
     State(state): State<Arc<AppState>>,
-    headers: axum::http::HeaderMap,
     Json(request): Json<AnswerRequest>,
 ) -> Result<Json<QueryResponse>, (StatusCode, Json<ErrorResponse>)> {
+    require_vault_id(&request.vault_id)?;
     let job_id = Uuid::new_v4();
-
-    // Extract API key from header
-    let api_key = headers
-        .get("X-API-Key")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
+    let top_k = resolve_top_k(request.context_size, state.config.reranker.top_k);
 
     // Mark job as queued
     state
@@ -240,14 +286,11 @@ pub async fn answer_handler(
             .await
             .update_status(&job_id, JobStatus::Processing);
 
-        // Perform query and answer with dynamic LLM
-        match answer_impl_with_llm(
+        match answer_impl(
             state_clone.rag.clone(),
+            &request.vault_id,
             &request.query,
-            request.llm_provider.as_deref(),
-            request.llm_model.as_deref(),
-            api_key.as_deref(),
-            request.context_size,
+            top_k,
         )
         .await
         {
@@ -277,6 +320,54 @@ pub async fn answer_handler(
         job_id: job_id.to_string(),
         message: "Query job started".to_string(),
     }))
+}
+
+/// Delete notes by path from a vault's collection (used by the client when a
+/// note is removed).
+pub async fn index_delete_handler(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<DeleteRequest>,
+) -> Result<Json<IndexResponse>, (StatusCode, Json<ErrorResponse>)> {
+    require_vault_id(&request.vault_id)?;
+    let embeddings = { state.rag.lock().await.embeddings() };
+    let paths: Vec<&String> = request.paths.iter().collect();
+    match embeddings.delete_embeddings(&request.vault_id, paths).await {
+        Ok(()) => Ok(Json(IndexResponse {
+            job_id: Uuid::new_v4().to_string(),
+            message: format!("Deleted {} paths", request.paths.len()),
+        })),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Delete failed: {}", e),
+            }),
+        )),
+    }
+}
+
+/// Reconcile support: the `{note path → content hash}` set the server holds for
+/// a vault, so the client can diff it against its own authoritative set and
+/// push/delete only the differences (adr/0019).
+pub async fn collection_hashes_handler(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(vault_id): axum::extract::Path<String>,
+) -> Result<Json<HashMap<String, String>>, (StatusCode, Json<ErrorResponse>)> {
+    require_vault_id(&vault_id)?;
+    let embeddings = { state.rag.lock().await.embeddings() };
+    match embeddings.get_indexed_notes(&vault_id).await {
+        Ok(notes) => Ok(Json(
+            notes
+                .into_iter()
+                .map(|(path, note)| (path, note.content_hash))
+                .collect(),
+        )),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to read hashes: {}", e),
+            }),
+        )),
+    }
 }
 
 /// Job Status - Get status of a job
@@ -329,7 +420,10 @@ pub async fn job_status_handler(
 // Implementation Functions
 // ============================================================================
 
-/// Deduplicates embedding results by FlattenedChunk, keeping the highest score for each unique chunk
+/// Deduplicates embedding results by FlattenedChunk (keeping the highest score
+/// per unique chunk) and returns them sorted best-first. Scores are similarities
+/// (higher = better) for both backends, so this ordering is what `take(top_k)`
+/// relies on when no reranker is present.
 fn deduplicate_chunks(
     results: Vec<(f64, crate::document::FlattenedChunk)>,
 ) -> Vec<(f64, crate::document::FlattenedChunk)> {
@@ -350,10 +444,13 @@ fn deduplicate_chunks(
             .or_insert(score);
     }
 
-    let deduplicated: Vec<(f64, crate::document::FlattenedChunk)> = dedup_map
+    let mut deduplicated: Vec<(f64, crate::document::FlattenedChunk)> = dedup_map
         .into_iter()
         .map(|(chunk, score)| (score, chunk))
         .collect();
+    // The HashMap destroyed the query's ordering; restore best-first so a
+    // no-reranker `take(top_k)` keeps the actual top matches.
+    deduplicated.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
     debug!(
         "After deduplication: {} unique results (from {} total)",
@@ -365,6 +462,7 @@ fn deduplicate_chunks(
 }
 
 async fn index_docs_impl(
+    collection: &str,
     docs: &[KimunDoc],
     indexed_notes: Option<&HashMap<String, IndexedNote>>,
     rag: Arc<Mutex<KimunRag>>,
@@ -378,7 +476,7 @@ async fn index_docs_impl(
     let rag_lock = rag.lock().await;
     let indexed_notes = match indexed_notes {
         Some(inotes) => inotes,
-        None => &rag_lock.embeddings.get_indexed_notes().await?,
+        None => &rag_lock.embeddings.get_indexed_notes(collection).await?,
     };
     debug!("Indexed notes: {}", indexed_notes.len());
 
@@ -395,7 +493,7 @@ async fn index_docs_impl(
                 // debug!("For updating, deleting embeddings for {}", doc.path);
                 rag_lock
                     .embeddings
-                    .delete_embeddings(vec![&doc.path])
+                    .delete_embeddings(collection, vec![&doc.path])
                     .await?;
                 updated_count += 1;
             } else {
@@ -420,7 +518,10 @@ async fn index_docs_impl(
                     current_batch_pos,
                     current_batch_pos + batch_len
                 );
-                rag_lock.embeddings.store_embeddings(&batch).await?;
+                rag_lock
+                    .embeddings
+                    .store_embeddings(collection, &batch)
+                    .await?;
                 batch.clear();
                 current_batch_pos += batch_len;
             }
@@ -434,7 +535,10 @@ async fn index_docs_impl(
             current_batch_pos,
             current_batch_pos + batch.len()
         );
-        rag_lock.embeddings.store_embeddings(&batch).await?;
+        rag_lock
+            .embeddings
+            .store_embeddings(collection, &batch)
+            .await?;
     }
 
     Ok(IndexStats {
@@ -446,166 +550,46 @@ async fn index_docs_impl(
     })
 }
 
-/// Answer implementation with dynamic LLM selection
-async fn answer_impl_with_llm(
+/// Answer implementation using the server-configured LLM.
+async fn answer_impl(
     rag: Arc<Mutex<KimunRag>>,
+    collection: &str,
     query: &str,
-    llm_provider: Option<&str>,
-    llm_model: Option<&str>,
-    api_key: Option<&str>,
-    context_size: ContextSize,
+    top_k: usize,
 ) -> anyhow::Result<(String, Vec<ChunkResult>)> {
-    use crate::llmclients::{
-        LLMClient, claude::ClaudeClient, gemini::GeminiClient, mistral::MistralClient,
-        openai::OpenAIClient,
-    };
-
     debug!("Answering a question");
 
-    // Step 1: Query embeddings (fast vector search) and get reranker while holding the lock briefly
-    let (raw_results, reranker_option) = {
+    // Query embeddings + grab the reranker and LLM client while holding the
+    // lock briefly, then release it before any slow work.
+    let (raw_results, reranker_option, llm_client) = {
         let rag_lock = rag.lock().await;
-        let results = rag_lock.query_embeddings_raw(query).await?;
-        let reranker = rag_lock.get_reranker();
-        (results, reranker)
+        let results = rag_lock.query_embeddings_raw(collection, query).await?;
+        (results, rag_lock.get_reranker(), rag_lock.get_llm_client())
     }; // Lock released here
 
-    debug!(
-        "Got {} raw results from embeddings query",
-        raw_results.len()
-    );
-
-    // Deduplicate by FlattenedChunk, keeping the highest score for each unique chunk
     let raw_results = deduplicate_chunks(raw_results);
 
-    // Determine top_k from context_size parameter
-    let top_k = context_size.to_top_k();
-    debug!("Using context_size {:?} with top_k {}", context_size, top_k);
-
-    // Step 2: Apply reranking (CPU-intensive) WITHOUT holding the lock
+    // Rerank (CPU-intensive) without the lock.
     let results = if let Some(reranker) = reranker_option {
-        debug!("Reranking results without lock");
         reranker.rerank(query, raw_results, top_k).await?
     } else {
-        debug!("No reranking needed, applying top_k limit");
-        // Still apply top_k limit even without reranking
         raw_results.into_iter().take(top_k).collect()
     };
 
-    debug!("After reranking: {} results", results.len());
-
-    // Step 3: Set up API key if provided (without lock)
-    let _env_guard = if let Some(key) = api_key {
-        llm_provider
-            .as_ref()
-            .map(|provider| set_temp_api_key(provider, key))
-    } else {
-        None
-    };
-
-    // Step 4: Create or get LLM client (without holding the lock)
-    let llm_client: Arc<dyn LLMClient + Send + Sync> = if let Some(provider) = llm_provider {
-        match provider.to_lowercase().as_str() {
-            "claude" => {
-                let model = llm_model.unwrap_or("claude-3-5-sonnet-20241022");
-                Arc::new(ClaudeClient::new(model.to_string()))
-            }
-            "openai" => {
-                let model = llm_model.unwrap_or("gpt-4o-mini");
-                Arc::new(OpenAIClient::new(model.to_string()))
-            }
-            "gemini" => {
-                let model = llm_model.unwrap_or("gemini-2.5-flash");
-                Arc::new(GeminiClient::new(model))
-            }
-            "mistral" => {
-                let model = llm_model.unwrap_or("mistral-large-latest");
-                Arc::new(MistralClient::new(model))
-            }
-            _ => anyhow::bail!("Unknown LLM provider: {}", provider),
-        }
-    } else {
-        // Get default LLM client (briefly holding lock just to clone the Arc)
-        let rag_lock = rag.lock().await;
-        let client = rag_lock.get_llm_client();
-        drop(rag_lock); // Explicitly release lock before LLM call
-        client
-    };
-
-    // Step 5: Call LLM without holding any lock - this is the slow operation (can take seconds)
-    debug!("Calling LLM without lock");
+    // Slow LLM call, no lock held.
     let answer = llm_client.ask(query, &results).await?;
 
-    // Format sources
     let sources: Vec<ChunkResult> = results
         .into_iter()
-        .map(|(score, chunk)| {
-            let source_path = chunk.doc_path.clone();
-            let title = chunk.title.clone();
-            let date = chunk.get_date_string();
-            let hash = chunk.doc_hash.clone();
-            ChunkResult {
-                path: source_path,
-                title,
-                date,
-                content: chunk.text,
-                similarity_score: score,
-                hash,
-            }
+        .map(|(score, chunk)| ChunkResult {
+            path: chunk.doc_path.clone(),
+            title: chunk.title.clone(),
+            date: chunk.get_date_string(),
+            hash: chunk.doc_hash.clone(),
+            content: chunk.text,
+            similarity_score: score,
         })
         .collect();
 
     Ok((answer, sources))
-}
-
-/// Helper to temporarily set API key in environment
-/// Returns a guard that will restore the original value on drop
-fn set_temp_api_key(provider: &str, api_key: &str) -> TempEnvGuard {
-    let env_var = match provider {
-        "claude" => "ANTHROPIC_API_KEY",
-        "openai" => "OPENAI_API_KEY",
-        "gemini" => "GEMINI_API_KEY",
-        "mistral" => "MISTRAL_API_KEY",
-        _ => {
-            return TempEnvGuard {
-                var: None,
-                original: None,
-            };
-        }
-    };
-
-    let original = std::env::var(env_var).ok();
-
-    // SAFETY: We're modifying environment variables in a controlled way within a single-threaded
-    // context (tokio spawn). The guard ensures restoration. This is acceptable for temporary
-    // API key injection per request.
-    unsafe {
-        std::env::set_var(env_var, api_key);
-    }
-
-    TempEnvGuard {
-        var: Some(env_var.to_string()),
-        original,
-    }
-}
-
-/// Guard that restores environment variable on drop
-struct TempEnvGuard {
-    var: Option<String>,
-    original: Option<String>,
-}
-
-impl Drop for TempEnvGuard {
-    fn drop(&mut self) {
-        if let Some(var) = &self.var {
-            // SAFETY: Restoring environment variable state
-            unsafe {
-                if let Some(original) = &self.original {
-                    std::env::set_var(var, original);
-                } else {
-                    std::env::remove_var(var);
-                }
-            }
-        }
-    }
 }
