@@ -4,10 +4,26 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RagConfig {
     pub server: ServerConfig,
-    pub vault: VaultConfig,
     pub vector_db: VectorDbConfig,
+    /// Which embedder produces the vectors. Defaults to the local fastembed
+    /// model so an existing config with no [embedder] section keeps working.
+    #[serde(default)]
+    pub embedder: EmbedderConfig,
     pub llm: LlmConfig,
     pub reranker: RerankerConfig,
+    /// Authentication. Optional so a localhost-only dev server needs no setup;
+    /// required in practice once the server binds beyond 127.0.0.1 (adr:
+    /// shared bearer token).
+    #[serde(default)]
+    pub auth: AuthConfig,
+}
+
+/// Bearer-token auth. When `token` is set, every API request must present it as
+/// `Authorization: Bearer <token>` (and the web UI is gated by it).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AuthConfig {
+    #[serde(default)]
+    pub token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,9 +36,51 @@ pub struct ServerConfig {
     pub max_concurrent_jobs: usize,
 }
 
+/// Selects the embedder. All collections on a server share one embedder — the
+/// same model must embed both documents and queries, so it is an invariant of
+/// the stored vectors. Changing it invalidates existing embeddings and forces a
+/// full re-index. `doc_prefix`/`query_prefix` are model-specific instruction
+/// prefixes (e.g. nomic's `search_document: ` / `search_query: `); leave empty
+/// when the model needs none.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VaultConfig {
-    pub path: PathBuf,
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum EmbedderConfig {
+    /// Local, in-process fastembed. No network. `model` names a bundled model
+    /// by its fastembed variant (e.g. `BGESmallENV15`) or model code (e.g.
+    /// `Xenova/bge-small-en-v1.5`); omit for the default (BGE-Large, 1024 dims).
+    #[serde(rename = "fastembed")]
+    FastEmbed {
+        #[serde(default)]
+        model: Option<String>,
+    },
+    /// An Ollama server's `/api/embed` endpoint.
+    #[serde(rename = "ollama")]
+    Ollama {
+        url: String,
+        model: String,
+        #[serde(default)]
+        doc_prefix: String,
+        #[serde(default)]
+        query_prefix: String,
+    },
+    /// Any OpenAI-compatible `/embeddings` endpoint.
+    #[serde(rename = "openai")]
+    OpenAI {
+        url: String,
+        model: String,
+        #[serde(default)]
+        api_key: Option<String>,
+        #[serde(default)]
+        doc_prefix: String,
+        #[serde(default)]
+        query_prefix: String,
+    },
+}
+
+impl Default for EmbedderConfig {
+    fn default() -> Self {
+        EmbedderConfig::FastEmbed { model: None }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,6 +100,10 @@ pub enum VectorDbConfig {
     },
 }
 
+/// LLM provider selection plus its model and API key. The key lives here
+/// (server-owned, editable in the web UI) rather than only in an env var, so
+/// Kimün never handles it (adr: server-owned LLM config). An absent `api_key`
+/// falls back to the provider's env var.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "provider", rename_all = "lowercase")]
 pub enum LlmConfig {
@@ -49,21 +111,29 @@ pub enum LlmConfig {
     Gemini {
         #[serde(default = "default_gemini_model")]
         model: String,
+        #[serde(default)]
+        api_key: Option<String>,
     },
     #[serde(rename = "mistral")]
     Mistral {
         #[serde(default = "default_mistral_model")]
         model: String,
+        #[serde(default)]
+        api_key: Option<String>,
     },
     #[serde(rename = "claude")]
     Claude {
         #[serde(default = "default_claude_model")]
         model: String,
+        #[serde(default)]
+        api_key: Option<String>,
     },
     #[serde(rename = "openai")]
     OpenAI {
         #[serde(default = "default_openai_model")]
         model: String,
+        #[serde(default)]
+        api_key: Option<String>,
     },
 }
 
@@ -71,6 +141,10 @@ pub enum LlmConfig {
 pub struct RerankerConfig {
     #[serde(default = "default_reranker_enabled")]
     pub enabled: bool,
+    /// Default number of results kept after reranking. Overridable per request
+    /// via `context_size`.
+    #[serde(default = "default_reranker_top_k")]
+    pub top_k: usize,
 }
 
 // Default value functions
@@ -118,6 +192,10 @@ fn default_reranker_enabled() -> bool {
     true
 }
 
+fn default_reranker_top_k() -> usize {
+    20
+}
+
 impl RagConfig {
     /// Load configuration from a TOML file
     pub fn from_file(path: PathBuf) -> anyhow::Result<Self> {
@@ -152,20 +230,12 @@ impl RagConfig {
     }
 
     /// Merge configuration with CLI arguments
-    pub fn merge_with_cli(
-        mut self,
-        host: Option<String>,
-        port: Option<u16>,
-        vault_path: Option<PathBuf>,
-    ) -> Self {
+    pub fn merge_with_cli(mut self, host: Option<String>, port: Option<u16>) -> Self {
         if let Some(host) = host {
             self.server.host = host;
         }
         if let Some(port) = port {
             self.server.port = port;
-        }
-        if let Some(vault_path) = vault_path {
-            self.vault.path = vault_path;
         }
         self
     }
@@ -177,11 +247,9 @@ mod tests {
 
     #[test]
     fn test_default_config_values() {
+        // Push-only server: no [vault] section exists anymore (adr/0018).
         let config_toml = r#"
 [server]
-
-[vault]
-path = "/tmp/notes"
 
 [vector_db]
 type = "sqlite"
@@ -196,5 +264,111 @@ provider = "gemini"
         assert_eq!(config.server.host, "127.0.0.1");
         assert_eq!(config.server.port, 7573);
         assert_eq!(config.reranker.enabled, true);
+        // top_k has a default and is configurable (was missing from the struct).
+        assert_eq!(config.reranker.top_k, 20);
+        // Auth is optional; absent by default.
+        assert!(config.auth.token.is_none());
+    }
+
+    #[test]
+    fn test_embedder_defaults_to_fastembed() {
+        let config_toml = r#"
+[server]
+[vector_db]
+type = "sqlite"
+[llm]
+provider = "gemini"
+[reranker]
+"#;
+        let config: RagConfig = toml::from_str(config_toml).unwrap();
+        assert!(matches!(
+            config.embedder,
+            EmbedderConfig::FastEmbed { model: None }
+        ));
+    }
+
+    #[test]
+    fn test_fastembed_model_parse() {
+        let config_toml = r#"
+[server]
+[vector_db]
+type = "sqlite"
+[embedder]
+type = "fastembed"
+model = "BGESmallENV15"
+[llm]
+provider = "gemini"
+[reranker]
+"#;
+        let config: RagConfig = toml::from_str(config_toml).unwrap();
+        match config.embedder {
+            EmbedderConfig::FastEmbed { model } => {
+                assert_eq!(model.as_deref(), Some("BGESmallENV15"))
+            }
+            other => panic!("expected fastembed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_embedder_ollama_parse() {
+        let config_toml = r#"
+[server]
+[vector_db]
+type = "sqlite"
+[embedder]
+type = "ollama"
+url = "http://localhost:11434"
+model = "nomic-embed-text"
+doc_prefix = "search_document: "
+query_prefix = "search_query: "
+[llm]
+provider = "gemini"
+[reranker]
+"#;
+        let config: RagConfig = toml::from_str(config_toml).unwrap();
+        match config.embedder {
+            EmbedderConfig::Ollama {
+                url,
+                model,
+                doc_prefix,
+                query_prefix,
+            } => {
+                assert_eq!(url, "http://localhost:11434");
+                assert_eq!(model, "nomic-embed-text");
+                assert_eq!(doc_prefix, "search_document: ");
+                assert_eq!(query_prefix, "search_query: ");
+            }
+            other => panic!("expected ollama, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_auth_and_llm_key_parse() {
+        let config_toml = r#"
+[server]
+
+[vector_db]
+type = "sqlite"
+
+[llm]
+provider = "claude"
+model = "claude-3-5-sonnet-20241022"
+api_key = "sk-ant-xxx"
+
+[reranker]
+top_k = 40
+
+[auth]
+token = "secret-token"
+"#;
+        let config: RagConfig = toml::from_str(config_toml).unwrap();
+        assert_eq!(config.reranker.top_k, 40);
+        assert_eq!(config.auth.token.as_deref(), Some("secret-token"));
+        match &config.llm {
+            LlmConfig::Claude { api_key, .. } => {
+                assert_eq!(api_key.as_deref(), Some("sk-ant-xxx"))
+            }
+            _ => panic!("expected claude"),
+        }
     }
 }

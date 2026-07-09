@@ -11,9 +11,14 @@ port = 7573
 # Maximum number of concurrent jobs (default: 10)
 max_concurrent_jobs = 10
 
-[vault]
-# Path to your notes vault
-path = "/path/to/your/notes"
+# The server no longer reads the vault: Kimün pushes notes to it (push-only,
+# adr/0018), so there is no [vault] section.
+
+[auth]
+# Bearer token required on every API request (Authorization: Bearer <token>)
+# and to reach the web UI. Leave unset only for a localhost-only dev server;
+# set one whenever the server binds beyond 127.0.0.1.
+# token = "change-me"
 
 [vector_db]
 # Vector database type: "sqlite" or "qdrant"
@@ -28,6 +33,33 @@ db_path = "./rag_index.sqlite"
 # url = "http://localhost:6333"
 # collection = "kimun_embeddings"
 
+[embedder]
+# Which model turns text into vectors. All collections share one embedder, and
+# the SAME model must embed documents and queries. Changing the embedder or
+# model invalidates every stored vector and forces a full re-index (the store is
+# recreated automatically on the next start). The vector width is detected
+# automatically.
+
+# Local, in-process, no network. Default model is BGE-Large-EN-V1.5 (1024 dims).
+type = "fastembed"
+# Optional: pick a bundled model by variant name (e.g. BGESmallENV15 = 384 dims,
+# BGEBaseENV15 = 768) or model code (e.g. Xenova/bge-small-en-v1.5). The vector
+# width is detected from the chosen model.
+# model = "BGESmallENV15"
+
+# Ollama server:
+# type = "ollama"
+# url = "http://localhost:11434"
+# model = "nomic-embed-text"
+# doc_prefix = "search_document: "   # model-specific; leave empty if unused
+# query_prefix = "search_query: "
+
+# Any OpenAI-compatible /embeddings endpoint (OpenAI, LM Studio, vLLM, gateways):
+# type = "openai"
+# url = "https://api.openai.com/v1"
+# model = "text-embedding-3-small"
+# api_key = "..."                    # or falls back to OPENAI_API_KEY
+
 [llm]
 # LLM provider: "gemini", "claude", "openai", or "mistral"
 provider = "gemini"
@@ -39,11 +71,10 @@ provider = "gemini"
 # Mistral: "mistral-large-latest" (default)
 model = "gemini-2.5-flash-preview-04-17"
 
-# API keys MUST be set via environment variables:
-# - GEMINI_API_KEY for Gemini
-# - ANTHROPIC_API_KEY for Claude (e.g., export ANTHROPIC_API_KEY=sk-ant-...)
-# - OPENAI_API_KEY for OpenAI (e.g., export OPENAI_API_KEY=sk-...)
-# - MISTRAL_API_KEY for Mistral
+# API key. Prefer setting it here (server-owned, and editable in the web UI) so
+# Kimün never handles it. If omitted, the server falls back to the provider's
+# env var (GEMINI_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY / MISTRAL_API_KEY).
+# api_key = "..."
 
 # Example configurations for each provider:
 

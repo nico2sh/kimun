@@ -2,7 +2,7 @@ use crate::document::{FlattenedChunk, KimunDoc};
 use async_trait::async_trait;
 use std::{collections::HashMap, fmt::Display};
 
-mod embedder;
+pub mod embedder;
 
 pub mod vecqdrant;
 pub mod vecsqlite;

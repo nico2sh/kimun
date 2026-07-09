@@ -1,8 +1,6 @@
 use std::fmt::Display;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
-
-use document::ChunkLoader;
 
 use dbembeddings::Embeddings;
 use dbembeddings::vecsqlite::VecSQLite;
@@ -57,28 +55,21 @@ impl KimunRag {
         Ok(self)
     }
 
-    /// Helper to create with SQLite and Gemini (for backward compatibility)
-    pub fn sqlite<P: AsRef<Path>>(path: P) -> Self {
-        Self {
-            embeddings: Arc::new(VecSQLite::new(path)),
+    /// Helper to create with local SQLite + fastembed and Gemini.
+    pub fn sqlite<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
+        let embedder =
+            Arc::new(crate::dbembeddings::embedder::fastembedder::FastEmbedder::new(None)?);
+        Ok(Self {
+            embeddings: Arc::new(VecSQLite::new(path, embedder)),
             llm_client: Arc::new(GeminiClient::new("gemini-2.5-flash")),
             reranker: None,
-        }
+        })
     }
 
     /// Initialize the embeddings database
     pub async fn init(&self) -> anyhow::Result<()> {
         self.embeddings.init().await?;
         tracing::debug!("KimunRag initialized (using lazy initialization)");
-        Ok(())
-    }
-
-    /// Store embeddings for all notes in the vault
-    pub async fn store_embeddings(&self, db_path: PathBuf) -> anyhow::Result<()> {
-        let chunk_loader = ChunkLoader::new(db_path);
-        let chunks = chunk_loader.load_notes()?;
-
-        self.embeddings.store_embeddings(&chunks).await?;
         Ok(())
     }
 
@@ -153,98 +144,6 @@ impl KimunRag {
         let answer = llm.ask(query, &context).await?;
         Ok((answer, context))
     }
-
-    /// Store embeddings with incremental indexing (only index changed notes)
-    pub async fn store_embeddings_incremental(
-        &self,
-        db_path: PathBuf,
-    ) -> anyhow::Result<IndexStats> {
-        debug!("Starting store embeddings incremental");
-        let chunk_loader = ChunkLoader::new(db_path);
-        let chunks = chunk_loader.load_notes()?;
-
-        // Get currently indexed notes
-        let mut indexed_notes = self.embeddings.get_indexed_notes().await?;
-
-        let mut indexed_count = 0;
-        let mut skipped_count = 0;
-        let mut updated_count = 0;
-
-        for chunk in &chunks {
-            let content_hash = chunk.hash.clone();
-            let needs_indexing = if let Some(indexed) = indexed_notes.remove(&chunk.path) {
-                let update = indexed.content_hash != content_hash;
-                if update {
-                    // These ones needs to be updated, so we need to remove them first
-                    debug!("For updating, deleting embeddings for {}", chunk.path);
-                    self.embeddings.delete_embeddings(vec![&chunk.path]).await?;
-                    updated_count += 1;
-                } else {
-                    debug!("Skipping embeddings for {}", chunk.path);
-                    skipped_count += 1;
-                }
-                update
-            } else {
-                debug!("Indexing embeddings for {}", chunk.path);
-                indexed_count += 1;
-                true
-            };
-
-            if needs_indexing {
-                debug!("Starting storing embeddings");
-                self.embeddings.store_embeddings(&chunks).await?;
-                debug!("Finished storing embeddings");
-            }
-        }
-
-        let missing = indexed_notes.keys().collect::<Vec<&String>>();
-        let removed_count = missing.len();
-        self.embeddings.delete_embeddings(missing).await?;
-
-        Ok(IndexStats {
-            indexed: indexed_count,
-            skipped: skipped_count,
-            updated: updated_count,
-            errors: 0,
-            removed: removed_count,
-        })
-    }
-
-    // Store a single note (replacing all existing chunks for that path)
-    //     pub async fn store_single_note(&self, db_path: PathBuf, note_path: &str) -> anyhow::Result<()> {
-    //         let chunk_loader = ChunkLoader::new(db_path);
-    //         let all_chunks = chunk_loader.load_notes()?;
-
-    //         // Filter to only the chunks for this path
-    //         let chunks: Vec<document::ChunksPayload> = all_chunks
-    //             .into_iter()
-    //             .filter(|c| c.doc_path == note_path)
-    //             .collect();
-
-    //         if chunks.is_empty() {
-    //             // If no chunks, remove from index
-    //             self.embeddings.remove_indexed_note(note_path).await?;
-    //             return Ok(());
-    //         }
-
-    //         // Compute hash
-    //         let content_hash = if chunks.windows(2).all(|w| w[0].doc_hash == w[1].doc_hash) {
-    //             chunks
-    //                 .first()
-    //                 .map(|f| f.doc_hash.clone())
-    //                 .unwrap_or_default()
-    //         } else {
-    //             "".to_string()
-    //         };
-
-    //         // Store embeddings
-    //         self.embeddings.store_embeddings(&chunks).await?;
-    //         self.embeddings
-    //             .mark_as_indexed(note_path, &content_hash)
-    //             .await?;
-
-    //         Ok(())
-    //     }
 }
 
 /// Statistics from indexing operation

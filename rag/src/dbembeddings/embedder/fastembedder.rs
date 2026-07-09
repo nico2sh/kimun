@@ -1,4 +1,6 @@
+use async_trait::async_trait;
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
+use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -6,23 +8,65 @@ use crate::document::FlattenedChunk;
 
 use super::Embedder;
 
+/// Default local model when none is named (BGE-Large-EN-V1.5, 1024 dims).
+const DEFAULT_MODEL: EmbeddingModel = EmbeddingModel::BGELargeENV15;
+
 pub struct FastEmbedder {
     model: Arc<Mutex<TextEmbedding>>,
+    dimension: usize,
 }
 
 impl FastEmbedder {
-    pub fn new() -> anyhow::Result<Self> {
+    /// Builds the local embedder for `model`, or the default when `None`. The
+    /// name accepts either the fastembed variant name (e.g. `BGESmallENV15`) or
+    /// the model code (e.g. `BAAI/bge-small-en-v1.5`), case-insensitively.
+    pub fn new(model: Option<&str>) -> anyhow::Result<Self> {
+        let (embedding_model, dimension) = resolve_model(model)?;
         let model = TextEmbedding::try_new(
-            // InitOptions::new(EmbeddingModel::BGESmallENV15).with_show_download_progress(true),
-            InitOptions::new(EmbeddingModel::BGELargeENV15).with_show_download_progress(true),
+            InitOptions::new(embedding_model).with_show_download_progress(true),
         )?;
         Ok(Self {
             model: Arc::new(Mutex::new(model)),
+            dimension,
         })
     }
 }
 
+/// Resolves a model name to its `EmbeddingModel` and output dimension.
+fn resolve_model(name: Option<&str>) -> anyhow::Result<(EmbeddingModel, usize)> {
+    let infos = TextEmbedding::list_supported_models();
+    let selected = match name {
+        None => DEFAULT_MODEL,
+        Some(s) => EmbeddingModel::from_str(s)
+            .ok()
+            .or_else(|| {
+                infos
+                    .iter()
+                    .find(|i| i.model_code.eq_ignore_ascii_case(s))
+                    .map(|i| i.model.clone())
+            })
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Unknown fastembed model `{s}` \
+                     (use a variant name like `BGESmallENV15`, or a model code \
+                     like `Xenova/bge-small-en-v1.5`)"
+                )
+            })?,
+    };
+    let dimension = infos
+        .iter()
+        .find(|i| i.model == selected)
+        .map(|i| i.dim)
+        .ok_or_else(|| anyhow::anyhow!("No dimension info for model `{selected:?}`"))?;
+    Ok((selected, dimension))
+}
+
+#[async_trait]
 impl Embedder for FastEmbedder {
+    fn dimension(&self) -> usize {
+        self.dimension
+    }
+
     async fn generate_embeddings(
         &self,
         chunks: &[FlattenedChunk],
@@ -42,8 +86,8 @@ impl Embedder for FastEmbedder {
         Ok(embeds)
     }
 
-    async fn prompt_embedding<S: AsRef<str>>(&self, query: S) -> anyhow::Result<Vec<f32>> {
-        let text = format!("query: {}", query.as_ref());
+    async fn prompt_embedding(&self, query: &str) -> anyhow::Result<Vec<f32>> {
+        let text = format!("query: {}", query);
         let model = self.model.clone();
 
         let embed = tokio::task::spawn_blocking(move || {
@@ -53,5 +97,35 @@ impl Embedder for FastEmbedder {
         .await??;
 
         Ok(embed.into_iter().next().unwrap())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_default_is_bge_large_1024() {
+        let (model, dim) = resolve_model(None).unwrap();
+        assert_eq!(model, EmbeddingModel::BGELargeENV15);
+        assert_eq!(dim, 1024);
+    }
+
+    #[test]
+    fn resolve_by_variant_name_case_insensitive() {
+        let (model, dim) = resolve_model(Some("bgesmallenv15")).unwrap();
+        assert_eq!(model, EmbeddingModel::BGESmallENV15);
+        assert_eq!(dim, 384);
+    }
+
+    #[test]
+    fn resolve_by_model_code() {
+        let (_model, dim) = resolve_model(Some("Xenova/bge-small-en-v1.5")).unwrap();
+        assert_eq!(dim, 384);
+    }
+
+    #[test]
+    fn resolve_unknown_model_errors() {
+        assert!(resolve_model(Some("not-a-real-model")).is_err());
     }
 }

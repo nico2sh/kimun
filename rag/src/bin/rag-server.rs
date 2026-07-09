@@ -9,10 +9,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use kimun_rag::{
     KimunRag,
     config::RagConfig,
-    handlers::{
-        answer_handler, get_embeddings_handler, index_all_handler, index_docs_handler,
-        index_single_handler, job_status_handler,
-    },
+    handlers::{answer_handler, get_embeddings_handler, index_docs_handler, job_status_handler},
     server_state::AppState,
 };
 
@@ -30,10 +27,6 @@ struct Cli {
     /// Port to bind to (overrides config)
     #[arg(short, long)]
     port: Option<u16>,
-
-    /// Vault path (overrides config)
-    #[arg(long)]
-    vault_path: Option<std::path::PathBuf>,
 }
 
 #[tokio::main]
@@ -52,11 +45,10 @@ async fn main() -> anyhow::Result<()> {
     // Load configuration
     tracing::info!("Loading configuration...");
     let config = RagConfig::load(cli.config)?;
-    let config = config.merge_with_cli(cli.host, cli.port, cli.vault_path);
+    let config = config.merge_with_cli(cli.host, cli.port);
 
     tracing::info!("Configuration loaded successfully");
     tracing::debug!("Server: {}:{}", config.server.host, config.server.port);
-    tracing::debug!("Vault path: {:?}", config.vault.path);
 
     // Create RAG instance based on config
     tracing::info!("Initializing RAG system...");
@@ -72,8 +64,6 @@ async fn main() -> anyhow::Result<()> {
     // Build router
     let app = Router::new()
         .route("/health", get(health_handler))
-        .route("/api/index/all", post(index_all_handler))
-        .route("/api/index/single", post(index_single_handler))
         .route("/api/index/docs", post(index_docs_handler))
         .route("/api/embeddings", post(get_embeddings_handler))
         .route("/api/answer", post(answer_handler))
@@ -96,20 +86,75 @@ async fn main() -> anyhow::Result<()> {
 /// Create RAG instance based on configuration
 async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<KimunRag> {
     use kimun_rag::{
-        config::{LlmConfig, VectorDbConfig},
-        dbembeddings::{vecqdrant::VecQdrant, vecsqlite::VecSQLite},
+        config::{EmbedderConfig, LlmConfig, VectorDbConfig},
+        dbembeddings::{
+            embedder::{
+                Embedder, fastembedder::FastEmbedder, ollama::OllamaEmbedder,
+                openai::OpenAiEmbedder,
+            },
+            vecqdrant::VecQdrant,
+            vecsqlite::VecSQLite,
+        },
         llmclients::claude::ClaudeClient,
         llmclients::gemini::GeminiClient,
         llmclients::mistral::MistralClient,
         llmclients::openai::OpenAIClient,
     };
 
+    // Build the embedder (shared by every collection on this server)
+    let embedder: Arc<dyn Embedder> = match &config.embedder {
+        EmbedderConfig::FastEmbed { model } => {
+            tracing::info!(
+                "Using local fastembed embedder (model: {})",
+                model.as_deref().unwrap_or("default BGE-Large")
+            );
+            Arc::new(FastEmbedder::new(model.as_deref())?)
+        }
+        EmbedderConfig::Ollama {
+            url,
+            model,
+            doc_prefix,
+            query_prefix,
+        } => {
+            tracing::info!("Using Ollama embedder {} at {}", model, url);
+            Arc::new(
+                OllamaEmbedder::new(
+                    url.clone(),
+                    model.clone(),
+                    doc_prefix.clone(),
+                    query_prefix.clone(),
+                )
+                .await?,
+            )
+        }
+        EmbedderConfig::OpenAI {
+            url,
+            model,
+            api_key,
+            doc_prefix,
+            query_prefix,
+        } => {
+            tracing::info!("Using OpenAI-compatible embedder {} at {}", model, url);
+            Arc::new(
+                OpenAiEmbedder::new(
+                    url.clone(),
+                    model.clone(),
+                    api_key.clone(),
+                    doc_prefix.clone(),
+                    query_prefix.clone(),
+                )
+                .await?,
+            )
+        }
+    };
+    tracing::info!("Embedder dimension: {}", embedder.dimension());
+
     // Create embeddings based on config
     let embeddings: Arc<dyn kimun_rag::dbembeddings::Embeddings + Send + Sync> =
         match &config.vector_db {
             VectorDbConfig::SQLite { db_path } => {
                 tracing::info!("Using SQLite vector database at {:?}", db_path);
-                Arc::new(VecSQLite::new(db_path))
+                Arc::new(VecSQLite::new(db_path, embedder.clone()))
             }
             VectorDbConfig::Qdrant { url, collection } => {
                 tracing::info!(
@@ -117,25 +162,25 @@ async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<KimunRag> 
                     url,
                     collection
                 );
-                Arc::new(VecQdrant::new(url.clone(), collection.clone()).await?)
+                Arc::new(VecQdrant::new(url.clone(), collection.clone(), embedder.clone()).await?)
             }
         };
 
     // Create LLM client based on config
     let llm_client: Arc<dyn kimun_rag::llmclients::LLMClient + Send + Sync> = match &config.llm {
-        LlmConfig::Gemini { model } => {
+        LlmConfig::Gemini { model, .. } => {
             tracing::info!("Using Gemini LLM with model: {}", model);
             Arc::new(GeminiClient::new(model))
         }
-        LlmConfig::Mistral { model } => {
+        LlmConfig::Mistral { model, .. } => {
             tracing::info!("Using Mistral LLM");
             Arc::new(MistralClient::new(model))
         }
-        LlmConfig::Claude { model } => {
+        LlmConfig::Claude { model, .. } => {
             tracing::info!("Using Claude LLM with model: {}", model);
             Arc::new(ClaudeClient::new(model))
         }
-        LlmConfig::OpenAI { model } => {
+        LlmConfig::OpenAI { model, .. } => {
             tracing::info!("Using OpenAI LLM with model: {}", model);
             Arc::new(OpenAIClient::new(model))
         }
