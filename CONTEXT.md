@@ -262,3 +262,29 @@ _Avoid_: auto-update (reserve that for the unattended variant, if it ever exists
 **Update notification**:
 The non-blocking signal that an **update check** found a newer release, surfaced in the TUI. On package-manager channels it carries the upgrade command to run; on self-update-eligible channels it offers to **self-update**.
 _Avoid_: update prompt (notification is passive; it does not steal focus)
+
+### RAG
+
+**RAG server**:
+The optional external service that gives a **Vault** semantic search and question-answering. Kimün works fully without it; when reachable it enables extra capabilities. Owns the vector store, the embedding and reranking models, the LLM configuration, and a web UI to configure them. Serves many vaults at once, one **collection** per vault. It never reads the vault's files — Kimün pushes to it (see adr on push-only sync).
+_Avoid_: embeddings server (names one role), AI server, LLM server (the LLM is one of several roles).
+
+**Collection**:
+The **RAG server**'s per-vault namespace for embeddings, keyed by **Vault ID**. One vault ↔ one collection; the server holds many, each isolating its vault's vectors, hashes, and **reconciliation** from every other's.
+_Avoid_: index (collides with **NoteIndex**), namespace (the mechanism, not the thing).
+
+**Vault ID**:
+The stable identifier that ties a **Vault** to its **collection** on the **RAG server**, generated once and kept in the vault under `.kimun/` so it survives renames and moves and is the same wherever the vault is opened (same rationale as **Saved search** and **Backup**).
+_Avoid_: collection name (that is the server-side view of it), workspace id (the **Workspace** is the config entry, not the vault).
+
+**RAG client**:
+The component inside Kimün that owns every dealing with the **RAG server** — connection and capability probing, the push of note changes, and **reconciliation**. Lives outside core (its own crate) so core stays free of network concerns; core feeds it only through the **index observer**.
+_Avoid_: rag bridge, sync manager (too generic), server client.
+
+**Index observer**:
+The core seam that reports a note change — a path, its content hash, and whether it was upserted or deleted — the moment the **NoteIndex** records it. Generic and consumer-agnostic: core knows nothing of who listens, and the event never carries chunk text. The **RAG client** is its first consumer, folding each observation into a dirty set it later drains.
+_Avoid_: change feed (implies a pull/stream), sync hook (names one consumer), listener (too generic).
+
+**Reconciliation**:
+Bringing the **RAG server**'s stored embeddings back in step with a **Vault** by comparing hash sets — the authoritative {note → hash} the **NoteIndex** holds against the server's — and pushing or deleting only the differences. The backbone of correctness: the live push path is only an optimization, so any update lost while offline is repaired at the next reconciliation.
+_Avoid_: resync, full sync (it is a diff, not a wholesale resend), catch-up.

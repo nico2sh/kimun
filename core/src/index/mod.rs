@@ -3,7 +3,7 @@ pub(crate) mod search_terms;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use log::{debug, error};
@@ -12,6 +12,27 @@ use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use sqlx::{Row, Sqlite, Transaction};
 
 use crate::note::{ContentChunk, LinkType, NoteContentData, NoteDetails};
+
+/// A note change reported by the [`NoteIndex`] the moment it is recorded, for
+/// consumers outside core (the RAG client). Thin by design — it carries a path,
+/// a content hash, and the kind of change, never chunk text (see adr/0019).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NoteChange {
+    /// A note was created or its content rewritten. `hash` is the note's
+    /// full-text [`NoteContentData::hash`].
+    Upsert { path: VaultPath, hash: u64 },
+    /// A note was removed from the index.
+    Delete { path: VaultPath },
+}
+
+/// Observer of index mutations, registered zero-or-one on a vault via
+/// [`NoteVault::set_index_observer`](crate::NoteVault::set_index_observer). The
+/// index calls [`on_change`](IndexObserver::on_change) synchronously right after
+/// a write commits, so an implementation must be cheap and non-blocking — no
+/// network, no `await`; fold the event into a queue and drain it elsewhere.
+pub trait IndexObserver: Send + Sync + std::fmt::Debug {
+    fn on_change(&self, change: &NoteChange);
+}
 
 fn row_to_note_entry(
     row: &sqlx::sqlite::SqliteRow,
@@ -123,6 +144,10 @@ pub(crate) struct NoteIndex {
     /// sync pass has filled the index. Shared across clones (like the pool)
     /// so every handle agrees on readiness.
     healed: Arc<AtomicBool>,
+    /// The registered index observer, if any. Shared across clones (like the
+    /// pool) so every handle emits to the same consumer; `None` until a caller
+    /// registers one, in which case emission is a no-op.
+    observer: Arc<RwLock<Option<Arc<dyn IndexObserver>>>>,
 }
 
 impl NoteIndex {
@@ -161,7 +186,44 @@ impl NoteIndex {
         Ok(Self {
             pool,
             healed: Arc::new(AtomicBool::new(healed)),
+            observer: Arc::new(RwLock::new(None)),
         })
+    }
+
+    /// Registers the index observer, replacing any previous one. Shared across
+    /// clones of this index.
+    pub(crate) fn set_observer(&self, observer: Arc<dyn IndexObserver>) {
+        *self.observer.write().unwrap() = Some(observer);
+    }
+
+    /// Whether an observer is registered. Lets callers skip building events
+    /// (e.g. re-hashing every note in a bulk `apply`) when nobody listens.
+    fn has_observer(&self) -> bool {
+        self.observer.read().unwrap().is_some()
+    }
+
+    /// Hands `change` to the registered observer, if any. A no-op when none is
+    /// registered. Paths are normalised to canonical vault-relative form so a
+    /// note has one identity regardless of the write path that produced it.
+    fn emit(&self, change: NoteChange) {
+        if let Some(observer) = self.observer.read().unwrap().as_ref() {
+            observer.on_change(&change);
+        }
+    }
+
+    /// Emits an `Upsert`, normalising the path to canonical vault-relative form.
+    fn emit_upsert(&self, path: &VaultPath, hash: u64) {
+        self.emit(NoteChange::Upsert {
+            path: path.canonical(),
+            hash,
+        });
+    }
+
+    /// Emits a `Delete`, normalising the path to canonical vault-relative form.
+    fn emit_delete(&self, path: &VaultPath) {
+        self.emit(NoteChange::Delete {
+            path: path.canonical(),
+        });
     }
 
     /// `false` when the schema was healed ([`open`](Self::open)) or dropped
@@ -221,6 +283,16 @@ impl NoteIndex {
         insert_notes(&mut tx, &diff.to_add).await?;
         update_notes(&mut tx, &diff.to_modify).await?;
         tx.commit().await?;
+        // Skip event construction (notably re-hashing every added/modified note)
+        // when nothing is listening — the common case for non-RAG users.
+        if self.has_observer() {
+            for path in &diff.to_delete {
+                self.emit_delete(path);
+            }
+            for (entry, text) in diff.to_add.iter().chain(diff.to_modify.iter()) {
+                self.emit_upsert(&entry.path, NoteDetails::content_data_of(text).hash);
+            }
+        }
         Ok(())
     }
 
@@ -233,7 +305,7 @@ impl NoteIndex {
         rewritten: &[(NoteEntryData, String)],
     ) -> Result<(), DBError> {
         let mut tx = self.pool.begin().await?;
-        rename_note(&mut tx, from, to).await?;
+        rename_note(&mut tx, &from.canonical(), &to.canonical()).await?;
         update_notes(&mut tx, rewritten).await?;
         tx.commit().await?;
         Ok(())
@@ -245,15 +317,19 @@ impl NoteIndex {
         to: &VaultPath,
     ) -> Result<(), DBError> {
         let mut tx = self.pool.begin().await?;
-        rename_directory(&mut tx, from, to).await?;
+        rename_directory(&mut tx, &from.canonical(), &to.canonical()).await?;
         tx.commit().await?;
         Ok(())
     }
 
     pub(crate) async fn delete_notes(&self, paths: &[VaultPath]) -> Result<(), DBError> {
+        let canonical: Vec<VaultPath> = paths.iter().map(|p| p.canonical()).collect();
         let mut tx = self.pool.begin().await?;
-        delete_notes(&mut tx, paths).await?;
+        delete_notes(&mut tx, &canonical).await?;
         tx.commit().await?;
+        for path in &canonical {
+            self.emit_delete(path);
+        }
         Ok(())
     }
 
@@ -261,8 +337,9 @@ impl NoteIndex {
         &self,
         directories: &[VaultPath],
     ) -> Result<(), DBError> {
+        let canonical: Vec<VaultPath> = directories.iter().map(|p| p.canonical()).collect();
         let mut tx = self.pool.begin().await?;
-        delete_directories(&mut tx, directories).await?;
+        delete_directories(&mut tx, &canonical).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -274,7 +351,9 @@ impl NoteIndex {
         entry_data: &NoteEntryData,
         note_details: &NoteDetails,
     ) -> Result<NoteContentData, DBError> {
-        save_note(&self.pool, entry_data, note_details).await
+        let data = save_note(&self.pool, entry_data, note_details).await?;
+        self.emit_upsert(&entry_data.path, data.hash);
+        Ok(data)
     }
 
     pub(crate) async fn search<S: AsRef<str>>(
@@ -295,7 +374,7 @@ impl NoteIndex {
         &self,
         path: &VaultPath,
     ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
-        search_note_by_path(&self.pool, path).await
+        search_note_by_path(&self.pool, &path.canonical()).await
     }
 
     pub(crate) async fn get_notes(
@@ -303,7 +382,7 @@ impl NoteIndex {
         path: &VaultPath,
         recursive: bool,
     ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
-        get_notes(&self.pool, path, recursive).await
+        get_notes(&self.pool, &path.canonical(), recursive).await
     }
 
     pub(crate) async fn get_all_notes(
@@ -316,7 +395,7 @@ impl NoteIndex {
         &self,
         path: &VaultPath,
     ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
-        get_backlinks(&self.pool, path).await
+        get_backlinks(&self.pool, &path.canonical()).await
     }
 
     pub(crate) async fn get_notes_sections(
@@ -324,7 +403,7 @@ impl NoteIndex {
         path: &VaultPath,
         recursive: bool,
     ) -> Result<HashMap<VaultPath, Vec<ContentChunk>>, DBError> {
-        get_notes_sections(&self.pool, path, recursive).await
+        get_notes_sections(&self.pool, &path.canonical(), recursive).await
     }
 
     pub(crate) async fn list_labels(&self) -> Result<Vec<String>, DBError> {
@@ -1516,8 +1595,12 @@ impl NoteBatch {
         links: Vec<crate::note::NoteLink>,
     ) {
         let idx = self.paths.len();
-        let (parent_path, name) = entry_data.path.get_parent_path();
-        self.paths.push(entry_data.path.to_string());
+        // Store every note under its canonical vault-relative key so the index
+        // never holds mixed relative/absolute forms of the same note,
+        // regardless of the path form the caller (or the walker) supplied.
+        let canonical_path = entry_data.path.canonical();
+        let (parent_path, name) = canonical_path.get_parent_path();
+        self.paths.push(canonical_path.to_string());
         self.notes.push(NoteRow {
             path_idx: idx,
             title: data.title,
