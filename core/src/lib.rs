@@ -54,8 +54,9 @@ pub use index::search_terms::{
     strip_order_directive, with_order_directive, OrderBy, OrderField, QueryTokenClass,
     QueryTokenSpan, SearchTerms,
 };
-pub use index::{IndexDiff, NoteSuggestion, TagSuggestion};
+pub use index::{IndexDiff, IndexObserver, NoteChange, NoteSuggestion, TagSuggestion};
 pub use nfs::saved_searches::{saved_search_name_matches, SavedSearch};
+pub use nfs::vault_id::VaultId;
 pub use nfs::EntryKind;
 pub use utilities::{app_log_dir, ensure_dir_exists};
 
@@ -242,6 +243,21 @@ impl NoteVault {
     /// OS path to the workspace root (filesystem root of this vault).
     pub fn workspace_path(&self) -> &Path {
         &self.workspace_path
+    }
+
+    /// Registers an [`IndexObserver`] that is notified of every note change the
+    /// index records (see [`NoteChange`]). Zero-or-one per vault; registering
+    /// again replaces the previous observer. The RAG client is its first
+    /// consumer.
+    pub fn set_index_observer(&self, observer: Arc<dyn IndexObserver>) {
+        self.index.set_observer(observer);
+    }
+
+    /// This vault's stable [`VaultId`], read from `.kimun/vault-id` or generated
+    /// and persisted there on first call. Survives renames and moves, and keys
+    /// the vault's collection on the RAG server (adr/0020).
+    pub async fn vault_id(&self) -> Result<VaultId, VaultError> {
+        Ok(nfs::vault_id::read_or_create_vault_id(self.workspace_path()).await?)
     }
 
     /// `false` when opening the vault self-healed the index schema (missing,
@@ -1400,6 +1416,173 @@ mod tests {
     // Helper: build a NoteVault pointing at a temp directory (no DB needed for pure-text tests).
     async fn make_vault(dir: &std::path::Path) -> NoteVault {
         NoteVault::new(VaultConfig::new(dir)).await.unwrap()
+    }
+
+    // ---- index observer ----
+
+    /// Test observer that records every change it is handed.
+    #[derive(Debug, Default)]
+    struct RecordingObserver {
+        changes: std::sync::Mutex<Vec<NoteChange>>,
+    }
+
+    impl IndexObserver for RecordingObserver {
+        fn on_change(&self, change: &NoteChange) {
+            self.changes.lock().unwrap().push(change.clone());
+        }
+    }
+
+    impl RecordingObserver {
+        fn recorded(&self) -> Vec<NoteChange> {
+            self.changes.lock().unwrap().clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn create_note_emits_upsert_with_content_hash() {
+        let dir = TempDir::new().unwrap();
+        let vault = make_vault(dir.path()).await;
+        let obs = std::sync::Arc::new(RecordingObserver::default());
+        vault.set_index_observer(obs.clone());
+
+        let (_, content) = vault
+            .create_note(&VaultPath::new("note.md"), "hello")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            obs.recorded(),
+            vec![NoteChange::Upsert {
+                // Canonical (vault-absolute) index identity, regardless of the
+                // relative form passed to create_note.
+                path: VaultPath::new("/note.md"),
+                hash: content.hash,
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_note_emits_delete() {
+        let dir = TempDir::new().unwrap();
+        let vault = make_vault(dir.path()).await;
+        vault
+            .create_note(&VaultPath::new("note.md"), "hello")
+            .await
+            .unwrap();
+
+        let obs = std::sync::Arc::new(RecordingObserver::default());
+        vault.set_index_observer(obs.clone());
+
+        vault.delete_note(&VaultPath::new("note.md")).await.unwrap();
+
+        assert_eq!(
+            obs.recorded(),
+            vec![NoteChange::Delete {
+                path: VaultPath::new("/note.md"),
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn create_then_sync_keeps_one_row_in_canonical_form() {
+        let dir = TempDir::new().unwrap();
+        let vault = make_vault(dir.path()).await;
+        vault
+            .create_note(&VaultPath::new("sub/note.md"), "hi")
+            .await
+            .unwrap();
+
+        // A full sync (as on vault open) must recognise the just-created note as
+        // the same note — not delete the cached row and re-add it under a
+        // different path form.
+        vault.index_notes(NotesValidation::Full).await.unwrap();
+
+        let all = vault.get_all_notes().await.unwrap();
+        assert_eq!(all.len(), 1, "create + sync must leave exactly one row");
+        assert_eq!(
+            all[0].0.path,
+            VaultPath::new("/sub/note.md"),
+            "stored path must be the single canonical (vault-absolute) form"
+        );
+    }
+
+    #[tokio::test]
+    async fn lookup_finds_note_regardless_of_path_form() {
+        let dir = TempDir::new().unwrap();
+        let vault = make_vault(dir.path()).await;
+        vault
+            .create_note(&VaultPath::new("sub/note.md"), "# Title\n\nbody")
+            .await
+            .unwrap();
+
+        // The note is stored under its canonical key; a lookup by any form of
+        // the same path must resolve to it.
+        for form in ["sub/note.md", "/sub/note.md"] {
+            let chunks = vault.get_note_chunks(&VaultPath::new(form)).await.unwrap();
+            assert!(
+                !chunks.is_empty(),
+                "get_note_chunks({form}) should find the note"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn vault_id_is_stable_across_reopen_and_persisted() {
+        let dir = TempDir::new().unwrap();
+        let id1 = make_vault(dir.path()).await.vault_id().await.unwrap();
+        let id2 = make_vault(dir.path()).await.vault_id().await.unwrap();
+        assert_eq!(id1, id2, "reopening the vault must keep the same id");
+        assert!(
+            dir.path().join(".kimun").join("vault-id").exists(),
+            "vault id must be persisted under .kimun/"
+        );
+    }
+
+    #[tokio::test]
+    async fn writes_succeed_without_observer() {
+        let dir = TempDir::new().unwrap();
+        let vault = make_vault(dir.path()).await;
+        // No observer registered: every mutation path must remain a no-op emit.
+        vault
+            .create_note(&VaultPath::new("n.md"), "x")
+            .await
+            .unwrap();
+        vault.save_note(&VaultPath::new("n.md"), "y").await.unwrap();
+        vault.delete_note(&VaultPath::new("n.md")).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn bulk_reindex_emits_upsert_per_note() {
+        let dir = TempDir::new().unwrap();
+        let vault = make_vault(dir.path()).await;
+        vault
+            .create_note(&VaultPath::new("a.md"), "aaa")
+            .await
+            .unwrap();
+        vault
+            .create_note(&VaultPath::new("b.md"), "bbb")
+            .await
+            .unwrap();
+
+        let obs = std::sync::Arc::new(RecordingObserver::default());
+        vault.set_index_observer(obs.clone());
+
+        // Full rebuild goes through the bulk apply path, not per-note save.
+        vault.recreate_index().await.unwrap();
+
+        let mut got: Vec<(String, bool)> = obs
+            .recorded()
+            .into_iter()
+            .map(|c| match c {
+                NoteChange::Upsert { path, .. } => (path.to_string(), true),
+                NoteChange::Delete { path } => (path.to_string(), false),
+            })
+            .collect();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![("/a.md".to_string(), true), ("/b.md".to_string(), true)]
+        );
     }
 
     // ---- attachments ----

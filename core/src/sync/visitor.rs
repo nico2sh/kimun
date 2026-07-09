@@ -53,7 +53,15 @@ impl NoteListVisitor {
     /// that as "skip this iteration" so the cached entry (if any) survives
     /// untouched and will be re-checked next time.
     fn verify_cached_note(&self, data: &NoteEntryData, os_path: &Path) -> Option<NoteContentData> {
-        let cached_option = self.notes_to_delete.lock().unwrap().remove(&data.path);
+        // Match against the canonical key: the cached rows are keyed canonical
+        // (vault-relative), while a walked entry's path is absolute. Without
+        // this the same note would fail to match and churn (delete + re-add)
+        // on every sync.
+        let cached_option = self
+            .notes_to_delete
+            .lock()
+            .unwrap()
+            .remove(&data.path.canonical());
 
         match cached_option {
             Some((cached_data, cached_details)) => {
@@ -148,7 +156,10 @@ impl NoteListVisitorBuilder {
     ) -> Self {
         let mut notes_to_delete = HashMap::new();
         for cached in cached_notes {
-            let path = cached.0.path.clone();
+            // Key by canonical form so lookups from the walker (absolute paths)
+            // match, and so residue keys handed to `IndexDiff::to_delete` are
+            // canonical too.
+            let path = cached.0.path.canonical();
             notes_to_delete.insert(path, cached);
         }
         Self {
@@ -276,10 +287,11 @@ mod tests {
 
         let builder = NoteListVisitorBuilder::new(workspace_path, validation, cached_notes, None);
 
-        // Test that notes are initially in the "to delete" list
+        // Test that notes are initially in the "to delete" list, keyed by their
+        // canonical (vault-absolute) index identity.
         let notes_to_delete = builder.get_notes_to_delete();
         assert_eq!(notes_to_delete.len(), 1);
-        assert_eq!(notes_to_delete[0], note_path);
+        assert_eq!(notes_to_delete[0], note_path.canonical());
 
         // Initially, no notes to add or modify
         assert_eq!(builder.get_notes_to_add().len(), 0);
