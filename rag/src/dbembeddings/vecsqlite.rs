@@ -1,5 +1,6 @@
 use std::{
     path::{Path, PathBuf},
+    sync::Arc,
     time::SystemTime,
 };
 
@@ -11,25 +12,22 @@ use zerocopy::IntoBytes;
 
 use crate::document::{FlattenedChunk, KimunDoc};
 
-use super::{
-    Embeddings,
-    embedder::{Embedder, fastembedder::FastEmbedder},
-};
+use super::{Embeddings, embedder::Embedder};
 
 const TOP_RESULTS: u32 = 512;
 
 pub struct VecSQLite {
-    embedder: FastEmbedder,
+    embedder: Arc<dyn Embedder>,
     db_path: PathBuf,
 }
 
 impl VecSQLite {
-    pub fn new<P: AsRef<Path>>(path: P) -> Self {
+    /// Creates a SQLite-backed vector store using `embedder` for both indexing
+    /// and querying. The vec table is created at `embedder.dimension()`.
+    pub fn new<P: AsRef<Path>>(path: P, embedder: Arc<dyn Embedder>) -> Self {
         unsafe {
             sqlite3_auto_extension(Some(std::mem::transmute(sqlite3_vec_init as *const ())));
         }
-
-        let embedder = FastEmbedder::new().unwrap();
 
         let db_path = path.as_ref().to_path_buf();
         Self { embedder, db_path }
@@ -159,6 +157,24 @@ impl VecSQLite {
             return Ok(false);
         }
 
+        // Verify the stored vector width matches the current embedder. A change
+        // (different embedder or model) means every stored vector is in a
+        // different space and cannot be reused — treat the store as invalid so
+        // it is recreated and re-embedded (via reconciliation).
+        let vec_schema: String = conn.query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='vec_items'",
+            [],
+            |row| row.get(0),
+        )?;
+        let expected_dim = format!("float[{}]", self.embedder.dimension());
+        if !vec_schema.contains(&expected_dim) {
+            debug!(
+                "Vector width changed (have `{}`, expected `{}`); recreating store",
+                vec_schema, expected_dim
+            );
+            return Ok(false);
+        }
+
         // Verify docs table schema
         let docs_schema_query = "SELECT sql FROM sqlite_master WHERE type='table' AND name='docs'";
         let docs_schema: String = conn.query_row(docs_schema_query, [], |row| row.get(0))?;
@@ -218,7 +234,10 @@ impl Embeddings for VecSQLite {
         let mut conn = self.connection()?;
         let tx = conn.transaction()?;
         tx.execute(
-            "CREATE VIRTUAL TABLE vec_items USING vec0(embedding float[1024])",
+            &format!(
+                "CREATE VIRTUAL TABLE vec_items USING vec0(embedding float[{}])",
+                self.embedder.dimension()
+            ),
             [],
         )?;
         tx.execute(
@@ -329,6 +348,64 @@ impl Embeddings for VecSQLite {
         let conn = self.connection()?;
         conn.execute("DELETE FROM indexed_notes WHERE path = ?1", [path])?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::document::FlattenedChunk;
+    use async_trait::async_trait;
+
+    /// Embedder that emits fixed-width zero vectors — no model download, so the
+    /// SQLite layer is testable in isolation.
+    #[derive(Debug)]
+    struct FakeEmbedder {
+        dim: usize,
+    }
+
+    #[async_trait]
+    impl Embedder for FakeEmbedder {
+        fn dimension(&self) -> usize {
+            self.dim
+        }
+        async fn generate_embeddings(
+            &self,
+            content: &[FlattenedChunk],
+        ) -> anyhow::Result<Vec<Vec<f32>>> {
+            Ok(content.iter().map(|_| vec![0.0; self.dim]).collect())
+        }
+        async fn prompt_embedding(&self, _content: &str) -> anyhow::Result<Vec<f32>> {
+            Ok(vec![0.0; self.dim])
+        }
+    }
+
+    #[tokio::test]
+    async fn reinit_recreates_when_embedder_dimension_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rag_index.sqlite");
+
+        VecSQLite::new(&path, Arc::new(FakeEmbedder { dim: 4 }))
+            .init()
+            .await
+            .unwrap();
+
+        // Reopening with a different embedder width must recreate the vec table
+        // rather than leave a store that would reject the new vectors.
+        VecSQLite::new(&path, Arc::new(FakeEmbedder { dim: 8 }))
+            .init()
+            .await
+            .unwrap();
+
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name = 'vec_items'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(sql.contains("float[8]"), "vec table not recreated: {sql}");
     }
 }
 

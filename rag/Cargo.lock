@@ -1808,6 +1808,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sqlite-vec",
+ "tempfile",
  "tokio",
  "toml",
  "tower 0.5.3",

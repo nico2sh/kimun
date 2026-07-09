@@ -17,23 +17,25 @@ use crate::{
     split_chunks_for_rag,
 };
 
-use super::{
-    Embeddings, IndexedNote,
-    embedder::{Embedder, fastembedder::FastEmbedder},
-};
+use std::sync::Arc;
+
+use super::{Embeddings, IndexedNote, embedder::Embedder};
 
 const TOP_RESULTS: u64 = 80;
 
 pub struct VecQdrant {
-    embedder: FastEmbedder,
+    embedder: Arc<dyn Embedder>,
     client: Qdrant,
     collection: String,
 }
 
 impl VecQdrant {
-    pub async fn new(url: String, collection: String) -> anyhow::Result<Self> {
+    pub async fn new(
+        url: String,
+        collection: String,
+        embedder: Arc<dyn Embedder>,
+    ) -> anyhow::Result<Self> {
         let client = Qdrant::from_url(&url).build()?;
-        let embedder = FastEmbedder::new()?;
 
         Ok(Self {
             embedder,
@@ -51,11 +53,15 @@ impl VecQdrant {
             .any(|c| c.name == self.collection);
 
         if !exists {
-            // Create collection with cosine distance and 1024 dimensions
+            // Create collection at the embedder's output dimension.
             self.client
                 .create_collection(
-                    CreateCollectionBuilder::new(&self.collection)
-                        .vectors_config(VectorParamsBuilder::new(1024, Distance::Cosine)),
+                    CreateCollectionBuilder::new(&self.collection).vectors_config(
+                        VectorParamsBuilder::new(
+                            self.embedder.dimension() as u64,
+                            Distance::Cosine,
+                        ),
+                    ),
                 )
                 .await?;
 

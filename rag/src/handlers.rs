@@ -1,4 +1,3 @@
-use anyhow::bail;
 use axum::{Json, extract::State, http::StatusCode};
 use log::debug;
 use serde::{Deserialize, Serialize};
@@ -8,27 +7,14 @@ use uuid::Uuid;
 
 use crate::{
     IndexStats, KimunRag,
-    config::RagConfig,
     dbembeddings::IndexedNote,
-    document::{KimunDoc, KimunSection},
+    document::KimunDoc,
     server_state::{AppState, JobStatus},
 };
 
 // ============================================================================
 // Request/Response Types
 // ============================================================================
-
-#[derive(Debug, Deserialize)]
-pub struct IndexSingleRequest {
-    pub path: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ChunkData {
-    pub content: String,
-    pub title: String,
-    pub date: Option<String>, // Format: YYYY-MM-DD
-}
 
 #[derive(Debug, Deserialize)]
 pub struct QueryRequest {
@@ -175,81 +161,6 @@ pub async fn index_docs_handler(
         job_id: job_id.to_string(),
         message: "Index chunks job started".to_string(),
     }))
-}
-
-/// Index All - Parse vault and create/store embeddings
-pub async fn index_all_handler(
-    State(state): State<Arc<AppState>>,
-) -> Result<Json<IndexResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let job_id = Uuid::new_v4();
-
-    // Mark job as queued
-    state
-        .job_tracker
-        .lock()
-        .await
-        .create(job_id, JobStatus::Queued);
-
-    // Spawn background task
-    let state_clone = state.clone();
-    tokio::spawn(async move {
-        // Mark as processing
-        state_clone
-            .job_tracker
-            .lock()
-            .await
-            .update_status(&job_id, JobStatus::Processing);
-
-        // Perform indexing
-        match index_all_impl(state_clone.rag.clone(), &state_clone.config).await {
-            Ok(stats) => {
-                let result = serde_json::json!({
-                    "indexed": stats.indexed,
-                    "skipped": stats.skipped,
-                    "updated": stats.updated,
-                    "errors": stats.errors,
-                })
-                .to_string();
-                state_clone
-                    .job_tracker
-                    .lock()
-                    .await
-                    .set_result(&job_id, result);
-            }
-            Err(e) => {
-                state_clone
-                    .job_tracker
-                    .lock()
-                    .await
-                    .set_error(&job_id, e.to_string());
-            }
-        }
-    });
-
-    Ok(Json(IndexResponse {
-        job_id: job_id.to_string(),
-        message: "Indexing job started".to_string(),
-    }))
-}
-
-/// Index Single Entry - Receive text chunks + path, replace all chunks for that path
-pub async fn index_single_handler(
-    State(state): State<Arc<AppState>>,
-    Json(request): Json<IndexSingleRequest>,
-) -> Result<Json<IndexResponse>, (StatusCode, Json<ErrorResponse>)> {
-    // Store synchronously (as per user requirement)
-    match store_single_note_impl(&request.path, state.rag.clone(), &state.config).await {
-        Ok(()) => Ok(Json(IndexResponse {
-            job_id: Uuid::new_v4().to_string(),
-            message: format!("Successfully indexed path {}", request.path),
-        })),
-        Err(e) => Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Failed to index: {}", e),
-            }),
-        )),
-    }
 }
 
 /// Get Embeddings - Query text → return top X chunks with path, title, similarity scores
@@ -533,168 +444,6 @@ async fn index_docs_impl(
         removed: 0,
         errors: 0,
     })
-}
-
-async fn store_single_note_impl(
-    path: &str,
-    rag: Arc<Mutex<KimunRag>>,
-    config: &RagConfig,
-) -> anyhow::Result<()> {
-    // Open the vault database
-    let vault_path = config.vault.path.clone();
-    let db_path = vault_path.join("kimun.sqlite");
-
-    if !db_path.exists() {
-        anyhow::bail!("Vault database not found at {:?}", db_path);
-    }
-
-    let source_path = path.to_string();
-    // Read notes from the database in a blocking task (rusqlite is not Send)
-    let chunks = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
-        use rusqlite::Connection;
-        let conn = Connection::open(&db_path)?;
-
-        let mut stmt = conn.prepare(
-            "SELECT n.path, nc.breadCrumb, nc.text, n.hash
-             FROM notes n
-             JOIN notesContent nc ON n.path = nc.path where n.path = ?1",
-        )?;
-        let mut rows = stmt.query([source_path])?;
-
-        let mut chunk_option: Option<KimunDoc> = None;
-        while let Some(row) = rows.next()? {
-            if let Some(chunk) = chunk_option.as_mut() {
-                let path: String = row.get(0)?;
-                if chunk.path != path {
-                    bail!("Paths differ, query is returning different paths, shouldn't happen: {} vs {}", chunk.path, path);
-                }
-
-                let breadcrumb: String = row.get(1)?;
-                let text: String = row.get(2)?;
-                let c = KimunSection{ title: breadcrumb, text };
-                chunk.sections.push(c);
-            } else {
-                let path: String = row.get(0)?;
-                let breadcrumb: String = row.get(1)?;
-                let text: String = row.get(2)?;
-                let hash: String = row.get(3)?;
-                let c = KimunDoc {
-                    path,
-                    hash,
-                    sections: vec![KimunSection {
-                        title: breadcrumb,
-                        text,
-                    }],
-                };
-                chunk_option = Some(c);
-            }
-        }
-
-        Ok(KimunDoc {
-            path: "".to_string(),
-            hash: "".to_string(),
-            sections: vec![],
-        })
-
-        // }
-    })
-    .await??;
-
-    let indexed_notes = {
-        // We get the lock in a separate context, so we don't hold it
-        let rag_lock = rag.lock().await;
-        let indexed_notes = rag_lock.embeddings.get_indexed_notes().await?;
-        indexed_notes
-    };
-    index_docs_impl(&[chunks], Some(&indexed_notes), rag).await?;
-
-    Ok(())
-}
-
-async fn index_all_impl(
-    rag: Arc<Mutex<KimunRag>>,
-    config: &RagConfig,
-) -> anyhow::Result<crate::IndexStats> {
-    // Open the vault database
-    let vault_path = config.vault.path.clone();
-    let db_path = vault_path.join("kimun.sqlite");
-
-    if !db_path.exists() {
-        anyhow::bail!("Vault database not found at {:?}", db_path);
-    }
-
-    // Read notes from the database in a blocking task (rusqlite is not Send)
-    let chunks = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
-        use rusqlite::Connection;
-        let conn = Connection::open(&db_path)?;
-
-        let mut stmt = conn.prepare(
-            "SELECT n.path, nc.breadCrumb, nc.text, n.hash
-             FROM notes n
-             JOIN notesContent nc ON n.path = nc.path ORDER BY n.path",
-        )?;
-        let mut rows = stmt.query([])?;
-
-        let mut chunks: Vec<KimunDoc> = vec![];
-        while let Some(row) = rows.next()? {
-            let path: String = row.get(0)?;
-            let breadcrumb: String = row.get(1)?;
-            let text: String = row.get(2)?;
-            let hash: String = row.get(3)?;
-            if let Some(ch) = chunks.last_mut() {
-                if ch.path != path {
-                    let new_chunk = KimunDoc {
-                        path: path.clone(),
-                        hash,
-                        sections: vec![KimunSection {
-                            title: breadcrumb,
-                            text,
-                        }],
-                    };
-                    chunks.push(new_chunk);
-                } else {
-                    ch.sections.push(KimunSection {
-                        title: breadcrumb,
-                        text,
-                    });
-                }
-            } else {
-                let new_chunk = KimunDoc {
-                    path: path.clone(),
-                    hash,
-                    sections: vec![KimunSection {
-                        title: breadcrumb,
-                        text,
-                    }],
-                };
-                chunks.push(new_chunk);
-            }
-        }
-
-        Ok(chunks)
-    })
-    .await??;
-
-    let mut indexed_notes = {
-        // We get the lock in a separate context, so we don't hold it
-        let rag_lock = rag.lock().await;
-        debug!("Getting indexed Notes");
-        let indexed_notes = rag_lock.embeddings.get_indexed_notes().await?;
-        indexed_notes
-    };
-    let mut index_stats = index_docs_impl(&chunks, Some(&indexed_notes), rag.clone()).await?;
-
-    for chunk in chunks {
-        indexed_notes.remove(&chunk.path);
-    }
-
-    let missing = indexed_notes.keys().collect::<Vec<&String>>();
-    index_stats.removed += missing.len();
-    let rag_lock = rag.lock().await;
-    rag_lock.embeddings.delete_embeddings(missing).await?;
-    debug!("Done indexing: {}", index_stats);
-
-    Ok(index_stats)
 }
 
 /// Answer implementation with dynamic LLM selection
