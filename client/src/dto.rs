@@ -80,3 +80,10 @@ pub struct JobStatus {
     pub result: Option<serde_json::Value>,
     pub error: Option<String>,
 }
+
+/// The `result` payload of a completed answer job.
+#[derive(Debug, Deserialize)]
+pub struct AnswerResult {
+    pub answer: String,
+    pub sources: Vec<ChunkResult>,
+}

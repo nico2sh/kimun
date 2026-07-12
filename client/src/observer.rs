@@ -8,10 +8,12 @@ use std::sync::{Arc, Mutex};
 use kimun_core::{IndexObserver, NoteChange, nfs::VaultPath};
 
 /// The pending change for a note. The latest event wins, so an Upsert followed
-/// by a Delete on the same path collapses to Delete (and vice-versa).
+/// by a Delete on the same path collapses to Delete (and vice-versa). `Upsert`
+/// carries the note's content hash from the (post-commit) change event, which
+/// matches the chunks the index holds for it at drain time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DirtyOp {
-    Upsert,
+    Upsert(u64),
     Delete,
 }
 
@@ -26,7 +28,7 @@ impl DirtySet {
     pub fn record(&self, change: &NoteChange) {
         let mut map = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         match change {
-            NoteChange::Upsert { path, .. } => map.insert(path.clone(), DirtyOp::Upsert),
+            NoteChange::Upsert { path, hash } => map.insert(path.clone(), DirtyOp::Upsert(*hash)),
             NoteChange::Delete { path } => map.insert(path.clone(), DirtyOp::Delete),
         };
     }
@@ -99,7 +101,10 @@ mod tests {
 
         set.record(&delete("b.md"));
         set.record(&upsert("b.md")); // recreate supersedes the delete
-        assert_eq!(set.drain(), vec![(VaultPath::new("b.md"), DirtyOp::Upsert)]);
+        assert_eq!(
+            set.drain(),
+            vec![(VaultPath::new("b.md"), DirtyOp::Upsert(1))]
+        );
     }
 
     #[test]
@@ -116,7 +121,7 @@ mod tests {
         let set = DirtySet::default();
         // Flush of "a.md" as Upsert failed; meanwhile a Delete arrived.
         set.record(&delete("a.md"));
-        set.requeue([(VaultPath::new("a.md"), DirtyOp::Upsert)]);
+        set.requeue([(VaultPath::new("a.md"), DirtyOp::Upsert(1))]);
         // The newer Delete must survive.
         assert_eq!(set.drain(), vec![(VaultPath::new("a.md"), DirtyOp::Delete)]);
     }
