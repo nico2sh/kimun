@@ -4,6 +4,7 @@ pub mod cli;
 pub mod components;
 pub mod event_handler;
 pub mod keys;
+pub mod rag;
 pub mod settings;
 pub mod ui;
 pub mod update;
@@ -213,6 +214,7 @@ async fn main() -> Result<()> {
     }
 
     spawn_update_check(&app, events.app_sender());
+    respawn_rag(&mut app, &events.app_sender());
 
     if let Err(e) = run_app(&mut terminal, &mut app, &mut events).await {
         tracing::error!("fatal error: {e}");
@@ -283,6 +285,18 @@ async fn rebuild_vault(
             tracing::error!("could not open vault at {}: {e}", workspace.display());
             None
         }
+    }
+}
+
+/// (Re)starts the background RAG sync for the current vault: aborts any prior
+/// task and spawns a fresh one bound to the current `app.vault`. A no-op sync
+/// (no server configured, or no vault) leaves the task `None`.
+fn respawn_rag(app: &mut App, tx: &crate::components::events::AppTx) {
+    if let Some(handle) = app.rag_sync_task.take() {
+        handle.abort();
+    }
+    if let Some(vault) = app.vault.clone() {
+        app.rag_sync_task = crate::rag::spawn_rag_sync(vault, &app.settings, tx.clone());
     }
 }
 
@@ -552,6 +566,7 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
         AppEvent::PreferencesSaved | AppEvent::OnboardingFinished => {
             // Rebuild the vault so workspace path and inbox_path changes take effect.
             app.vault = rebuild_vault(&app.settings).await;
+            respawn_rag(app, tx);
             tx.send(AppEvent::OpenScreen(ScreenEvent::Start)).ok();
         }
         AppEvent::ClosePreferences => {
@@ -567,6 +582,7 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
                 s.save_to_disk().ok();
             }
             app.vault = None;
+            respawn_rag(app, tx);
             switch_screen(app, tx, ScreenEvent::OpenPreferencesWithError(msg)).await;
         }
         AppEvent::WorkspaceSwitched(name) => {
@@ -578,6 +594,7 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
                 s.save_to_disk().ok();
             }
             app.vault = rebuild_vault(&app.settings).await;
+            respawn_rag(app, tx);
             tx.send(AppEvent::OpenScreen(ScreenEvent::Start)).ok();
         }
         AppEvent::UpdateAvailable(status) => {

@@ -12,6 +12,8 @@ fn workspace_config_serializes_to_toml() {
             current_workspace: "default".to_string(),
             update_check: true,
             mouse: true,
+            rag_server_url: None,
+            rag_server_token: None,
         },
         workspaces: BTreeMap::from([(
             "default".to_string(),
@@ -55,6 +57,8 @@ fn workspace_serialization_order_is_deterministic() {
             current_workspace: "personal".to_string(),
             update_check: true,
             mouse: true,
+            rag_server_url: None,
+            rag_server_token: None,
         },
         // Inserted out of alphabetical order on purpose.
         workspaces: BTreeMap::from([
@@ -99,6 +103,8 @@ fn mouse_false_round_trips() {
             current_workspace: "default".to_string(),
             update_check: true,
             mouse: false,
+            rag_server_url: None,
+            rag_server_token: None,
         },
         workspaces: BTreeMap::new(),
     };

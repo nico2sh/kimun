@@ -53,6 +53,15 @@ pub struct GlobalConfig {
     /// Read only at startup. Defaults on (today's behavior).
     #[serde(default = "default_mouse")]
     pub mouse: bool,
+    /// Base URL of the optional RAG server (e.g. `http://localhost:7573`). When
+    /// set and reachable, kimün enables semantic search and Q&A (adr/0018).
+    /// Global (one server serves many vaults, each as its own collection —
+    /// adr/0020); `None` means the feature is off.
+    #[serde(default)]
+    pub rag_server_url: Option<String>,
+    /// Bearer token for the RAG server, when it requires one.
+    #[serde(default)]
+    pub rag_server_token: Option<String>,
 }
 
 fn default_update_check() -> bool {
@@ -114,6 +123,8 @@ impl WorkspaceConfig {
                 current_workspace: String::new(),
                 update_check: true,
                 mouse: true,
+                rag_server_url: None,
+                rag_server_token: None,
             },
             workspaces: BTreeMap::new(),
         }

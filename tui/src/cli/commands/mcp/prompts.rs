@@ -249,9 +249,12 @@ impl KimunHandler {
 
         let topics = self.extract_leaf_headings(&vault_path).await?;
 
-        // Search each topic; deduplicate results; cap at max
+        // Search each topic; deduplicate results; cap at max. Normalize to the
+        // canonical (vault-absolute) form the index returns (adr/0021) so the
+        // relative source path excludes itself from its own related list.
+        let norm = |p: &VaultPath| p.flatten().absolute().to_string();
         let mut seen: HashSet<String> = HashSet::new();
-        seen.insert(vault_path.to_string());
+        seen.insert(norm(&vault_path));
 
         let mut related_sections: Vec<String> = Vec::new();
 
@@ -262,7 +265,7 @@ impl KimunHandler {
                 .await
                 .map_err(|e| McpError::internal_error(e.to_string(), None))?;
             for (entry, _) in results {
-                let path_str = entry.path.to_string();
+                let path_str = norm(&entry.path);
                 if seen.contains(&path_str) {
                     continue;
                 }
@@ -658,9 +661,13 @@ impl KimunHandler {
 
         let topics = self.extract_leaf_headings(&vault_path).await?;
 
-        // Build exclusion set: outlinks + backlinks + source itself
+        // Build exclusion set: outlinks + backlinks + source itself. Normalize
+        // every path to the canonical (vault-absolute) form the index search
+        // returns (adr/0021) — self and outlinks arrive relative, backlinks
+        // absolute, so a raw string mix would never match the candidates.
+        let norm = |p: &VaultPath| p.flatten().absolute().to_string();
         let mut excluded: HashSet<String> = HashSet::new();
-        excluded.insert(vault_path.to_string());
+        excluded.insert(norm(&vault_path));
 
         let md_note = self
             .vault
@@ -669,7 +676,7 @@ impl KimunHandler {
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
         for link in md_note.links {
             if let LinkType::Note(linked_path) = link.ltype {
-                excluded.insert(linked_path.to_string());
+                excluded.insert(norm(&linked_path));
             }
         }
 
@@ -679,7 +686,7 @@ impl KimunHandler {
             .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
         for (entry, _) in &backlinks {
-            excluded.insert(entry.path.to_string());
+            excluded.insert(norm(&entry.path));
         }
 
         // Search each heading; collect, deduplicate, filter, cap
@@ -693,7 +700,7 @@ impl KimunHandler {
                 .await
                 .map_err(|e| McpError::internal_error(e.to_string(), None))?;
             for (entry, _) in results {
-                let path_str = entry.path.to_string();
+                let path_str = norm(&entry.path);
                 if seen.contains(&path_str) {
                     continue;
                 }

@@ -67,7 +67,9 @@ impl RowSource<FileListEntry> for DirListingSource {
         let drain = tokio::task::spawn_blocking(move || {
             let mut entries: Vec<FileListEntry> = Vec::new();
             while let Ok(result) = rx.recv() {
-                if matches!(result.rtype, ResultType::Directory) && result.path == dir {
+                // `is_like` ignores relative/absolute form (adr/0021): skip the
+                // current dir's own "." entry whichever form each side carries.
+                if matches!(result.rtype, ResultType::Directory) && result.path.is_like(&dir) {
                     continue;
                 }
                 let journal_date = vault.journal_date(&result.path).map(format_journal_date);
@@ -214,7 +216,7 @@ impl SidebarComponent {
 
     /// Sort field/order to apply for `dir` (journal dirs get their own).
     fn sort_for(&self, dir: &VaultPath) -> (SortField, SortOrder) {
-        if dir == self.vault.journal_path() {
+        if dir.is_like(self.vault.journal_path()) {
             (self.journal_sort_field, self.journal_sort_order)
         } else {
             (self.default_sort_field, self.default_sort_order)
@@ -359,7 +361,7 @@ impl SidebarComponent {
     /// `true` when the active directory is the journal (so its sort default is
     /// the journal one). Lets the caller persist to the matching settings.
     pub fn is_current_journal(&self) -> bool {
-        &self.current_dir == self.vault.journal_path()
+        self.current_dir.is_like(self.vault.journal_path())
     }
 
     /// Save the dialog's selection as the in-session default for the active

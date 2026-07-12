@@ -275,7 +275,12 @@ impl RowSource<LinkEntry> for LinksSource {
                 mentions
                     .unwrap_or_default()
                     .into_iter()
-                    .filter(|(entry, _)| entry.path != self.note && !linked.contains(&entry.path))
+                    // `is_like`: `self.note` may be relative while `entry.path` is
+                    // index-absolute (adr/0021), so `==` would fail to exclude the
+                    // open note from its own unlinked-mentions list.
+                    .filter(|(entry, _)| {
+                        !entry.path.is_like(&self.note) && !linked.contains(&entry.path)
+                    })
                     .map(|(entry, content)| {
                         let (_, filename) = entry.path.get_parent_path();
                         LinkEntry {

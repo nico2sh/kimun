@@ -46,6 +46,8 @@ pub struct DocState<'a> {
     pub link: Option<String>,
     /// Newer release available, e.g. `⬆ 0.18.0` — opens the update dialog.
     pub update: Option<String>,
+    /// RAG server status, e.g. `rag: online` — absent when no server is set.
+    pub rag: Option<String>,
 }
 
 /// Everything the status bar shows for the current frame.
@@ -202,6 +204,9 @@ impl FooterBar {
             if let Some(update) = &doc.update {
                 w += " · ".width() + update.width();
             }
+            if let Some(rag) = &doc.rag {
+                w += " · ".width() + rag.width();
+            }
             w
         };
         let path_budget = (rect.width as usize).saturating_sub(tail_width + 1);
@@ -256,6 +261,12 @@ impl FooterBar {
                         .fg(theme.accent.to_ratatui())
                         .add_modifier(Modifier::BOLD),
                 ),
+            );
+        }
+        if let Some(rag) = &doc.rag {
+            push(
+                &mut segments,
+                Span::styled(rag.clone(), Style::default().fg(theme.green.to_ratatui())),
             );
         }
         f.render_widget(Paragraph::new(Line::from(segments)), rows[1]);
