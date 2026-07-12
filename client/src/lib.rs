@@ -9,11 +9,15 @@ pub mod dto;
 pub mod observer;
 pub mod reconcile;
 
+pub mod sync;
+
+use async_trait::async_trait;
 use dto::{
-    DeleteRequest, EmbeddingsResponse, Health, IndexDocsRequest, JobAccepted, QueryRequest, WireDoc,
+    AnswerResult, DeleteRequest, EmbeddingsResponse, Health, IndexDocsRequest, JobAccepted,
+    JobStatus, QueryRequest, WireDoc,
 };
 
-pub use dto::ChunkResult;
+pub use dto::{ChunkResult, WireSection};
 pub use observer::{DirtyOp, DirtySet, RagObserver};
 pub use reconcile::{ReconcilePlan, diff as reconcile_diff};
 
@@ -23,6 +27,35 @@ pub enum RagError {
     Http(#[from] reqwest::Error),
     #[error("server returned {status}: {body}")]
     Status { status: u16, body: String },
+    /// A well-formed HTTP exchange that violated the expected protocol (job
+    /// failed/timed out, unparseable result).
+    #[error("{0}")]
+    Protocol(String),
+}
+
+/// The subset of server operations the sync orchestration depends on, behind a
+/// trait so it can be exercised with a fake in tests. [`RagClient`] is the real
+/// implementation.
+#[async_trait]
+pub trait RagTransport: Send + Sync {
+    async fn push_docs(&self, docs: Vec<WireDoc>) -> Result<(), RagError>;
+    async fn delete_paths(&self, paths: Vec<String>) -> Result<(), RagError>;
+    async fn server_hashes(&self) -> Result<HashMap<String, String>, RagError>;
+}
+
+#[async_trait]
+impl RagTransport for RagClient {
+    async fn push_docs(&self, docs: Vec<WireDoc>) -> Result<(), RagError> {
+        // The server indexes in the background; an accepted push is enough for
+        // the drain path (reconciliation catches any server-side failure).
+        RagClient::push_docs(self, docs).await.map(|_job_id| ())
+    }
+    async fn delete_paths(&self, paths: Vec<String>) -> Result<(), RagError> {
+        RagClient::delete_paths(self, paths).await
+    }
+    async fn server_hashes(&self) -> Result<HashMap<String, String>, RagError> {
+        RagClient::server_hashes(self).await
+    }
 }
 
 /// The single place a note's content hash is turned into its wire/reconcile
@@ -170,5 +203,53 @@ impl RagClient {
             .json::<EmbeddingsResponse>()
             .await?
             .chunks)
+    }
+
+    /// Submits a question, polls the job to completion, and returns the LLM
+    /// answer plus its cited source chunks.
+    pub async fn ask(
+        &self,
+        query: &str,
+        context_size: Option<ContextSize>,
+    ) -> Result<AnswerResult, RagError> {
+        let body = QueryRequest {
+            vault_id: self.vault_id.clone(),
+            query: query.to_string(),
+            context_size: context_size.map(|c| c.as_str().to_string()),
+        };
+        let resp = self
+            .auth(self.http.post(self.url("/api/answer")).json(&body))
+            .send()
+            .await?;
+        let job_id = Self::ok(resp).await?.json::<JobAccepted>().await?.job_id;
+        self.poll_answer(&job_id).await
+    }
+
+    /// Polls `/api/job/{id}` until the answer job completes or fails. The ceiling
+    /// tracks the server's job-retention window (~5 min) so a slow LLM (large
+    /// context, local model) isn't cut off with a false timeout while its result
+    /// is still coming.
+    async fn poll_answer(&self, job_id: &str) -> Result<AnswerResult, RagError> {
+        let path = format!("/api/job/{job_id}");
+        for _ in 0..300 {
+            let resp = self.auth(self.http.get(self.url(&path))).send().await?;
+            let status = Self::ok(resp).await?.json::<JobStatus>().await?;
+            match status.status.as_str() {
+                "completed" => {
+                    let result = status
+                        .result
+                        .ok_or_else(|| RagError::Protocol("completed job had no result".into()))?;
+                    return serde_json::from_value::<AnswerResult>(result)
+                        .map_err(|e| RagError::Protocol(format!("bad answer result: {e}")));
+                }
+                "failed" => {
+                    return Err(RagError::Protocol(
+                        status.error.unwrap_or_else(|| "answer job failed".into()),
+                    ));
+                }
+                _ => tokio::time::sleep(std::time::Duration::from_secs(1)).await,
+            }
+        }
+        Err(RagError::Protocol("answer job timed out".into()))
     }
 }
