@@ -257,8 +257,8 @@ button{margin-top:1rem;padding:.5rem 1rem;border:0;border-radius:6px;background:
 async fn dashboard(State(state): State<Arc<AppState>>) -> Markup {
     let c = &state.config;
     let vector_db = match &c.vector_db {
-        crate::config::VectorDbConfig::SQLite { db_path } => {
-            format!("SQLite ({})", db_path.display())
+        crate::config::VectorDbConfig::Lance { path } => {
+            format!("LanceDB ({})", path.display())
         }
         crate::config::VectorDbConfig::Qdrant { url, collection } => {
             format!("Qdrant ({url}, prefix `{collection}`)")
@@ -717,7 +717,7 @@ mod tests {
 
     #[async_trait]
     impl LLMClient for FakeLlm {
-        async fn ask(&self, _: &str, _: &Vec<(f64, FlattenedChunk)>) -> anyhow::Result<String> {
+        async fn ask(&self, _: &str, _: &[(f64, FlattenedChunk)]) -> anyhow::Result<String> {
             Ok("answer".into())
         }
     }
@@ -727,7 +727,7 @@ mod tests {
             r#"
 [server]
 [vector_db]
-type = "sqlite"
+type = "qdrant"
 [llm]
 provider = "gemini"
 [reranker]
@@ -909,7 +909,7 @@ provider = "gemini"
             r#"
 [server]
 [vector_db]
-type = "sqlite"
+type = "qdrant"
 [llm]
 provider = "gemini"
 api_key = "gemini-key"
@@ -944,7 +944,7 @@ api_key = "gemini-key"
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("rag.conf");
         let app = app(state_from(
-            "[server]\n[vector_db]\ntype = \"sqlite\"\n[llm]\nprovider = \"gemini\"\n[reranker]\n",
+            "[server]\n[vector_db]\ntype = \"qdrant\"\n[llm]\nprovider = \"gemini\"\n[reranker]\n",
             path.clone(),
         ));
         let form = "host=127.0.0.1&port=99999999&provider=gemini&model=m&api_key=&reranker_top_k=20&auth_token=";

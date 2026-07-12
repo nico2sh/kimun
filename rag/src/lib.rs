@@ -1,11 +1,9 @@
 use std::fmt::Display;
-use std::path::Path;
 use std::sync::Arc;
 
 use dbembeddings::Embeddings;
-use dbembeddings::vecsqlite::VecSQLite;
 // use kimun_core::NoteVault;
-use llmclients::{LLMClient, gemini::GeminiClient};
+use llmclients::LLMClient;
 use log::debug;
 
 use crate::document::FlattenedChunk;
@@ -61,17 +59,6 @@ impl KimunRag {
         let reranker = CrossEncoderReranker::new()?;
         self.reranker = Some(Arc::new(reranker));
         Ok(self)
-    }
-
-    /// Helper to create with local SQLite + fastembed and Gemini.
-    pub fn sqlite<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
-        let embedder =
-            Arc::new(crate::dbembeddings::embedder::fastembedder::FastEmbedder::new(None)?);
-        Ok(Self {
-            embeddings: Arc::new(VecSQLite::new(path, embedder)),
-            llm_client: Arc::new(GeminiClient::new("gemini-2.5-flash")),
-            reranker: None,
-        })
     }
 
     /// Initialize the embeddings database

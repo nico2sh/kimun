@@ -159,11 +159,11 @@ pub async fn drain<T: RagTransport>(
     }
 
     let mut first_err: Option<RagError> = None;
-    if !docs.is_empty() {
-        if let Err(e) = transport.push_docs(docs).await {
-            dirty.requeue(built.into_iter().map(|(p, h)| (p, DirtyOp::Upsert(h))));
-            first_err = Some(e);
-        }
+    if !docs.is_empty()
+        && let Err(e) = transport.push_docs(docs).await
+    {
+        dirty.requeue(built.into_iter().map(|(p, h)| (p, DirtyOp::Upsert(h))));
+        first_err = Some(e);
     }
     if !deletes.is_empty() {
         let paths_for_requeue: Vec<VaultPath> = deletes.iter().map(VaultPath::new).collect();

@@ -18,7 +18,7 @@ pub struct AppState {
     pub config_path: Option<PathBuf>,
     pub job_tracker: Arc<Mutex<JobTracker>>,
     /// Serializes index writes (store/delete) so concurrent jobs on the same
-    /// collection can't double-insert chunks or collide on the SQLite file.
+    /// collection can't double-insert chunks or race each other's updates.
     /// Queries never take this — they clone the embeddings handle instead, so
     /// indexing does not block search/answer.
     pub index_lock: Arc<Mutex<()>>,
@@ -45,6 +45,12 @@ impl AppState {
 /// Tracks jobs (queries, indexing operations) with their status
 pub struct JobTracker {
     jobs: HashMap<Uuid, Job>,
+}
+
+impl Default for JobTracker {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl JobTracker {

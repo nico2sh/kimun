@@ -83,13 +83,17 @@ impl Default for EmbedderConfig {
     }
 }
 
+/// Vector store selection. `lance` is embedded (local, file-backed, no server);
+/// `qdrant` talks to a standalone server. A Turso backend is planned as a second
+/// embedded option once it supports vector similarity search.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum VectorDbConfig {
-    #[serde(rename = "sqlite")]
-    SQLite {
-        #[serde(default = "default_sqlite_path")]
-        db_path: PathBuf,
+    /// Embedded LanceDB store. `path` is a local directory (one table per vault).
+    #[serde(rename = "lance")]
+    Lance {
+        #[serde(default = "default_lance_path")]
+        path: PathBuf,
     },
     #[serde(rename = "qdrant")]
     Qdrant {
@@ -230,8 +234,8 @@ fn default_max_concurrent_jobs() -> usize {
     10
 }
 
-fn default_sqlite_path() -> PathBuf {
-    PathBuf::from("./rag_index.sqlite")
+fn default_lance_path() -> PathBuf {
+    PathBuf::from("./rag_lance")
 }
 
 fn default_qdrant_url() -> String {
@@ -342,7 +346,7 @@ mod tests {
 [server]
 
 [vector_db]
-type = "sqlite"
+type = "qdrant"
 
 [llm]
 provider = "gemini"
@@ -365,7 +369,7 @@ provider = "gemini"
         let config_toml = r#"
 [server]
 [vector_db]
-type = "sqlite"
+type = "qdrant"
 [llm]
 provider = "gemini"
 [reranker]
@@ -382,7 +386,7 @@ provider = "gemini"
         let config_toml = r#"
 [server]
 [vector_db]
-type = "sqlite"
+type = "qdrant"
 [embedder]
 type = "fastembed"
 model = "BGESmallENV15"
@@ -404,7 +408,7 @@ provider = "gemini"
         let config_toml = r#"
 [server]
 [vector_db]
-type = "sqlite"
+type = "qdrant"
 [embedder]
 type = "ollama"
 url = "http://localhost:11434"
@@ -443,8 +447,9 @@ host = "0.0.0.0"
 port = 9000
 
 [vector_db]
-type = "sqlite"
-db_path = "./x.sqlite"
+type = "qdrant"
+url = "http://localhost:6333"
+collection = "kimun_embeddings"
 
 [embedder]
 type = "ollama"
@@ -479,8 +484,27 @@ token = "secret-token"
         assert_eq!(reloaded.auth.token.as_deref(), Some("secret-token"));
         assert_eq!(reloaded.llm.provider(), "claude");
         assert_eq!(reloaded.llm.api_key(), Some("sk-ant-xxx"));
-        assert!(matches!(reloaded.vector_db, VectorDbConfig::SQLite { .. }));
+        assert!(matches!(reloaded.vector_db, VectorDbConfig::Qdrant { .. }));
         assert!(matches!(reloaded.embedder, EmbedderConfig::Ollama { .. }));
+    }
+
+    #[test]
+    fn lance_vector_db_parses_with_default_path() {
+        let config_toml = r#"
+[server]
+[vector_db]
+type = "lance"
+[llm]
+provider = "gemini"
+[reranker]
+"#;
+        let config: RagConfig = toml::from_str(config_toml).unwrap();
+        match config.vector_db {
+            VectorDbConfig::Lance { path } => {
+                assert_eq!(path, default_lance_path())
+            }
+            other => panic!("expected lance, got {other:?}"),
+        }
     }
 
     #[test]
@@ -503,7 +527,7 @@ token = "secret-token"
 [server]
 
 [vector_db]
-type = "sqlite"
+type = "qdrant"
 
 [llm]
 provider = "claude"

@@ -21,14 +21,14 @@ max_concurrent_jobs = 10
 # token = "change-me"
 
 [vector_db]
-# Vector database type: "sqlite" or "qdrant"
-type = "sqlite"
+# Vector database backend: "lance" (embedded) or "qdrant" (server).
 
-# SQLite-specific settings (when type = "sqlite")
-db_path = "./rag_index.sqlite"
+# LanceDB — embedded, local, no server. `path` is a directory (one table per
+# vault). Zero setup; good for a single machine.
+type = "lance"
+path = "./rag_lance"
 
-# Qdrant-specific settings (when type = "qdrant")
-# Uncomment and configure if using Qdrant:
+# Qdrant — a standalone server; better at scale. Uncomment to use instead:
 # type = "qdrant"
 # url = "http://localhost:6333"
 # `collection` is a namespace PREFIX: each vault gets its own Qdrant collection
@@ -39,9 +39,9 @@ db_path = "./rag_index.sqlite"
 [embedder]
 # Which model turns text into vectors. All collections share one embedder, and
 # the SAME model must embed documents and queries. Changing the embedder or
-# model invalidates every stored vector and forces a full re-index (the store is
-# recreated automatically on the next start). The vector width is detected
-# automatically.
+# model invalidates every stored vector and forces a full re-index (drop the
+# store — the Lance dir or the Qdrant collection — then re-push). The vector
+# width is detected automatically.
 
 # Local, in-process, no network. Default model is BGE-Large-EN-V1.5 (1024 dims).
 type = "fastembed"

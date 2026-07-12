@@ -24,7 +24,7 @@ impl OpenAIClient {
         }
     }
 
-    fn get_prompt(&self, question: String, context: &Vec<(f64, FlattenedChunk)>) -> String {
+    fn get_prompt(&self, question: String, context: &[(f64, FlattenedChunk)]) -> String {
         let mut context_string = String::new();
         for (distance, chunk) in context {
             context_string.push_str(&format!(
@@ -67,7 +67,7 @@ impl LLMClient for OpenAIClient {
     async fn ask(
         &self,
         question: &str,
-        context: &Vec<(f64, crate::document::FlattenedChunk)>,
+        context: &[(f64, crate::document::FlattenedChunk)],
     ) -> anyhow::Result<String> {
         // Create a new reqwest client
         let client = Client::new();
