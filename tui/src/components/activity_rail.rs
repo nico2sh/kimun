@@ -21,9 +21,10 @@ pub const RAIL_WIDTH: u16 = 7;
 
 /// The rail items in presentation order. CFG is last and pinned to the
 /// bottom of the strip by a spacer.
-const ITEMS: [(&str, DrawerView); 6] = [
+const ITEMS: [(&str, DrawerView); 7] = [
     ("FIL", DrawerView::Files),
     ("FND", DrawerView::Find),
+    ("SEM", DrawerView::Semantic),
     ("TAG", DrawerView::Tags),
     ("LNK", DrawerView::Links),
     ("OUT", DrawerView::Outline),
@@ -36,6 +37,8 @@ fn glyph_for(icons: &crate::settings::icons::Icons, view: DrawerView) -> &'stati
     match view {
         DrawerView::Files => icons.rail_files,
         DrawerView::Find => icons.rail_find,
+        // No dedicated icon field yet; `~` reads as "similar" and is ASCII-safe.
+        DrawerView::Semantic => "~",
         DrawerView::Tags => icons.rail_tags,
         DrawerView::Links => icons.rail_links,
         DrawerView::Outline => icons.rail_outline,

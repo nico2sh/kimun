@@ -14,6 +14,7 @@ use crate::components::event_state::EventState;
 use crate::components::events::{AppTx, InputEvent};
 use crate::components::panel::panel_block;
 use crate::components::query_panel::QueryPanel;
+use crate::components::semantic_search::SemanticPanel;
 use crate::components::sidebar::SidebarComponent;
 use crate::settings::themes::Theme;
 
@@ -23,6 +24,7 @@ use crate::settings::themes::Theme;
 pub enum DrawerView {
     Files,
     Find,
+    Semantic,
     Tags,
     Links,
     Outline,
@@ -35,6 +37,7 @@ impl DrawerView {
         match self {
             DrawerView::Files => "FILES",
             DrawerView::Find => "FIND",
+            DrawerView::Semantic => "SEMANTIC",
             DrawerView::Tags => "TAGS",
             DrawerView::Links => "LINKS",
             DrawerView::Outline => "OUTLINE",
@@ -61,6 +64,7 @@ pub struct DrawerHost {
     active: DrawerView,
     sidebar: SidebarComponent,
     query: QueryPanel,
+    semantic: SemanticPanel,
     tags: TagsPanel,
     links: LinksPanel,
     outline: OutlinePanel,
@@ -72,6 +76,7 @@ impl DrawerHost {
     pub fn new(
         sidebar: SidebarComponent,
         query: QueryPanel,
+        semantic: SemanticPanel,
         tags: TagsPanel,
         links: LinksPanel,
         outline: OutlinePanel,
@@ -80,6 +85,7 @@ impl DrawerHost {
             active: DrawerView::Files,
             sidebar,
             query,
+            semantic,
             tags,
             links,
             outline,
@@ -101,7 +107,7 @@ impl DrawerHost {
     /// query input; the list views are filter-as-you-type lists, which read
     /// as lists (spec mockup shows them with ≣).
     pub fn is_text_input(&self) -> bool {
-        matches!(self.active, DrawerView::Find)
+        matches!(self.active, DrawerView::Find | DrawerView::Semantic)
     }
 
     pub fn set_view(&mut self, view: DrawerView) {
@@ -122,6 +128,9 @@ impl DrawerHost {
     pub fn query_mut(&mut self) -> &mut QueryPanel {
         &mut self.query
     }
+    pub fn semantic_mut(&mut self) -> &mut SemanticPanel {
+        &mut self.semantic
+    }
     pub fn tags_mut(&mut self) -> &mut TagsPanel {
         &mut self.tags
     }
@@ -136,6 +145,7 @@ impl DrawerHost {
         match self.active {
             DrawerView::Files => self.sidebar.hint_shortcuts(),
             DrawerView::Find => self.query.hint_shortcuts(),
+            DrawerView::Semantic => self.semantic.hint_shortcuts(),
             DrawerView::Tags => self.tags.hint_shortcuts(),
             DrawerView::Links => self.links.hint_shortcuts(),
             DrawerView::Outline => self.outline.hint_shortcuts(),
@@ -158,6 +168,7 @@ impl DrawerHost {
                     EventState::NotConsumed
                 }
             }
+            DrawerView::Semantic => self.semantic.handle_input(event, tx),
             DrawerView::Tags => self.tags.handle_input(event, tx),
             DrawerView::Links => self.links.handle_input(event, tx),
             DrawerView::Outline => self.outline.handle_input(event, tx),
@@ -207,6 +218,7 @@ impl DrawerHost {
         match self.active {
             DrawerView::Files => self.sidebar.render(f, rect, theme, focused),
             DrawerView::Find => self.query.render(f, rect, theme, focused),
+            DrawerView::Semantic => self.semantic.render(f, rect, theme, focused),
             DrawerView::Tags => self.tags.render(f, rect, theme, focused),
             DrawerView::Links => self.links.render(f, rect, theme, focused),
             DrawerView::Outline => self.outline.render(f, rect, theme, focused),

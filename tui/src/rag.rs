@@ -32,6 +32,21 @@ pub enum RagStatus {
     Online,
 }
 
+/// A completed RAG answer delivered back to the answer overlay via
+/// [`AppEvent::RagAnswerReady`](crate::components::events::AppEvent).
+#[derive(Debug, Clone)]
+pub struct RagAnswer {
+    pub answer: String,
+    pub sources: Vec<RagSource>,
+}
+
+/// A cited source chunk — enough to render a row and open the note.
+#[derive(Debug, Clone)]
+pub struct RagSource {
+    pub path: kimun_core::nfs::VaultPath,
+    pub title: String,
+}
+
 impl RagStatus {
     /// Short footer label, or `None` when nothing should show.
     pub fn label(self) -> Option<&'static str> {

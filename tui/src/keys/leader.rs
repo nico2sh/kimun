@@ -79,6 +79,7 @@ impl LeaderAction {
         match self {
             LeaderAction::OpenDrawer(DrawerView::Files) => "drawer.files",
             LeaderAction::OpenDrawer(DrawerView::Find) => "drawer.find",
+            LeaderAction::OpenDrawer(DrawerView::Semantic) => "drawer.semantic",
             LeaderAction::OpenDrawer(DrawerView::Tags) => "drawer.tags",
             LeaderAction::OpenDrawer(DrawerView::Links) => "drawer.links",
             LeaderAction::OpenDrawer(DrawerView::Outline) => "drawer.outline",

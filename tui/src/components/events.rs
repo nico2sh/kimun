@@ -39,6 +39,13 @@ pub enum AppEvent {
     /// Background RAG sync task reporting its connection/sync status. Rendered
     /// in the editor footer.
     RagStatus(crate::rag::RagStatus),
+    /// A RAG answer job finished (or failed) — delivered to the answer overlay.
+    /// `request_id` correlates the result to the ask that produced it, so a late
+    /// answer from a closed/superseded ask can't clobber the current overlay.
+    RagAnswerReady {
+        request_id: u64,
+        result: std::result::Result<crate::rag::RagAnswer, String>,
+    },
     Autosave,
     /// Background autosave task finished. `saved_revision` carries the
     /// editor's `content_revision` at the moment the save was *issued*

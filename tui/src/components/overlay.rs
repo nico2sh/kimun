@@ -18,6 +18,7 @@ pub enum OverlayKind {
     NoteBrowser,
     SavedSearches,
     CommandPalette,
+    RagAnswer,
     Dialog,
 }
 
@@ -28,6 +29,7 @@ impl OverlayKind {
             OverlayKind::NoteBrowser => "NOTE BROWSER",
             OverlayKind::SavedSearches => "SAVED SEARCHES",
             OverlayKind::CommandPalette => "COMMANDS",
+            OverlayKind::RagAnswer => "ASK (RAG)",
             OverlayKind::Dialog => "DIALOG",
         }
     }
