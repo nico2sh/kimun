@@ -201,6 +201,21 @@ impl NoteIndex {
         *self.observer.write().unwrap() = Some(observer);
     }
 
+    /// Removes the registered observer (if any), so it stops receiving events.
+    pub(crate) fn clear_observer(&self) {
+        *self.observer.write().unwrap() = None;
+    }
+
+    /// Removes the observer only if it is the exact one passed in (by identity).
+    /// Lets a consumer deregister its own observer on teardown without wiping a
+    /// newer one that has since replaced it.
+    pub(crate) fn clear_observer_if(&self, observer: &Arc<dyn IndexObserver>) {
+        let mut guard = self.observer.write().unwrap();
+        if guard.as_ref().is_some_and(|cur| Arc::ptr_eq(cur, observer)) {
+            *guard = None;
+        }
+    }
+
     /// Whether an observer is registered. Lets callers skip building events
     /// (e.g. re-hashing every note in a bulk `apply`) when nobody listens.
     fn has_observer(&self) -> bool {

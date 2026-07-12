@@ -16,8 +16,8 @@ max_concurrent_jobs = 10
 
 [auth]
 # Bearer token required on every API request (Authorization: Bearer <token>)
-# and to reach the web UI. Leave unset only for a localhost-only dev server;
-# set one whenever the server binds beyond 127.0.0.1.
+# and to sign in to the web UI. Leave unset only for a localhost-only dev
+# server; set one whenever the server binds beyond 127.0.0.1.
 # token = "change-me"
 
 [vector_db]

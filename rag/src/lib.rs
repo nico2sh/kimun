@@ -24,6 +24,7 @@ pub mod auth;
 pub mod config;
 pub mod handlers;
 pub mod server_state;
+pub mod webui;
 
 pub struct KimunRag {
     embeddings: Arc<dyn Embeddings + Send + Sync>,

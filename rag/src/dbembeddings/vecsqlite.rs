@@ -430,6 +430,32 @@ impl Embeddings for VecSQLite {
         )?;
         Ok(())
     }
+
+    async fn list_collections(&self) -> anyhow::Result<Vec<crate::dbembeddings::CollectionInfo>> {
+        let conn = self.connection()?;
+        let mut stmt = conn.prepare(
+            "SELECT collection, COUNT(*) FROM indexed_notes GROUP BY collection ORDER BY collection",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(crate::dbembeddings::CollectionInfo {
+                    name: row.get::<_, String>(0)?,
+                    note_count: row.get::<_, i64>(1)? as usize,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    async fn collection_names(&self) -> anyhow::Result<Vec<String>> {
+        let conn = self.connection()?;
+        let mut stmt =
+            conn.prepare("SELECT DISTINCT collection FROM indexed_notes ORDER BY collection")?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
 }
 
 #[cfg(test)]

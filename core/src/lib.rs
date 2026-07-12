@@ -253,6 +253,20 @@ impl NoteVault {
         self.index.set_observer(observer);
     }
 
+    /// Removes the registered [`IndexObserver`], so no consumer keeps receiving
+    /// change events (e.g. when the RAG client for this vault is torn down).
+    pub fn clear_index_observer(&self) {
+        self.index.clear_observer();
+    }
+
+    /// Removes the registered [`IndexObserver`] only if it is exactly `observer`
+    /// (by identity). A consumer whose observer has since been replaced by a
+    /// newer one leaves that newer observer in place. Use this on teardown so a
+    /// superseded handle doesn't deregister its successor.
+    pub fn clear_index_observer_if(&self, observer: &Arc<dyn IndexObserver>) {
+        self.index.clear_observer_if(observer);
+    }
+
     /// This vault's stable [`VaultId`], read from `.kimun/vault-id` or generated
     /// and persisted there on first call. Survives renames and moves, and keys
     /// the vault's collection on the RAG server (adr/0020).
@@ -1480,6 +1494,47 @@ mod tests {
             vec![NoteChange::Delete {
                 path: VaultPath::new("/note.md"),
             }]
+        );
+    }
+
+    #[tokio::test]
+    async fn clear_index_observer_if_only_clears_the_matching_observer() {
+        let dir = TempDir::new().unwrap();
+        let vault = make_vault(dir.path()).await;
+
+        let a: std::sync::Arc<dyn IndexObserver> =
+            std::sync::Arc::new(RecordingObserver::default());
+        let b_inner = std::sync::Arc::new(RecordingObserver::default());
+        let b: std::sync::Arc<dyn IndexObserver> = b_inner.clone();
+
+        // B replaces A as the (zero-or-one) observer.
+        vault.set_index_observer(a.clone());
+        vault.set_index_observer(b.clone());
+
+        // A superseded handle deregistering itself must NOT wipe B.
+        vault.clear_index_observer_if(&a);
+
+        vault
+            .create_note(&VaultPath::new("note.md"), "hello")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            b_inner.recorded().len(),
+            1,
+            "the surviving observer B must still receive events"
+        );
+
+        // Now B deregisters itself → no observer remains.
+        vault.clear_index_observer_if(&b);
+        vault
+            .create_note(&VaultPath::new("note2.md"), "world")
+            .await
+            .unwrap();
+        assert_eq!(
+            b_inner.recorded().len(),
+            1,
+            "after B clears itself it must receive no further events"
         );
     }
 

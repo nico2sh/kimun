@@ -45,8 +45,9 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
-    // Load configuration
+    // Load configuration (remembering the path so the web UI can persist edits).
     tracing::info!("Loading configuration...");
+    let config_path = RagConfig::resolve_path(cli.config.clone());
     let config = RagConfig::load(cli.config)?;
     let config = config.merge_with_cli(cli.host, cli.port);
 
@@ -62,7 +63,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("RAG system initialized");
 
     // Create application state
-    let state = Arc::new(AppState::new(rag, config.clone()));
+    let state = Arc::new(AppState::new(rag, config.clone()).with_config_path(config_path));
 
     // Periodically drop completed/old jobs so the tracker doesn't grow for the
     // life of the process.
@@ -106,6 +107,7 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/health", get(health_handler))
         .merge(api)
+        .merge(kimun_rag::webui::routes(state.clone()))
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state);
 
@@ -264,16 +266,10 @@ async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<KimunRag> 
 async fn health_handler(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
 ) -> axum::Json<serde_json::Value> {
-    let llm_provider = match &state.config.llm {
-        kimun_rag::config::LlmConfig::Gemini { .. } => "gemini",
-        kimun_rag::config::LlmConfig::Mistral { .. } => "mistral",
-        kimun_rag::config::LlmConfig::Claude { .. } => "claude",
-        kimun_rag::config::LlmConfig::OpenAI { .. } => "openai",
-    };
     axum::Json(serde_json::json!({
         "status": "ok",
         "reranker": state.config.reranker.enabled,
-        "llm_provider": llm_provider,
+        "llm_provider": state.config.llm.provider(),
         "auth_required": state.config.auth.token.is_some(),
     }))
 }

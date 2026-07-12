@@ -19,7 +19,7 @@ pub struct RagConfig {
 }
 
 /// Bearer-token auth. When `token` is set, every API request must present it as
-/// `Authorization: Bearer <token>` (and the web UI is gated by it).
+/// `Authorization: Bearer <token>`, and the web UI requires it at sign-in.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AuthConfig {
     #[serde(default)]
@@ -101,8 +101,8 @@ pub enum VectorDbConfig {
 }
 
 /// LLM provider selection plus its model and API key. The key lives here
-/// (server-owned, editable in the web UI) rather than only in an env var, so
-/// Kimün never handles it (adr: server-owned LLM config). An absent `api_key`
+/// (server-owned config, editable in the web UI) rather than only in an env var,
+/// so Kimün never handles it (adr: server-owned LLM config). An absent `api_key`
 /// falls back to the provider's env var.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "provider", rename_all = "lowercase")]
@@ -135,6 +135,76 @@ pub enum LlmConfig {
         #[serde(default)]
         api_key: Option<String>,
     },
+}
+
+impl LlmConfig {
+    /// Short provider id (`gemini` | `mistral` | `claude` | `openai`) — used by
+    /// the web UI form and the `/health` probe.
+    pub fn provider(&self) -> &'static str {
+        match self {
+            LlmConfig::Gemini { .. } => "gemini",
+            LlmConfig::Mistral { .. } => "mistral",
+            LlmConfig::Claude { .. } => "claude",
+            LlmConfig::OpenAI { .. } => "openai",
+        }
+    }
+
+    /// The configured model name.
+    pub fn model(&self) -> &str {
+        match self {
+            LlmConfig::Gemini { model, .. }
+            | LlmConfig::Mistral { model, .. }
+            | LlmConfig::Claude { model, .. }
+            | LlmConfig::OpenAI { model, .. } => model,
+        }
+    }
+
+    /// The configured API key, if any.
+    pub fn api_key(&self) -> Option<&str> {
+        match self {
+            LlmConfig::Gemini { api_key, .. }
+            | LlmConfig::Mistral { api_key, .. }
+            | LlmConfig::Claude { api_key, .. }
+            | LlmConfig::OpenAI { api_key, .. } => api_key.as_deref(),
+        }
+    }
+
+    /// Builds a config from web-form parts, defaulting the model per provider
+    /// when blank. Unknown provider ids are rejected.
+    pub fn from_parts(
+        provider: &str,
+        model: Option<String>,
+        api_key: Option<String>,
+    ) -> anyhow::Result<Self> {
+        let key = api_key.filter(|k| !k.is_empty());
+        Ok(match provider {
+            "gemini" => LlmConfig::Gemini {
+                model: model
+                    .filter(|m| !m.is_empty())
+                    .unwrap_or_else(default_gemini_model),
+                api_key: key,
+            },
+            "mistral" => LlmConfig::Mistral {
+                model: model
+                    .filter(|m| !m.is_empty())
+                    .unwrap_or_else(default_mistral_model),
+                api_key: key,
+            },
+            "claude" => LlmConfig::Claude {
+                model: model
+                    .filter(|m| !m.is_empty())
+                    .unwrap_or_else(default_claude_model),
+                api_key: key,
+            },
+            "openai" => LlmConfig::OpenAI {
+                model: model
+                    .filter(|m| !m.is_empty())
+                    .unwrap_or_else(default_openai_model),
+                api_key: key,
+            },
+            other => anyhow::bail!("unknown LLM provider: {other}"),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -213,6 +283,26 @@ impl RagConfig {
         path.push("kimun");
         path.push("rag.conf");
         path
+    }
+
+    /// Resolve the config path from an optional override, falling back to the
+    /// default location. Same resolution [`load`](Self::load) uses, exposed so
+    /// callers can persist edits back to the file the server was loaded from.
+    pub fn resolve_path(override_path: Option<PathBuf>) -> PathBuf {
+        override_path.unwrap_or_else(Self::default_path)
+    }
+
+    /// Serialize the config back to a TOML file. The web UI uses this to persist
+    /// edits; the running server keeps its in-memory config until restarted.
+    pub fn save_to(&self, path: &std::path::Path) -> anyhow::Result<()> {
+        let toml =
+            toml::to_string_pretty(self).map_err(|e| anyhow::anyhow!("serialize config: {e}"))?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| anyhow::anyhow!("create config dir {:?}: {e}", parent))?;
+        }
+        std::fs::write(path, toml).map_err(|e| anyhow::anyhow!("write config {:?}: {e}", path))?;
+        Ok(())
     }
 
     /// Load config from default path or provided path
@@ -340,6 +430,71 @@ provider = "gemini"
             }
             other => panic!("expected ollama, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn save_to_round_trips_through_toml() {
+        // The web UI persists edits via save_to; the internally-tagged enums
+        // (llm provider, vector_db type, embedder type) must survive a
+        // serialize → write → reload cycle.
+        let config_toml = r#"
+[server]
+host = "0.0.0.0"
+port = 9000
+
+[vector_db]
+type = "sqlite"
+db_path = "./x.sqlite"
+
+[embedder]
+type = "ollama"
+url = "http://localhost:11434"
+model = "nomic-embed-text"
+doc_prefix = "d: "
+query_prefix = "q: "
+
+[llm]
+provider = "claude"
+model = "claude-3-5-sonnet-20241022"
+api_key = "sk-ant-xxx"
+
+[reranker]
+enabled = false
+top_k = 33
+
+[auth]
+token = "secret-token"
+"#;
+        let original: RagConfig = toml::from_str(config_toml).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested").join("rag.conf");
+        original.save_to(&path).unwrap();
+
+        let reloaded = RagConfig::from_file(path).unwrap();
+        assert_eq!(reloaded.server.host, "0.0.0.0");
+        assert_eq!(reloaded.server.port, 9000);
+        assert_eq!(reloaded.reranker.enabled, false);
+        assert_eq!(reloaded.reranker.top_k, 33);
+        assert_eq!(reloaded.auth.token.as_deref(), Some("secret-token"));
+        assert_eq!(reloaded.llm.provider(), "claude");
+        assert_eq!(reloaded.llm.api_key(), Some("sk-ant-xxx"));
+        assert!(matches!(reloaded.vector_db, VectorDbConfig::SQLite { .. }));
+        assert!(matches!(reloaded.embedder, EmbedderConfig::Ollama { .. }));
+    }
+
+    #[test]
+    fn llm_from_parts_defaults_model_and_rejects_unknown() {
+        let c = LlmConfig::from_parts("openai", None, None).unwrap();
+        assert_eq!(c.provider(), "openai");
+        assert_eq!(c.model(), &default_openai_model());
+        assert!(c.api_key().is_none());
+
+        let c = LlmConfig::from_parts("gemini", Some(String::new()), Some("k".into())).unwrap();
+        assert_eq!(c.model(), &default_gemini_model());
+        assert_eq!(c.api_key(), Some("k"));
+
+        assert!(LlmConfig::from_parts("bogus", None, None).is_err());
     }
 
     #[test]

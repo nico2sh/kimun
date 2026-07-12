@@ -15,6 +15,14 @@ pub struct IndexedNote {
     pub last_indexed: i64, // Unix timestamp
 }
 
+/// One collection's summary for the server admin UI: its name (the vault id)
+/// and how many notes it has indexed.
+#[derive(Debug, Clone)]
+pub struct CollectionInfo {
+    pub name: String,
+    pub note_count: usize,
+}
+
 impl Display for IndexedNote {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(
@@ -45,5 +53,19 @@ pub trait Embeddings: Send + Sync {
         &self,
         collection: &str,
     ) -> anyhow::Result<HashMap<String, IndexedNote>>;
+
+    /// Every collection the store holds, with its indexed-note count. Powers the
+    /// server admin UI's collections page. May be O(store) per collection on some
+    /// backends — use [`collection_names`](Self::collection_names) when only the
+    /// names are needed.
+    async fn list_collections(&self) -> anyhow::Result<Vec<CollectionInfo>>;
+
+    /// Just the collection names (vault ids), cheaply — no per-collection scan.
+    /// For pickers/dropdowns that don't need counts.
+    async fn collection_names(&self) -> anyhow::Result<Vec<String>>;
+    /// Removes a single note's hash record. Deletes go through `delete` on the
+    /// store (which drops chunks + hash together); this lower-level hook is
+    /// currently unused, and the two backends differ in whether it also removes
+    /// chunk vectors — wire it through `delete` before relying on it.
     async fn remove_indexed_note(&self, collection: &str, path: &str) -> anyhow::Result<()>;
 }
