@@ -10,10 +10,18 @@ use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 use kimun_rag_client::{ChunkResult, RagClient};
 
+use ratatui::Frame;
+use ratatui::layout::Rect;
+
+use crate::components::event_state::EventState;
+use crate::components::events::{AppEvent, AppTx, InputEvent};
 use crate::components::file_list::FileListEntry;
 use crate::components::note_browser::format_journal_date;
+use crate::components::query_list_panel::{ListPanelSpec, QueryListPanel};
 use crate::components::search_list::{Emit, RowSource};
 use crate::settings::SharedSettings;
+use crate::settings::icons::Icons;
+use crate::settings::themes::Theme;
 
 /// Builds a [`RagClient`] for the current vault from config, or `None` when no
 /// server URL is configured. Shared by every RAG query surface.
@@ -94,6 +102,10 @@ impl RowSource<FileListEntry> for SemanticSource {
             emit.replace(Vec::new());
             return;
         }
+        // Debounce: the load engine aborts this task on the next keystroke, so a
+        // short leading delay coalesces rapid typing into a single server request
+        // (each query is one HTTP POST + a vault-id read).
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
         let entries = match rag_client(&self.settings, &self.vault).await {
             Some(client) => match client.search(query, None).await {
                 Ok(chunks) => chunks_to_entries(chunks, &self.vault),
@@ -107,6 +119,76 @@ impl RowSource<FileListEntry> for SemanticSource {
             None => Vec::new(),
         };
         emit.replace(entries);
+    }
+}
+
+/// Spec for the semantic drawer view: a query input over server-ranked note
+/// results; Enter/click opens the note, right-click opens the file-ops menu.
+pub struct SemanticSpec;
+
+impl ListPanelSpec for SemanticSpec {
+    type Row = FileListEntry;
+    const TITLE: &'static str = "Semantic";
+    const HAS_FILTER: bool = true;
+
+    fn submit(row: &FileListEntry, tx: &AppTx) {
+        if let FileListEntry::Note { path, .. } = row {
+            tx.send(AppEvent::open(path.clone())).ok();
+        }
+    }
+
+    fn context_event(row: &FileListEntry) -> Option<AppEvent> {
+        match row {
+            FileListEntry::Note { path, .. } => Some(AppEvent::ShowFileOpsMenu(path.clone())),
+            _ => None,
+        }
+    }
+
+    fn hints() -> Vec<(String, String)> {
+        vec![("Enter".into(), "Open".into())]
+    }
+}
+
+/// The SEMANTIC drawer view: type a query, see the notes the RAG server ranks
+/// most similar. Only meaningful when a server is configured + reachable.
+pub struct SemanticPanel {
+    vault: Arc<NoteVault>,
+    settings: SharedSettings,
+    body: QueryListPanel<SemanticSpec>,
+    source_installed: bool,
+}
+
+impl SemanticPanel {
+    pub fn new(vault: Arc<NoteVault>, settings: SharedSettings, icons: Icons) -> Self {
+        Self {
+            vault,
+            settings,
+            body: QueryListPanel::new(icons),
+            source_installed: false,
+        }
+    }
+
+    /// Installs the server-backed source the first time the view is opened.
+    pub fn ensure_source(&mut self, tx: &AppTx) {
+        if !self.source_installed {
+            self.body.set_source(
+                SemanticSource::new(self.vault.clone(), self.settings.clone()),
+                tx,
+            );
+            self.source_installed = true;
+        }
+    }
+
+    pub fn hint_shortcuts(&self) -> Vec<(String, String)> {
+        self.body.hint_shortcuts()
+    }
+
+    pub fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
+        self.body.handle_input(event, tx)
+    }
+
+    pub fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
+        self.body.render(f, rect, theme, focused);
     }
 }
 

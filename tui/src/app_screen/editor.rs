@@ -96,10 +96,15 @@ impl EditorScreen {
         let icons = s.icons();
         let sidebar = SidebarComponent::from_settings(vault.clone(), &s);
         let query_panel = QueryPanel::new(vault.clone(), kb.clone(), icons.clone());
+        let semantic = crate::components::semantic_search::SemanticPanel::new(
+            vault.clone(),
+            settings.clone(),
+            s.icons(),
+        );
         let tags = TagsPanel::new(vault.clone(), s.icons());
         let links = LinksPanel::new(vault.clone(), s.icons());
         let outline = OutlinePanel::new(vault.clone(), s.icons());
-        let drawer = DrawerHost::new(sidebar, query_panel, tags, links, outline);
+        let drawer = DrawerHost::new(sidebar, query_panel, semantic, tags, links, outline);
         let rail_kb = kb.clone();
         let mut editor = TextEditorComponent::new(kb, &s);
         editor.set_vault(vault.clone());
@@ -720,6 +725,7 @@ impl EditorScreen {
                 };
                 self.panels.drawer_set_config_info(info);
             }
+            DrawerView::Semantic => self.panels.semantic_mut().ensure_source(tx),
             DrawerView::Tags => self.panels.tags_mut().refresh(tx),
             DrawerView::Links => self.panels.links_mut().set_note(self.path.clone(), tx),
             DrawerView::Outline => self.panels.outline_mut().set_note(self.path.clone(), tx),
@@ -855,6 +861,26 @@ impl EditorScreen {
         );
         drop(s);
         self.present_overlay(Box::new(modal));
+    }
+
+    /// Open the RAG answer overlay (ask a question). No-op while an overlay is
+    /// open; the overlay itself reports "no server configured" when unusable.
+    fn open_rag_answer(&mut self, tx: &AppTx) {
+        if self.overlays.is_open() {
+            return;
+        }
+        if !crate::components::semantic_search::rag_configured(&self.settings) {
+            tx.send(AppEvent::FlashMessage(
+                "Set rag_server_url in config to use Ask (RAG)".into(),
+            ))
+            .ok();
+            return;
+        }
+        let overlay = crate::components::rag_answer::RagAnswerOverlay::new(
+            self.vault.clone(),
+            self.settings.clone(),
+        );
+        self.present_overlay(Box::new(overlay));
     }
 
     /// Open the live theme picker (leader `v c` and the CFG rail item). The
@@ -1448,6 +1474,14 @@ impl AppScreen for EditorScreen {
                         self.dismiss_overlay();
                     } else {
                         self.open_saved_searches(tx);
+                    }
+                    return EventState::Consumed;
+                }
+                Some(ActionShortcuts::OpenRagAnswer) => {
+                    if self.overlays.active_kind() == Some(OverlayKind::RagAnswer) {
+                        self.dismiss_overlay();
+                    } else {
+                        self.open_rag_answer(tx);
                     }
                     return EventState::Consumed;
                 }

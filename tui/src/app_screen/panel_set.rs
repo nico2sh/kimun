@@ -387,6 +387,9 @@ impl PanelSet {
     pub fn query_mut(&mut self) -> &mut QueryPanel {
         self.drawer.query_mut()
     }
+    pub fn semantic_mut(&mut self) -> &mut crate::components::semantic_search::SemanticPanel {
+        self.drawer.semantic_mut()
+    }
     pub fn tags_mut(&mut self) -> &mut crate::components::drawer_views::TagsPanel {
         self.drawer.tags_mut()
     }
@@ -584,8 +587,13 @@ mod tests {
         let tags = crate::components::drawer_views::TagsPanel::new(vault.clone(), settings.icons());
         let links =
             crate::components::drawer_views::LinksPanel::new(vault.clone(), settings.icons());
+        let semantic = crate::components::semantic_search::SemanticPanel::new(
+            vault.clone(),
+            std::sync::Arc::new(std::sync::RwLock::new(settings.clone())),
+            settings.icons(),
+        );
         let outline = crate::components::drawer_views::OutlinePanel::new(vault, settings.icons());
-        let drawer = DrawerHost::new(sidebar, query, tags, links, outline);
+        let drawer = DrawerHost::new(sidebar, query, semantic, tags, links, outline);
         PanelSet::from_panels(drawer, editor, settings.icons(), settings.key_bindings)
     }
 
