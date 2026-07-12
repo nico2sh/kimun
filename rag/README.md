@@ -13,7 +13,7 @@ queries. One server can host **many vaults** at once — each vault is a
 `.kimun/` in the vault). Every `/api` request carries a `vault_id`.
 
 ```
-Kimün  ──push docs / delete / query──▶  RAG server ──▶  vector DB (sqlite-vec | Qdrant)
+Kimün  ──push docs / delete / query──▶  RAG server ──▶  vector DB (LanceDB | Qdrant)
                                                     └──▶  LLM (Claude | OpenAI | Gemini | Mistral)
 ```
 
@@ -49,9 +49,12 @@ See `config.example.toml` for the annotated template. Sections:
 - **`[auth]`** — optional `token`. When set, every `/api` request must send
   `Authorization: Bearer <token>`; `/health` stays open. Required in practice
   once you bind beyond `127.0.0.1`.
-- **`[vector_db]`** — `type = "sqlite"` (`db_path`) or `type = "qdrant"`
-  (`url`, `collection` — used as a name **prefix**, so each vault's Qdrant
-  collection is `<prefix>-<vault-id>`).
+- **`[vector_db]`** — pick a backend:
+  - `type = "lance"` (`path`) — **embedded LanceDB**: a local directory, one
+    table per vault, no server. Zero setup; the default.
+  - `type = "qdrant"` (`url`, `collection` — used as a name **prefix**, so each
+    vault's Qdrant collection is `<prefix>-<vault-id>`) — a standalone server,
+    better at scale.
 - **`[embedder]`** — how text becomes vectors. All collections share one
   embedder (the same model must embed documents and queries):
   - `type = "fastembed"` — local, no network. Optional `model` (e.g.
@@ -62,8 +65,8 @@ See `config.example.toml` for the annotated template. Sections:
     `model`, optional `api_key`, `doc_prefix`/`query_prefix`.
 
   The vector width is detected automatically. **Changing the embedder or model
-  invalidates all stored vectors** and forces a re-index — the store is
-  recreated on the next start (sqlite) / the Qdrant collection must be dropped.
+  invalidates all stored vectors** and forces a re-index — drop the store (the
+  Lance directory or the Qdrant collection), then re-push.
 - **`[llm]`** — `provider` (`claude` | `openai` | `gemini` | `mistral`),
   `model`, optional `api_key`. The key is server-owned; if omitted it falls back
   to the provider's env var (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
@@ -184,9 +187,12 @@ Its threat model is deliberately small; know these boundaries before exposing it
 
 ## Vector databases
 
-- **SQLite (`sqlite-vec`)** — local, file-based, zero setup. Collections are
-  isolated by a partition key. Good for small-to-medium vaults.
+- **LanceDB** — embedded, file-based, no server: the store is a local directory
+  with one table per vault. Zero setup; the default. Exhaustive (exact) KNN — no
+  ANN index is built, which is fine for small-to-medium vaults.
 - **Qdrant** — a standalone server; one collection per vault. Better at scale.
+- **Turso** *(planned)* — another embedded option once
+  [Turso](https://github.com/tursodatabase/turso) ships vector similarity search.
 
 ## Development
 
@@ -199,15 +205,36 @@ cargo clippy -p kimun_rag
 cargo fmt
 ```
 
-The vector-store SQL and the external embedders are unit-tested with a fake
-embedder, and the web UI is exercised end-to-end with a fake store, so most
-tests run without downloading a model.
+**Build prerequisite: `protoc`.** LanceDB compiles Protocol Buffer definitions
+in its build script, so the Protobuf compiler *and its well-known types* must be
+installed:
 
-**SQLite version pin.** This crate uses `rusqlite`, while `core` uses `sqlx`;
-both link the native `sqlite3` library, and Cargo permits only one
-`libsqlite3-sys` version across the workspace. `rusqlite` is therefore pinned to
-the version whose `libsqlite3-sys` matches `sqlx-sqlite`'s. Bump the two in
-lockstep (see the comment in `Cargo.toml`).
+```bash
+# Fedora
+sudo dnf install protobuf-compiler protobuf-devel
+# Debian/Ubuntu
+sudo apt install protobuf-compiler
+# macOS
+brew install protobuf
+# Windows (any one)
+winget install protobuf   # or: choco install protoc / scoop install protobuf
+```
+
+If `protoc` is present but its bundled `.proto`s are not (e.g. Fedora without
+`protobuf-devel`), the build fails with
+`google/protobuf/empty.proto: File not found`; point `PROTOC_INCLUDE` at a
+directory holding the well-known types to override.
+
+LanceDB builds on Linux, macOS, and Windows. On **Windows** use the default
+`x86_64-pc-windows-msvc` toolchain with the Visual Studio C++ build tools
+installed — parts of the dependency tree (`zstd-sys`, `lz4-sys`) compile C.
+The Linux-only `io-uring` dependency is target-gated, so it is not built
+elsewhere.
+
+The vector-store adapters and the external embedders are unit-tested with a fake
+embedder (the LanceDB adapter runs against a real on-disk store in a temp dir),
+and the web UI is exercised end-to-end with a fake store, so most tests run
+without downloading a model or reaching a live Qdrant.
 
 ## License
 

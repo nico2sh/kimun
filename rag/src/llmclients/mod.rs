@@ -12,6 +12,6 @@ pub trait LLMClient: Send + Sync {
     async fn ask(
         &self,
         question: &str,
-        context: &Vec<(f64, FlattenedChunk)>,
+        context: &[(f64, FlattenedChunk)],
     ) -> anyhow::Result<String>;
 }

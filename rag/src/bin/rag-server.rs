@@ -132,8 +132,8 @@ async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<KimunRag> 
                 Embedder, fastembedder::FastEmbedder, ollama::OllamaEmbedder,
                 openai::OpenAiEmbedder,
             },
+            veclance::VecLance,
             vecqdrant::VecQdrant,
-            vecsqlite::VecSQLite,
         },
         llmclients::claude::ClaudeClient,
         llmclients::gemini::GeminiClient,
@@ -214,9 +214,9 @@ async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<KimunRag> 
     // Create embeddings based on config
     let embeddings: Arc<dyn kimun_rag::dbembeddings::Embeddings + Send + Sync> =
         match &config.vector_db {
-            VectorDbConfig::SQLite { db_path } => {
-                tracing::info!("Using SQLite vector database at {:?}", db_path);
-                Arc::new(VecSQLite::new(db_path, embedder.clone()))
+            VectorDbConfig::Lance { path } => {
+                tracing::info!("Using LanceDB vector database at {:?}", path);
+                Arc::new(VecLance::new(path, embedder.clone()).await?)
             }
             VectorDbConfig::Qdrant { url, collection } => {
                 tracing::info!(

@@ -66,14 +66,14 @@ impl VecQdrant {
         let exists = collections.collections.iter().any(|c| c.name == name);
 
         if exists {
-            if let Some(existing) = self.collection_dimension(&name).await? {
-                if existing != dim {
-                    anyhow::bail!(
-                        "Qdrant collection `{name}` has dimension {existing} but the \
-                         embedder produces {dim}. The embedder or model changed; drop \
-                         the collection and re-index."
-                    );
-                }
+            if let Some(existing) = self.collection_dimension(&name).await?
+                && existing != dim
+            {
+                anyhow::bail!(
+                    "Qdrant collection `{name}` has dimension {existing} but the \
+                     embedder produces {dim}. The embedder or model changed; drop \
+                     the collection and re-index."
+                );
             }
             return Ok(());
         }
@@ -185,10 +185,7 @@ enum PaginationStatus {
 
 impl PaginationStatus {
     fn has_more(&self) -> bool {
-        match self {
-            PaginationStatus::None => false,
-            _ => true,
-        }
+        !matches!(self, PaginationStatus::None)
     }
 }
 

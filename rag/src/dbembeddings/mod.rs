@@ -4,8 +4,8 @@ use std::{collections::HashMap, fmt::Display};
 
 pub mod embedder;
 
+pub mod veclance;
 pub mod vecqdrant;
-pub mod vecsqlite;
 
 /// Information about an indexed note
 #[derive(Debug, Clone)]

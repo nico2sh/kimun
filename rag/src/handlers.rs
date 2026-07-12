@@ -345,7 +345,7 @@ pub async fn index_delete_handler(
     let embeddings = { state.rag.lock().await.embeddings() };
     let paths: Vec<&String> = request.paths.iter().collect();
     // Serialize with index writes so a delete can't interleave with a store on
-    // the same collection (SQLite file contention / partial-visibility).
+    // the same collection (partial-visibility / lost updates in the store).
     let _index_guard = state.index_lock.lock().await;
     match embeddings.delete_embeddings(&request.vault_id, paths).await {
         Ok(()) => Ok(Json(IndexResponse {
