@@ -64,6 +64,9 @@ pub struct EditorScreen {
     /// App-global update notice, seeded by `AppEvent::UpdateAvailable`. Drives
     /// the footer indicator; `None` when up to date or the check found nothing.
     update: Option<crate::update::UpdateStatus>,
+    /// Latest RAG connection/sync status from the background sync task, shown in
+    /// the footer. `Disabled` (no server) renders nothing.
+    rag_status: crate::rag::RagStatus,
     /// The leader-key sequence state machine (Ctrl-G gateway, spec §8a).
     leader: LeaderEngine,
     /// App event sender, captured on enter — render-side async kicks (the
@@ -110,6 +113,7 @@ impl EditorScreen {
             panels: PanelSet::from_panels(drawer, editor, rail_icons, rail_kb),
             doc_meta: crate::app_screen::doc_meta::DocMeta::new(vault.clone()),
             update: None,
+            rag_status: crate::rag::RagStatus::Disabled,
             vault,
             path,
             footer,
@@ -536,7 +540,11 @@ impl EditorScreen {
 
     async fn on_entry_op(&mut self, from: VaultPath, tx: &AppTx) {
         self.dismiss_overlay();
-        if from == self.path {
+        // `is_like` ignores the vault-relative/absolute distinction: `from` (from
+        // a sidebar/query row) is index-absolute while `self.path` may be relative
+        // (adr/0021). A plain `==` would miss, leaving the stale autosave to
+        // recreate a deleted/moved note.
+        if from.is_like(&self.path) {
             self.autosave.stop();
             self.try_save().await;
             let parent = self.path.get_parent_path().0;
@@ -558,7 +566,10 @@ impl EditorScreen {
     async fn on_note_renamed(&mut self, from: VaultPath, to: VaultPath, tx: &AppTx) {
         self.dismiss_overlay();
         self.panels.sidebar_mut().rename_note_row(&from, &to);
-        if from == self.path {
+        // `is_like` so an absolute `from` (index row) matches a possibly-relative
+        // `self.path` (adr/0021) — otherwise the retarget + autosave-abort below
+        // are skipped and the stale save resurrects the old path.
+        if from.is_like(&self.path) {
             // The open note was renamed. Kill any in-flight autosave still
             // targeting the OLD path before retargeting (spawn_autosave bakes
             // the path in; vault.save_note writes unconditionally, so a stale
@@ -1768,6 +1779,7 @@ impl AppScreen for EditorScreen {
                     .update
                     .as_ref()
                     .map(|u| format!("⬆ {} available", u.latest)),
+                rag: self.rag_status.label().map(|s| s.to_string()),
             },
         };
         self.footer.render(f, rows[2], theme, &ctx);
@@ -1810,6 +1822,9 @@ impl AppScreen for EditorScreen {
         match msg {
             AppEvent::UpdateAvailable(status) => {
                 self.update = Some(status);
+            }
+            AppEvent::RagStatus(status) => {
+                self.rag_status = status;
             }
             AppEvent::ShowUpdateDialog => {
                 if let Some(status) = self.update.clone() {

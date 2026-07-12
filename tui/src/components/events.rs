@@ -36,6 +36,9 @@ pub enum AppEvent {
     // ── App-level messages ───────────────────────────────────────────────────
     Quit,
     Redraw,
+    /// Background RAG sync task reporting its connection/sync status. Rendered
+    /// in the editor footer.
+    RagStatus(crate::rag::RagStatus),
     Autosave,
     /// Background autosave task finished. `saved_revision` carries the
     /// editor's `content_revision` at the moment the save was *issued*

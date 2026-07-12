@@ -31,6 +31,10 @@ pub struct App {
     /// A newer release found by the background update check at startup, if any.
     /// Seeded into each editor screen so the footer can show the indicator.
     pub update: Option<crate::update::UpdateStatus>,
+
+    /// The background RAG sync task for the current vault, when a server is
+    /// configured. Aborted and respawned when the vault is rebuilt.
+    pub rag_sync_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl App {
@@ -88,6 +92,7 @@ impl App {
             vault,
             screen_generation: 0,
             update: None,
+            rag_sync_task: None,
         })
     }
 }

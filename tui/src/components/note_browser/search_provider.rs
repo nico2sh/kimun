@@ -72,15 +72,19 @@ impl RowSource<FileListEntry> for SearchNotesProvider {
             // Build a lookup map from all indexed notes so we can resolve each
             // last_path to its full metadata in O(1).
             let all_notes = self.vault.get_all_notes().await.unwrap_or_default();
+            // The index returns canonical (vault-absolute) paths (adr/0021),
+            // while `last_paths` (from history) may be relative — normalize both
+            // sides to the same form before matching.
+            let norm = |p: &VaultPath| p.flatten().absolute();
             let mut by_path: std::collections::HashMap<_, _> = all_notes
                 .into_iter()
-                .map(|(entry, content)| (entry.path.clone(), (entry, content)))
+                .map(|(entry, content)| (norm(&entry.path), (entry, content)))
                 .collect();
 
             // last_paths is most-recent-first; iterate as-is.
             self.last_paths
                 .iter()
-                .filter_map(|path| by_path.remove(path))
+                .filter_map(|path| by_path.remove(&norm(path)))
                 .map(|(entry, content)| self.to_entry(entry, content))
                 .collect()
         } else {

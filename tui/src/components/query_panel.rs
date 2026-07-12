@@ -998,7 +998,8 @@ mod tests {
                 opened = Some(path);
             }
         }
-        assert_eq!(opened, Some(VaultPath::note_path_from("target")));
+        // The index returns canonical (vault-absolute) paths (adr/0021).
+        assert_eq!(opened, Some(VaultPath::note_path_from("target").absolute()));
     }
 
     /// The memoised highlight needles must follow both cache keys: recompute

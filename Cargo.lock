@@ -1807,6 +1807,7 @@ dependencies = [
  "futures 0.3.32",
  "itertools 0.14.0",
  "kimun_core",
+ "kimun_rag_client",
  "log",
  "nucleo",
  "nvim-rs",
