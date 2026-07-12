@@ -27,6 +27,7 @@ pub mod rich_row;
 pub mod saved_search_breadcrumb;
 pub mod saved_searches_modal;
 pub mod search_list;
+pub mod semantic_search;
 pub mod sidebar;
 pub mod single_line_input;
 pub mod text_editor;

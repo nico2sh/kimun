@@ -13,8 +13,13 @@ use tokio::task::JoinHandle;
 use crate::components::events::{AppEvent, AppTx};
 use crate::settings::SharedSettings;
 
-/// How often the background task drains + reconciles and refreshes status.
+/// How often the background task flushes pending changes and refreshes status.
 const SYNC_INTERVAL: Duration = Duration::from_secs(10);
+
+/// Run a full reconcile (index-wide read + full-collection hash fetch) only
+/// every Nth interval — the drain fast path handles the common case, and a
+/// reconnect forces a reconcile immediately. At 10s × 30 that's ~5 min.
+const RECONCILE_EVERY_N_TICKS: u32 = 30;
 
 /// RAG connection status surfaced in the footer. `Disabled` (no server
 /// configured) is never sent — the loop simply doesn't start — so the footer
@@ -57,33 +62,60 @@ pub fn spawn_rag_sync(
     };
 
     Some(tokio::spawn(async move {
-        let vault_id = match vault.vault_id().await {
-            Ok(id) => id.to_string(),
-            Err(e) => {
-                log::warn!("RAG: cannot read vault id: {e}");
-                let _ = tx.send(AppEvent::RagStatus(RagStatus::Offline));
-                return;
-            }
-        };
-        let client = RagClient::new(url, token, vault_id);
-        let sync = RagSync::new(vault, client);
-
         let mut interval = tokio::time::interval(SYNC_INTERVAL);
+        // Don't stack missed ticks into a back-to-back burst if a slow tick
+        // overruns the interval (large vault / slow server).
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        // Resolve the vault id (which registers the observer) lazily so a
+        // transient failure just retries next tick instead of killing sync for
+        // the whole session.
+        let mut sync: Option<RagSync> = None;
+        // Force a reconcile on the first successful tick and after any offline
+        // gap; drain-only in between.
+        let mut ticks_since_reconcile = RECONCILE_EVERY_N_TICKS;
+
         loop {
             interval.tick().await;
-            if sync.online().await {
-                let _ = tx.send(AppEvent::RagStatus(RagStatus::Syncing));
-                let status = match sync.tick().await {
-                    Ok(()) => RagStatus::Online,
-                    Err(e) => {
-                        log::debug!("RAG sync tick failed: {e}");
-                        RagStatus::Offline
+
+            if sync.is_none() {
+                match vault.vault_id().await {
+                    Ok(id) => {
+                        let client = RagClient::new(url.clone(), token.clone(), id.to_string());
+                        sync = Some(RagSync::new(vault.clone(), client));
                     }
-                };
-                let _ = tx.send(AppEvent::RagStatus(status));
-            } else {
-                let _ = tx.send(AppEvent::RagStatus(RagStatus::Offline));
+                    Err(e) => {
+                        log::warn!("RAG: cannot read vault id (will retry): {e}");
+                        let _ = tx.send(AppEvent::RagStatus(RagStatus::Offline));
+                        continue;
+                    }
+                }
             }
+            let sync = sync.as_ref().expect("sync established above");
+
+            if !sync.online().await {
+                let _ = tx.send(AppEvent::RagStatus(RagStatus::Offline));
+                // Re-establish full consistency on the next successful tick.
+                ticks_since_reconcile = RECONCILE_EVERY_N_TICKS;
+                continue;
+            }
+
+            let _ = tx.send(AppEvent::RagStatus(RagStatus::Syncing));
+            let result = if ticks_since_reconcile >= RECONCILE_EVERY_N_TICKS {
+                ticks_since_reconcile = 0;
+                sync.tick().await // drain + reconcile
+            } else {
+                ticks_since_reconcile += 1;
+                sync.drain().await // fast path
+            };
+            let status = match result {
+                Ok(()) => RagStatus::Online,
+                Err(e) => {
+                    log::debug!("RAG sync failed: {e}");
+                    RagStatus::Offline
+                }
+            };
+            let _ = tx.send(AppEvent::RagStatus(status));
         }
     }))
 }

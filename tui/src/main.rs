@@ -333,6 +333,9 @@ async fn switch_screen(app: &mut App, tx: &AppTx, new_screen: ScreenEvent) {
             .handle_app_message(AppEvent::UpdateAvailable(status), tx)
             .await;
     }
+    screen
+        .handle_app_message(AppEvent::RagStatus(app.rag_status), tx)
+        .await;
     app.current_screen = Some(screen);
     // Bumped here (not at every swap site) because every swap goes through
     // this function. The main loop watches this counter to break its inner
@@ -605,6 +608,16 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
             if let Some(screen) = app.current_screen.as_mut() {
                 screen
                     .handle_app_message(AppEvent::UpdateAvailable(status), tx)
+                    .await;
+            }
+        }
+        AppEvent::RagStatus(status) => {
+            // Same pattern as update: keep app-globally for screen seeding, and
+            // forward for immediate display.
+            app.rag_status = status;
+            if let Some(screen) = app.current_screen.as_mut() {
+                screen
+                    .handle_app_message(AppEvent::RagStatus(status), tx)
                     .await;
             }
         }
