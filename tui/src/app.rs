@@ -35,6 +35,11 @@ pub struct App {
     /// The background RAG sync task for the current vault, when a server is
     /// configured. Aborted and respawned when the vault is rebuilt.
     pub rag_sync_task: Option<tokio::task::JoinHandle<()>>,
+
+    /// Latest RAG status from the background task, held app-globally so a
+    /// freshly-opened editor can be seeded immediately (like `update`) instead
+    /// of showing nothing until the next sync tick.
+    pub rag_status: crate::rag::RagStatus,
 }
 
 impl App {
@@ -93,6 +98,7 @@ impl App {
             screen_generation: 0,
             update: None,
             rag_sync_task: None,
+            rag_status: crate::rag::RagStatus::Disabled,
         })
     }
 }

@@ -50,6 +50,19 @@ impl RagSync {
         reconcile(&self.vault, &self.client).await
     }
 
+    /// Flush pending changes only — the cheap fast path (touches only dirty
+    /// notes). Run this often; run [`tick`](Self::tick)/[`reconcile`](Self::reconcile)
+    /// occasionally as the safety net.
+    pub async fn drain(&self) -> Result<(), RagError> {
+        drain(&self.vault, &self.dirty, &self.client).await
+    }
+
+    /// Full hash-diff reconciliation only — an index-wide read + a full-collection
+    /// hash fetch. The periodic backbone; not needed on every tick.
+    pub async fn reconcile(&self) -> Result<(), RagError> {
+        reconcile(&self.vault, &self.client).await
+    }
+
     /// The underlying client, for queries (search / ask).
     pub fn client(&self) -> &RagClient {
         &self.client

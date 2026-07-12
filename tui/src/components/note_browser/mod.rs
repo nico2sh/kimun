@@ -553,7 +553,7 @@ impl Overlay for NoteBrowserModal {
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-pub(super) fn format_journal_date(date: NaiveDate) -> String {
+pub(crate) fn format_journal_date(date: NaiveDate) -> String {
     date.format("%A, %B %-d, %Y").to_string()
 }
 
