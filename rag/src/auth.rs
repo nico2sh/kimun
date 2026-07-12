@@ -31,7 +31,7 @@ pub fn is_authorized(expected: Option<&str>, auth_header: Option<&str>) -> bool 
 
 /// Length-independent-branch comparison so a wrong token can't be recovered by
 /// timing. (Short-circuiting `==` on the token would leak a match prefix.)
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }

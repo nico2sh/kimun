@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use kimun_core::{NoteVault, error::VaultError, nfs::VaultPath};
+use kimun_core::{IndexObserver, NoteVault, error::VaultError, nfs::VaultPath};
 
 use crate::dto::{WireDoc, WireSection};
 use crate::{
@@ -21,6 +21,9 @@ use crate::{
 pub struct RagSync {
     vault: Arc<NoteVault>,
     dirty: Arc<DirtySet>,
+    /// The exact observer this sync registered, kept so `Drop` can deregister
+    /// *only* ours (by identity) and never a newer one that replaced it.
+    observer: Arc<dyn IndexObserver>,
     client: RagClient,
 }
 
@@ -31,10 +34,13 @@ impl RagSync {
     /// dirty-set (its `tick` still self-heals via reconcile, but its drain fast
     /// path goes silent).
     pub fn new(vault: Arc<NoteVault>, client: RagClient) -> Self {
-        let dirty = register(&vault);
+        let dirty = Arc::new(DirtySet::default());
+        let observer: Arc<dyn IndexObserver> = Arc::new(RagObserver::new(dirty.clone()));
+        vault.set_index_observer(observer.clone());
         Self {
             vault,
             dirty,
+            observer,
             client,
         }
     }
@@ -66,6 +72,15 @@ impl RagSync {
     /// The underlying client, for queries (search / ask).
     pub fn client(&self) -> &RagClient {
         &self.client
+    }
+}
+
+impl Drop for RagSync {
+    fn drop(&mut self) {
+        // Deregister *our* observer so a superseded/aborted sync doesn't leave
+        // the vault feeding a dirty-set nobody drains — but only if it's still
+        // ours, so we never wipe a newer sync that has replaced it.
+        self.vault.clear_index_observer_if(&self.observer);
     }
 }
 
@@ -136,7 +151,9 @@ pub async fn drain<T: RagTransport>(
                 docs.push(doc);
                 built.push((path, hash));
             }
-            Ok(None) => {} // empty note — nothing to index
+            // An emptied note has no chunks to index — delete it server-side so
+            // its old chunks don't linger (and so /hashes stops reporting it).
+            Ok(None) => deletes.push(path.to_string()),
             Err(_) => dirty.requeue([(path, DirtyOp::Upsert(hash))]),
         }
     }
@@ -183,20 +200,29 @@ pub async fn reconcile<T: RagTransport>(vault: &NoteVault, transport: &T) -> Res
     let plan = reconcile_diff(&local_str, &server);
 
     let mut docs = Vec::new();
+    let mut to_delete = plan.to_delete;
     for path_str in &plan.to_push {
         let hash = local_hashes[path_str];
-        if let Some(doc) = build_doc(vault, &VaultPath::new(path_str), hash)
+        match build_doc(vault, &VaultPath::new(path_str), hash)
             .await
             .map_err(|e| RagError::Protocol(format!("build doc {path_str}: {e}")))?
         {
-            docs.push(doc);
+            Some(doc) => docs.push(doc),
+            // Empty note: it carries no chunks. If the server still has it (it
+            // was emptied), delete it; if not, it's already converged (nothing
+            // to push). Either way it never becomes a stale server entry.
+            None => {
+                if server.contains_key(path_str) {
+                    to_delete.push(path_str.clone());
+                }
+            }
         }
     }
     if !docs.is_empty() {
         transport.push_docs(docs).await?;
     }
-    if !plan.to_delete.is_empty() {
-        transport.delete_paths(plan.to_delete).await?;
+    if !to_delete.is_empty() {
+        transport.delete_paths(to_delete).await?;
     }
     Ok(())
 }

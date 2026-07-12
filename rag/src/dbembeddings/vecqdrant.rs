@@ -364,4 +364,50 @@ impl Embeddings for VecQdrant {
             .await?;
         Ok(())
     }
+
+    /// NOTE: counts distinct notes via a full payload scroll per collection
+    /// (O(points)), so it's meant for the occasional admin collections page. Use
+    /// [`collection_names`](Self::collection_names) for pickers.
+    async fn list_collections(&self) -> anyhow::Result<Vec<crate::dbembeddings::CollectionInfo>> {
+        let mut names = self.collection_names().await?;
+        names.sort();
+        let mut out = Vec::with_capacity(names.len());
+        for vault in names {
+            // Count distinct indexed notes (reuses the payload scroll so the
+            // number matches what reconciliation sees), not raw chunk points.
+            let note_count = self
+                .get_indexed_notes(&vault)
+                .await
+                .map(|m| m.len())
+                .unwrap_or(0);
+            out.push(crate::dbembeddings::CollectionInfo {
+                name: vault,
+                note_count,
+            });
+        }
+        Ok(out)
+    }
+
+    async fn collection_names(&self) -> anyhow::Result<Vec<String>> {
+        // Only collections under our prefix belong to this server. With an empty
+        // prefix every Qdrant collection on the instance is treated as a vault.
+        let dash_prefix = if self.collection_prefix.is_empty() {
+            String::new()
+        } else {
+            format!("{}-", self.collection_prefix)
+        };
+        let all = self.client.list_collections().await?;
+        let names = all
+            .collections
+            .into_iter()
+            .filter_map(|c| {
+                if dash_prefix.is_empty() {
+                    Some(c.name)
+                } else {
+                    c.name.strip_prefix(&dash_prefix).map(str::to_string)
+                }
+            })
+            .collect();
+        Ok(names)
+    }
 }

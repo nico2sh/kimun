@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::Mutex;
@@ -12,7 +13,15 @@ use crate::config::RagConfig;
 pub struct AppState {
     pub rag: Arc<Mutex<KimunRag>>,
     pub config: Arc<RagConfig>,
+    /// Where the config was loaded from, so the web UI can persist edits back to
+    /// it. `None` disables saving (config supplied without a resolvable path).
+    pub config_path: Option<PathBuf>,
     pub job_tracker: Arc<Mutex<JobTracker>>,
+    /// Serializes index writes (store/delete) so concurrent jobs on the same
+    /// collection can't double-insert chunks or collide on the SQLite file.
+    /// Queries never take this — they clone the embeddings handle instead, so
+    /// indexing does not block search/answer.
+    pub index_lock: Arc<Mutex<()>>,
 }
 
 impl AppState {
@@ -20,8 +29,16 @@ impl AppState {
         Self {
             rag: Arc::new(Mutex::new(rag)),
             config: Arc::new(config),
+            config_path: None,
             job_tracker: Arc::new(Mutex::new(JobTracker::new())),
+            index_lock: Arc::new(Mutex::new(())),
         }
+    }
+
+    /// Records the on-disk config path so the web UI can write edits back to it.
+    pub fn with_config_path(mut self, path: PathBuf) -> Self {
+        self.config_path = Some(path);
+        self
     }
 }
 
@@ -55,6 +72,13 @@ impl JobTracker {
         self.jobs.get(job_id)
     }
 
+    /// All tracked jobs, newest first — for the web UI's job list.
+    pub fn list(&self) -> Vec<Job> {
+        let mut jobs: Vec<Job> = self.jobs.values().cloned().collect();
+        jobs.sort_by_key(|j| std::cmp::Reverse(j.created_at));
+        jobs
+    }
+
     /// Update job status
     pub fn update_status(&mut self, job_id: &Uuid, status: JobStatus) -> Option<()> {
         let job = self.jobs.get_mut(job_id)?;
@@ -78,14 +102,17 @@ impl JobTracker {
         Some(())
     }
 
-    /// Clean up old jobs (older than 5 minutes)
+    /// Evict jobs older than the retention window. Kept well above the client's
+    /// answer-poll ceiling (~5 min) so a slow-but-live job is never deleted out
+    /// from under a polling client; also bounds a job that a panicking task left
+    /// stuck in `Processing`.
     pub fn cleanup_old_jobs(&mut self) {
         let now = SystemTime::now();
-        let five_minutes = std::time::Duration::from_secs(300);
+        let retention = std::time::Duration::from_secs(15 * 60);
 
         self.jobs.retain(|_, job| {
             if let Ok(elapsed) = now.duration_since(job.created_at) {
-                elapsed < five_minutes
+                elapsed < retention
             } else {
                 true // Keep if we can't determine age
             }

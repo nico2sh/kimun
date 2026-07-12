@@ -19,18 +19,24 @@ Kimün  ──push docs / delete / query──▶  RAG server ──▶  vector 
 
 ## Quick start
 
+The server is the `kimun_rag` crate (a member of the Kimün workspace). Run it
+from the repo root with `-p kimun_rag`, or from this `rag/` directory:
+
 ```bash
 mkdir -p ~/.config/kimun
-cp config.example.toml ~/.config/kimun/rag.conf
+cp rag/config.example.toml ~/.config/kimun/rag.conf
 # edit ~/.config/kimun/rag.conf (see Configuration)
-cargo run --release --bin rag-server
+cargo run --release -p kimun_rag --bin rag-server
 ```
 
 Override host/port/config on the CLI:
 
 ```bash
-cargo run --bin rag-server -- --config /path/to/rag.conf --host 0.0.0.0 --port 7573
+cargo run -p kimun_rag --bin rag-server -- --config /path/to/rag.conf --host 0.0.0.0 --port 7573
 ```
+
+Open `http://127.0.0.1:7573/` for the [web UI](#web-ui); the API lives under
+`/api` (see [API](#api)).
 
 First run downloads the embedding model (and the reranker, if enabled) — a few
 hundred MB — unless you point `[embedder]` at an external service.
@@ -94,7 +100,9 @@ Push a vault's documents. Runs in the background; returns a `job_id`.
 ```
 
 Only documents whose `hash` differs from the server's are re-embedded; unchanged
-ones are skipped.
+ones are skipped. The `hash` covers note **content**, not the chunking — so
+changing the chunking/embedding logic won't re-embed existing notes on its own;
+drop the store (or bump the embedder, which recreates it) to force a re-index.
 
 ### `POST /api/index/delete`
 
@@ -133,6 +141,47 @@ the background; returns a `job_id`. Poll `/api/job/{job_id}` for the result
 Job status: `queued` | `processing` | `completed` (with `result`) | `failed`
 (with `error`).
 
+## Web UI
+
+The server also renders a small admin UI at its root (`http://<host>:<port>/`) —
+server-rendered pages, no build step, no external assets. It offers:
+
+- a **dashboard** of the running configuration (bind address, vector DB,
+  embedder, LLM, reranker, auth);
+- a **config** page to edit the LLM (provider/model/key), reranker, auth token,
+  and bind address — changes are **written to the config file and applied on the
+  next restart** (the embedder, vector store, and LLM client are built at
+  startup, so the live instance is never mutated);
+- a **collections** list with per-vault indexed-note counts;
+- a **jobs** view (auto-refreshing) for indexing/answer jobs;
+- a **test-query** box that runs a semantic search against a collection.
+
+When an `[auth]` token is set, the UI requires signing in with it (the token is
+kept in an `HttpOnly` session cookie); with no token it is open, same as the API.
+The vector DB and embedder are not editable from the UI — change those in the
+config file and restart, since altering them invalidates stored vectors.
+
+## Security
+
+The server is meant to run on a trusted network or behind a gateway you control.
+Its threat model is deliberately small; know these boundaries before exposing it:
+
+- **No built-in TLS.** The server speaks plain HTTP, so the bearer token and note
+  content cross the wire in the clear. Never bind beyond `127.0.0.1` without a
+  TLS-terminating reverse proxy (nginx, Caddy, a tunnel) in front of it. Point
+  Kimün at the proxy's `https://` URL.
+- **One shared token, one trust domain.** The `[auth]` token authenticates the
+  *deployment*, not individual vaults — any holder can push to or query any
+  vault on the server (vaults are isolated by id, not by credential). Run one
+  server per trust domain; don't share a server across mutually-distrusting users.
+- **Fail-open below the loopback bind.** With no token set the API is
+  unauthenticated. The server logs a warning when it binds beyond `127.0.0.1`
+  without one, but it still serves — set a token yourself; nothing forces it.
+- **No rate limiting.** There is no built-in throttle on requests or answer
+  jobs; put that in the reverse proxy if you need it.
+- **Token stored in plaintext config.** Protect `rag.conf` with filesystem
+  permissions (`chmod 600`).
+
 ## Vector databases
 
 - **SQLite (`sqlite-vec`)** — local, file-based, zero setup. Collections are
@@ -141,15 +190,24 @@ Job status: `queued` | `processing` | `completed` (with `result`) | `failed`
 
 ## Development
 
+Part of the Kimün Cargo workspace, so the usual workspace commands include it:
+
 ```bash
-cargo build --release --bin rag-server
-cargo test
-cargo clippy
+cargo build -p kimun_rag              # or `cargo build --workspace`
+cargo test -p kimun_rag               # or `cargo test --workspace`
+cargo clippy -p kimun_rag
 cargo fmt
 ```
 
 The vector-store SQL and the external embedders are unit-tested with a fake
-embedder, so most tests run without downloading a model.
+embedder, and the web UI is exercised end-to-end with a fake store, so most
+tests run without downloading a model.
+
+**SQLite version pin.** This crate uses `rusqlite`, while `core` uses `sqlx`;
+both link the native `sqlite3` library, and Cargo permits only one
+`libsqlite3-sys` version across the workspace. `rusqlite` is therefore pinned to
+the version whose `libsqlite3-sys` matches `sqlx-sqlite`'s. Bump the two in
+lockstep (see the comment in `Cargo.toml`).
 
 ## License
 

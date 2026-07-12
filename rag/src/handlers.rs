@@ -74,13 +74,21 @@ fn bad_request(msg: &str) -> (StatusCode, Json<ErrorResponse>) {
     )
 }
 
-/// Rejects a missing/blank vault id — it is the collection key, and an empty
-/// one would cross-mix every blank-id vault into a single collection.
+/// Validates the vault id — the collection key. Rejects blank ids (which would
+/// cross-mix every blank-id vault) and any id with characters outside
+/// `[A-Za-z0-9._-]`, so it stays a safe, non-colliding collection-name segment
+/// (Kimün always sends a UUID; adr/0020).
 fn require_vault_id(vault_id: &str) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
-    if vault_id.trim().is_empty() {
-        Err(bad_request("vault_id is required"))
-    } else {
+    let ok = !vault_id.is_empty()
+        && vault_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+    if ok {
         Ok(())
+    } else {
+        Err(bad_request(
+            "vault_id must be non-empty and contain only [A-Za-z0-9._-]",
+        ))
     }
 }
 
@@ -165,6 +173,11 @@ pub async fn index_docs_handler(
             .lock()
             .await
             .update_status(&job_id, JobStatus::Processing);
+
+        // Serialize against other index writes (store/delete) for the lifetime
+        // of this read-modify-write, so two concurrent pushes can't both treat a
+        // note as new and double-insert its chunks.
+        let _index_guard = state_clone.index_lock.lock().await;
 
         // Perform indexing
         match index_docs_impl(
@@ -331,6 +344,9 @@ pub async fn index_delete_handler(
     require_vault_id(&request.vault_id)?;
     let embeddings = { state.rag.lock().await.embeddings() };
     let paths: Vec<&String> = request.paths.iter().collect();
+    // Serialize with index writes so a delete can't interleave with a store on
+    // the same collection (SQLite file contention / partial-visibility).
+    let _index_guard = state.index_lock.lock().await;
     match embeddings.delete_embeddings(&request.vault_id, paths).await {
         Ok(()) => Ok(Json(IndexResponse {
             job_id: Uuid::new_v4().to_string(),
@@ -473,10 +489,12 @@ async fn index_docs_impl(
 
     debug!("Starting to store {} chunks", docs.len());
 
-    let rag_lock = rag.lock().await;
+    // Clone the embeddings handle and drop the lock so the (network/CPU-heavy)
+    // embed + store below doesn't block every concurrent search/answer request.
+    let embeddings = { rag.lock().await.embeddings() };
     let indexed_notes = match indexed_notes {
         Some(inotes) => inotes,
-        None => &rag_lock.embeddings.get_indexed_notes(collection).await?,
+        None => &embeddings.get_indexed_notes(collection).await?,
     };
     debug!("Indexed notes: {}", indexed_notes.len());
 
@@ -491,8 +509,7 @@ async fn index_docs_impl(
             if update {
                 // These ones needs to be updated, so we need to remove them first
                 // debug!("For updating, deleting embeddings for {}", doc.path);
-                rag_lock
-                    .embeddings
+                embeddings
                     .delete_embeddings(collection, vec![&doc.path])
                     .await?;
                 updated_count += 1;
@@ -518,10 +535,7 @@ async fn index_docs_impl(
                     current_batch_pos,
                     current_batch_pos + batch_len
                 );
-                rag_lock
-                    .embeddings
-                    .store_embeddings(collection, &batch)
-                    .await?;
+                embeddings.store_embeddings(collection, &batch).await?;
                 batch.clear();
                 current_batch_pos += batch_len;
             }
@@ -535,10 +549,7 @@ async fn index_docs_impl(
             current_batch_pos,
             current_batch_pos + batch.len()
         );
-        rag_lock
-            .embeddings
-            .store_embeddings(collection, &batch)
-            .await?;
+        embeddings.store_embeddings(collection, &batch).await?;
     }
 
     Ok(IndexStats {

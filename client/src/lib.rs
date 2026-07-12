@@ -231,9 +231,25 @@ impl RagClient {
     /// is still coming.
     async fn poll_answer(&self, job_id: &str) -> Result<AnswerResult, RagError> {
         let path = format!("/api/job/{job_id}");
+        let mut consecutive_errors = 0u32;
         for _ in 0..300 {
-            let resp = self.auth(self.http.get(self.url(&path))).send().await?;
-            let status = Self::ok(resp).await?.json::<JobStatus>().await?;
+            // A transient poll error (network blip, server briefly busy) must not
+            // abort an answer that is still being generated — retry, and only
+            // give up after a run of consecutive failures.
+            let status = match self.poll_once(&path).await {
+                Ok(s) => {
+                    consecutive_errors = 0;
+                    s
+                }
+                Err(e) => {
+                    consecutive_errors += 1;
+                    if consecutive_errors >= 15 {
+                        return Err(e);
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    continue;
+                }
+            };
             match status.status.as_str() {
                 "completed" => {
                     let result = status
@@ -251,5 +267,11 @@ impl RagClient {
             }
         }
         Err(RagError::Protocol("answer job timed out".into()))
+    }
+
+    /// One poll of the job status endpoint.
+    async fn poll_once(&self, path: &str) -> Result<JobStatus, RagError> {
+        let resp = self.auth(self.http.get(self.url(path))).send().await?;
+        Ok(Self::ok(resp).await?.json::<JobStatus>().await?)
     }
 }
