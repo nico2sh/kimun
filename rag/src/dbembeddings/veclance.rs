@@ -70,8 +70,10 @@ impl VecLance {
     /// Opens the vault's table, creating it empty (at the embedder's dimension)
     /// if absent. Fails loudly if an existing table's vector width differs from
     /// the embedder's — the model changed and the operator must drop the table
-    /// and re-index (adr: dimension change is destructive).
-    async fn open_or_create(&self, collection: &str) -> anyhow::Result<Table> {
+    /// and re-index (adr: dimension change is destructive). The returned bool is
+    /// `true` when the table was just created, so the caller can skip the
+    /// upsert-delete against a table that is known to be empty.
+    async fn open_or_create(&self, collection: &str) -> anyhow::Result<(Table, bool)> {
         let dim = self.embedder.dimension();
         if self.table_exists(collection).await? {
             let table = self.connection.open_table(collection).execute().await?;
@@ -84,7 +86,7 @@ impl VecLance {
                      the table and re-index."
                 );
             }
-            Ok(table)
+            Ok((table, false))
         } else {
             let table = self
                 .connection
@@ -92,7 +94,7 @@ impl VecLance {
                 .execute()
                 .await?;
             debug!("Created LanceDB table: {collection}");
-            Ok(table)
+            Ok((table, true))
         }
     }
 
@@ -201,7 +203,7 @@ impl Embeddings for VecLance {
     }
 
     async fn store_embeddings(&self, collection: &str, content: &[KimunDoc]) -> anyhow::Result<()> {
-        let table = self.open_or_create(collection).await?;
+        let (table, just_created) = self.open_or_create(collection).await?;
         let dim = self.embedder.dimension();
 
         // Upsert by path: a re-pushed doc replaces its old chunks instead of
@@ -209,13 +211,18 @@ impl Embeddings for VecLance {
         // `content`, and index writes are serialized upstream, so deleting the
         // incoming paths before inserting is safe. (This is stricter than the
         // Qdrant backend, which appends — but it keeps `/hashes` deterministic.)
-        let mut paths: Vec<String> = content.iter().map(|d| d.path.clone()).collect();
-        paths.sort();
-        paths.dedup();
-        if !paths.is_empty() {
-            table
-                .delete(Self::path_in_predicate(&paths).as_str())
-                .await?;
+        // Skip it entirely for a table we just created: it is empty, and the
+        // initial full-vault index would otherwise build a `path IN (…)` list
+        // over every note to delete nothing.
+        if !just_created {
+            let mut paths: Vec<String> = content.iter().map(|d| d.path.clone()).collect();
+            paths.sort();
+            paths.dedup();
+            if !paths.is_empty() {
+                table
+                    .delete(Self::path_in_predicate(&paths).as_str())
+                    .await?;
+            }
         }
 
         // Sub-split sections to the embedding window, then embed and store each
