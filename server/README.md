@@ -24,15 +24,15 @@ from the repo root with `-p kimun_server`, or from this `server/` directory:
 
 ```bash
 mkdir -p ~/.config/kimun
-cp server/config.example.toml ~/.config/kimun/rag.conf
-# edit ~/.config/kimun/rag.conf (see Configuration)
+cp server/config.example.toml ~/.config/kimun/server.toml
+# edit ~/.config/kimun/server.toml (see Configuration)
 cargo run --release -p kimun_server --bin kimun-server
 ```
 
 Override host/port/config on the CLI:
 
 ```bash
-cargo run -p kimun_server --bin kimun-server -- --config /path/to/rag.conf --host 0.0.0.0 --port 7573
+cargo run -p kimun_server --bin kimun-server -- --config /path/to/server.toml --host 0.0.0.0 --port 7573
 ```
 
 Open `http://127.0.0.1:7573/` for the [web UI](#web-ui); the API lives under
@@ -182,7 +182,7 @@ Its threat model is deliberately small; know these boundaries before exposing it
   without one, but it still serves — set a token yourself; nothing forces it.
 - **No rate limiting.** There is no built-in throttle on requests or answer
   jobs; put that in the reverse proxy if you need it.
-- **Token stored in plaintext config.** Protect `rag.conf` with filesystem
+- **Token stored in plaintext config.** Protect `server.toml` with filesystem
   permissions (`chmod 600`).
 
 ## Vector databases

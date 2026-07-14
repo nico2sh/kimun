@@ -19,7 +19,7 @@ use kimun_server::{
 #[derive(Parser)]
 #[command(version, about = "Kimun RAG Server", long_about = None)]
 struct Cli {
-    /// Path to configuration file (default: ~/.config/kimun/rag.conf)
+    /// Path to configuration file (default: ~/.config/kimun/server.toml)
     #[arg(short, long)]
     config: Option<std::path::PathBuf>,
 

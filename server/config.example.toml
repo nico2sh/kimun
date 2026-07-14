@@ -1,5 +1,5 @@
 # Kimun RAG Server Configuration
-# Copy this file to ~/.config/kimun/rag.conf and customize
+# Copy this file to ~/.config/kimun/server.toml and customize
 
 [server]
 # Host to bind to (default: 127.0.0.1)

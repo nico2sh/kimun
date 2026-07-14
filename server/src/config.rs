@@ -597,12 +597,12 @@ impl RagConfig {
         Ok(config)
     }
 
-    /// Get the default config path (~/.config/kimun/rag.conf)
+    /// Get the default config path (~/.config/kimun/server.toml)
     pub fn default_path() -> PathBuf {
         let mut path = dirs::home_dir().expect("Could not find home directory");
         path.push(".config");
         path.push("kimun");
-        path.push("rag.conf");
+        path.push("server.toml");
         path
     }
 
@@ -842,7 +842,7 @@ token = "secret-token"
         let original: RagConfig = toml::from_str(config_toml).unwrap();
 
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("nested").join("rag.conf");
+        let path = dir.path().join("nested").join("server.toml");
         original.save_to(&path).unwrap();
 
         let reloaded = RagConfig::from_file(path).unwrap();
@@ -1206,7 +1206,7 @@ type = "lance"
         // Missing path → generate a semantic-only default, persist it, boot from
         // it. A second load reads the file back rather than regenerating.
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("kimun").join("rag.conf");
+        let path = dir.path().join("kimun").join("server.toml");
         assert!(!path.exists());
 
         let generated = RagConfig::load_or_generate_default(&path).unwrap();
@@ -1225,7 +1225,7 @@ type = "lance"
         // The default is what first run writes with save_to; it must reload.
         let config = RagConfig::default();
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("kimun").join("rag.conf");
+        let path = dir.path().join("kimun").join("server.toml");
         config.save_to(&path).unwrap();
 
         let reloaded = RagConfig::from_file(path).unwrap();
