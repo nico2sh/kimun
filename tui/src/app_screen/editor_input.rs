@@ -11,6 +11,13 @@
 //! above it (the old quirk let a leader-pending Ctrl+V paste an image and
 //! leave the sequence pending). Ctrl-chords and paste payloads cancel the
 //! sequence and dispatch normally; every other key feeds it.
+//!
+//! Two decided collaterals of that reorder, both asserted by tests below:
+//! Ctrl+Enter mid-sequence now feeds the leader instead of following the
+//! link (Enter is not a `Char` chord, so no exception applies — §8a wins
+//! over the old follow-link-first order), and a paste arriving mid-sequence
+//! under an open overlay cancels the leader where the old ladder left it
+//! pending (the paste rule applies regardless of who receives the paste).
 
 use ratatui::crossterm::event::KeyEvent;
 
@@ -71,20 +78,28 @@ pub struct Classification {
 pub enum EditorIntent {
     /// Swallow the event (guarded no-ops, the F-key sink).
     Consume,
-    /// Bracketed paste into the editor: try an image paste first, fall back
-    /// to pasting the text when the clipboard holds no image.
-    EditorPaste(String),
-    /// Ctrl+V in the editor: probe the clipboard for an image; when there is
-    /// none, apply the fallback classification (the rest of the ladder).
-    ImageProbe { fallback: Box<Classification> },
+    /// Bracketed paste into the editor: try an image paste first, fall
+    /// back to pasting the event's text payload when the clipboard holds
+    /// no image. Carries nothing — the executor reads the payload back
+    /// from the event it already holds, so large pastes are never cloned.
+    EditorPaste,
+    /// Ctrl+V in the editor: probe the clipboard for an image. When there
+    /// is none, the executor reclassifies the tail of the ladder
+    /// ([`classify_tail`] with `cancel_leader = false` — the probe
+    /// classification already owned any leader cancel) against fresh
+    /// screen state. Lazy on purpose: the common with-image press must not
+    /// pay for a discarded fallback classification.
+    ImageProbe,
     /// Follow the note link under the editor cursor.
     FollowLink,
     /// Feed the key to the pending leader sequence.
     LeaderKey(KeyEvent),
     /// Start a leader sequence and schedule the which-key reveal.
     LeaderStart,
-    /// A screen action with no classification-time policy beyond its guard.
-    Action(EditorAction),
+    /// A screen operation with no classification-time policy beyond its
+    /// guard (see CONTEXT.md **Intent** — "action" is reserved for
+    /// `ActionShortcuts`, the classifier's *input*).
+    Op(EditorOp),
     /// Dismiss the overlay when one of `kind` is already open, else `open`.
     ToggleOverlay {
         kind: OverlayKind,
@@ -137,7 +152,7 @@ pub enum CycleDir {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum EditorAction {
+pub enum EditorOp {
     ToggleDrawer,
     FocusLeft,
     FocusRight,
@@ -192,21 +207,18 @@ pub fn classify(event: &InputEvent, bindings: &KeyBindings, ctx: &InputCtx) -> C
 
     // Bracketed paste (terminal-level). The executor tries an image paste
     // first and falls back to the text payload.
-    if ctx.editor_active()
-        && let InputEvent::Paste(text) = event
-    {
+    if ctx.editor_active() && matches!(event, InputEvent::Paste(_)) {
         return Classification {
             flash: None,
             cancel_leader,
-            intent: EditorIntent::EditorPaste(text.clone()),
+            intent: EditorIntent::EditorPaste,
         };
     }
 
     // Ctrl+V: probe the clipboard for an image ahead of the editor's own
-    // text paste. No image → the rest of the ladder decides, so the
-    // fallback is the classification of everything below this tier. The
-    // leader cancel rides on the outer classification: the sequence dies
-    // whether or not the clipboard holds an image.
+    // text paste. No image → the executor reclassifies the tail against
+    // fresh state. The leader cancel rides on this classification: the
+    // sequence dies whether or not the clipboard holds an image.
     if ctx.editor_active()
         && let InputEvent::Key(key) = event
         && key.modifiers == KeyModifiers::CONTROL
@@ -215,9 +227,7 @@ pub fn classify(event: &InputEvent, bindings: &KeyBindings, ctx: &InputCtx) -> C
         return Classification {
             flash: None,
             cancel_leader,
-            intent: EditorIntent::ImageProbe {
-                fallback: Box::new(classify_tail(event, bindings, ctx, cancel_leader)),
-            },
+            intent: EditorIntent::ImageProbe,
         };
     }
 
@@ -226,17 +236,17 @@ pub fn classify(event: &InputEvent, bindings: &KeyBindings, ctx: &InputCtx) -> C
 
 /// The ladder below the leader tier and the paste intercepts: shortcuts →
 /// overlay → mouse → vim Space leader → Tab cycle → FIND Esc → focused
-/// panel. Also the Ctrl+V no-image fallback. `cancel_leader` carries the
-/// leader tier's verdict into the returned classification.
-fn classify_tail(
+/// panel. `cancel_leader` carries the leader tier's verdict into the
+/// returned classification. `pub(crate)` for one caller besides
+/// [`classify`]: the executor's no-image [`EditorIntent::ImageProbe`]
+/// path, which runs the tail against post-probe state.
+pub(crate) fn classify_tail(
     event: &InputEvent,
     bindings: &KeyBindings,
     ctx: &InputCtx,
     cancel_leader: bool,
 ) -> Classification {
     use ratatui::crossterm::event::{KeyCode, KeyModifiers};
-
-    let mut flash = None;
 
     // Ctrl+Enter follows the link under the cursor on kitty-protocol
     // terminals (legacy terminals can't tell it from Enter).
@@ -246,181 +256,154 @@ fn classify_tail(
         && key.modifiers.contains(KeyModifiers::CONTROL)
     {
         return Classification {
-            flash,
+            flash: None,
             cancel_leader,
             intent: EditorIntent::FollowLink,
         };
     }
 
+    // Shortcut tier: resolve the bound action (if any) to an intent, and
+    // compute the footer chord flash. The match *yields* instead of
+    // returning so `flash` has a single owner: the one `done` constructor
+    // below moves it into whichever classification wins.
+    let mut flash = None;
+    let mut shortcut_intent = None;
     if let InputEvent::Key(key) = event
         && let Some(combo) = key_event_to_combo(key)
     {
-        let is_fkey = matches!(
-            combo.key,
-            KeyStrike::F1
-                | KeyStrike::F2
-                | KeyStrike::F3
-                | KeyStrike::F4
-                | KeyStrike::F5
-                | KeyStrike::F6
-                | KeyStrike::F7
-                | KeyStrike::F8
-                | KeyStrike::F9
-                | KeyStrike::F10
-                | KeyStrike::F11
-                | KeyStrike::F12
-        );
+        let is_fkey = combo.key.is_fkey();
         let action = bindings.get_action(&combo);
         // Flash the raw chord — except for the leader gateway, whose
         // affordance is the pending sequence (and the which-key overlay).
-        if action != Some(ActionShortcuts::Leader)
-            && (is_fkey
-                || ((combo.modifiers.is_ctrl() || combo.modifiers.is_alt())
-                    && combo.key >= KeyStrike::KeyA
-                    && combo.key <= KeyStrike::KeyZ))
-        {
+        if action != Some(ActionShortcuts::Leader) && (is_fkey || combo.is_letter_chord()) {
             flash = Some(combo.to_string());
         }
-        let done = |intent| Classification {
-            flash: flash.clone(),
-            cancel_leader,
-            intent,
-        };
-        match action {
-            Some(ActionShortcuts::OpenCommandPalette) => {
-                return done(EditorIntent::ToggleOverlay {
-                    kind: OverlayKind::CommandPalette,
-                    open: OverlayOpen::CommandPalette,
-                });
-            }
+        shortcut_intent = match action {
+            Some(ActionShortcuts::OpenCommandPalette) => Some(EditorIntent::ToggleOverlay {
+                kind: OverlayKind::CommandPalette,
+                open: OverlayOpen::CommandPalette,
+            }),
             Some(ActionShortcuts::Leader) => {
                 // The gateway works in every context, including mid-typing —
                 // but not while an overlay owns input.
-                return done(if ctx.overlay.is_none() {
+                Some(if ctx.overlay.is_none() {
                     EditorIntent::LeaderStart
                 } else {
                     EditorIntent::Consume
-                });
+                })
             }
-            Some(ActionShortcuts::ToggleSidebar) => {
-                return done(EditorIntent::Action(EditorAction::ToggleDrawer));
-            }
+            Some(ActionShortcuts::ToggleSidebar) => Some(EditorIntent::Op(EditorOp::ToggleDrawer)),
             Some(ActionShortcuts::FocusSidebar) => {
                 // No-op while an overlay owns input, but still consume the key.
-                return done(if ctx.overlay.is_none() {
-                    EditorIntent::Action(EditorAction::FocusLeft)
+                Some(if ctx.overlay.is_none() {
+                    EditorIntent::Op(EditorOp::FocusLeft)
                 } else {
                     EditorIntent::Consume
-                });
+                })
             }
-            Some(ActionShortcuts::FocusEditor) => {
-                return done(if ctx.overlay.is_none() {
-                    EditorIntent::Action(EditorAction::FocusRight)
-                } else {
-                    EditorIntent::Consume
-                });
-            }
-            Some(ActionShortcuts::NewJournal) => {
-                return done(EditorIntent::Action(EditorAction::OpenJournal));
-            }
-            Some(ActionShortcuts::SearchNotes) => {
-                return done(EditorIntent::ToggleOverlay {
-                    kind: OverlayKind::NoteBrowser,
-                    open: OverlayOpen::SearchBrowser,
-                });
-            }
-            Some(ActionShortcuts::OpenNote) => {
-                return done(EditorIntent::ToggleOverlay {
-                    kind: OverlayKind::NoteBrowser,
-                    open: OverlayOpen::FileFinder,
-                });
-            }
+            Some(ActionShortcuts::FocusEditor) => Some(if ctx.overlay.is_none() {
+                EditorIntent::Op(EditorOp::FocusRight)
+            } else {
+                EditorIntent::Consume
+            }),
+            Some(ActionShortcuts::NewJournal) => Some(EditorIntent::Op(EditorOp::OpenJournal)),
+            Some(ActionShortcuts::SearchNotes) => Some(EditorIntent::ToggleOverlay {
+                kind: OverlayKind::NoteBrowser,
+                open: OverlayOpen::SearchBrowser,
+            }),
+            Some(ActionShortcuts::OpenNote) => Some(EditorIntent::ToggleOverlay {
+                kind: OverlayKind::NoteBrowser,
+                open: OverlayOpen::FileFinder,
+            }),
             Some(ActionShortcuts::FileOperations) if ctx.editor_active() => {
-                return done(EditorIntent::Action(EditorAction::ShowFileOps));
+                Some(EditorIntent::Op(EditorOp::ShowFileOps))
             }
             Some(ActionShortcuts::FollowLink) if ctx.editor_active() => {
-                return done(EditorIntent::FollowLink);
+                Some(EditorIntent::FollowLink)
             }
             Some(ActionShortcuts::ToggleQueryPanel) => {
-                return done(EditorIntent::Action(EditorAction::ToggleQueryPanel));
+                Some(EditorIntent::Op(EditorOp::ToggleQueryPanel))
             }
             Some(ActionShortcuts::OpenFileBrowser) => {
                 // Open (or switch to) the FILES view — never hides the drawer;
                 // ToggleSidebar is the on/off switch. Always reveal: with FILES
                 // already open this is the "where is my note" gesture.
-                return done(EditorIntent::Action(EditorAction::OpenFileBrowserReveal));
+                Some(EditorIntent::Op(EditorOp::OpenFileBrowserReveal))
             }
-            Some(ActionShortcuts::OpenSavedSearches) => {
-                return done(EditorIntent::ToggleOverlay {
-                    kind: OverlayKind::SavedSearches,
-                    open: OverlayOpen::SavedSearches,
-                });
-            }
-            Some(ActionShortcuts::OpenRagAnswer) => {
-                return done(EditorIntent::ToggleOverlay {
-                    kind: OverlayKind::RagAnswer,
-                    open: OverlayOpen::RagAnswer,
-                });
-            }
+            Some(ActionShortcuts::OpenSavedSearches) => Some(EditorIntent::ToggleOverlay {
+                kind: OverlayKind::SavedSearches,
+                open: OverlayOpen::SavedSearches,
+            }),
+            Some(ActionShortcuts::OpenRagAnswer) => Some(EditorIntent::ToggleOverlay {
+                kind: OverlayKind::RagAnswer,
+                open: OverlayOpen::RagAnswer,
+            }),
             Some(ActionShortcuts::OpenSortDialog) => {
                 // Sort applies only when a list is focused (the drawer's
                 // Find / Files views). When the editor is focused, do NOT
-                // consume — fall through so the key reaches it (e.g. Ctrl+R
-                // is redo in the nvim editor).
+                // consume — fall through (`None`) so the key reaches it
+                // (e.g. Ctrl+R is redo in the nvim editor).
                 if ctx.focused == PanelKind::Drawer && ctx.overlay.is_none() {
-                    return done(match ctx.drawer_view {
+                    Some(match ctx.drawer_view {
                         DrawerView::Find => EditorIntent::OpenDialog(DialogRequest::SortQuery),
                         DrawerView::Files => EditorIntent::OpenDialog(DialogRequest::SortSidebar),
                         _ => EditorIntent::Consume,
-                    });
+                    })
+                } else {
+                    None
                 }
             }
             Some(ActionShortcuts::SaveCurrentQuery) => {
                 // Whether there is anything to save is executor state (the
                 // live query text); the key is consumed either way.
-                return done(EditorIntent::Action(EditorAction::SaveCurrentQuery));
+                Some(EditorIntent::Op(EditorOp::SaveCurrentQuery))
             }
             Some(ActionShortcuts::SwitchWorkspace) => {
-                return done(EditorIntent::Action(EditorAction::OpenWorkspaceSwitcher));
+                Some(EditorIntent::Op(EditorOp::OpenWorkspaceSwitcher))
             }
-            Some(ActionShortcuts::QuickNote) => {
-                return done(if ctx.overlay.is_none() {
-                    EditorIntent::OpenDialog(DialogRequest::QuickNote)
-                } else {
-                    EditorIntent::Consume
-                });
-            }
+            Some(ActionShortcuts::QuickNote) => Some(if ctx.overlay.is_none() {
+                EditorIntent::OpenDialog(DialogRequest::QuickNote)
+            } else {
+                EditorIntent::Consume
+            }),
             Some(ActionShortcuts::FindInBuffer) if ctx.editor_active() => {
-                return done(EditorIntent::Action(EditorAction::FindInBuffer));
+                Some(EditorIntent::Op(EditorOp::FindInBuffer))
             }
             Some(ActionShortcuts::Text(
                 action @ (TextAction::Bold | TextAction::Italic | TextAction::Strikethrough),
-            )) if ctx.editor_active() => {
-                return done(EditorIntent::Action(EditorAction::ApplyText(action)));
-            }
+            )) if ctx.editor_active() => Some(EditorIntent::Op(EditorOp::ApplyText(action))),
             _ => {
                 if is_fkey {
                     // F1 opens the help modal. Over the Find panel it surfaces
                     // query syntax instead of the flat key-bindings help. All
                     // F-keys are consumed and never forwarded to the editor.
                     if combo.key == KeyStrike::F1 && combo.modifiers.is_empty() {
-                        return done(EditorIntent::Action(if ctx.find_panel_focused() {
-                            EditorAction::OpenQueryHelp
+                        Some(EditorIntent::Op(if ctx.find_panel_focused() {
+                            EditorOp::OpenQueryHelp
                         } else {
-                            EditorAction::OpenHelp
-                        }));
+                            EditorOp::OpenHelp
+                        }))
+                    } else {
+                        Some(EditorIntent::Consume)
                     }
-                    return done(EditorIntent::Consume);
+                } else {
+                    None
                 }
             }
-        }
+        };
     }
 
-    let done = |intent| Classification {
-        flash: flash.clone(),
+    // Single constructor: moves `flash` into the winning classification.
+    // Every call site diverges, so the FnOnce closure is used at most once.
+    let done = move |intent| Classification {
+        flash,
         cancel_leader,
         intent,
     };
+
+    if let Some(intent) = shortcut_intent {
+        return done(intent);
+    }
 
     // An open overlay intercepts all remaining input ahead of the panels.
     if ctx.overlay.is_some() {
@@ -532,7 +515,7 @@ mod tests {
     #[test]
     fn bracketed_paste_in_editor_is_editor_paste() {
         let c = classify_it(&InputEvent::Paste("hi".into()), &ctx());
-        assert_eq!(c.intent, EditorIntent::EditorPaste("hi".into()));
+        assert_eq!(c.intent, EditorIntent::EditorPaste);
     }
 
     #[test]
@@ -557,34 +540,43 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_v_in_editor_probes_image_with_panel_fallback() {
+    fn ctrl_v_in_editor_is_a_bare_image_probe() {
+        // The probe carries no precomputed fallback: the executor
+        // reclassifies the tail only when the clipboard holds no image.
         let c = classify_it(&ctrl('v'), &ctx());
-        let EditorIntent::ImageProbe { fallback } = c.intent else {
-            panic!("expected ImageProbe, got {:?}", c.intent);
-        };
-        // No image on the clipboard → the rest of the ladder: Ctrl+V is
-        // unbound, so it reaches the focused panel (the editor's own paste),
-        // flashing the chord on the way through the shortcut tier.
+        assert_eq!(c.intent, EditorIntent::ImageProbe);
+        assert_eq!(c.flash, None, "flash belongs to the no-image tail only");
+    }
+
+    #[test]
+    fn ctrl_v_no_image_tail_reaches_panel_with_a_flash() {
+        // The executor's no-image path: classify_tail against post-probe
+        // state (leader already cancelled → cancel_leader = false). Ctrl+V
+        // is unbound, so it reaches the focused panel (the editor's own
+        // paste), flashing the chord on the way through the shortcut tier.
+        let c = classify_tail(&ctrl('v'), &bindings(), &ctx(), false);
         assert_eq!(
-            fallback.intent,
+            c.intent,
             EditorIntent::Panel {
                 fallback: PanelFallback::None
             }
         );
-        assert!(fallback.flash.is_some());
+        assert!(c.flash.is_some());
+        assert!(!c.cancel_leader, "the outer probe already owned the cancel");
     }
 
     #[test]
     fn leader_pending_ctrl_v_cancels_leader_then_probes_image() {
         // §8a ctrl-chord exception: the chord cancels the pending sequence
         // and dispatches normally — for Ctrl+V that is the image probe, so
-        // the cancel rides on the outer classification (the leader must die
-        // whether or not the clipboard holds an image).
+        // the cancel rides on the probe classification (the leader must die
+        // whether or not the clipboard holds an image), and exactly once:
+        // the no-image reclassification must not re-cancel.
         let mut cx = ctx();
         cx.leader_pending = true;
         let c = classify_it(&ctrl('v'), &cx);
         assert!(c.cancel_leader);
-        assert!(matches!(c.intent, EditorIntent::ImageProbe { .. }));
+        assert_eq!(c.intent, EditorIntent::ImageProbe);
     }
 
     #[test]
@@ -595,7 +587,7 @@ mod tests {
         cx.leader_pending = true;
         let c = classify_it(&InputEvent::Paste("hi".into()), &cx);
         assert!(c.cancel_leader);
-        assert_eq!(c.intent, EditorIntent::EditorPaste("hi".into()));
+        assert_eq!(c.intent, EditorIntent::EditorPaste);
     }
 
     #[test]
@@ -711,7 +703,7 @@ mod tests {
     #[test]
     fn toggle_drawer_chord_is_action() {
         let c = classify_it(&ctrl('t'), &ctx());
-        assert_eq!(c.intent, EditorIntent::Action(EditorAction::ToggleDrawer));
+        assert_eq!(c.intent, EditorIntent::Op(EditorOp::ToggleDrawer));
     }
 
     #[test]
@@ -730,7 +722,7 @@ mod tests {
         let c = classify_it(&ctrl('b'), &ctx());
         assert_eq!(
             c.intent,
-            EditorIntent::Action(EditorAction::ApplyText(TextAction::Bold))
+            EditorIntent::Op(EditorOp::ApplyText(TextAction::Bold))
         );
 
         // Drawer focused: the guard fails and the chord falls through the
@@ -782,13 +774,13 @@ mod tests {
     #[test]
     fn f1_opens_help_or_query_help_by_focus() {
         let c = classify_it(&key(KeyCode::F(1), KeyModifiers::NONE), &ctx());
-        assert_eq!(c.intent, EditorIntent::Action(EditorAction::OpenHelp));
+        assert_eq!(c.intent, EditorIntent::Op(EditorOp::OpenHelp));
 
         let mut cx = ctx();
         cx.focused = PanelKind::Drawer;
         cx.drawer_view = DrawerView::Find;
         let c = classify_it(&key(KeyCode::F(1), KeyModifiers::NONE), &cx);
-        assert_eq!(c.intent, EditorIntent::Action(EditorAction::OpenQueryHelp));
+        assert_eq!(c.intent, EditorIntent::Op(EditorOp::OpenQueryHelp));
     }
 
     #[test]
@@ -799,10 +791,20 @@ mod tests {
     }
 
     #[test]
+    fn high_fkeys_are_sunk_like_the_rest() {
+        // "All F-keys are consumed and never forwarded to the editor" —
+        // including F13+ (KeyStrike defines up to F25); the shared
+        // KeyStrike::is_fkey predicate keeps this in step with the
+        // binding validator.
+        let c = classify_it(&key(KeyCode::F(13), KeyModifiers::NONE), &ctx());
+        assert_eq!(c.intent, EditorIntent::Consume);
+    }
+
+    #[test]
     fn bound_fkey_dispatches_when_guard_holds_and_sinks_when_not() {
         // F2 = FileOperations, guarded on the active editor.
         let c = classify_it(&key(KeyCode::F(2), KeyModifiers::NONE), &ctx());
-        assert_eq!(c.intent, EditorIntent::Action(EditorAction::ShowFileOps));
+        assert_eq!(c.intent, EditorIntent::Op(EditorOp::ShowFileOps));
 
         let mut cx = ctx();
         cx.focused = PanelKind::Drawer;

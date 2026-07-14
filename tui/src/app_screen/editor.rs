@@ -10,7 +10,7 @@ use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
 
 use crate::app_screen::editor_input::{
-    Classification, CycleDir, DialogRequest, EditorAction, EditorIntent, InputCtx, OverlayOpen,
+    Classification, CycleDir, DialogRequest, EditorIntent, EditorOp, InputCtx, OverlayOpen,
     PanelFallback, classify,
 };
 use crate::app_screen::overlay_host::OverlayHost;
@@ -37,6 +37,7 @@ use crate::components::query_panel::QueryPanel;
 use crate::components::saved_searches_modal::SavedSearchesModal;
 use crate::components::sidebar::SidebarComponent;
 use crate::components::text_editor::TextEditorComponent;
+use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::leader::{LeaderAction, LeaderEngine, LeaderOutcome};
 use crate::settings::SharedSettings;
@@ -625,6 +626,18 @@ impl EditorScreen {
 }
 
 impl EditorScreen {
+    /// Snapshot of the screen state the input classifier reads. Built per
+    /// classification — cheap field reads only.
+    fn input_ctx(&self) -> InputCtx {
+        InputCtx {
+            overlay: self.overlays.active_kind(),
+            leader_pending: self.leader.is_pending(),
+            focused: self.panels.focused(),
+            drawer_view: self.panels.active_drawer_view(),
+            vim_space_leads: self.panels.editor().is_some_and(|e| e.vim_space_leads()),
+        }
+    }
+
     /// Apply a classification: pre-effects first (footer chord flash, leader
     /// cancel), then the intent. The classifier decides *what* an event
     /// means; everything that mutates happens here.
@@ -651,20 +664,35 @@ impl EditorScreen {
     ) -> EventState {
         match intent {
             EditorIntent::Consume => EventState::Consumed,
-            EditorIntent::EditorPaste(text) => {
+            EditorIntent::EditorPaste => {
                 if !self.try_paste_image(tx)
+                    && let InputEvent::Paste(text) = event
                     && !text.is_empty()
                     && let Some(ed) = self.panels.editor_mut()
                 {
-                    ed.paste_text(&text, tx);
+                    ed.paste_text(text, tx);
                 }
                 EventState::Consumed
             }
-            EditorIntent::ImageProbe { fallback } => {
+            EditorIntent::ImageProbe => {
                 if self.try_paste_image(tx) {
                     EventState::Consumed
                 } else {
-                    self.apply_classification(*fallback, event, tx)
+                    // No image: the rest of the ladder decides. Reclassify
+                    // the tail against fresh state — any leader cancel was
+                    // already applied by the probe classification, so the
+                    // tail must not re-cancel (`cancel_leader = false`).
+                    let ctx = self.input_ctx();
+                    let classification = {
+                        let s = self.settings.read().unwrap();
+                        crate::app_screen::editor_input::classify_tail(
+                            event,
+                            &s.key_bindings,
+                            &ctx,
+                            false,
+                        )
+                    };
+                    self.apply_classification(classification, event, tx)
                 }
             }
             EditorIntent::FollowLink => {
@@ -677,8 +705,8 @@ impl EditorScreen {
                 self.schedule_whichkey_reveal(tx);
                 EventState::Consumed
             }
-            EditorIntent::Action(action) => {
-                self.run_action(action, tx);
+            EditorIntent::Op(op) => {
+                self.run_op(op, tx);
                 EventState::Consumed
             }
             EditorIntent::ToggleOverlay { kind, open } => {
@@ -736,24 +764,24 @@ impl EditorScreen {
         }
     }
 
-    fn run_action(&mut self, action: EditorAction, tx: &AppTx) {
-        match action {
-            EditorAction::ToggleDrawer => self.toggle_drawer(tx),
-            EditorAction::FocusLeft => self.focus_left(tx),
-            EditorAction::FocusRight => self.focus_right(tx),
-            EditorAction::OpenJournal => {
+    fn run_op(&mut self, op: EditorOp, tx: &AppTx) {
+        match op {
+            EditorOp::ToggleDrawer => self.toggle_drawer(tx),
+            EditorOp::FocusLeft => self.focus_left(tx),
+            EditorOp::FocusRight => self.focus_right(tx),
+            EditorOp::OpenJournal => {
                 tx.send(AppEvent::OpenJournal).ok();
             }
-            EditorAction::ShowFileOps => {
+            EditorOp::ShowFileOps => {
                 tx.send(AppEvent::FileOp(FileOp::ShowMenu(self.path.clone())))
                     .ok();
             }
-            EditorAction::ToggleQueryPanel => self.toggle_backlinks(tx),
-            EditorAction::OpenFileBrowserReveal => {
+            EditorOp::ToggleQueryPanel => self.toggle_backlinks(tx),
+            EditorOp::OpenFileBrowserReveal => {
                 self.open_drawer_view(DrawerView::Files, tx);
                 self.reveal_note_dir_in_sidebar(tx);
             }
-            EditorAction::SaveCurrentQuery => {
+            EditorOp::SaveCurrentQuery => {
                 if let Some((query, provenance, source)) = self.save_query_source() {
                     // Opening the save dialog replaces the note browser (if
                     // any); the chained-open guard preserves the original
@@ -767,19 +795,19 @@ impl EditorScreen {
                     )));
                 }
             }
-            EditorAction::OpenWorkspaceSwitcher => self.open_workspace_switcher(),
-            EditorAction::FindInBuffer => {
+            EditorOp::OpenWorkspaceSwitcher => self.open_workspace_switcher(),
+            EditorOp::FindInBuffer => {
                 if let Some(ed) = self.panels.editor_mut() {
                     ed.open_or_advance_search();
                 }
             }
-            EditorAction::ApplyText(text_action) => {
+            EditorOp::ApplyText(text_action) => {
                 if let Some(ed) = self.panels.editor_mut() {
                     ed.apply_text_action(text_action);
                 }
             }
-            EditorAction::OpenHelp => self.open_help(),
-            EditorAction::OpenQueryHelp => self.open_query_help(),
+            EditorOp::OpenHelp => self.open_help(),
+            EditorOp::OpenQueryHelp => self.open_query_help(),
         }
     }
 
@@ -1830,16 +1858,15 @@ impl AppScreen for EditorScreen {
         // Classify first, mutate after: the pure classifier resolves the
         // event against the input precedence (see `editor_input`), and the
         // executor methods below apply the resulting intent.
-        let ctx = InputCtx {
-            overlay: self.overlays.active_kind(),
-            leader_pending: self.leader.is_pending(),
-            focused: self.panels.focused(),
-            drawer_view: self.panels.active_drawer_view(),
-            vim_space_leads: self.panels.editor().is_some_and(|e| e.vim_space_leads()),
-        };
-        let classification = {
+        let ctx = self.input_ctx();
+        // The settings lock guards the key bindings, which only the
+        // shortcut tier reads — never lock for mouse/paste traffic (mouse
+        // motion is high-frequency).
+        let classification = if matches!(event, InputEvent::Key(_)) {
             let s = self.settings.read().unwrap();
             classify(event, &s.key_bindings, &ctx)
+        } else {
+            classify(event, &KeyBindings::empty(), &ctx)
         };
         self.apply_classification(classification, event, tx)
     }

@@ -5,14 +5,12 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
-use ratatui::widgets::Paragraph;
 
 use crate::components::Component;
+use crate::components::config_panel::ConfigPanel;
 use crate::components::drawer_views::{LinksPanel, OutlinePanel, TagsPanel};
 use crate::components::event_state::EventState;
 use crate::components::events::{AppTx, InputEvent};
-use crate::components::panel::panel_block;
 use crate::components::query_panel::QueryPanel;
 use crate::components::semantic_search::SemanticPanel;
 use crate::components::sidebar::SidebarComponent;
@@ -46,16 +44,7 @@ impl DrawerView {
     }
 }
 
-/// What the CFG drawer view displays — resolved by the host screen when the
-/// view opens (the drawer itself holds no settings handle).
-#[derive(Default, Clone)]
-pub struct ConfigInfo {
-    pub theme_name: String,
-    pub leader_key: String,
-    pub preferences_key: String,
-    pub leader_timeout_ms: u64,
-    pub config_path: String,
-}
+pub use crate::components::config_panel::ConfigInfo;
 
 /// Hosts the drawer views. FILES and FIND are the ported existing panels
 /// (file browser and Query panel); TAGS, LINKS, and OUTLINE are the
@@ -68,8 +57,7 @@ pub struct DrawerHost {
     tags: TagsPanel,
     links: LinksPanel,
     outline: OutlinePanel,
-    /// CFG view contents, refreshed by the host when the view opens.
-    config_info: ConfigInfo,
+    config: ConfigPanel,
 }
 
 impl DrawerHost {
@@ -89,13 +77,13 @@ impl DrawerHost {
             tags,
             links,
             outline,
-            config_info: ConfigInfo::default(),
+            config: ConfigPanel::default(),
         }
     }
 
     /// Refresh what the CFG view shows (called when the view opens).
     pub fn set_config_info(&mut self, info: ConfigInfo) {
-        self.config_info = info;
+        self.config.set_info(info);
     }
 
     pub fn active_view(&self) -> DrawerView {
@@ -149,10 +137,7 @@ impl DrawerHost {
             DrawerView::Tags => self.tags.hint_shortcuts(),
             DrawerView::Links => self.links.hint_shortcuts(),
             DrawerView::Outline => self.outline.hint_shortcuts(),
-            DrawerView::Config => vec![
-                ("t/⏎".into(), "Theme picker".into()),
-                ("p".into(), "Preferences".into()),
-            ],
+            DrawerView::Config => self.config.hint_shortcuts(),
         }
     }
 
@@ -172,29 +157,7 @@ impl DrawerHost {
             DrawerView::Tags => self.tags.handle_input(event, tx),
             DrawerView::Links => self.links.handle_input(event, tx),
             DrawerView::Outline => self.outline.handle_input(event, tx),
-            DrawerView::Config => {
-                if let InputEvent::Key(key) = event {
-                    use ratatui::crossterm::event::KeyCode;
-                    match key.code {
-                        KeyCode::Char('t') | KeyCode::Enter => {
-                            tx.send(crate::components::events::AppEvent::ExecuteLeaderAction(
-                                crate::keys::leader::LeaderAction::VaultTheme,
-                            ))
-                            .ok();
-                            return EventState::Consumed;
-                        }
-                        KeyCode::Char('p') => {
-                            tx.send(crate::components::events::AppEvent::OpenScreen(
-                                crate::components::events::ScreenEvent::OpenPreferences,
-                            ))
-                            .ok();
-                            return EventState::Consumed;
-                        }
-                        _ => {}
-                    }
-                }
-                EventState::NotConsumed
-            }
+            DrawerView::Config => self.config.handle_input(event, tx),
         }
     }
 
@@ -222,50 +185,116 @@ impl DrawerHost {
             DrawerView::Tags => self.tags.render(f, rect, theme, focused),
             DrawerView::Links => self.links.render(f, rect, theme, focused),
             DrawerView::Outline => self.outline.render(f, rect, theme, focused),
-            DrawerView::Config => {
-                let block = panel_block("Config", theme, focused);
-                let inner = block.inner(rect);
-                f.render_widget(block, rect);
-                let info = &self.config_info;
-                let label = Style::default().fg(theme.gray.to_ratatui());
-                let value = Style::default().fg(theme.fg.to_ratatui());
-                let keycap = Style::default().fg(theme.yellow.to_ratatui());
-                let lines = vec![
-                    ratatui::text::Line::from(vec![
-                        ratatui::text::Span::styled(" theme    ", label),
-                        ratatui::text::Span::styled(info.theme_name.clone(), value),
-                    ]),
-                    ratatui::text::Line::from(vec![
-                        ratatui::text::Span::styled(" leader   ", label),
-                        ratatui::text::Span::styled(info.leader_key.clone(), value),
-                    ]),
-                    ratatui::text::Line::from(vec![
-                        ratatui::text::Span::styled(" prefs    ", label),
-                        ratatui::text::Span::styled(info.preferences_key.clone(), value),
-                    ]),
-                    ratatui::text::Line::from(vec![
-                        ratatui::text::Span::styled(" timeout  ", label),
-                        ratatui::text::Span::styled(
-                            format!("{} ms (which-key reveal)", info.leader_timeout_ms),
-                            value,
-                        ),
-                    ]),
-                    ratatui::text::Line::from(vec![
-                        ratatui::text::Span::styled(" config   ", label),
-                        ratatui::text::Span::styled(info.config_path.clone(), value),
-                    ]),
-                    ratatui::text::Line::default(),
-                    ratatui::text::Line::from(vec![
-                        ratatui::text::Span::styled(" t ", keycap),
-                        ratatui::text::Span::styled("theme picker", label),
-                    ]),
-                    ratatui::text::Line::from(vec![
-                        ratatui::text::Span::styled(" p ", keycap),
-                        ratatui::text::Span::styled("preferences", label),
-                    ]),
-                ];
-                f.render_widget(Paragraph::new(lines), inner);
-            }
+            DrawerView::Config => self.config.render(f, rect, theme, focused),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::components::events::AppEvent;
+    use crate::settings::AppSettings;
+    use crate::test_support::temp_vault;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use tokio::sync::mpsc::unbounded_channel;
+
+    async fn make_host() -> DrawerHost {
+        let vault = temp_vault("drawerhost").await;
+        vault.validate_and_init().await.unwrap();
+        let settings = AppSettings::default();
+        let sidebar = crate::components::sidebar::SidebarComponent::new(
+            settings.key_bindings.clone(),
+            vault.clone(),
+            settings.icons(),
+            &settings,
+        );
+        let query = crate::components::query_panel::QueryPanel::new(
+            vault.clone(),
+            settings.key_bindings.clone(),
+            settings.icons(),
+        );
+        let semantic = crate::components::semantic_search::SemanticPanel::new(
+            vault.clone(),
+            std::sync::Arc::new(std::sync::RwLock::new(settings.clone())),
+            settings.icons(),
+        );
+        let tags = crate::components::drawer_views::TagsPanel::new(vault.clone(), settings.icons());
+        let links =
+            crate::components::drawer_views::LinksPanel::new(vault.clone(), settings.icons());
+        let outline = crate::components::drawer_views::OutlinePanel::new(vault, settings.icons());
+        DrawerHost::new(sidebar, query, semantic, tags, links, outline)
+    }
+
+    fn key(code: KeyCode) -> InputEvent {
+        InputEvent::Key(KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    /// FIND's key-only rule: the Query panel speaks `handle_key`, so
+    /// non-key events must pass through unconsumed rather than reach it.
+    #[tokio::test]
+    async fn find_view_delivers_keys_only() {
+        let mut host = make_host().await;
+        let (tx, _rx) = unbounded_channel();
+        host.set_view(DrawerView::Find);
+        assert_eq!(
+            host.handle_input(&InputEvent::Paste("hi".into()), &tx),
+            EventState::NotConsumed,
+            "a paste is not a key; FIND must not consume it"
+        );
+    }
+
+    /// The CFG arm delegates to the ConfigPanel component (adr/0023: no
+    /// inline view logic in the host) — its launcher keys work through the
+    /// host's dispatch.
+    #[tokio::test]
+    async fn config_view_routes_to_the_config_panel() {
+        let mut host = make_host().await;
+        let (tx, mut rx) = unbounded_channel();
+        host.set_view(DrawerView::Config);
+        assert_eq!(
+            host.handle_input(&key(KeyCode::Char('t')), &tx),
+            EventState::Consumed
+        );
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AppEvent::ExecuteLeaderAction(
+                crate::keys::leader::LeaderAction::VaultTheme
+            ))
+        ));
+        assert_eq!(
+            host.handle_input(&key(KeyCode::Char('x')), &tx),
+            EventState::NotConsumed
+        );
+    }
+
+    /// Hints follow the active view — the routing seam every view shares.
+    #[tokio::test]
+    async fn hints_follow_the_active_view() {
+        let mut host = make_host().await;
+        host.set_view(DrawerView::Config);
+        let cfg_hints = host.hint_shortcuts();
+        assert!(cfg_hints.iter().any(|(_, h)| h == "Theme picker"));
+        host.set_view(DrawerView::Files);
+        assert_ne!(host.hint_shortcuts(), cfg_hints);
+    }
+
+    /// The status bar's ⌨/≣ indicator: only the query-input views read as
+    /// text input.
+    #[tokio::test]
+    async fn text_input_views_are_find_and_semantic() {
+        let mut host = make_host().await;
+        for (view, expect) in [
+            (DrawerView::Files, false),
+            (DrawerView::Find, true),
+            (DrawerView::Semantic, true),
+            (DrawerView::Tags, false),
+            (DrawerView::Links, false),
+            (DrawerView::Outline, false),
+            (DrawerView::Config, false),
+        ] {
+            host.set_view(view);
+            assert_eq!(host.is_text_input(), expect, "{view:?}");
         }
     }
 }
