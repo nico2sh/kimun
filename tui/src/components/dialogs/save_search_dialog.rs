@@ -4,7 +4,7 @@ use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
 
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, InputEvent, SaveSource};
+use crate::components::events::{AppEvent, AppTx, InputEvent, SaveSource, SavedSearchFlow};
 use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::components::single_line_input::{InputOutcome, SingleLineInput};
 use crate::settings::themes::Theme;
@@ -42,7 +42,7 @@ pub struct SaveSearchDialog {
     /// editor re-pins by identity rather than by comparing query text.
     source: SaveSource,
     /// Existing saved-search names, loaded asynchronously after open (see
-    /// [`AppEvent::SavedSearchNamesLoaded`]). `None` until the load lands —
+    /// [`AppEvent::OverlayData(OverlayData::SavedSearchNamesLoaded)`]). `None` until the load lands —
     /// the hint shows [`SaveHint::Pending`] rather than guessing "save new".
     existing: Option<Vec<String>>,
 }
@@ -108,11 +108,11 @@ impl SaveSearchDialog {
         };
         match self.name.handle_key(key) {
             InputOutcome::Submit => {
-                tx.send(AppEvent::SaveSearchConfirmed {
+                tx.send(AppEvent::SavedSearch(SavedSearchFlow::Confirmed {
                     name: self.effective_name().to_string(),
                     query: self.query.clone(),
                     source: self.source,
-                })
+                }))
                 .ok();
                 tx.send(AppEvent::CloseOverlay).ok();
                 EventState::Consumed
@@ -223,11 +223,11 @@ mod tests {
     ) -> Option<(String, String, SaveSource)> {
         let mut found = None;
         while let Ok(e) = rx.try_recv() {
-            if let AppEvent::SaveSearchConfirmed {
+            if let AppEvent::SavedSearch(SavedSearchFlow::Confirmed {
                 name,
                 query,
                 source,
-            } = e
+            }) = e
             {
                 found = Some((name, query, source));
             }

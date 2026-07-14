@@ -11,7 +11,7 @@ use ratatui::widgets::{Block, Paragraph};
 use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::Component;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, InputEvent};
+use crate::components::events::{AppEvent, AppTx, FileOp, InputEvent};
 use crate::components::sidebar::SidebarComponent;
 use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::key_event_to_combo;
@@ -81,7 +81,7 @@ impl AppScreen for BrowseScreen {
     }
 
     async fn handle_app_message(&mut self, msg: AppEvent, tx: &AppTx) {
-        if let AppEvent::EntryCreated(path) = msg {
+        if let AppEvent::FileOp(FileOp::Created(path)) = msg {
             // A note was created somewhere; rebuild the listing only when we are
             // browsing its directory so the new note shows up.
             let (parent, _) = path.get_parent_path();

@@ -31,14 +31,18 @@ pub enum RagStatus {
     /// Reachable, a sync pass in flight. `llm_available` carries whether the
     /// server has an LLM configured (question-answering possible), so Ask stays
     /// gated consistently while syncing.
-    Syncing { llm_available: bool },
+    Syncing {
+        llm_available: bool,
+    },
     /// Reachable and idle. `llm_available` = the server has an LLM (Q&A on);
     /// `false` = semantic-only (search only).
-    Online { llm_available: bool },
+    Online {
+        llm_available: bool,
+    },
 }
 
 /// A completed RAG answer delivered back to the answer overlay via
-/// [`AppEvent::RagAnswerReady`](crate::components::events::AppEvent).
+/// [`AppEvent::OverlayData(OverlayData::RagAnswerReady)`](crate::components::events::AppEvent).
 #[derive(Debug, Clone)]
 pub struct RagAnswer {
     pub answer: String,

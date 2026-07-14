@@ -15,7 +15,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, InputEvent};
+use crate::components::events::{AppEvent, AppTx, InputEvent, OverlayData};
 use crate::components::overlay::{Overlay, OverlayKind, OverlayMsg};
 use crate::components::semantic_search::rag_client;
 use crate::rag::{RagAnswer, RagSource};
@@ -61,7 +61,7 @@ impl RagAnswerOverlay {
         }
     }
 
-    /// Spawns the ask job; the result comes back via `AppEvent::RagAnswerReady`.
+    /// Spawns the ask job; the result comes back via `AppEvent::OverlayData(OverlayData::RagAnswerReady)`.
     fn submit(&mut self, tx: &AppTx) {
         let query = self.prompt.trim().to_string();
         if query.is_empty() {
@@ -92,7 +92,10 @@ impl RagAnswerOverlay {
                     .map_err(|e| e.to_string()),
                 None => Err("No RAG server configured".to_string()),
             };
-            let _ = tx.send(AppEvent::RagAnswerReady { request_id, result });
+            let _ = tx.send(AppEvent::OverlayData(OverlayData::RagAnswerReady {
+                request_id,
+                result,
+            }));
         });
     }
 
@@ -163,13 +166,13 @@ impl Overlay for RagAnswerOverlay {
         }
     }
 
-    fn handle_app_message(
+    fn handle_data(
         &mut self,
-        msg: &AppEvent,
+        data: &OverlayData,
         _vault: &Arc<NoteVault>,
         _tx: &AppTx,
     ) -> OverlayMsg {
-        if let AppEvent::RagAnswerReady { request_id, result } = msg {
+        if let OverlayData::RagAnswerReady { request_id, result } = data {
             // Ignore a late answer from a superseded / closed ask.
             if *request_id != self.request_id {
                 return OverlayMsg::NotConsumed;

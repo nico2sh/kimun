@@ -9,6 +9,10 @@ use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
 
+use crate::app_screen::editor_input::{
+    Classification, CycleDir, DialogRequest, EditorAction, EditorIntent, InputCtx, OverlayOpen,
+    PanelFallback, classify,
+};
 use crate::app_screen::overlay_host::OverlayHost;
 use crate::app_screen::panel_set::PanelSet;
 use crate::app_screen::{AppScreen, ScreenKind};
@@ -18,21 +22,22 @@ use crate::components::dialogs::ActiveDialog;
 use crate::components::drawer::{DrawerHost, DrawerView};
 use crate::components::drawer_views::{LinksPanel, OutlinePanel, TagsPanel};
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, InputEvent, SaveSource, ScreenEvent, SortTarget};
+use crate::components::events::{
+    AppEvent, AppTx, FileOp, InputEvent, OverlayData, SaveSource, SavedSearchFlow, ScreenEvent,
+    SortTarget, UpdateFlow,
+};
 use crate::components::file_list::FileListEntry;
 use crate::components::footer_bar::FooterBar;
 use crate::components::note_browser::file_finder_provider::FileFinderProvider;
 use crate::components::note_browser::search_provider::resolving_search_source;
 use crate::components::note_browser::{BrowserScope, NoteBrowserModal};
-use crate::components::overlay::{Overlay, OverlayKind, OverlayMsg};
+use crate::components::overlay::{Overlay, OverlayKind};
 use crate::components::panel::PanelKind;
 use crate::components::query_panel::QueryPanel;
 use crate::components::saved_searches_modal::SavedSearchesModal;
 use crate::components::sidebar::SidebarComponent;
 use crate::components::text_editor::TextEditorComponent;
-use crate::keys::action_shortcuts::{ActionShortcuts, TextAction};
-use crate::keys::key_event_to_combo;
-use crate::keys::key_strike::KeyStrike;
+use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::leader::{LeaderAction, LeaderEngine, LeaderOutcome};
 use crate::settings::SharedSettings;
 use crate::settings::icons::Icons;
@@ -61,7 +66,7 @@ pub struct EditorScreen {
     /// Async document/status state: backlink count, git summary, link
     /// affordance cache, pending emphasis needles (see `doc_meta.rs`).
     doc_meta: crate::app_screen::doc_meta::DocMeta,
-    /// App-global update notice, seeded by `AppEvent::UpdateAvailable`. Drives
+    /// App-global update notice, seeded by `AppEvent::Update(UpdateFlow::Available)`. Drives
     /// the footer indicator; `None` when up to date or the check found nothing.
     update: Option<crate::update::UpdateStatus>,
     /// Latest RAG connection/sync status from the background sync task, shown in
@@ -192,14 +197,16 @@ impl EditorScreen {
                 {
                     Ok(Ok(b)) => b,
                     Ok(Err(e)) => {
-                        tx2.send(AppEvent::DialogError(format!("Image encode failed: {e}")))
-                            .ok();
+                        tx2.send(AppEvent::OverlayData(OverlayData::Error(format!(
+                            "Image encode failed: {e}"
+                        ))))
+                        .ok();
                         return;
                     }
                     Err(e) => {
-                        tx2.send(AppEvent::DialogError(format!(
+                        tx2.send(AppEvent::OverlayData(OverlayData::Error(format!(
                             "Image encode task failed: {e}"
-                        )))
+                        ))))
                         .ok();
                         return;
                     }
@@ -209,8 +216,10 @@ impl EditorScreen {
                     tx2.send(AppEvent::InsertAtCursor(markdown)).ok();
                 }
                 Err(e) => {
-                    tx2.send(AppEvent::DialogError(format!("Image save failed: {e}")))
-                        .ok();
+                    tx2.send(AppEvent::OverlayData(OverlayData::Error(format!(
+                        "Image save failed: {e}"
+                    ))))
+                    .ok();
                 }
             }
         });
@@ -616,11 +625,525 @@ impl EditorScreen {
 }
 
 impl EditorScreen {
-    /// The editor owns key input: it is focused and no overlay sits over it.
-    /// Editor-only shortcuts (file ops, follow-link, find, text styling) and
-    /// the paste intercept gate on this.
-    fn editor_active(&self) -> bool {
-        self.panels.focused() == PanelKind::Editor && !self.overlays.is_open()
+    /// Apply a classification: pre-effects first (footer chord flash, leader
+    /// cancel), then the intent. The classifier decides *what* an event
+    /// means; everything that mutates happens here.
+    fn apply_classification(
+        &mut self,
+        classification: Classification,
+        event: &InputEvent,
+        tx: &AppTx,
+    ) -> EventState {
+        if let Some(chord) = classification.flash {
+            self.footer.flash(chord, tx);
+        }
+        if classification.cancel_leader {
+            self.leader.cancel();
+        }
+        self.execute_intent(classification.intent, event, tx)
+    }
+
+    fn execute_intent(
+        &mut self,
+        intent: EditorIntent,
+        event: &InputEvent,
+        tx: &AppTx,
+    ) -> EventState {
+        match intent {
+            EditorIntent::Consume => EventState::Consumed,
+            EditorIntent::EditorPaste(text) => {
+                if !self.try_paste_image(tx)
+                    && !text.is_empty()
+                    && let Some(ed) = self.panels.editor_mut()
+                {
+                    ed.paste_text(&text, tx);
+                }
+                EventState::Consumed
+            }
+            EditorIntent::ImageProbe { fallback } => {
+                if self.try_paste_image(tx) {
+                    EventState::Consumed
+                } else {
+                    self.apply_classification(*fallback, event, tx)
+                }
+            }
+            EditorIntent::FollowLink => {
+                self.follow_link_at_cursor(tx);
+                EventState::Consumed
+            }
+            EditorIntent::LeaderKey(key) => self.handle_leader_key(&key, tx),
+            EditorIntent::LeaderStart => {
+                self.leader.start();
+                self.schedule_whichkey_reveal(tx);
+                EventState::Consumed
+            }
+            EditorIntent::Action(action) => {
+                self.run_action(action, tx);
+                EventState::Consumed
+            }
+            EditorIntent::ToggleOverlay { kind, open } => {
+                if self.overlays.active_kind() == Some(kind) {
+                    self.dismiss_overlay();
+                } else {
+                    self.open_overlay_for(open, tx);
+                }
+                EventState::Consumed
+            }
+            EditorIntent::OpenDialog(request) => {
+                self.open_dialog_for(request);
+                EventState::Consumed
+            }
+            EditorIntent::Overlay => self.overlays.handle_input(event, tx),
+            EditorIntent::Mouse => {
+                // `PanelSet` hit-tests the panel columns: a click focuses the
+                // panel under the cursor (one rule for every panel) and the
+                // event is forwarded to that panel for its internal behavior.
+                let state = self.panels.handle_mouse(event, tx);
+                // A selectionless right-click in the editor asks for the
+                // note's context menu — the screen owns the path, so it
+                // opens it here.
+                if self.panels.editor().is_some_and(|e| e.wants_context_menu) {
+                    if let Some(ed) = self.panels.editor_mut() {
+                        ed.wants_context_menu = false;
+                    }
+                    tx.send(AppEvent::FileOp(FileOp::ShowMenu(self.path.clone())))
+                        .ok();
+                }
+                state
+            }
+            EditorIntent::Panel { fallback } => {
+                let state = self.panels.handle_input(event, tx);
+                if state == EventState::NotConsumed {
+                    match fallback {
+                        PanelFallback::None => state,
+                        PanelFallback::FocusCycle(CycleDir::Right) => {
+                            self.focus_right(tx);
+                            EventState::Consumed
+                        }
+                        PanelFallback::FocusCycle(CycleDir::Left) => {
+                            self.focus_left(tx);
+                            EventState::Consumed
+                        }
+                        PanelFallback::FocusEditor => {
+                            self.focus_editor();
+                            EventState::Consumed
+                        }
+                    }
+                } else {
+                    state
+                }
+            }
+        }
+    }
+
+    fn run_action(&mut self, action: EditorAction, tx: &AppTx) {
+        match action {
+            EditorAction::ToggleDrawer => self.toggle_drawer(tx),
+            EditorAction::FocusLeft => self.focus_left(tx),
+            EditorAction::FocusRight => self.focus_right(tx),
+            EditorAction::OpenJournal => {
+                tx.send(AppEvent::OpenJournal).ok();
+            }
+            EditorAction::ShowFileOps => {
+                tx.send(AppEvent::FileOp(FileOp::ShowMenu(self.path.clone())))
+                    .ok();
+            }
+            EditorAction::ToggleQueryPanel => self.toggle_backlinks(tx),
+            EditorAction::OpenFileBrowserReveal => {
+                self.open_drawer_view(DrawerView::Files, tx);
+                self.reveal_note_dir_in_sidebar(tx);
+            }
+            EditorAction::SaveCurrentQuery => {
+                if let Some((query, provenance, source)) = self.save_query_source() {
+                    // Opening the save dialog replaces the note browser (if
+                    // any); the chained-open guard preserves the original
+                    // opener focus.
+                    self.present_overlay(Box::new(ActiveDialog::save_search(
+                        query,
+                        provenance,
+                        source,
+                        self.vault.clone(),
+                        tx,
+                    )));
+                }
+            }
+            EditorAction::OpenWorkspaceSwitcher => self.open_workspace_switcher(),
+            EditorAction::FindInBuffer => {
+                if let Some(ed) = self.panels.editor_mut() {
+                    ed.open_or_advance_search();
+                }
+            }
+            EditorAction::ApplyText(text_action) => {
+                if let Some(ed) = self.panels.editor_mut() {
+                    ed.apply_text_action(text_action);
+                }
+            }
+            EditorAction::OpenHelp => self.open_help(),
+            EditorAction::OpenQueryHelp => self.open_query_help(),
+        }
+    }
+
+    fn open_overlay_for(&mut self, open: OverlayOpen, tx: &AppTx) {
+        match open {
+            OverlayOpen::SearchBrowser => self.open_search_browser(tx),
+            OverlayOpen::FileFinder => self.open_file_finder(tx),
+            OverlayOpen::SavedSearches => self.open_saved_searches(tx),
+            OverlayOpen::RagAnswer => self.open_rag_answer(tx),
+            OverlayOpen::CommandPalette => self.open_command_palette(tx),
+        }
+    }
+
+    fn open_dialog_for(&mut self, request: DialogRequest) {
+        match request {
+            DialogRequest::SortQuery => {
+                let (field, order) = self.panels.query().current_order();
+                self.present_overlay(Box::new(ActiveDialog::sort(
+                    SortTarget::Query,
+                    field,
+                    order,
+                    false,
+                )));
+            }
+            DialogRequest::SortSidebar => {
+                let (field, order) = self.panels.sidebar().current_sort();
+                self.present_overlay(Box::new(ActiveDialog::sort(
+                    SortTarget::Sidebar,
+                    field,
+                    order,
+                    self.panels.sidebar().group_dirs(),
+                )));
+            }
+            DialogRequest::QuickNote => {
+                self.present_overlay(Box::new(ActiveDialog::quick_note(self.vault.clone())));
+            }
+        }
+    }
+
+    /// One owner for the self-update lifecycle's display half; the
+    /// app-global half (persisting dismissals, seeding later screens) lives
+    /// in main.rs.
+    fn handle_update(&mut self, flow: UpdateFlow, tx: &AppTx) {
+        match flow {
+            UpdateFlow::Available(status) => {
+                self.update = Some(status);
+            }
+            UpdateFlow::ShowDialog => {
+                if let Some(status) = self.update.clone() {
+                    self.present_overlay(Box::new(ActiveDialog::update(&status)));
+                }
+            }
+            UpdateFlow::Dismiss(_) => {
+                // Persistence happens in main; here we just drop the indicator.
+                self.update = None;
+            }
+            UpdateFlow::Applied => {
+                // Installed — drop the notice so the footer/dialog stop offering
+                // the version we just wrote (restart still required to run it).
+                self.update = None;
+            }
+            UpdateFlow::Apply => {
+                let tx2 = tx.clone();
+                tx.send(AppEvent::FlashMessage("Downloading update…".into()))
+                    .ok();
+                tokio::spawn(async move {
+                    let result = async {
+                        let latest = crate::update::latest_release().await?;
+                        crate::update::install(latest).await
+                    }
+                    .await;
+                    let msg = match result {
+                        Ok(()) => {
+                            tx2.send(AppEvent::Update(UpdateFlow::Applied)).ok();
+                            "Update installed — restart kimün to apply".to_string()
+                        }
+                        Err(e) => format!("Update failed: {e}"),
+                    };
+                    tx2.send(AppEvent::FlashMessage(msg)).ok();
+                });
+            }
+        }
+    }
+
+    /// One owner for file operations: requests present the matching dialog,
+    /// confirmations keep the sidebar and the open note in step.
+    async fn handle_file_op(&mut self, op: FileOp, tx: &AppTx) {
+        match op {
+            FileOp::ShowMenu(path) => {
+                self.present_overlay(Box::new(ActiveDialog::file_ops_menu(path)));
+            }
+            FileOp::ShowDelete(path) => {
+                self.present_overlay(Box::new(ActiveDialog::delete(path, self.vault.clone())));
+            }
+            FileOp::ShowRename(path) => {
+                self.present_overlay(Box::new(ActiveDialog::rename(path, self.vault.clone())));
+            }
+            FileOp::ShowMove(path) => {
+                self.present_overlay(Box::new(ActiveDialog::move_to(
+                    path,
+                    self.vault.clone(),
+                    tx,
+                )));
+            }
+            FileOp::Created(path) => {
+                // Pure notification: a note now exists at `path`. Opening is the
+                // creator's job (via OpenPath); here we only keep the sidebar in
+                // step when it is browsing the new note's directory.
+                self.refresh_sidebar_if_showing(&path.get_parent_path().0, tx);
+            }
+            FileOp::Deleted(path) => {
+                self.on_entry_op(path, tx).await;
+            }
+            FileOp::Renamed { from, to } => {
+                // Note rename → targeted row update (and retarget the editor if
+                // it is the open note). Directory rename keeps the full reload.
+                if from.is_note() {
+                    self.on_note_renamed(from, to, tx).await;
+                } else {
+                    self.on_entry_op(from, tx).await;
+                }
+            }
+            FileOp::Moved { from, .. } => {
+                self.on_entry_op(from, tx).await;
+            }
+        }
+    }
+
+    /// One owner for the saved-search save/select flow.
+    fn handle_saved_search(&mut self, flow: SavedSearchFlow, tx: &AppTx) {
+        match flow {
+            SavedSearchFlow::Selected { query, name } => {
+                // Deliberate non-restoring close: the selection lands in the
+                // Query panel (set by apply_saved_search), not back on the
+                // overlay's opener — so close the overlay without dismiss_overlay.
+                self.overlays.close();
+                self.apply_saved_search(query, name, tx);
+            }
+            SavedSearchFlow::Confirmed {
+                name,
+                query,
+                source,
+            } => {
+                // Write in the background; the breadcrumb re-pin waits for
+                // the success event so the UI never claims an unpersisted
+                // save (see `Persisted` below).
+                let vault = self.vault.clone();
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    match vault.save_search(&name, &query).await {
+                        Ok(()) => {
+                            tx.send(AppEvent::SavedSearch(SavedSearchFlow::Persisted {
+                                name,
+                                query,
+                                source,
+                            }))
+                            .ok();
+                        }
+                        Err(e) => {
+                            tracing::warn!("failed to save search '{}': {}", name, e);
+                            tx.send(AppEvent::SavedSearch(SavedSearchFlow::SaveFailed { name }))
+                                .ok();
+                        }
+                    }
+                });
+            }
+            // Re-pin the panel breadcrumb to the saved identity: the edited
+            // marker drops on an update, the name switches on a save-as-new.
+            // Only for panel-sourced saves (a note-browser save must not
+            // steal the panel's provenance, even when the query text
+            // coincides), and not for the query-as-name fallback (a
+            // breadcrumb that echoes the query is noise).
+            SavedSearchFlow::Persisted {
+                name,
+                query,
+                source: SaveSource::QueryPanel,
+            } if name.trim() != query.trim() => {
+                self.panels.query_mut().repin_saved_search(name, &query);
+            }
+            SavedSearchFlow::Persisted { .. } => {}
+            SavedSearchFlow::SaveFailed { name } => {
+                self.footer
+                    .flash(format!("Failed to save search '{name}'"), tx);
+            }
+        }
+    }
+
+    /// The editor-owned singles: everything with exactly one arm and no
+    /// family. Family events never reach this match.
+    async fn handle_owned_message(&mut self, msg: AppEvent, tx: &AppTx) {
+        match msg {
+            AppEvent::RagStatus(status) => {
+                self.rag_status = status;
+            }
+            // Stale completions (for notes we've navigated away from) fall
+            // through to the catch-all and are dropped.
+            AppEvent::FlashMessage(msg) => {
+                self.footer.flash(msg, tx);
+            }
+            AppEvent::ExecuteLeaderAction(action) => {
+                if self.overlays.is_open() {
+                    // The palette closes itself before sending, so this is
+                    // unreachable from it — but never drop an action silently.
+                    tracing::warn!("ExecuteLeaderAction({action:?}) dropped: overlay open");
+                } else {
+                    self.execute_leader_action(action, tx);
+                }
+            }
+            AppEvent::ApplyTheme { theme, persist } => {
+                // The picker resolved the theme already — no disk re-read,
+                // just adapt to the terminal and swap.
+                {
+                    let mut s = self.settings.write().unwrap();
+                    s.set_theme(theme.name.clone());
+                }
+                self.theme = (*theme).adapt_to_terminal();
+                if persist {
+                    let snapshot = self.settings.read().unwrap().clone();
+                    tokio::spawn(async move {
+                        snapshot.save_to_disk().ok();
+                    });
+                }
+                tx.send(AppEvent::Redraw).ok();
+            }
+            // Drawer panels can't emit these under an overlay, but guard
+            // anyway: never mutate panels while an overlay owns input.
+            AppEvent::RunTagQuery(label) if !self.overlays.is_open() => {
+                self.open_find_with_query(format!("#{label}"), None, tx);
+            }
+            AppEvent::JumpToHeading(heading) if !self.overlays.is_open() => {
+                if let Some(ed) = self.panels.editor_mut() {
+                    ed.jump_to_heading(&heading);
+                }
+                self.focus_editor();
+            }
+            AppEvent::OpenDrawerView(view) => {
+                // Selecting the already-active view toggles the drawer closed
+                // (spec §3: clicking the active rail item toggles).
+                if self.panels.is_visible(PanelKind::Drawer)
+                    && self.panels.active_drawer_view() == view
+                {
+                    self.panels.hide(PanelKind::Drawer);
+                } else {
+                    self.open_drawer_view(view, tx);
+                }
+            }
+            AppEvent::CloseOverlay => {
+                // Dismiss-to-opener. Guarded by is_open() on purpose: a
+                // selection that wants a specific post-close focus
+                // (OpenPath -> editor, SavedSearchSelected -> Query panel)
+                // closes the overlay itself first, so a later/!dialog
+                // CloseOverlay must not re-restore and clobber that focus.
+                self.dismiss_overlay();
+            }
+            AppEvent::SortChanged {
+                target,
+                field,
+                order,
+                group_directories,
+                persist,
+            } => {
+                match target {
+                    SortTarget::Sidebar if persist => {
+                        // Update the sidebar's in-session per-context default AND
+                        // apply live. `is_current_journal()` is the single source
+                        // of truth for which context this save targets — reused
+                        // for the on-disk settings write below.
+                        let is_journal = self.panels.sidebar().is_current_journal();
+                        self.panels
+                            .sidebar_mut()
+                            .save_default(field, order, group_directories);
+                        {
+                            let mut s = self.settings.write().unwrap();
+                            if is_journal {
+                                s.journal_sort_field =
+                                    crate::settings::SortFieldSetting::from(field);
+                                s.journal_sort_order =
+                                    crate::settings::SortOrderSetting::from(order);
+                            } else {
+                                s.default_sort_field =
+                                    crate::settings::SortFieldSetting::from(field);
+                                s.default_sort_order =
+                                    crate::settings::SortOrderSetting::from(order);
+                            }
+                            s.group_directories = group_directories;
+                        }
+                        let snapshot = self.settings.read().unwrap().clone();
+                        tokio::spawn(async move {
+                            snapshot.save_to_disk().ok();
+                        });
+                    }
+                    SortTarget::Sidebar => {
+                        self.panels
+                            .sidebar_mut()
+                            .apply_sort(field, order, group_directories)
+                    }
+                    // The query panel has no persisted default (the order lives
+                    // in the query string); `persist` is always false here.
+                    SortTarget::Query => self.panels.query_mut().apply_sort(field, order, tx),
+                }
+            }
+            AppEvent::Autosave => {
+                self.spawn_autosave(tx);
+            }
+            AppEvent::AutosaveCompleted {
+                path,
+                saved_revision,
+                title,
+            } => {
+                if path == self.path
+                    && let Some(rev) = saved_revision
+                    && let Some(ed) = self.panels.editor_mut()
+                {
+                    ed.mark_saved_at_revision(rev);
+                }
+                if let Some(raw_title) = title {
+                    self.note_saved(&path, raw_title);
+                }
+                // The write changed the working tree — refresh the git
+                // segment (throttled).
+                self.doc_meta.refresh_git(tx);
+                // `SingleSlotTask::is_in_flight()` flips to false the
+                // moment the spawned future returns (success or panic),
+                // so we don't have to clear the slot manually here —
+                // the next `spawn_autosave` tick will overwrite it.
+                // Skip explicit cleanup; was previously racy because a
+                // stale completion arriving after `try_save` had
+                // already cleared and respawned could wipe the fresh
+                // handle.
+            }
+            AppEvent::FocusSidebar => {
+                self.focus_sidebar(tx);
+            }
+            AppEvent::FollowLink(target) => {
+                self.follow_link(target, tx).await;
+            }
+            AppEvent::FollowLabel(name) => {
+                let initial = format!("#{name}");
+                let s = self.settings.read().unwrap();
+                let provider = resolving_search_source(
+                    self.vault.clone(),
+                    s.current_last_paths(),
+                    Some(self.path.clone()),
+                );
+                let modal = NoteBrowserModal::with_initial_query(
+                    "Note Browser",
+                    BrowserScope::Query,
+                    provider,
+                    self.vault.clone(),
+                    s.key_bindings.clone(),
+                    s.icons(),
+                    tx.clone(),
+                    initial,
+                );
+                drop(s);
+                self.present_overlay(Box::new(modal));
+            }
+            AppEvent::InsertAtCursor(text) if self.panels.focused() == PanelKind::Editor => {
+                if let Some(ed) = self.panels.editor_mut() {
+                    ed.insert_at_cursor(&text, tx);
+                }
+            }
+            _ => {}
+        }
     }
 
     pub fn focus_editor(&mut self) {
@@ -916,14 +1439,6 @@ impl EditorScreen {
         self.present_overlay(Box::new(dialog));
     }
 
-    /// True when the Find drawer view (the query panel) holds focus — the
-    /// context in which F1 surfaces query syntax help instead of the flat
-    /// key-bindings panel.
-    fn find_panel_focused(&self) -> bool {
-        self.panels.focused() == PanelKind::Drawer
-            && self.panels.active_drawer_view() == DrawerView::Find
-    }
-
     /// Open the search query syntax reference (F1 while the Find panel is
     /// focused). No-op while an overlay is open.
     fn open_query_help(&mut self) {
@@ -1105,8 +1620,9 @@ impl EditorScreen {
                                 // Manual check: surface the notice AND open the
                                 // dialog the user explicitly asked for (shown even
                                 // if previously skipped — they asked).
-                                tx2.send(AppEvent::UpdateAvailable(status)).ok();
-                                tx2.send(AppEvent::ShowUpdateDialog).ok();
+                                tx2.send(AppEvent::Update(UpdateFlow::Available(status)))
+                                    .ok();
+                                tx2.send(AppEvent::Update(UpdateFlow::ShowDialog)).ok();
                             }
                             Ok(_) => {
                                 tx2.send(AppEvent::FlashMessage("kimün is up to date".into()))
@@ -1151,13 +1667,16 @@ impl EditorScreen {
                 self.footer.flash("templates — coming soon".to_string(), tx);
             }
             LeaderAction::NoteRename => {
-                tx.send(AppEvent::ShowRenameDialog(self.path.clone())).ok();
+                tx.send(AppEvent::FileOp(FileOp::ShowRename(self.path.clone())))
+                    .ok();
             }
             LeaderAction::NoteMove => {
-                tx.send(AppEvent::ShowMoveDialog(self.path.clone())).ok();
+                tx.send(AppEvent::FileOp(FileOp::ShowMove(self.path.clone())))
+                    .ok();
             }
             LeaderAction::NoteDelete => {
-                tx.send(AppEvent::ShowDeleteDialog(self.path.clone())).ok();
+                tx.send(AppEvent::FileOp(FileOp::ShowDelete(self.path.clone())))
+                    .ok();
             }
 
             // +links
@@ -1308,370 +1827,21 @@ impl AppScreen for EditorScreen {
     }
 
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
-        // Bracketed paste (terminal-level) — fired by Cmd+V on macOS and by
-        // terminal-paste shortcuts on every platform. Try image first; if the
-        // clipboard does not hold an image, fall back to the pasted text. The
-        // payload string may be empty (e.g. clipboard contains image only).
-        if self.editor_active()
-            && let InputEvent::Paste(text) = event
-        {
-            if !self.try_paste_image(tx)
-                && !text.is_empty()
-                && let Some(ed) = self.panels.editor_mut()
-            {
-                ed.paste_text(text, tx);
-            }
-            return EventState::Consumed;
-        }
-        // Intercept Ctrl+V to handle image paste before the editor consumes it
-        // for a regular text paste. Falls through if the clipboard is not an image.
-        if self.editor_active()
-            && let InputEvent::Key(key) = event
-            && key.modifiers == ratatui::crossterm::event::KeyModifiers::CONTROL
-            && key.code == ratatui::crossterm::event::KeyCode::Char('v')
-            && self.try_paste_image(tx)
-        {
-            return EventState::Consumed;
-        }
-        // Ctrl+Enter follows the link under the cursor on kitty-protocol
-        // terminals (legacy terminals can't tell it from Enter; Ctrl+N is the
-        // always-works binding).
-        if self.editor_active()
-            && let InputEvent::Key(key) = event
-            && key.code == ratatui::crossterm::event::KeyCode::Enter
-            && key
-                .modifiers
-                .contains(ratatui::crossterm::event::KeyModifiers::CONTROL)
-        {
-            self.follow_link_at_cursor(tx);
-            return EventState::Consumed;
-        }
-
-        // A pending leader sequence owns the keyboard ahead of everything
-        // else (spec §8a) — every key is consumed until it fires or cancels.
-        // Exceptions: an overlay that opened underneath (async paths) wins,
-        // and a Ctrl-chord cancels the sequence then dispatches normally, so
-        // Ctrl-G restarts the leader and Ctrl-Q still quits mid-sequence.
-        if self.leader.is_pending()
-            && let InputEvent::Key(key) = event
-        {
-            if self.overlays.is_open() {
-                self.leader.cancel();
-            } else if matches!(key.code, ratatui::crossterm::event::KeyCode::Char(_))
-                && key
-                    .modifiers
-                    .contains(ratatui::crossterm::event::KeyModifiers::CONTROL)
-            {
-                self.leader.cancel();
-                // fall through to normal dispatch below
-            } else {
-                return self.handle_leader_key(key, tx);
-            }
-        }
-
-        if let InputEvent::Key(key) = event
-            && let Some(combo) = key_event_to_combo(key)
-        {
-            let is_fkey = matches!(
-                combo.key,
-                KeyStrike::F1
-                    | KeyStrike::F2
-                    | KeyStrike::F3
-                    | KeyStrike::F4
-                    | KeyStrike::F5
-                    | KeyStrike::F6
-                    | KeyStrike::F7
-                    | KeyStrike::F8
-                    | KeyStrike::F9
-                    | KeyStrike::F10
-                    | KeyStrike::F11
-                    | KeyStrike::F12
-            );
-            let action = {
-                let s = self.settings.read().unwrap();
-                s.key_bindings.get_action(&combo)
-            };
-            // Flash the raw chord — except for the leader gateway, whose
-            // affordance is the pending sequence (and the which-key overlay).
-            if action != Some(ActionShortcuts::Leader)
-                && (is_fkey
-                    || ((combo.modifiers.is_ctrl() || combo.modifiers.is_alt())
-                        && combo.key >= KeyStrike::KeyA
-                        && combo.key <= KeyStrike::KeyZ))
-            {
-                self.footer.flash(combo.to_string(), tx);
-            }
-            match action {
-                Some(ActionShortcuts::OpenCommandPalette) => {
-                    if self.overlays.active_kind() == Some(OverlayKind::CommandPalette) {
-                        self.dismiss_overlay();
-                    } else {
-                        self.open_command_palette(tx);
-                    }
-                    return EventState::Consumed;
-                }
-                Some(ActionShortcuts::Leader) => {
-                    // The gateway works in every context, including
-                    // mid-typing — but not while an overlay owns input.
-                    if !self.overlays.is_open() {
-                        self.leader.start();
-                        self.schedule_whichkey_reveal(tx);
-                    }
-                    return EventState::Consumed;
-                }
-                Some(ActionShortcuts::ToggleSidebar) => {
-                    self.toggle_drawer(tx);
-                    return EventState::Consumed;
-                }
-                Some(ActionShortcuts::FocusSidebar) => {
-                    // No-op while an overlay owns input, but still consume the key.
-                    if !self.overlays.is_open() {
-                        self.focus_left(tx);
-                    }
-                    return EventState::Consumed;
-                }
-                Some(ActionShortcuts::FocusEditor) => {
-                    if !self.overlays.is_open() {
-                        self.focus_right(tx);
-                    }
-                    return EventState::Consumed;
-                }
-                Some(ActionShortcuts::NewJournal) => {
-                    tx.send(AppEvent::OpenJournal).ok();
-                    return EventState::Consumed;
-                }
-                Some(ActionShortcuts::SearchNotes) => {
-                    if self.overlays.active_kind() == Some(OverlayKind::NoteBrowser) {
-                        self.dismiss_overlay();
-                    } else {
-                        self.open_search_browser(tx);
-                    }
-                    return EventState::Consumed;
-                }
-                Some(ActionShortcuts::OpenNote) => {
-                    if self.overlays.active_kind() == Some(OverlayKind::NoteBrowser) {
-                        self.dismiss_overlay();
-                    } else {
-                        self.open_file_finder(tx);
-                    }
-                    return EventState::Consumed;
-                }
-                Some(ActionShortcuts::FileOperations) if self.editor_active() => {
-                    tx.send(AppEvent::ShowFileOpsMenu(self.path.clone())).ok();
-                    return EventState::Consumed;
-                }
-                Some(ActionShortcuts::FollowLink) if self.editor_active() => {
-                    self.follow_link_at_cursor(tx);
-                    return EventState::Consumed;
-                }
-                Some(ActionShortcuts::ToggleQueryPanel) => {
-                    self.toggle_backlinks(tx);
-                    return EventState::Consumed;
-                }
-                Some(ActionShortcuts::OpenFileBrowser) => {
-                    // Open (or switch to) the FILES view — never hides the
-                    // drawer; Ctrl-T (ToggleSidebar) is the on/off switch.
-                    // Always reveal: with FILES already open this is the
-                    // "where is my note" gesture, snapping a browsed-away
-                    // sidebar back to the current note's directory.
-                    self.open_drawer_view(DrawerView::Files, tx);
-                    self.reveal_note_dir_in_sidebar(tx);
-                    return EventState::Consumed;
-                }
-                Some(ActionShortcuts::OpenSavedSearches) => {
-                    if self.overlays.active_kind() == Some(OverlayKind::SavedSearches) {
-                        self.dismiss_overlay();
-                    } else {
-                        self.open_saved_searches(tx);
-                    }
-                    return EventState::Consumed;
-                }
-                Some(ActionShortcuts::OpenRagAnswer) => {
-                    if self.overlays.active_kind() == Some(OverlayKind::RagAnswer) {
-                        self.dismiss_overlay();
-                    } else {
-                        self.open_rag_answer(tx);
-                    }
-                    return EventState::Consumed;
-                }
-                Some(ActionShortcuts::OpenSortDialog) => {
-                    // Sort applies only when a list is focused (the drawer's
-                    // Find / Files views). When the editor is focused, do NOT
-                    // consume — fall through so the key reaches it (e.g. Ctrl+R
-                    // is redo in the nvim editor).
-                    if matches!(self.panels.focused(), PanelKind::Drawer)
-                        && !self.overlays.is_open()
-                    {
-                        let target = match self.panels.active_drawer_view() {
-                            DrawerView::Find => Some(SortTarget::Query),
-                            DrawerView::Files => Some(SortTarget::Sidebar),
-                            _ => None,
-                        };
-                        if let Some(target) = target {
-                            let dialog = match target {
-                                SortTarget::Sidebar => {
-                                    let (f, o) = self.panels.sidebar().current_sort();
-                                    ActiveDialog::sort(
-                                        target,
-                                        f,
-                                        o,
-                                        self.panels.sidebar().group_dirs(),
-                                    )
-                                }
-                                SortTarget::Query => {
-                                    let (f, o) = self.panels.query().current_order();
-                                    ActiveDialog::sort(target, f, o, false)
-                                }
-                            };
-                            self.present_overlay(Box::new(dialog));
-                        }
-                        return EventState::Consumed;
-                    }
-                }
-                Some(ActionShortcuts::SaveCurrentQuery) => {
-                    if let Some((query, provenance, source)) = self.save_query_source() {
-                        // Opening the save dialog replaces the note browser (if
-                        // any); the chained-open guard preserves the original
-                        // opener focus.
-                        self.present_overlay(Box::new(ActiveDialog::save_search(
-                            query,
-                            provenance,
-                            source,
-                            self.vault.clone(),
-                            tx,
-                        )));
-                    }
-                    return EventState::Consumed;
-                }
-                Some(ActionShortcuts::SwitchWorkspace) => {
-                    self.open_workspace_switcher();
-                    return EventState::Consumed;
-                }
-                Some(ActionShortcuts::QuickNote) => {
-                    if !self.overlays.is_open() {
-                        self.present_overlay(Box::new(ActiveDialog::quick_note(
-                            self.vault.clone(),
-                        )));
-                    }
-                    return EventState::Consumed;
-                }
-                Some(ActionShortcuts::FindInBuffer) if self.editor_active() => {
-                    if let Some(ed) = self.panels.editor_mut() {
-                        ed.open_or_advance_search();
-                    }
-                    return EventState::Consumed;
-                }
-                Some(ActionShortcuts::Text(
-                    action @ (TextAction::Bold | TextAction::Italic | TextAction::Strikethrough),
-                )) if self.editor_active() => {
-                    if let Some(ed) = self.panels.editor_mut() {
-                        ed.apply_text_action(action);
-                    }
-                    return EventState::Consumed;
-                }
-                _ => {
-                    if is_fkey {
-                        // F1 opens the help modal (only when no other dialog is active).
-                        // Over the Find panel it surfaces query syntax instead of
-                        // the flat key-bindings help.
-                        if combo.key == KeyStrike::F1 && combo.modifiers.is_empty() {
-                            if self.find_panel_focused() {
-                                self.open_query_help();
-                            } else {
-                                self.open_help();
-                            }
-                        }
-                        // All F-keys (including F1 when a dialog is already open) are consumed
-                        // and never forwarded to the embedded editor.
-                        return EventState::Consumed;
-                    }
-                }
-            }
-        }
-
-        // An open overlay intercepts all remaining input ahead of the panels.
-        if self.overlays.is_open() {
-            return self.overlays.handle_input(event, tx);
-        }
-
-        if matches!(event, InputEvent::Mouse(_)) {
-            // `PanelSet` hit-tests the panel columns: a click focuses the
-            // panel under the cursor (one rule for every panel) and the event
-            // is forwarded to that panel for its internal behavior.
-            let state = self.panels.handle_mouse(event, tx);
-            // A selectionless right-click in the editor asks for the note's
-            // context menu — the screen owns the path, so it opens it here.
-            if self.panels.editor().is_some_and(|e| e.wants_context_menu) {
-                if let Some(ed) = self.panels.editor_mut() {
-                    ed.wants_context_menu = false;
-                }
-                tx.send(AppEvent::ShowFileOpsMenu(self.path.clone())).ok();
-            }
-            return state;
-        }
-
-        // Bare Space falls through to the focused panel (types a space in text
-        // inputs, no-op in lists) — EXCEPT in vim Normal mode with empty pending
-        // state, where Space is a second leader gateway (in addition to Ctrl-G).
-        // Insert/Visual/other backends keep Space typing a space because
-        // `vim_space_leads()` returns false for those states.
-
-        // Vim Normal mode: bare Space is the leader (in addition to Ctrl-G),
-        // but only with an empty pending state so it never shadows Space as a
-        // motion/operator argument. Insert/Visual and the other backends keep
-        // Space typing a space (the rule below the Tab handling).
-        if self.editor_active()
-            && !self.overlays.is_open()
-            && !self.leader.is_pending()
-            && let InputEvent::Key(key) = event
-            && key.code == ratatui::crossterm::event::KeyCode::Char(' ')
-            && key.modifiers.is_empty()
-            && self.panels.editor().is_some_and(|e| e.vim_space_leads())
-        {
-            self.leader.start();
-            self.schedule_whichkey_reveal(tx);
-            return EventState::Consumed;
-        }
-
-        // Tab / Shift-Tab cycle panel focus (spec §2). The focused panel gets
-        // first crack — the Query panel's autocomplete accepts on Tab — and
-        // the editor keeps Tab for indentation (it is a text field, the same
-        // rule that keeps Space typing a space there).
-        if self.panels.focused() != PanelKind::Editor
-            && let InputEvent::Key(key) = event
-        {
-            use ratatui::crossterm::event::KeyCode;
-            if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
-                let state = self.panels.handle_input(event, tx);
-                if state == EventState::NotConsumed {
-                    if key.code == KeyCode::Tab {
-                        self.focus_right(tx);
-                    } else {
-                        self.focus_left(tx);
-                    }
-                }
-                return EventState::Consumed;
-            }
-        }
-
-        // Keyboard → the focused panel. The drawer's FIND view gets first
-        // crack (its autocomplete popup may consume Esc); on an unhandled Esc
-        // it yields focus back to the editor.
-        if self.panels.focused() == PanelKind::Drawer
-            && self.panels.active_drawer_view() == DrawerView::Find
-            && let InputEvent::Key(key) = event
-        {
-            let state = self.panels.handle_input(event, tx);
-            if state == EventState::NotConsumed
-                && key.code == ratatui::crossterm::event::KeyCode::Esc
-            {
-                self.focus_editor();
-                return EventState::Consumed;
-            }
-            return state;
-        }
-
-        self.panels.handle_input(event, tx)
+        // Classify first, mutate after: the pure classifier resolves the
+        // event against the input precedence (see `editor_input`), and the
+        // executor methods below apply the resulting intent.
+        let ctx = InputCtx {
+            overlay: self.overlays.active_kind(),
+            leader_pending: self.leader.is_pending(),
+            focused: self.panels.focused(),
+            drawer_view: self.panels.active_drawer_view(),
+            vim_space_leads: self.panels.editor().is_some_and(|e| e.vim_space_leads()),
+        };
+        let classification = {
+            let s = self.settings.read().unwrap();
+            classify(event, &s.key_bindings, &ctx)
+        };
+        self.apply_classification(classification, event, tx)
     }
 
     fn render(&mut self, f: &mut ratatui::Frame) {
@@ -1848,318 +2018,25 @@ impl AppScreen for EditorScreen {
     }
 
     async fn handle_app_message(&mut self, msg: AppEvent, tx: &AppTx) {
-        // Route validation / async-result messages to the active overlay first,
-        // so an open dialog still receives its events. Show*/CloseOverlay are
-        // NotConsumed by overlays and fall through to the owned match below.
-        match self.overlays.handle_app_message(&msg, &self.vault, tx) {
-            OverlayMsg::Consumed => return,
-            OverlayMsg::NotConsumed => {}
-        }
-
-        // Async status results (backlink count, git, link meta) are
-        // DocMeta's; everything else comes back for the owned match.
-        let Some(msg) = self.doc_meta.handle(msg, &self.path) else {
-            return;
-        };
-
         match msg {
-            AppEvent::UpdateAvailable(status) => {
-                self.update = Some(status);
+            // Overlay data belongs to the open overlay alone (see CONTEXT.md):
+            // route it there and stop. `NotConsumed` — no overlay open, or not
+            // the kind the data was addressed to — means the result is stale;
+            // it is dropped here and nothing else ever sees it.
+            AppEvent::OverlayData(data) => {
+                self.overlays.handle_data(&data, &self.vault, tx);
             }
-            AppEvent::RagStatus(status) => {
-                self.rag_status = status;
+            AppEvent::Update(flow) => self.handle_update(flow, tx),
+            AppEvent::FileOp(op) => self.handle_file_op(op, tx).await,
+            AppEvent::SavedSearch(flow) => self.handle_saved_search(flow, tx),
+            msg => {
+                // Async status results (backlink count, git, link meta) are
+                // DocMeta's; everything else reaches the owned match.
+                let Some(msg) = self.doc_meta.handle(msg, &self.path) else {
+                    return;
+                };
+                self.handle_owned_message(msg, tx).await;
             }
-            AppEvent::ShowUpdateDialog => {
-                if let Some(status) = self.update.clone() {
-                    self.present_overlay(Box::new(ActiveDialog::update(&status)));
-                }
-            }
-            AppEvent::DismissUpdate(_) => {
-                // Persistence happens in main; here we just drop the indicator.
-                self.update = None;
-            }
-            AppEvent::UpdateApplied => {
-                // Installed — drop the notice so the footer/dialog stop offering
-                // the version we just wrote (restart still required to run it).
-                self.update = None;
-            }
-            AppEvent::ApplyUpdate => {
-                let tx2 = tx.clone();
-                tx.send(AppEvent::FlashMessage("Downloading update…".into()))
-                    .ok();
-                tokio::spawn(async move {
-                    let result = async {
-                        let latest = crate::update::latest_release().await?;
-                        crate::update::install(latest).await
-                    }
-                    .await;
-                    let msg = match result {
-                        Ok(()) => {
-                            tx2.send(AppEvent::UpdateApplied).ok();
-                            "Update installed — restart kimün to apply".to_string()
-                        }
-                        Err(e) => format!("Update failed: {e}"),
-                    };
-                    tx2.send(AppEvent::FlashMessage(msg)).ok();
-                });
-            }
-            AppEvent::ShowFileOpsMenu(path) => {
-                self.present_overlay(Box::new(ActiveDialog::file_ops_menu(path)));
-            }
-            AppEvent::ShowDeleteDialog(path) => {
-                self.present_overlay(Box::new(ActiveDialog::delete(path, self.vault.clone())));
-            }
-            AppEvent::ShowRenameDialog(path) => {
-                self.present_overlay(Box::new(ActiveDialog::rename(path, self.vault.clone())));
-            }
-            AppEvent::ShowMoveDialog(path) => {
-                self.present_overlay(Box::new(ActiveDialog::move_to(
-                    path,
-                    self.vault.clone(),
-                    tx,
-                )));
-            }
-            // Stale completions (for notes we've navigated away from) fall
-            // through to the catch-all and are dropped.
-            AppEvent::FlashMessage(msg) => {
-                self.footer.flash(msg, tx);
-            }
-            AppEvent::ExecuteLeaderAction(action) => {
-                if self.overlays.is_open() {
-                    // The palette closes itself before sending, so this is
-                    // unreachable from it — but never drop an action silently.
-                    tracing::warn!("ExecuteLeaderAction({action:?}) dropped: overlay open");
-                } else {
-                    self.execute_leader_action(action, tx);
-                }
-            }
-            AppEvent::ApplyTheme { theme, persist } => {
-                // The picker resolved the theme already — no disk re-read,
-                // just adapt to the terminal and swap.
-                {
-                    let mut s = self.settings.write().unwrap();
-                    s.set_theme(theme.name.clone());
-                }
-                self.theme = (*theme).adapt_to_terminal();
-                if persist {
-                    let snapshot = self.settings.read().unwrap().clone();
-                    tokio::spawn(async move {
-                        snapshot.save_to_disk().ok();
-                    });
-                }
-                tx.send(AppEvent::Redraw).ok();
-            }
-            // Drawer panels can't emit these under an overlay, but guard
-            // anyway: never mutate panels while an overlay owns input.
-            AppEvent::RunTagQuery(label) if !self.overlays.is_open() => {
-                self.open_find_with_query(format!("#{label}"), None, tx);
-            }
-            AppEvent::JumpToHeading(heading) if !self.overlays.is_open() => {
-                if let Some(ed) = self.panels.editor_mut() {
-                    ed.jump_to_heading(&heading);
-                }
-                self.focus_editor();
-            }
-            AppEvent::OpenDrawerView(view) => {
-                // Selecting the already-active view toggles the drawer closed
-                // (spec §3: clicking the active rail item toggles).
-                if self.panels.is_visible(PanelKind::Drawer)
-                    && self.panels.active_drawer_view() == view
-                {
-                    self.panels.hide(PanelKind::Drawer);
-                } else {
-                    self.open_drawer_view(view, tx);
-                }
-            }
-            AppEvent::CloseOverlay => {
-                // Dismiss-to-opener. Guarded by is_open() on purpose: a
-                // selection that wants a specific post-close focus
-                // (OpenPath -> editor, SavedSearchSelected -> Query panel)
-                // closes the overlay itself first, so a later/!dialog
-                // CloseOverlay must not re-restore and clobber that focus.
-                self.dismiss_overlay();
-            }
-            AppEvent::SortChanged {
-                target,
-                field,
-                order,
-                group_directories,
-                persist,
-            } => {
-                match target {
-                    SortTarget::Sidebar if persist => {
-                        // Update the sidebar's in-session per-context default AND
-                        // apply live. `is_current_journal()` is the single source
-                        // of truth for which context this save targets — reused
-                        // for the on-disk settings write below.
-                        let is_journal = self.panels.sidebar().is_current_journal();
-                        self.panels
-                            .sidebar_mut()
-                            .save_default(field, order, group_directories);
-                        {
-                            let mut s = self.settings.write().unwrap();
-                            if is_journal {
-                                s.journal_sort_field =
-                                    crate::settings::SortFieldSetting::from(field);
-                                s.journal_sort_order =
-                                    crate::settings::SortOrderSetting::from(order);
-                            } else {
-                                s.default_sort_field =
-                                    crate::settings::SortFieldSetting::from(field);
-                                s.default_sort_order =
-                                    crate::settings::SortOrderSetting::from(order);
-                            }
-                            s.group_directories = group_directories;
-                        }
-                        let snapshot = self.settings.read().unwrap().clone();
-                        tokio::spawn(async move {
-                            snapshot.save_to_disk().ok();
-                        });
-                    }
-                    SortTarget::Sidebar => {
-                        self.panels
-                            .sidebar_mut()
-                            .apply_sort(field, order, group_directories)
-                    }
-                    // The query panel has no persisted default (the order lives
-                    // in the query string); `persist` is always false here.
-                    SortTarget::Query => self.panels.query_mut().apply_sort(field, order, tx),
-                }
-            }
-            AppEvent::Autosave => {
-                self.spawn_autosave(tx);
-            }
-            AppEvent::AutosaveCompleted {
-                path,
-                saved_revision,
-                title,
-            } => {
-                if path == self.path
-                    && let Some(rev) = saved_revision
-                    && let Some(ed) = self.panels.editor_mut()
-                {
-                    ed.mark_saved_at_revision(rev);
-                }
-                if let Some(raw_title) = title {
-                    self.note_saved(&path, raw_title);
-                }
-                // The write changed the working tree — refresh the git
-                // segment (throttled).
-                self.doc_meta.refresh_git(tx);
-                // `SingleSlotTask::is_in_flight()` flips to false the
-                // moment the spawned future returns (success or panic),
-                // so we don't have to clear the slot manually here —
-                // the next `spawn_autosave` tick will overwrite it.
-                // Skip explicit cleanup; was previously racy because a
-                // stale completion arriving after `try_save` had
-                // already cleared and respawned could wipe the fresh
-                // handle.
-            }
-            AppEvent::FocusSidebar => {
-                self.focus_sidebar(tx);
-            }
-            AppEvent::SavedSearchSelected { query, name } => {
-                // Deliberate non-restoring close: the selection lands in the
-                // Query panel (set by apply_saved_search), not back on the
-                // overlay's opener — so close the overlay without dismiss_overlay.
-                self.overlays.close();
-                self.apply_saved_search(query, name, tx);
-            }
-            AppEvent::FollowLink(target) => {
-                self.follow_link(target, tx).await;
-            }
-            AppEvent::FollowLabel(name) => {
-                let initial = format!("#{name}");
-                let s = self.settings.read().unwrap();
-                let provider = resolving_search_source(
-                    self.vault.clone(),
-                    s.current_last_paths(),
-                    Some(self.path.clone()),
-                );
-                let modal = NoteBrowserModal::with_initial_query(
-                    "Note Browser",
-                    BrowserScope::Query,
-                    provider,
-                    self.vault.clone(),
-                    s.key_bindings.clone(),
-                    s.icons(),
-                    tx.clone(),
-                    initial,
-                );
-                drop(s);
-                self.present_overlay(Box::new(modal));
-            }
-            AppEvent::EntryCreated(path) => {
-                // Pure notification: a note now exists at `path`. Opening is the
-                // creator's job (via OpenPath); here we only keep the sidebar in
-                // step when it is browsing the new note's directory.
-                self.refresh_sidebar_if_showing(&path.get_parent_path().0, tx);
-            }
-            AppEvent::EntryDeleted(path) => {
-                self.on_entry_op(path, tx).await;
-            }
-            AppEvent::EntryRenamed { from, to } => {
-                // Note rename → targeted row update (and retarget the editor if
-                // it is the open note). Directory rename keeps the full reload.
-                if from.is_note() {
-                    self.on_note_renamed(from, to, tx).await;
-                } else {
-                    self.on_entry_op(from, tx).await;
-                }
-            }
-            AppEvent::EntryMoved { from, .. } => {
-                self.on_entry_op(from, tx).await;
-            }
-            AppEvent::SaveSearchConfirmed {
-                name,
-                query,
-                source,
-            } => {
-                // Write in the background; the breadcrumb re-pin waits for
-                // the success event so the UI never claims an unpersisted
-                // save (see SavedSearchPersisted below).
-                let vault = self.vault.clone();
-                let tx = tx.clone();
-                tokio::spawn(async move {
-                    match vault.save_search(&name, &query).await {
-                        Ok(()) => {
-                            tx.send(AppEvent::SavedSearchPersisted {
-                                name,
-                                query,
-                                source,
-                            })
-                            .ok();
-                        }
-                        Err(e) => {
-                            tracing::warn!("failed to save search '{}': {}", name, e);
-                            tx.send(AppEvent::SavedSearchSaveFailed { name }).ok();
-                        }
-                    }
-                });
-            }
-            // Re-pin the panel breadcrumb to the saved identity: the edited
-            // marker drops on an update, the name switches on a save-as-new.
-            // Only for panel-sourced saves (a note-browser save must not
-            // steal the panel's provenance, even when the query text
-            // coincides), and not for the query-as-name fallback (a
-            // breadcrumb that echoes the query is noise).
-            AppEvent::SavedSearchPersisted {
-                name,
-                query,
-                source: SaveSource::QueryPanel,
-            } if name.trim() != query.trim() => {
-                self.panels.query_mut().repin_saved_search(name, &query);
-            }
-            AppEvent::SavedSearchSaveFailed { name } => {
-                self.footer
-                    .flash(format!("Failed to save search '{name}'"), tx);
-            }
-            AppEvent::InsertAtCursor(text) if self.panels.focused() == PanelKind::Editor => {
-                if let Some(ed) = self.panels.editor_mut() {
-                    ed.insert_at_cursor(&text, tx);
-                }
-            }
-            _ => {}
         }
     }
 
@@ -2195,6 +2072,7 @@ impl AppScreen for EditorScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::keys::key_event_to_combo;
 
     /// Compile-time test: `PanelKind` and `OverlayKind` are usable here.
     #[test]
@@ -2411,11 +2289,11 @@ mod tests {
 
         screen
             .handle_app_message(
-                AppEvent::SavedSearchPersisted {
+                AppEvent::SavedSearch(SavedSearchFlow::Persisted {
                     name: "urgent-todos".to_string(),
                     query: "#todo and #urgent".to_string(),
                     source: SaveSource::QueryPanel,
-                },
+                }),
                 &tx,
             )
             .await;
@@ -2438,11 +2316,11 @@ mod tests {
         // panel's live query: source identity, not text equality, decides.
         screen
             .handle_app_message(
-                AppEvent::SavedSearchPersisted {
+                AppEvent::SavedSearch(SavedSearchFlow::Persisted {
                     name: "inbox".to_string(),
                     query: "#todo".to_string(),
                     source: SaveSource::NoteBrowser,
-                },
+                }),
                 &tx,
             )
             .await;
@@ -2466,11 +2344,11 @@ mod tests {
         // the breadcrumb is a distinct provenance tag, not the query).
         screen
             .handle_app_message(
-                AppEvent::SavedSearchPersisted {
+                AppEvent::SavedSearch(SavedSearchFlow::Persisted {
                     name: "#todo".to_string(),
                     query: "#todo".to_string(),
                     source: SaveSource::QueryPanel,
-                },
+                }),
                 &tx,
             )
             .await;
@@ -2489,11 +2367,11 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         screen
             .handle_app_message(
-                AppEvent::SaveSearchConfirmed {
+                AppEvent::SavedSearch(SavedSearchFlow::Confirmed {
                     name: "mine".to_string(),
                     query: "#todo".to_string(),
                     source: SaveSource::QueryPanel,
-                },
+                }),
                 &tx,
             )
             .await;
@@ -2502,7 +2380,7 @@ mod tests {
         let event = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
                 match rx.recv().await {
-                    Some(e @ AppEvent::SavedSearchPersisted { .. }) => break e,
+                    Some(e @ AppEvent::SavedSearch(SavedSearchFlow::Persisted { .. })) => break e,
                     Some(_) => continue,
                     None => panic!("channel closed before SavedSearchPersisted"),
                 }
@@ -2511,11 +2389,11 @@ mod tests {
         .await
         .expect("SavedSearchPersisted within timeout");
 
-        let AppEvent::SavedSearchPersisted {
+        let AppEvent::SavedSearch(SavedSearchFlow::Persisted {
             name,
             query,
             source,
-        } = event
+        }) = event
         else {
             unreachable!()
         };
@@ -2564,10 +2442,10 @@ mod tests {
         // Replay the exact sequence the saved-searches modal emits on select.
         screen
             .handle_app_message(
-                AppEvent::SavedSearchSelected {
+                AppEvent::SavedSearch(SavedSearchFlow::Selected {
                     query: "<{note}".to_string(),
                     name: "Backlinks (current note)".to_string(),
-                },
+                }),
                 &tx,
             )
             .await;
@@ -2867,10 +2745,10 @@ mod tests {
         vault.rename_note(&from, &to).await.unwrap();
         screen
             .handle_app_message(
-                AppEvent::EntryRenamed {
+                AppEvent::FileOp(FileOp::Renamed {
                     from: from.clone(),
                     to: to.clone(),
-                },
+                }),
                 &tx,
             )
             .await;

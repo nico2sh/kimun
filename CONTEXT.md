@@ -142,6 +142,12 @@ _Avoid_: backlinks panel (now only the default state), search panel / search sid
 The note-preview surface the **Query panel** shows for its selected result, owning one expand state — **Collapsed** (list only), **Context** (half-height preview below the list), **Full** (preview takes the whole panel) — and the content scroll. The scroll is either *anchored* (the render places it on the first needle match each frame) or *user-owned* once a wheel/key tick moves it; a query edit re-arms the anchor. Context sticks across selection moves (re-anchoring on the new row); Full and a vanished selection collapse. Composed by the panel (which keeps the result list and the engine's wheel-routing region), so the scroll/anchor state machine is testable without a vault.
 _Avoid_: expand state (names one field), content view, preview widget.
 
+### Editor input
+
+**Intent**:
+What one raw input event *means* in the editor screen, resolved by the input precedence (leader → shortcuts → overlay → mouse → panels) before anything mutates. Produced by a pure classifier (`classify(event, bindings, ctx) → Intent`) over a snapshot of the screen's input-relevant state; the editor screen then *executes* intents. Precedence order is the classifier's spec, table-tested — never statement order in a handler. Intents that depend on a runtime outcome encode the fallback as data (panel-first-crack with a focus fallback; the clipboard image probe) rather than deciding it at classify time.
+_Avoid_: action (collides with `ActionShortcuts`, one input to classification), command (collides with **Vim command**), keypress/event (the raw input, not its meaning).
+
 ### TUI surfaces
 
 **Panel**:
@@ -174,6 +180,10 @@ _Avoid_: popup, modal (names only some), dialog (names only one kind).
 **OverlayHost**:
 The single-slot owner of the active **Overlay**; saves the opener panel's focus on open and returns it on close. The transient-surface counterpart to the **PanelSet**.
 _Avoid_: dialog manager (the superseded name), overlay stack (it is single-slot).
+
+**Overlay data**:
+An async result addressed to the open **Overlay** — a dialog's validation verdict, its loaded directory list, a RAG answer, an operation error. One event family (`OverlayData`) routed *only* to the **OverlayHost**, never to a screen's owned handling; an overlay data event arriving with no (or the wrong) overlay open is stale by definition and dropped. This replaces the old convention of giving the active overlay first crack at every app event.
+_Avoid_: dialog event (the RAG answer overlay is not a dialog), validation result (names one kind).
 
 ### Indexing
 

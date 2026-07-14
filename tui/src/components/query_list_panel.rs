@@ -230,10 +230,13 @@ impl<S: ListPanelSpec> QueryListPanel<S> {
             // otherwise the (possibly stale) results stay visible.
             let query_empty = list.query().trim().is_empty();
             if count == 0 && (loading || !query_empty) {
-                let msg = if loading { "Searching…" } else { "No results" };
+                let msg = if loading {
+                    "Searching…"
+                } else {
+                    "No results"
+                };
                 f.render_widget(
-                    Paragraph::new(Line::from(Span::styled(msg, dim)))
-                        .alignment(Alignment::Center),
+                    Paragraph::new(Line::from(Span::styled(msg, dim))).alignment(Alignment::Center),
                     rows[1],
                 );
             } else {
@@ -451,7 +454,10 @@ mod tests {
             "render must drain the loader; is_loading stuck:\n{text}"
         );
         assert!(text.contains("No results"), "resolved to empty:\n{text}");
-        assert!(!text.contains("Searching"), "must not be stuck searching:\n{text}");
+        assert!(
+            !text.contains("Searching"),
+            "must not be stuck searching:\n{text}"
+        );
     }
 
     #[tokio::test]

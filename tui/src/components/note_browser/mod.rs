@@ -11,7 +11,9 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::components::autocomplete::AutocompleteMode;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, AppTxExt, InputEvent, redraw_callback};
+use crate::components::events::{
+    AppEvent, AppTx, AppTxExt, InputEvent, OverlayData, redraw_callback,
+};
 use crate::components::file_list::FileListEntry;
 use crate::components::overlay::{Overlay, OverlayKind, OverlayMsg};
 use crate::components::panel::{ModalBg, ModalSpec, modal_chrome};
@@ -280,7 +282,8 @@ impl NoteBrowserModal {
                 match vault.load_or_create_note(&path, None).await {
                     Ok((_, created)) => tx.announce_and_open(path, created),
                     Err(e) => {
-                        tx.send(AppEvent::DialogError(e.to_string())).ok();
+                        tx.send(AppEvent::OverlayData(OverlayData::Error(e.to_string())))
+                            .ok();
                     }
                 }
             });
@@ -375,15 +378,15 @@ impl Overlay for NoteBrowserModal {
         }
     }
 
-    fn handle_app_message(
+    fn handle_data(
         &mut self,
-        msg: &AppEvent,
+        data: &OverlayData,
         _vault: &Arc<NoteVault>,
         _tx: &AppTx,
     ) -> OverlayMsg {
         // A failed `Create: …` (or other open error) surfaces here while the
         // modal stays open, so the user sees why nothing happened.
-        if let AppEvent::DialogError(text) = msg {
+        if let OverlayData::Error(text) = data {
             self.error = Some(text.clone());
             OverlayMsg::Consumed
         } else {
@@ -669,8 +672,7 @@ mod tests {
         let mut modal = make_modal_with(OneNoteSource { path }, tx.clone()).await;
         let vault = temp_vault("modal_err").await;
 
-        let consumed =
-            modal.handle_app_message(&AppEvent::DialogError("boom".to_string()), &vault, &tx);
+        let consumed = modal.handle_data(&OverlayData::Error("boom".to_string()), &vault, &tx);
         assert!(matches!(consumed, OverlayMsg::Consumed));
         assert_eq!(modal.error.as_deref(), Some("boom"));
 
