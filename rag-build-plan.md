@@ -1,6 +1,6 @@
 # RAG Integration — Build Plan
 
-Sequenced plan to take the `rag/` server from experimental/pull to the
+Sequenced plan to take the `server/` server from experimental/pull to the
 push-only, multi-vault, Kimün-owned architecture decided in adr/0018–0020 and
 CONTEXT.md (RAG section).
 
@@ -57,13 +57,13 @@ change for existing users (no observer registered).
 
 ## Phase 2 — Server: push-only + multi-vault + auth
 
-Independent of P1. Reshapes the existing `rag/` crate.
+Independent of P1. Reshapes the existing `server/` crate.
 
 **2.1 Strip the pull model** (adr/0018)
-- Delete `ChunkLoader` (`rag/src/document.rs:222`), `index_all_impl` +
+- Delete `ChunkLoader` (`server/src/document.rs:222`), `index_all_impl` +
   `index_all_handler`, `index_single_*`, `store_single_note_impl`,
   `store_embeddings*` on `KimunRag` that read `kimun.sqlite`.
-- Remove `vault.path` from `RagConfig` (`rag/src/config.rs:23`).
+- Remove `vault.path` from `RagConfig` (`server/src/config.rs:23`).
 - This deletes, rather than fixes, the known bugs: `store_single_note_impl`
   empty-doc return (handlers.rs:593), `ChunkLoader` column mismatch
   (document.rs:242), `store_embeddings_incremental` re-store-all (lib.rs:195).
@@ -118,7 +118,7 @@ Needs P1 (seam + vault id) and P2 (endpoints). New workspace crate depending on
   reconnect self-heal).
 
 **Ships:** a headless client library that keeps a vault in sync and can query.
-Exercisable via a tiny CLI harness (replace the stubbed `rag/src/bin/rag.rs`).
+Exercisable via a tiny CLI harness (replace the stubbed `server/src/bin/rag.rs`).
 
 ---
 
