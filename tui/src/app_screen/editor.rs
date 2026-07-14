@@ -876,6 +876,15 @@ impl EditorScreen {
             .ok();
             return;
         }
+        // Ask needs an LLM: hide it when offline or connected to a semantic-only
+        // server (search works, question-answering does not — adr/0022).
+        if !self.rag_status.llm_available() {
+            tx.send(AppEvent::FlashMessage(
+                "Ask (RAG) needs an LLM-configured server; this one is semantic-search only".into(),
+            ))
+            .ok();
+            return;
+        }
         let overlay = crate::components::rag_answer::RagAnswerOverlay::new(
             self.vault.clone(),
             self.settings.clone(),

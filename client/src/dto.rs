@@ -61,8 +61,13 @@ pub struct Health {
     pub status: String,
     #[serde(default)]
     pub reranker: bool,
+    /// The configured LLM provider, or `None` on a semantic-only server (no LLM
+    /// → search works, question-answering does not). Must be optional: the
+    /// server sends an explicit `null` here, which a plain `String` field —
+    /// even with `#[serde(default)]` — fails to deserialize, marking a healthy
+    /// semantic-only server as offline.
     #[serde(default)]
-    pub llm_provider: String,
+    pub llm_provider: Option<String>,
     #[serde(default)]
     pub auth_required: bool,
 }
@@ -86,4 +91,28 @@ pub struct JobStatus {
 pub struct AnswerResult {
     pub answer: String,
     pub sources: Vec<ChunkResult>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn health_parses_semantic_only_null_llm_provider() {
+        // A semantic-only server sends `llm_provider: null`. The probe must still
+        // parse (server reachable → online), so search stays available even with
+        // no LLM configured.
+        let json = r#"{"status":"ok","reranker":true,"llm_provider":null,"auth_required":false}"#;
+        let health: Health = serde_json::from_str(json).expect("must parse null llm_provider");
+        assert_eq!(health.status, "ok");
+        assert!(health.llm_provider.is_none());
+    }
+
+    #[test]
+    fn health_parses_configured_llm_provider() {
+        let json = r#"{"status":"ok","reranker":false,"llm_provider":"gemini","auth_required":true}"#;
+        let health: Health = serde_json::from_str(json).unwrap();
+        assert_eq!(health.llm_provider.as_deref(), Some("gemini"));
+        assert!(health.auth_required);
+    }
 }
