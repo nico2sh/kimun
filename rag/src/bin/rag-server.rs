@@ -57,9 +57,6 @@ async fn main() -> anyhow::Result<()> {
     // Create RAG instance based on config
     tracing::info!("Initializing RAG system...");
     let rag = create_rag_from_config(&config).await?;
-
-    // Initialize the RAG system
-    rag.init().await?;
     tracing::info!("RAG system initialized");
 
     // Create application state
@@ -126,40 +123,14 @@ async fn main() -> anyhow::Result<()> {
 /// Create RAG instance based on configuration
 async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<KimunRag> {
     use kimun_rag::{
-        config::{EmbedderConfig, LlmConfig, VectorDbConfig},
+        config::{EmbedderConfig, VectorDbConfig},
         dbembeddings::{
-            embedder::{
-                Embedder, fastembedder::FastEmbedder, ollama::OllamaEmbedder,
-                openai::OpenAiEmbedder,
-            },
+            embedder::{Embedder, fastembedder::FastEmbedder, http::HttpEmbedder},
             veclance::VecLance,
             vecqdrant::VecQdrant,
         },
-        llmclients::claude::ClaudeClient,
-        llmclients::gemini::GeminiClient,
-        llmclients::mistral::MistralClient,
-        llmclients::openai::OpenAIClient,
+        llmclients::ChatClient,
     };
-
-    // Resolve the LLM API key BEFORE any async/network work spawns, so exporting
-    // it can't race another thread's getenv. When config carries the key, export
-    // it (the provider client reads its env var); then require a key to be
-    // present, failing with a clean error instead of a panic deep in the client.
-    fn ensure_llm_key(var: &str, key: Option<&str>) -> anyhow::Result<()> {
-        if let Some(key) = key {
-            // SAFETY: called at startup before the embedder/clients are built,
-            // i.e. before any spawned worker reads the environment.
-            unsafe { std::env::set_var(var, key) };
-        }
-        if std::env::var(var).is_err() {
-            anyhow::bail!("Missing API key: set [llm] api_key in config or export {var}");
-        }
-        Ok(())
-    }
-    // No [llm] → semantic-only server; skip the key gate entirely (adr/0022).
-    if let Some(llm) = &config.llm {
-        ensure_llm_key(llm.env_var(), llm.api_key())?;
-    }
 
     // Build the embedder (shared by every collection on this server)
     let embedder: Arc<dyn Embedder> = match &config.embedder {
@@ -178,7 +149,7 @@ async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<KimunRag> 
         } => {
             tracing::info!("Using Ollama embedder {} at {}", model, url);
             Arc::new(
-                OllamaEmbedder::new(
+                HttpEmbedder::ollama(
                     url.clone(),
                     model.clone(),
                     doc_prefix.clone(),
@@ -196,7 +167,7 @@ async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<KimunRag> 
         } => {
             tracing::info!("Using OpenAI-compatible embedder {} at {}", model, url);
             Arc::new(
-                OpenAiEmbedder::new(
+                HttpEmbedder::openai(
                     url.clone(),
                     model.clone(),
                     api_key.clone(),
@@ -209,12 +180,14 @@ async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<KimunRag> 
     };
     tracing::info!("Embedder dimension: {}", embedder.dimension());
 
-    // Create embeddings based on config
-    let embeddings: Arc<dyn kimun_rag::dbembeddings::Embeddings + Send + Sync> =
+    // Create the vector store based on config. It only needs the embedder's
+    // dimension (its tables/collections are created at that width) — embedding
+    // itself happens in the pipeline, above the storage seam.
+    let store: Arc<dyn kimun_rag::dbembeddings::VectorStore + Send + Sync> =
         match &config.vector_db {
             VectorDbConfig::Lance { path } => {
                 tracing::info!("Using LanceDB vector database at {:?}", path);
-                Arc::new(VecLance::new(path, embedder.clone()).await?)
+                Arc::new(VecLance::new(path, embedder.dimension()).await?)
             }
             VectorDbConfig::Qdrant { url, collection } => {
                 tracing::info!(
@@ -222,29 +195,31 @@ async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<KimunRag> 
                     url,
                     collection
                 );
-                Arc::new(VecQdrant::new(url.clone(), collection.clone(), embedder.clone()).await?)
+                Arc::new(
+                    VecQdrant::new(url.clone(), collection.clone(), embedder.dimension()).await?,
+                )
             }
         };
 
-    // Create LLM client based on config (keys already exported above). `None` on
-    // a semantic-only server (adr/0022).
+    // Create LLM client based on config. `None` on a semantic-only server
+    // (adr/0022). The key comes from config or the provider's env var and is
+    // handed to the client directly — no env mutation, and a missing key is a
+    // clean startup error, not a panic in the client.
     let llm_client: Option<Arc<dyn kimun_rag::llmclients::LLMClient + Send + Sync>> =
         match &config.llm {
-            Some(LlmConfig::Gemini { model, .. }) => {
-                tracing::info!("Using Gemini LLM with model: {}", model);
-                Some(Arc::new(GeminiClient::new(model)))
-            }
-            Some(LlmConfig::Mistral { model, .. }) => {
-                tracing::info!("Using Mistral LLM");
-                Some(Arc::new(MistralClient::new(model)))
-            }
-            Some(LlmConfig::Claude { model, .. }) => {
-                tracing::info!("Using Claude LLM with model: {}", model);
-                Some(Arc::new(ClaudeClient::new(model)))
-            }
-            Some(LlmConfig::OpenAI { model, .. }) => {
-                tracing::info!("Using OpenAI LLM with model: {}", model);
-                Some(Arc::new(OpenAIClient::new(model)))
+            Some(llm) => {
+                let api_key = llm
+                    .api_key()
+                    .map(str::to_string)
+                    .or_else(|| std::env::var(llm.env_var()).ok())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "Missing API key: set [llm] api_key in config or export {}",
+                            llm.env_var()
+                        )
+                    })?;
+                tracing::info!("Using {} LLM with model: {}", llm.provider(), llm.model());
+                Some(Arc::new(ChatClient::from_config(llm, api_key)))
             }
             None => {
                 tracing::info!("No LLM configured — semantic-only server (search, no Q&A)");
@@ -252,7 +227,7 @@ async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<KimunRag> 
             }
         };
 
-    let mut rag = KimunRag::new(embeddings, llm_client);
+    let mut rag = KimunRag::new(store, embedder, llm_client);
 
     // Enable reranking if configured
     if config.reranker.enabled {

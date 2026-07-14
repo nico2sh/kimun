@@ -277,6 +277,14 @@ _Avoid_: index (collides with **NoteIndex**), namespace (the mechanism, not the 
 The stable identifier that ties a **Vault** to its **collection** on the **RAG server**, generated once and kept in the vault under `.kimun/` so it survives renames and moves and is the same wherever the vault is opened (same rationale as **Saved search** and **Backup**).
 _Avoid_: collection name (that is the server-side view of it), workspace id (the **Workspace** is the config entry, not the vault).
 
+**Query pipeline**:
+The **RAG server**'s one door to everything done with a vault's content (`KimunRag`): every surface — the API handlers and the web UI — searches, answers, indexes, and deletes through it, so policy has a single home. Retrieval side: **search** returns one result per note (top_k counts notes — a section-heavy note must not crowd out others), **answer** feeds the LLM the top_k chunks (sections, chunk-level); chunk dedup, rerank-or-take, and the semantic-only rejection live inside (`can_answer` is the capability gate). Index side: the hash-diff against the **vector store**'s records, stale-chunk deletion, section sub-splitting to the embedding window, and embed batching — the pipeline owns the embedder; the store never embeds.
+_Avoid_: search pipeline (names one slice), RAG orchestrator, KimunRag as a prose term (the struct, not the concept).
+
+**Vector store**:
+The **RAG server**'s pure-storage seam (`VectorStore`): adapters (LanceDB, Qdrant) store, delete, and search pre-embedded chunk rows per **collection** — never embed, split, or rank; that is **query pipeline** policy above the seam. Contract pinned by a conformance suite run against every adapter: collections appear lazily on first store, reads/deletes of a missing collection are empty/no-op (never an error — reconciliation may probe a never-pushed vault), query scores are similarities, best-first.
+_Avoid_: embeddings store (it stores vectors it did not make), db/backend (implementation, not the role), index (collides with **NoteIndex**).
+
 **RAG client**:
 The component inside Kimün that owns every dealing with the **RAG server** — connection and capability probing, the push of note changes, and **reconciliation**. Lives outside core (its own crate) so core stays free of network concerns; core feeds it only through the **index observer**.
 _Avoid_: rag bridge, sync manager (too generic), server client.

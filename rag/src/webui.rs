@@ -29,7 +29,7 @@ use maud::{DOCTYPE, Markup, html};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use crate::config::{LlmConfig, RagConfig};
+use crate::config::{ConfigForm, RagConfig};
 use crate::server_state::AppState;
 
 const SESSION_COOKIE: &str = "kimun_session";
@@ -373,21 +373,10 @@ fn config_markup(state: &AppState, c: &RagConfig, flash: Option<Markup>) -> Mark
     shell(state, "/config", "Configuration", body)
 }
 
-// Numeric fields arrive as strings so a non-numeric value yields a friendly
-// flash instead of a bare 400 that discards the whole form.
-#[derive(Deserialize)]
-struct ConfigForm {
-    host: String,
-    port: String,
-    provider: String,
-    model: String,
-    api_key: String,
-    #[serde(default)]
-    reranker_enabled: Option<String>,
-    reranker_top_k: String,
-    auth_token: String,
-}
-
+/// Pure web plumbing: origin check, writable-path check, then hand the form to
+/// [`RagConfig::apply_form`] — every form→config rule lives there, so a new
+/// web-exposed option touches the config module and the form markup, not this
+/// handler.
 async fn config_submit(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -407,58 +396,10 @@ async fn config_submit(
         );
     };
 
-    let (Ok(port), Ok(top_k)) = (
-        f.port.trim().parse::<u16>(),
-        f.reranker_top_k.trim().parse::<usize>(),
-    ) else {
-        return err_page(
-            &state,
-            html! { p .flash.err { "Port and top_k must be whole numbers." } },
-        );
+    let cfg = match state.config.apply_form(f) {
+        Ok(cfg) => cfg,
+        Err(e) => return err_page(&state, html! { p .flash.err { (e) } }),
     };
-
-    // "none" → semantic-only: clear the LLM entirely rather than writing a
-    // keyless provider that would fail the boot key gate (adr/0022).
-    let llm = if f.provider == "none" {
-        None
-    } else {
-        // A typed key overwrites; a blank key keeps the current one only when the
-        // provider is unchanged — switching provider with a blank key must NOT
-        // carry the old provider's key over (it would be wrong), so fall back to
-        // the env var.
-        let key = if !f.api_key.is_empty() {
-            Some(f.api_key)
-        } else if Some(f.provider.as_str()) == state.config.llm.as_ref().map(|l| l.provider()) {
-            state
-                .config
-                .llm
-                .as_ref()
-                .and_then(|l| l.api_key())
-                .map(str::to_string)
-        } else {
-            None
-        };
-        match LlmConfig::from_parts(&f.provider, Some(f.model), key) {
-            Ok(llm) => Some(llm),
-            Err(e) => {
-                return err_page(
-                    &state,
-                    html! { p .flash.err { "Invalid LLM settings: " (e) } },
-                );
-            }
-        }
-    };
-
-    let mut cfg: RagConfig = (*state.config).clone();
-    cfg.server.host = f.host;
-    cfg.server.port = port;
-    cfg.llm = llm;
-    cfg.reranker.enabled = f.reranker_enabled.is_some();
-    cfg.reranker.top_k = top_k;
-    // Blank keeps the current token (the password field is never pre-filled).
-    if !f.auth_token.is_empty() {
-        cfg.auth.token = Some(f.auth_token);
-    }
 
     match cfg.save_to(&path) {
         Ok(()) => config_markup(
@@ -476,11 +417,7 @@ async fn config_submit(
 // ============================================================================
 
 async fn collections_page(State(state): State<Arc<AppState>>) -> Markup {
-    let embeddings = {
-        let rag = state.rag.lock().await;
-        rag.embeddings()
-    };
-    let result = embeddings.list_collections().await;
+    let result = state.rag.collections().await;
     let body = html! {
         h1 { "Collections" }
         div .card {
@@ -579,26 +516,19 @@ async fn query_submit(State(state): State<Arc<AppState>>, Form(f): Form<QueryFor
 
 type SearchOutcome = Result<Vec<(f64, String, String)>, String>;
 
+/// The same pipeline the API's `/api/embeddings` runs — the test query shows
+/// exactly what clients get (one row per note, top_k notes).
 async fn run_search(state: &AppState, vault_id: &str, query: &str) -> SearchOutcome {
     if vault_id.is_empty() || query.trim().is_empty() {
         return Err("Pick a collection and enter a query.".into());
     }
-    let (embeddings, reranker) = {
-        let rag = state.rag.lock().await;
-        (rag.embeddings(), rag.get_reranker())
-    };
+    let collection = crate::CollectionKey::parse(vault_id).map_err(|e| e.to_string())?;
     let top_k = state.config.reranker.top_k;
-    let raw = embeddings
-        .query_embedding(vault_id, query)
+    let ranked = state
+        .rag
+        .search(&collection, query, top_k)
         .await
         .map_err(|e| e.to_string())?;
-    let ranked = match reranker {
-        Some(r) => r
-            .rerank(query, raw, top_k)
-            .await
-            .map_err(|e| e.to_string())?,
-        None => raw.into_iter().take(top_k).collect(),
-    };
     Ok(ranked
         .into_iter()
         .map(|(score, chunk)| (score, chunk.doc_path, chunk.text))
@@ -654,11 +584,7 @@ fn query_markup(
 // ============================================================================
 
 async fn collection_names(state: &AppState) -> Vec<String> {
-    let embeddings = {
-        let rag = state.rag.lock().await;
-        rag.embeddings()
-    };
-    embeddings.collection_names().await.unwrap_or_default()
+    state.rag.collection_names().await.unwrap_or_default()
 }
 
 fn short_id(id: &str) -> String {
@@ -679,73 +605,10 @@ fn truncate(s: &str, max: usize) -> String {
 mod tests {
     use super::*;
     use crate::KimunRag;
-    use crate::dbembeddings::{CollectionInfo, Embeddings, IndexedNote};
-    use crate::document::FlattenedChunk;
-    use crate::llmclients::LLMClient;
-    use async_trait::async_trait;
+    use crate::test_support::{FakeEmbedder, FakeLlm, FakeVectorStore};
     use axum::body::{Body, to_bytes};
     use axum::http::{Request, StatusCode, header::CONTENT_TYPE};
-    use std::collections::HashMap;
     use tower::ServiceExt;
-
-    struct FakeEmbeddings;
-
-    #[async_trait]
-    impl Embeddings for FakeEmbeddings {
-        async fn init(&self) -> anyhow::Result<()> {
-            Ok(())
-        }
-        async fn store_embeddings(
-            &self,
-            _: &str,
-            _: &[crate::document::KimunDoc],
-        ) -> anyhow::Result<()> {
-            Ok(())
-        }
-        async fn delete_embeddings(&self, _: &str, _: Vec<&String>) -> anyhow::Result<()> {
-            Ok(())
-        }
-        async fn query_embedding(
-            &self,
-            _: &str,
-            _: &str,
-        ) -> anyhow::Result<Vec<(f64, FlattenedChunk)>> {
-            Ok(vec![(
-                0.9,
-                FlattenedChunk {
-                    doc_path: "/notes/a.md".into(),
-                    doc_hash: "h".into(),
-                    title: "A".into(),
-                    text: "hello world".into(),
-                    date: None,
-                },
-            )])
-        }
-        async fn get_indexed_notes(&self, _: &str) -> anyhow::Result<HashMap<String, IndexedNote>> {
-            Ok(HashMap::new())
-        }
-        async fn remove_indexed_note(&self, _: &str, _: &str) -> anyhow::Result<()> {
-            Ok(())
-        }
-        async fn list_collections(&self) -> anyhow::Result<Vec<CollectionInfo>> {
-            Ok(vec![CollectionInfo {
-                name: "vault-1".into(),
-                note_count: 3,
-            }])
-        }
-        async fn collection_names(&self) -> anyhow::Result<Vec<String>> {
-            Ok(vec!["vault-1".into()])
-        }
-    }
-
-    struct FakeLlm;
-
-    #[async_trait]
-    impl LLMClient for FakeLlm {
-        async fn ask(&self, _: &str, _: &[(f64, FlattenedChunk)]) -> anyhow::Result<String> {
-            Ok("answer".into())
-        }
-    }
 
     fn state(token: Option<&str>, config_path: Option<std::path::PathBuf>) -> Arc<AppState> {
         let config_toml = format!(
@@ -763,7 +626,11 @@ provider = "gemini"
                 .unwrap_or_default()
         );
         let config: RagConfig = toml::from_str(&config_toml).unwrap();
-        let rag = KimunRag::new(Arc::new(FakeEmbeddings), Some(Arc::new(FakeLlm)));
+        let rag = KimunRag::new(
+            Arc::new(FakeVectorStore::default()),
+            Arc::new(FakeEmbedder),
+            Some(Arc::new(FakeLlm)),
+        );
         let mut st = AppState::new(rag, config);
         if let Some(p) = config_path {
             st = st.with_config_path(p);
@@ -923,7 +790,11 @@ provider = "gemini"
     /// Builds an AppState from a full config TOML, with a writable config path.
     fn state_from(config_toml: &str, path: std::path::PathBuf) -> Arc<AppState> {
         let config: RagConfig = toml::from_str(config_toml).unwrap();
-        let rag = KimunRag::new(Arc::new(FakeEmbeddings), Some(Arc::new(FakeLlm)));
+        let rag = KimunRag::new(
+            Arc::new(FakeVectorStore::default()),
+            Arc::new(FakeEmbedder),
+            Some(Arc::new(FakeLlm)),
+        );
         Arc::new(AppState::new(rag, config).with_config_path(path))
     }
 
@@ -1053,7 +924,7 @@ api_key = "gemini-key"
         let config: RagConfig =
             toml::from_str("[server]\n[vector_db]\ntype = \"qdrant\"\n[reranker]\n").unwrap();
         assert!(config.llm.is_none());
-        let rag = KimunRag::new(Arc::new(FakeEmbeddings), None);
+        let rag = KimunRag::new(Arc::new(FakeVectorStore::default()), Arc::new(FakeEmbedder), None);
         let state = Arc::new(AppState::new(rag, config));
 
         let req = crate::handlers::AnswerRequest {
@@ -1064,6 +935,10 @@ api_key = "gemini-key"
         let err = crate::handlers::answer_handler(axum::extract::State(state), axum::Json(req))
             .await
             .expect_err("semantic-only server must reject answering");
-        assert_eq!(err.0, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(matches!(err, crate::RagError::SemanticOnly));
+        assert_eq!(
+            err.into_response().status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
     }
 }

@@ -86,6 +86,12 @@ model = "gemini-2.5-flash-preview-04-17"
 # provider = "openai"
 # model = "gpt-4o-mini"
 
+# The openai provider can also point at any OpenAI-compatible chat endpoint
+# (Ollama, llama.cpp, OpenRouter, LM Studio) via an optional url:
+# provider = "openai"
+# url = "http://localhost:11434/v1"
+# model = "llama3"
+
 # For Mistral:
 # provider = "mistral"
 # model = "mistral-large-latest"

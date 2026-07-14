@@ -1,5 +1,4 @@
 use fastembed::{RerankInitOptions, RerankerModel, TextRerank};
-use log::debug;
 use std::sync::{Arc, Mutex};
 
 use crate::document::FlattenedChunk;
@@ -73,25 +72,6 @@ impl CrossEncoderReranker {
         scored_results.truncate(top_k);
 
         Ok(scored_results)
-    }
-}
-
-/// Apply reranking if enabled in config
-pub async fn apply_reranking(
-    query: &str,
-    results: Vec<(f64, FlattenedChunk)>,
-    reranker: Option<&CrossEncoderReranker>,
-    top_k: usize,
-) -> anyhow::Result<Vec<(f64, FlattenedChunk)>> {
-    if let Some(reranker) = reranker {
-        debug!("Reranking the results with the TOP {}", top_k);
-        reranker.rerank(query, results, top_k).await
-    } else {
-        // No reranking, just return top_k
-        debug!("No Reranking, returning the TOP {}", top_k);
-        let mut results = results;
-        results.truncate(top_k);
-        Ok(results)
     }
 }
 

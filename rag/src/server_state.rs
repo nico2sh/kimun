@@ -11,7 +11,9 @@ use crate::config::RagConfig;
 /// Shared application state
 #[derive(Clone)]
 pub struct AppState {
-    pub rag: Arc<Mutex<KimunRag>>,
+    /// The query pipeline. Immutable after startup (config edits apply on
+    /// restart), so it is shared plainly — no lock.
+    pub rag: Arc<KimunRag>,
     pub config: Arc<RagConfig>,
     /// Where the config was loaded from, so the web UI can persist edits back to
     /// it. `None` disables saving (config supplied without a resolvable path).
@@ -19,15 +21,14 @@ pub struct AppState {
     pub job_tracker: Arc<Mutex<JobTracker>>,
     /// Serializes index writes (store/delete) so concurrent jobs on the same
     /// collection can't double-insert chunks or race each other's updates.
-    /// Queries never take this — they clone the embeddings handle instead, so
-    /// indexing does not block search/answer.
+    /// Queries never take this, so indexing does not block search/answer.
     pub index_lock: Arc<Mutex<()>>,
 }
 
 impl AppState {
     pub fn new(rag: KimunRag, config: RagConfig) -> Self {
         Self {
-            rag: Arc::new(Mutex::new(rag)),
+            rag: Arc::new(rag),
             config: Arc::new(config),
             config_path: None,
             job_tracker: Arc::new(Mutex::new(JobTracker::new())),
