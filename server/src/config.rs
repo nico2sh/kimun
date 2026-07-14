@@ -227,6 +227,18 @@ impl LlmConfig {
         }
     }
 
+    /// The id the web form uses for this config. Distinguishes the cloud
+    /// `openai` provider from `openai-local` (the same OpenAI wire pointed at a
+    /// user-supplied endpoint — Ollama, llama.cpp, …), so the form can
+    /// pre-select the right option and expose the URL field. Both ids map back
+    /// to [`LlmConfig::OpenAI`] on save.
+    pub fn form_id(&self) -> &'static str {
+        match self {
+            LlmConfig::OpenAI { url: Some(_), .. } => "openai-local",
+            other => other.provider(),
+        }
+    }
+
     /// Builds a config from web-form parts, defaulting the model per provider
     /// when blank. Unknown provider ids are rejected. `url` applies to the
     /// openai provider only (the endpoint override); other providers ignore it.
@@ -380,6 +392,10 @@ pub struct ConfigForm {
     pub provider: String,
     pub model: String,
     pub api_key: String,
+    /// Endpoint URL for the `openai-local` provider; ignored otherwise.
+    /// Defaulted so form posts predating the field still deserialize.
+    #[serde(default)]
+    pub llm_url: String,
     /// `none` | `fastembed` | `ollama` | `openai` — `none` clears the embedder
     /// (unconfigured server, adr/0024).
     pub embedder_provider: String,
@@ -421,8 +437,11 @@ impl RagConfig {
         let llm = if f.provider == "none" {
             None
         } else {
+            // Compare against form_id, not provider(): "openai-local" and
+            // "openai" are distinct form choices (switching between them is a
+            // provider change, so secrets don't carry across).
             let provider_unchanged =
-                Some(f.provider.as_str()) == self.llm.as_ref().map(|l| l.provider());
+                Some(f.provider.as_str()) == self.llm.as_ref().map(|l| l.form_id());
             let carry = |current: Option<&str>| {
                 if provider_unchanged {
                     current.map(str::to_string)
@@ -435,11 +454,21 @@ impl RagConfig {
             } else {
                 carry(self.llm.as_ref().and_then(|l| l.api_key()))
             };
-            // The form has no url field; keep a hand-edited endpoint override
-            // alive across saves as long as the provider stays the same.
-            let url = carry(self.llm.as_ref().and_then(|l| l.url()));
+            // "openai-local" is a form-level alias: the OpenAI wire pointed at
+            // a user-supplied endpoint (Ollama, llama.cpp, …). It maps to the
+            // `openai` provider with a url override; the cloud providers have
+            // fixed endpoints and never write one.
+            let (provider, url) = if f.provider == "openai-local" {
+                let url = f.llm_url.trim();
+                if url.is_empty() {
+                    anyhow::bail!("The local OpenAI-compatible provider needs a URL.");
+                }
+                ("openai", Some(url.to_string()))
+            } else {
+                (f.provider.as_str(), None)
+            };
             Some(
-                LlmConfig::from_parts(&f.provider, Some(f.model), key, url)
+                LlmConfig::from_parts(provider, Some(f.model), key, url)
                     .map_err(|e| anyhow::anyhow!("Invalid LLM settings: {e}"))?,
             )
         };
@@ -858,6 +887,7 @@ provider = "gemini"
             provider: provider.into(),
             model: "m".into(),
             api_key: api_key.into(),
+            llm_url: String::new(),
             embedder_provider: "none".into(),
             fastembed_model: String::new(),
             embedder_url: String::new(),
@@ -908,16 +938,42 @@ provider = "gemini"
     }
 
     #[test]
-    fn apply_form_carries_endpoint_url_while_provider_unchanged() {
-        let cfg =
-            config_with_llm("[llm]\nprovider = \"openai\"\nurl = \"http://localhost:11434/v1\"");
-        let kept = cfg.apply_form(form("openai", "")).unwrap();
-        assert_eq!(
-            kept.llm.as_ref().unwrap().url(),
-            Some("http://localhost:11434/v1")
+    fn apply_form_openai_local_maps_to_openai_with_url() {
+        let cfg = config_with_llm("");
+        let mut f = form("openai-local", "");
+        f.llm_url = "http://localhost:11434/v1".into();
+        let out = cfg.apply_form(f).unwrap();
+        let llm = out.llm.as_ref().unwrap();
+        assert_eq!(llm.provider(), "openai");
+        assert_eq!(llm.form_id(), "openai-local");
+        assert_eq!(llm.url(), Some("http://localhost:11434/v1"));
+    }
+
+    #[test]
+    fn apply_form_openai_local_requires_url() {
+        let cfg = config_with_llm("");
+        let err = cfg.apply_form(form("openai-local", "")).unwrap_err();
+        assert!(err.to_string().contains("needs a URL"));
+    }
+
+    #[test]
+    fn apply_form_openai_local_and_cloud_openai_are_distinct_providers() {
+        // A configured local endpoint round-trips: blank key is carried while
+        // the form choice stays openai-local.
+        let cfg = config_with_llm(
+            "[llm]\nprovider = \"openai\"\napi_key = \"local-key\"\nurl = \"http://localhost:11434/v1\"",
         );
-        let switched = cfg.apply_form(form("gemini", "")).unwrap();
-        assert_eq!(switched.llm.as_ref().unwrap().url(), None);
+        assert_eq!(cfg.llm.as_ref().unwrap().form_id(), "openai-local");
+        let mut f = form("openai-local", "");
+        f.llm_url = "http://localhost:11434/v1".into();
+        let kept = cfg.apply_form(f).unwrap();
+        assert_eq!(kept.llm.as_ref().unwrap().api_key(), Some("local-key"));
+        // Switching to cloud openai is a provider change: the url is dropped
+        // and the local key is NOT inherited.
+        let cloud = cfg.apply_form(form("openai", "")).unwrap();
+        let llm = cloud.llm.as_ref().unwrap();
+        assert_eq!(llm.url(), None);
+        assert_eq!(llm.api_key(), None);
     }
 
     #[test]

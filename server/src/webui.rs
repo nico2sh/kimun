@@ -434,7 +434,10 @@ async fn dashboard(State(state): State<Arc<AppState>>) -> Markup {
                 dt { "Vector DB" } dd { (vector_db) }
                 dt { "Embedder" } dd { (embedder) }
                 dt { "LLM" } dd {
-                    @if let Some(l) = &c.llm { (l.provider()) " · " (l.model()) }
+                    @if let Some(l) = &c.llm {
+                        (l.provider()) " · " (l.model())
+                        @if let Some(u) = l.url() { " · " (u) }
+                    }
                     @else { "not configured (semantic-only)" }
                 }
                 dt { "LLM key" } dd {
@@ -465,9 +468,19 @@ async fn config_page(State(state): State<Arc<AppState>>) -> Markup {
 fn config_markup(state: &AppState, c: &RagConfig, flash: Option<Markup>) -> Markup {
     // "none" is the semantic-only sentinel (search, no Q&A). It maps to
     // `llm = None` on save, and is what a server with no configured LLM shows
-    // (adr/0022).
-    let providers = ["none", "gemini", "claude", "openai", "mistral"];
-    let current = c.llm.as_ref().map(|l| l.provider()).unwrap_or("none");
+    // (adr/0022). "openai-local" is the OpenAI wire pointed at a user-supplied
+    // endpoint (Ollama, llama.cpp, …) — same table-driven field groups as the
+    // embedder select: each option's data-groups names the field divs it shows.
+    let providers = [
+        ("none", ""),
+        ("gemini", "llm"),
+        ("claude", "llm"),
+        ("openai", "llm"),
+        ("mistral", "llm"),
+        ("openai-local", "llm llm-url"),
+    ];
+    let current = c.llm.as_ref().map(|l| l.form_id()).unwrap_or("none");
+    let current_llm_url = c.llm.as_ref().and_then(|l| l.url()).unwrap_or("");
     let can_save = state.config_path.is_some();
     // Embedder section (adr/0024): "none" is the unconfigured sentinel; the
     // fastembed model is a dropdown so a local model is always an explicit
@@ -608,13 +621,25 @@ fn config_markup(state: &AppState, c: &RagConfig, flash: Option<Markup>) -> Mark
                 h2 { "LLM" }
                 label { "Provider" }
                 select name="provider" {
-                    @for p in providers {
-                        option value=(p) data-groups=(if p == "none" { "" } else { "llm" }) selected[p == current] {
-                            @if p == "none" { "— none (semantic-only) —" } @else { (p) }
+                    @for (p, groups) in providers {
+                        option value=(p) data-groups=(groups) selected[p == current] {
+                            @match p {
+                                "none" => { "— none (semantic-only) —" }
+                                "openai-local" => { "openai-compatible (local: Ollama, llama.cpp, …)" }
+                                _ => { (p) }
+                            }
                         }
                     }
                 }
                 p .muted { "Select — none — for a search-only server (no question-answering)." }
+                noscript {
+                    p .muted { "(Without JavaScript all fields are shown: URL applies to the local OpenAI-compatible provider only.)" }
+                }
+                div data-llm="llm-url" {
+                    label { "URL" }
+                    input type="text" name="llm_url" value=(current_llm_url) placeholder="http://localhost:11434/v1";
+                    p .muted { "The endpoint's OpenAI-compatible base URL. Keyless local servers work — leave the API key blank." }
+                }
                 div data-llm="llm" {
                     label { "Model" }
                     input type="text" name="model" value=(c.llm.as_ref().map(|l| l.model()).unwrap_or(""));
