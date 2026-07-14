@@ -21,6 +21,7 @@ use crate::components::preferences::appearance_section::AppearanceSection;
 use crate::components::preferences::display_section::DisplaySection;
 use crate::components::preferences::editor_section::EditorSection;
 use crate::components::preferences::indexing_section::IndexingSection;
+use crate::components::preferences::server_section::ServerSection;
 use crate::components::preferences::sorting_section::SortingSection;
 use crate::components::preferences::workspaces_section::{
     Mode as WorkspaceMode, WorkspacesSection,
@@ -71,6 +72,7 @@ enum PreferencesSection {
     Sorting,
     Indexing,
     Editor,
+    Server,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -94,6 +96,7 @@ pub struct PreferencesScreen {
     pending_create_name: Option<String>,
     indexing_section: IndexingSection,
     editor_section: EditorSection,
+    server_section: ServerSection,
     pub overlay: Overlay,
     pub pending_save_after_index: bool,
     throbber_state: ThrobberState,
@@ -121,6 +124,10 @@ impl PreferencesScreen {
         let use_nerd_fonts = s.use_nerd_fonts;
         let update_check = s.update_check();
         let mouse = s.mouse();
+        let server_url = s
+            .workspace_config
+            .as_ref()
+            .and_then(|wc| wc.global.kimun_server_url.clone());
         let initial_settings = s.clone();
         let workspaces_section = WorkspacesSection::new(&s);
         let sorting_section = SortingSection::new(
@@ -138,6 +145,7 @@ impl PreferencesScreen {
             pending_create_name: None,
             indexing_section: IndexingSection::new(vault_available),
             editor_section: EditorSection::new(autosave_interval_secs, editor_backend),
+            server_section: ServerSection::new(server_url),
             settings,
             initial_settings,
             theme,
@@ -475,18 +483,20 @@ impl AppScreen for PreferencesScreen {
                             PreferencesSection::Display => PreferencesSection::Sorting,
                             PreferencesSection::Sorting => PreferencesSection::Indexing,
                             PreferencesSection::Indexing => PreferencesSection::Editor,
-                            PreferencesSection::Editor => PreferencesSection::Workspaces,
+                            PreferencesSection::Editor => PreferencesSection::Server,
+                            PreferencesSection::Server => PreferencesSection::Workspaces,
                         };
                         EventState::Consumed
                     }
                     KeyCode::Up | KeyCode::Char('k') => {
                         self.section = match self.section {
-                            PreferencesSection::Workspaces => PreferencesSection::Editor,
+                            PreferencesSection::Workspaces => PreferencesSection::Server,
                             PreferencesSection::Appearance => PreferencesSection::Workspaces,
                             PreferencesSection::Display => PreferencesSection::Appearance,
                             PreferencesSection::Sorting => PreferencesSection::Display,
                             PreferencesSection::Indexing => PreferencesSection::Sorting,
                             PreferencesSection::Editor => PreferencesSection::Indexing,
+                            PreferencesSection::Server => PreferencesSection::Editor,
                         };
                         EventState::Consumed
                     }
@@ -650,6 +660,19 @@ impl AppScreen for PreferencesScreen {
                             s.editor_backend = self.editor_section.editor_backend;
                             r
                         }
+                        PreferencesSection::Server => {
+                            let r = self.server_section.handle_input(&app_event, tx);
+                            if r.is_consumed() {
+                                let mut s = self.settings.write().unwrap();
+                                s.workspace_config
+                                    .get_or_insert_with(
+                                        crate::settings::workspace_config::WorkspaceConfig::new_empty,
+                                    )
+                                    .global
+                                    .kimun_server_url = self.server_section.server_url.clone();
+                            }
+                            r
+                        }
                     }
                 }
             },
@@ -775,6 +798,7 @@ impl AppScreen for PreferencesScreen {
             PreferencesSection::Sorting => 3,
             PreferencesSection::Indexing => 4,
             PreferencesSection::Editor => 5,
+            PreferencesSection::Server => 6,
         };
         let items: Vec<ListItem> = [
             "Workspaces",
@@ -783,6 +807,7 @@ impl AppScreen for PreferencesScreen {
             "Sorting",
             "Indexing",
             "Editor",
+            "Server",
         ]
         .iter()
         .enumerate()
@@ -829,6 +854,10 @@ impl AppScreen for PreferencesScreen {
             }
             PreferencesSection::Editor => {
                 self.editor_section
+                    .render(f, cols[1], &theme, content_focused)
+            }
+            PreferencesSection::Server => {
+                self.server_section
                     .render(f, cols[1], &theme, content_focused)
             }
         }
