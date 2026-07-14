@@ -130,6 +130,9 @@ impl ListPanelSpec for SemanticSpec {
     type Row = FileListEntry;
     const TITLE: &'static str = "Semantic";
     const HAS_FILTER: bool = true;
+    // Server-backed query: draw a bordered search box separated from the results
+    // and a "Searching…" indicator while the request is in flight.
+    const BORDERED_INPUT: bool = true;
 
     fn submit(row: &FileListEntry, tx: &AppTx) {
         if let FileListEntry::Note { path, .. } = row {
