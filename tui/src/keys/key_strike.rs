@@ -546,3 +546,28 @@ impl From<KeyStrike> for String {
 //         }
 //     }
 // }
+
+impl KeyStrike {
+    /// Whether this strike is a function key (F1–F25). The one F-key
+    /// predicate — the classifier's F-key sink and the binding validator
+    /// both call this, so the covered range cannot drift between them.
+    /// Relies on the F-key variants being declared contiguously.
+    pub fn is_fkey(self) -> bool {
+        self >= KeyStrike::F1 && self <= KeyStrike::F25
+    }
+}
+
+#[cfg(test)]
+mod fkey_tests {
+    use super::*;
+
+    #[test]
+    fn fkey_predicate_covers_the_full_contiguous_range() {
+        assert!(KeyStrike::F1.is_fkey());
+        assert!(KeyStrike::F12.is_fkey());
+        assert!(KeyStrike::F13.is_fkey(), "F13+ must not silently fall out");
+        assert!(KeyStrike::F25.is_fkey());
+        assert!(!KeyStrike::KeyA.is_fkey());
+        assert!(!KeyStrike::Escape.is_fkey());
+    }
+}

@@ -10,7 +10,7 @@ use ratatui::layout::Rect;
 
 use crate::components::event_state::EventState;
 use crate::components::events::{AppTx, InputEvent, OverlayData};
-use crate::components::overlay::{Overlay, OverlayKind, OverlayMsg};
+use crate::components::overlay::{Overlay, OverlayKind};
 use crate::settings::themes::Theme;
 
 pub struct OverlayHost<F> {
@@ -77,17 +77,13 @@ impl<F> OverlayHost<F> {
     }
 
     /// Route an **Overlay data** result to the active overlay. With no
-    /// overlay open the data is stale by definition; the caller drops it.
-    pub fn handle_data(
-        &mut self,
-        data: &OverlayData,
-        vault: &Arc<NoteVault>,
-        tx: &AppTx,
-    ) -> OverlayMsg {
+    /// overlay open — or when the active overlay is not the kind the data
+    /// was addressed to — the result is stale by definition and dies here;
+    /// there is deliberately nothing to return, because nothing else may
+    /// ever see overlay data (see CONTEXT.md **Overlay data**).
+    pub fn handle_data(&mut self, data: &OverlayData, vault: &Arc<NoteVault>, tx: &AppTx) {
         if let Some(o) = &mut self.active {
-            o.handle_data(data, vault, tx)
-        } else {
-            OverlayMsg::NotConsumed
+            o.handle_data(data, vault, tx);
         }
     }
 

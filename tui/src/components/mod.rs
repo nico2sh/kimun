@@ -5,6 +5,7 @@ pub mod autosave_timer;
 pub mod command_palette;
 pub mod dialogs;
 pub mod dir_browser;
+pub mod config_panel;
 pub mod drawer;
 pub mod drawer_views;
 pub mod event_state;
