@@ -32,13 +32,16 @@ impl FastEmbedder {
     }
 }
 
-/// Every bundled fastembed model as `(model code, dimension)` — feeds the web
-/// UI's model dropdown so choosing a local model is always explicit (adr/0024).
+/// Every bundled fastembed model as `(model code, dimension)`, sorted
+/// alphabetically by code — feeds the web UI's model dropdown so choosing a
+/// local model is always explicit (adr/0024).
 pub fn supported_models() -> Vec<(String, usize)> {
-    TextEmbedding::list_supported_models()
+    let mut models: Vec<_> = TextEmbedding::list_supported_models()
         .into_iter()
         .map(|i| (i.model_code, i.dim))
-        .collect()
+        .collect();
+    models.sort_by_key(|(code, _)| code.to_lowercase());
+    models
 }
 
 /// The canonical model code for any accepted model name — variant name
@@ -174,5 +177,14 @@ mod tests {
                 .iter()
                 .any(|(code, dim)| code == "Xenova/bge-small-en-v1.5" && *dim == 384)
         );
+    }
+
+    #[test]
+    fn supported_models_is_sorted_alphabetically() {
+        let models = supported_models();
+        let codes: Vec<String> = models.iter().map(|(c, _)| c.to_lowercase()).collect();
+        let mut sorted = codes.clone();
+        sorted.sort();
+        assert_eq!(codes, sorted);
     }
 }
