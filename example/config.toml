@@ -58,6 +58,7 @@ group_directories = false
 current_workspace = "personal"
 update_check = true
 mouse = true
+rag_server_url = "http://localhost:7573"
 
 [workspaces.personal]
 path = "personal"

@@ -28,8 +28,13 @@ const RECONCILE_EVERY_N_TICKS: u32 = 30;
 pub enum RagStatus {
     Disabled,
     Offline,
-    Syncing,
-    Online,
+    /// Reachable, a sync pass in flight. `llm_available` carries whether the
+    /// server has an LLM configured (question-answering possible), so Ask stays
+    /// gated consistently while syncing.
+    Syncing { llm_available: bool },
+    /// Reachable and idle. `llm_available` = the server has an LLM (Q&A on);
+    /// `false` = semantic-only (search only).
+    Online { llm_available: bool },
 }
 
 /// A completed RAG answer delivered back to the answer overlay via
@@ -53,9 +58,24 @@ impl RagStatus {
         match self {
             RagStatus::Disabled => None,
             RagStatus::Offline => Some("rag: offline"),
-            RagStatus::Syncing => Some("rag: syncing"),
-            RagStatus::Online => Some("rag: online"),
+            RagStatus::Syncing { .. } => Some("rag: syncing"),
+            RagStatus::Online { .. } => Some("rag: online"),
         }
+    }
+
+    /// Whether question-answering (Ask) is available right now: the server is
+    /// reachable AND has an LLM configured. `false` when offline, disabled, or
+    /// connected to a semantic-only server — the Ask overlay is hidden in those
+    /// cases (adr/0022).
+    pub fn llm_available(self) -> bool {
+        matches!(
+            self,
+            RagStatus::Online {
+                llm_available: true
+            } | RagStatus::Syncing {
+                llm_available: true
+            }
+        )
     }
 }
 
@@ -108,14 +128,19 @@ pub fn spawn_rag_sync(
             }
             let sync = sync.as_ref().expect("sync established above");
 
-            if !sync.online().await {
-                let _ = tx.send(AppEvent::RagStatus(RagStatus::Offline));
-                // Re-establish full consistency on the next successful tick.
-                ticks_since_reconcile = RECONCILE_EVERY_N_TICKS;
-                continue;
-            }
+            // One probe drives both reachability and LLM capability (whether Ask
+            // is offered). `None` = offline.
+            let llm_available = match sync.probe().await {
+                Some(llm) => llm,
+                None => {
+                    let _ = tx.send(AppEvent::RagStatus(RagStatus::Offline));
+                    // Re-establish full consistency on the next successful tick.
+                    ticks_since_reconcile = RECONCILE_EVERY_N_TICKS;
+                    continue;
+                }
+            };
 
-            let _ = tx.send(AppEvent::RagStatus(RagStatus::Syncing));
+            let _ = tx.send(AppEvent::RagStatus(RagStatus::Syncing { llm_available }));
             let result = if ticks_since_reconcile >= RECONCILE_EVERY_N_TICKS {
                 ticks_since_reconcile = 0;
                 sync.tick().await // drain + reconcile
@@ -124,7 +149,7 @@ pub fn spawn_rag_sync(
                 sync.drain().await // fast path
             };
             let status = match result {
-                Ok(()) => RagStatus::Online,
+                Ok(()) => RagStatus::Online { llm_available },
                 Err(e) => {
                     log::debug!("RAG sync failed: {e}");
                     RagStatus::Offline

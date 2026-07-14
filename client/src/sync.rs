@@ -50,6 +50,18 @@ impl RagSync {
         self.client.health().await.is_ok()
     }
 
+    /// Probe reachability and LLM capability in one `/health` request:
+    /// `None` = offline; `Some(true)` = reachable with an LLM (question-answering
+    /// available); `Some(false)` = reachable but semantic-only (no LLM). Lets the
+    /// UI both gate connection status and hide Ask on a semantic-only server.
+    pub async fn probe(&self) -> Option<bool> {
+        self.client
+            .health()
+            .await
+            .ok()
+            .map(|h| h.llm_provider.is_some())
+    }
+
     /// One sync pass: flush pending changes, then reconcile to repair drift.
     pub async fn tick(&self) -> Result<(), RagError> {
         drain(&self.vault, &self.dirty, &self.client).await?;
