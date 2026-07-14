@@ -352,12 +352,15 @@ mod tests {
             .unwrap();
         drain(&vault, &dirty, &transport).await.unwrap();
 
-        let pushed = transport.pushed.lock().unwrap();
-        assert_eq!(pushed.len(), 1);
-        assert_eq!(pushed[0].path, "/a.md"); // canonical
-        assert!(!pushed[0].sections.is_empty());
-        assert!(dirty.is_empty());
-        drop(pushed);
+        // Block-scoped: clippy's await_holding_lock tracks lexical scope, so an
+        // explicit drop() before the awaits below wouldn't silence it.
+        {
+            let pushed = transport.pushed.lock().unwrap();
+            assert_eq!(pushed.len(), 1);
+            assert_eq!(pushed[0].path, "/a.md"); // canonical
+            assert!(!pushed[0].sections.is_empty());
+            assert!(dirty.is_empty());
+        }
 
         vault.delete_note(&VaultPath::new("a.md")).await.unwrap();
         drain(&vault, &dirty, &transport).await.unwrap();
