@@ -199,23 +199,22 @@ async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<Option<Kim
     // Create the vector store based on config. It only needs the embedder's
     // dimension (its tables/collections are created at that width) — embedding
     // itself happens in the pipeline, above the storage seam.
-    let store: Arc<dyn kimun_server::dbembeddings::VectorStore + Send + Sync> =
-        match &config.vector_db {
-            VectorDbConfig::Lance { path } => {
-                tracing::info!("Using LanceDB vector database at {:?}", path);
-                Arc::new(VecLance::new(path, embedder.dimension()).await?)
-            }
-            VectorDbConfig::Qdrant { url, collection } => {
-                tracing::info!(
-                    "Using Qdrant vector database at {} (collection: {})",
-                    url,
-                    collection
-                );
-                Arc::new(
-                    VecQdrant::new(url.clone(), collection.clone(), embedder.dimension()).await?,
-                )
-            }
-        };
+    let store: Arc<dyn kimun_server::dbembeddings::VectorStore + Send + Sync> = match &config
+        .vector_db
+    {
+        VectorDbConfig::Lance { path } => {
+            tracing::info!("Using LanceDB vector database at {:?}", path);
+            Arc::new(VecLance::new(path, embedder.dimension()).await?)
+        }
+        VectorDbConfig::Qdrant { url, collection } => {
+            tracing::info!(
+                "Using Qdrant vector database at {} (collection: {})",
+                url,
+                collection
+            );
+            Arc::new(VecQdrant::new(url.clone(), collection.clone(), embedder.dimension()).await?)
+        }
+    };
 
     // Embedder fingerprint (adr/0025): a changed embedder makes every stored
     // vector garbage, and reconciliation can't detect it. The gate is armed on

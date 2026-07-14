@@ -113,10 +113,8 @@ impl VecLance {
     }
 
     fn build_batch(rows: &[EmbeddedChunk], dim: usize) -> anyhow::Result<RecordBatch> {
-        let paths =
-            StringArray::from_iter_values(rows.iter().map(|r| r.chunk.doc_path.as_str()));
-        let hashes =
-            StringArray::from_iter_values(rows.iter().map(|r| r.chunk.doc_hash.as_str()));
+        let paths = StringArray::from_iter_values(rows.iter().map(|r| r.chunk.doc_path.as_str()));
+        let hashes = StringArray::from_iter_values(rows.iter().map(|r| r.chunk.doc_hash.as_str()));
         let titles = StringArray::from_iter_values(rows.iter().map(|r| r.chunk.title.as_str()));
         let dates = StringArray::from_iter_values(
             rows.iter()
@@ -426,10 +424,8 @@ mod tests {
     #[tokio::test]
     async fn conformance_drop_all() {
         let (_dir, s) = store().await;
-        conformance::drop_all_removes_every_collection_but_not_the_fingerprint_slot(
-            &s, "va", "vb",
-        )
-        .await;
+        conformance::drop_all_removes_every_collection_but_not_the_fingerprint_slot(&s, "va", "vb")
+            .await;
     }
 
     #[tokio::test]
@@ -452,7 +448,10 @@ mod tests {
             chunk: conformance::row("b.md", "h", "y").chunk,
             vector: vec![0.5; 16],
         };
-        let err = s16.store("v", &[row]).await.expect_err("dim change must fail");
+        let err = s16
+            .store("v", &[row])
+            .await
+            .expect_err("dim change must fail");
         assert!(err.to_string().contains("dimension"));
     }
 }
