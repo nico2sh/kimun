@@ -380,6 +380,35 @@ impl Default for RagConfig {
     }
 }
 
+impl RagConfig {
+    /// A ready-to-run config for `--default-config`: embedded LanceDB plus the
+    /// local fastembed embedder with its default model. Unlike [`Default`] —
+    /// which is *unconfigured* (no embedder, data operations rejected,
+    /// adr/0024) — this serves indexing and search out of the box. Still
+    /// semantic-only: no LLM, so `/api/answer` is rejected (adr/0022).
+    pub fn ready_default() -> Self {
+        Self {
+            embedder: Some(EmbedderConfig::FastEmbed { model: None }),
+            ..Self::default()
+        }
+    }
+
+    /// [`ready_default`](Self::ready_default), materialized at `path` when no
+    /// file exists there yet — `--default-config` leaves a real file behind so
+    /// later file-based starts (and web-UI edits) have something to load and
+    /// update. An existing file is never touched; the returned config is the
+    /// built-in default either way (the flag means "run with defaults", not
+    /// "load the file").
+    pub fn ready_default_persisted(path: &std::path::Path) -> anyhow::Result<Self> {
+        let config = Self::ready_default();
+        if !path.exists() {
+            config.save_to(path)?;
+            tracing::info!("Wrote default config (LanceDB + fastembed) to {:?}", path);
+        }
+        Ok(config)
+    }
+}
+
 /// The web UI's config form, exactly as submitted. Numeric fields arrive as
 /// strings so a non-numeric value yields a friendly flash instead of a bare
 /// 400 that discards the whole form. Exposing a new option in the web UI means
@@ -1218,6 +1247,45 @@ type = "lance"
         let reloaded = RagConfig::load_or_generate_default(&path).unwrap();
         assert!(reloaded.llm.is_none());
         assert!(matches!(reloaded.vector_db, VectorDbConfig::Lance { .. }));
+    }
+
+    #[test]
+    fn ready_default_is_fastembed_on_lance_semantic_only() {
+        let cfg = RagConfig::ready_default();
+        assert!(matches!(
+            cfg.embedder,
+            Some(EmbedderConfig::FastEmbed { model: None })
+        ));
+        assert!(matches!(cfg.vector_db, VectorDbConfig::Lance { .. }));
+        assert!(cfg.llm.is_none());
+    }
+
+    #[test]
+    fn ready_default_persisted_writes_once_and_never_overwrites() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("kimun").join("server.toml");
+
+        // Missing file → written, and it round-trips as the ready default.
+        RagConfig::ready_default_persisted(&path).unwrap();
+        let on_disk = RagConfig::from_file(path.clone()).unwrap();
+        assert!(matches!(
+            on_disk.embedder,
+            Some(EmbedderConfig::FastEmbed { model: None })
+        ));
+
+        // Existing file → untouched, even when its content differs.
+        std::fs::write(
+            &path,
+            "[server]\nport = 9999\n[vector_db]\ntype = \"qdrant\"\n[reranker]\n",
+        )
+        .unwrap();
+        let returned = RagConfig::ready_default_persisted(&path).unwrap();
+        assert!(
+            returned.embedder.is_some(),
+            "still runs the built-in default"
+        );
+        let untouched = RagConfig::from_file(path).unwrap();
+        assert_eq!(untouched.server.port, 9999);
     }
 
     #[test]

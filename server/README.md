@@ -35,6 +35,13 @@ Override host/port/config on the CLI:
 cargo run -p kimun_server --bin kimun-server -- --config /path/to/server.toml --host 0.0.0.0 --port 7573
 ```
 
+Or skip the config file entirely and start with working local defaults
+(embedded LanceDB + the local fastembed embedder, semantic-only):
+
+```bash
+cargo run --release -p kimun_server --bin kimun-server -- --default-config
+```
+
 Open `http://127.0.0.1:7573/` for the [web UI](#web-ui); the API lives under
 `/api` (see [API](#api)).
 
