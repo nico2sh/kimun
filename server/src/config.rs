@@ -670,7 +670,7 @@ provider = "gemini"
         let config: RagConfig = toml::from_str(config_toml).unwrap();
         assert_eq!(config.server.host, "127.0.0.1");
         assert_eq!(config.server.port, 7573);
-        assert_eq!(config.reranker.enabled, true);
+        assert!(config.reranker.enabled);
         // top_k has a default and is configurable (was missing from the struct).
         assert_eq!(config.reranker.top_k, 20);
         // Auth is optional; absent by default.
@@ -819,7 +819,7 @@ token = "secret-token"
         let reloaded = RagConfig::from_file(path).unwrap();
         assert_eq!(reloaded.server.host, "0.0.0.0");
         assert_eq!(reloaded.server.port, 9000);
-        assert_eq!(reloaded.reranker.enabled, false);
+        assert!(!reloaded.reranker.enabled);
         assert_eq!(reloaded.reranker.top_k, 33);
         assert_eq!(reloaded.auth.token.as_deref(), Some("secret-token"));
         let llm = reloaded.llm.as_ref().expect("llm present");

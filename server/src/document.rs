@@ -671,7 +671,7 @@ fn main() {
         // Most chunks should be close to target size (800)
         let avg_size: usize = result.iter().map(|s| s.len()).sum::<usize>() / result.len();
         assert!(
-            avg_size >= 600 && avg_size <= 1536,
+            (600..=1536).contains(&avg_size),
             "Average chunk size {} should be reasonable",
             avg_size
         );
@@ -703,12 +703,12 @@ fn main() {
         // String
         let owned = String::from("Test string for splitting into multiple chunks.");
         let result1 = crate::document::split_chunks_for_rag(owned, 20, 40);
-        assert!(result1.len() >= 1);
+        assert!(!result1.is_empty());
 
         // &str
         let borrowed = "Test string for splitting into multiple chunks.";
         let result2 = crate::document::split_chunks_for_rag(borrowed, 20, 40);
-        assert!(result2.len() >= 1);
+        assert!(!result2.is_empty());
 
         // Both should produce same results
         assert_eq!(result1.len(), result2.len());
@@ -724,7 +724,7 @@ fn main() {
         // Use larger sizes to reduce chance of splitting on char boundary
         let result = crate::document::split_chunks_for_rag(text, 100, 200);
 
-        assert!(result.len() >= 1);
+        assert!(!result.is_empty());
 
         // Unicode should be preserved
         let combined = result.join(" ");
@@ -803,7 +803,7 @@ fn main() {
 
         let result = crate::document::split_chunks_for_rag(text, 40, 80);
 
-        assert!(result.len() >= 1);
+        assert!(!result.is_empty());
 
         // Should not lose any content
         let combined = result.join(" ");
@@ -829,7 +829,7 @@ fn main() {
         // This should not panic even though we're splitting multi-byte sequences
         let result = crate::document::split_chunks_for_rag(&text, 50, 100);
 
-        assert!(result.len() >= 1);
+        assert!(!result.is_empty());
 
         // Verify all chunks are valid UTF-8
         for chunk in &result {
