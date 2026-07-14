@@ -58,10 +58,10 @@ pub struct GlobalConfig {
     /// Global (one server serves many vaults, each as its own collection —
     /// adr/0020); `None` means the feature is off.
     #[serde(default)]
-    pub rag_server_url: Option<String>,
+    pub kimun_server_url: Option<String>,
     /// Bearer token for the RAG server, when it requires one.
     #[serde(default)]
-    pub rag_server_token: Option<String>,
+    pub kimun_server_token: Option<String>,
 }
 
 fn default_update_check() -> bool {
@@ -123,8 +123,8 @@ impl WorkspaceConfig {
                 current_workspace: String::new(),
                 update_check: true,
                 mouse: true,
-                rag_server_url: None,
-                rag_server_token: None,
+                kimun_server_url: None,
+                kimun_server_token: None,
             },
             workspaces: BTreeMap::new(),
         }

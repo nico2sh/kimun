@@ -91,8 +91,8 @@ pub fn spawn_rag_sync(
         let settings = settings.read().ok()?;
         let global = &settings.workspace_config.as_ref()?.global;
         (
-            global.rag_server_url.clone()?,
-            global.rag_server_token.clone(),
+            global.kimun_server_url.clone()?,
+            global.kimun_server_token.clone(),
         )
     };
 

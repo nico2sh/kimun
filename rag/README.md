@@ -26,13 +26,13 @@ from the repo root with `-p kimun_rag`, or from this `rag/` directory:
 mkdir -p ~/.config/kimun
 cp rag/config.example.toml ~/.config/kimun/rag.conf
 # edit ~/.config/kimun/rag.conf (see Configuration)
-cargo run --release -p kimun_rag --bin rag-server
+cargo run --release -p kimun_rag --bin kimun-server
 ```
 
 Override host/port/config on the CLI:
 
 ```bash
-cargo run -p kimun_rag --bin rag-server -- --config /path/to/rag.conf --host 0.0.0.0 --port 7573
+cargo run -p kimun_rag --bin kimun-server -- --config /path/to/rag.conf --host 0.0.0.0 --port 7573
 ```
 
 Open `http://127.0.0.1:7573/` for the [web UI](#web-ui); the API lives under

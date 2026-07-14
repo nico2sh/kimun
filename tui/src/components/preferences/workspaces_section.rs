@@ -366,8 +366,8 @@ mod tests {
                 current_workspace: current.to_string(),
                 update_check: true,
                 mouse: true,
-                rag_server_url: None,
-                rag_server_token: None,
+                kimun_server_url: None,
+                kimun_server_token: None,
             },
             workspaces: ws_map,
         });

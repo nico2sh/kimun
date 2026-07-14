@@ -129,7 +129,7 @@ Needs P3. All gated on server reachability — invisible when standalone.
 **4.1 Wiring**
 - App owns a `RagClient`; register it as the vault's index observer; spawn a
   background drain/reconcile task on a tokio handle.
-- Config: `rag_server_url` + token in `GlobalConfig`
+- Config: `kimun_server_url` + token in `GlobalConfig`
   (tui/src/settings/workspace_config.rs:41). Edit in preferences + an onboarding
   step.
 
