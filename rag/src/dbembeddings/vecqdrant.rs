@@ -353,7 +353,7 @@ impl VectorStore for VecQdrant {
 
 /// Conformance against a live Qdrant. `#[ignore]`d because they need a running
 /// server: `QDRANT_URL` (default `http://localhost:6334`), then
-/// `cargo test -p kimun_rag -- --ignored`. Each run uses a fresh prefix-less
+/// `cargo test -p kimun_server -- --ignored`. Each run uses a fresh prefix-less
 /// namespace under `kimun-conformance-*` collections; they are dropped first so
 /// reruns start clean.
 #[cfg(test)]

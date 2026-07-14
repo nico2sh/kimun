@@ -127,7 +127,7 @@ impl FlattenedChunk {
 /// # Examples
 ///
 /// ```rust
-/// use kimun_rag::document::{KimunDoc, KimunSection, split_chunks_for_rag};
+/// use kimun_server::document::{KimunDoc, KimunSection, split_chunks_for_rag};
 ///
 /// let text = "This is a very long text...".to_string();
 /// let doc = KimunDoc {

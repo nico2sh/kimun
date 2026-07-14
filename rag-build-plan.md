@@ -6,7 +6,7 @@ CONTEXT.md (RAG section).
 
 Decisions this plan implements:
 - Push-only sync; server never reads the vault (adr/0018).
-- Core network-free; **index observer** seam + `kimun_rag_client` crate;
+- Core network-free; **index observer** seam + `kimun_server_client` crate;
   **reconciliation** (hash-diff) is the backbone, no durable outbox (adr/0019).
 - Multi-vault server, one **collection** per **Vault ID** in `.kimun/` (adr/0020).
 - Server-owned LLM config, bearer-token auth, per-note hash (v1).
@@ -97,7 +97,7 @@ before any Kimün wiring exists.
 
 ---
 
-## Phase 3 — `kimun_rag_client` crate
+## Phase 3 — `kimun_server_client` crate
 
 Needs P1 (seam + vault id) and P2 (endpoints). New workspace crate depending on
 `kimun_core` for types (`ContentChunk`, `VaultPath`, `VaultId`).

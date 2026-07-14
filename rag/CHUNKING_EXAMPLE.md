@@ -5,7 +5,7 @@ The `split_chunks_for_rag` function takes a `KimunDoc` (which already contains c
 ## Basic Usage
 
 ```rust
-use kimun_rag::{KimunDoc, Chunk, split_chunks_for_rag};
+use kimun_server::{KimunDoc, Chunk, split_chunks_for_rag};
 
 // Create a document with large chunks
 let doc = KimunDoc {
@@ -129,7 +129,7 @@ let result = split_chunks_for_rag(doc, 512, 1024);
 ### Before Indexing
 
 ```rust
-use kimun_rag::{KimunDoc, split_chunks_for_rag};
+use kimun_server::{KimunDoc, split_chunks_for_rag};
 
 // Load documents from vault (already chunked by markdown sections)
 let docs: Vec<KimunDoc> = load_from_vault()?;
@@ -151,7 +151,7 @@ for doc in optimized_docs {
 The `ChunkLoader::load_notes()` method already calls this function internally with optimal defaults:
 
 ```rust
-use kimun_rag::document::ChunkLoader;
+use kimun_server::document::ChunkLoader;
 
 let loader = ChunkLoader::new(vault_path);
 let docs = loader.load_notes()?;  // Already split with target=800, max=1536 (optimal!)

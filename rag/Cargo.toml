@@ -1,5 +1,5 @@
 [package]
-name = "kimun_rag"
+name = "kimun_server"
 version = "0.1.0"
 edition = "2024"
 

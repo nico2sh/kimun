@@ -1,5 +1,5 @@
 [package]
-name = "kimun_rag_client"
+name = "kimun_server_client"
 version = "0.1.0"
 edition = "2024"
 

@@ -17,7 +17,7 @@ path = "src/lib.rs"
 
 [dependencies]
 kimun_core = { path = "../core", version = "0.2.27" }
-kimun_rag_client = { path = "../client" }
+kimun_server_client = { path = "../client" }
 
 clap = { version = "4", features = ["derive"] }
 color-eyre = "0.6.5"

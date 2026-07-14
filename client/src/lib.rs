@@ -1,4 +1,4 @@
-//! `kimun_rag_client` — the component inside Kimün that owns every dealing with
+//! `kimun_server_client` — the component inside Kimün that owns every dealing with
 //! the RAG server: connection/capability probing, pushing note changes, and
 //! hash-diff reconciliation (see CONTEXT.md "RAG client", adr/0018–0021). Core
 //! stays network-free; it feeds this crate only through the [`observer`] seam.

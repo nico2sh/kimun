@@ -8,7 +8,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
-use kimun_rag_client::{ChunkResult, RagClient};
+use kimun_server_client::{ChunkResult, RagClient};
 
 use ratatui::Frame;
 use ratatui::layout::Rect;

@@ -4077,7 +4077,7 @@ dependencies = [
  "futures 0.3.32",
  "itertools 0.14.0",
  "kimun_core",
- "kimun_rag_client",
+ "kimun_server_client",
  "log",
  "nucleo",
  "nvim-rs",
@@ -4136,7 +4136,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "kimun_rag"
+name = "kimun_server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -4167,7 +4167,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "kimun_rag_client"
+name = "kimun_server_client"
 version = "0.1.0"
 dependencies = [
  "async-trait",
