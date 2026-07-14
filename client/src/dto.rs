@@ -115,7 +115,8 @@ mod tests {
 
     #[test]
     fn health_parses_configured_llm_provider() {
-        let json = r#"{"status":"ok","reranker":false,"llm_provider":"gemini","auth_required":true}"#;
+        let json =
+            r#"{"status":"ok","reranker":false,"llm_provider":"gemini","auth_required":true}"#;
         let health: Health = serde_json::from_str(json).unwrap();
         assert_eq!(health.llm_provider.as_deref(), Some("gemini"));
         assert!(health.auth_required);
@@ -139,7 +140,8 @@ mod tests {
     #[test]
     fn health_tolerates_missing_embedder_field() {
         // An older server without the field must still parse (probe stays green).
-        let json = r#"{"status":"ok","reranker":true,"llm_provider":"gemini","auth_required":false}"#;
+        let json =
+            r#"{"status":"ok","reranker":true,"llm_provider":"gemini","auth_required":false}"#;
         let health: Health = serde_json::from_str(json).unwrap();
         assert!(health.embedder.is_none());
     }
