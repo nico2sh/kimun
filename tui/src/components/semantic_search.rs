@@ -133,6 +133,10 @@ impl ListPanelSpec for SemanticSpec {
     // Server-backed query: draw a bordered search box separated from the results
     // and a "Searching…" indicator while the request is in flight.
     const BORDERED_INPUT: bool = true;
+    // The server already ranks/filters by the query; don't re-filter its
+    // semantic results locally by the literal query text (that discards
+    // conceptually-relevant notes whose titles lack the words).
+    const LOCAL_FILTER: bool = false;
 
     fn submit(row: &FileListEntry, tx: &AppTx) {
         if let FileListEntry::Note { path, .. } = row {
