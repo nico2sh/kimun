@@ -1,4 +1,4 @@
-rag/qdrant/
+qdrant/
 api.env
 target/
 pkg/
