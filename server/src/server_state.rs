@@ -5,15 +5,16 @@ use std::time::SystemTime;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use crate::KimunRag;
 use crate::config::RagConfig;
+use crate::{KimunRag, RagError};
 
 /// Shared application state
 #[derive(Clone)]
 pub struct AppState {
-    /// The query pipeline. Immutable after startup (config edits apply on
-    /// restart), so it is shared plainly — no lock.
-    pub rag: Arc<KimunRag>,
+    /// The query pipeline, or `None` on an *unconfigured* server (no embedder →
+    /// no vector store, adr/0024). Immutable after startup (config edits apply
+    /// on restart), so it is shared plainly — no lock.
+    pub rag: Option<Arc<KimunRag>>,
     pub config: Arc<RagConfig>,
     /// Where the config was loaded from, so the web UI can persist edits back to
     /// it. `None` disables saving (config supplied without a resolvable path).
@@ -26,14 +27,20 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(rag: KimunRag, config: RagConfig) -> Self {
+    pub fn new(rag: Option<KimunRag>, config: RagConfig) -> Self {
         Self {
-            rag: Arc::new(rag),
+            rag: rag.map(Arc::new),
             config: Arc::new(config),
             config_path: None,
             job_tracker: Arc::new(Mutex::new(JobTracker::new())),
             index_lock: Arc::new(Mutex::new(())),
         }
+    }
+
+    /// The pipeline, or the typed unconfigured rejection — the one gate every
+    /// data handler runs before touching a request (adr/0024).
+    pub fn rag(&self) -> Result<&Arc<KimunRag>, RagError> {
+        self.rag.as_ref().ok_or(RagError::Unconfigured)
     }
 
     /// Records the on-disk config path so the web UI can write edits back to it.

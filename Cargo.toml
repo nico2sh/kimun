@@ -1,5 +1,5 @@
 [workspace]
-members = ["core", "tui", "client", "rag"]
+members = ["core", "tui", "client", "server"]
 resolver = "2"
 
 [profile.release]

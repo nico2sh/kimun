@@ -142,7 +142,7 @@ impl IntoResponse for RagError {
         let status = match &self {
             RagError::Validation(_) => StatusCode::BAD_REQUEST,
             RagError::NotFound(_) => StatusCode::NOT_FOUND,
-            RagError::SemanticOnly => StatusCode::SERVICE_UNAVAILABLE,
+            RagError::SemanticOnly | RagError::Unconfigured => StatusCode::SERVICE_UNAVAILABLE,
             RagError::Backend(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (
@@ -164,6 +164,7 @@ pub async fn index_docs_handler(
     Json(request): Json<IndexDocsRequest>,
 ) -> Result<Json<IndexResponse>, RagError> {
     let collection = CollectionKey::parse(&request.vault_id)?;
+    let rag = state.rag()?.clone();
     let job_id = Uuid::new_v4();
 
     // Mark job as queued
@@ -189,7 +190,7 @@ pub async fn index_docs_handler(
         let _index_guard = state_clone.index_lock.lock().await;
 
         // Perform indexing
-        match state_clone.rag.index(&collection, &request.docs).await {
+        match rag.index(&collection, &request.docs).await {
             Ok(stats) => {
                 let result = serde_json::json!({
                     "indexed": stats.indexed,
@@ -228,7 +229,10 @@ pub async fn get_embeddings_handler(
     let collection = CollectionKey::parse(&request.vault_id)?;
     let top_k = resolve_top_k(request.context_size, state.config.reranker.top_k);
 
-    let results = state.rag.search(&collection, &request.query, top_k).await?;
+    let results = state
+        .rag()?
+        .search(&collection, &request.query, top_k)
+        .await?;
 
     let chunks: Vec<ChunkResult> = results.into_iter().map(ChunkResult::from).collect();
 
@@ -243,11 +247,12 @@ pub async fn answer_handler(
     Json(request): Json<AnswerRequest>,
 ) -> Result<Json<QueryResponse>, RagError> {
     let collection = CollectionKey::parse(&request.vault_id)?;
+    let rag = state.rag()?.clone();
     // Semantic-only server: reject question-answering up front rather than minting
     // a job that can only fail (adr/0022). The client already gates on
     // /health.llm_provider; this is the belt-and-suspenders path. The pipeline
     // is the truth here, not the config — it holds the actually-constructed LLM.
-    if !state.rag.can_answer() {
+    if !rag.can_answer() {
         return Err(RagError::SemanticOnly);
     }
     let job_id = Uuid::new_v4();
@@ -271,11 +276,7 @@ pub async fn answer_handler(
             .await
             .update_status(&job_id, JobStatus::Processing);
 
-        match state_clone
-            .rag
-            .answer(&collection, &request.query, top_k)
-            .await
-        {
+        match rag.answer(&collection, &request.query, top_k).await {
             Ok(answer) => {
                 let sources: Vec<ChunkResult> =
                     answer.sources.into_iter().map(ChunkResult::from).collect();
@@ -316,7 +317,10 @@ pub async fn index_delete_handler(
     // Serialize with index writes so a delete can't interleave with a store on
     // the same collection (partial-visibility / lost updates in the store).
     let _index_guard = state.index_lock.lock().await;
-    state.rag.delete_notes(&collection, &request.paths).await?;
+    state
+        .rag()?
+        .delete_notes(&collection, &request.paths)
+        .await?;
     Ok(Json(IndexResponse {
         job_id: Uuid::new_v4().to_string(),
         message: format!("Deleted {} paths", request.paths.len()),
@@ -331,7 +335,7 @@ pub async fn collection_hashes_handler(
     axum::extract::Path(vault_id): axum::extract::Path<String>,
 ) -> Result<Json<HashMap<String, String>>, RagError> {
     let collection = CollectionKey::parse(&vault_id)?;
-    Ok(Json(state.rag.note_hashes(&collection).await?))
+    Ok(Json(state.rag()?.note_hashes(&collection).await?))
 }
 
 /// Job Status - Get status of a job
@@ -382,6 +386,7 @@ mod tests {
             ),
             (RagError::NotFound("gone".into()), StatusCode::NOT_FOUND),
             (RagError::SemanticOnly, StatusCode::SERVICE_UNAVAILABLE),
+            (RagError::Unconfigured, StatusCode::SERVICE_UNAVAILABLE),
             (
                 RagError::Backend(anyhow::anyhow!("boom")),
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -402,6 +407,69 @@ mod tests {
         assert_eq!(json["error"], "vault_id must be non-empty");
     }
 
+    #[tokio::test]
+    async fn data_handlers_reject_unconfigured_with_503() {
+        // An unconfigured server has no pipeline: every data endpoint rejects
+        // before doing any work (adr/0024). /health and /api/job stay live.
+        use crate::config::RagConfig;
+        let config: RagConfig =
+            toml::from_str("[server]\n[vector_db]\ntype = \"lance\"\n[reranker]\n").unwrap();
+        let state = Arc::new(AppState::new(None, config));
+
+        let err = get_embeddings_handler(
+            State(state.clone()),
+            Json(QueryRequest {
+                vault_id: "vault-1".into(),
+                query: "q".into(),
+                context_size: None,
+            }),
+        )
+        .await
+        .expect_err("unconfigured must reject search");
+        assert!(matches!(err, RagError::Unconfigured));
+        assert_eq!(err.into_response().status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let err = index_docs_handler(
+            State(state.clone()),
+            Json(IndexDocsRequest {
+                vault_id: "vault-1".into(),
+                docs: vec![],
+            }),
+        )
+        .await
+        .expect_err("unconfigured must reject indexing");
+        assert!(matches!(err, RagError::Unconfigured));
+
+        let err = answer_handler(
+            State(state.clone()),
+            Json(AnswerRequest {
+                vault_id: "vault-1".into(),
+                query: "q".into(),
+                context_size: None,
+            }),
+        )
+        .await
+        .expect_err("unconfigured must reject answering");
+        assert!(matches!(err, RagError::Unconfigured));
+
+        let err = index_delete_handler(
+            State(state.clone()),
+            Json(DeleteRequest {
+                vault_id: "vault-1".into(),
+                paths: vec!["a.md".into()],
+            }),
+        )
+        .await
+        .expect_err("unconfigured must reject deletes");
+        assert!(matches!(err, RagError::Unconfigured));
+
+        let err =
+            collection_hashes_handler(State(state), axum::extract::Path("vault-1".to_string()))
+                .await
+                .expect_err("unconfigured must reject hash reads");
+        assert!(matches!(err, RagError::Unconfigured));
+    }
+
     #[test]
     fn collection_key_rejects_blank_and_unsafe_ids() {
         assert!(matches!(
@@ -412,6 +480,19 @@ mod tests {
             CollectionKey::parse("../escape"),
             Err(RagError::Validation(_))
         ));
+        // "__" is reserved for server metadata collections (the embedder
+        // fingerprint, adr/0025) — a vault id there would collide with the
+        // qdrant fingerprint collection and be hidden from listings/wipes.
+        assert!(matches!(
+            CollectionKey::parse("__fingerprint"),
+            Err(RagError::Validation(_))
+        ));
+        assert!(matches!(
+            CollectionKey::parse("__x"),
+            Err(RagError::Validation(_))
+        ));
+        // A single leading underscore is still a valid id character.
+        assert!(CollectionKey::parse("_vault").is_ok());
         let key = CollectionKey::parse("550e8400-e29b-41d4-a716-446655440000").unwrap();
         assert_eq!(key.as_str(), "550e8400-e29b-41d4-a716-446655440000");
     }

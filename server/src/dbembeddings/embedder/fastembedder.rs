@@ -32,6 +32,27 @@ impl FastEmbedder {
     }
 }
 
+/// Every bundled fastembed model as `(model code, dimension)` — feeds the web
+/// UI's model dropdown so choosing a local model is always explicit (adr/0024).
+pub fn supported_models() -> Vec<(String, usize)> {
+    TextEmbedding::list_supported_models()
+        .into_iter()
+        .map(|i| (i.model_code, i.dim))
+        .collect()
+}
+
+/// The canonical model code for any accepted model name — variant name
+/// (`BGESmallENV15`) or model code, case-insensitive. The web UI's dropdown is
+/// keyed by model codes, so this is how a config value written in either form
+/// matches its option. `None` for an unknown model.
+pub fn canonical_model_code(name: &str) -> Option<String> {
+    let (model, _) = resolve_model(Some(name)).ok()?;
+    TextEmbedding::list_supported_models()
+        .iter()
+        .find(|i| i.model == model)
+        .map(|i| i.model_code.clone())
+}
+
 /// Resolves a model name to its `EmbeddingModel` and output dimension.
 fn resolve_model(name: Option<&str>) -> anyhow::Result<(EmbeddingModel, usize)> {
     let infos = TextEmbedding::list_supported_models();
@@ -127,5 +148,31 @@ mod tests {
     #[test]
     fn resolve_unknown_model_errors() {
         assert!(resolve_model(Some("not-a-real-model")).is_err());
+    }
+
+    #[test]
+    fn canonical_model_code_accepts_variant_names_and_codes() {
+        // A config may name the model either way (resolve_model accepts both);
+        // the web UI dropdown needs the code form to match its options.
+        assert_eq!(
+            canonical_model_code("BGESmallENV15").as_deref(),
+            Some("Xenova/bge-small-en-v1.5")
+        );
+        assert_eq!(
+            canonical_model_code("xenova/BGE-small-en-v1.5").as_deref(),
+            Some("Xenova/bge-small-en-v1.5")
+        );
+        assert!(canonical_model_code("not-a-real-model").is_none());
+    }
+
+    #[test]
+    fn supported_models_is_nonempty_and_carries_dims() {
+        let models = supported_models();
+        assert!(!models.is_empty());
+        assert!(
+            models
+                .iter()
+                .any(|(code, dim)| code == "Xenova/bge-small-en-v1.5" && *dim == 384)
+        );
     }
 }

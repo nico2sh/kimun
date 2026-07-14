@@ -54,10 +54,18 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Configuration loaded successfully");
     tracing::debug!("Server: {}:{}", config.server.host, config.server.port);
 
-    // Create RAG instance based on config
+    // Create RAG instance based on config. `None` = unconfigured (adr/0024).
     tracing::info!("Initializing RAG system...");
     let rag = create_rag_from_config(&config).await?;
-    tracing::info!("RAG system initialized");
+    match &rag {
+        Some(_) => tracing::info!("RAG system initialized"),
+        None => tracing::warn!(
+            "No embedder configured — server is UNCONFIGURED: indexing and search are disabled. \
+             Open http://{}:{}/config to set up an embedder (and optionally an LLM).",
+            config.server.host,
+            config.server.port
+        ),
+    }
 
     // Create application state
     let state = Arc::new(AppState::new(rag, config.clone()).with_config_path(config_path));
@@ -120,8 +128,11 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Create RAG instance based on configuration
-async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<KimunRag> {
+/// Builds the query pipeline from config, or `None` on an *unconfigured*
+/// server — no embedder means no vector store (its dimension comes from the
+/// embedder) and no pipeline at all; every data endpoint rejects with 503
+/// until one is configured (adr/0024).
+async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<Option<KimunRag>> {
     use kimun_server::{
         config::{EmbedderConfig, VectorDbConfig},
         dbembeddings::{
@@ -132,8 +143,13 @@ async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<KimunRag> 
         llmclients::ChatClient,
     };
 
+    // No embedder → unconfigured: nothing to build (adr/0024).
+    let Some(embedder_cfg) = &config.embedder else {
+        return Ok(None);
+    };
+
     // Build the embedder (shared by every collection on this server)
-    let embedder: Arc<dyn Embedder> = match &config.embedder {
+    let embedder: Arc<dyn Embedder> = match embedder_cfg {
         EmbedderConfig::FastEmbed { model } => {
             tracing::info!(
                 "Using local fastembed embedder (model: {})",
@@ -201,6 +217,13 @@ async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<KimunRag> 
             }
         };
 
+    // Embedder fingerprint (adr/0025): a changed embedder makes every stored
+    // vector garbage, and reconciliation can't detect it. The gate is armed on
+    // the pipeline (every data op verifies before touching the store) rather
+    // than enforced here, so a store that is unreachable at boot (e.g. Qdrant
+    // still starting) degrades to failing requests instead of aborting startup.
+    let fingerprint = embedder_cfg.fingerprint(embedder.dimension());
+
     // Create LLM client based on config. `None` on a semantic-only server
     // (adr/0022). The key comes from config or the provider's env var and is
     // handed to the client directly — no env mutation, and a missing key is a
@@ -227,7 +250,7 @@ async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<KimunRag> 
             }
         };
 
-    let mut rag = KimunRag::new(store, embedder, llm_client);
+    let mut rag = KimunRag::new(store, embedder, llm_client).with_fingerprint(fingerprint);
 
     // Enable reranking if configured
     if config.reranker.enabled {
@@ -237,17 +260,29 @@ async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<KimunRag> 
         tracing::info!("Reranking disabled");
     }
 
-    Ok(rag)
+    // Best-effort eager fingerprint check: the normal case wipes/records at
+    // boot; an unreachable store just defers the gate to the first request.
+    if let Err(e) = rag.check_fingerprint().await {
+        tracing::warn!(
+            "Could not verify the embedder fingerprint at startup ({e}); \
+             will retry on first use — data operations fail until the vector store is reachable"
+        );
+    }
+
+    Ok(Some(rag))
 }
 
 /// Health + capability probe. The client hits this to decide which features to
 /// light up (adr: additive surfaces appear only when the server is reachable).
+/// `embedder: null` = unconfigured (adr/0024); `llm_provider: null` =
+/// semantic-only (adr/0022).
 async fn health_handler(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
 ) -> axum::Json<serde_json::Value> {
     axum::Json(serde_json::json!({
         "status": "ok",
         "reranker": state.config.reranker.enabled,
+        "embedder": state.config.embedder.as_ref().map(|e| e.provider()),
         "llm_provider": state.config.llm.as_ref().map(|l| l.provider()),
         "auth_required": state.config.auth.token.is_some(),
     }))

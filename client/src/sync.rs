@@ -14,6 +14,40 @@ use crate::{
     DirtyOp, DirtySet, RagClient, RagError, RagObserver, RagTransport, hash_string, reconcile_diff,
 };
 
+/// What a reachable server can do, derived from `/health` (adr/0024): search
+/// needs an embedder, question-answering needs an embedder AND an LLM.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServerCapability {
+    /// No embedder configured — nothing works server-side; the client must not
+    /// push or reconcile (every call would 503).
+    Unconfigured,
+    /// Embedder, no LLM: search and sync work, question-answering does not.
+    SemanticOnly,
+    /// Embedder and LLM: everything works.
+    Full,
+}
+
+impl ServerCapability {
+    /// Derives the capability from a health probe's fields.
+    pub fn from_health(health: &crate::dto::Health) -> Self {
+        match (health.embedder.is_some(), health.llm_provider.is_some()) {
+            (false, _) => ServerCapability::Unconfigured,
+            (true, false) => ServerCapability::SemanticOnly,
+            (true, true) => ServerCapability::Full,
+        }
+    }
+
+    /// Whether push/reconcile/search are usable.
+    pub fn search_available(self) -> bool {
+        !matches!(self, ServerCapability::Unconfigured)
+    }
+
+    /// Whether question-answering is usable.
+    pub fn llm_available(self) -> bool {
+        matches!(self, ServerCapability::Full)
+    }
+}
+
 /// Bundles a vault, its dirty-set, and the server client, and drives sync. The
 /// caller (the TUI) owns the schedule: probe [`online`](RagSync::online) to gate
 /// features, and call [`tick`](RagSync::tick) periodically to keep the server in
@@ -50,16 +84,15 @@ impl RagSync {
         self.client.health().await.is_ok()
     }
 
-    /// Probe reachability and LLM capability in one `/health` request:
-    /// `None` = offline; `Some(true)` = reachable with an LLM (question-answering
-    /// available); `Some(false)` = reachable but semantic-only (no LLM). Lets the
-    /// UI both gate connection status and hide Ask on a semantic-only server.
-    pub async fn probe(&self) -> Option<bool> {
+    /// Probe reachability and capability in one `/health` request: `None` =
+    /// offline; otherwise the server's [`ServerCapability`] — `Unconfigured`
+    /// (no embedder: don't sync), `SemanticOnly` (search, no Q&A), or `Full`.
+    pub async fn probe(&self) -> Option<ServerCapability> {
         self.client
             .health()
             .await
             .ok()
-            .map(|h| h.llm_provider.is_some())
+            .map(|h| ServerCapability::from_health(&h))
     }
 
     /// One sync pass: flush pending changes, then reconcile to repair drift.
@@ -243,6 +276,35 @@ pub async fn reconcile<T: RagTransport>(vault: &NoteVault, transport: &T) -> Res
 mod tests {
     use super::*;
     use async_trait::async_trait;
+
+    #[test]
+    fn capability_from_health_fields() {
+        use crate::dto::Health;
+        let h = |embedder: Option<&str>, llm: Option<&str>| Health {
+            status: "ok".into(),
+            reranker: false,
+            embedder: embedder.map(str::to_string),
+            llm_provider: llm.map(str::to_string),
+            auth_required: false,
+        };
+        assert_eq!(
+            ServerCapability::from_health(&h(None, None)),
+            ServerCapability::Unconfigured
+        );
+        assert_eq!(
+            // An LLM without an embedder still can't answer — retrieval is dead.
+            ServerCapability::from_health(&h(None, Some("gemini"))),
+            ServerCapability::Unconfigured
+        );
+        assert_eq!(
+            ServerCapability::from_health(&h(Some("fastembed"), None)),
+            ServerCapability::SemanticOnly
+        );
+        assert_eq!(
+            ServerCapability::from_health(&h(Some("fastembed"), Some("gemini"))),
+            ServerCapability::Full
+        );
+    }
     use kimun_core::VaultConfig;
     use std::sync::Mutex;
     use tempfile::TempDir;

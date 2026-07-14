@@ -5,10 +5,13 @@ use std::path::PathBuf;
 pub struct RagConfig {
     pub server: ServerConfig,
     pub vector_db: VectorDbConfig,
-    /// Which embedder produces the vectors. Defaults to the local fastembed
-    /// model so an existing config with no [embedder] section keeps working.
+    /// Which embedder produces the vectors. Optional: with no `[embedder]`
+    /// section the server is *unconfigured* — it boots, serves the web UI and
+    /// `/health`, and rejects every data operation until an embedder is chosen
+    /// (adr/0024). There is deliberately no silent default. A first-run
+    /// generated config omits it.
     #[serde(default)]
-    pub embedder: EmbedderConfig,
+    pub embedder: Option<EmbedderConfig>,
     /// The LLM used for question-answering. Optional: with no `[llm]` section the
     /// server is *semantic-only* — it answers `/api/embeddings` searches but
     /// rejects `/api/answer` (adr/0022). A first-run generated config omits it.
@@ -81,9 +84,32 @@ pub enum EmbedderConfig {
     },
 }
 
-impl Default for EmbedderConfig {
-    fn default() -> Self {
-        EmbedderConfig::FastEmbed { model: None }
+impl EmbedderConfig {
+    /// Short provider id (`fastembed` | `ollama` | `openai`) — used by the web
+    /// UI form and the `/health` capability probe (adr/0024).
+    pub fn provider(&self) -> &'static str {
+        match self {
+            EmbedderConfig::FastEmbed { .. } => "fastembed",
+            EmbedderConfig::Ollama { .. } => "ollama",
+            EmbedderConfig::OpenAI { .. } => "openai",
+        }
+    }
+
+    /// The embedder fingerprint recorded next to stored vectors: provider,
+    /// model (lowercased), and vector dimension. Stored vectors are only
+    /// comparable to queries embedded by the same model, and reconciliation
+    /// cannot see a model swap (note hashes don't change) — on a fingerprint
+    /// mismatch at startup the server wipes all collections (adr/0025).
+    pub fn fingerprint(&self, dimension: usize) -> String {
+        let model = match self {
+            EmbedderConfig::FastEmbed { model } => {
+                model.as_deref().unwrap_or("default").to_lowercase()
+            }
+            EmbedderConfig::Ollama { model, .. } | EmbedderConfig::OpenAI { model, .. } => {
+                model.to_lowercase()
+            }
+        };
+        format!("{}:{}:{}", self.provider(), model, dimension)
     }
 }
 
@@ -317,9 +343,9 @@ fn default_reranker_top_k() -> usize {
     20
 }
 
-/// A zero-config default: LanceDB under the data dir, local fastembed, default
-/// `127.0.0.1` bind, no LLM (semantic-only), no auth. This is what a first run
-/// with no config file boots from and writes to disk (adr/0022).
+/// A zero-config default: LanceDB under the data dir, default `127.0.0.1`
+/// bind, no embedder (unconfigured, adr/0024), no LLM, no auth. This is what a
+/// first run with no config file boots from and writes to disk (adr/0022).
 impl Default for RagConfig {
     fn default() -> Self {
         RagConfig {
@@ -331,7 +357,7 @@ impl Default for RagConfig {
             vector_db: VectorDbConfig::Lance {
                 path: generated_lance_path(),
             },
-            embedder: EmbedderConfig::default(),
+            embedder: None,
             llm: None,
             reranker: RerankerConfig {
                 enabled: default_reranker_enabled(),
@@ -354,6 +380,18 @@ pub struct ConfigForm {
     pub provider: String,
     pub model: String,
     pub api_key: String,
+    /// `none` | `fastembed` | `ollama` | `openai` — `none` clears the embedder
+    /// (unconfigured server, adr/0024).
+    pub embedder_provider: String,
+    pub fastembed_model: String,
+    pub embedder_url: String,
+    pub embedder_model: String,
+    pub embedder_api_key: String,
+    /// `lance` | `qdrant`.
+    pub vector_db: String,
+    pub lance_path: String,
+    pub qdrant_url: String,
+    pub qdrant_collection: String,
     #[serde(default)]
     pub reranker_enabled: Option<String>,
     pub reranker_top_k: String,
@@ -363,12 +401,13 @@ pub struct ConfigForm {
 impl RagConfig {
     /// Applies a submitted web form onto this (current) config, producing the
     /// config to persist. Every form→config rule lives here, not in the web
-    /// layer: numeric parsing, the `none` provider sentinel clearing the LLM
-    /// (adr/0022), and the carry rules for values the form can't or doesn't
-    /// resend — a blank secret keeps the current one, and provider-scoped
-    /// values (API key, endpoint url) carry over only while the provider is
-    /// unchanged (a switched provider must not inherit the old provider's key).
-    /// Errors are user-facing flash messages.
+    /// layer: numeric parsing, the `none` sentinels clearing the LLM (adr/0022)
+    /// and the embedder (adr/0024), the vector-db selection, and the carry
+    /// rules for values the form can't or doesn't resend — a blank secret keeps
+    /// the current one, and provider-scoped values (API keys, endpoint url,
+    /// embedder prefixes) carry over only while the provider is unchanged (a
+    /// switched provider must not inherit the old provider's key). Errors are
+    /// user-facing flash messages.
     pub fn apply_form(&self, f: ConfigForm) -> anyhow::Result<RagConfig> {
         let (Ok(port), Ok(top_k)) = (
             f.port.trim().parse::<u16>(),
@@ -405,10 +444,112 @@ impl RagConfig {
             )
         };
 
+        // "none" → unconfigured: clear the embedder entirely (adr/0024). The
+        // fastembed model is always an explicit choice — no hidden default.
+        let embedder = match f.embedder_provider.as_str() {
+            "none" => None,
+            "fastembed" => {
+                let model = f.fastembed_model.trim();
+                if model.is_empty() {
+                    anyhow::bail!("Pick a fastembed model.");
+                }
+                Some(EmbedderConfig::FastEmbed {
+                    model: Some(model.to_string()),
+                })
+            }
+            "ollama" => {
+                let (url, model) = (f.embedder_url.trim(), f.embedder_model.trim());
+                if url.is_empty() || model.is_empty() {
+                    anyhow::bail!("The Ollama embedder needs a URL and a model.");
+                }
+                // Prefixes are file-only knobs; carry them while the type is
+                // unchanged so a web save never erases a hand-edited value.
+                let (doc_prefix, query_prefix) = match &self.embedder {
+                    Some(EmbedderConfig::Ollama {
+                        doc_prefix,
+                        query_prefix,
+                        ..
+                    }) => (doc_prefix.clone(), query_prefix.clone()),
+                    _ => (String::new(), String::new()),
+                };
+                Some(EmbedderConfig::Ollama {
+                    url: url.to_string(),
+                    model: model.to_string(),
+                    doc_prefix,
+                    query_prefix,
+                })
+            }
+            "openai" => {
+                let (url, model) = (f.embedder_url.trim(), f.embedder_model.trim());
+                if url.is_empty() || model.is_empty() {
+                    anyhow::bail!("The OpenAI-compatible embedder needs a URL and a model.");
+                }
+                // Blank key keeps the current one only while the type is
+                // unchanged (a switched embedder must not inherit a key);
+                // prefixes carry under the same rule.
+                let (current_key, doc_prefix, query_prefix) = match &self.embedder {
+                    Some(EmbedderConfig::OpenAI {
+                        api_key,
+                        doc_prefix,
+                        query_prefix,
+                        ..
+                    }) => (api_key.clone(), doc_prefix.clone(), query_prefix.clone()),
+                    _ => (None, String::new(), String::new()),
+                };
+                let api_key = if f.embedder_api_key.is_empty() {
+                    current_key
+                } else {
+                    Some(f.embedder_api_key.clone())
+                };
+                Some(EmbedderConfig::OpenAI {
+                    url: url.to_string(),
+                    model: model.to_string(),
+                    api_key,
+                    doc_prefix,
+                    query_prefix,
+                })
+            }
+            other => anyhow::bail!("Unknown embedder provider: {other}"),
+        };
+
+        let vector_db = match f.vector_db.as_str() {
+            "lance" => {
+                let path = f.lance_path.trim();
+                VectorDbConfig::Lance {
+                    path: if path.is_empty() {
+                        generated_lance_path()
+                    } else {
+                        PathBuf::from(path)
+                    },
+                }
+            }
+            "qdrant" => VectorDbConfig::Qdrant {
+                url: {
+                    let url = f.qdrant_url.trim();
+                    if url.is_empty() {
+                        default_qdrant_url()
+                    } else {
+                        url.to_string()
+                    }
+                },
+                collection: {
+                    let c = f.qdrant_collection.trim();
+                    if c.is_empty() {
+                        default_qdrant_collection()
+                    } else {
+                        c.to_string()
+                    }
+                },
+            },
+            other => anyhow::bail!("Unknown vector DB: {other}"),
+        };
+
         let mut cfg = self.clone();
         cfg.server.host = f.host;
         cfg.server.port = port;
         cfg.llm = llm;
+        cfg.embedder = embedder;
+        cfg.vector_db = vector_db;
         cfg.reranker.enabled = f.reranker_enabled.is_some();
         cfg.reranker.top_k = top_k;
         // Blank keeps the current token (the password field is never pre-filled).
@@ -489,7 +630,7 @@ impl RagConfig {
         let config = Self::default();
         config.save_to(path)?;
         tracing::info!(
-            "No config found; wrote a semantic-only default (LanceDB, no LLM) to {:?}",
+            "No config found; wrote an unconfigured default (LanceDB, no embedder, no LLM) to {:?} — open the web UI /config to set up an embedder",
             path
         );
         Ok(config)
@@ -537,7 +678,9 @@ provider = "gemini"
     }
 
     #[test]
-    fn test_embedder_defaults_to_fastembed() {
+    fn config_without_embedder_section_is_unconfigured() {
+        // No [embedder] section → None (unconfigured server, adr/0024). The old
+        // silent fastembed fallback is gone deliberately.
         let config_toml = r#"
 [server]
 [vector_db]
@@ -547,10 +690,35 @@ provider = "gemini"
 [reranker]
 "#;
         let config: RagConfig = toml::from_str(config_toml).unwrap();
-        assert!(matches!(
-            config.embedder,
-            EmbedderConfig::FastEmbed { model: None }
-        ));
+        assert!(config.embedder.is_none());
+    }
+
+    #[test]
+    fn embedder_provider_ids() {
+        let fe = EmbedderConfig::FastEmbed { model: None };
+        assert_eq!(fe.provider(), "fastembed");
+        let ol: RagConfig = toml::from_str(
+            "[server]\n[vector_db]\ntype = \"qdrant\"\n[embedder]\ntype = \"ollama\"\nurl = \"u\"\nmodel = \"m\"\n[reranker]\n",
+        )
+        .unwrap();
+        assert_eq!(ol.embedder.unwrap().provider(), "ollama");
+    }
+
+    #[test]
+    fn embedder_fingerprint_is_provider_model_dim() {
+        let fe = EmbedderConfig::FastEmbed {
+            model: Some("BGESmallENV15".into()),
+        };
+        assert_eq!(fe.fingerprint(384), "fastembed:bgesmallenv15:384");
+        let fe_default = EmbedderConfig::FastEmbed { model: None };
+        assert_eq!(fe_default.fingerprint(1024), "fastembed:default:1024");
+        let ol = EmbedderConfig::Ollama {
+            url: "http://x".into(),
+            model: "Nomic-Embed-Text".into(),
+            doc_prefix: String::new(),
+            query_prefix: String::new(),
+        };
+        assert_eq!(ol.fingerprint(768), "ollama:nomic-embed-text:768");
     }
 
     #[test]
@@ -568,7 +736,7 @@ provider = "gemini"
 "#;
         let config: RagConfig = toml::from_str(config_toml).unwrap();
         match config.embedder {
-            EmbedderConfig::FastEmbed { model } => {
+            Some(EmbedderConfig::FastEmbed { model }) => {
                 assert_eq!(model.as_deref(), Some("BGESmallENV15"))
             }
             other => panic!("expected fastembed, got {other:?}"),
@@ -593,12 +761,12 @@ provider = "gemini"
 "#;
         let config: RagConfig = toml::from_str(config_toml).unwrap();
         match config.embedder {
-            EmbedderConfig::Ollama {
+            Some(EmbedderConfig::Ollama {
                 url,
                 model,
                 doc_prefix,
                 query_prefix,
-            } => {
+            }) => {
                 assert_eq!(url, "http://localhost:11434");
                 assert_eq!(model, "nomic-embed-text");
                 assert_eq!(doc_prefix, "search_document: ");
@@ -658,7 +826,10 @@ token = "secret-token"
         assert_eq!(llm.provider(), "claude");
         assert_eq!(llm.api_key(), Some("sk-ant-xxx"));
         assert!(matches!(reloaded.vector_db, VectorDbConfig::Qdrant { .. }));
-        assert!(matches!(reloaded.embedder, EmbedderConfig::Ollama { .. }));
+        assert!(matches!(
+            reloaded.embedder,
+            Some(EmbedderConfig::Ollama { .. })
+        ));
     }
 
     #[test]
@@ -687,6 +858,15 @@ provider = "gemini"
             provider: provider.into(),
             model: "m".into(),
             api_key: api_key.into(),
+            embedder_provider: "none".into(),
+            fastembed_model: String::new(),
+            embedder_url: String::new(),
+            embedder_model: String::new(),
+            embedder_api_key: String::new(),
+            vector_db: "lance".into(),
+            lance_path: "./rag_lance".into(),
+            qdrant_url: String::new(),
+            qdrant_collection: String::new(),
             reranker_enabled: Some("on".into()),
             reranker_top_k: "20".into(),
             auth_token: String::new(),
@@ -751,6 +931,128 @@ provider = "gemini"
         f.auth_token = "new-secret".into();
         let out = cfg.apply_form(f).unwrap();
         assert_eq!(out.auth.token.as_deref(), Some("new-secret"));
+    }
+
+    #[test]
+    fn apply_form_embedder_none_clears_embedder() {
+        let cfg: RagConfig = toml::from_str(
+            "[server]\n[vector_db]\ntype = \"lance\"\n[embedder]\ntype = \"fastembed\"\nmodel = \"BGESmallENV15\"\n[reranker]\n",
+        )
+        .unwrap();
+        let out = cfg.apply_form(form("none", "")).unwrap();
+        assert!(out.embedder.is_none(), "none must clear to unconfigured");
+    }
+
+    #[test]
+    fn apply_form_fastembed_requires_a_model() {
+        let cfg = RagConfig::default();
+        let mut f = form("none", "");
+        f.embedder_provider = "fastembed".into();
+        f.fastembed_model = String::new();
+        let err = cfg.apply_form(f).unwrap_err();
+        assert!(err.to_string().contains("model"));
+
+        let mut f = form("none", "");
+        f.embedder_provider = "fastembed".into();
+        f.fastembed_model = "Xenova/bge-small-en-v1.5".into();
+        let out = cfg.apply_form(f).unwrap();
+        match out.embedder {
+            Some(EmbedderConfig::FastEmbed { model }) => {
+                assert_eq!(model.as_deref(), Some("Xenova/bge-small-en-v1.5"))
+            }
+            other => panic!("expected fastembed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn apply_form_ollama_requires_url_and_model_and_carries_prefixes() {
+        let cfg: RagConfig = toml::from_str(
+            "[server]\n[vector_db]\ntype = \"lance\"\n[embedder]\ntype = \"ollama\"\nurl = \"http://old:11434\"\nmodel = \"old\"\ndoc_prefix = \"d: \"\nquery_prefix = \"q: \"\n[reranker]\n",
+        )
+        .unwrap();
+        // Missing url → friendly error.
+        let mut f = form("none", "");
+        f.embedder_provider = "ollama".into();
+        f.embedder_model = "nomic-embed-text".into();
+        assert!(cfg.apply_form(f).is_err());
+        // Same provider → prefixes (file-only knobs) carry over.
+        let mut f = form("none", "");
+        f.embedder_provider = "ollama".into();
+        f.embedder_url = "http://new:11434".into();
+        f.embedder_model = "nomic-embed-text".into();
+        let out = cfg.apply_form(f).unwrap();
+        match out.embedder {
+            Some(EmbedderConfig::Ollama {
+                url,
+                model,
+                doc_prefix,
+                query_prefix,
+            }) => {
+                assert_eq!(url, "http://new:11434");
+                assert_eq!(model, "nomic-embed-text");
+                assert_eq!(doc_prefix, "d: ");
+                assert_eq!(query_prefix, "q: ");
+            }
+            other => panic!("expected ollama, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn apply_form_openai_embedder_key_carries_only_while_type_unchanged() {
+        let cfg: RagConfig = toml::from_str(
+            "[server]\n[vector_db]\ntype = \"lance\"\n[embedder]\ntype = \"openai\"\nurl = \"https://api.openai.com/v1\"\nmodel = \"text-embedding-3-small\"\napi_key = \"emb-key\"\n[reranker]\n",
+        )
+        .unwrap();
+        // Same type, blank key → carried.
+        let mut f = form("none", "");
+        f.embedder_provider = "openai".into();
+        f.embedder_url = "https://api.openai.com/v1".into();
+        f.embedder_model = "text-embedding-3-small".into();
+        let out = cfg.apply_form(f).unwrap();
+        match &out.embedder {
+            Some(EmbedderConfig::OpenAI { api_key, .. }) => {
+                assert_eq!(api_key.as_deref(), Some("emb-key"))
+            }
+            other => panic!("expected openai, got {other:?}"),
+        }
+        // Switched type → key must not leak into the new embedder.
+        let mut f = form("none", "");
+        f.embedder_provider = "ollama".into();
+        f.embedder_url = "http://x:11434".into();
+        f.embedder_model = "m".into();
+        let out = cfg.apply_form(f).unwrap();
+        assert!(matches!(out.embedder, Some(EmbedderConfig::Ollama { .. })));
+    }
+
+    #[test]
+    fn apply_form_vector_db_switch() {
+        let cfg = RagConfig::default();
+        // lance with explicit path
+        let mut f = form("none", "");
+        f.vector_db = "lance".into();
+        f.lance_path = "/data/lance".into();
+        let out = cfg.apply_form(f).unwrap();
+        match out.vector_db {
+            VectorDbConfig::Lance { path } => assert_eq!(path, PathBuf::from("/data/lance")),
+            other => panic!("expected lance, got {other:?}"),
+        }
+        // lance with blank path → generated default (data-dir absolute)
+        let mut f = form("none", "");
+        f.vector_db = "lance".into();
+        f.lance_path = String::new();
+        let out = cfg.apply_form(f).unwrap();
+        assert!(matches!(out.vector_db, VectorDbConfig::Lance { .. }));
+        // qdrant with blanks → defaults
+        let mut f = form("none", "");
+        f.vector_db = "qdrant".into();
+        let out = cfg.apply_form(f).unwrap();
+        match out.vector_db {
+            VectorDbConfig::Qdrant { url, collection } => {
+                assert_eq!(url, default_qdrant_url());
+                assert_eq!(collection, default_qdrant_collection());
+            }
+            other => panic!("expected qdrant, got {other:?}"),
+        }
     }
 
     #[test]
@@ -823,12 +1125,13 @@ type = "lance"
     }
 
     #[test]
-    fn default_config_is_semantic_only_lance() {
-        // The generated first-run default: LanceDB, fastembed, no LLM, no auth.
+    fn default_config_is_unconfigured_lance() {
+        // The generated first-run default: LanceDB, no embedder, no LLM, no
+        // auth (adr/0024).
         let config = RagConfig::default();
         assert!(config.llm.is_none());
         assert!(config.auth.token.is_none());
-        assert!(matches!(config.embedder, EmbedderConfig::FastEmbed { .. }));
+        assert!(config.embedder.is_none());
         match config.vector_db {
             VectorDbConfig::Lance { path } => {
                 // Absolute when a data dir resolves (generated_lance_path).
@@ -870,9 +1173,6 @@ type = "lance"
         let reloaded = RagConfig::from_file(path).unwrap();
         assert!(reloaded.llm.is_none());
         assert!(matches!(reloaded.vector_db, VectorDbConfig::Lance { .. }));
-        assert!(matches!(
-            reloaded.embedder,
-            EmbedderConfig::FastEmbed { .. }
-        ));
+        assert!(reloaded.embedder.is_none());
     }
 }

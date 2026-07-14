@@ -61,6 +61,11 @@ pub struct Health {
     pub status: String,
     #[serde(default)]
     pub reranker: bool,
+    /// The configured embedder provider, or `None` on an *unconfigured* server
+    /// (no embedder → no indexing, no search, adr/0024). Optional for the same
+    /// reason as `llm_provider`: the server sends an explicit `null`.
+    #[serde(default)]
+    pub embedder: Option<String>,
     /// The configured LLM provider, or `None` on a semantic-only server (no LLM
     /// → search works, question-answering does not). Must be optional: the
     /// server sends an explicit `null` here, which a plain `String` field —
@@ -114,5 +119,28 @@ mod tests {
         let health: Health = serde_json::from_str(json).unwrap();
         assert_eq!(health.llm_provider.as_deref(), Some("gemini"));
         assert!(health.auth_required);
+    }
+
+    #[test]
+    fn health_parses_unconfigured_null_embedder() {
+        // An unconfigured server (no embedder, adr/0024) sends embedder: null.
+        let json = r#"{"status":"ok","reranker":true,"embedder":null,"llm_provider":null,"auth_required":false}"#;
+        let health: Health = serde_json::from_str(json).expect("must parse null embedder");
+        assert!(health.embedder.is_none());
+    }
+
+    #[test]
+    fn health_parses_configured_embedder() {
+        let json = r#"{"status":"ok","reranker":true,"embedder":"fastembed","llm_provider":null,"auth_required":false}"#;
+        let health: Health = serde_json::from_str(json).unwrap();
+        assert_eq!(health.embedder.as_deref(), Some("fastembed"));
+    }
+
+    #[test]
+    fn health_tolerates_missing_embedder_field() {
+        // An older server without the field must still parse (probe stays green).
+        let json = r#"{"status":"ok","reranker":true,"llm_provider":"gemini","auth_required":false}"#;
+        let health: Health = serde_json::from_str(json).unwrap();
+        assert!(health.embedder.is_none());
     }
 }

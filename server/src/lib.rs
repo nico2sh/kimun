@@ -38,11 +38,14 @@ pub struct CollectionKey(String);
 
 impl CollectionKey {
     /// Validates a raw vault id. Rejects blank ids (which would cross-mix every
-    /// blank-id vault) and any id with characters outside `[A-Za-z0-9._-]`, so
-    /// it stays a safe, non-colliding collection-name segment (Kimün always
-    /// sends a UUID; adr/0020).
+    /// blank-id vault), any id with characters outside `[A-Za-z0-9._-]`, and
+    /// ids starting with `__` — that prefix is reserved for server metadata
+    /// collections (the embedder fingerprint, adr/0025) and is excluded from
+    /// listings and the fingerprint wipe. So a key stays a safe, non-colliding
+    /// collection-name segment (Kimün always sends a UUID; adr/0020).
     pub fn parse(vault_id: &str) -> Result<Self, RagError> {
         let ok = !vault_id.is_empty()
+            && !vault_id.starts_with("__")
             && vault_id
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
@@ -50,7 +53,8 @@ impl CollectionKey {
             Ok(Self(vault_id.to_string()))
         } else {
             Err(RagError::Validation(
-                "vault_id must be non-empty and contain only [A-Za-z0-9._-]".to_string(),
+                "vault_id must be non-empty, must not start with '__' (reserved), and contain only [A-Za-z0-9._-]"
+                    .to_string(),
             ))
         }
     }
@@ -75,7 +79,8 @@ pub struct Answer {
 /// The server's domain error: every way a request can fail, each variant
 /// carrying its meaning rather than a status code. The HTTP mapping lives in
 /// one place (`IntoResponse` in the handlers module): `Validation` → 400,
-/// `NotFound` → 404, `SemanticOnly` → 503 (adr/0022), `Backend` → 500.
+/// `NotFound` → 404, `SemanticOnly`/`Unconfigured` → 503 (adr/0022, adr/0024),
+/// `Backend` → 500.
 #[derive(Debug)]
 pub enum RagError {
     /// The request itself is malformed (bad vault id, unparseable job id).
@@ -85,6 +90,11 @@ pub enum RagError {
     /// No LLM configured — this server answers semantic searches only
     /// (adr/0022).
     SemanticOnly,
+    /// No embedder configured — the server is *unconfigured*: no vector store,
+    /// no indexing, no search, no answering (adr/0024). Distinct from
+    /// [`SemanticOnly`](Self::SemanticOnly) (embedder present, LLM absent) so
+    /// the two states never blur.
+    Unconfigured,
     Backend(anyhow::Error),
 }
 
@@ -95,6 +105,12 @@ impl Display for RagError {
             RagError::NotFound(msg) => write!(f, "{msg}"),
             RagError::SemanticOnly => {
                 write!(f, "no LLM configured; this server is semantic-only")
+            }
+            RagError::Unconfigured => {
+                write!(
+                    f,
+                    "no embedder configured; this server is unconfigured — open the web UI to configure one"
+                )
             }
             RagError::Backend(e) => write!(f, "{e}"),
         }
@@ -142,6 +158,14 @@ pub struct KimunRag {
     /// not (adr/0022).
     llm_client: Option<Arc<dyn LLMClient + Send + Sync>>,
     reranker: Option<Arc<CrossEncoderReranker>>,
+    /// The embedder fingerprint this pipeline must find recorded with the
+    /// store's data (adr/0025). `None` skips the gate (tests, callers that
+    /// enforce it themselves).
+    expected_fingerprint: Option<String>,
+    /// One-shot success marker for the fingerprint gate. A failed check is NOT
+    /// cached — every data operation retries until the store is reachable, so
+    /// a store that was down at boot never lets data ops run unverified.
+    fingerprint_checked: tokio::sync::OnceCell<()>,
 }
 
 impl KimunRag {
@@ -157,6 +181,8 @@ impl KimunRag {
             embedder,
             llm_client,
             reranker: None,
+            expected_fingerprint: None,
+            fingerprint_checked: tokio::sync::OnceCell::new(),
         }
     }
 
@@ -165,6 +191,40 @@ impl KimunRag {
         let reranker = CrossEncoderReranker::new()?;
         self.reranker = Some(Arc::new(reranker));
         Ok(self)
+    }
+
+    /// Arms the **embedder fingerprint** gate (adr/0025): before the first data
+    /// operation touches the store, the recorded fingerprint is compared to
+    /// `fingerprint` and a mismatch wipes all collections. Deliberately lazy —
+    /// a store that is unreachable at boot (e.g. Qdrant still starting) must
+    /// not prevent the server from binding; the check runs on first use
+    /// instead, and keeps retrying until it succeeds.
+    pub fn with_fingerprint(mut self, fingerprint: String) -> Self {
+        self.expected_fingerprint = Some(fingerprint);
+        self
+    }
+
+    /// Runs the fingerprint gate now (idempotent; success is remembered,
+    /// failure retried on the next call). Startup calls this once as a
+    /// best-effort eager check; every data operation calls it as the actual
+    /// guarantee.
+    pub async fn check_fingerprint(&self) -> Result<(), RagError> {
+        let Some(expected) = &self.expected_fingerprint else {
+            return Ok(());
+        };
+        self.fingerprint_checked
+            .get_or_try_init(|| async {
+                let wiped = enforce_embedder_fingerprint(self.store.as_ref(), expected).await?;
+                if wiped {
+                    log::warn!(
+                        "Embedder changed (fingerprint now `{expected}`): wiped ALL stored \
+                         collections. Every vault re-indexes on its next reconciliation."
+                    );
+                }
+                Ok::<(), RagError>(())
+            })
+            .await?;
+        Ok(())
     }
 
     /// Whether this server can answer questions — the capability gate for
@@ -227,6 +287,7 @@ impl KimunRag {
         collection: &CollectionKey,
         query: &str,
     ) -> Result<Vec<ScoredChunk>, RagError> {
+        self.check_fingerprint().await?;
         let vector = self.embedder.prompt_embedding(query).await?;
         let raw = self
             .store
@@ -244,6 +305,7 @@ impl KimunRag {
         collection: &CollectionKey,
         docs: &[KimunDoc],
     ) -> Result<IndexStats, RagError> {
+        self.check_fingerprint().await?;
         let indexed_notes = self.store.indexed_notes(collection.as_str()).await?;
         debug!(
             "Indexing {} docs against {} already indexed",
@@ -317,6 +379,7 @@ impl KimunRag {
         collection: &CollectionKey,
         paths: &[String],
     ) -> Result<(), RagError> {
+        self.check_fingerprint().await?;
         self.store.delete(collection.as_str(), paths).await?;
         Ok(())
     }
@@ -327,6 +390,7 @@ impl KimunRag {
         &self,
         collection: &CollectionKey,
     ) -> Result<HashMap<String, String>, RagError> {
+        self.check_fingerprint().await?;
         let notes = self.store.indexed_notes(collection.as_str()).await?;
         Ok(notes
             .into_iter()
@@ -336,11 +400,13 @@ impl KimunRag {
 
     /// Every collection with its indexed-note count (admin UI).
     pub async fn collections(&self) -> Result<Vec<CollectionInfo>, RagError> {
+        self.check_fingerprint().await?;
         Ok(self.store.list_collections().await?)
     }
 
     /// Just the collection names (vault ids).
     pub async fn collection_names(&self) -> Result<Vec<String>, RagError> {
+        self.check_fingerprint().await?;
         Ok(self.store.collection_names().await?)
     }
 }
@@ -403,6 +469,30 @@ fn deduplicate_chunks(results: Vec<ScoredChunk>) -> Vec<ScoredChunk> {
     deduplicated
 }
 
+/// Startup guard for the **embedder fingerprint** (adr/0025): compares the
+/// configured embedder's fingerprint against the one recorded with the store's
+/// data. On mismatch the stored vectors are unusable by definition — drop every
+/// collection and record the new fingerprint; the now-empty server makes every
+/// client's next reconciliation re-push everything. A fresh store just records
+/// it. Returns `true` when data was wiped (the caller logs loudly).
+pub async fn enforce_embedder_fingerprint(
+    store: &(dyn VectorStore + Send + Sync),
+    expected: &str,
+) -> anyhow::Result<bool> {
+    match store.read_fingerprint().await? {
+        Some(existing) if existing == expected => Ok(false),
+        Some(_) => {
+            store.drop_all_collections().await?;
+            store.write_fingerprint(expected).await?;
+            Ok(true)
+        }
+        None => {
+            store.write_fingerprint(expected).await?;
+            Ok(false)
+        }
+    }
+}
+
 /// Statistics from indexing operation
 #[derive(Debug, Clone)]
 pub struct IndexStats {
@@ -440,6 +530,11 @@ pub(crate) mod test_support {
         pub notes: HashMap<String, IndexedNote>,
         pub stored: Mutex<Vec<(String, Vec<String>)>>,
         pub deleted: Mutex<Vec<(String, Vec<String>)>>,
+        pub fingerprint: Mutex<Option<String>>,
+        pub dropped_all: Mutex<bool>,
+        /// When set, `read_fingerprint` errors — simulates a store that is
+        /// unreachable (Qdrant down) for the lazy-gate tests.
+        pub fingerprint_unavailable: Mutex<bool>,
     }
 
     impl Default for FakeVectorStore {
@@ -458,6 +553,9 @@ pub(crate) mod test_support {
                 notes: HashMap::new(),
                 stored: Mutex::new(Vec::new()),
                 deleted: Mutex::new(Vec::new()),
+                fingerprint: Mutex::new(None),
+                dropped_all: Mutex::new(false),
+                fingerprint_unavailable: Mutex::new(false),
             }
         }
     }
@@ -497,6 +595,20 @@ pub(crate) mod test_support {
         }
         async fn collection_names(&self) -> anyhow::Result<Vec<String>> {
             Ok(vec!["vault-1".into()])
+        }
+        async fn read_fingerprint(&self) -> anyhow::Result<Option<String>> {
+            if *self.fingerprint_unavailable.lock().unwrap() {
+                anyhow::bail!("store unreachable");
+            }
+            Ok(self.fingerprint.lock().unwrap().clone())
+        }
+        async fn write_fingerprint(&self, fingerprint: &str) -> anyhow::Result<()> {
+            *self.fingerprint.lock().unwrap() = Some(fingerprint.to_string());
+            Ok(())
+        }
+        async fn drop_all_collections(&self) -> anyhow::Result<()> {
+            *self.dropped_all.lock().unwrap() = true;
+            Ok(())
         }
     }
 
@@ -700,6 +812,82 @@ mod tests {
         let stored = fake.stored.lock().unwrap().clone();
         assert_eq!(stored.len(), 1);
         assert_eq!(stored[0].1, vec!["b.md".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn fingerprint_fresh_store_records_without_wiping() {
+        let store = FakeVectorStore::default();
+        let wiped = enforce_embedder_fingerprint(&store, "fastembed:default:1024")
+            .await
+            .unwrap();
+        assert!(!wiped);
+        assert!(!*store.dropped_all.lock().unwrap());
+        assert_eq!(
+            store.fingerprint.lock().unwrap().as_deref(),
+            Some("fastembed:default:1024")
+        );
+    }
+
+    #[tokio::test]
+    async fn fingerprint_match_is_a_no_op() {
+        let store = FakeVectorStore::default();
+        *store.fingerprint.lock().unwrap() = Some("fastembed:default:1024".to_string());
+        let wiped = enforce_embedder_fingerprint(&store, "fastembed:default:1024")
+            .await
+            .unwrap();
+        assert!(!wiped);
+        assert!(!*store.dropped_all.lock().unwrap());
+    }
+
+    #[tokio::test]
+    async fn fingerprint_mismatch_wipes_and_rerecords() {
+        // The embedder changed: stored vectors are garbage for the new model,
+        // and reconciliation can't see it (note hashes unchanged) — wipe, so
+        // every client's next reconcile re-pushes everything (adr/0025).
+        let store = FakeVectorStore::default();
+        *store.fingerprint.lock().unwrap() = Some("fastembed:default:1024".to_string());
+        let wiped = enforce_embedder_fingerprint(&store, "ollama:nomic-embed-text:768")
+            .await
+            .unwrap();
+        assert!(wiped);
+        assert!(*store.dropped_all.lock().unwrap());
+        assert_eq!(
+            store.fingerprint.lock().unwrap().as_deref(),
+            Some("ollama:nomic-embed-text:768")
+        );
+    }
+
+    #[tokio::test]
+    async fn fingerprint_gate_runs_before_first_data_op_and_wipes_on_mismatch() {
+        let fake = Arc::new(FakeVectorStore::default());
+        *fake.fingerprint.lock().unwrap() = Some("old:fp:1".into());
+        let rag = KimunRag::new(fake.clone(), Arc::new(FakeEmbedder), None)
+            .with_fingerprint("new:fp:8".into());
+        rag.search(&key("vault-1"), "q", 5).await.unwrap();
+        assert!(*fake.dropped_all.lock().unwrap());
+        assert_eq!(
+            fake.fingerprint.lock().unwrap().as_deref(),
+            Some("new:fp:8")
+        );
+    }
+
+    #[tokio::test]
+    async fn fingerprint_gate_retries_after_store_outage() {
+        // A store that is down at boot (Qdrant still starting) must not let
+        // data ops run unverified — but must recover without a restart once
+        // the store is reachable (adr/0025).
+        let fake = Arc::new(FakeVectorStore::default());
+        *fake.fingerprint_unavailable.lock().unwrap() = true;
+        let rag = KimunRag::new(fake.clone(), Arc::new(FakeEmbedder), None)
+            .with_fingerprint("fp:8".into());
+        assert!(rag.check_fingerprint().await.is_err(), "eager check fails");
+        assert!(
+            rag.search(&key("vault-1"), "q", 5).await.is_err(),
+            "data op must not run while the fingerprint is unverifiable"
+        );
+        *fake.fingerprint_unavailable.lock().unwrap() = false;
+        rag.search(&key("vault-1"), "q", 5).await.unwrap();
+        assert_eq!(fake.fingerprint.lock().unwrap().as_deref(), Some("fp:8"));
     }
 
     #[test]

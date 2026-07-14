@@ -45,6 +45,13 @@ impl VecQdrant {
         }
     }
 
+    /// The reserved qdrant collection holding the embedder fingerprint — inside
+    /// the server's prefix namespace, excluded from collection listings by the
+    /// `__` marker (adr/0025).
+    fn fingerprint_collection(&self) -> String {
+        self.collection_name("__fingerprint")
+    }
+
     async fn collection_exists(&self, name: &str) -> anyhow::Result<bool> {
         let collections = self.client.list_collections().await?;
         Ok(collections.collections.iter().any(|c| c.name == name))
@@ -340,14 +347,73 @@ impl VectorStore for VecQdrant {
             .collections
             .into_iter()
             .filter_map(|c| {
-                if dash_prefix.is_empty() {
+                let name = if dash_prefix.is_empty() {
                     Some(c.name)
                 } else {
                     c.name.strip_prefix(&dash_prefix).map(str::to_string)
-                }
+                }?;
+                // Reserved metadata collections (fingerprint) are not vaults.
+                (!name.starts_with("__")).then_some(name)
             })
             .collect();
         Ok(names)
+    }
+
+    async fn read_fingerprint(&self) -> anyhow::Result<Option<String>> {
+        let name = self.fingerprint_collection();
+        if !self.collection_exists(&name).await? {
+            return Ok(None);
+        }
+        let scroll = self
+            .client
+            .scroll(
+                ScrollPointsBuilder::new(&name)
+                    .with_payload(true)
+                    .with_vectors(false)
+                    .limit(1),
+            )
+            .await?;
+        Ok(scroll
+            .result
+            .first()
+            .and_then(|p| p.payload.get("fingerprint"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()))
+    }
+
+    async fn write_fingerprint(&self, fingerprint: &str) -> anyhow::Result<()> {
+        let name = self.fingerprint_collection();
+        if !self.collection_exists(&name).await? {
+            self.client
+                .create_collection(
+                    CreateCollectionBuilder::new(&name)
+                        .vectors_config(VectorParamsBuilder::new(1, Distance::Cosine)),
+                )
+                .await?;
+        }
+        let mut payload = HashMap::new();
+        payload.insert(
+            "fingerprint".to_string(),
+            Value::from(fingerprint.to_string()),
+        );
+        // Fixed point id → an upsert overwrites the previous fingerprint.
+        let point = PointStruct::new(
+            "00000000-0000-0000-0000-000000000001".to_string(),
+            vec![0.0f32],
+            payload,
+        );
+        self.client
+            .upsert_points(UpsertPointsBuilder::new(&name, vec![point]).wait(true))
+            .await?;
+        Ok(())
+    }
+
+    async fn drop_all_collections(&self) -> anyhow::Result<()> {
+        for vault in self.collection_names().await? {
+            let full = self.collection_name(&vault);
+            self.client.delete_collection(&full).await?;
+        }
+        Ok(())
     }
 }
 
@@ -423,5 +489,29 @@ mod tests {
     async fn conformance_round_trip() {
         let s = store("roundtrip").await;
         conformance::stored_chunk_round_trips_its_fields(&s, "v").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a live Qdrant (set QDRANT_URL, default localhost:6334)"]
+    async fn conformance_fingerprint_round_trip() {
+        let s = store("fingerprint").await;
+        conformance::fingerprint_round_trips_and_starts_absent(&s).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a live Qdrant (set QDRANT_URL, default localhost:6334)"]
+    async fn conformance_drop_all() {
+        let s = store("dropall").await;
+        conformance::drop_all_removes_every_collection_but_not_the_fingerprint_slot(
+            &s, "va", "vb",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a live Qdrant (set QDRANT_URL, default localhost:6334)"]
+    async fn conformance_fingerprint_not_a_collection() {
+        let s = store("fpslot").await;
+        conformance::fingerprint_slot_never_appears_as_a_collection(&s).await;
     }
 }

@@ -265,21 +265,28 @@ async fn dashboard(State(state): State<Arc<AppState>>) -> Markup {
         }
     };
     let embedder = match &c.embedder {
-        crate::config::EmbedderConfig::FastEmbed { model } => {
+        None => "not configured (unconfigured server)".to_string(),
+        Some(crate::config::EmbedderConfig::FastEmbed { model }) => {
             format!(
                 "fastembed ({})",
                 model.as_deref().unwrap_or("default BGE-Large")
             )
         }
-        crate::config::EmbedderConfig::Ollama { url, model, .. } => {
+        Some(crate::config::EmbedderConfig::Ollama { url, model, .. }) => {
             format!("ollama {model} @ {url}")
         }
-        crate::config::EmbedderConfig::OpenAI { url, model, .. } => {
+        Some(crate::config::EmbedderConfig::OpenAI { url, model, .. }) => {
             format!("openai-compatible {model} @ {url}")
         }
     };
     let body = html! {
         h1 { "Dashboard" }
+        @if c.embedder.is_none() {
+            p .flash.err {
+                "This server is unconfigured — no embedder is set, so indexing and search are disabled. "
+                a href="/config" { "Configure an embedder" } "."
+            }
+        }
         div .card {
             dl {
                 dt { "Bind address" } dd .mono { (c.server.host) ":" (c.server.port) }
@@ -298,7 +305,7 @@ async fn dashboard(State(state): State<Arc<AppState>>) -> Markup {
                 dt { "Auth" } dd { @if c.auth.token.is_some() { span .badge { "token required" } } @else { span .badge { "open" } } }
             }
         }
-        p .muted { "The vector store and embedder are fixed at startup. Change them in the config file and restart the server." }
+        p .muted { "The vector store and embedder are fixed at startup. Change them in Config and restart the server." }
     };
     shell(&state, "/", "Dashboard", body)
 }
@@ -321,6 +328,52 @@ fn config_markup(state: &AppState, c: &RagConfig, flash: Option<Markup>) -> Mark
     let providers = ["none", "gemini", "claude", "openai", "mistral"];
     let current = c.llm.as_ref().map(|l| l.provider()).unwrap_or("none");
     let can_save = state.config_path.is_some();
+    // Embedder section (adr/0024): "none" is the unconfigured sentinel; the
+    // fastembed model is a dropdown so a local model is always an explicit
+    // choice, never a hidden default.
+    let embedder_providers = ["none", "fastembed", "ollama", "openai"];
+    let current_embedder = c.embedder.as_ref().map(|e| e.provider()).unwrap_or("none");
+    let fastembed_models = crate::dbembeddings::embedder::fastembedder::supported_models();
+    // Canonicalize a configured fastembed model to its model code — configs may
+    // use variant names (`BGESmallENV15`), but the dropdown options are keyed
+    // by code, and an unmatched value would silently deselect the model and
+    // fail the next save.
+    let (current_fastembed, current_url, current_model) = match &c.embedder {
+        Some(crate::config::EmbedderConfig::FastEmbed { model }) => (
+            model
+                .as_deref()
+                .map(|m| {
+                    crate::dbembeddings::embedder::fastembedder::canonical_model_code(m)
+                        .unwrap_or_else(|| m.to_string())
+                })
+                .unwrap_or_default(),
+            String::new(),
+            String::new(),
+        ),
+        Some(crate::config::EmbedderConfig::Ollama { url, model, .. })
+        | Some(crate::config::EmbedderConfig::OpenAI { url, model, .. }) => {
+            (String::new(), url.clone(), model.clone())
+        }
+        None => (String::new(), String::new(), String::new()),
+    };
+    let embedder_key_set = matches!(
+        &c.embedder,
+        Some(crate::config::EmbedderConfig::OpenAI {
+            api_key: Some(_),
+            ..
+        })
+    );
+    let (current_vector_db, lance_path, qdrant_url, qdrant_collection) = match &c.vector_db {
+        crate::config::VectorDbConfig::Lance { path } => (
+            "lance",
+            path.display().to_string(),
+            String::new(),
+            String::new(),
+        ),
+        crate::config::VectorDbConfig::Qdrant { url, collection } => {
+            ("qdrant", String::new(), url.clone(), collection.clone())
+        }
+    };
     let body = html! {
         h1 { "Configuration" }
         @if let Some(f) = flash { (f) }
@@ -333,6 +386,51 @@ fn config_markup(state: &AppState, c: &RagConfig, flash: Option<Markup>) -> Mark
                 div .row {
                     div { label { "Host" } input type="text" name="host" value=(c.server.host); }
                     div { label { "Port" } input type="number" name="port" value=(c.server.port); }
+                }
+            }
+            div .card {
+                h2 { "Embedder" }
+                @if c.embedder.is_none() {
+                    p .flash.err { "No embedder configured — the server is unconfigured: indexing and search are disabled until one is set." }
+                }
+                label { "Provider" }
+                select name="embedder_provider" {
+                    @for p in embedder_providers {
+                        option value=(p) selected[p == current_embedder] {
+                            @if p == "none" { "— none (unconfigured) —" } @else { (p) }
+                        }
+                    }
+                }
+                p .muted { "Changing the embedder invalidates all indexed data — on the next start the server wipes stored vectors and every vault re-indexes on its next sync." }
+                label { "Fastembed model (fastembed only)" }
+                select name="fastembed_model" {
+                    option value="" selected[current_fastembed.is_empty()] { "— pick a model —" }
+                    @for (code, dim) in &fastembed_models {
+                        option value=(code) selected[code.eq_ignore_ascii_case(&current_fastembed)] {
+                            (code) " (" (dim) " dims)"
+                        }
+                    }
+                }
+                div .row {
+                    div { label { "URL (ollama / openai)" } input type="text" name="embedder_url" value=(current_url); }
+                    div { label { "Model (ollama / openai)" } input type="text" name="embedder_model" value=(current_model); }
+                }
+                label { "API key (openai only)" }
+                input type="password" name="embedder_api_key" placeholder=(if embedder_key_set { "unchanged (a key is set)" } else { "from environment if blank" });
+                p .muted { "Instruction prefixes (doc_prefix / query_prefix) are file-only settings; a save here keeps them." }
+            }
+            div .card {
+                h2 { "Vector DB" }
+                label { "Backend" }
+                select name="vector_db" {
+                    option value="lance" selected[current_vector_db == "lance"] { "LanceDB (embedded, local)" }
+                    option value="qdrant" selected[current_vector_db == "qdrant"] { "Qdrant (server)" }
+                }
+                label { "LanceDB path (lance only)" }
+                input type="text" name="lance_path" value=(lance_path) placeholder="default: data dir";
+                div .row {
+                    div { label { "Qdrant URL (qdrant only)" } input type="text" name="qdrant_url" value=(qdrant_url) placeholder="http://localhost:6333"; }
+                    div { label { "Qdrant collection prefix (qdrant only)" } input type="text" name="qdrant_collection" value=(qdrant_collection) placeholder="kimun_embeddings"; }
                 }
             }
             div .card {
@@ -417,21 +515,34 @@ async fn config_submit(
 // ============================================================================
 
 async fn collections_page(State(state): State<Arc<AppState>>) -> Markup {
-    let result = state.rag.collections().await;
-    let body = html! {
-        h1 { "Collections" }
-        div .card {
-            @match result {
-                Ok(cols) if cols.is_empty() => p .muted { "No collections yet — push some notes from Kimün." },
-                Ok(cols) => table {
-                    thead { tr { th { "Vault id" } th { "Indexed notes" } } }
-                    tbody {
-                        @for col in &cols {
-                            tr { td .mono { (col.name) } td { (col.note_count) } }
-                        }
+    let body = match &state.rag {
+        None => html! {
+            h1 { "Collections" }
+            div .card {
+                p .flash.err {
+                    "Server unconfigured — configure an embedder in "
+                    a href="/config" { "Config" } " to enable indexing."
+                }
+            }
+        },
+        Some(rag) => {
+            let result = rag.collections().await;
+            html! {
+                h1 { "Collections" }
+                div .card {
+                    @match result {
+                        Ok(cols) if cols.is_empty() => p .muted { "No collections yet — push some notes from Kimün." },
+                        Ok(cols) => table {
+                            thead { tr { th { "Vault id" } th { "Indexed notes" } } }
+                            tbody {
+                                @for col in &cols {
+                                    tr { td .mono { (col.name) } td { (col.note_count) } }
+                                }
+                            }
+                        },
+                        Err(e) => p .flash.err { "Could not list collections: " (e) },
                     }
-                },
-                Err(e) => p .flash.err { "Could not list collections: " (e) },
+                }
             }
         }
     };
@@ -519,13 +630,15 @@ type SearchOutcome = Result<Vec<(f64, String, String)>, String>;
 /// The same pipeline the API's `/api/embeddings` runs — the test query shows
 /// exactly what clients get (one row per note, top_k notes).
 async fn run_search(state: &AppState, vault_id: &str, query: &str) -> SearchOutcome {
+    let Some(rag) = state.rag.as_ref() else {
+        return Err("Server unconfigured — configure an embedder first.".into());
+    };
     if vault_id.is_empty() || query.trim().is_empty() {
         return Err("Pick a collection and enter a query.".into());
     }
     let collection = crate::CollectionKey::parse(vault_id).map_err(|e| e.to_string())?;
     let top_k = state.config.reranker.top_k;
-    let ranked = state
-        .rag
+    let ranked = rag
         .search(&collection, query, top_k)
         .await
         .map_err(|e| e.to_string())?;
@@ -544,18 +657,27 @@ fn query_markup(
 ) -> Markup {
     let body = html! {
         h1 { "Test query" }
-        div .card {
-            form method="post" action="/query" {
-                label { "Collection" }
-                select name="vault_id" {
-                    option value="" { "— select —" }
-                    @for c in collections {
-                        option value=(c) selected[c == vault_id] { (c) }
-                    }
+        @if state.rag.is_none() {
+            div .card {
+                p .flash.err {
+                    "Server unconfigured — configure an embedder in "
+                    a href="/config" { "Config" } " to enable search."
                 }
-                label { "Query" }
-                input type="text" name="query" value=(query) autofocus?;
-                button type="submit" { "Search" }
+            }
+        } @else {
+            div .card {
+                form method="post" action="/query" {
+                    label { "Collection" }
+                    select name="vault_id" {
+                        option value="" { "— select —" }
+                        @for c in collections {
+                            option value=(c) selected[c == vault_id] { (c) }
+                        }
+                    }
+                    label { "Query" }
+                    input type="text" name="query" value=(query) autofocus?;
+                    button type="submit" { "Search" }
+                }
             }
         }
         @if let Some(outcome) = results {
@@ -584,7 +706,10 @@ fn query_markup(
 // ============================================================================
 
 async fn collection_names(state: &AppState) -> Vec<String> {
-    state.rag.collection_names().await.unwrap_or_default()
+    match &state.rag {
+        Some(rag) => rag.collection_names().await.unwrap_or_default(),
+        None => Vec::new(),
+    }
 }
 
 fn short_id(id: &str) -> String {
@@ -631,7 +756,7 @@ provider = "gemini"
             Arc::new(FakeEmbedder),
             Some(Arc::new(FakeLlm)),
         );
-        let mut st = AppState::new(rag, config);
+        let mut st = AppState::new(Some(rag), config);
         if let Some(p) = config_path {
             st = st.with_config_path(p);
         }
@@ -768,7 +893,7 @@ provider = "gemini"
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("rag.conf");
         let app = app(state(None, Some(path.clone())));
-        let form = "host=127.0.0.1&port=7573&provider=claude&model=my-model&api_key=&reranker_top_k=20&auth_token=";
+        let form = "host=127.0.0.1&port=7573&provider=claude&model=my-model&api_key=&embedder_provider=none&fastembed_model=&embedder_url=&embedder_model=&embedder_api_key=&vector_db=qdrant&lance_path=&qdrant_url=&qdrant_collection=&reranker_top_k=20&auth_token=";
         let resp = app
             .oneshot(
                 Request::post("/config")
@@ -795,7 +920,54 @@ provider = "gemini"
             Arc::new(FakeEmbedder),
             Some(Arc::new(FakeLlm)),
         );
-        Arc::new(AppState::new(rag, config).with_config_path(path))
+        Arc::new(AppState::new(Some(rag), config).with_config_path(path))
+    }
+
+    /// An unconfigured server: no embedder in config, no pipeline (adr/0024).
+    fn unconfigured_state() -> Arc<AppState> {
+        let config: RagConfig =
+            toml::from_str("[server]\n[vector_db]\ntype = \"lance\"\n[reranker]\n").unwrap();
+        assert!(config.embedder.is_none());
+        Arc::new(AppState::new(None, config))
+    }
+
+    #[tokio::test]
+    async fn unconfigured_dashboard_points_to_config() {
+        let app = app(unconfigured_state());
+        let resp = app
+            .oneshot(Request::get("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let html = body_text(resp).await;
+        assert!(html.contains("unconfigured"), "dashboard must flag the state");
+        assert!(html.contains("/config"), "and link to the config page");
+    }
+
+    #[tokio::test]
+    async fn unconfigured_collections_page_shows_banner_not_error() {
+        let app = app(unconfigured_state());
+        let resp = app
+            .oneshot(Request::get("/collections").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(body_text(resp).await.contains("unconfigured"));
+    }
+
+    #[tokio::test]
+    async fn unconfigured_query_page_disables_search() {
+        let app = app(unconfigured_state());
+        let resp = app
+            .oneshot(Request::get("/query").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let html = body_text(resp).await;
+        assert!(html.contains("unconfigured"));
+        assert!(
+            !html.contains(r#"<button type="submit">Search"#),
+            "no live search form"
+        );
     }
 
     #[tokio::test]
@@ -815,7 +987,7 @@ api_key = "gemini-key"
             path.clone(),
         ));
         // Switch to openai, leave key blank → must NOT reuse the gemini key.
-        let form = "host=127.0.0.1&port=7573&provider=openai&model=gpt-4o-mini&api_key=&reranker_top_k=20&auth_token=";
+        let form = "host=127.0.0.1&port=7573&provider=openai&model=gpt-4o-mini&api_key=&embedder_provider=none&fastembed_model=&embedder_url=&embedder_model=&embedder_api_key=&vector_db=qdrant&lance_path=&qdrant_url=&qdrant_collection=&reranker_top_k=20&auth_token=";
         let resp = app
             .oneshot(
                 Request::post("/config")
@@ -845,7 +1017,7 @@ api_key = "gemini-key"
             "[server]\n[vector_db]\ntype = \"qdrant\"\n[llm]\nprovider = \"gemini\"\n[reranker]\n",
             path.clone(),
         ));
-        let form = "host=127.0.0.1&port=99999999&provider=gemini&model=m&api_key=&reranker_top_k=20&auth_token=";
+        let form = "host=127.0.0.1&port=99999999&provider=gemini&model=m&api_key=&embedder_provider=none&fastembed_model=&embedder_url=&embedder_model=&embedder_api_key=&vector_db=qdrant&lance_path=&qdrant_url=&qdrant_collection=&reranker_top_k=20&auth_token=";
         let resp = app
             .oneshot(
                 Request::post("/config")
@@ -881,7 +1053,7 @@ api_key = "gemini-key"
 "#,
             path.clone(),
         ));
-        let form = "host=127.0.0.1&port=7573&provider=none&model=&api_key=&reranker_top_k=20&auth_token=";
+        let form = "host=127.0.0.1&port=7573&provider=none&model=&api_key=&embedder_provider=none&fastembed_model=&embedder_url=&embedder_model=&embedder_api_key=&vector_db=qdrant&lance_path=&qdrant_url=&qdrant_collection=&reranker_top_k=20&auth_token=";
         let resp = app
             .oneshot(
                 Request::post("/config")
@@ -918,6 +1090,87 @@ api_key = "gemini-key"
     }
 
     #[tokio::test]
+    async fn config_form_saves_embedder_and_vector_db() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rag.conf");
+        let app = app(state_from(
+            "[server]\n[vector_db]\ntype = \"qdrant\"\n[reranker]\n",
+            path.clone(),
+        ));
+        let form = "host=127.0.0.1&port=7573&provider=none&model=&api_key=&embedder_provider=fastembed&fastembed_model=Xenova%2Fbge-small-en-v1.5&embedder_url=&embedder_model=&embedder_api_key=&vector_db=lance&lance_path=%2Fdata%2Flance&qdrant_url=&qdrant_collection=&reranker_top_k=20&auth_token=";
+        let resp = app
+            .oneshot(
+                Request::post("/config")
+                    .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .body(Body::from(form))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(body_text(resp).await.contains("Saved"));
+
+        let saved = RagConfig::from_file(path).unwrap();
+        match saved.embedder {
+            Some(crate::config::EmbedderConfig::FastEmbed { model }) => {
+                assert_eq!(model.as_deref(), Some("Xenova/bge-small-en-v1.5"))
+            }
+            other => panic!("expected fastembed, got {other:?}"),
+        }
+        assert!(matches!(
+            saved.vector_db,
+            crate::config::VectorDbConfig::Lance { .. }
+        ));
+    }
+
+    /// An unconfigured server with a writable config path (for the form page).
+    fn unconfigured_state_with_path() -> Arc<AppState> {
+        let config: RagConfig =
+            toml::from_str("[server]\n[vector_db]\ntype = \"lance\"\n[reranker]\n").unwrap();
+        Arc::new(
+            AppState::new(None, config).with_config_path(std::path::PathBuf::from("/dev/null")),
+        )
+    }
+
+    #[tokio::test]
+    async fn config_page_preselects_fastembed_model_saved_as_variant_name() {
+        // A config may name the model by fastembed variant (`BGESmallENV15`);
+        // the dropdown is keyed by model code. Without canonicalization no
+        // option is selected, the browser submits the empty placeholder, and
+        // any unrelated save fails with "Pick a fastembed model."
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rag.conf");
+        let app = app(state_from(
+            "[server]\n[vector_db]\ntype = \"lance\"\n[embedder]\ntype = \"fastembed\"\nmodel = \"BGESmallENV15\"\n[reranker]\n",
+            path,
+        ));
+        let resp = app
+            .oneshot(Request::get("/config").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let html = body_text(resp).await;
+        assert!(
+            html.contains(r#"<option value="Xenova/bge-small-en-v1.5" selected"#),
+            "variant-name config must pre-select its model-code option"
+        );
+    }
+
+    #[tokio::test]
+    async fn unconfigured_config_page_preselects_embedder_none_and_warns() {
+        let app = app(unconfigured_state_with_path());
+        let resp = app
+            .oneshot(Request::get("/config").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let html = body_text(resp).await;
+        assert!(
+            html.contains(r#"<select name="embedder_provider""#),
+            "embedder select must render"
+        );
+        assert!(html.contains("invalidates"), "wipe warning must render");
+    }
+
+    #[tokio::test]
     async fn answer_handler_rejects_when_semantic_only() {
         // A semantic-only server (no [llm]) must reject /api/answer at submit
         // time with 503, not mint a job that can only fail (adr/0022).
@@ -925,7 +1178,7 @@ api_key = "gemini-key"
             toml::from_str("[server]\n[vector_db]\ntype = \"qdrant\"\n[reranker]\n").unwrap();
         assert!(config.llm.is_none());
         let rag = KimunRag::new(Arc::new(FakeVectorStore::default()), Arc::new(FakeEmbedder), None);
-        let state = Arc::new(AppState::new(rag, config));
+        let state = Arc::new(AppState::new(Some(rag), config));
 
         let req = crate::handlers::AnswerRequest {
             vault_id: "vault-1".into(),
