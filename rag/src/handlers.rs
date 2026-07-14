@@ -278,6 +278,17 @@ pub async fn answer_handler(
     Json(request): Json<AnswerRequest>,
 ) -> Result<Json<QueryResponse>, (StatusCode, Json<ErrorResponse>)> {
     require_vault_id(&request.vault_id)?;
+    // Semantic-only server: reject question-answering up front rather than minting
+    // a job that can only fail (adr/0022). The client already gates on
+    // /health.llm_provider; this is the belt-and-suspenders path.
+    if state.config.llm.is_none() {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse {
+                error: "no LLM configured; this server answers semantic searches only".to_string(),
+            }),
+        ));
+    }
     let job_id = Uuid::new_v4();
     let top_k = resolve_top_k(request.context_size, state.config.reranker.top_k);
 
@@ -571,11 +582,16 @@ async fn answer_impl(
     debug!("Answering a question");
 
     // Query embeddings + grab the reranker and LLM client while holding the
-    // lock briefly, then release it before any slow work.
+    // lock briefly, then release it before any slow work. The LLM is checked
+    // first (defense-in-depth: the handler already rejects a semantic-only
+    // server, adr/0022) so we don't run a vector search we'd only throw away.
     let (raw_results, reranker_option, llm_client) = {
         let rag_lock = rag.lock().await;
+        let llm_client = rag_lock
+            .get_llm_client()
+            .ok_or_else(|| anyhow::anyhow!("no LLM configured; this server is semantic-only"))?;
         let results = rag_lock.query_embeddings_raw(collection, query).await?;
-        (results, rag_lock.get_reranker(), rag_lock.get_llm_client())
+        (results, rag_lock.get_reranker(), llm_client)
     }; // Lock released here
 
     let raw_results = deduplicate_chunks(raw_results);

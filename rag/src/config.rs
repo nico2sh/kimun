@@ -9,7 +9,11 @@ pub struct RagConfig {
     /// model so an existing config with no [embedder] section keeps working.
     #[serde(default)]
     pub embedder: EmbedderConfig,
-    pub llm: LlmConfig,
+    /// The LLM used for question-answering. Optional: with no `[llm]` section the
+    /// server is *semantic-only* — it answers `/api/embeddings` searches but
+    /// rejects `/api/answer` (adr/0022). A first-run generated config omits it.
+    #[serde(default)]
+    pub llm: Option<LlmConfig>,
     pub reranker: RerankerConfig,
     /// Authentication. Optional so a localhost-only dev server needs no setup;
     /// required in practice once the server binds beyond 127.0.0.1 (adr:
@@ -163,6 +167,18 @@ impl LlmConfig {
         }
     }
 
+    /// The environment variable the provider's client reads its API key from.
+    /// Single source of truth for the provider→env-var mapping, shared by the
+    /// startup key gate and the web UI's save path.
+    pub fn env_var(&self) -> &'static str {
+        match self {
+            LlmConfig::Gemini { .. } => "GEMINI_API_KEY",
+            LlmConfig::Mistral { .. } => "MISTRAL_API_KEY",
+            LlmConfig::Claude { .. } => "ANTHROPIC_API_KEY",
+            LlmConfig::OpenAI { .. } => "OPENAI_API_KEY",
+        }
+    }
+
     /// The configured API key, if any.
     pub fn api_key(&self) -> Option<&str> {
         match self {
@@ -238,6 +254,22 @@ fn default_lance_path() -> PathBuf {
     PathBuf::from("./rag_lance")
 }
 
+/// LanceDB store path baked into a *generated* first-run config: an absolute
+/// path under the OS data dir (`~/.local/share/kimun/rag_lance`) so the store
+/// does not float with the process's launch directory the way `./rag_lance`
+/// would (adr/0022). Falls back to the relative default if the data dir can't be
+/// resolved.
+fn generated_lance_path() -> PathBuf {
+    match dirs::data_dir() {
+        Some(mut dir) => {
+            dir.push("kimun");
+            dir.push("rag_lance");
+            dir
+        }
+        None => default_lance_path(),
+    }
+}
+
 fn default_qdrant_url() -> String {
     "http://localhost:6333".to_string()
 }
@@ -268,6 +300,31 @@ fn default_reranker_enabled() -> bool {
 
 fn default_reranker_top_k() -> usize {
     20
+}
+
+/// A zero-config default: LanceDB under the data dir, local fastembed, default
+/// `127.0.0.1` bind, no LLM (semantic-only), no auth. This is what a first run
+/// with no config file boots from and writes to disk (adr/0022).
+impl Default for RagConfig {
+    fn default() -> Self {
+        RagConfig {
+            server: ServerConfig {
+                host: default_host(),
+                port: default_port(),
+                max_concurrent_jobs: default_max_concurrent_jobs(),
+            },
+            vector_db: VectorDbConfig::Lance {
+                path: generated_lance_path(),
+            },
+            embedder: EmbedderConfig::default(),
+            llm: None,
+            reranker: RerankerConfig {
+                enabled: default_reranker_enabled(),
+                top_k: default_reranker_top_k(),
+            },
+            auth: AuthConfig::default(),
+        }
+    }
 }
 
 impl RagConfig {
@@ -309,18 +366,43 @@ impl RagConfig {
         Ok(())
     }
 
-    /// Load config from default path or provided path
+    /// Load config from default path or provided path.
+    ///
+    /// An explicit `--config` path that does not exist is an error — an explicit
+    /// path asserts the file is there, so a typo fails loud. But when no override
+    /// is given and the *default* path is missing, this is a first run: generate
+    /// a semantic-only default config, persist it there, and boot from it
+    /// (adr/0022).
     pub fn load(override_path: Option<PathBuf>) -> anyhow::Result<Self> {
-        let path = override_path.unwrap_or_else(Self::default_path);
-
-        if !path.exists() {
-            anyhow::bail!(
-                "Config file not found at {:?}. Please create a config file. See config.example.toml for reference.",
-                path
-            );
+        if let Some(path) = override_path {
+            if !path.exists() {
+                anyhow::bail!(
+                    "Config file not found at {:?}. Please create a config file. See config.example.toml for reference.",
+                    path
+                );
+            }
+            return Self::from_file(path);
         }
 
-        Self::from_file(path)
+        Self::load_or_generate_default(&Self::default_path())
+    }
+
+    /// Load the config at `path`, or — when it does not exist — generate a
+    /// semantic-only default, persist it there, and return it (adr/0022). Split
+    /// out from [`load`] so the first-run generation is testable against a temp
+    /// path instead of the hardcoded [`default_path`](Self::default_path).
+    fn load_or_generate_default(path: &std::path::Path) -> anyhow::Result<Self> {
+        if path.exists() {
+            return Self::from_file(path.to_path_buf());
+        }
+
+        let config = Self::default();
+        config.save_to(path)?;
+        tracing::info!(
+            "No config found; wrote a semantic-only default (LanceDB, no LLM) to {:?}",
+            path
+        );
+        Ok(config)
     }
 
     /// Merge configuration with CLI arguments
@@ -482,8 +564,9 @@ token = "secret-token"
         assert_eq!(reloaded.reranker.enabled, false);
         assert_eq!(reloaded.reranker.top_k, 33);
         assert_eq!(reloaded.auth.token.as_deref(), Some("secret-token"));
-        assert_eq!(reloaded.llm.provider(), "claude");
-        assert_eq!(reloaded.llm.api_key(), Some("sk-ant-xxx"));
+        let llm = reloaded.llm.as_ref().expect("llm present");
+        assert_eq!(llm.provider(), "claude");
+        assert_eq!(llm.api_key(), Some("sk-ant-xxx"));
         assert!(matches!(reloaded.vector_db, VectorDbConfig::Qdrant { .. }));
         assert!(matches!(reloaded.embedder, EmbedderConfig::Ollama { .. }));
     }
@@ -544,10 +627,77 @@ token = "secret-token"
         assert_eq!(config.reranker.top_k, 40);
         assert_eq!(config.auth.token.as_deref(), Some("secret-token"));
         match &config.llm {
-            LlmConfig::Claude { api_key, .. } => {
+            Some(LlmConfig::Claude { api_key, .. }) => {
                 assert_eq!(api_key.as_deref(), Some("sk-ant-xxx"))
             }
             _ => panic!("expected claude"),
         }
+    }
+
+    #[test]
+    fn config_without_llm_section_is_semantic_only() {
+        // No [llm] section → llm is None (semantic-only server, adr/0022).
+        let config_toml = r#"
+[server]
+[vector_db]
+type = "lance"
+[reranker]
+"#;
+        let config: RagConfig = toml::from_str(config_toml).unwrap();
+        assert!(config.llm.is_none());
+    }
+
+    #[test]
+    fn default_config_is_semantic_only_lance() {
+        // The generated first-run default: LanceDB, fastembed, no LLM, no auth.
+        let config = RagConfig::default();
+        assert!(config.llm.is_none());
+        assert!(config.auth.token.is_none());
+        assert!(matches!(config.embedder, EmbedderConfig::FastEmbed { .. }));
+        match config.vector_db {
+            VectorDbConfig::Lance { path } => {
+                // Absolute when a data dir resolves (generated_lance_path).
+                assert!(path.ends_with("kimun/rag_lance"), "got {path:?}");
+            }
+            other => panic!("expected lance, got {other:?}"),
+        }
+        assert_eq!(config.server.host, default_host());
+        assert_eq!(config.server.port, default_port());
+    }
+
+    #[test]
+    fn load_or_generate_default_writes_semantic_only_on_first_run() {
+        // Missing path → generate a semantic-only default, persist it, boot from
+        // it. A second load reads the file back rather than regenerating.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("kimun").join("rag.conf");
+        assert!(!path.exists());
+
+        let generated = RagConfig::load_or_generate_default(&path).unwrap();
+        assert!(generated.llm.is_none());
+        assert!(path.exists(), "first run must persist the default");
+
+        // Second call must not overwrite: mark the file, reload, confirm it read
+        // the existing file (llm still none, file untouched semantics).
+        let reloaded = RagConfig::load_or_generate_default(&path).unwrap();
+        assert!(reloaded.llm.is_none());
+        assert!(matches!(reloaded.vector_db, VectorDbConfig::Lance { .. }));
+    }
+
+    #[test]
+    fn default_config_round_trips_through_save_to() {
+        // The default is what first run writes with save_to; it must reload.
+        let config = RagConfig::default();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("kimun").join("rag.conf");
+        config.save_to(&path).unwrap();
+
+        let reloaded = RagConfig::from_file(path).unwrap();
+        assert!(reloaded.llm.is_none());
+        assert!(matches!(reloaded.vector_db, VectorDbConfig::Lance { .. }));
+        assert!(matches!(
+            reloaded.embedder,
+            EmbedderConfig::FastEmbed { .. }
+        ));
     }
 }

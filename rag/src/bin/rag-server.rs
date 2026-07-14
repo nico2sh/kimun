@@ -145,7 +145,7 @@ async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<KimunRag> 
     // it can't race another thread's getenv. When config carries the key, export
     // it (the provider client reads its env var); then require a key to be
     // present, failing with a clean error instead of a panic deep in the client.
-    fn ensure_llm_key(var: &str, key: &Option<String>) -> anyhow::Result<()> {
+    fn ensure_llm_key(var: &str, key: Option<&str>) -> anyhow::Result<()> {
         if let Some(key) = key {
             // SAFETY: called at startup before the embedder/clients are built,
             // i.e. before any spawned worker reads the environment.
@@ -156,11 +156,9 @@ async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<KimunRag> 
         }
         Ok(())
     }
-    match &config.llm {
-        LlmConfig::Gemini { api_key, .. } => ensure_llm_key("GEMINI_API_KEY", api_key)?,
-        LlmConfig::Mistral { api_key, .. } => ensure_llm_key("MISTRAL_API_KEY", api_key)?,
-        LlmConfig::Claude { api_key, .. } => ensure_llm_key("ANTHROPIC_API_KEY", api_key)?,
-        LlmConfig::OpenAI { api_key, .. } => ensure_llm_key("OPENAI_API_KEY", api_key)?,
+    // No [llm] → semantic-only server; skip the key gate entirely (adr/0022).
+    if let Some(llm) = &config.llm {
+        ensure_llm_key(llm.env_var(), llm.api_key())?;
     }
 
     // Build the embedder (shared by every collection on this server)
@@ -228,25 +226,31 @@ async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<KimunRag> 
             }
         };
 
-    // Create LLM client based on config (keys already exported above).
-    let llm_client: Arc<dyn kimun_rag::llmclients::LLMClient + Send + Sync> = match &config.llm {
-        LlmConfig::Gemini { model, .. } => {
-            tracing::info!("Using Gemini LLM with model: {}", model);
-            Arc::new(GeminiClient::new(model))
-        }
-        LlmConfig::Mistral { model, .. } => {
-            tracing::info!("Using Mistral LLM");
-            Arc::new(MistralClient::new(model))
-        }
-        LlmConfig::Claude { model, .. } => {
-            tracing::info!("Using Claude LLM with model: {}", model);
-            Arc::new(ClaudeClient::new(model))
-        }
-        LlmConfig::OpenAI { model, .. } => {
-            tracing::info!("Using OpenAI LLM with model: {}", model);
-            Arc::new(OpenAIClient::new(model))
-        }
-    };
+    // Create LLM client based on config (keys already exported above). `None` on
+    // a semantic-only server (adr/0022).
+    let llm_client: Option<Arc<dyn kimun_rag::llmclients::LLMClient + Send + Sync>> =
+        match &config.llm {
+            Some(LlmConfig::Gemini { model, .. }) => {
+                tracing::info!("Using Gemini LLM with model: {}", model);
+                Some(Arc::new(GeminiClient::new(model)))
+            }
+            Some(LlmConfig::Mistral { model, .. }) => {
+                tracing::info!("Using Mistral LLM");
+                Some(Arc::new(MistralClient::new(model)))
+            }
+            Some(LlmConfig::Claude { model, .. }) => {
+                tracing::info!("Using Claude LLM with model: {}", model);
+                Some(Arc::new(ClaudeClient::new(model)))
+            }
+            Some(LlmConfig::OpenAI { model, .. }) => {
+                tracing::info!("Using OpenAI LLM with model: {}", model);
+                Some(Arc::new(OpenAIClient::new(model)))
+            }
+            None => {
+                tracing::info!("No LLM configured — semantic-only server (search, no Q&A)");
+                None
+            }
+        };
 
     let mut rag = KimunRag::new(embeddings, llm_client);
 
@@ -269,7 +273,7 @@ async fn health_handler(
     axum::Json(serde_json::json!({
         "status": "ok",
         "reranker": state.config.reranker.enabled,
-        "llm_provider": state.config.llm.provider(),
+        "llm_provider": state.config.llm.as_ref().map(|l| l.provider()),
         "auth_required": state.config.auth.token.is_some(),
     }))
 }
