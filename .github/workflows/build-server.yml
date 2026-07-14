@@ -1,0 +1,179 @@
+# Release workflow: Build and publish the Kimun server for all platforms
+# Triggered on kimun_server semantic version tags (created by release-plz)
+on:
+  push:
+    tags:
+      - "kimun_server-v[0-9]+.[0-9]+.[0-9]+*"
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: stable
+
+name: release-server
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - name: Windows Build
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: windows
+            artifact_suffix: ""
+            binary: kimun-server.exe
+          - name: MacOS Build x64
+            os: macos-latest
+            target: x86_64-apple-darwin
+            artifact: macos
+            artifact_suffix: _intel
+            binary: kimun-server
+          - name: MacOS Build arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: macos
+            artifact_suffix: _apple_silicon
+            binary: kimun-server
+          - name: Linux Build
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: linux
+            artifact_suffix: ""
+            binary: kimun-server
+          - name: Linux Build arm64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            artifact: linux
+            artifact_suffix: _arm64
+            binary: kimun-server
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract version
+        id: extract_version
+        shell: bash
+        run: echo "version=${GITHUB_REF_NAME#kimun_server-v}" >> $GITHUB_OUTPUT
+
+      # Setup Rust toolchain
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # qdrant-client/lancedb pull in prost-build, which needs a system protoc.
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Cache cargo registry + target/ via Swatinem/rust-cache. Tests are
+      # not run here — release-plz only creates tags from main commits, and
+      # every main commit has already passed check.yml's test suite.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-server-${{ matrix.target }}
+
+      # Build the server binary
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }} --bin kimun-server
+
+      # Copy binary to dist/
+      - name: Create distribution directory
+        run: mkdir -p dist
+        shell: bash
+
+      - name: Copy binary to dist
+        run: cp target/${{ matrix.target }}/release/${{ matrix.binary }} dist/
+        shell: bash
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kimun Server v${{ steps.extract_version.outputs.version }} (${{ matrix.artifact }}${{ matrix.artifact_suffix }})
+          path: dist
+
+  create-release:
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.extract_version.outputs.version }}
+
+    steps:
+      - name: Extract version
+        id: extract_version
+        run: echo "version=${GITHUB_REF_NAME#kimun_server-v}" >> $GITHUB_OUTPUT
+
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
+      - name: Display structure of downloaded files
+        run: ls -R release-artifacts
+
+      - name: Create compressed archives with consistent naming
+        run: |
+          set -euo pipefail
+          cd release-artifacts
+          VERSION="${GITHUB_REF_NAME#kimun_server-v}"
+
+          for dir in */; do
+            dirname="${dir%/}"
+
+            if [[ "$dirname" == *"windows"* ]]; then
+              ARCHIVE_NAME="kimun-server-${VERSION}-windows-x64.zip"
+              cd "$dirname" && zip -r "../${ARCHIVE_NAME}" . && cd ..
+            elif [[ "$dirname" == *"intel"* ]]; then
+              tar -czf "kimun-server-${VERSION}-macos-x64.tar.gz" -C "$dirname" .
+            elif [[ "$dirname" == *"apple_silicon"* ]]; then
+              tar -czf "kimun-server-${VERSION}-macos-arm64.tar.gz" -C "$dirname" .
+            elif [[ "$dirname" == *"linux"* && "$dirname" == *"arm64"* ]]; then
+              # Must precede the generic linux branch — arm64 dirs also match *linux*.
+              tar -czf "kimun-server-${VERSION}-linux-arm64.tar.gz" -C "$dirname" .
+            elif [[ "$dirname" == *"linux"* ]]; then
+              tar -czf "kimun-server-${VERSION}-linux-x64.tar.gz" -C "$dirname" .
+            else
+              echo "::error::unclassified artifact directory: $dirname"
+              exit 1
+            fi
+          done
+
+          ls -lh kimun-server-* 2>/dev/null || true
+        shell: bash
+
+      - name: Generate checksums
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          cd release-artifacts
+          files=(kimun-server-*.zip kimun-server-*.tar.gz)
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "::error::No archives found to checksum"
+            exit 1
+          fi
+          sha256sum "${files[@]}" > checksums-sha256.txt
+          cat checksums-sha256.txt
+        shell: bash
+
+      # Attach binaries to the release created by release-plz. No `body:` /
+      # `name:` here: release-plz owns the changelog, we only add assets.
+      - name: Attach release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          draft: false
+          prerelease: ${{ contains(steps.extract_version.outputs.version, '-') }}
+          append_body: false
+          files: |
+            release-artifacts/kimun-server-*.zip
+            release-artifacts/kimun-server-*.tar.gz
+            release-artifacts/checksums-sha256.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

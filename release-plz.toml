@@ -14,3 +14,15 @@ git_tag_name = "kimun_core-v{{ version }}"
 [[package]]
 name = "kimun-notes"
 git_tag_name = "kimun-notes-v{{ version }}"
+
+# Server ships as GitHub release binaries only (build-server.yml triggers on the
+# tag); it is a binary, not a library, so no crates.io publish.
+[[package]]
+name = "kimun_server"
+git_tag_name = "kimun_server-v{{ version }}"
+publish = false
+
+# Internal client lib consumed via path dependency; not released on its own.
+[[package]]
+name = "kimun_server_client"
+release = false
