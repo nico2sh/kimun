@@ -30,8 +30,8 @@ pub async fn rag_client(settings: &SharedSettings, vault: &NoteVault) -> Option<
         let settings = settings.read().ok()?;
         let global = &settings.workspace_config.as_ref()?.global;
         (
-            global.rag_server_url.clone()?,
-            global.rag_server_token.clone(),
+            global.kimun_server_url.clone()?,
+            global.kimun_server_token.clone(),
         )
     };
     let vault_id = vault.vault_id().await.ok()?;
@@ -47,7 +47,7 @@ pub fn rag_configured(settings: &SharedSettings) -> bool {
         .and_then(|s| {
             s.workspace_config
                 .as_ref()
-                .and_then(|wc| wc.global.rag_server_url.clone())
+                .and_then(|wc| wc.global.kimun_server_url.clone())
         })
         .is_some()
 }

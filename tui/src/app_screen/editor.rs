@@ -871,7 +871,7 @@ impl EditorScreen {
         }
         if !crate::components::semantic_search::rag_configured(&self.settings) {
             tx.send(AppEvent::FlashMessage(
-                "Set rag_server_url in config to use Ask (RAG)".into(),
+                "Set kimun_server_url in config to use Ask (RAG)".into(),
             ))
             .ok();
             return;

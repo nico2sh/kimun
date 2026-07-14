@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [[bin]]
-name = "rag-server"
-path = "src/bin/rag-server.rs"
+name = "kimun-server"
+path = "src/bin/kimun-server.rs"
 
 [dependencies]
 anyhow = "1.0"
