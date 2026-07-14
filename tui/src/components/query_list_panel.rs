@@ -44,6 +44,15 @@ pub trait ListPanelSpec {
     /// OUTLINE), whose behavior is unchanged.
     const BORDERED_INPUT: bool = false;
 
+    /// Whether the typed query ALSO fuzzy-filters the loaded rows locally
+    /// (`true`, default). Set `false` for server-backed sources whose `load`
+    /// already applies the query (semantic search): the server returns ranked,
+    /// conceptually-relevant notes that rarely contain the query words verbatim,
+    /// so a local fuzzy pass over their titles would wrongly discard nearly all
+    /// of them. `false` keeps the input (it drives the server reload) but shows
+    /// every returned row in server rank order.
+    const LOCAL_FILTER: bool = true;
+
     /// What Enter / click-activate does with the selected row.
     fn submit(row: &Self::Row, tx: &AppTx);
 
@@ -73,7 +82,14 @@ impl<S: ListPanelSpec> QueryListPanel<S> {
     pub fn set_source(&mut self, source: impl RowSource<S::Row> + 'static, tx: &AppTx) {
         let mut builder = SearchList::builder(source, redraw_callback(tx.clone()));
         if S::HAS_FILTER {
-            builder = builder.filter(Filter::Fuzzy);
+            // A server-backed source (LOCAL_FILTER = false) already applied the
+            // query in `load`; keep its ranked rows as-is (SourceOrder) instead of
+            // fuzzy-filtering them again by the literal query text.
+            builder = builder.filter(if S::LOCAL_FILTER {
+                Filter::Fuzzy
+            } else {
+                Filter::SourceOrder
+            });
         }
         self.list = Some(builder.icons(self.icons.clone()).build());
     }
@@ -310,7 +326,34 @@ mod tests {
         }
     }
 
-    fn buffer_text(panel: &mut QueryListPanel<BorderedSpec>) -> String {
+    /// A server-backed source: returns the same three rows for any query (the
+    /// server did the ranking; the query is not a local substring filter).
+    struct ThreeSource;
+    #[async_trait::async_trait]
+    impl RowSource<Row> for ThreeSource {
+        async fn load(&self, _q: &str, emit: Emit<Row>) {
+            emit.replace(vec![
+                Row("alpha".into()),
+                Row("beta".into()),
+                Row("gamma".into()),
+            ]);
+        }
+    }
+
+    /// Like `BorderedSpec` but opts out of local filtering (server-backed).
+    struct NoFilterSpec;
+    impl ListPanelSpec for NoFilterSpec {
+        type Row = Row;
+        const TITLE: &'static str = "Semantic";
+        const BORDERED_INPUT: bool = true;
+        const LOCAL_FILTER: bool = false;
+        fn submit(_row: &Row, _tx: &AppTx) {}
+        fn hints() -> Vec<(String, String)> {
+            Vec::new()
+        }
+    }
+
+    fn buffer_text<S: ListPanelSpec>(panel: &mut QueryListPanel<S>) -> String {
         let theme = Theme::default();
         let mut term = Terminal::new(TestBackend::new(40, 12)).unwrap();
         term.draw(|f| panel.render(f, Rect::new(0, 0, 40, 12), &theme, true))
@@ -324,6 +367,56 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// Regression: a server-backed view (`LOCAL_FILTER = false`) must NOT drop
+    /// the server's ranked rows just because their titles don't contain the
+    /// typed query. This was the "semantic search shows one result" bug — the
+    /// local fuzzy filter discarded every conceptually-relevant note whose title
+    /// lacked the query words.
+    #[tokio::test]
+    async fn no_local_filter_keeps_server_rows_that_dont_match_query() {
+        let (tx, _rx) = unbounded_channel();
+        let mut panel = QueryListPanel::<NoFilterSpec>::new(Icons::new(false));
+        panel.set_source(ThreeSource, &tx);
+        {
+            let list = panel.list_mut().unwrap();
+            list.poll_until_idle().await;
+            // A query that matches none of the row titles verbatim.
+            list.set_query("zzz-not-in-any-title");
+            list.poll_until_idle().await;
+        }
+        assert_eq!(
+            panel.list().unwrap().match_count(),
+            3,
+            "server rows must survive a non-matching query (no local filter)"
+        );
+        let text = buffer_text(&mut panel);
+        assert!(
+            text.contains("alpha") && text.contains("beta") && text.contains("gamma"),
+            "all server rows shown:\n{text}"
+        );
+    }
+
+    /// Contrast: a local-filter view (`LOCAL_FILTER = true`, the drawer default)
+    /// DOES narrow rows by the typed query — the behavior semantic search must
+    /// avoid but TAGS/LINKS/OUTLINE rely on.
+    #[tokio::test]
+    async fn local_filter_narrows_rows_by_query() {
+        let (tx, _rx) = unbounded_channel();
+        let mut panel = QueryListPanel::<BorderedSpec>::new(Icons::new(false));
+        panel.set_source(ThreeSource, &tx);
+        {
+            let list = panel.list_mut().unwrap();
+            list.poll_until_idle().await;
+            list.set_query("alpha");
+            list.poll_until_idle().await;
+        }
+        assert_eq!(
+            panel.list().unwrap().match_count(),
+            1,
+            "local fuzzy filter keeps only the matching row"
+        );
     }
 
     #[tokio::test]

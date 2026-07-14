@@ -247,13 +247,21 @@ pub async fn get_embeddings_handler(
         .await
         .map_err(&fail)?;
     let raw = deduplicate_chunks(raw);
-    let results = match reranker {
+    // Rank the FULL pool before cutting: semantic search lists NOTES, but a
+    // single section-heavy note can otherwise fill every chunk slot and collapse
+    // (client-side, one row per note) to a single result. Rerank/sort everything,
+    // then keep each note's best chunk and take the top_k NOTES. (`/answer` keeps
+    // chunk-level context — this note-dedup is search-only.)
+    let pool_size = raw.len();
+    let ranked = match reranker {
         Some(reranker) => reranker
-            .rerank(&request.query, raw, top_k)
+            .rerank(&request.query, raw, pool_size)
             .await
             .map_err(&fail)?,
-        None => raw.into_iter().take(top_k).collect(),
+        // `deduplicate_chunks` already sorted best-first.
+        None => raw,
     };
+    let results = dedupe_by_note(ranked, top_k);
 
     let chunks: Vec<ChunkResult> = results
         .into_iter()
@@ -451,6 +459,32 @@ pub async fn job_status_handler(
 /// per unique chunk) and returns them sorted best-first. Scores are similarities
 /// (higher = better) for both backends, so this ordering is what `take(top_k)`
 /// relies on when no reranker is present.
+/// Collapse ranked chunks to one row per note — the best (first-seen, so
+/// highest-ranked) chunk of each `doc_path` — and keep at most `top_k` notes.
+/// Semantic search lists notes, so the top_k cut must land on NOTES, not chunks;
+/// otherwise a note split into many matching sections crowds every other note
+/// out of the results. Input must already be ranked best-first.
+fn dedupe_by_note(
+    ranked: Vec<(f64, crate::document::FlattenedChunk)>,
+    top_k: usize,
+) -> Vec<(f64, crate::document::FlattenedChunk)> {
+    use std::collections::HashSet;
+    if top_k == 0 {
+        return Vec::new();
+    }
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut out = Vec::new();
+    for (score, chunk) in ranked {
+        if seen.insert(chunk.doc_path.clone()) {
+            out.push((score, chunk));
+            if out.len() == top_k {
+                break;
+            }
+        }
+    }
+    out
+}
+
 fn deduplicate_chunks(
     results: Vec<(f64, crate::document::FlattenedChunk)>,
 ) -> Vec<(f64, crate::document::FlattenedChunk)> {
@@ -619,4 +653,58 @@ async fn answer_impl(
         .collect();
 
     Ok((answer, sources))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::document::FlattenedChunk;
+
+    fn chunk(path: &str, section: &str) -> FlattenedChunk {
+        FlattenedChunk {
+            doc_path: path.to_string(),
+            doc_hash: "h".to_string(),
+            title: section.to_string(),
+            text: format!("{path}#{section}"),
+            date: None,
+        }
+    }
+
+    #[test]
+    fn dedupe_by_note_keeps_best_chunk_per_note_and_caps_at_top_k() {
+        // Ranked best-first: note A dominates the top with three sections, then B,
+        // then C. Chunk-level top_k=2 would return two A chunks → one note; the
+        // note-dedup must instead surface A and B (each note's best chunk).
+        let ranked = vec![
+            (0.99, chunk("/a.md", "intro")),
+            (0.98, chunk("/a.md", "body")),
+            (0.97, chunk("/a.md", "end")),
+            (0.80, chunk("/b.md", "b1")),
+            (0.70, chunk("/c.md", "c1")),
+        ];
+        let out = dedupe_by_note(ranked, 2);
+        assert_eq!(out.len(), 2, "top_k counts NOTES, not chunks");
+        assert_eq!(out[0].1.doc_path, "/a.md");
+        assert_eq!(out[0].1.title, "intro", "keeps the note's highest-ranked chunk");
+        assert_eq!(out[1].1.doc_path, "/b.md");
+    }
+
+    #[test]
+    fn dedupe_by_note_returns_all_distinct_notes_when_under_top_k() {
+        let ranked = vec![
+            (0.9, chunk("/a.md", "s")),
+            (0.8, chunk("/a.md", "s2")),
+            (0.7, chunk("/b.md", "s")),
+        ];
+        let out = dedupe_by_note(ranked, 20);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].1.doc_path, "/a.md");
+        assert_eq!(out[1].1.doc_path, "/b.md");
+    }
+
+    #[test]
+    fn dedupe_by_note_top_k_zero_is_empty() {
+        let ranked = vec![(0.9, chunk("/a.md", "s"))];
+        assert!(dedupe_by_note(ranked, 0).is_empty());
+    }
 }
