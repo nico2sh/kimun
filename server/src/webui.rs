@@ -472,7 +472,19 @@ fn config_markup(state: &AppState, c: &RagConfig, flash: Option<Markup>) -> Mark
     // Embedder section (adr/0024): "none" is the unconfigured sentinel; the
     // fastembed model is a dropdown so a local model is always an explicit
     // choice, never a hidden default.
-    let embedder_providers = ["none", "fastembed", "ollama", "openai"];
+    //
+    // Each provider carries the form field groups it uses (rendered as
+    // data-groups on its <option>; the field divs below are tagged with one
+    // group each and the page script shows only the selected option's groups).
+    // This table is the single place a provider's fields are declared — adding
+    // a provider without naming its groups leaves its fields hidden, so keep
+    // apply_form's dispatch in config.rs in step with it.
+    let embedder_providers = [
+        ("none", ""),
+        ("fastembed", "model"),
+        ("ollama", "http"),
+        ("openai", "http key"),
+    ];
     let current_embedder = c.embedder.as_ref().map(|e| e.provider()).unwrap_or("none");
     let fastembed_models = crate::dbembeddings::embedder::fastembedder::supported_models();
     // Canonicalize a configured fastembed model to its model code — configs may
@@ -536,42 +548,60 @@ fn config_markup(state: &AppState, c: &RagConfig, flash: Option<Markup>) -> Mark
                 }
                 label { "Provider" }
                 select name="embedder_provider" {
-                    @for p in embedder_providers {
-                        option value=(p) selected[p == current_embedder] {
+                    @for (p, groups) in embedder_providers {
+                        option value=(p) data-groups=(groups) selected[p == current_embedder] {
                             @if p == "none" { "— none (unconfigured) —" } @else { (p) }
                         }
                     }
                 }
                 p .muted { "Changing the embedder invalidates all indexed data — on the next start the server wipes stored vectors and every vault re-indexes on its next sync." }
-                label { "Fastembed model (fastembed only)" }
-                select name="fastembed_model" {
-                    option value="" selected[current_fastembed.is_empty()] { "— pick a model —" }
-                    @for (code, dim) in &fastembed_models {
-                        option value=(code) selected[code.eq_ignore_ascii_case(&current_fastembed)] {
-                            (code) " (" (dim) " dims)"
+                noscript {
+                    p .muted { "(Without JavaScript all fields are shown: Model applies to fastembed; URL and Model to ollama and openai; API key to openai only.)" }
+                }
+                // Provider-specific field groups: the script at the bottom of
+                // the page shows only the groups named by the selected option's
+                // data-groups. Hidden fields still submit, but apply_form
+                // dispatches on the provider and ignores the rest.
+                div data-embedder="model" {
+                    label { "Model" }
+                    select name="fastembed_model" {
+                        option value="" selected[current_fastembed.is_empty()] { "— pick a model —" }
+                        @for (code, dim) in &fastembed_models {
+                            option value=(code) selected[code.eq_ignore_ascii_case(&current_fastembed)] {
+                                (code) " (" (dim) " dims)"
+                            }
                         }
                     }
                 }
-                div .row {
-                    div { label { "URL (ollama / openai)" } input type="text" name="embedder_url" value=(current_url); }
-                    div { label { "Model (ollama / openai)" } input type="text" name="embedder_model" value=(current_model); }
+                div data-embedder="http" {
+                    div .row {
+                        div { label { "URL" } input type="text" name="embedder_url" value=(current_url); }
+                        div { label { "Model" } input type="text" name="embedder_model" value=(current_model); }
+                    }
+                    p .muted { "Instruction prefixes (doc_prefix / query_prefix) are file-only settings; a save here keeps them." }
                 }
-                label { "API key (openai only)" }
-                input type="password" name="embedder_api_key" placeholder=(if embedder_key_set { "unchanged (a key is set)" } else { "from environment if blank" });
-                p .muted { "Instruction prefixes (doc_prefix / query_prefix) are file-only settings; a save here keeps them." }
+                div data-embedder="key" {
+                    label { "API key" }
+                    input type="password" name="embedder_api_key" placeholder=(if embedder_key_set { "unchanged (a key is set)" } else { "from environment if blank" });
+                }
             }
             section .group {
                 h2 { "Vector DB" }
                 label { "Backend" }
                 select name="vector_db" {
-                    option value="lance" selected[current_vector_db == "lance"] { "LanceDB (embedded, local)" }
-                    option value="qdrant" selected[current_vector_db == "qdrant"] { "Qdrant (server)" }
+                    option value="lance" data-groups="lance" selected[current_vector_db == "lance"] { "LanceDB (embedded, local)" }
+                    option value="qdrant" data-groups="qdrant" selected[current_vector_db == "qdrant"] { "Qdrant (server)" }
                 }
-                label { "LanceDB path (lance only)" }
-                input type="text" name="lance_path" value=(lance_path) placeholder="default: data dir";
-                div .row {
-                    div { label { "Qdrant URL (qdrant only)" } input type="text" name="qdrant_url" value=(qdrant_url) placeholder="http://localhost:6333"; }
-                    div { label { "Qdrant collection prefix (qdrant only)" } input type="text" name="qdrant_collection" value=(qdrant_collection) placeholder="kimun_embeddings"; }
+                noscript {
+                    p .muted { "(Without JavaScript all fields are shown: the path applies to LanceDB; URL and collection prefix to Qdrant.)" }
+                }
+                div data-vectordb="lance" {
+                    label { "LanceDB path" }
+                    input type="text" name="lance_path" value=(lance_path) placeholder="default: data dir";
+                }
+                div .row data-vectordb="qdrant" {
+                    div { label { "Qdrant URL" } input type="text" name="qdrant_url" value=(qdrant_url) placeholder="http://localhost:6333"; }
+                    div { label { "Qdrant collection prefix" } input type="text" name="qdrant_collection" value=(qdrant_collection) placeholder="kimun_embeddings"; }
                 }
             }
             section .group {
@@ -579,17 +609,19 @@ fn config_markup(state: &AppState, c: &RagConfig, flash: Option<Markup>) -> Mark
                 label { "Provider" }
                 select name="provider" {
                     @for p in providers {
-                        option value=(p) selected[p == current] {
+                        option value=(p) data-groups=(if p == "none" { "" } else { "llm" }) selected[p == current] {
                             @if p == "none" { "— none (semantic-only) —" } @else { (p) }
                         }
                     }
                 }
                 p .muted { "Select — none — for a search-only server (no question-answering)." }
-                label { "Model" }
-                input type="text" name="model" value=(c.llm.as_ref().map(|l| l.model()).unwrap_or(""));
-                label { "API key" }
-                input type="password" name="api_key" placeholder=(if c.llm.as_ref().and_then(|l| l.api_key()).is_some() { "unchanged (a key is set)" } else { "from environment if blank" });
-                p .muted { "Leave blank to keep the current key (or fall back to the provider env var)." }
+                div data-llm="llm" {
+                    label { "Model" }
+                    input type="text" name="model" value=(c.llm.as_ref().map(|l| l.model()).unwrap_or(""));
+                    label { "API key" }
+                    input type="password" name="api_key" placeholder=(if c.llm.as_ref().and_then(|l| l.api_key()).is_some() { "unchanged (a key is set)" } else { "from environment if blank" });
+                    p .muted { "Leave blank to keep the current key (or fall back to the provider env var)." }
+                }
             }
             section .group {
                 h2 { "Reranker" }
@@ -607,6 +639,27 @@ fn config_markup(state: &AppState, c: &RagConfig, flash: Option<Markup>) -> Mark
                 button type="submit" { "Save to config file" }
                 p .muted { "Saved changes take effect the next time the server starts." }
             }
+        }
+        script {
+            (maud::PreEscaped(r#"
+const bindVisibility = (selectName, attr) => {
+  const sel = document.querySelector('select[name="' + selectName + '"]');
+  const apply = () => {
+    const groups = (sel.selectedOptions[0].getAttribute('data-groups') || '').split(' ');
+    document.querySelectorAll('[data-' + attr + ']').forEach(el => {
+      el.style.display = groups.includes(el.getAttribute('data-' + attr)) ? '' : 'none';
+    });
+  };
+  sel.addEventListener('change', apply);
+  // pageshow: Firefox restores form state on reload/back AFTER scripts run,
+  // without firing 'change' — re-apply so visibility tracks the restored value.
+  window.addEventListener('pageshow', apply);
+  apply();
+};
+bindVisibility('embedder_provider', 'embedder');
+bindVisibility('vector_db', 'vectordb');
+bindVisibility('provider', 'llm');
+"#))
         }
     };
     shell(state, "/config", "Configuration", body)
@@ -1233,7 +1286,7 @@ api_key = "gemini-key"
             .unwrap();
         let html = body_text(resp).await;
         assert!(
-            html.contains(r#"<option value="none" selected"#),
+            html.contains(r#"<option value="none" data-groups="" selected"#),
             "none must be the selected provider on a semantic-only server"
         );
     }
