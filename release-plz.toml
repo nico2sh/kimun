@@ -22,7 +22,8 @@ name = "kimun_server"
 git_tag_name = "kimun_server-v{{ version }}"
 publish = false
 
-# Internal client lib consumed via path dependency; not released on its own.
+# Published to crates.io: kimun-notes depends on it, and crates.io requires all
+# dependencies of a published crate to be published themselves.
 [[package]]
 name = "kimun_server_client"
-release = false
+git_tag_name = "kimun_server_client-v{{ version }}"

@@ -2,9 +2,13 @@
 name = "kimun_server_client"
 version = "0.1.0"
 edition = "2024"
+description = "Client for the Kimün RAG server — capability probing, note sync, and hash-diff reconciliation"
+license = "MIT"
+readme = "../README.md"
+repository = "https://github.com/nico2sh/kimun"
 
 [dependencies]
-kimun_core = { path = "../core" }
+kimun_core = { path = "../core", version = "0.2.27" }
 serde = { workspace = true }
 serde_json = "1.0"
 tokio = { workspace = true }
