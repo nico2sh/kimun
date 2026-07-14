@@ -266,7 +266,7 @@ _Avoid_: update prompt (notification is passive; it does not steal focus)
 ### RAG
 
 **RAG server**:
-The optional external service that gives a **Vault** semantic search and question-answering. Kimün works fully without it; when reachable it enables extra capabilities. Owns the vector store, the embedding and reranking models, the LLM configuration, and a web UI to configure them. Serves many vaults at once, one **collection** per vault. It never reads the vault's files — Kimün pushes to it (see adr on push-only sync).
+The optional external service that gives a **Vault** semantic search and question-answering. Kimün works fully without it; when reachable it enables extra capabilities. Owns the vector store, the embedding and reranking models, an optional LLM configuration, and a web UI to configure them. Semantic search needs only the embedder, so the server can run with no LLM at all — a *semantic-only* server answers searches but rejects question-answering; the LLM is what a query-and-answer needs on top (see adr on optional LLM). Serves many vaults at once, one **collection** per vault. It never reads the vault's files — Kimün pushes to it (see adr on push-only sync).
 _Avoid_: embeddings server (names one role), AI server, LLM server (the LLM is one of several roles).
 
 **Collection**:

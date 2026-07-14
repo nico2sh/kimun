@@ -26,15 +26,18 @@ pub mod webui;
 
 pub struct KimunRag {
     embeddings: Arc<dyn Embeddings + Send + Sync>,
-    llm_client: Arc<dyn LLMClient + Send + Sync>,
+    /// `None` on a semantic-only server — search works, question-answering does
+    /// not (adr/0022).
+    llm_client: Option<Arc<dyn LLMClient + Send + Sync>>,
     reranker: Option<Arc<CrossEncoderReranker>>,
 }
 
 impl KimunRag {
-    /// Create a new KimunRag instance with provided embeddings and LLM client
+    /// Create a new KimunRag instance with provided embeddings and an optional
+    /// LLM client. Pass `None` for a semantic-only server.
     pub fn new(
         embeddings: Arc<dyn Embeddings + Send + Sync>,
-        llm_client: Arc<dyn LLMClient + Send + Sync>,
+        llm_client: Option<Arc<dyn LLMClient + Send + Sync>>,
     ) -> Self {
         Self {
             embeddings,
@@ -43,8 +46,8 @@ impl KimunRag {
         }
     }
 
-    /// Get a clone of the LLM client
-    pub fn get_llm_client(&self) -> Arc<dyn LLMClient + Send + Sync> {
+    /// Get a clone of the LLM client, or `None` on a semantic-only server.
+    pub fn get_llm_client(&self) -> Option<Arc<dyn LLMClient + Send + Sync>> {
         self.llm_client.clone()
     }
 
@@ -128,8 +131,11 @@ impl KimunRag {
         query: &str,
         top_k: usize,
     ) -> anyhow::Result<(String, Vec<(f64, FlattenedChunk)>)> {
-        self.ask_with_llm(collection, query, self.llm_client.clone(), top_k)
-            .await
+        let llm = self
+            .llm_client
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("no LLM configured; this server is semantic-only"))?;
+        self.ask_with_llm(collection, query, llm, top_k).await
     }
 
     pub async fn ask_with_llm(

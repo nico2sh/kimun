@@ -285,8 +285,15 @@ async fn dashboard(State(state): State<Arc<AppState>>) -> Markup {
                 dt { "Bind address" } dd .mono { (c.server.host) ":" (c.server.port) }
                 dt { "Vector DB" } dd { (vector_db) }
                 dt { "Embedder" } dd { (embedder) }
-                dt { "LLM" } dd { (c.llm.provider()) " · " (c.llm.model()) }
-                dt { "LLM key" } dd { @if c.llm.api_key().is_some() { "set in config" } @else { "from environment" } }
+                dt { "LLM" } dd {
+                    @if let Some(l) = &c.llm { (l.provider()) " · " (l.model()) }
+                    @else { "not configured (semantic-only)" }
+                }
+                dt { "LLM key" } dd {
+                    @if let Some(l) = &c.llm {
+                        @if l.api_key().is_some() { "set in config" } @else { "from environment" }
+                    } @else { "—" }
+                }
                 dt { "Reranker" } dd { @if c.reranker.enabled { "on (top_k " (c.reranker.top_k) ")" } @else { "off" } }
                 dt { "Auth" } dd { @if c.auth.token.is_some() { span .badge { "token required" } } @else { span .badge { "open" } } }
             }
@@ -308,8 +315,11 @@ async fn config_page(State(state): State<Arc<AppState>>) -> Markup {
 /// Renders the config form from `c` (the running config, or the just-saved one
 /// after a successful write so the fields reflect what's on disk).
 fn config_markup(state: &AppState, c: &RagConfig, flash: Option<Markup>) -> Markup {
-    let providers = ["gemini", "claude", "openai", "mistral"];
-    let current = c.llm.provider();
+    // "none" is the semantic-only sentinel (search, no Q&A). It maps to
+    // `llm = None` on save, and is what a server with no configured LLM shows
+    // (adr/0022).
+    let providers = ["none", "gemini", "claude", "openai", "mistral"];
+    let current = c.llm.as_ref().map(|l| l.provider()).unwrap_or("none");
     let can_save = state.config_path.is_some();
     let body = html! {
         h1 { "Configuration" }
@@ -330,13 +340,16 @@ fn config_markup(state: &AppState, c: &RagConfig, flash: Option<Markup>) -> Mark
                 label { "Provider" }
                 select name="provider" {
                     @for p in providers {
-                        option value=(p) selected[p == current] { (p) }
+                        option value=(p) selected[p == current] {
+                            @if p == "none" { "— none (semantic-only) —" } @else { (p) }
+                        }
                     }
                 }
+                p .muted { "Select — none — for a search-only server (no question-answering)." }
                 label { "Model" }
-                input type="text" name="model" value=(c.llm.model());
+                input type="text" name="model" value=(c.llm.as_ref().map(|l| l.model()).unwrap_or(""));
                 label { "API key" }
-                input type="password" name="api_key" placeholder=(if c.llm.api_key().is_some() { "unchanged (a key is set)" } else { "from environment if blank" });
+                input type="password" name="api_key" placeholder=(if c.llm.as_ref().and_then(|l| l.api_key()).is_some() { "unchanged (a key is set)" } else { "from environment if blank" });
                 p .muted { "Leave blank to keep the current key (or fall back to the provider env var)." }
             }
             div .card {
@@ -404,23 +417,35 @@ async fn config_submit(
         );
     };
 
-    // A typed key overwrites; a blank key keeps the current one only when the
-    // provider is unchanged — switching provider with a blank key must NOT carry
-    // the old provider's key over (it would be wrong), so fall back to the env var.
-    let key = if !f.api_key.is_empty() {
-        Some(f.api_key)
-    } else if f.provider == state.config.llm.provider() {
-        state.config.llm.api_key().map(str::to_string)
-    } else {
+    // "none" → semantic-only: clear the LLM entirely rather than writing a
+    // keyless provider that would fail the boot key gate (adr/0022).
+    let llm = if f.provider == "none" {
         None
-    };
-    let llm = match LlmConfig::from_parts(&f.provider, Some(f.model), key) {
-        Ok(llm) => llm,
-        Err(e) => {
-            return err_page(
-                &state,
-                html! { p .flash.err { "Invalid LLM settings: " (e) } },
-            );
+    } else {
+        // A typed key overwrites; a blank key keeps the current one only when the
+        // provider is unchanged — switching provider with a blank key must NOT
+        // carry the old provider's key over (it would be wrong), so fall back to
+        // the env var.
+        let key = if !f.api_key.is_empty() {
+            Some(f.api_key)
+        } else if Some(f.provider.as_str()) == state.config.llm.as_ref().map(|l| l.provider()) {
+            state
+                .config
+                .llm
+                .as_ref()
+                .and_then(|l| l.api_key())
+                .map(str::to_string)
+        } else {
+            None
+        };
+        match LlmConfig::from_parts(&f.provider, Some(f.model), key) {
+            Ok(llm) => Some(llm),
+            Err(e) => {
+                return err_page(
+                    &state,
+                    html! { p .flash.err { "Invalid LLM settings: " (e) } },
+                );
+            }
         }
     };
 
@@ -738,7 +763,7 @@ provider = "gemini"
                 .unwrap_or_default()
         );
         let config: RagConfig = toml::from_str(&config_toml).unwrap();
-        let rag = KimunRag::new(Arc::new(FakeEmbeddings), Arc::new(FakeLlm));
+        let rag = KimunRag::new(Arc::new(FakeEmbeddings), Some(Arc::new(FakeLlm)));
         let mut st = AppState::new(rag, config);
         if let Some(p) = config_path {
             st = st.with_config_path(p);
@@ -890,14 +915,15 @@ provider = "gemini"
         assert!(body_text(resp).await.contains("Saved"));
 
         let saved = RagConfig::from_file(path).unwrap();
-        assert_eq!(saved.llm.provider(), "claude");
-        assert_eq!(saved.llm.model(), "my-model");
+        let llm = saved.llm.as_ref().expect("llm saved");
+        assert_eq!(llm.provider(), "claude");
+        assert_eq!(llm.model(), "my-model");
     }
 
     /// Builds an AppState from a full config TOML, with a writable config path.
     fn state_from(config_toml: &str, path: std::path::PathBuf) -> Arc<AppState> {
         let config: RagConfig = toml::from_str(config_toml).unwrap();
-        let rag = KimunRag::new(Arc::new(FakeEmbeddings), Arc::new(FakeLlm));
+        let rag = KimunRag::new(Arc::new(FakeEmbeddings), Some(Arc::new(FakeLlm)));
         Arc::new(AppState::new(rag, config).with_config_path(path))
     }
 
@@ -931,9 +957,10 @@ api_key = "gemini-key"
         assert_eq!(resp.status(), StatusCode::OK);
 
         let saved = RagConfig::from_file(path).unwrap();
-        assert_eq!(saved.llm.provider(), "openai");
+        let llm = saved.llm.as_ref().expect("llm saved");
+        assert_eq!(llm.provider(), "openai");
         assert_eq!(
-            saved.llm.api_key(),
+            llm.api_key(),
             None,
             "old provider's key must not carry over"
         );
@@ -963,5 +990,80 @@ api_key = "gemini-key"
             !path.exists(),
             "invalid input must not write the config file"
         );
+    }
+
+    #[tokio::test]
+    async fn saving_provider_none_clears_llm_to_semantic_only() {
+        // Selecting "none" disables Q&A: llm is cleared to None, not written as a
+        // keyless provider that would fail the boot key gate (adr/0022).
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rag.conf");
+        let app = app(state_from(
+            r#"
+[server]
+[vector_db]
+type = "qdrant"
+[llm]
+provider = "gemini"
+api_key = "gemini-key"
+[reranker]
+"#,
+            path.clone(),
+        ));
+        let form = "host=127.0.0.1&port=7573&provider=none&model=&api_key=&reranker_top_k=20&auth_token=";
+        let resp = app
+            .oneshot(
+                Request::post("/config")
+                    .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .body(Body::from(form))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let saved = RagConfig::from_file(path).unwrap();
+        assert!(saved.llm.is_none(), "provider=none must clear the LLM");
+    }
+
+    #[tokio::test]
+    async fn semantic_only_config_page_defaults_provider_to_none() {
+        // With no [llm], the provider select must pre-select the none sentinel.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rag.conf");
+        let app = app(state_from(
+            "[server]\n[vector_db]\ntype = \"qdrant\"\n[reranker]\n",
+            path,
+        ));
+        let resp = app
+            .oneshot(Request::get("/config").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let html = body_text(resp).await;
+        assert!(
+            html.contains(r#"<option value="none" selected"#),
+            "none must be the selected provider on a semantic-only server"
+        );
+    }
+
+    #[tokio::test]
+    async fn answer_handler_rejects_when_semantic_only() {
+        // A semantic-only server (no [llm]) must reject /api/answer at submit
+        // time with 503, not mint a job that can only fail (adr/0022).
+        let config: RagConfig =
+            toml::from_str("[server]\n[vector_db]\ntype = \"qdrant\"\n[reranker]\n").unwrap();
+        assert!(config.llm.is_none());
+        let rag = KimunRag::new(Arc::new(FakeEmbeddings), None);
+        let state = Arc::new(AppState::new(rag, config));
+
+        let req = crate::handlers::AnswerRequest {
+            vault_id: "vault-1".into(),
+            query: "hello".into(),
+            context_size: None,
+        };
+        let err = crate::handlers::answer_handler(axum::extract::State(state), axum::Json(req))
+            .await
+            .expect_err("semantic-only server must reject answering");
+        assert_eq!(err.0, StatusCode::SERVICE_UNAVAILABLE);
     }
 }
