@@ -234,6 +234,10 @@ async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<Option<Kim
                     .api_key()
                     .map(str::to_string)
                     .or_else(|| std::env::var(llm.env_var()).ok())
+                    // A custom endpoint (openai-local: Ollama, llama.cpp, …) is
+                    // typically keyless — send an empty bearer instead of
+                    // refusing to boot. Cloud providers stay gated.
+                    .or_else(|| llm.url().map(|_| String::new()))
                     .ok_or_else(|| {
                         anyhow::anyhow!(
                             "Missing API key: set [llm] api_key in config or export {}",
