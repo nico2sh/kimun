@@ -1,28 +1,24 @@
 use log::debug;
 use qdrant_client::{
-    Payload, Qdrant,
+    Qdrant,
     qdrant::{
         Condition, CreateCollectionBuilder, CreateFieldIndexCollectionBuilder, DeletePointsBuilder,
         Distance, FieldType, Filter, PointId, PointStruct, ScoredPoint, ScrollPointsBuilder,
-        SearchPointsBuilder, SetPayloadPointsBuilder, UpsertPointsBuilder, Value,
-        VectorParamsBuilder,
+        SearchPointsBuilder, UpsertPointsBuilder, Value, VectorParamsBuilder,
     },
 };
-use serde_json::json;
 use std::collections::HashMap;
 use uuid::Uuid;
 
-use crate::document::{FlattenedChunk, KimunDoc};
+use crate::document::FlattenedChunk;
 
-use std::sync::Arc;
-
-use super::{Embeddings, IndexedNote, embedder::Embedder};
-
-const TOP_RESULTS: u64 = 80;
+use super::{CollectionInfo, EmbeddedChunk, IndexedNote, VectorStore};
 
 pub struct VecQdrant {
-    embedder: Arc<dyn Embedder>,
     client: Qdrant,
+    /// Vector width every collection is created at — the embedder's dimension,
+    /// fixed at composition time.
+    dim: usize,
     /// Namespace prefix; the effective Qdrant collection for a vault is
     /// `<prefix>-<vault-id>` (or just the vault-id when the prefix is empty).
     /// One vault ↔ one Qdrant collection (adr/0020).
@@ -30,16 +26,12 @@ pub struct VecQdrant {
 }
 
 impl VecQdrant {
-    pub async fn new(
-        url: String,
-        collection: String,
-        embedder: Arc<dyn Embedder>,
-    ) -> anyhow::Result<Self> {
+    pub async fn new(url: String, collection: String, dim: usize) -> anyhow::Result<Self> {
         let client = Qdrant::from_url(&url).build()?;
 
         Ok(Self {
-            embedder,
             client,
+            dim,
             collection_prefix: collection,
         })
     }
@@ -53,19 +45,21 @@ impl VecQdrant {
         }
     }
 
-    /// Ensures the vault's collection exists at the embedder's dimension. If it
+    async fn collection_exists(&self, name: &str) -> anyhow::Result<bool> {
+        let collections = self.client.list_collections().await?;
+        Ok(collections.collections.iter().any(|c| c.name == name))
+    }
+
+    /// Ensures the vault's collection exists at the store's dimension. If it
     /// already exists at a *different* dimension (embedder/model changed),
     /// fails loudly rather than letting later upserts be rejected — the
     /// operator must drop the collection and re-index (adr: dimension change is
     /// destructive).
     async fn ensure_collection(&self, collection: &str) -> anyhow::Result<()> {
         let name = self.collection_name(collection);
-        let dim = self.embedder.dimension() as u64;
+        let dim = self.dim as u64;
 
-        let collections = self.client.list_collections().await?;
-        let exists = collections.collections.iter().any(|c| c.name == name);
-
-        if exists {
+        if self.collection_exists(&name).await? {
             if let Some(existing) = self.collection_dimension(&name).await?
                 && existing != dim
             {
@@ -111,10 +105,8 @@ impl VecQdrant {
         Ok(dim)
     }
 
-    fn chunk_to_point(chunk: &FlattenedChunk, embedding: Vec<f32>) -> PointStruct {
-        use qdrant_client::qdrant::Value;
-        use std::collections::HashMap;
-
+    fn row_to_point(row: &EmbeddedChunk) -> PointStruct {
+        let chunk = &row.chunk;
         let mut payload = HashMap::new();
         payload.insert("path".to_string(), Value::from(chunk.doc_path.clone()));
         payload.insert("title".to_string(), Value::from(chunk.title.clone()));
@@ -125,7 +117,7 @@ impl VecQdrant {
         payload.insert("text".to_string(), Value::from(chunk.text.clone()));
         payload.insert("hash".to_string(), Value::from(chunk.doc_hash.clone()));
 
-        PointStruct::new(Uuid::new_v4().to_string(), embedding, payload)
+        PointStruct::new(Uuid::new_v4().to_string(), row.vector.clone(), payload)
     }
 
     fn payload_to_chunk(payload: &HashMap<String, Value>) -> FlattenedChunk {
@@ -151,15 +143,9 @@ impl VecQdrant {
             .map(|s| s.to_string())
             .unwrap_or_default();
 
-        let date = if let Some(ds) = date_str {
-            if !ds.is_empty() {
-                chrono::NaiveDate::parse_from_str(ds, "%Y-%m-%d").ok()
-            } else {
-                None
-            }
-        } else {
-            None
-        };
+        let date = date_str
+            .filter(|ds| !ds.is_empty())
+            .and_then(|ds| chrono::NaiveDate::parse_from_str(ds, "%Y-%m-%d").ok());
 
         FlattenedChunk {
             doc_path: path,
@@ -171,9 +157,7 @@ impl VecQdrant {
     }
 
     fn point_to_chunk(point: &ScoredPoint) -> FlattenedChunk {
-        let payload = &point.payload;
-
-        VecQdrant::payload_to_chunk(payload)
+        Self::payload_to_chunk(&point.payload)
     }
 }
 
@@ -199,57 +183,32 @@ impl From<Option<PointId>> for PaginationStatus {
 }
 
 #[async_trait::async_trait]
-impl Embeddings for VecQdrant {
-    async fn init(&self) -> anyhow::Result<()> {
-        // Collections are per-vault and created lazily on first store, so there
-        // is nothing to do at server start.
-        Ok(())
-    }
-
-    async fn store_embeddings(&self, collection: &str, content: &[KimunDoc]) -> anyhow::Result<()> {
+impl VectorStore for VecQdrant {
+    async fn store(&self, collection: &str, rows: &[EmbeddedChunk]) -> anyhow::Result<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
         self.ensure_collection(collection).await?;
         let name = self.collection_name(collection);
-        const BATCH_SIZE: usize = 100;
-
-        // Sub-split sections to the embedding window, then embed and store each
-        // sub-chunk 1:1 — so a point's stored text is exactly the text that
-        // produced its vector (mismatched otherwise).
-        let chunks = FlattenedChunk::from_chunks_split(content, 800, 1536);
-        debug!("{} docs split to {} chunks", content.len(), chunks.len());
-
-        for batch in chunks.chunks(BATCH_SIZE) {
-            let embeddings = self.embedder.generate_embeddings(batch).await?;
-            if embeddings.len() != batch.len() {
-                anyhow::bail!(
-                    "embedder returned {} vectors for {} chunks",
-                    embeddings.len(),
-                    batch.len()
-                );
-            }
-            let points = batch
-                .iter()
-                .zip(embeddings)
-                .map(|(chunk, embedding)| VecQdrant::chunk_to_point(chunk, embedding))
-                .collect::<Vec<PointStruct>>();
-            self.client
-                .upsert_points(UpsertPointsBuilder::new(&name, points))
-                .await?;
-        }
-
+        let points = rows.iter().map(Self::row_to_point).collect::<Vec<_>>();
+        self.client
+            .upsert_points(UpsertPointsBuilder::new(&name, points).wait(true))
+            .await?;
         Ok(())
     }
 
-    async fn delete_embeddings(&self, collection: &str, paths: Vec<&String>) -> anyhow::Result<()> {
-        // For each path in paths, delete all points where payload.path matches
+    async fn delete(&self, collection: &str, paths: &[String]) -> anyhow::Result<()> {
+        let name = self.collection_name(collection);
+        // A vault never indexed has no collection; nothing to delete.
+        if paths.is_empty() || !self.collection_exists(&name).await? {
+            return Ok(());
+        }
         self.client
             .delete_points(
-                DeletePointsBuilder::new(self.collection_name(collection))
+                DeletePointsBuilder::new(&name)
                     .points(Filter::must([Condition::matches(
                         "path",
-                        paths
-                            .into_iter()
-                            .map(|p| p.to_owned())
-                            .collect::<Vec<String>>(),
+                        paths.to_vec(),
                     )]))
                     .wait(true),
             )
@@ -257,35 +216,37 @@ impl Embeddings for VecQdrant {
         Ok(())
     }
 
-    async fn query_embedding(
+    async fn query(
         &self,
         collection: &str,
-        query: &str,
+        vector: Vec<f32>,
+        limit: usize,
     ) -> anyhow::Result<Vec<(f64, FlattenedChunk)>> {
-        // Generate query embedding
-        let query_vec = self.embedder.prompt_embedding(query).await?;
+        let name = self.collection_name(collection);
+        // Missing collection → no results, never an error (matches the trait
+        // contract; a search may race the first push).
+        if !self.collection_exists(&name).await? {
+            return Ok(Vec::new());
+        }
 
-        // Search for similar vectors using the builder API
         let search_result = self
             .client
             .search_points(
-                SearchPointsBuilder::new(self.collection_name(collection), query_vec, TOP_RESULTS)
-                    .with_payload(true),
+                SearchPointsBuilder::new(&name, vector, limit as u64).with_payload(true),
             )
             .await?;
 
-        // Convert results
         let results: Vec<(f64, FlattenedChunk)> = search_result
             .result
             .iter()
             .map(|point| {
-                let chunk = VecQdrant::point_to_chunk(point);
+                let chunk = Self::point_to_chunk(point);
                 (point.score as f64, chunk)
             })
             .collect();
 
         debug!(
-            "Query returned {} results (distances: {:.4} to {:.4})",
+            "Query returned {} results (scores: {:.4} to {:.4})",
             results.len(),
             results.first().map(|(d, _)| *d).unwrap_or(0.0),
             results.last().map(|(d, _)| *d).unwrap_or(0.0)
@@ -294,7 +255,7 @@ impl Embeddings for VecQdrant {
         Ok(results)
     }
 
-    async fn get_indexed_notes(
+    async fn indexed_notes(
         &self,
         collection: &str,
     ) -> anyhow::Result<HashMap<String, IndexedNote>> {
@@ -302,8 +263,7 @@ impl Embeddings for VecQdrant {
         // A vault never indexed yet has no collection. Reconcile starts by
         // reading the server's hash set, so return an empty map rather than
         // erroring on the missing collection — the client then pushes everything.
-        let collections = self.client.list_collections().await?;
-        if !collections.collections.iter().any(|c| c.name == name) {
+        if !self.collection_exists(&name).await? {
             return Ok(HashMap::new());
         }
 
@@ -326,7 +286,7 @@ impl Embeddings for VecQdrant {
             let scroll_result = self.client.scroll(spb).await?;
 
             scroll_result.result.into_iter().for_each(|p| {
-                let chunk = VecQdrant::payload_to_chunk(&p.payload);
+                let chunk = Self::payload_to_chunk(&p.payload);
                 let path = chunk.doc_path.clone();
                 let note = IndexedNote {
                     path: chunk.doc_path,
@@ -344,28 +304,10 @@ impl Embeddings for VecQdrant {
         Ok(result)
     }
 
-    async fn remove_indexed_note(&self, collection: &str, path: &str) -> anyhow::Result<()> {
-        // Delete all points with this path
-        self.client
-            .set_payload(
-                SetPayloadPointsBuilder::new(
-                    self.collection_name(collection),
-                    Payload::try_from(json!({
-                        "hash": "",
-                    }))
-                    .unwrap(),
-                )
-                .points_selector(Filter::must([Condition::matches("path", path.to_string())]))
-                .wait(true),
-            )
-            .await?;
-        Ok(())
-    }
-
     /// NOTE: counts distinct notes via a full payload scroll per collection
     /// (O(points)), so it's meant for the occasional admin collections page. Use
     /// [`collection_names`](Self::collection_names) for pickers.
-    async fn list_collections(&self) -> anyhow::Result<Vec<crate::dbembeddings::CollectionInfo>> {
+    async fn list_collections(&self) -> anyhow::Result<Vec<CollectionInfo>> {
         let mut names = self.collection_names().await?;
         names.sort();
         let mut out = Vec::with_capacity(names.len());
@@ -373,11 +315,11 @@ impl Embeddings for VecQdrant {
             // Count distinct indexed notes (reuses the payload scroll so the
             // number matches what reconciliation sees), not raw chunk points.
             let note_count = self
-                .get_indexed_notes(&vault)
+                .indexed_notes(&vault)
                 .await
                 .map(|m| m.len())
                 .unwrap_or(0);
-            out.push(crate::dbembeddings::CollectionInfo {
+            out.push(CollectionInfo {
                 name: vault,
                 note_count,
             });
@@ -406,5 +348,80 @@ impl Embeddings for VecQdrant {
             })
             .collect();
         Ok(names)
+    }
+}
+
+/// Conformance against a live Qdrant. `#[ignore]`d because they need a running
+/// server: `QDRANT_URL` (default `http://localhost:6334`), then
+/// `cargo test -p kimun_rag -- --ignored`. Each run uses a fresh prefix-less
+/// namespace under `kimun-conformance-*` collections; they are dropped first so
+/// reruns start clean.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dbembeddings::conformance;
+
+    /// One namespace per test (prefix `kimun-conf-<tag>`) so parallel `--ignored`
+    /// runs don't race each other; each test drops its own leftovers first.
+    async fn store(tag: &str) -> VecQdrant {
+        let url =
+            std::env::var("QDRANT_URL").unwrap_or_else(|_| "http://localhost:6334".to_string());
+        let store = VecQdrant::new(url, format!("kimun-conf-{tag}"), conformance::DIM)
+            .await
+            .expect("qdrant client");
+        for name in store.collection_names().await.expect("qdrant reachable") {
+            let full = store.collection_name(&name);
+            let _ = store.client.delete_collection(&full).await;
+        }
+        store
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a live Qdrant (set QDRANT_URL, default localhost:6334)"]
+    async fn conformance_store_then_query() {
+        let s = store("query").await;
+        conformance::store_then_query_finds_the_chunk(&s, "v").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a live Qdrant (set QDRANT_URL, default localhost:6334)"]
+    async fn conformance_query_limit() {
+        let s = store("limit").await;
+        conformance::query_respects_limit(&s, "v").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a live Qdrant (set QDRANT_URL, default localhost:6334)"]
+    async fn conformance_missing_collection() {
+        let s = store("missing").await;
+        conformance::missing_collection_is_empty_not_error(&s, "nope").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a live Qdrant (set QDRANT_URL, default localhost:6334)"]
+    async fn conformance_delete() {
+        let s = store("delete").await;
+        conformance::delete_removes_every_chunk_of_the_note(&s, "v").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a live Qdrant (set QDRANT_URL, default localhost:6334)"]
+    async fn conformance_indexed_notes() {
+        let s = store("notes").await;
+        conformance::indexed_notes_reports_one_hash_per_path(&s, "v").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a live Qdrant (set QDRANT_URL, default localhost:6334)"]
+    async fn conformance_collections() {
+        let s = store("collections").await;
+        conformance::collections_list_each_vault(&s, "vault_a", "vault_b").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a live Qdrant (set QDRANT_URL, default localhost:6334)"]
+    async fn conformance_round_trip() {
+        let s = store("roundtrip").await;
+        conformance::stored_chunk_round_trips_its_fields(&s, "v").await;
     }
 }

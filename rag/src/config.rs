@@ -142,6 +142,10 @@ pub enum LlmConfig {
         model: String,
         #[serde(default)]
         api_key: Option<String>,
+        /// Optional OpenAI-compatible endpoint (Ollama, llama.cpp, OpenRouter…);
+        /// defaults to api.openai.com when absent.
+        #[serde(default)]
+        url: Option<String>,
     },
 }
 
@@ -189,12 +193,22 @@ impl LlmConfig {
         }
     }
 
+    /// The configured endpoint override, if any (OpenAI provider only).
+    pub fn url(&self) -> Option<&str> {
+        match self {
+            LlmConfig::OpenAI { url, .. } => url.as_deref(),
+            _ => None,
+        }
+    }
+
     /// Builds a config from web-form parts, defaulting the model per provider
-    /// when blank. Unknown provider ids are rejected.
+    /// when blank. Unknown provider ids are rejected. `url` applies to the
+    /// openai provider only (the endpoint override); other providers ignore it.
     pub fn from_parts(
         provider: &str,
         model: Option<String>,
         api_key: Option<String>,
+        url: Option<String>,
     ) -> anyhow::Result<Self> {
         let key = api_key.filter(|k| !k.is_empty());
         Ok(match provider {
@@ -221,6 +235,7 @@ impl LlmConfig {
                     .filter(|m| !m.is_empty())
                     .unwrap_or_else(default_openai_model),
                 api_key: key,
+                url: url.filter(|u| !u.is_empty()),
             },
             other => anyhow::bail!("unknown LLM provider: {other}"),
         })
@@ -327,7 +342,82 @@ impl Default for RagConfig {
     }
 }
 
+/// The web UI's config form, exactly as submitted. Numeric fields arrive as
+/// strings so a non-numeric value yields a friendly flash instead of a bare
+/// 400 that discards the whole form. Exposing a new option in the web UI means
+/// a field here, a rule in [`RagConfig::apply_form`], and an input in the
+/// form's markup — nothing else.
+#[derive(Debug, Deserialize)]
+pub struct ConfigForm {
+    pub host: String,
+    pub port: String,
+    pub provider: String,
+    pub model: String,
+    pub api_key: String,
+    #[serde(default)]
+    pub reranker_enabled: Option<String>,
+    pub reranker_top_k: String,
+    pub auth_token: String,
+}
+
 impl RagConfig {
+    /// Applies a submitted web form onto this (current) config, producing the
+    /// config to persist. Every form→config rule lives here, not in the web
+    /// layer: numeric parsing, the `none` provider sentinel clearing the LLM
+    /// (adr/0022), and the carry rules for values the form can't or doesn't
+    /// resend — a blank secret keeps the current one, and provider-scoped
+    /// values (API key, endpoint url) carry over only while the provider is
+    /// unchanged (a switched provider must not inherit the old provider's key).
+    /// Errors are user-facing flash messages.
+    pub fn apply_form(&self, f: ConfigForm) -> anyhow::Result<RagConfig> {
+        let (Ok(port), Ok(top_k)) = (
+            f.port.trim().parse::<u16>(),
+            f.reranker_top_k.trim().parse::<usize>(),
+        ) else {
+            anyhow::bail!("Port and top_k must be whole numbers.");
+        };
+
+        // "none" → semantic-only: clear the LLM entirely rather than writing a
+        // keyless provider that would fail the boot key gate (adr/0022).
+        let llm = if f.provider == "none" {
+            None
+        } else {
+            let provider_unchanged =
+                Some(f.provider.as_str()) == self.llm.as_ref().map(|l| l.provider());
+            let carry = |current: Option<&str>| {
+                if provider_unchanged {
+                    current.map(str::to_string)
+                } else {
+                    None
+                }
+            };
+            let key = if !f.api_key.is_empty() {
+                Some(f.api_key)
+            } else {
+                carry(self.llm.as_ref().and_then(|l| l.api_key()))
+            };
+            // The form has no url field; keep a hand-edited endpoint override
+            // alive across saves as long as the provider stays the same.
+            let url = carry(self.llm.as_ref().and_then(|l| l.url()));
+            Some(
+                LlmConfig::from_parts(&f.provider, Some(f.model), key, url)
+                    .map_err(|e| anyhow::anyhow!("Invalid LLM settings: {e}"))?,
+            )
+        };
+
+        let mut cfg = self.clone();
+        cfg.server.host = f.host;
+        cfg.server.port = port;
+        cfg.llm = llm;
+        cfg.reranker.enabled = f.reranker_enabled.is_some();
+        cfg.reranker.top_k = top_k;
+        // Blank keeps the current token (the password field is never pre-filled).
+        if !f.auth_token.is_empty() {
+            cfg.auth.token = Some(f.auth_token);
+        }
+        Ok(cfg)
+    }
+
     /// Load configuration from a TOML file
     pub fn from_file(path: PathBuf) -> anyhow::Result<Self> {
         let contents = std::fs::read_to_string(&path)
@@ -590,18 +680,103 @@ provider = "gemini"
         }
     }
 
+    fn form(provider: &str, api_key: &str) -> ConfigForm {
+        ConfigForm {
+            host: "127.0.0.1".into(),
+            port: "7573".into(),
+            provider: provider.into(),
+            model: "m".into(),
+            api_key: api_key.into(),
+            reranker_enabled: Some("on".into()),
+            reranker_top_k: "20".into(),
+            auth_token: String::new(),
+        }
+    }
+
+    fn config_with_llm(llm_toml: &str) -> RagConfig {
+        toml::from_str(&format!(
+            "[server]\n[vector_db]\ntype = \"qdrant\"\n{llm_toml}\n[reranker]\n"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn apply_form_rejects_non_numeric_port_without_mutating() {
+        let cfg = config_with_llm("[llm]\nprovider = \"gemini\"");
+        let mut f = form("gemini", "");
+        f.port = "not-a-port".into();
+        let err = cfg.apply_form(f).unwrap_err();
+        assert!(err.to_string().contains("whole numbers"));
+    }
+
+    #[test]
+    fn apply_form_blank_key_keeps_current_only_when_provider_unchanged() {
+        let cfg = config_with_llm("[llm]\nprovider = \"gemini\"\napi_key = \"gem-key\"");
+        // Same provider, blank key → carried.
+        let kept = cfg.apply_form(form("gemini", "")).unwrap();
+        assert_eq!(kept.llm.as_ref().unwrap().api_key(), Some("gem-key"));
+        // Switched provider, blank key → NOT carried.
+        let switched = cfg.apply_form(form("openai", "")).unwrap();
+        assert_eq!(switched.llm.as_ref().unwrap().api_key(), None);
+    }
+
+    #[test]
+    fn apply_form_none_provider_clears_llm() {
+        let cfg = config_with_llm("[llm]\nprovider = \"gemini\"\napi_key = \"k\"");
+        let out = cfg.apply_form(form("none", "")).unwrap();
+        assert!(out.llm.is_none());
+    }
+
+    #[test]
+    fn apply_form_carries_endpoint_url_while_provider_unchanged() {
+        let cfg = config_with_llm(
+            "[llm]\nprovider = \"openai\"\nurl = \"http://localhost:11434/v1\"",
+        );
+        let kept = cfg.apply_form(form("openai", "")).unwrap();
+        assert_eq!(kept.llm.as_ref().unwrap().url(), Some("http://localhost:11434/v1"));
+        let switched = cfg.apply_form(form("gemini", "")).unwrap();
+        assert_eq!(switched.llm.as_ref().unwrap().url(), None);
+    }
+
+    #[test]
+    fn apply_form_blank_auth_token_keeps_current() {
+        let cfg: RagConfig = toml::from_str(
+            "[server]\n[vector_db]\ntype = \"qdrant\"\n[reranker]\n[auth]\ntoken = \"secret\"\n",
+        )
+        .unwrap();
+        let out = cfg.apply_form(form("none", "")).unwrap();
+        assert_eq!(out.auth.token.as_deref(), Some("secret"));
+        // A typed token replaces it.
+        let mut f = form("none", "");
+        f.auth_token = "new-secret".into();
+        let out = cfg.apply_form(f).unwrap();
+        assert_eq!(out.auth.token.as_deref(), Some("new-secret"));
+    }
+
     #[test]
     fn llm_from_parts_defaults_model_and_rejects_unknown() {
-        let c = LlmConfig::from_parts("openai", None, None).unwrap();
+        let c = LlmConfig::from_parts("openai", None, None, None).unwrap();
         assert_eq!(c.provider(), "openai");
         assert_eq!(c.model(), &default_openai_model());
         assert!(c.api_key().is_none());
+        assert!(c.url().is_none());
 
-        let c = LlmConfig::from_parts("gemini", Some(String::new()), Some("k".into())).unwrap();
+        let c = LlmConfig::from_parts(
+            "openai",
+            None,
+            None,
+            Some("http://localhost:11434/v1".into()),
+        )
+        .unwrap();
+        assert_eq!(c.url(), Some("http://localhost:11434/v1"));
+
+        let c = LlmConfig::from_parts("gemini", Some(String::new()), Some("k".into()), None)
+            .unwrap();
         assert_eq!(c.model(), &default_gemini_model());
         assert_eq!(c.api_key(), Some("k"));
+        assert!(c.url().is_none(), "url is openai-only");
 
-        assert!(LlmConfig::from_parts("bogus", None, None).is_err());
+        assert!(LlmConfig::from_parts("bogus", None, None, None).is_err());
     }
 
     #[test]

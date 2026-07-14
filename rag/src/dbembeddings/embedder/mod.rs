@@ -3,8 +3,7 @@ use async_trait::async_trait;
 use crate::document::FlattenedChunk;
 
 pub mod fastembedder;
-pub mod ollama;
-pub mod openai;
+pub mod http;
 
 /// A text→vector embedder. One implementation runs locally (fastembed); others
 /// call an external service (Ollama, any OpenAI-compatible endpoint). The same
