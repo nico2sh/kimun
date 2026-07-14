@@ -7,7 +7,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use kimun_core::NoteVault;
-use kimun_server_client::{RagClient, sync::RagSync};
+use kimun_server_client::{
+    RagClient,
+    sync::{RagSync, ServerCapability},
+};
 use tokio::task::JoinHandle;
 
 use crate::components::events::{AppEvent, AppTx};
@@ -28,6 +31,10 @@ const RECONCILE_EVERY_N_TICKS: u32 = 30;
 pub enum RagStatus {
     Disabled,
     Offline,
+    /// Reachable but the server has no embedder configured (adr/0024): nothing
+    /// works server-side, so the loop skips pushing and reconciling entirely —
+    /// every call would 503 — and just reports the state.
+    NotConfigured,
     /// Reachable, a sync pass in flight. `llm_available` carries whether the
     /// server has an LLM configured (question-answering possible), so Ask stays
     /// gated consistently while syncing.
@@ -62,6 +69,7 @@ impl RagStatus {
         match self {
             RagStatus::Disabled => None,
             RagStatus::Offline => Some("rag: offline"),
+            RagStatus::NotConfigured => Some("rag: not configured"),
             RagStatus::Syncing { .. } => Some("rag: syncing"),
             RagStatus::Online { .. } => Some("rag: online"),
         }
@@ -132,10 +140,11 @@ pub fn spawn_rag_sync(
             }
             let sync = sync.as_ref().expect("sync established above");
 
-            // One probe drives both reachability and LLM capability (whether Ask
-            // is offered). `None` = offline.
-            let llm_available = match sync.probe().await {
-                Some(llm) => llm,
+            // One probe drives reachability and capability (adr/0024): offline,
+            // unconfigured (skip sync — the server rejects everything), or
+            // semantic-only/full (llm_available gates Ask).
+            let capability = match sync.probe().await {
+                Some(c) => c,
                 None => {
                     let _ = tx.send(AppEvent::RagStatus(RagStatus::Offline));
                     // Re-establish full consistency on the next successful tick.
@@ -143,6 +152,13 @@ pub fn spawn_rag_sync(
                     continue;
                 }
             };
+            if capability == ServerCapability::Unconfigured {
+                let _ = tx.send(AppEvent::RagStatus(RagStatus::NotConfigured));
+                // When an embedder appears, start with a full reconcile.
+                ticks_since_reconcile = RECONCILE_EVERY_N_TICKS;
+                continue;
+            }
+            let llm_available = capability.llm_available();
 
             let _ = tx.send(AppEvent::RagStatus(RagStatus::Syncing { llm_available }));
             let result = if ticks_since_reconcile >= RECONCILE_EVERY_N_TICKS {
@@ -162,4 +178,18 @@ pub fn spawn_rag_sync(
             let _ = tx.send(AppEvent::RagStatus(status));
         }
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn not_configured_status_labels_and_gates() {
+        assert_eq!(
+            RagStatus::NotConfigured.label(),
+            Some("rag: not configured")
+        );
+        assert!(!RagStatus::NotConfigured.llm_available());
+    }
 }

@@ -34,11 +34,14 @@ path = "./rag_lance"
 # collection = "kimun_embeddings"
 
 [embedder]
-# Which model turns text into vectors. All collections share one embedder, and
-# the SAME model must embed documents and queries. Changing the embedder or
-# model invalidates every stored vector and forces a full re-index (drop the
-# store — the Lance dir or the Qdrant collection — then re-push). The vector
-# width is detected automatically.
+# Which model turns text into vectors. OPTIONAL: with no [embedder] section the
+# server is UNCONFIGURED — it boots and serves the web UI, but rejects all
+# indexing and search until an embedder is set (easiest from the web UI /config).
+# All collections share one embedder, and the SAME model must embed documents
+# and queries. Changing the embedder or model invalidates every stored vector:
+# on the next start the server detects the change (embedder fingerprint) and
+# wipes ALL stored collections; every vault re-indexes on its next sync.
+# The vector width is detected automatically.
 
 # Local, in-process, no network. Default model is BGE-Large-EN-V1.5 (1024 dims).
 type = "fastembed"

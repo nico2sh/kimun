@@ -20,11 +20,11 @@ Kimün  ──push docs / delete / query──▶  RAG server ──▶  vector 
 ## Quick start
 
 The server is the `kimun_server` crate (a member of the Kimün workspace). Run it
-from the repo root with `-p kimun_server`, or from this `rag/` directory:
+from the repo root with `-p kimun_server`, or from this `server/` directory:
 
 ```bash
 mkdir -p ~/.config/kimun
-cp rag/config.example.toml ~/.config/kimun/rag.conf
+cp server/config.example.toml ~/.config/kimun/rag.conf
 # edit ~/.config/kimun/rag.conf (see Configuration)
 cargo run --release -p kimun_server --bin kimun-server
 ```

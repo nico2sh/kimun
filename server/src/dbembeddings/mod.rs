@@ -84,6 +84,20 @@ pub trait VectorStore: Send + Sync {
     /// Just the collection names (vault ids), cheaply — no per-collection scan.
     /// For pickers/dropdowns that don't need counts.
     async fn collection_names(&self) -> anyhow::Result<Vec<String>>;
+
+    /// The embedder fingerprint recorded with this store's data, if any —
+    /// `None` on a store that has never had one written (adr/0025).
+    async fn read_fingerprint(&self) -> anyhow::Result<Option<String>>;
+
+    /// Records the embedder fingerprint. Overwrites any previous value.
+    async fn write_fingerprint(&self, fingerprint: &str) -> anyhow::Result<()>;
+
+    /// Drops every vault collection (all stored vectors). Startup uses this
+    /// when the configured embedder's fingerprint no longer matches the stored
+    /// one — the old vectors are unusable by definition, and the now-empty
+    /// server makes every client's next reconciliation re-push everything
+    /// (adr/0025). The fingerprint slot itself is metadata and survives.
+    async fn drop_all_collections(&self) -> anyhow::Result<()>;
 }
 
 /// The conformance suite: the [`VectorStore`] contract as executable checks,
@@ -221,6 +235,62 @@ pub(crate) mod conformance {
         let get = |n: &str| infos.iter().find(|i| i.name == n).map(|i| i.note_count);
         assert_eq!(get(c1), Some(1));
         assert_eq!(get(c2), Some(1));
+    }
+
+    pub(crate) async fn fingerprint_round_trips_and_starts_absent(store: &dyn VectorStore) {
+        assert_eq!(
+            store.read_fingerprint().await.unwrap(),
+            None,
+            "fresh store has none"
+        );
+        store
+            .write_fingerprint("fastembed:default:1024")
+            .await
+            .unwrap();
+        assert_eq!(
+            store.read_fingerprint().await.unwrap().as_deref(),
+            Some("fastembed:default:1024")
+        );
+        // Overwrite wins.
+        store.write_fingerprint("ollama:nomic:768").await.unwrap();
+        assert_eq!(
+            store.read_fingerprint().await.unwrap().as_deref(),
+            Some("ollama:nomic:768")
+        );
+    }
+
+    pub(crate) async fn drop_all_removes_every_collection_but_not_the_fingerprint_slot(
+        store: &dyn VectorStore,
+        c1: &str,
+        c2: &str,
+    ) {
+        store.write_fingerprint("fp1").await.unwrap();
+        store.store(c1, &[row("a.md", "h", "x")]).await.unwrap();
+        store.store(c2, &[row("b.md", "h", "y")]).await.unwrap();
+
+        store.drop_all_collections().await.unwrap();
+
+        assert!(
+            store.collection_names().await.unwrap().is_empty(),
+            "no vault collections left"
+        );
+        assert!(store.indexed_notes(c1).await.unwrap().is_empty());
+        // The fingerprint slot is metadata, not a collection: still writable/readable.
+        store.write_fingerprint("fp2").await.unwrap();
+        assert_eq!(
+            store.read_fingerprint().await.unwrap().as_deref(),
+            Some("fp2")
+        );
+    }
+
+    pub(crate) async fn fingerprint_slot_never_appears_as_a_collection(store: &dyn VectorStore) {
+        store.write_fingerprint("fp").await.unwrap();
+        let names = store.collection_names().await.unwrap();
+        assert!(
+            names.is_empty(),
+            "metadata must not leak into collections: {names:?}"
+        );
+        assert!(store.list_collections().await.unwrap().is_empty());
     }
 
     pub(crate) async fn stored_chunk_round_trips_its_fields(store: &dyn VectorStore, c: &str) {

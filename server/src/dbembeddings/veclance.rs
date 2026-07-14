@@ -26,15 +26,28 @@ pub struct VecLance {
     /// fixed at composition time.
     dim: usize,
     connection: Connection,
+    /// The store's root directory — the embedder fingerprint lives here as a
+    /// plain file next to the Lance datasets (adr/0025).
+    root: std::path::PathBuf,
 }
 
 impl VecLance {
     /// Opens (creating the directory if needed) the Lance database rooted at
     /// `path`. Each vault becomes a table inside it, at vector width `dim`.
     pub async fn new(path: impl AsRef<Path>, dim: usize) -> anyhow::Result<Self> {
-        let uri = path.as_ref().to_string_lossy().to_string();
+        let root = path.as_ref().to_path_buf();
+        let uri = root.to_string_lossy().to_string();
         let connection = connect(&uri).execute().await?;
-        Ok(Self { dim, connection })
+        Ok(Self {
+            dim,
+            connection,
+            root,
+        })
+    }
+
+    /// The fingerprint file inside the store directory.
+    fn fingerprint_path(&self) -> std::path::PathBuf {
+        self.root.join("embedder.fingerprint")
     }
 
     /// The Arrow schema for a vault table at the store's vector width. Column
@@ -324,8 +337,30 @@ impl VectorStore for VecLance {
     }
 
     async fn collection_names(&self) -> anyhow::Result<Vec<String>> {
-        // Every table in the Lance directory is a vault collection.
+        // Every table in the Lance directory is a vault collection (the
+        // fingerprint is a plain file, not a table).
         Ok(self.connection.table_names().execute().await?)
+    }
+
+    async fn read_fingerprint(&self) -> anyhow::Result<Option<String>> {
+        match tokio::fs::read_to_string(self.fingerprint_path()).await {
+            Ok(s) => Ok(Some(s.trim().to_string())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    async fn write_fingerprint(&self, fingerprint: &str) -> anyhow::Result<()> {
+        tokio::fs::create_dir_all(&self.root).await?;
+        tokio::fs::write(self.fingerprint_path(), fingerprint).await?;
+        Ok(())
+    }
+
+    async fn drop_all_collections(&self) -> anyhow::Result<()> {
+        for name in self.connection.table_names().execute().await? {
+            self.connection.drop_table(&name, &[]).await?;
+        }
+        Ok(())
     }
 }
 
@@ -380,6 +415,27 @@ mod tests {
     async fn conformance_round_trip() {
         let (_dir, s) = store().await;
         conformance::stored_chunk_round_trips_its_fields(&s, "v").await;
+    }
+
+    #[tokio::test]
+    async fn conformance_fingerprint_round_trip() {
+        let (_dir, s) = store().await;
+        conformance::fingerprint_round_trips_and_starts_absent(&s).await;
+    }
+
+    #[tokio::test]
+    async fn conformance_drop_all() {
+        let (_dir, s) = store().await;
+        conformance::drop_all_removes_every_collection_but_not_the_fingerprint_slot(
+            &s, "va", "vb",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn conformance_fingerprint_not_a_collection() {
+        let (_dir, s) = store().await;
+        conformance::fingerprint_slot_never_appears_as_a_collection(&s).await;
     }
 
     #[tokio::test]

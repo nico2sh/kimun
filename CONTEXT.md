@@ -273,36 +273,44 @@ _Avoid_: auto-update (reserve that for the unattended variant, if it ever exists
 The non-blocking signal that an **update check** found a newer release, surfaced in the TUI. On package-manager channels it carries the upgrade command to run; on self-update-eligible channels it offers to **self-update**.
 _Avoid_: update prompt (notification is passive; it does not steal focus)
 
-### RAG
+### Kimün server
 
-**RAG server**:
-The optional external service that gives a **Vault** semantic search and question-answering. Kimün works fully without it; when reachable it enables extra capabilities. Owns the vector store, the embedding and reranking models, an optional LLM configuration, and a web UI to configure them. Semantic search needs only the embedder, so the server can run with no LLM at all — a *semantic-only* server answers searches but rejects question-answering; the LLM is what a query-and-answer needs on top (see adr on optional LLM). Serves many vaults at once, one **collection** per vault. It never reads the vault's files — Kimün pushes to it (see adr on push-only sync).
-_Avoid_: embeddings server (names one role), AI server, LLM server (the LLM is one of several roles).
+**Kimün server**:
+The optional external service that gives a **Vault** semantic search and question-answering. Kimün works fully without it; when reachable it enables extra capabilities. Owns the vector store, an optional embedder, optional reranking models, an optional LLM configuration, and a web UI to configure them. Capabilities stack: with no embedder the server is **unconfigured** (nothing works but the web UI); with an embedder but no LLM it is *semantic-only* — answers searches but rejects question-answering; the LLM is what a query-and-answer needs on top (see adr on optional LLM and adr on optional embedder). Serves many vaults at once, one **collection** per vault. It never reads the vault's files — Kimün pushes to it (see adr on push-only sync).
+_Avoid_: RAG server (names one technique; the server is also plain search and a config surface), embeddings server (names one role), AI server, LLM server (the LLM is one of several roles).
+
+**Unconfigured**:
+The **Kimün server** state when no embedder is configured — the default on first run. The server boots and serves its web UI and health probe, but every data operation (indexing, search, question-answering) is rejected until an embedder is chosen; the vector store is not even opened, since its shape depends on the embedder. Distinct from *semantic-only* (embedder present, LLM absent) and from offline (unreachable). Clients detect it from the health probe and skip pushing and **reconciliation** entirely.
+_Avoid_: setup mode (implies a different runtime mode; it is the same server with a capability absent), broken/degraded (it is a deliberate, healthy state).
 
 **Collection**:
-The **RAG server**'s per-vault namespace for embeddings, keyed by **Vault ID**. One vault ↔ one collection; the server holds many, each isolating its vault's vectors, hashes, and **reconciliation** from every other's.
+The **Kimün server**'s per-vault namespace for embeddings, keyed by **Vault ID**. One vault ↔ one collection; the server holds many, each isolating its vault's vectors, hashes, and **reconciliation** from every other's.
 _Avoid_: index (collides with **NoteIndex**), namespace (the mechanism, not the thing).
 
 **Vault ID**:
-The stable identifier that ties a **Vault** to its **collection** on the **RAG server**, generated once and kept in the vault under `.kimun/` so it survives renames and moves and is the same wherever the vault is opened (same rationale as **Saved search** and **Backup**).
+The stable identifier that ties a **Vault** to its **collection** on the **Kimün server**, generated once and kept in the vault under `.kimun/` so it survives renames and moves and is the same wherever the vault is opened (same rationale as **Saved search** and **Backup**).
 _Avoid_: collection name (that is the server-side view of it), workspace id (the **Workspace** is the config entry, not the vault).
 
 **Query pipeline**:
-The **RAG server**'s one door to everything done with a vault's content (`KimunRag`): every surface — the API handlers and the web UI — searches, answers, indexes, and deletes through it, so policy has a single home. Retrieval side: **search** returns one result per note (top_k counts notes — a section-heavy note must not crowd out others), **answer** feeds the LLM the top_k chunks (sections, chunk-level); chunk dedup, rerank-or-take, and the semantic-only rejection live inside (`can_answer` is the capability gate). Index side: the hash-diff against the **vector store**'s records, stale-chunk deletion, section sub-splitting to the embedding window, and embed batching — the pipeline owns the embedder; the store never embeds.
+The **Kimün server**'s one door to everything done with a vault's content (`KimunRag`): every surface — the API handlers and the web UI — searches, answers, indexes, and deletes through it, so policy has a single home. It exists only on a configured server — an **unconfigured** server has no pipeline to route to, and rejects before reaching it. Retrieval side: **search** returns one result per note (top_k counts notes — a section-heavy note must not crowd out others), **answer** feeds the LLM the top_k chunks (sections, chunk-level); chunk dedup, rerank-or-take, and the semantic-only rejection live inside (`can_answer` is the capability gate). Index side: the hash-diff against the **vector store**'s records, stale-chunk deletion, section sub-splitting to the embedding window, and embed batching — the pipeline owns the embedder; the store never embeds.
 _Avoid_: search pipeline (names one slice), RAG orchestrator, KimunRag as a prose term (the struct, not the concept).
 
 **Vector store**:
-The **RAG server**'s pure-storage seam (`VectorStore`): adapters (LanceDB, Qdrant) store, delete, and search pre-embedded chunk rows per **collection** — never embed, split, or rank; that is **query pipeline** policy above the seam. Contract pinned by a conformance suite run against every adapter: collections appear lazily on first store, reads/deletes of a missing collection are empty/no-op (never an error — reconciliation may probe a never-pushed vault), query scores are similarities, best-first.
+The **Kimün server**'s pure-storage seam (`VectorStore`): adapters (LanceDB, Qdrant) store, delete, and search pre-embedded chunk rows per **collection** — never embed, split, or rank; that is **query pipeline** policy above the seam. Contract pinned by a conformance suite run against every adapter: collections appear lazily on first store, reads/deletes of a missing collection are empty/no-op (never an error — reconciliation may probe a never-pushed vault), query scores are similarities, best-first.
 _Avoid_: embeddings store (it stores vectors it did not make), db/backend (implementation, not the role), index (collides with **NoteIndex**).
 
-**RAG client**:
-The component inside Kimün that owns every dealing with the **RAG server** — connection and capability probing, the push of note changes, and **reconciliation**. Lives outside core (its own crate) so core stays free of network concerns; core feeds it only through the **index observer**.
-_Avoid_: rag bridge, sync manager (too generic), server client.
+**Server client**:
+The component inside Kimün that owns every dealing with the **Kimün server** — connection and capability probing, the push of note changes, and **reconciliation**. The capability probe distinguishes three reachable states — **unconfigured**, *semantic-only*, and full — and the client gates each surface on it: no pushes or **reconciliation** against an unconfigured server. Lives outside core (its own crate) so core stays free of network concerns; core feeds it only through the **index observer**.
+_Avoid_: RAG client (see **Kimün server** on RAG), rag bridge, sync manager (too generic).
 
 **Index observer**:
-The core seam that reports a note change — a path, its content hash, and whether it was upserted or deleted — the moment the **NoteIndex** records it. Generic and consumer-agnostic: core knows nothing of who listens, and the event never carries chunk text. The **RAG client** is its first consumer, folding each observation into a dirty set it later drains.
+The core seam that reports a note change — a path, its content hash, and whether it was upserted or deleted — the moment the **NoteIndex** records it. Generic and consumer-agnostic: core knows nothing of who listens, and the event never carries chunk text. The **Server client** is its first consumer, folding each observation into a dirty set it later drains.
 _Avoid_: change feed (implies a pull/stream), sync hook (names one consumer), listener (too generic).
 
 **Reconciliation**:
-Bringing the **RAG server**'s stored embeddings back in step with a **Vault** by comparing hash sets — the authoritative {note → hash} the **NoteIndex** holds against the server's — and pushing or deleting only the differences. The backbone of correctness: the live push path is only an optimization, so any update lost while offline is repaired at the next reconciliation.
+Bringing the **Kimün server**'s stored embeddings back in step with a **Vault** by comparing hash sets — the authoritative {note → hash} the **NoteIndex** holds against the server's — and pushing or deleting only the differences. The backbone of correctness: the live push path is only an optimization, so any update lost while offline is repaired at the next reconciliation. Blind to *how* content was embedded — hashes cover note content, not the embedder — so an embedder change is invisible to it; the **embedder fingerprint** covers that gap.
 _Avoid_: resync, full sync (it is a diff, not a wholesale resend), catch-up.
+
+**Embedder fingerprint**:
+The identity of the embedder (provider, model, dimension) recorded alongside the **Kimün server**'s stored vectors. Vectors are only comparable to queries embedded by the same model, and **reconciliation** cannot detect a model swap (note hashes don't change), so the server compares the configured embedder against the fingerprint before any data operation — eagerly at boot, deferred and retried if the store is unreachable then: on mismatch it wipes all **collections** and records the new fingerprint — the now-empty server makes every client's next reconciliation re-push everything (see adr on embedder fingerprint).
+_Avoid_: embedder version (models aren't versions of each other), schema (the store's column shape is a consequence, not the concept).
