@@ -6,7 +6,7 @@ use clap::Parser;
 use std::sync::Arc;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use kimun_rag::{
+use kimun_server::{
     KimunRag,
     config::RagConfig,
     handlers::{
@@ -38,7 +38,7 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "kimun_rag=debug,tower_http=debug".into()),
+                .unwrap_or_else(|_| "kimun_server=debug,tower_http=debug".into()),
         )
         .with(tracing_subscriber::fmt::layer())
         .init();
@@ -98,13 +98,13 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/job/{job_id}", get(job_status_handler))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
-            kimun_rag::auth::auth_middleware,
+            kimun_server::auth::auth_middleware,
         ));
 
     let app = Router::new()
         .route("/health", get(health_handler))
         .merge(api)
-        .merge(kimun_rag::webui::routes(state.clone()))
+        .merge(kimun_server::webui::routes(state.clone()))
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state);
 
@@ -122,7 +122,7 @@ async fn main() -> anyhow::Result<()> {
 
 /// Create RAG instance based on configuration
 async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<KimunRag> {
-    use kimun_rag::{
+    use kimun_server::{
         config::{EmbedderConfig, VectorDbConfig},
         dbembeddings::{
             embedder::{Embedder, fastembedder::FastEmbedder, http::HttpEmbedder},
@@ -183,7 +183,7 @@ async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<KimunRag> 
     // Create the vector store based on config. It only needs the embedder's
     // dimension (its tables/collections are created at that width) — embedding
     // itself happens in the pipeline, above the storage seam.
-    let store: Arc<dyn kimun_rag::dbembeddings::VectorStore + Send + Sync> =
+    let store: Arc<dyn kimun_server::dbembeddings::VectorStore + Send + Sync> =
         match &config.vector_db {
             VectorDbConfig::Lance { path } => {
                 tracing::info!("Using LanceDB vector database at {:?}", path);
@@ -205,7 +205,7 @@ async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<KimunRag> 
     // (adr/0022). The key comes from config or the provider's env var and is
     // handed to the client directly — no env mutation, and a missing key is a
     // clean startup error, not a panic in the client.
-    let llm_client: Option<Arc<dyn kimun_rag::llmclients::LLMClient + Send + Sync>> =
+    let llm_client: Option<Arc<dyn kimun_server::llmclients::LLMClient + Send + Sync>> =
         match &config.llm {
             Some(llm) => {
                 let api_key = llm

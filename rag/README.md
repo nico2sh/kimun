@@ -19,20 +19,20 @@ Kimün  ──push docs / delete / query──▶  RAG server ──▶  vector 
 
 ## Quick start
 
-The server is the `kimun_rag` crate (a member of the Kimün workspace). Run it
-from the repo root with `-p kimun_rag`, or from this `rag/` directory:
+The server is the `kimun_server` crate (a member of the Kimün workspace). Run it
+from the repo root with `-p kimun_server`, or from this `rag/` directory:
 
 ```bash
 mkdir -p ~/.config/kimun
 cp rag/config.example.toml ~/.config/kimun/rag.conf
 # edit ~/.config/kimun/rag.conf (see Configuration)
-cargo run --release -p kimun_rag --bin kimun-server
+cargo run --release -p kimun_server --bin kimun-server
 ```
 
 Override host/port/config on the CLI:
 
 ```bash
-cargo run -p kimun_rag --bin kimun-server -- --config /path/to/rag.conf --host 0.0.0.0 --port 7573
+cargo run -p kimun_server --bin kimun-server -- --config /path/to/rag.conf --host 0.0.0.0 --port 7573
 ```
 
 Open `http://127.0.0.1:7573/` for the [web UI](#web-ui); the API lives under
@@ -199,9 +199,9 @@ Its threat model is deliberately small; know these boundaries before exposing it
 Part of the Kimün Cargo workspace, so the usual workspace commands include it:
 
 ```bash
-cargo build -p kimun_rag              # or `cargo build --workspace`
-cargo test -p kimun_rag               # or `cargo test --workspace`
-cargo clippy -p kimun_rag
+cargo build -p kimun_server              # or `cargo build --workspace`
+cargo test -p kimun_server               # or `cargo test --workspace`
+cargo clippy -p kimun_server
 cargo fmt
 ```
 

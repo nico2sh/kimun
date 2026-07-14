@@ -1,13 +1,13 @@
 //! Wiring for the optional RAG server (P4). When a server URL is configured,
 //! a background task keeps the current vault in sync and reports connection
-//! status to the UI. Everything talks to the server through `kimun_rag_client`;
+//! status to the UI. Everything talks to the server through `kimun_server_client`;
 //! the TUI only spawns the loop and renders status.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use kimun_core::NoteVault;
-use kimun_rag_client::{RagClient, sync::RagSync};
+use kimun_server_client::{RagClient, sync::RagSync};
 use tokio::task::JoinHandle;
 
 use crate::components::events::{AppEvent, AppTx};
