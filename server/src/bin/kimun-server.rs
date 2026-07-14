@@ -23,6 +23,11 @@ struct Cli {
     #[arg(short, long)]
     config: Option<std::path::PathBuf>,
 
+    /// Start with built-in defaults — embedded LanceDB plus the local
+    /// fastembed embedder (default model) — without reading a config file.
+    #[arg(long, conflicts_with = "config")]
+    default_config: bool,
+
     /// Host to bind to (overrides config)
     #[arg(long)]
     host: Option<String>,
@@ -48,7 +53,17 @@ async fn main() -> anyhow::Result<()> {
     // Load configuration (remembering the path so the web UI can persist edits).
     tracing::info!("Loading configuration...");
     let config_path = RagConfig::resolve_path(cli.config.clone());
-    let config = RagConfig::load(cli.config)?;
+    let config = if cli.default_config {
+        // Explicit opt-in to local defaults; no file is read. A missing config
+        // file is created with these defaults so later file-based starts (and
+        // web-UI edits) have a real file; an existing file is left untouched.
+        tracing::info!(
+            "--default-config: using built-in defaults (LanceDB + fastembed), not reading a config file"
+        );
+        RagConfig::ready_default_persisted(&config_path)?
+    } else {
+        RagConfig::load(cli.config)?
+    };
     let config = config.merge_with_cli(cli.host, cli.port);
 
     tracing::info!("Configuration loaded successfully");
