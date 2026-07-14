@@ -1115,7 +1115,7 @@ provider = "gemini"
     #[tokio::test]
     async fn config_submit_persists_to_file() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("rag.conf");
+        let path = dir.path().join("server.toml");
         let app = app(state(None, Some(path.clone())));
         let form = "host=127.0.0.1&port=7573&provider=claude&model=my-model&api_key=&embedder_provider=none&fastembed_model=&embedder_url=&embedder_model=&embedder_api_key=&vector_db=qdrant&lance_path=&qdrant_url=&qdrant_collection=&reranker_top_k=20&auth_token=";
         let resp = app
@@ -1200,7 +1200,7 @@ provider = "gemini"
     #[tokio::test]
     async fn provider_switch_with_blank_key_does_not_carry_old_key() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("rag.conf");
+        let path = dir.path().join("server.toml");
         let app = app(state_from(
             r#"
 [server]
@@ -1239,7 +1239,7 @@ api_key = "gemini-key"
     #[tokio::test]
     async fn invalid_port_flashes_error_without_400_or_write() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("rag.conf");
+        let path = dir.path().join("server.toml");
         let app = app(state_from(
             "[server]\n[vector_db]\ntype = \"qdrant\"\n[llm]\nprovider = \"gemini\"\n[reranker]\n",
             path.clone(),
@@ -1267,7 +1267,7 @@ api_key = "gemini-key"
         // Selecting "none" disables Q&A: llm is cleared to None, not written as a
         // keyless provider that would fail the boot key gate (adr/0022).
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("rag.conf");
+        let path = dir.path().join("server.toml");
         let app = app(state_from(
             r#"
 [server]
@@ -1300,7 +1300,7 @@ api_key = "gemini-key"
     async fn semantic_only_config_page_defaults_provider_to_none() {
         // With no [llm], the provider select must pre-select the none sentinel.
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("rag.conf");
+        let path = dir.path().join("server.toml");
         let app = app(state_from(
             "[server]\n[vector_db]\ntype = \"qdrant\"\n[reranker]\n",
             path,
@@ -1319,7 +1319,7 @@ api_key = "gemini-key"
     #[tokio::test]
     async fn config_form_saves_embedder_and_vector_db() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("rag.conf");
+        let path = dir.path().join("server.toml");
         let app = app(state_from(
             "[server]\n[vector_db]\ntype = \"qdrant\"\n[reranker]\n",
             path.clone(),
@@ -1366,7 +1366,7 @@ api_key = "gemini-key"
         // option is selected, the browser submits the empty placeholder, and
         // any unrelated save fails with "Pick a fastembed model."
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("rag.conf");
+        let path = dir.path().join("server.toml");
         let app = app(state_from(
             "[server]\n[vector_db]\ntype = \"lance\"\n[embedder]\ntype = \"fastembed\"\nmodel = \"BGESmallENV15\"\n[reranker]\n",
             path,
