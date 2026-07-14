@@ -19,7 +19,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{ListItem, Paragraph};
 
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, InputEvent};
+use crate::components::events::{AppEvent, AppTx, FileOp, InputEvent};
 use crate::components::panel::panel_block;
 use crate::components::query_list_panel::{ListPanelSpec, QueryListPanel};
 use crate::components::rich_row::RichRow;
@@ -314,7 +314,7 @@ impl ListPanelSpec for LinksSpec {
     }
 
     fn context_event(row: &LinkEntry) -> Option<AppEvent> {
-        Some(AppEvent::ShowFileOpsMenu(row.path.clone()))
+        Some(AppEvent::FileOp(FileOp::ShowMenu(row.path.clone())))
     }
 
     fn hints() -> Vec<(String, String)> {

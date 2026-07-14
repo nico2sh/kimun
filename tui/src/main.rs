@@ -54,7 +54,7 @@ use crate::app_screen::onboarding::OnboardingScreen;
 use crate::app_screen::preferences::PreferencesScreen;
 use crate::app_screen::start::StartScreen;
 use crate::app_screen::{AppScreen, ScreenKind};
-use crate::components::events::{AppEvent, AppTx, AppTxExt, InputEvent, ScreenEvent};
+use crate::components::events::{AppEvent, AppTx, AppTxExt, InputEvent, ScreenEvent, UpdateFlow};
 use crate::event_handler::EventHandler;
 use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::key_event_to_combo;
@@ -330,7 +330,7 @@ async fn switch_screen(app: &mut App, tx: &AppTx, new_screen: ScreenEvent) {
     // existed. Non-editor screens ignore the event.
     if let Some(status) = app.update.clone() {
         screen
-            .handle_app_message(AppEvent::UpdateAvailable(status), tx)
+            .handle_app_message(AppEvent::Update(UpdateFlow::Available(status)), tx)
             .await;
     }
     screen
@@ -355,7 +355,7 @@ async fn switch_screen(app: &mut App, tx: &AppTx, new_screen: ScreenEvent) {
 
 /// Kick off the background update check (gated on the user's `update_check`
 /// preference). All network/filesystem work runs on `spawn_blocking`; a found
-/// update is surfaced via `AppEvent::UpdateAvailable`. Failures are logged and
+/// update is surfaced via `AppEvent::Update(UpdateFlow::Available)`. Failures are logged and
 /// swallowed — the check never blocks startup or interaction.
 fn spawn_update_check(app: &App, tx: AppTx) {
     if !app.settings.read().unwrap().update_check() {
@@ -367,7 +367,7 @@ fn spawn_update_check(app: &App, tx: AppTx) {
     tokio::spawn(async move {
         match crate::update::check_now(config_dir, false).await {
             Ok(Some(status)) if status.should_notify() => {
-                let _ = tx.send(AppEvent::UpdateAvailable(status));
+                let _ = tx.send(AppEvent::Update(UpdateFlow::Available(status)));
             }
             Ok(_) => {}
             Err(e) => tracing::debug!("update check failed: {e}"),
@@ -600,15 +600,27 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
             respawn_rag(app, tx);
             tx.send(AppEvent::OpenScreen(ScreenEvent::Start)).ok();
         }
-        AppEvent::UpdateAvailable(status) => {
-            // Remember app-globally (so a later-opened editor can be seeded in
-            // switch_screen) and forward to the current screen for immediate
-            // display. Non-editor screens ignore it.
-            app.update = Some(status.clone());
+        AppEvent::Update(flow) => {
+            // The app-global half of the update lifecycle: remember the
+            // notice (so a later-opened editor is seeded in switch_screen),
+            // persist a dismissal, clear on dismiss/install. Every flow
+            // event is then forwarded — the editor screen owns the display
+            // half (indicator, dialog, running the install).
+            match &flow {
+                UpdateFlow::Available(status) => app.update = Some(status.clone()),
+                UpdateFlow::Dismiss(version) => {
+                    if let Ok(config_dir) = crate::settings::config_dir()
+                        && let Err(e) = crate::update::dismiss(&config_dir, version)
+                    {
+                        tracing::debug!("could not persist update dismissal: {e}");
+                    }
+                    app.update = None;
+                }
+                UpdateFlow::Applied => app.update = None,
+                UpdateFlow::Apply | UpdateFlow::ShowDialog => {}
+            }
             if let Some(screen) = app.current_screen.as_mut() {
-                screen
-                    .handle_app_message(AppEvent::UpdateAvailable(status), tx)
-                    .await;
+                screen.handle_app_message(AppEvent::Update(flow), tx).await;
             }
         }
         AppEvent::RagStatus(status) => {
@@ -619,29 +631,6 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
                 screen
                     .handle_app_message(AppEvent::RagStatus(status), tx)
                     .await;
-            }
-        }
-        AppEvent::DismissUpdate(version) => {
-            // Persist the skip and clear the app-global notice, then forward so
-            // the current screen drops its indicator copy.
-            if let Ok(config_dir) = crate::settings::config_dir()
-                && let Err(e) = crate::update::dismiss(&config_dir, &version)
-            {
-                tracing::debug!("could not persist update dismissal: {e}");
-            }
-            app.update = None;
-            if let Some(screen) = app.current_screen.as_mut() {
-                screen
-                    .handle_app_message(AppEvent::DismissUpdate(version), tx)
-                    .await;
-            }
-        }
-        AppEvent::UpdateApplied => {
-            // Self-update installed: clear the app-global notice so no
-            // later-opened screen is re-seeded with the now-installed version.
-            app.update = None;
-            if let Some(screen) = app.current_screen.as_mut() {
-                screen.handle_app_message(AppEvent::UpdateApplied, tx).await;
             }
         }
         other => {

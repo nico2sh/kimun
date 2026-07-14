@@ -9,7 +9,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, InputEvent};
+use crate::components::events::{AppTx, InputEvent, OverlayData};
 use crate::components::overlay::{Overlay, OverlayKind, OverlayMsg};
 use crate::settings::themes::Theme;
 
@@ -76,14 +76,16 @@ impl<F> OverlayHost<F> {
         }
     }
 
-    pub fn handle_app_message(
+    /// Route an **Overlay data** result to the active overlay. With no
+    /// overlay open the data is stale by definition; the caller drops it.
+    pub fn handle_data(
         &mut self,
-        msg: &AppEvent,
+        data: &OverlayData,
         vault: &Arc<NoteVault>,
         tx: &AppTx,
     ) -> OverlayMsg {
         if let Some(o) = &mut self.active {
-            o.handle_app_message(msg, vault, tx)
+            o.handle_data(data, vault, tx)
         } else {
             OverlayMsg::NotConsumed
         }

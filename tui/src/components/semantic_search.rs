@@ -14,7 +14,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, InputEvent};
+use crate::components::events::{AppEvent, AppTx, FileOp, InputEvent};
 use crate::components::file_list::FileListEntry;
 use crate::components::note_browser::format_journal_date;
 use crate::components::query_list_panel::{ListPanelSpec, QueryListPanel};
@@ -146,7 +146,9 @@ impl ListPanelSpec for SemanticSpec {
 
     fn context_event(row: &FileListEntry) -> Option<AppEvent> {
         match row {
-            FileListEntry::Note { path, .. } => Some(AppEvent::ShowFileOpsMenu(path.clone())),
+            FileListEntry::Note { path, .. } => {
+                Some(AppEvent::FileOp(FileOp::ShowMenu(path.clone())))
+            }
             _ => None,
         }
     }

@@ -13,7 +13,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::components::Component;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, AppTxExt, InputEvent, redraw_callback};
+use crate::components::events::{AppEvent, AppTx, AppTxExt, FileOp, InputEvent, redraw_callback};
 use crate::components::file_list::{FileListEntry, SortField, SortOrder};
 use crate::components::search_list::{
     Emit, Filter, KeyReaction, RowSource, SearchList, SearchMouse,
@@ -467,7 +467,7 @@ impl Component for SidebarComponent {
                                 FileListEntry::Up { .. } | FileListEntry::CreateNote { .. }
                             )
                         {
-                            tx.send(AppEvent::ShowFileOpsMenu(entry.path().clone()))
+                            tx.send(AppEvent::FileOp(FileOp::ShowMenu(entry.path().clone())))
                                 .ok();
                         }
                     }

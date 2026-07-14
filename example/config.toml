@@ -58,8 +58,6 @@ group_directories = false
 current_workspace = "personal"
 update_check = true
 mouse = true
-# Optional Kimün server (semantic search + Q&A). Omit to disable the feature.
-# One server serves many vaults; each vault is its own collection.
 kimun_server_url = "http://localhost:7573"
 
 [workspaces.personal]
