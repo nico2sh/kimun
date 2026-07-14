@@ -360,7 +360,10 @@ mod tests {
         assert!(prompt.contains("--- Document: /a.md (Relevance: 0.9000) ---"));
         assert!(prompt.contains("# Alpha\nalpha body"));
         assert!(prompt.contains("beta body"));
-        assert!(!prompt.contains("# \n"), "empty title must not emit a heading");
+        assert!(
+            !prompt.contains("# \n"),
+            "empty title must not emit a heading"
+        );
         assert!(prompt.contains("Question: what is alpha?"));
         assert!(prompt.contains("personal knowledge base"));
     }
@@ -369,20 +372,14 @@ mod tests {
     type Captured = Arc<Mutex<Option<(HeaderMap, serde_json::Value)>>>;
 
     /// Serves `response` on `route`, capturing what the client sent.
-    async fn mock_provider(
-        route: &str,
-        response: serde_json::Value,
-        captured: Captured,
-    ) -> String {
+    async fn mock_provider(route: &str, response: serde_json::Value, captured: Captured) -> String {
         let app = Router::new().route(
             route,
-            post(
-                move |headers: HeaderMap, body: String| async move {
-                    let json = serde_json::from_str(&body).unwrap_or(serde_json::Value::Null);
-                    *captured.lock().unwrap() = Some((headers, json));
-                    Json(response)
-                },
-            ),
+            post(move |headers: HeaderMap, body: String| async move {
+                let json = serde_json::from_str(&body).unwrap_or(serde_json::Value::Null);
+                *captured.lock().unwrap() = Some((headers, json));
+                Json(response)
+            }),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -426,8 +423,16 @@ mod tests {
         assert_eq!(headers["authorization"], "Bearer sk-test");
         assert_eq!(body["model"], "test-model");
         assert_eq!(body["messages"][0]["role"], "user");
-        assert!(body["messages"][0]["content"].as_str().unwrap().contains("q?"));
-        assert!(body.get("max_tokens").is_none(), "OpenAI-compat omits max_tokens");
+        assert!(
+            body["messages"][0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("q?")
+        );
+        assert!(
+            body.get("max_tokens").is_none(),
+            "OpenAI-compat omits max_tokens"
+        );
     }
 
     #[tokio::test]
@@ -447,10 +452,7 @@ mod tests {
         )
         .await;
 
-        let answer = client(Wire::Anthropic, base)
-            .ask("q?", &[])
-            .await
-            .unwrap();
+        let answer = client(Wire::Anthropic, base).ask("q?", &[]).await.unwrap();
         assert_eq!(answer, "part one\npart two");
 
         let (headers, body) = captured.lock().unwrap().take().unwrap();
@@ -478,7 +480,10 @@ mod tests {
         assert_eq!(answer, "gemini answer");
 
         let (headers, body) = captured.lock().unwrap().take().unwrap();
-        assert!(headers.get("authorization").is_none(), "gemini auth is the url key");
+        assert!(
+            headers.get("authorization").is_none(),
+            "gemini auth is the url key"
+        );
         assert!(
             body["contents"][0]["parts"][0]["text"]
                 .as_str()
@@ -556,7 +561,12 @@ mod tests {
         ];
         for (cfg, expected_base) in cases {
             let client = ChatClient::from_config(&cfg, "k".into());
-            assert_eq!(client.base_url, expected_base, "provider {}", cfg.provider());
+            assert_eq!(
+                client.base_url,
+                expected_base,
+                "provider {}",
+                cfg.provider()
+            );
             assert_eq!(client.model, "m");
         }
     }

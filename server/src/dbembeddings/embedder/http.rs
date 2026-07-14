@@ -187,11 +187,7 @@ mod tests {
     /// Captured request: headers plus the JSON body the embedder sent.
     type Captured = Arc<Mutex<Option<(HeaderMap, serde_json::Value)>>>;
 
-    async fn mock_endpoint(
-        route: &str,
-        response: serde_json::Value,
-        captured: Captured,
-    ) -> String {
+    async fn mock_endpoint(route: &str, response: serde_json::Value, captured: Captured) -> String {
         let app = Router::new().route(
             route,
             post(move |headers: HeaderMap, body: String| async move {
@@ -241,7 +237,10 @@ mod tests {
         let out = e.generate_embeddings(&[chunk("T", "body")]).await.unwrap();
         assert_eq!(out, vec![vec![0.1, 0.2, 0.3]]);
         let (headers, body) = captured.lock().unwrap().take().unwrap();
-        assert!(headers.get("authorization").is_none(), "ollama sends no auth");
+        assert!(
+            headers.get("authorization").is_none(),
+            "ollama sends no auth"
+        );
         assert_eq!(body["model"], "nomic");
         assert_eq!(body["input"][0], "search_document: T\nbody");
     }

@@ -81,6 +81,56 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
     Router::new()
         .merge(protected)
         .route("/login", get(login_page).post(login_submit))
+        .route("/assets/fonts/{file}", get(font_asset))
+        .route("/assets/img/{file}", get(image_asset))
+}
+
+// ============================================================================
+// Embedded assets
+// ============================================================================
+
+/// Brand fonts served from the binary (single-binary constraint: no CDN, no
+/// external requests). Public — the login page needs them too.
+async fn font_asset(axum::extract::Path(file): axum::extract::Path<String>) -> Response {
+    let bytes: &'static [u8] = match file.as_str() {
+        "ahm-regular.woff2" => {
+            include_bytes!("../assets/fonts/AtkinsonHyperlegibleMono-Regular.woff2")
+        }
+        "ahm-bold.woff2" => include_bytes!("../assets/fonts/AtkinsonHyperlegibleMono-Bold.woff2"),
+        "inter-regular.woff2" => include_bytes!("../assets/fonts/Inter-Regular.woff2"),
+        "inter-semibold.woff2" => include_bytes!("../assets/fonts/Inter-SemiBold.woff2"),
+        _ => return axum::http::StatusCode::NOT_FOUND.into_response(),
+    };
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, "font/woff2"),
+            (
+                axum::http::header::CACHE_CONTROL,
+                "public, max-age=31536000, immutable",
+            ),
+        ],
+        bytes,
+    )
+        .into_response()
+}
+
+/// The Kimün mark (nav brand + favicon), embedded like the fonts.
+async fn image_asset(axum::extract::Path(file): axum::extract::Path<String>) -> Response {
+    let bytes: &'static [u8] = match file.as_str() {
+        "kimun.png" => include_bytes!("../assets/img/kimun.png"),
+        _ => return axum::http::StatusCode::NOT_FOUND.into_response(),
+    };
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, "image/png"),
+            (
+                axum::http::header::CACHE_CONTROL,
+                "public, max-age=31536000, immutable",
+            ),
+        ],
+        bytes,
+    )
+        .into_response()
 }
 
 // ============================================================================
@@ -166,9 +216,15 @@ fn login_markup(error: bool) -> Markup {
     html! {
         (DOCTYPE)
         html {
-            head { meta charset="utf-8"; title { "Kimün RAG — Sign in" } (styles()) }
+            head {
+                meta charset="utf-8";
+                title { "Kimün RAG — Sign in" }
+                link rel="icon" type="image/png" href="/assets/img/kimun.png";
+                (styles())
+            }
             body {
                 main .login {
+                    img .logo-lg src="/assets/img/kimun.png" alt="" width="40" height="40";
                     h1 { "Kimün RAG" }
                     @if error { p .flash.err { "Incorrect token." } }
                     form method="post" action="/login" {
@@ -198,9 +254,15 @@ fn shell(state: &AppState, active: &str, title: &str, body: Markup) -> Markup {
     html! {
         (DOCTYPE)
         html {
-            head { meta charset="utf-8"; title { "Kimün RAG — " (title) } (styles()) }
+            head {
+                meta charset="utf-8";
+                title { "Kimün RAG — " (title) }
+                link rel="icon" type="image/png" href="/assets/img/kimun.png";
+                (styles())
+            }
             body {
                 nav {
+                    img .logo src="/assets/img/kimun.png" alt="" width="20" height="20";
                     span .brand { "Kimün RAG" }
                     @for (href, label) in nav {
                         a href=(href) .active[active == href] { (label) }
@@ -217,34 +279,78 @@ fn styles() -> Markup {
     html! {
         style {
             (maud::PreEscaped(r#"
-:root{--fg:#1c1c1e;--muted:#6b7280;--bg:#f7f7f8;--card:#fff;--line:#e5e7eb;--accent:#2563eb;}
+@font-face{font-family:"Atkinson Hyperlegible Mono";src:url(/assets/fonts/ahm-regular.woff2) format("woff2");font-weight:400;font-display:swap}
+@font-face{font-family:"Atkinson Hyperlegible Mono";src:url(/assets/fonts/ahm-bold.woff2) format("woff2");font-weight:700;font-display:swap}
+@font-face{font-family:"Inter";src:url(/assets/fonts/inter-regular.woff2) format("woff2");font-weight:400;font-display:swap}
+@font-face{font-family:"Inter";src:url(/assets/fonts/inter-semibold.woff2) format("woff2");font-weight:600;font-display:swap}
+:root{
+  --bg:oklch(20% .008 75);
+  --panel:oklch(23.5% .009 75);
+  --line:oklch(31% .012 75);
+  --fg:oklch(91% .012 85);
+  --muted:oklch(67% .018 80);
+  --accent:oklch(84% .14 89);
+  --link:oklch(76% .07 230);
+  --ok:oklch(76% .1 145);
+  --err:oklch(74% .12 30);
+  --mono:"Atkinson Hyperlegible Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --sans:"Inter",system-ui,sans-serif;
+  --sp-xs:.25rem;--sp-sm:.5rem;--sp-md:.75rem;--sp-lg:1rem;--sp-xl:1.5rem;--sp-2xl:2rem;--sp-3xl:3rem;
+}
 *{box-sizing:border-box}
-body{margin:0;font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:var(--fg);background:var(--bg)}
-nav{display:flex;gap:.25rem;align-items:center;padding:.6rem 1rem;background:var(--card);border-bottom:1px solid var(--line)}
-nav .brand{font-weight:700;margin-right:1rem}
-nav a{padding:.35rem .7rem;border-radius:6px;color:var(--muted);text-decoration:none}
-nav a:hover{background:var(--bg)}
-nav a.active{color:var(--accent);font-weight:600}
+body{margin:0;font:1rem/1.65 var(--sans);color:var(--fg);background:var(--bg)}
+a{color:var(--link)}
+a:focus-visible,input:focus-visible,select:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+nav{display:flex;gap:var(--sp-lg);align-items:baseline;padding:var(--sp-md) var(--sp-xl);border-bottom:1px solid var(--line)}
+nav .logo{align-self:center;border-radius:4px}
+nav .brand{font:700 1rem var(--mono);margin-right:var(--sp-lg)}
+nav a{color:var(--muted);text-decoration:none;font:400 .875rem var(--mono)}
+nav a:hover{color:var(--fg)}
+nav a.active{color:var(--accent)}
 nav a.right{margin-left:auto}
-main{max-width:900px;margin:1.5rem auto;padding:0 1rem}
-main.login{max-width:340px;margin-top:12vh}
-h1{font-size:1.4rem}h2{font-size:1.05rem;margin-top:1.6rem}
-.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:1rem 1.2rem;margin:1rem 0}
-table{width:100%;border-collapse:collapse}
-th,td{text-align:left;padding:.45rem .6rem;border-bottom:1px solid var(--line);vertical-align:top}
-th{color:var(--muted);font-weight:600;font-size:.82rem;text-transform:uppercase;letter-spacing:.03em}
-dl{display:grid;grid-template-columns:auto 1fr;gap:.35rem 1rem;margin:0}
-dt{color:var(--muted)}dd{margin:0;font-variant-numeric:tabular-nums}
-label{display:block;margin:.6rem 0 .2rem;color:var(--muted);font-size:.9rem}
-input,select{width:100%;padding:.45rem .55rem;border:1px solid var(--line);border-radius:6px;font:inherit;background:var(--card)}
-.row{display:flex;gap:1rem}.row>div{flex:1}
-.check{display:flex;align-items:center;gap:.5rem}.check input{width:auto}
-button{margin-top:1rem;padding:.5rem 1rem;border:0;border-radius:6px;background:var(--accent);color:#fff;font:inherit;font-weight:600;cursor:pointer}
-.flash{padding:.6rem .8rem;border-radius:6px;margin:.8rem 0}
-.flash.ok{background:#ecfdf5;color:#047857}.flash.err{background:#fef2f2;color:#b91c1c}
-.muted{color:var(--muted)}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.86rem}
-.snippet{color:var(--muted);font-size:.9rem}
-.badge{display:inline-block;padding:.1rem .5rem;border-radius:999px;font-size:.78rem;background:var(--bg);border:1px solid var(--line)}
+main{max-width:880px;margin:var(--sp-3xl) auto;padding:0 var(--sp-xl)}
+main.login{max-width:22rem;margin-top:16vh}
+main.login .logo-lg{border-radius:8px;margin-bottom:var(--sp-md)}
+h1{font:700 1.5625rem/1.3 var(--mono);letter-spacing:-.01em;margin:0 0 var(--sp-xl)}
+h2{font:700 1rem/1.4 var(--mono);margin:var(--sp-2xl) 0 var(--sp-md)}
+p{max-width:70ch}
+.statusline{font:400 .9375rem/1.6 var(--mono);margin:calc(-1*var(--sp-md)) 0 var(--sp-2xl);color:var(--muted)}
+.statusline b{color:var(--fg);font-weight:400}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:var(--sp-xl)}
+section.group{border-top:1px solid var(--line);margin-top:var(--sp-xl);padding-top:var(--sp-lg)}
+section.group h2{margin:0 0 var(--sp-md)}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+th,td{text-align:left;padding:var(--sp-sm) var(--sp-lg) var(--sp-sm) 0;border-bottom:1px solid var(--line);vertical-align:top}
+th{font:700 .75rem var(--mono);color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+dl{display:grid;grid-template-columns:max-content 1fr;gap:var(--sp-sm) var(--sp-2xl);margin:0}
+dt{color:var(--muted);font:400 .875rem/1.7 var(--mono)}
+dd{margin:0;font-variant-numeric:tabular-nums}
+label{display:block;margin:var(--sp-lg) 0 var(--sp-xs);color:var(--muted);font:400 .8125rem var(--mono)}
+input,select{width:100%;padding:var(--sp-sm) var(--sp-md);border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--fg);font:400 .875rem var(--mono)}
+input::placeholder{color:var(--muted)}
+.row{display:flex;gap:var(--sp-lg)}.row>div{flex:1}
+.check{display:flex;align-items:center;gap:var(--sp-sm)}.check input{width:auto}
+button{margin-top:var(--sp-xl);padding:var(--sp-sm) var(--sp-xl);border:0;border-radius:6px;background:var(--accent);color:oklch(24% .03 85);font:700 .875rem var(--mono);cursor:pointer}
+button:hover{background:oklch(88% .13 89)}
+.flash{padding:var(--sp-md) var(--sp-lg);border-radius:6px;margin:var(--sp-lg) 0;font-size:.9375rem}
+.flash.ok{background:oklch(76% .1 145/.12);color:var(--ok)}
+.flash.err{background:oklch(74% .12 30/.12);color:var(--err)}
+.flash a{color:inherit;text-decoration:underline}
+.muted{color:var(--muted)}
+.mono{font-family:var(--mono);font-size:.875rem}
+.snippet{color:var(--muted);font-size:.875rem;max-width:70ch}
+.badge{display:inline-block;padding:.05rem .5rem;border-radius:4px;font:400 .75rem var(--mono);background:var(--panel);border:1px solid var(--line)}
+.status{display:inline-flex;align-items:center;gap:.45em;font:400 .875rem var(--mono)}
+.status::before{content:"";width:.5em;height:.5em;border-radius:50%;background:var(--muted);flex:none}
+.status.processing::before{background:var(--accent);animation:pulse 1.6s ease-out infinite}
+.status.completed::before{background:var(--ok)}
+.status.failed::before{background:var(--err)}
+.live{color:var(--muted);font:400 .75rem var(--mono)}
+.live::before{content:"";display:inline-block;width:.45em;height:.45em;border-radius:50%;background:var(--ok);margin-right:.4em;animation:pulse 2s ease-out infinite}
+.hit{margin:var(--sp-lg) 0 0;padding-top:var(--sp-lg);border-top:1px solid var(--line)}
+.hit .score{color:var(--muted);font:400 .75rem var(--mono);margin-left:var(--sp-sm)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+@media (prefers-reduced-motion:reduce){.status.processing::before,.live::before{animation:none}}
 "#))
         }
     }
@@ -279,15 +385,50 @@ async fn dashboard(State(state): State<Arc<AppState>>) -> Markup {
             format!("openai-compatible {model} @ {url}")
         }
     };
+    // Glance line: live counts so "is my server fine?" is answered before the
+    // config echo. Skipped when the store can't be reached (the pages below
+    // surface their own errors).
+    let glance = match &state.rag {
+        Some(rag) => {
+            let active = state
+                .job_tracker
+                .lock()
+                .await
+                .list()
+                .iter()
+                .filter(|j| {
+                    matches!(
+                        j.status,
+                        crate::server_state::JobStatus::Queued
+                            | crate::server_state::JobStatus::Processing
+                    )
+                })
+                .count();
+            rag.collections().await.ok().map(|cols| {
+                let notes: usize = cols.iter().map(|c| c.note_count).sum();
+                (cols.len(), notes, active)
+            })
+        }
+        None => None,
+    };
     let body = html! {
         h1 { "Dashboard" }
+        @if let Some((cols, notes, active)) = glance {
+            p .statusline {
+                b { (count_noun(cols, "collection")) }
+                " · "
+                b { (count_noun(notes, "indexed note")) }
+                " · "
+                @if active == 0 { "idle" } @else { b { (count_noun(active, "active job")) } }
+            }
+        }
         @if c.embedder.is_none() {
             p .flash.err {
                 "This server is unconfigured — no embedder is set, so indexing and search are disabled. "
                 a href="/config" { "Configure an embedder" } "."
             }
         }
-        div .card {
+        div .panel {
             dl {
                 dt { "Bind address" } dd .mono { (c.server.host) ":" (c.server.port) }
                 dt { "Vector DB" } dd { (vector_db) }
@@ -381,14 +522,14 @@ fn config_markup(state: &AppState, c: &RagConfig, flash: Option<Markup>) -> Mark
             p .flash.err { "No writable config path — edits cannot be saved." }
         }
         form method="post" action="/config" {
-            div .card {
+            section .group {
                 h2 { "Server" }
                 div .row {
                     div { label { "Host" } input type="text" name="host" value=(c.server.host); }
                     div { label { "Port" } input type="number" name="port" value=(c.server.port); }
                 }
             }
-            div .card {
+            section .group {
                 h2 { "Embedder" }
                 @if c.embedder.is_none() {
                     p .flash.err { "No embedder configured — the server is unconfigured: indexing and search are disabled until one is set." }
@@ -419,7 +560,7 @@ fn config_markup(state: &AppState, c: &RagConfig, flash: Option<Markup>) -> Mark
                 input type="password" name="embedder_api_key" placeholder=(if embedder_key_set { "unchanged (a key is set)" } else { "from environment if blank" });
                 p .muted { "Instruction prefixes (doc_prefix / query_prefix) are file-only settings; a save here keeps them." }
             }
-            div .card {
+            section .group {
                 h2 { "Vector DB" }
                 label { "Backend" }
                 select name="vector_db" {
@@ -433,7 +574,7 @@ fn config_markup(state: &AppState, c: &RagConfig, flash: Option<Markup>) -> Mark
                     div { label { "Qdrant collection prefix (qdrant only)" } input type="text" name="qdrant_collection" value=(qdrant_collection) placeholder="kimun_embeddings"; }
                 }
             }
-            div .card {
+            section .group {
                 h2 { "LLM" }
                 label { "Provider" }
                 select name="provider" {
@@ -450,13 +591,13 @@ fn config_markup(state: &AppState, c: &RagConfig, flash: Option<Markup>) -> Mark
                 input type="password" name="api_key" placeholder=(if c.llm.as_ref().and_then(|l| l.api_key()).is_some() { "unchanged (a key is set)" } else { "from environment if blank" });
                 p .muted { "Leave blank to keep the current key (or fall back to the provider env var)." }
             }
-            div .card {
+            section .group {
                 h2 { "Reranker" }
                 div .check { input type="checkbox" name="reranker_enabled" checked[c.reranker.enabled]; label style="margin:0" { "Enabled" } }
                 label { "Default results (top_k)" }
                 input type="number" name="reranker_top_k" value=(c.reranker.top_k);
             }
-            div .card {
+            section .group {
                 h2 { "Auth" }
                 label { "Bearer token" }
                 input type="password" name="auth_token" placeholder=(if c.auth.token.is_some() { "unchanged (a token is set)" } else { "open — no token set" });
@@ -518,30 +659,31 @@ async fn collections_page(State(state): State<Arc<AppState>>) -> Markup {
     let body = match &state.rag {
         None => html! {
             h1 { "Collections" }
-            div .card {
-                p .flash.err {
-                    "Server unconfigured — configure an embedder in "
-                    a href="/config" { "Config" } " to enable indexing."
-                }
+            p .flash.err {
+                "Server unconfigured — configure an embedder in "
+                a href="/config" { "Config" } " to enable indexing."
             }
         },
         Some(rag) => {
             let result = rag.collections().await;
             html! {
                 h1 { "Collections" }
-                div .card {
-                    @match result {
-                        Ok(cols) if cols.is_empty() => p .muted { "No collections yet — push some notes from Kimün." },
-                        Ok(cols) => table {
-                            thead { tr { th { "Vault id" } th { "Indexed notes" } } }
-                            tbody {
-                                @for col in &cols {
-                                    tr { td .mono { (col.name) } td { (col.note_count) } }
-                                }
+                @match result {
+                    Ok(cols) if cols.is_empty() => {
+                        p .muted {
+                            "No collections yet — each vault that syncs here gets one. Push notes from Kimün: "
+                            span .mono { "kimun workspace sync" }
+                        }
+                    },
+                    Ok(cols) => table {
+                        thead { tr { th { "Vault id" } th { "Indexed notes" } } }
+                        tbody {
+                            @for col in &cols {
+                                tr { td .mono { (col.name) } td { (col.note_count) } }
                             }
-                        },
-                        Err(e) => p .flash.err { "Could not list collections: " (e) },
-                    }
+                        }
+                    },
+                    Err(e) => p .flash.err { "Could not list collections: " (e) },
                 }
             }
         }
@@ -557,7 +699,8 @@ async fn jobs_page(State(state): State<Arc<AppState>>) -> Markup {
     let table = jobs_table(&state).await;
     let body = html! {
         h1 { "Jobs" }
-        div .card #jobs { (table) }
+        p .live { "live — refreshes every 2s while this tab is visible" }
+        div #jobs { (table) }
         script {
             (maud::PreEscaped(r#"
 setInterval(async () => {
@@ -582,7 +725,7 @@ async fn jobs_table(state: &AppState) -> Markup {
     let jobs = state.job_tracker.lock().await.list();
     html! {
         @if jobs.is_empty() {
-            p .muted { "No jobs yet." }
+            p .muted { "No jobs yet — syncs and questions land here as they run." }
         } @else {
             table {
                 thead { tr { th { "Job" } th { "Status" } th { "Detail" } } }
@@ -590,7 +733,7 @@ async fn jobs_table(state: &AppState) -> Markup {
                     @for job in &jobs {
                         tr {
                             td .mono { (short_id(&job.id.to_string())) }
-                            td { span .badge { (job.status.as_str()) } }
+                            td { span class=(format!("status {}", job.status.as_str())) { (job.status.as_str()) } }
                             td .snippet {
                                 @if let Some(err) = &job.error { (err) }
                                 @else if let Some(res) = &job.result { (truncate(res, 160)) }
@@ -657,41 +800,36 @@ fn query_markup(
 ) -> Markup {
     let body = html! {
         h1 { "Test query" }
+        p .muted { "Runs the same pipeline clients get from the API — one row per note, top_k notes." }
         @if state.rag.is_none() {
-            div .card {
-                p .flash.err {
-                    "Server unconfigured — configure an embedder in "
-                    a href="/config" { "Config" } " to enable search."
-                }
+            p .flash.err {
+                "Server unconfigured — configure an embedder in "
+                a href="/config" { "Config" } " to enable search."
             }
         } @else {
-            div .card {
-                form method="post" action="/query" {
-                    label { "Collection" }
-                    select name="vault_id" {
-                        option value="" { "— select —" }
-                        @for c in collections {
-                            option value=(c) selected[c == vault_id] { (c) }
-                        }
+            form method="post" action="/query" {
+                label { "Collection" }
+                select name="vault_id" {
+                    option value="" { "— select —" }
+                    @for c in collections {
+                        option value=(c) selected[c == vault_id] { (c) }
                     }
-                    label { "Query" }
-                    input type="text" name="query" value=(query) autofocus?;
-                    button type="submit" { "Search" }
                 }
+                label { "Query" }
+                input type="text" name="query" value=(query) autofocus?;
+                button type="submit" { "Search" }
             }
         }
         @if let Some(outcome) = results {
-            div .card {
-                @match outcome {
-                    Err(e) => p .flash.err { (e) },
-                    Ok(hits) if hits.is_empty() => p .muted { "No matches." },
-                    Ok(hits) => {
-                        h2 { (hits.len()) " results" }
-                        @for (score, path, text) in &hits {
-                            div style="margin:.8rem 0" {
-                                div { span .mono { (path) } " " span .muted { (format!("{score:.3}")) } }
-                                div .snippet { (truncate(text, 240)) }
-                            }
+            @match outcome {
+                Err(e) => p .flash.err { (e) },
+                Ok(hits) if hits.is_empty() => p .muted { "No matches." },
+                Ok(hits) => {
+                    h2 { (count_noun(hits.len(), "result")) }
+                    @for (score, path, text) in &hits {
+                        div .hit {
+                            div { span .mono { (path) } span .score { (format!("{score:.3}")) } }
+                            div .snippet { (truncate(text, 240)) }
                         }
                     }
                 }
@@ -709,6 +847,14 @@ async fn collection_names(state: &AppState) -> Vec<String> {
     match &state.rag {
         Some(rag) => rag.collection_names().await.unwrap_or_default(),
         None => Vec::new(),
+    }
+}
+
+fn count_noun(n: usize, noun: &str) -> String {
+    if n == 1 {
+        format!("{n} {noun}")
+    } else {
+        format!("{n} {noun}s")
     }
 }
 
@@ -940,7 +1086,10 @@ provider = "gemini"
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let html = body_text(resp).await;
-        assert!(html.contains("unconfigured"), "dashboard must flag the state");
+        assert!(
+            html.contains("unconfigured"),
+            "dashboard must flag the state"
+        );
         assert!(html.contains("/config"), "and link to the config page");
     }
 
@@ -1171,13 +1320,63 @@ api_key = "gemini-key"
     }
 
     #[tokio::test]
+    async fn font_assets_are_served_publicly() {
+        // Fonts must load on the login page, so the route sits outside auth.
+        let app = app(state(Some("secret"), None));
+        let resp = app
+            .oneshot(
+                Request::get("/assets/fonts/ahm-regular.woff2")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers()[CONTENT_TYPE], "font/woff2");
+    }
+
+    #[tokio::test]
+    async fn unknown_font_asset_is_404() {
+        let app = app(state(None, None));
+        let resp = app
+            .oneshot(
+                Request::get("/assets/fonts/evil.woff2")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn logo_is_served_publicly() {
+        // Nav brand + favicon; the login page needs it, so it sits outside auth.
+        let app = app(state(Some("secret"), None));
+        let resp = app
+            .oneshot(
+                Request::get("/assets/img/kimun.png")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers()[CONTENT_TYPE], "image/png");
+    }
+
+    #[tokio::test]
     async fn answer_handler_rejects_when_semantic_only() {
         // A semantic-only server (no [llm]) must reject /api/answer at submit
         // time with 503, not mint a job that can only fail (adr/0022).
         let config: RagConfig =
             toml::from_str("[server]\n[vector_db]\ntype = \"qdrant\"\n[reranker]\n").unwrap();
         assert!(config.llm.is_none());
-        let rag = KimunRag::new(Arc::new(FakeVectorStore::default()), Arc::new(FakeEmbedder), None);
+        let rag = KimunRag::new(
+            Arc::new(FakeVectorStore::default()),
+            Arc::new(FakeEmbedder),
+            None,
+        );
         let state = Arc::new(AppState::new(Some(rag), config));
 
         let req = crate::handlers::AnswerRequest {

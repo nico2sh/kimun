@@ -576,12 +576,7 @@ pub(crate) mod test_support {
                 .push((collection.to_string(), paths.to_vec()));
             Ok(())
         }
-        async fn query(
-            &self,
-            _: &str,
-            _: Vec<f32>,
-            _: usize,
-        ) -> anyhow::Result<Vec<ScoredChunk>> {
+        async fn query(&self, _: &str, _: Vec<f32>, _: usize) -> anyhow::Result<Vec<ScoredChunk>> {
             Ok(self.results.clone())
         }
         async fn indexed_notes(&self, _: &str) -> anyhow::Result<HashMap<String, IndexedNote>> {
@@ -675,11 +670,7 @@ mod tests {
         KimunRag::new(
             Arc::new(store),
             Arc::new(FakeEmbedder),
-            if llm {
-                Some(Arc::new(FakeLlm))
-            } else {
-                None
-            },
+            if llm { Some(Arc::new(FakeLlm)) } else { None },
         )
     }
 
@@ -714,10 +705,17 @@ mod tests {
     async fn search_dedupes_identical_chunks_keeping_best_score() {
         let dup = chunk("/a.md", "s");
         let store = FakeVectorStore {
-            results: vec![(0.5, dup.clone()), (0.9, dup.clone()), (0.7, chunk("/b.md", "s"))],
+            results: vec![
+                (0.5, dup.clone()),
+                (0.9, dup.clone()),
+                (0.7, chunk("/b.md", "s")),
+            ],
             ..Default::default()
         };
-        let out = rag(store, false).search(&key("vault-1"), "q", 10).await.unwrap();
+        let out = rag(store, false)
+            .search(&key("vault-1"), "q", 10)
+            .await
+            .unwrap();
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].0, 0.9, "duplicate keeps its highest score");
         assert_eq!(out[0].1.doc_path, "/a.md");
@@ -731,7 +729,10 @@ mod tests {
         assert_eq!(answer.text, "answer");
         assert_eq!(answer.sources.len(), 2);
         assert_eq!(answer.sources[0].1.doc_path, "/a.md");
-        assert_eq!(answer.sources[1].1.doc_path, "/a.md", "chunk-level: no note-dedup");
+        assert_eq!(
+            answer.sources[1].1.doc_path, "/a.md",
+            "chunk-level: no note-dedup"
+        );
     }
 
     #[tokio::test]

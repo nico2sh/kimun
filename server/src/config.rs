@@ -909,11 +909,13 @@ provider = "gemini"
 
     #[test]
     fn apply_form_carries_endpoint_url_while_provider_unchanged() {
-        let cfg = config_with_llm(
-            "[llm]\nprovider = \"openai\"\nurl = \"http://localhost:11434/v1\"",
-        );
+        let cfg =
+            config_with_llm("[llm]\nprovider = \"openai\"\nurl = \"http://localhost:11434/v1\"");
         let kept = cfg.apply_form(form("openai", "")).unwrap();
-        assert_eq!(kept.llm.as_ref().unwrap().url(), Some("http://localhost:11434/v1"));
+        assert_eq!(
+            kept.llm.as_ref().unwrap().url(),
+            Some("http://localhost:11434/v1")
+        );
         let switched = cfg.apply_form(form("gemini", "")).unwrap();
         assert_eq!(switched.llm.as_ref().unwrap().url(), None);
     }
@@ -1072,8 +1074,8 @@ provider = "gemini"
         .unwrap();
         assert_eq!(c.url(), Some("http://localhost:11434/v1"));
 
-        let c = LlmConfig::from_parts("gemini", Some(String::new()), Some("k".into()), None)
-            .unwrap();
+        let c =
+            LlmConfig::from_parts("gemini", Some(String::new()), Some("k".into()), None).unwrap();
         assert_eq!(c.model(), &default_gemini_model());
         assert_eq!(c.api_key(), Some("k"));
         assert!(c.url().is_none(), "url is openai-only");

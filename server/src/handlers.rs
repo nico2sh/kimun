@@ -380,10 +380,7 @@ mod tests {
     #[test]
     fn rag_error_maps_to_the_contracted_status_codes() {
         let cases = [
-            (
-                RagError::Validation("bad".into()),
-                StatusCode::BAD_REQUEST,
-            ),
+            (RagError::Validation("bad".into()), StatusCode::BAD_REQUEST),
             (RagError::NotFound("gone".into()), StatusCode::NOT_FOUND),
             (RagError::SemanticOnly, StatusCode::SERVICE_UNAVAILABLE),
             (RagError::Unconfigured, StatusCode::SERVICE_UNAVAILABLE),
@@ -427,7 +424,10 @@ mod tests {
         .await
         .expect_err("unconfigured must reject search");
         assert!(matches!(err, RagError::Unconfigured));
-        assert_eq!(err.into_response().status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            err.into_response().status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
 
         let err = index_docs_handler(
             State(state.clone()),
@@ -497,4 +497,3 @@ mod tests {
         assert_eq!(key.as_str(), "550e8400-e29b-41d4-a716-446655440000");
     }
 }
-

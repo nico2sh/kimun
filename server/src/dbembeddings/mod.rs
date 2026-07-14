@@ -169,7 +169,13 @@ pub(crate) mod conformance {
 
     pub(crate) async fn missing_collection_is_empty_not_error(store: &dyn VectorStore, c: &str) {
         assert!(store.indexed_notes(c).await.unwrap().is_empty());
-        assert!(store.query(c, vector_for("q"), 10).await.unwrap().is_empty());
+        assert!(
+            store
+                .query(c, vector_for("q"), 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
         // Deleting from a missing collection is a no-op, not an error.
         store.delete(c, &["x.md".to_string()]).await.unwrap();
     }
@@ -191,17 +197,17 @@ pub(crate) mod conformance {
         let notes = store.indexed_notes(c).await.unwrap();
         assert_eq!(notes.len(), 1);
         assert!(notes.contains_key("b.md"));
-        let results = store.query(c, vector_for("alpha section one"), 10).await.unwrap();
+        let results = store
+            .query(c, vector_for("alpha section one"), 10)
+            .await
+            .unwrap();
         assert!(
             results.iter().all(|(_, chunk)| chunk.doc_path != "a.md"),
             "no chunk of a deleted note may remain searchable"
         );
     }
 
-    pub(crate) async fn indexed_notes_reports_one_hash_per_path(
-        store: &dyn VectorStore,
-        c: &str,
-    ) {
+    pub(crate) async fn indexed_notes_reports_one_hash_per_path(store: &dyn VectorStore, c: &str) {
         store
             .store(
                 c,
@@ -219,11 +225,7 @@ pub(crate) mod conformance {
         assert_eq!(notes.get("b.md").unwrap().content_hash, "h2");
     }
 
-    pub(crate) async fn collections_list_each_vault(
-        store: &dyn VectorStore,
-        c1: &str,
-        c2: &str,
-    ) {
+    pub(crate) async fn collections_list_each_vault(store: &dyn VectorStore, c1: &str, c2: &str) {
         store.store(c1, &[row("a.md", "h", "x")]).await.unwrap();
         store.store(c2, &[row("b.md", "h", "y")]).await.unwrap();
 

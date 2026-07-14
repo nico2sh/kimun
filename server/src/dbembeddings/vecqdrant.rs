@@ -213,10 +213,7 @@ impl VectorStore for VecQdrant {
         self.client
             .delete_points(
                 DeletePointsBuilder::new(&name)
-                    .points(Filter::must([Condition::matches(
-                        "path",
-                        paths.to_vec(),
-                    )]))
+                    .points(Filter::must([Condition::matches("path", paths.to_vec())]))
                     .wait(true),
             )
             .await?;
@@ -238,9 +235,7 @@ impl VectorStore for VecQdrant {
 
         let search_result = self
             .client
-            .search_points(
-                SearchPointsBuilder::new(&name, vector, limit as u64).with_payload(true),
-            )
+            .search_points(SearchPointsBuilder::new(&name, vector, limit as u64).with_payload(true))
             .await?;
 
         let results: Vec<(f64, FlattenedChunk)> = search_result
@@ -502,10 +497,8 @@ mod tests {
     #[ignore = "needs a live Qdrant (set QDRANT_URL, default localhost:6334)"]
     async fn conformance_drop_all() {
         let s = store("dropall").await;
-        conformance::drop_all_removes_every_collection_but_not_the_fingerprint_slot(
-            &s, "va", "vb",
-        )
-        .await;
+        conformance::drop_all_removes_every_collection_but_not_the_fingerprint_slot(&s, "va", "vb")
+            .await;
     }
 
     #[tokio::test]
