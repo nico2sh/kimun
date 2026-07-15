@@ -17,8 +17,7 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, OverlayData};
 use crate::components::overlay::{Overlay, OverlayKind, OverlayMsg};
-use crate::components::semantic_search::rag_client;
-use crate::rag::{RagAnswer, RagSource};
+use crate::rag::{RagAnswer, RagSource, rag_client};
 use crate::settings::SharedSettings;
 use crate::settings::themes::Theme;
 

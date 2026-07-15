@@ -8,7 +8,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
-use kimun_server_client::{ChunkResult, RagClient};
+use kimun_server_client::ChunkResult;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -19,38 +19,10 @@ use crate::components::file_list::FileListEntry;
 use crate::components::note_browser::format_journal_date;
 use crate::components::query_list_panel::{ListPanelSpec, QueryListPanel};
 use crate::components::search_list::{Emit, RowSource};
+use crate::rag::rag_client;
 use crate::settings::SharedSettings;
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
-
-/// Builds a [`RagClient`] for the current vault from config, or `None` when no
-/// server URL is configured. Shared by every RAG query surface.
-pub async fn rag_client(settings: &SharedSettings, vault: &NoteVault) -> Option<RagClient> {
-    let (url, token) = {
-        let settings = settings.read().ok()?;
-        let global = &settings.workspace_config.as_ref()?.global;
-        (
-            global.kimun_server_url.clone()?,
-            global.kimun_server_token.clone(),
-        )
-    };
-    let vault_id = vault.vault_id().await.ok()?;
-    Some(RagClient::new(url, token, vault_id.to_string()))
-}
-
-/// Whether a RAG server is configured (drives showing the semantic surface at
-/// all). Reachability is a separate, runtime concern.
-pub fn rag_configured(settings: &SharedSettings) -> bool {
-    settings
-        .read()
-        .ok()
-        .and_then(|s| {
-            s.workspace_config
-                .as_ref()
-                .and_then(|wc| wc.global.kimun_server_url.clone())
-        })
-        .is_some()
-}
 
 /// One note row per unique note among the server's chunk results, in result
 /// order (best first), deduplicated by canonical path.
