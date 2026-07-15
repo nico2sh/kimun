@@ -1,6 +1,5 @@
 [workspace]
-members = ["core", "tui"]
-exclude = ["rag"]
+members = ["core", "tui", "client", "server"]
 resolver = "2"
 
 [profile.release]
@@ -8,7 +7,9 @@ opt-level = "z"   # optimise for size (smaller than "s", smaller than 3)
 lto = true        # cross-crate dead-code elimination
 codegen-units = 1 # single CGU lets LLVM inline across the whole crate
 strip = true      # strip debug symbols from the final binary
-panic = "abort"   # drop unwinding machinery (~10 % size reduction)
+# NOTE: intentionally NOT panic = "abort". The kimun-server spawns per-request
+# worker tasks; with unwinding a panicking task is isolated (the runtime catches
+# it) instead of aborting the whole process. Keep the default unwind.
 
 [workspace.dependencies]
 # NOTE: kimun_core is intentionally NOT pinned here. release-plz rewrites this

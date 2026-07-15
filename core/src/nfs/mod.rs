@@ -1,5 +1,6 @@
 pub mod filename;
 pub mod saved_searches;
+pub mod vault_id;
 use std::{
     fmt::Display,
     hash::Hash,
@@ -1389,6 +1390,19 @@ impl VaultPath {
     /// Marks this path relative in place.
     pub fn to_relative(&mut self) {
         self.absolute = false;
+    }
+
+    /// Canonical index identity of this path: [`flatten`]ed and vault-*absolute*
+    /// (rooted at `/`), so a note has exactly one key whether it was reached as
+    /// `note.md` or `/note.md`. Every path that is stored in or looked up from
+    /// the index must go through this, so the index can never hold mixed
+    /// relative/absolute forms of the same note. Absolute is the established
+    /// index form — the vault walker that bulk-indexes notes produces it, and
+    /// browse/search results carry it.
+    ///
+    /// [`flatten`]: VaultPath::flatten
+    pub(crate) fn canonical(&self) -> VaultPath {
+        self.flatten().absolute()
     }
 
     /// Splits the path into its parent path and the final component's name.

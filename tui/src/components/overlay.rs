@@ -9,7 +9,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, InputEvent};
+use crate::components::events::{AppTx, InputEvent, OverlayData};
 use crate::settings::themes::Theme;
 
 /// Identifies which overlay is active — used for toggle, focus label, and hints.
@@ -18,6 +18,7 @@ pub enum OverlayKind {
     NoteBrowser,
     SavedSearches,
     CommandPalette,
+    RagAnswer,
     Dialog,
 }
 
@@ -28,6 +29,7 @@ impl OverlayKind {
             OverlayKind::NoteBrowser => "NOTE BROWSER",
             OverlayKind::SavedSearches => "SAVED SEARCHES",
             OverlayKind::CommandPalette => "COMMANDS",
+            OverlayKind::RagAnswer => "ASK (RAG)",
             OverlayKind::Dialog => "DIALOG",
         }
     }
@@ -50,9 +52,12 @@ pub enum OverlayMsg {
 pub trait Overlay {
     fn kind(&self) -> OverlayKind;
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState;
-    fn handle_app_message(
+    /// Receive an **Overlay data** result addressed to this overlay (see
+    /// CONTEXT.md). `NotConsumed` means the data was not for this overlay
+    /// (or is stale) — the host drops it; nothing else ever sees it.
+    fn handle_data(
         &mut self,
-        _msg: &AppEvent,
+        _data: &OverlayData,
         _vault: &Arc<NoteVault>,
         _tx: &AppTx,
     ) -> OverlayMsg {

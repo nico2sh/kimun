@@ -6,7 +6,7 @@ use ratatui::widgets::Paragraph;
 
 use crate::components::Component;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx};
+use crate::components::events::{AppEvent, AppTx, UpdateFlow};
 use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::settings::themes::Theme;
 use crate::update::UpdateStatus;
@@ -52,12 +52,13 @@ impl UpdateAvailableDialog {
     ) -> EventState {
         match key.code {
             KeyCode::Char('u') | KeyCode::Char('U') if self.eligible => {
-                tx.send(AppEvent::ApplyUpdate).ok();
+                tx.send(AppEvent::Update(UpdateFlow::Apply)).ok();
                 tx.send(AppEvent::CloseOverlay).ok();
                 EventState::Consumed
             }
             KeyCode::Char('s') | KeyCode::Char('S') => {
-                tx.send(AppEvent::DismissUpdate(self.latest.clone())).ok();
+                tx.send(AppEvent::Update(UpdateFlow::Dismiss(self.latest.clone())))
+                    .ok();
                 tx.send(AppEvent::CloseOverlay).ok();
                 EventState::Consumed
             }
@@ -216,7 +217,9 @@ mod tests {
         let mut d = UpdateAvailableDialog::new(&status(InstallChannel::Direct));
         let state = d.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE), &tx);
         assert_eq!(state, EventState::Consumed);
-        assert!(matches!(rx.try_recv(), Ok(AppEvent::DismissUpdate(v)) if v == "0.18.0"));
+        assert!(
+            matches!(rx.try_recv(), Ok(AppEvent::Update(UpdateFlow::Dismiss(v))) if v == "0.18.0")
+        );
         assert!(matches!(rx.try_recv(), Ok(AppEvent::CloseOverlay)));
     }
 
@@ -226,7 +229,10 @@ mod tests {
         // Eligible: 'u' applies.
         let mut d = UpdateAvailableDialog::new(&status(InstallChannel::Script));
         d.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE), &tx);
-        assert!(matches!(rx.try_recv(), Ok(AppEvent::ApplyUpdate)));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AppEvent::Update(UpdateFlow::Apply))
+        ));
 
         // Not eligible: 'u' is swallowed, no apply.
         let (tx2, mut rx2) = mpsc::unbounded_channel::<AppEvent>();

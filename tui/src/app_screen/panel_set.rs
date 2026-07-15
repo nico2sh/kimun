@@ -228,10 +228,11 @@ impl PanelSet {
         editor: TextEditorComponent,
         icons: crate::settings::icons::Icons,
         key_bindings: crate::keys::KeyBindings,
+        semantic_visible: bool,
     ) -> Self {
         Self {
             order: PanelOrder::new(),
-            rail: ActivityRail::new(key_bindings, icons),
+            rail: ActivityRail::new(key_bindings, icons, semantic_visible),
             drawer,
             editor,
             attachment: None,
@@ -386,6 +387,9 @@ impl PanelSet {
     }
     pub fn query_mut(&mut self) -> &mut QueryPanel {
         self.drawer.query_mut()
+    }
+    pub fn semantic_mut(&mut self) -> &mut crate::components::semantic_search::SemanticPanel {
+        self.drawer.semantic_mut()
     }
     pub fn tags_mut(&mut self) -> &mut crate::components::drawer_views::TagsPanel {
         self.drawer.tags_mut()
@@ -584,9 +588,20 @@ mod tests {
         let tags = crate::components::drawer_views::TagsPanel::new(vault.clone(), settings.icons());
         let links =
             crate::components::drawer_views::LinksPanel::new(vault.clone(), settings.icons());
+        let semantic = crate::components::semantic_search::SemanticPanel::new(
+            vault.clone(),
+            std::sync::Arc::new(std::sync::RwLock::new(settings.clone())),
+            settings.icons(),
+        );
         let outline = crate::components::drawer_views::OutlinePanel::new(vault, settings.icons());
-        let drawer = DrawerHost::new(sidebar, query, tags, links, outline);
-        PanelSet::from_panels(drawer, editor, settings.icons(), settings.key_bindings)
+        let drawer = DrawerHost::new(sidebar, query, semantic, tags, links, outline);
+        PanelSet::from_panels(
+            drawer,
+            editor,
+            settings.icons(),
+            settings.key_bindings,
+            true,
+        )
     }
 
     /// Lay the visible panels out over a fixed area, as a render would.

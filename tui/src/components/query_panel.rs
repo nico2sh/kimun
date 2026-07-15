@@ -14,7 +14,7 @@ use kimun_core::{OrderBy, OrderField, with_order_directive};
 
 use crate::components::autocomplete::AutocompleteMode;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx};
+use crate::components::events::{AppEvent, AppTx, FileOp};
 use crate::components::file_list::{SortField, SortOrder};
 use crate::components::preview_pane::PreviewPane;
 use crate::components::query_vars::{QueryContext, query_has_variables, resolve_query};
@@ -581,7 +581,7 @@ impl QueryPanel {
             // Right-click on a result row → file/note context menu (spec §10).
             SearchMouse::Context(_) => {
                 if let Some(path) = self.selected_path().cloned() {
-                    tx.send(AppEvent::ShowFileOpsMenu(path)).ok();
+                    tx.send(AppEvent::FileOp(FileOp::ShowMenu(path))).ok();
                 }
                 EventState::Consumed
             }
@@ -998,7 +998,8 @@ mod tests {
                 opened = Some(path);
             }
         }
-        assert_eq!(opened, Some(VaultPath::note_path_from("target")));
+        // The index returns canonical (vault-absolute) paths (adr/0021).
+        assert_eq!(opened, Some(VaultPath::note_path_from("target").absolute()));
     }
 
     /// The memoised highlight needles must follow both cache keys: recompute

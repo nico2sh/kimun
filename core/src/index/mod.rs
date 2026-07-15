@@ -3,7 +3,7 @@ pub(crate) mod search_terms;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use log::{debug, error};
@@ -12,6 +12,27 @@ use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use sqlx::{Row, Sqlite, Transaction};
 
 use crate::note::{ContentChunk, LinkType, NoteContentData, NoteDetails};
+
+/// A note change reported by the [`NoteIndex`] the moment it is recorded, for
+/// consumers outside core (the RAG client). Thin by design — it carries a path,
+/// a content hash, and the kind of change, never chunk text (see adr/0019).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NoteChange {
+    /// A note was created or its content rewritten. `hash` is the note's
+    /// full-text [`NoteContentData::hash`].
+    Upsert { path: VaultPath, hash: u64 },
+    /// A note was removed from the index.
+    Delete { path: VaultPath },
+}
+
+/// Observer of index mutations, registered zero-or-one on a vault via
+/// [`NoteVault::set_index_observer`](crate::NoteVault::set_index_observer). The
+/// index calls [`on_change`](IndexObserver::on_change) synchronously right after
+/// a write commits, so an implementation must be cheap and non-blocking — no
+/// network, no `await`; fold the event into a queue and drain it elsewhere.
+pub trait IndexObserver: Send + Sync + std::fmt::Debug {
+    fn on_change(&self, change: &NoteChange);
+}
 
 fn row_to_note_entry(
     row: &sqlx::sqlite::SqliteRow,
@@ -88,7 +109,12 @@ use super::{
 //      of each link destination) so the `>`/`lk:` link filter matches notes
 //      by name with an indexed lookup instead of a leading-`%` scan. Bump
 //      forces a clean reindex so the column is populated for existing vaults.
-const VERSION: &str = "0.10";
+// 0.11: Note paths are now stored in one canonical (vault-absolute) form
+//       (adr/0021). Existing vaults may hold rows written in relative form (or
+//       relative+absolute duplicates) that canonical reads no longer match.
+//       Bump forces a clean reindex so every row is rewritten canonical and
+//       stale duplicates are dropped.
+const VERSION: &str = "0.11";
 pub(crate) const DB_FILE: &str = "kimun.sqlite";
 
 /// The diff a vault sync walk produces and `NoteIndex::apply` consumes in
@@ -123,6 +149,10 @@ pub(crate) struct NoteIndex {
     /// sync pass has filled the index. Shared across clones (like the pool)
     /// so every handle agrees on readiness.
     healed: Arc<AtomicBool>,
+    /// The registered index observer, if any. Shared across clones (like the
+    /// pool) so every handle emits to the same consumer; `None` until a caller
+    /// registers one, in which case emission is a no-op.
+    observer: Arc<RwLock<Option<Arc<dyn IndexObserver>>>>,
 }
 
 impl NoteIndex {
@@ -161,7 +191,59 @@ impl NoteIndex {
         Ok(Self {
             pool,
             healed: Arc::new(AtomicBool::new(healed)),
+            observer: Arc::new(RwLock::new(None)),
         })
+    }
+
+    /// Registers the index observer, replacing any previous one. Shared across
+    /// clones of this index.
+    pub(crate) fn set_observer(&self, observer: Arc<dyn IndexObserver>) {
+        *self.observer.write().unwrap() = Some(observer);
+    }
+
+    /// Removes the registered observer (if any), so it stops receiving events.
+    pub(crate) fn clear_observer(&self) {
+        *self.observer.write().unwrap() = None;
+    }
+
+    /// Removes the observer only if it is the exact one passed in (by identity).
+    /// Lets a consumer deregister its own observer on teardown without wiping a
+    /// newer one that has since replaced it.
+    pub(crate) fn clear_observer_if(&self, observer: &Arc<dyn IndexObserver>) {
+        let mut guard = self.observer.write().unwrap();
+        if guard.as_ref().is_some_and(|cur| Arc::ptr_eq(cur, observer)) {
+            *guard = None;
+        }
+    }
+
+    /// Whether an observer is registered. Lets callers skip building events
+    /// (e.g. re-hashing every note in a bulk `apply`) when nobody listens.
+    fn has_observer(&self) -> bool {
+        self.observer.read().unwrap().is_some()
+    }
+
+    /// Hands `change` to the registered observer, if any. A no-op when none is
+    /// registered. Paths are normalised to canonical vault-relative form so a
+    /// note has one identity regardless of the write path that produced it.
+    fn emit(&self, change: NoteChange) {
+        if let Some(observer) = self.observer.read().unwrap().as_ref() {
+            observer.on_change(&change);
+        }
+    }
+
+    /// Emits an `Upsert`, normalising the path to canonical vault-relative form.
+    fn emit_upsert(&self, path: &VaultPath, hash: u64) {
+        self.emit(NoteChange::Upsert {
+            path: path.canonical(),
+            hash,
+        });
+    }
+
+    /// Emits a `Delete`, normalising the path to canonical vault-relative form.
+    fn emit_delete(&self, path: &VaultPath) {
+        self.emit(NoteChange::Delete {
+            path: path.canonical(),
+        });
     }
 
     /// `false` when the schema was healed ([`open`](Self::open)) or dropped
@@ -221,6 +303,16 @@ impl NoteIndex {
         insert_notes(&mut tx, &diff.to_add).await?;
         update_notes(&mut tx, &diff.to_modify).await?;
         tx.commit().await?;
+        // Skip event construction (notably re-hashing every added/modified note)
+        // when nothing is listening — the common case for non-RAG users.
+        if self.has_observer() {
+            for path in &diff.to_delete {
+                self.emit_delete(path);
+            }
+            for (entry, text) in diff.to_add.iter().chain(diff.to_modify.iter()) {
+                self.emit_upsert(&entry.path, NoteDetails::content_data_of(text).hash);
+            }
+        }
         Ok(())
     }
 
@@ -232,10 +324,31 @@ impl NoteIndex {
         to: &VaultPath,
         rewritten: &[(NoteEntryData, String)],
     ) -> Result<(), DBError> {
+        let from = from.canonical();
+        let to = to.canonical();
         let mut tx = self.pool.begin().await?;
-        rename_note(&mut tx, from, to).await?;
+        // Capture the moving note's hash before the rows change, so observers
+        // can be told about the note under its new path (a rename leaves the
+        // content — and therefore the hash — untouched).
+        let moved_hash = if self.has_observer() {
+            note_hash(&mut tx, &from).await?
+        } else {
+            None
+        };
+        rename_note(&mut tx, &from, &to).await?;
         update_notes(&mut tx, rewritten).await?;
         tx.commit().await?;
+        if self.has_observer() {
+            if let Some(hash) = moved_hash {
+                self.emit_delete(&from);
+                self.emit_upsert(&to, hash);
+            }
+            // The backlink victims' content changed: their links were
+            // rewritten to the new name.
+            for (entry, text) in rewritten {
+                self.emit_upsert(&entry.path, NoteDetails::content_data_of(text).hash);
+            }
+        }
         Ok(())
     }
 
@@ -244,16 +357,38 @@ impl NoteIndex {
         from: &VaultPath,
         to: &VaultPath,
     ) -> Result<(), DBError> {
+        let from = from.canonical();
+        let to = to.canonical();
         let mut tx = self.pool.begin().await?;
-        rename_directory(&mut tx, from, to).await?;
+        // Capture the affected notes before the prefix rewrite, so observers
+        // learn both sides of every move.
+        let moved = if self.has_observer() {
+            notes_under(&mut tx, &from).await?
+        } else {
+            Vec::new()
+        };
+        rename_directory(&mut tx, &from, &to).await?;
         tx.commit().await?;
+        let from_prefix = dir_prefix(&from);
+        let to_prefix = dir_prefix(&to);
+        for (path, hash) in moved {
+            self.emit_delete(&path);
+            // Mirror the SQL prefix rewrite to obtain the post-rename path.
+            if let Some(rest) = path.to_string().strip_prefix(&from_prefix) {
+                self.emit_upsert(&VaultPath::new(format!("{to_prefix}{rest}")), hash);
+            }
+        }
         Ok(())
     }
 
     pub(crate) async fn delete_notes(&self, paths: &[VaultPath]) -> Result<(), DBError> {
+        let canonical: Vec<VaultPath> = paths.iter().map(|p| p.canonical()).collect();
         let mut tx = self.pool.begin().await?;
-        delete_notes(&mut tx, paths).await?;
+        delete_notes(&mut tx, &canonical).await?;
         tx.commit().await?;
+        for path in &canonical {
+            self.emit_delete(path);
+        }
         Ok(())
     }
 
@@ -261,9 +396,21 @@ impl NoteIndex {
         &self,
         directories: &[VaultPath],
     ) -> Result<(), DBError> {
+        let canonical: Vec<VaultPath> = directories.iter().map(|p| p.canonical()).collect();
         let mut tx = self.pool.begin().await?;
-        delete_directories(&mut tx, directories).await?;
+        // Capture the contained notes before the rows go, so observers get a
+        // Delete per note — same contract as delete_notes above.
+        let mut removed = Vec::new();
+        if self.has_observer() {
+            for directory in &canonical {
+                removed.extend(notes_under(&mut tx, directory).await?);
+            }
+        }
+        delete_directories(&mut tx, &canonical).await?;
         tx.commit().await?;
+        for (path, _) in removed {
+            self.emit_delete(&path);
+        }
         Ok(())
     }
 
@@ -274,7 +421,9 @@ impl NoteIndex {
         entry_data: &NoteEntryData,
         note_details: &NoteDetails,
     ) -> Result<NoteContentData, DBError> {
-        save_note(&self.pool, entry_data, note_details).await
+        let data = save_note(&self.pool, entry_data, note_details).await?;
+        self.emit_upsert(&entry_data.path, data.hash);
+        Ok(data)
     }
 
     pub(crate) async fn search<S: AsRef<str>>(
@@ -295,7 +444,7 @@ impl NoteIndex {
         &self,
         path: &VaultPath,
     ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
-        search_note_by_path(&self.pool, path).await
+        search_note_by_path(&self.pool, &path.canonical()).await
     }
 
     pub(crate) async fn get_notes(
@@ -303,7 +452,7 @@ impl NoteIndex {
         path: &VaultPath,
         recursive: bool,
     ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
-        get_notes(&self.pool, path, recursive).await
+        get_notes(&self.pool, &path.canonical(), recursive).await
     }
 
     pub(crate) async fn get_all_notes(
@@ -316,7 +465,7 @@ impl NoteIndex {
         &self,
         path: &VaultPath,
     ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
-        get_backlinks(&self.pool, path).await
+        get_backlinks(&self.pool, &path.canonical()).await
     }
 
     pub(crate) async fn get_notes_sections(
@@ -324,7 +473,7 @@ impl NoteIndex {
         path: &VaultPath,
         recursive: bool,
     ) -> Result<HashMap<VaultPath, Vec<ContentChunk>>, DBError> {
-        get_notes_sections(&self.pool, path, recursive).await
+        get_notes_sections(&self.pool, &path.canonical(), recursive).await
     }
 
     pub(crate) async fn list_labels(&self) -> Result<Vec<String>, DBError> {
@@ -1516,8 +1665,12 @@ impl NoteBatch {
         links: Vec<crate::note::NoteLink>,
     ) {
         let idx = self.paths.len();
-        let (parent_path, name) = entry_data.path.get_parent_path();
-        self.paths.push(entry_data.path.to_string());
+        // Store every note under its canonical vault-relative key so the index
+        // never holds mixed relative/absolute forms of the same note,
+        // regardless of the path form the caller (or the walker) supplied.
+        let canonical_path = entry_data.path.canonical();
+        let (parent_path, name) = canonical_path.get_parent_path();
+        self.paths.push(canonical_path.to_string());
         self.notes.push(NoteRow {
             path_idx: idx,
             title: data.title,
@@ -1751,6 +1904,53 @@ fn fts4_quote(term: &str) -> String {
     format!("\"{}\"", escaped)
 }
 
+/// A directory path in the form the prefix `LIKE` predicates use: its
+/// canonical string with a trailing separator, so `<prefix> || '%'` matches
+/// exactly the rows under (not merely named like) the directory.
+fn dir_prefix(path: &VaultPath) -> String {
+    let s = path.to_string();
+    if s.ends_with(PATH_SEPARATOR) {
+        s
+    } else {
+        format!("{s}{PATH_SEPARATOR}")
+    }
+}
+
+/// The stored content hash of one indexed note, or `None` when the path has
+/// no row. Read inside the caller's transaction so it reflects pre-mutation
+/// state.
+async fn note_hash(
+    tx: &mut Transaction<'_, Sqlite>,
+    path: &VaultPath,
+) -> Result<Option<u64>, DBError> {
+    let hash: Option<String> = sqlx::query_scalar("SELECT hash FROM notes WHERE path = ?")
+        .bind(path.to_string())
+        .fetch_optional(&mut **tx)
+        .await?;
+    // A non-numeric hash is a corrupt row; 0 keeps the observer informed and
+    // merely forces the consumer to treat the note as changed.
+    Ok(hash.map(|h| h.parse().unwrap_or(0)))
+}
+
+/// `(path, hash)` of every indexed note under `directory` (recursively),
+/// captured inside the caller's transaction so the rename/delete wrappers can
+/// emit observer events for exactly the rows their SQL is about to touch.
+async fn notes_under(
+    tx: &mut Transaction<'_, Sqlite>,
+    directory: &VaultPath,
+) -> Result<Vec<(VaultPath, u64)>, DBError> {
+    let pattern = escape_like_pattern(&dir_prefix(directory));
+    let rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT path, hash FROM notes WHERE path LIKE (? || '%') ESCAPE '\\'")
+            .bind(&pattern)
+            .fetch_all(&mut **tx)
+            .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(path, hash)| (VaultPath::new(&path), hash.parse().unwrap_or(0)))
+        .collect())
+}
+
 /// Escapes SQLite LIKE pattern metacharacters (`\`, `%`, `_`) in `s` so the
 /// result can be used as a safe literal prefix before appending `%`.
 /// Must be paired with `ESCAPE '\\'` in the SQL clause.
@@ -1825,24 +2025,27 @@ async fn rename_directory(
     from: &VaultPath,
     to: &VaultPath,
 ) -> Result<(), DBError> {
-    let from = {
-        let s = from.to_string();
-        if s.ends_with(PATH_SEPARATOR) {
-            s
-        } else {
-            s + &PATH_SEPARATOR.to_string()
-        }
-    };
-    let to = {
-        let s = to.to_string();
-        if s.ends_with(PATH_SEPARATOR) {
-            s
-        } else {
-            s + &PATH_SEPARATOR.to_string()
-        }
-    };
+    // Stored (no trailing separator) form for exact basePath matches, and the
+    // prefix form for everything nested deeper.
+    let from_base = from.to_string();
+    let to_base = to.to_string();
+    let from = dir_prefix(from);
+    let to = dir_prefix(to);
 
     let from_escaped = escape_like_pattern(&from);
+
+    // Direct children: their basePath equals `from` exactly (basePath is
+    // stored without a trailing separator), so the prefix LIKE below cannot
+    // match them.
+    sqlx::query(
+        "UPDATE notes SET path = ? || SUBSTR(path, LENGTH(?) + 1), basePath = ? WHERE basePath = ?",
+    )
+    .bind(&to)
+    .bind(&from)
+    .bind(&to_base)
+    .bind(&from_base)
+    .execute(&mut **tx)
+    .await?;
 
     let notes_sql = "UPDATE notes SET path = ? || SUBSTR(path, LENGTH(?) + 1), basePath = ? || SUBSTR(basePath, LENGTH(?) + 1) WHERE basePath LIKE (? || '%') ESCAPE '\\'";
     sqlx::query(notes_sql)
@@ -1903,13 +2106,7 @@ async fn delete_directory(
     tx: &mut Transaction<'_, Sqlite>,
     directory_path: &VaultPath,
 ) -> Result<(), DBError> {
-    let path_str = directory_path.to_string();
-    let normalized = if path_str.ends_with(PATH_SEPARATOR) {
-        path_str
-    } else {
-        format!("{path_str}{PATH_SEPARATOR}")
-    };
-    let pattern = escape_like_pattern(&normalized);
+    let pattern = escape_like_pattern(&dir_prefix(directory_path));
 
     sqlx::query("DELETE FROM notes WHERE path LIKE (? || '%') ESCAPE '\\'")
         .bind(&pattern)
@@ -3141,6 +3338,53 @@ mod tests {
         assert_eq!(
             new_rows.into_iter().map(|(n,)| n).collect::<Vec<_>>(),
             vec!["foo".to_string()],
+        );
+
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn rename_directory_renames_direct_children_note_rows() {
+        use crate::nfs::{NoteEntryData, VaultPath};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("kimun.sqlite");
+        let db = super::NoteIndex::open(&db_path).await.unwrap();
+
+        // One note directly in the renamed directory, one nested deeper.
+        let mut tx = db.pool().begin().await.unwrap();
+        for path in ["/old_dir/note.md", "/old_dir/sub/deep.md"] {
+            let entry = NoteEntryData {
+                path: VaultPath::note_path_from(path),
+                size: 10,
+                modified_secs: 0,
+            };
+            super::insert_notes(&mut tx, &[(entry, "content".to_string())])
+                .await
+                .unwrap();
+        }
+        super::rename_directory(
+            &mut tx,
+            &VaultPath::new("/old_dir"),
+            &VaultPath::new("/new_dir"),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        let rows: Vec<(String, String)> =
+            sqlx::query_as("SELECT path, basePath FROM notes ORDER BY path")
+                .fetch_all(db.pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                ("/new_dir/note.md".to_string(), "/new_dir".to_string()),
+                (
+                    "/new_dir/sub/deep.md".to_string(),
+                    "/new_dir/sub".to_string()
+                ),
+            ],
         );
 
         db.close().await;

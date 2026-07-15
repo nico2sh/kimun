@@ -3,15 +3,14 @@
 //! The backend (`NvimBackend`) owns the nvim process and its snapshot. This
 //! module owns the *host policy* that sits between that backend and the app:
 //! the `ZZ`/`ZQ` and `:wq`/`:q` quit intercepts, and the per-frame
-//! `content_gen` → `content_revision` mirror.
+//! quit-command policy. The `content_gen` → revision derivation lives in
+//! `snapshot_from_backend`; the editor adopts the snapshot's value.
 //!
 //! As with the [decode seam](super::nvim_decode), the fragile part is pulled
 //! out as a pure decision ([`classify_nvim_key`]) that is fully testable with
 //! no nvim process: given the pending-Z state, the key, the mode and the
 //! command line, it returns *what to do*. [`NvimHost`] is the thin stateful
 //! shell that applies the decision — forwarding to nvim and emitting app events.
-
-use std::num::NonZeroU64;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -118,26 +117,6 @@ fn needs_snapshot(pending_z: bool, key: &KeyEvent) -> bool {
     !pending_z && matches!(key.code, KeyCode::Char('Z') | KeyCode::Enter)
 }
 
-/// Outcome of applying a key on the Nvim backend. The host bumps the cursor
-/// generation only when a key was actually forwarded to nvim.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NvimKeyResult {
-    /// Key was handled without forwarding (buffered Z, or a quit intercept).
-    Consumed,
-    /// Key (and possibly a replayed `Z`) was forwarded to nvim.
-    Forwarded,
-}
-
-/// Values the render loop needs from the Nvim backend each frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FrameSync {
-    /// `content_revision` to mirror, if the refresh task saw a content change.
-    /// `None` leaves the host's revision untouched.
-    pub rev: Option<NonZeroU64>,
-    /// Active visual selection to render.
-    pub selection: Option<Selection>,
-}
-
 /// Host-side Nvim state: the only thing the host must track itself is the
 /// pending-`Z` flag for the `ZZ`/`ZQ` two-key sequence.
 #[derive(Debug, Default)]
@@ -157,7 +136,7 @@ impl NvimHost {
     /// when the decision actually consults mode/cmdline — see [`needs_snapshot`].
     /// Ordinary keystrokes (insert-mode typing, the pending-Z second key) take
     /// the lock-free path: no lock, no clone.
-    pub fn handle_key(&mut self, nvim: &NvimBackend, key: &KeyEvent, tx: &AppTx) -> NvimKeyResult {
+    pub fn handle_key(&mut self, nvim: &NvimBackend, key: &KeyEvent, tx: &AppTx) {
         let decision = if needs_snapshot(self.pending_z, key) {
             let snap = nvim.snapshot();
             classify_nvim_key(self.pending_z, key, &snap.mode, snap.cmdline.as_deref())
@@ -170,7 +149,7 @@ impl NvimHost {
         self.pending_z = matches!(decision, NvimKeyDecision::BufferZ);
 
         match decision {
-            NvimKeyDecision::BufferZ => NvimKeyResult::Consumed,
+            NvimKeyDecision::BufferZ => {}
             NvimKeyDecision::Quit(kind) => {
                 if kind.needs_escape() {
                     // Leave command-line mode so the intercept doesn't strand
@@ -181,7 +160,6 @@ impl NvimHost {
                     tx.send(AppEvent::Autosave).ok();
                 }
                 tx.send(AppEvent::FocusSidebar).ok();
-                NvimKeyResult::Consumed
             }
             NvimKeyDecision::ReplayZThenForward => {
                 nvim.handle_key(
@@ -189,38 +167,27 @@ impl NvimHost {
                     tx.clone(),
                 );
                 nvim.handle_key(key, tx.clone());
-                NvimKeyResult::Forwarded
             }
             NvimKeyDecision::Forward => {
                 nvim.handle_key(key, tx.clone());
-                NvimKeyResult::Forwarded
             }
         }
     }
 
-    /// Per-frame sync: resize nvim to the editor area, then read the snapshot's
-    /// `content_gen` and active visual selection.
+    /// Per-frame sync: resize nvim to the editor area, then read the
+    /// snapshot's active visual selection.
     ///
-    /// Canonical explanation of the revision mirror (referenced from the host's
-    /// key handler): the editor tracks two independent counters. `edit_generation`
-    /// (bumped by every forwarded key) invalidates the view cache; `content_gen`
-    /// is owned by the reverse-refresh task in `backend.rs`, which bumps it *only*
-    /// when `snap.lines` actually diffs. We mirror `content_gen` into the host's
-    /// `content_revision` here. Because navigation keystrokes don't change `lines`,
-    /// they don't bump `content_gen`, so an in-flight autosave's revision token
-    /// stays valid across cursor movement. `NonZeroU64::new(gen + 1)` maps the
-    /// initial `gen == 0` to "no change yet" (`None` leaves the host's revision
-    /// untouched).
-    pub fn frame_sync(&self, nvim: &NvimBackend, width: u16, height: u16) -> FrameSync {
+    /// The revision is deliberately NOT read here. `content_gen` is owned
+    /// by the reverse-refresh task in `backend.rs`, which bumps it *only*
+    /// when `snap.lines` actually diffs; the frame snapshot
+    /// (`snapshot_from_backend`) derives the editor's revision from it
+    /// under a single lock, and the editor's `Revisions` adopts that
+    /// value. Navigation keystrokes don't change `lines`, so they don't
+    /// bump `content_gen` — an in-flight autosave's revision token stays
+    /// valid across cursor movement.
+    pub fn frame_sync(&self, nvim: &NvimBackend, width: u16, height: u16) -> Option<Selection> {
         nvim.maybe_resize(width, height);
-        let snap = nvim.snapshot();
-        let selection = snap.visual_selection;
-        let content_gen = snap.content_gen;
-        drop(snap);
-        FrameSync {
-            rev: NonZeroU64::new(content_gen.saturating_add(1)),
-            selection,
-        }
+        nvim.snapshot().visual_selection
     }
 }
 

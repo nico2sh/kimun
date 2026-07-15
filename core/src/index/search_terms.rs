@@ -986,7 +986,7 @@ mod tests {
     fn search_terms() {
         let query = "some text more terms";
         let search_terms = SearchTerms::from_query_string(query);
-        println!("{:?}", &search_terms);
+        println!("{:?}", search_terms);
 
         let breadcrumb = search_terms.breadcrumb;
         let filename = search_terms.filename;
@@ -1008,7 +1008,7 @@ mod tests {
     fn search_in() {
         let query = "@title in:othertitle";
         let search_terms = SearchTerms::from_query_string(query);
-        println!("{:?}", &search_terms);
+        println!("{:?}", search_terms);
 
         let breadcrumb = search_terms.breadcrumb;
         let filename = search_terms.filename;
@@ -1026,7 +1026,7 @@ mod tests {
     fn search_at() {
         let query = "=file name:directory";
         let search_terms = SearchTerms::from_query_string(query);
-        println!("{:?}", &search_terms);
+        println!("{:?}", search_terms);
 
         let breadcrumb = search_terms.breadcrumb;
         let filename = search_terms.filename;
@@ -1044,7 +1044,7 @@ mod tests {
     fn search_at_quoted() {
         let query = "='file name' name:\"directory path\"";
         let search_terms = SearchTerms::from_query_string(query);
-        println!("{:?}", &search_terms);
+        println!("{:?}", search_terms);
 
         let breadcrumb = search_terms.breadcrumb;
         let filename = search_terms.filename;
@@ -1062,7 +1062,7 @@ mod tests {
     fn search_at_quoted_not_closed() {
         let query = "='file name' name:\"directory path";
         let search_terms = SearchTerms::from_query_string(query);
-        println!("{:?}", &search_terms);
+        println!("{:?}", search_terms);
 
         let breadcrumb = search_terms.breadcrumb;
         let filename = search_terms.filename;
@@ -1081,7 +1081,7 @@ mod tests {
     fn search_combined() {
         let query = "searchterm    =file otherterm name:directory in:title @text      \"some text\" /basedirectory";
         let search_terms = SearchTerms::from_query_string(query);
-        println!("{:?}", &search_terms);
+        println!("{:?}", search_terms);
 
         let breadcrumb = search_terms.breadcrumb;
         let filename = search_terms.filename;

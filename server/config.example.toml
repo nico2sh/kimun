@@ -1,0 +1,108 @@
+# Kimun RAG Server Configuration
+# Copy this file to ~/.config/kimun/server.toml and customize
+
+[server]
+# Host to bind to (default: 127.0.0.1)
+host = "127.0.0.1"
+
+# Port to listen on (default: 7573)
+port = 7573
+
+# Maximum number of concurrent jobs (default: 10)
+max_concurrent_jobs = 10
+
+[auth]
+# Bearer token required on every API request (Authorization: Bearer <token>)
+# and to sign in to the web UI. Leave unset only for a localhost-only dev
+# server; set one whenever the server binds beyond 127.0.0.1.
+# token = "change-me"
+
+[vector_db]
+# Vector database backend: "sqlite" (embedded) or "qdrant" (server).
+
+# SQLite — embedded, local, no server. `path` is a directory holding the
+# database file (one collection per vault). Zero setup; good for a single
+# machine.
+type = "sqlite"
+path = "./rag_sqlite"
+
+# Qdrant — a standalone server; better at scale. Uncomment to use instead:
+# type = "qdrant"
+# url = "http://localhost:6333"
+# `collection` is a namespace PREFIX: each vault gets its own Qdrant collection
+# named "<collection>-<vault-id>". Leave empty to name collections by vault-id
+# alone.
+# collection = "kimun_embeddings"
+
+[embedder]
+# Which model turns text into vectors. OPTIONAL: with no [embedder] section the
+# server is UNCONFIGURED — it boots and serves the web UI, but rejects all
+# indexing and search until an embedder is set (easiest from the web UI /config).
+# All collections share one embedder, and the SAME model must embed documents
+# and queries. Changing the embedder or model invalidates every stored vector:
+# on the next start the server detects the change (embedder fingerprint) and
+# wipes ALL stored collections; every vault re-indexes on its next sync.
+# The vector width is detected automatically.
+
+# Local, in-process, no network. Default model is BGE-Large-EN-V1.5 (1024 dims).
+type = "fastembed"
+# Optional: pick a bundled model by variant name (e.g. BGESmallENV15 = 384 dims,
+# BGEBaseENV15 = 768) or model code (e.g. Xenova/bge-small-en-v1.5). The vector
+# width is detected from the chosen model.
+# model = "BGESmallENV15"
+
+# Ollama server:
+# type = "ollama"
+# url = "http://localhost:11434"
+# model = "nomic-embed-text"
+# doc_prefix = "search_document: "   # model-specific; leave empty if unused
+# query_prefix = "search_query: "
+
+# Any OpenAI-compatible /embeddings endpoint (OpenAI, LM Studio, vLLM, gateways):
+# type = "openai"
+# url = "https://api.openai.com/v1"
+# model = "text-embedding-3-small"
+# api_key = "..."                    # or falls back to OPENAI_API_KEY
+
+[llm]
+# LLM provider: "gemini", "claude", "openai", or "mistral"
+provider = "gemini"
+
+# Model name (provider-specific)
+# Gemini: "gemini-2.5-flash-preview-04-17" (default, most cost-effective)
+# Claude: "claude-3-5-sonnet-20241022" (default, best for text)
+# OpenAI: "gpt-4o-mini" (default, most cost-effective)
+# Mistral: "mistral-large-latest" (default)
+model = "gemini-2.5-flash-preview-04-17"
+
+# API key. Prefer setting it here (server-owned, and editable in the web UI) so
+# Kimün never handles it. If omitted, the server falls back to the provider's
+# env var (GEMINI_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY / MISTRAL_API_KEY).
+# api_key = "..."
+
+# Example configurations for each provider:
+
+# For Claude (recommended for best text quality):
+# provider = "claude"
+# model = "claude-3-5-sonnet-20241022"
+
+# For OpenAI (cost-effective):
+# provider = "openai"
+# model = "gpt-4o-mini"
+
+# The openai provider can also point at any OpenAI-compatible chat endpoint
+# (Ollama, llama.cpp, OpenRouter, LM Studio) via an optional url:
+# provider = "openai"
+# url = "http://localhost:11434/v1"
+# model = "llama3"
+
+# For Mistral:
+# provider = "mistral"
+# model = "mistral-large-latest"
+
+[reranker]
+# Enable cross-encoder reranking for better results (default: true)
+enabled = true
+
+# Number of results to return after reranking (default: 20)
+top_k = 20

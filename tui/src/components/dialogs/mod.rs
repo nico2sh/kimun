@@ -21,7 +21,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
 use crate::components::Component;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, InputEvent, SaveSource, SortTarget};
+use crate::components::events::{AppEvent, AppTx, InputEvent, OverlayData, SaveSource, SortTarget};
 use crate::components::file_list::{SortField, SortOrder};
 use crate::components::overlay::{Overlay, OverlayKind, OverlayMsg};
 use crate::settings::themes::Theme;
@@ -129,7 +129,7 @@ impl ActiveDialog {
     /// Open the save-search dialog. `provenance` is the saved-search name the
     /// query came from (the breadcrumb), pre-filled as the default name. The
     /// existing names load in the background and arrive via
-    /// [`AppEvent::SavedSearchNamesLoaded`] to drive the dialog's hint.
+    /// [`AppEvent::OverlayData(OverlayData::SavedSearchNamesLoaded)`] to drive the dialog's hint.
     pub fn save_search(
         query: String,
         provenance: Option<String>,
@@ -141,7 +141,10 @@ impl ActiveDialog {
         tokio::spawn(async move {
             if let Ok(searches) = vault.list_saved_searches().await {
                 let names = searches.into_iter().map(|s| s.name).collect();
-                tx.send(AppEvent::SavedSearchNamesLoaded(names)).ok();
+                tx.send(AppEvent::OverlayData(OverlayData::SavedSearchNamesLoaded(
+                    names,
+                )))
+                .ok();
             }
         });
         ActiveDialog::SaveSearch(SaveSearchDialog::new(query, provenance, source))
@@ -182,14 +185,14 @@ impl Overlay for ActiveDialog {
         <Self as Component>::handle_input(self, event, tx)
     }
 
-    fn handle_app_message(
+    fn handle_data(
         &mut self,
-        msg: &AppEvent,
+        data: &OverlayData,
         _vault: &Arc<NoteVault>,
         tx: &AppTx,
     ) -> OverlayMsg {
-        match msg {
-            AppEvent::RenameValidation { available } => {
+        match data {
+            OverlayData::RenameValidation { available } => {
                 if let ActiveDialog::Rename(d) = self {
                     d.validation_state = if *available {
                         ValidationState::Available
@@ -200,7 +203,7 @@ impl Overlay for ActiveDialog {
                 }
                 OverlayMsg::Consumed
             }
-            AppEvent::MoveDirectoriesLoaded(paths) => {
+            OverlayData::MoveDirectoriesLoaded(paths) => {
                 if let ActiveDialog::Move(d) = self {
                     d.all_dirs = paths.clone();
                     d.filtered = None;
@@ -212,7 +215,7 @@ impl Overlay for ActiveDialog {
                 }
                 OverlayMsg::Consumed
             }
-            AppEvent::MoveFilterResults(paths) => {
+            OverlayData::MoveFilterResults(paths) => {
                 if let ActiveDialog::Move(d) = self {
                     d.filter_task = None;
                     d.filtered = Some(paths.clone());
@@ -225,7 +228,7 @@ impl Overlay for ActiveDialog {
                 }
                 OverlayMsg::Consumed
             }
-            AppEvent::MoveDestValidation { available } => {
+            OverlayData::MoveDestValidation { available } => {
                 if let ActiveDialog::Move(d) = self {
                     d.dest_validation = if *available {
                         ValidationState::Available
@@ -236,13 +239,13 @@ impl Overlay for ActiveDialog {
                 }
                 OverlayMsg::Consumed
             }
-            AppEvent::SavedSearchNamesLoaded(names) => {
+            OverlayData::SavedSearchNamesLoaded(names) => {
                 if let ActiveDialog::SaveSearch(d) = self {
                     d.set_existing_names(names.clone());
                 }
                 OverlayMsg::Consumed
             }
-            AppEvent::DialogError(text) => {
+            OverlayData::Error(text) => {
                 self.set_error(text.clone());
                 OverlayMsg::Consumed
             }

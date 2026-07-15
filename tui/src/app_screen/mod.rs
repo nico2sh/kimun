@@ -1,6 +1,7 @@
 pub mod browse;
 pub mod doc_meta;
 pub mod editor;
+pub mod editor_input;
 pub mod onboarding;
 pub mod overlay_host;
 pub mod panel_set;

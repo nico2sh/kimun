@@ -12,7 +12,7 @@ use tokio::task::JoinHandle;
 use crate::components::Component;
 use crate::components::dialogs::ValidationState;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx};
+use crate::components::events::{AppEvent, AppTx, FileOp, OverlayData};
 use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::components::single_line_input::{InputOutcome, SingleLineInput};
 use crate::settings::themes::Theme;
@@ -68,7 +68,7 @@ impl RenameDialog {
 
     /// Abort any in-flight validation task and spawn a new one for the
     /// current value of `self.input`.  The result is sent as
-    /// [`AppEvent::RenameValidation`] so that state updates happen in
+    /// [`AppEvent::OverlayData(OverlayData::RenameValidation)`] so that state updates happen in
     /// `handle_app_message` rather than in `render`.
     fn spawn_validation(&mut self, tx: &AppTx) {
         // Abort the previous task if it is still running.
@@ -91,7 +91,9 @@ impl RenameDialog {
             let exists = vault.exists(&candidate).await;
             // `true` means the name is *available* (does not exist yet).
             tx_clone
-                .send(AppEvent::RenameValidation { available: !exists })
+                .send(AppEvent::OverlayData(OverlayData::RenameValidation {
+                    available: !exists,
+                }))
                 .ok();
         });
 
@@ -125,10 +127,12 @@ impl RenameDialog {
                         let result = vault.rename_entry(&from, &new_path).await;
                         match result {
                             Ok(()) => {
-                                tx2.send(AppEvent::EntryRenamed { from, to: new_path }).ok();
+                                tx2.send(AppEvent::FileOp(FileOp::Renamed { from, to: new_path }))
+                                    .ok();
                             }
                             Err(e) => {
-                                tx2.send(AppEvent::DialogError(e.to_string())).ok();
+                                tx2.send(AppEvent::OverlayData(OverlayData::Error(e.to_string())))
+                                    .ok();
                             }
                         }
                     });
