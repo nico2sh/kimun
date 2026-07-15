@@ -1,6 +1,6 @@
 [package]
 name = "kimun-notes"
-version = "0.20.0"
+version = "0.20.1"
 edition = "2024"
 description = "A terminal-based notes application"
 license = "MIT"
@@ -17,7 +17,7 @@ path = "src/lib.rs"
 
 [dependencies]
 kimun_core = { path = "../core", version = "0.2.28" }
-kimun_server_client = { path = "../client", version = "0.1.0" }
+kimun_server_client = { path = "../client", version = "0.1.1" }
 
 clap = { version = "4", features = ["derive"] }
 color-eyre = "0.6.5"
