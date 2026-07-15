@@ -88,7 +88,8 @@ Open `http://127.0.0.1:7573/` for the [web UI](#web-ui); the API lives under
 `/api` (see [API](#api)).
 
 First run downloads the embedding model (and the reranker, if enabled) — a few
-hundred MB — unless you point `[embedder]` at an external service.
+hundred MB. Pointing `[embedder]` at an external service skips the embedding
+model, but the reranker model still downloads unless `[reranker]` is disabled.
 
 To connect Kimün, set the server address in Preferences (Server section) or in
 `config.toml` — `kimun_server_url = "http://localhost:7573"` under `[global]`,
@@ -132,8 +133,24 @@ See `config.example.toml` for the annotated template. Sections:
   `model`, optional `api_key`. The key is server-owned; if omitted it falls back
   to the provider's env var (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
   `GEMINI_API_KEY`, `MISTRAL_API_KEY`). Kimün never sends a key.
-- **`[reranker]`** — `enabled` (default true), `top_k` (default result count,
-  overridable per request via `context_size`).
+- **`[reranker]`** — `enabled` (default true), `top_k` (default result count
+  with or without reranking, overridable per request via `context_size`), and
+  a backend:
+  - `type = "fastembed"` (default) — local cross-encoder, model downloaded
+    from Hugging Face on first start regardless of the `[embedder]` choice.
+  - `type = "http"` — any Cohere/Jina-compatible rerank endpoint (`url`,
+    optional `model`, optional `api_key` sent as a bearer token; `/rerank` is
+    appended to `url`): [Cohere](https://docs.cohere.com/reference/rerank),
+    [Jina AI](https://jina.ai/reranker/),
+    [Voyage AI](https://docs.voyageai.com/reference/reranker-api), or
+    self-hosted [vLLM](https://docs.vllm.ai) / Infinity. OpenAI, Mistral,
+    Gemini, and Anthropic offer no rerank API — Anthropic points to Voyage
+    for embeddings and reranking. See `config.example.toml` for each.
+
+  Reranker initialization failure (blocked model download, unreachable
+  endpoint) is non-fatal: the server logs a warning and runs without
+  reranking (`/health` reports `"reranker": false`). Unlike the embedder,
+  switching rerankers never invalidates stored vectors.
 
 ## API
 

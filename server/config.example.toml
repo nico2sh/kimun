@@ -76,6 +76,13 @@ type = "fastembed"
 # model = "gemini-embedding-001"     # 3072 dims
 # api_key = "..."                    # Gemini API key
 
+# Voyage AI (Anthropic has no embeddings API and points to Voyage; the Voyage
+# API is OpenAI-shaped):
+# type = "openai"
+# url = "https://api.voyageai.com/v1"
+# model = "voyage-3.5"
+# api_key = "..."                    # Voyage API key
+
 [llm]
 # LLM provider: "gemini", "claude", "openai", or "mistral"
 provider = "gemini"
@@ -113,8 +120,47 @@ model = "gemini-2.5-flash-preview-04-17"
 # model = "mistral-large-latest"
 
 [reranker]
-# Enable cross-encoder reranking for better results (default: true)
+# Enable reranking for better result ordering (default: true). If the reranker
+# fails to initialize (model download blocked, endpoint unreachable), the
+# server logs a warning and keeps running without reranking; /health then
+# reports "reranker": false.
 enabled = true
 
-# Number of results to return after reranking (default: 20)
+# Default number of results returned by search/answer, overridable per request
+# via context_size. Applies with or without reranking (default: 20).
 top_k = 20
+
+# Local fastembed cross-encoder (BGE-Reranker-Base), the default. Downloads
+# the model from Hugging Face on first start — independent of the [embedder]
+# choice. Set enabled = false (or use type = "http") to skip the download.
+type = "fastembed"
+
+# Or any Cohere/Jina-compatible HTTP rerank endpoint: POST {url}/rerank with
+# {model, query, documents} answered by scored indices. Covers Cohere, Jina,
+# Voyage, and self-hosted vLLM / Infinity. NOT available from OpenAI, Mistral,
+# Gemini, or Anthropic — none of them offers a rerank API (Anthropic points to
+# Voyage). `model` is optional for single-model self-hosted servers; `api_key`
+# is sent as a bearer token.
+#
+# Cohere:
+# type = "http"
+# url = "https://api.cohere.com/v2"
+# model = "rerank-v3.5"
+# api_key = "..."
+#
+# Jina AI:
+# type = "http"
+# url = "https://api.jina.ai/v1"
+# model = "jina-reranker-v2-base-multilingual"
+# api_key = "..."
+#
+# Voyage AI (Anthropic's recommended embeddings/reranking partner):
+# type = "http"
+# url = "https://api.voyageai.com/v1"
+# model = "rerank-2.5"
+# api_key = "..."
+#
+# Self-hosted vLLM (or Infinity at its root URL):
+# type = "http"
+# url = "http://localhost:8000/v1"
+# model = "BAAI/bge-reranker-v2-m3"

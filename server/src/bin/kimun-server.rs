@@ -175,7 +175,7 @@ async fn main() -> anyhow::Result<()> {
 async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<Option<KimunRag>> {
     use anyhow::Context;
     use kimun_server::{
-        config::{EmbedderConfig, VectorDbConfig},
+        config::{EmbedderConfig, RerankerProvider, VectorDbConfig},
         dbembeddings::{
             embedder::{Embedder, fastembedder::FastEmbedder, http::HttpEmbedder},
             vecqdrant::VecQdrant,
@@ -303,10 +303,30 @@ async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<Option<Kim
 
     let mut rag = KimunRag::new(store, embedder, llm_client).with_fingerprint(fingerprint);
 
-    // Enable reranking if configured
+    // Enable reranking if configured. Initialization failure (typically: the
+    // cross-encoder model download failed — offline, proxy — or an unreachable
+    // rerank endpoint) is non-fatal; the server logs a warning and serves with
+    // plain vector ranking.
     if config.reranker.enabled {
-        tracing::info!("Enabling reranking");
-        rag = rag.with_reranking()?;
+        match kimun_server::reranker::from_config(&config.reranker).await {
+            Ok(reranker) => {
+                tracing::info!(
+                    "Reranking enabled ({})",
+                    match config.reranker.provider {
+                        RerankerProvider::FastEmbed => "local cross-encoder".to_string(),
+                        RerankerProvider::Http => format!(
+                            "http endpoint {}",
+                            config.reranker.url.as_deref().unwrap_or_default()
+                        ),
+                    }
+                );
+                rag = rag.with_reranker(reranker);
+            }
+            Err(e) => tracing::warn!(
+                "Reranker initialization failed ({e:#}); continuing without reranking — \
+                 semantic search still works, results use plain vector ranking"
+            ),
+        }
     } else {
         tracing::info!("Reranking disabled");
     }
@@ -329,6 +349,8 @@ async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<Option<Kim
 /// semantic-only (adr/0022). A degraded server (embedder configured but its
 /// initialization failed at startup) reports `embedder: null` too — the
 /// capability is genuinely absent — plus the error under `degraded`.
+/// `reranker` likewise reports the *active* reranker, not the config: an
+/// enabled reranker whose model download failed shows `false`.
 async fn health_handler(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
 ) -> axum::Json<serde_json::Value> {
@@ -339,7 +361,7 @@ async fn health_handler(
         .map(|e| e.provider());
     axum::Json(serde_json::json!({
         "status": "ok",
-        "reranker": state.config.reranker.enabled,
+        "reranker": state.rag.as_ref().is_some_and(|r| r.has_reranker()),
         "embedder": embedder,
         "llm_provider": state.config.llm.as_ref().map(|l| l.provider()),
         "auth_required": state.config.auth.token.is_some(),

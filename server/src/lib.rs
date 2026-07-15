@@ -10,7 +10,7 @@ use log::debug;
 use crate::document::{FlattenedChunk, KimunDoc};
 
 // Re-export commonly used types and functions
-use crate::reranker::CrossEncoderReranker;
+use crate::reranker::Reranker;
 pub use document::{KimunSection, split_chunks_for_rag};
 
 pub mod dbembeddings;
@@ -158,7 +158,7 @@ pub struct KimunRag {
     /// `None` on a semantic-only server — search works, question-answering does
     /// not (adr/0022).
     llm_client: Option<Arc<dyn LLMClient + Send + Sync>>,
-    reranker: Option<Arc<CrossEncoderReranker>>,
+    reranker: Option<Arc<dyn Reranker>>,
     /// The embedder fingerprint this pipeline must find recorded with the
     /// store's data (adr/0025). `None` skips the gate (tests, callers that
     /// enforce it themselves).
@@ -187,11 +187,21 @@ impl KimunRag {
         }
     }
 
-    /// Enable reranking with the given top_k parameter
-    pub fn with_reranking(mut self) -> anyhow::Result<Self> {
-        let reranker = CrossEncoderReranker::new()?;
-        self.reranker = Some(Arc::new(reranker));
-        Ok(self)
+    /// Attach a reranker (built by [`reranker::from_config`]). The caller owns
+    /// the failure policy: reranker initialization is non-fatal at the server
+    /// level — on error nothing is attached and results fall back to plain
+    /// vector ranking. `/health` reports the actual state via
+    /// [`Self::has_reranker`].
+    pub fn with_reranker(mut self, reranker: Arc<dyn Reranker>) -> Self {
+        self.reranker = Some(reranker);
+        self
+    }
+
+    /// Whether a reranker is actually active. Config may ask for one that then
+    /// failed to initialize, so capability probes must ask the rag, not the
+    /// config.
+    pub fn has_reranker(&self) -> bool {
+        self.reranker.is_some()
     }
 
     /// Arms the **embedder fingerprint** gate (adr/0025): before the first data
@@ -745,6 +755,15 @@ mod tests {
             Arc::new(FakeEmbedder),
             if llm { Some(Arc::new(FakeLlm)) } else { None },
         )
+    }
+
+    #[test]
+    fn reranker_is_absent_until_successfully_enabled() {
+        let r = rag(FakeVectorStore::default(), false);
+        assert!(
+            !r.has_reranker(),
+            "a fresh KimunRag reports no reranker — /health must not claim one"
+        );
     }
 
     /// A store returning note A three times at the top, then B, then C —
