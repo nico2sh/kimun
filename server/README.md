@@ -151,7 +151,8 @@ the differences.
 
 ### `POST /api/embeddings`
 
-Semantic search (no LLM). Returns the matching chunks.
+Semantic search (no LLM). Returns the matching chunks plus `query_time_ms`,
+the wall-clock duration of the search pipeline.
 
 ```json
 { "vault_id": "…", "query": "What are RAG systems?", "context_size": "medium" }

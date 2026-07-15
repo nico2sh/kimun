@@ -90,6 +90,9 @@ pub struct QueryResponse {
 #[derive(Debug, Serialize)]
 pub struct EmbeddingsResponse {
     pub chunks: Vec<ChunkResult>,
+    /// Wall-clock duration of the whole search pipeline (query embedding +
+    /// store search + rerank), in milliseconds.
+    pub query_time_ms: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -229,14 +232,19 @@ pub async fn get_embeddings_handler(
     let collection = CollectionKey::parse(&request.vault_id)?;
     let top_k = resolve_top_k(request.context_size, state.config.reranker.top_k);
 
+    let started = std::time::Instant::now();
     let results = state
         .rag()?
         .search(&collection, &request.query, top_k)
         .await?;
+    let query_time_ms = started.elapsed().as_millis() as u64;
 
     let chunks: Vec<ChunkResult> = results.into_iter().map(ChunkResult::from).collect();
 
-    Ok(Json(EmbeddingsResponse { chunks }))
+    Ok(Json(EmbeddingsResponse {
+        chunks,
+        query_time_ms,
+    }))
 }
 
 /// Answer - Query text → LLM answer with context (queued). The LLM is the one
