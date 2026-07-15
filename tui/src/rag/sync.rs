@@ -116,24 +116,24 @@ pub fn spawn_rag_sync(
 
             let result = if ticks_since_reconcile >= RECONCILE_EVERY_N_TICKS {
                 ticks_since_reconcile = 0;
-                match sync.tick().await {
-                    // Reconcile skipped: the index flipped to rebuilding
-                    // between the gate above and the pass. Retry next tick.
-                    Ok(false) => {
-                        ticks_since_reconcile = RECONCILE_EVERY_N_TICKS;
-                        Ok(())
-                    }
-                    Ok(true) => Ok(()),
-                    Err(e) => Err(e),
-                }
+                sync.tick().await // drain + reconcile
             } else {
                 ticks_since_reconcile += 1;
                 sync.drain().await // fast path
             };
             let status = match result {
-                Ok(()) => {
+                Ok(true) => {
                     auth_failed = false;
                     RagStatus::Online { llm_available }
+                }
+                // Pass skipped: the index flipped to rebuilding between the
+                // gate above and the call. Nothing was synced, so keep
+                // reporting Syncing (not Online) and force a full reconcile
+                // once the index is ready again.
+                Ok(false) => {
+                    ticks_since_reconcile = RECONCILE_EVERY_N_TICKS;
+                    auth_failed = false;
+                    RagStatus::Syncing { llm_available }
                 }
                 // The server rejected our token (401/403): a credentials
                 // problem, not an unreachable server.

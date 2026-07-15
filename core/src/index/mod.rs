@@ -3380,7 +3380,10 @@ mod tests {
             rows,
             vec![
                 ("/new_dir/note.md".to_string(), "/new_dir".to_string()),
-                ("/new_dir/sub/deep.md".to_string(), "/new_dir/sub".to_string()),
+                (
+                    "/new_dir/sub/deep.md".to_string(),
+                    "/new_dir/sub".to_string()
+                ),
             ],
         );
 

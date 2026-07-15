@@ -105,17 +105,19 @@ impl RagSync {
     }
 
     /// One sync pass: flush pending changes, then reconcile to repair drift.
-    /// Returns `false` when the reconcile was skipped because the local index
+    /// Returns `false` when either half was skipped because the local index
     /// is not ready yet — call again once it is.
     pub async fn tick(&self) -> Result<bool, RagError> {
-        drain(&self.vault, &self.dirty, &self.client).await?;
-        reconcile(&self.vault, &self.client).await
+        let drained = drain(&self.vault, &self.dirty, &self.client).await?;
+        let reconciled = reconcile(&self.vault, &self.client).await?;
+        Ok(drained && reconciled)
     }
 
     /// Flush pending changes only — the cheap fast path (touches only dirty
     /// notes). Run this often; run [`tick`](Self::tick)/[`reconcile`](Self::reconcile)
-    /// occasionally as the safety net.
-    pub async fn drain(&self) -> Result<(), RagError> {
+    /// occasionally as the safety net. Returns `false` when skipped because
+    /// the local index is not ready.
+    pub async fn drain(&self) -> Result<bool, RagError> {
         drain(&self.vault, &self.dirty, &self.client).await
     }
 
@@ -140,7 +142,6 @@ impl Drop for RagSync {
         self.vault.clear_index_observer_if(&self.observer);
     }
 }
-
 
 /// Builds the wire document for a note: its canonical path, content hash, and
 /// heading sections pulled from the index. Returns `None` when the note has no
@@ -173,20 +174,22 @@ pub async fn build_doc(
 
 /// Flushes the dirty-set to the server. Failed operations are re-queued so the
 /// next drain (or a reconcile) retries them.
+///
+/// Returns `false` (doing nothing) when the local index is not ready: an
+/// unready (healed/rebuilding) index reads as empty, so build_doc would find
+/// no chunks and turn queued upserts into server-side deletes. The dirty-set
+/// stays queued until the index is filled; callers should retry then.
 pub async fn drain<T: RagTransport>(
     vault: &NoteVault,
     dirty: &DirtySet,
     transport: &T,
-) -> Result<(), RagError> {
-    // An unready (healed/rebuilding) index reads as empty: build_doc would find
-    // no chunks and turn queued upserts into server-side deletes. Leave the
-    // dirty-set queued until the index is filled.
+) -> Result<bool, RagError> {
     if !vault.index_ready() {
-        return Ok(());
+        return Ok(false);
     }
     let ops = dirty.drain();
     if ops.is_empty() {
-        return Ok(());
+        return Ok(true);
     }
 
     let mut upserts: Vec<(VaultPath, u64)> = Vec::new();
@@ -232,7 +235,7 @@ pub async fn drain<T: RagTransport>(
 
     match first_err {
         Some(e) => Err(e),
-        None => Ok(()),
+        None => Ok(true),
     }
 }
 
@@ -243,7 +246,10 @@ pub async fn drain<T: RagTransport>(
 /// healed/rebuilding index reads as an empty vault, and diffing against that
 /// snapshot would put every server doc in `to_delete` — wiping the collection.
 /// Callers should retry once the index is filled.
-pub async fn reconcile<T: RagTransport>(vault: &NoteVault, transport: &T) -> Result<bool, RagError> {
+pub async fn reconcile<T: RagTransport>(
+    vault: &NoteVault,
+    transport: &T,
+) -> Result<bool, RagError> {
     if !vault.index_ready() {
         return Ok(false);
     }
@@ -469,13 +475,14 @@ mod tests {
         assert!(transport.pushed.lock().unwrap().is_empty());
 
         // Drain likewise holds queued ops instead of misreading the empty
-        // index (an upsert would otherwise become a server-side delete).
+        // index (an upsert would otherwise become a server-side delete),
+        // and reports the skip so callers don't claim the vault is synced.
         let dirty = register(&vault);
         dirty.record(&kimun_core::NoteChange::Upsert {
             path: VaultPath::new("precious.md"),
             hash: 1,
         });
-        drain(&vault, &dirty, &transport).await.unwrap();
+        assert!(!drain(&vault, &dirty, &transport).await.unwrap());
         assert_eq!(dirty.len(), 1);
         assert!(transport.deleted.lock().unwrap().is_empty());
     }
