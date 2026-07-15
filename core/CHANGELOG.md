@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.28](https://github.com/nico2sh/kimun/compare/kimun_core-v0.2.27...kimun_core-v0.2.28) - 2026-07-15
+
+### Added
+
+- sqlite vector store
+- webserver ui
+- embedding server
+- events on store and delete notes that can be subscribed on
+
+### Fixed
+
+- bug hunt
+
+### Other
+
+- hardening the server
+- clippy
+- clippy
+
 ## [0.2.27](https://github.com/nico2sh/kimun/compare/kimun_core-v0.2.26...kimun_core-v0.2.27) - 2026-06-18
 
 ### Added

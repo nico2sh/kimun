@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.19.5...kimun-notes-v0.20.0) - 2026-07-15
+
+### Added
+
+- sqlite vector store
+- server config in ui
+- optional embedding
+- semantic search working
+- semantic search
+- rag wiring
+
+### Fixed
+
+- bug hunt
+- no semantic search when no server config
+- fmt
+- update and publish client
+- semantic search collapsing to a single result
+- working semantic search
+- issues with absolute and relative paths
+
+### Other
+
+- hardening the server
+- clippy
+- server documentation
+- panels deepened
+- app events grouped
+- renamed client to server reference instead of rag
+- rag server renamed to kimun server
+- dependencies upgrade
+
 ## [0.19.5](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.19.4...kimun-notes-v0.19.5) - 2026-06-18
 
 ### Added
