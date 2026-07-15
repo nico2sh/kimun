@@ -1,6 +1,6 @@
 [package]
 name = "kimun_server_client"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Client for the Kimün RAG server — capability probing, note sync, and hash-diff reconciliation"
 license = "MIT"
