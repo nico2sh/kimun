@@ -113,16 +113,19 @@ impl EmbedderConfig {
     }
 }
 
-/// Vector store selection. `lance` is embedded (local, file-backed, no server);
-/// `qdrant` talks to a standalone server. A Turso backend is planned as a second
-/// embedded option once it supports vector similarity search.
+/// Vector store selection. `sqlite` is embedded (local, file-backed, no
+/// server); `qdrant` talks to a standalone server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum VectorDbConfig {
-    /// Embedded LanceDB store. `path` is a local directory (one table per vault).
-    #[serde(rename = "lance")]
-    Lance {
-        #[serde(default = "default_lance_path")]
+    /// Embedded SQLite store. `path` is a local directory holding the
+    /// database file (one collection per vault inside it). `lance` is
+    /// accepted as a legacy alias: the replaced LanceDB backend's data is
+    /// unreadable either way, so an old config boots an empty store and the
+    /// clients' next reconciliation re-pushes everything.
+    #[serde(rename = "sqlite", alias = "lance")]
+    Sqlite {
+        #[serde(default = "default_sqlite_path")]
         path: PathBuf,
     },
     #[serde(rename = "qdrant")]
@@ -303,23 +306,23 @@ fn default_max_concurrent_jobs() -> usize {
     10
 }
 
-fn default_lance_path() -> PathBuf {
-    PathBuf::from("./rag_lance")
+fn default_sqlite_path() -> PathBuf {
+    PathBuf::from("./rag_sqlite")
 }
 
-/// LanceDB store path baked into a *generated* first-run config: an absolute
-/// path under the OS data dir (`~/.local/share/kimun/rag_lance`) so the store
-/// does not float with the process's launch directory the way `./rag_lance`
+/// SQLite store path baked into a *generated* first-run config: an absolute
+/// path under the OS data dir (`~/.local/share/kimun/rag_sqlite`) so the store
+/// does not float with the process's launch directory the way `./rag_sqlite`
 /// would (adr/0022). Falls back to the relative default if the data dir can't be
 /// resolved.
-fn generated_lance_path() -> PathBuf {
+fn generated_sqlite_path() -> PathBuf {
     match dirs::data_dir() {
         Some(mut dir) => {
             dir.push("kimun");
-            dir.push("rag_lance");
+            dir.push("rag_sqlite");
             dir
         }
-        None => default_lance_path(),
+        None => default_sqlite_path(),
     }
 }
 
@@ -355,7 +358,7 @@ fn default_reranker_top_k() -> usize {
     20
 }
 
-/// A zero-config default: LanceDB under the data dir, default `127.0.0.1`
+/// A zero-config default: SQLite under the data dir, default `127.0.0.1`
 /// bind, no embedder (unconfigured, adr/0024), no LLM, no auth. This is what a
 /// first run with no config file boots from and writes to disk (adr/0022).
 impl Default for RagConfig {
@@ -366,8 +369,8 @@ impl Default for RagConfig {
                 port: default_port(),
                 max_concurrent_jobs: default_max_concurrent_jobs(),
             },
-            vector_db: VectorDbConfig::Lance {
-                path: generated_lance_path(),
+            vector_db: VectorDbConfig::Sqlite {
+                path: generated_sqlite_path(),
             },
             embedder: None,
             llm: None,
@@ -381,7 +384,7 @@ impl Default for RagConfig {
 }
 
 impl RagConfig {
-    /// A ready-to-run config for `--default-config`: embedded LanceDB plus the
+    /// A ready-to-run config for `--default-config`: embedded SQLite plus the
     /// local fastembed embedder with its default model. Unlike [`Default`] —
     /// which is *unconfigured* (no embedder, data operations rejected,
     /// adr/0024) — this serves indexing and search out of the box. Still
@@ -403,7 +406,7 @@ impl RagConfig {
         let config = Self::ready_default();
         if !path.exists() {
             config.save_to(path)?;
-            tracing::info!("Wrote default config (LanceDB + fastembed) to {:?}", path);
+            tracing::info!("Wrote default config (SQLite + fastembed) to {:?}", path);
         }
         Ok(config)
     }
@@ -432,9 +435,11 @@ pub struct ConfigForm {
     pub embedder_url: String,
     pub embedder_model: String,
     pub embedder_api_key: String,
-    /// `lance` | `qdrant`.
+    /// `sqlite` | `qdrant`.
     pub vector_db: String,
-    pub lance_path: String,
+    /// Aliased so form posts predating the SQLite rename still deserialize.
+    #[serde(alias = "lance_path")]
+    pub sqlite_path: String,
     pub qdrant_url: String,
     pub qdrant_collection: String,
     #[serde(default)]
@@ -571,11 +576,12 @@ impl RagConfig {
         };
 
         let vector_db = match f.vector_db.as_str() {
-            "lance" => {
-                let path = f.lance_path.trim();
-                VectorDbConfig::Lance {
+            // "lance" accepted from stale forms predating the SQLite rename.
+            "sqlite" | "lance" => {
+                let path = f.sqlite_path.trim();
+                VectorDbConfig::Sqlite {
                     path: if path.is_empty() {
-                        generated_lance_path()
+                        generated_sqlite_path()
                     } else {
                         PathBuf::from(path)
                     },
@@ -688,7 +694,7 @@ impl RagConfig {
         let config = Self::default();
         config.save_to(path)?;
         tracing::info!(
-            "No config found; wrote an unconfigured default (LanceDB, no embedder, no LLM) to {:?} — open the web UI /config to set up an embedder",
+            "No config found; wrote an unconfigured default (SQLite, no embedder, no LLM) to {:?} — open the web UI /config to set up an embedder",
             path
         );
         Ok(config)
@@ -891,21 +897,41 @@ token = "secret-token"
     }
 
     #[test]
-    fn lance_vector_db_parses_with_default_path() {
+    fn sqlite_vector_db_parses_with_default_path() {
         let config_toml = r#"
 [server]
 [vector_db]
-type = "lance"
+type = "sqlite"
 [llm]
 provider = "gemini"
 [reranker]
 "#;
         let config: RagConfig = toml::from_str(config_toml).unwrap();
         match config.vector_db {
-            VectorDbConfig::Lance { path } => {
-                assert_eq!(path, default_lance_path())
+            VectorDbConfig::Sqlite { path } => {
+                assert_eq!(path, default_sqlite_path())
             }
-            other => panic!("expected lance, got {other:?}"),
+            other => panic!("expected sqlite, got {other:?}"),
+        }
+    }
+
+    /// Configs written before the LanceDB → SQLite replacement still parse:
+    /// `type = "lance"` is a legacy alias for the SQLite store.
+    #[test]
+    fn legacy_lance_type_parses_as_sqlite() {
+        let config_toml = r#"
+[server]
+[vector_db]
+type = "lance"
+path = "/data/old_lance"
+[reranker]
+"#;
+        let config: RagConfig = toml::from_str(config_toml).unwrap();
+        match config.vector_db {
+            VectorDbConfig::Sqlite { path } => {
+                assert_eq!(path, PathBuf::from("/data/old_lance"))
+            }
+            other => panic!("expected sqlite, got {other:?}"),
         }
     }
 
@@ -922,8 +948,8 @@ provider = "gemini"
             embedder_url: String::new(),
             embedder_model: String::new(),
             embedder_api_key: String::new(),
-            vector_db: "lance".into(),
-            lance_path: "./rag_lance".into(),
+            vector_db: "sqlite".into(),
+            sqlite_path: "./rag_sqlite".into(),
             qdrant_url: String::new(),
             qdrant_collection: String::new(),
             reranker_enabled: Some("on".into()),
@@ -1023,7 +1049,7 @@ provider = "gemini"
     #[test]
     fn apply_form_embedder_none_clears_embedder() {
         let cfg: RagConfig = toml::from_str(
-            "[server]\n[vector_db]\ntype = \"lance\"\n[embedder]\ntype = \"fastembed\"\nmodel = \"BGESmallENV15\"\n[reranker]\n",
+            "[server]\n[vector_db]\ntype = \"sqlite\"\n[embedder]\ntype = \"fastembed\"\nmodel = \"BGESmallENV15\"\n[reranker]\n",
         )
         .unwrap();
         let out = cfg.apply_form(form("none", "")).unwrap();
@@ -1054,7 +1080,7 @@ provider = "gemini"
     #[test]
     fn apply_form_ollama_requires_url_and_model_and_carries_prefixes() {
         let cfg: RagConfig = toml::from_str(
-            "[server]\n[vector_db]\ntype = \"lance\"\n[embedder]\ntype = \"ollama\"\nurl = \"http://old:11434\"\nmodel = \"old\"\ndoc_prefix = \"d: \"\nquery_prefix = \"q: \"\n[reranker]\n",
+            "[server]\n[vector_db]\ntype = \"sqlite\"\n[embedder]\ntype = \"ollama\"\nurl = \"http://old:11434\"\nmodel = \"old\"\ndoc_prefix = \"d: \"\nquery_prefix = \"q: \"\n[reranker]\n",
         )
         .unwrap();
         // Missing url → friendly error.
@@ -1087,7 +1113,7 @@ provider = "gemini"
     #[test]
     fn apply_form_openai_embedder_key_carries_only_while_type_unchanged() {
         let cfg: RagConfig = toml::from_str(
-            "[server]\n[vector_db]\ntype = \"lance\"\n[embedder]\ntype = \"openai\"\nurl = \"https://api.openai.com/v1\"\nmodel = \"text-embedding-3-small\"\napi_key = \"emb-key\"\n[reranker]\n",
+            "[server]\n[vector_db]\ntype = \"sqlite\"\n[embedder]\ntype = \"openai\"\nurl = \"https://api.openai.com/v1\"\nmodel = \"text-embedding-3-small\"\napi_key = \"emb-key\"\n[reranker]\n",
         )
         .unwrap();
         // Same type, blank key → carried.
@@ -1114,21 +1140,27 @@ provider = "gemini"
     #[test]
     fn apply_form_vector_db_switch() {
         let cfg = RagConfig::default();
-        // lance with explicit path
+        // sqlite with explicit path
         let mut f = form("none", "");
-        f.vector_db = "lance".into();
-        f.lance_path = "/data/lance".into();
+        f.vector_db = "sqlite".into();
+        f.sqlite_path = "/data/sqlite".into();
         let out = cfg.apply_form(f).unwrap();
         match out.vector_db {
-            VectorDbConfig::Lance { path } => assert_eq!(path, PathBuf::from("/data/lance")),
-            other => panic!("expected lance, got {other:?}"),
+            VectorDbConfig::Sqlite { path } => assert_eq!(path, PathBuf::from("/data/sqlite")),
+            other => panic!("expected sqlite, got {other:?}"),
         }
-        // lance with blank path → generated default (data-dir absolute)
+        // sqlite with blank path → generated default (data-dir absolute)
+        let mut f = form("none", "");
+        f.vector_db = "sqlite".into();
+        f.sqlite_path = String::new();
+        let out = cfg.apply_form(f).unwrap();
+        assert!(matches!(out.vector_db, VectorDbConfig::Sqlite { .. }));
+        // "lance" from a stale form still selects the SQLite store.
         let mut f = form("none", "");
         f.vector_db = "lance".into();
-        f.lance_path = String::new();
+        f.sqlite_path = "/data/old".into();
         let out = cfg.apply_form(f).unwrap();
-        assert!(matches!(out.vector_db, VectorDbConfig::Lance { .. }));
+        assert!(matches!(out.vector_db, VectorDbConfig::Sqlite { .. }));
         // qdrant with blanks → defaults
         let mut f = form("none", "");
         f.vector_db = "qdrant".into();
@@ -1204,7 +1236,7 @@ token = "secret-token"
         let config_toml = r#"
 [server]
 [vector_db]
-type = "lance"
+type = "sqlite"
 [reranker]
 "#;
         let config: RagConfig = toml::from_str(config_toml).unwrap();
@@ -1212,19 +1244,19 @@ type = "lance"
     }
 
     #[test]
-    fn default_config_is_unconfigured_lance() {
-        // The generated first-run default: LanceDB, no embedder, no LLM, no
+    fn default_config_is_unconfigured_sqlite() {
+        // The generated first-run default: SQLite, no embedder, no LLM, no
         // auth (adr/0024).
         let config = RagConfig::default();
         assert!(config.llm.is_none());
         assert!(config.auth.token.is_none());
         assert!(config.embedder.is_none());
         match config.vector_db {
-            VectorDbConfig::Lance { path } => {
-                // Absolute when a data dir resolves (generated_lance_path).
-                assert!(path.ends_with("kimun/rag_lance"), "got {path:?}");
+            VectorDbConfig::Sqlite { path } => {
+                // Absolute when a data dir resolves (generated_sqlite_path).
+                assert!(path.ends_with("kimun/rag_sqlite"), "got {path:?}");
             }
-            other => panic!("expected lance, got {other:?}"),
+            other => panic!("expected sqlite, got {other:?}"),
         }
         assert_eq!(config.server.host, default_host());
         assert_eq!(config.server.port, default_port());
@@ -1246,17 +1278,17 @@ type = "lance"
         // the existing file (llm still none, file untouched semantics).
         let reloaded = RagConfig::load_or_generate_default(&path).unwrap();
         assert!(reloaded.llm.is_none());
-        assert!(matches!(reloaded.vector_db, VectorDbConfig::Lance { .. }));
+        assert!(matches!(reloaded.vector_db, VectorDbConfig::Sqlite { .. }));
     }
 
     #[test]
-    fn ready_default_is_fastembed_on_lance_semantic_only() {
+    fn ready_default_is_fastembed_on_sqlite_semantic_only() {
         let cfg = RagConfig::ready_default();
         assert!(matches!(
             cfg.embedder,
             Some(EmbedderConfig::FastEmbed { model: None })
         ));
-        assert!(matches!(cfg.vector_db, VectorDbConfig::Lance { .. }));
+        assert!(matches!(cfg.vector_db, VectorDbConfig::Sqlite { .. }));
         assert!(cfg.llm.is_none());
     }
 
@@ -1298,7 +1330,7 @@ type = "lance"
 
         let reloaded = RagConfig::from_file(path).unwrap();
         assert!(reloaded.llm.is_none());
-        assert!(matches!(reloaded.vector_db, VectorDbConfig::Lance { .. }));
+        assert!(matches!(reloaded.vector_db, VectorDbConfig::Sqlite { .. }));
         assert!(reloaded.embedder.is_none());
     }
 }

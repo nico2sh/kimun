@@ -53,15 +53,9 @@ cargo install --git https://github.com/nico2sh/kimun kimun_server
 
 This builds and installs the `kimun-server` binary into `~/.cargo/bin`.
 
-> **Build prerequisite:** the embedded LanceDB vector store compiles Protocol
-> Buffer definitions, so `protoc` must be installed — `sudo dnf install
-> protobuf-compiler protobuf-devel` (Fedora), `sudo apt install
-> protobuf-compiler` (Debian/Ubuntu), `brew install protobuf` (macOS), or
-> `winget install protobuf` (Windows).
-
 ## Running the server
 
-Start with working local defaults — embedded LanceDB vector store plus a
+Start with working local defaults — embedded SQLite vector store plus a
 local embedding model, no config file needed:
 
 ```sh
@@ -77,7 +71,7 @@ creates it if missing). Edit it — or use the web UI's Config page — to choos
 - **Embedder** — local [fastembed](https://github.com/Anush008/fastembed-rs)
   models (no network), or an external Ollama / OpenAI-compatible embeddings
   endpoint.
-- **Vector store** — embedded LanceDB (zero setup, the default) or a
+- **Vector store** — embedded SQLite (zero setup, the default) or a
   standalone [Qdrant](https://qdrant.tech) server.
 - **LLM for Ask** — Claude, OpenAI, Gemini, Mistral, or any local
   OpenAI-compatible endpoint (Ollama, llama.cpp, …). Leave unset for a

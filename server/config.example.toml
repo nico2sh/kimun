@@ -18,12 +18,13 @@ max_concurrent_jobs = 10
 # token = "change-me"
 
 [vector_db]
-# Vector database backend: "lance" (embedded) or "qdrant" (server).
+# Vector database backend: "sqlite" (embedded) or "qdrant" (server).
 
-# LanceDB — embedded, local, no server. `path` is a directory (one table per
-# vault). Zero setup; good for a single machine.
-type = "lance"
-path = "./rag_lance"
+# SQLite — embedded, local, no server. `path` is a directory holding the
+# database file (one collection per vault). Zero setup; good for a single
+# machine.
+type = "sqlite"
+path = "./rag_sqlite"
 
 # Qdrant — a standalone server; better at scale. Uncomment to use instead:
 # type = "qdrant"
