@@ -36,101 +36,81 @@ fn vault_id_path(workspace_path: &Path) -> std::path::PathBuf {
 }
 
 /// Reads the vault's [`VaultId`], creating and persisting a fresh one under
-/// `.kimun/vault-id` when none exists yet. A malformed stored id is treated as
-/// absent and replaced, so a corrupt file self-heals rather than wedging the
+/// `.kimun/vault-id` when none exists yet. A malformed or orphaned-empty
+/// stored id is replaced, so the file self-heals rather than wedging the
 /// vault.
 pub async fn read_or_create_vault_id(workspace_path: &Path) -> Result<VaultId, FSError> {
     let path = vault_id_path(workspace_path);
-    match tokio::fs::read_to_string(&path).await {
+    // Fast path, no locking: [`settle_vault_id`] publishes atomically (temp
+    // file + rename), so a reader sees either the previous or the new
+    // complete content — never a partial write.
+    if let Ok(body) = tokio::fs::read_to_string(&path).await {
+        if let Ok(uuid) = Uuid::from_str(body.trim()) {
+            return Ok(VaultId(uuid));
+        }
+    }
+    // Missing, empty, or corrupt — settle it on a blocking thread (std fs +
+    // a blocking OS lock).
+    tokio::task::spawn_blocking(move || settle_vault_id(&path))
+        .await
+        .map_err(|e| FSError::ReadFileError(std::io::Error::other(e)))?
+}
+
+/// Decides the vault id when the file is missing, empty, or corrupt.
+///
+/// Every mutation is serialized on an OS file lock (`vault-id.lock`, held for
+/// the duration of this function and released by the OS even if the holder
+/// crashes), so exactly one process settles the id per contention epoch and
+/// everyone else re-reads that id under the same lock. A lock-free
+/// rename/create election was tried first and abandoned: any process that
+/// once observed corrupt content could re-run the election later and evict a
+/// freshly-healed valid id, splitting the vault across two server collections
+/// (adr/0020). A held lock has no such window, and lock staleness cannot
+/// occur because the OS drops it with the process.
+fn settle_vault_id(path: &Path) -> Result<VaultId, FSError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false) // the file is only a lock anchor; content irrelevant
+        .write(true)
+        .open(path.with_extension("lock"))?;
+    lock_file.lock()?; // held until `lock_file` drops
+
+    // Re-read under the lock: whoever held it before us may already have
+    // settled the id.
+    match std::fs::read_to_string(path) {
         Ok(body) => {
             let trimmed = body.trim();
             if let Ok(uuid) = Uuid::from_str(trimmed) {
                 return Ok(VaultId(uuid));
             }
             if trimmed.is_empty() {
-                // Empty file means a concurrent creator is mid-write (create_new
-                // makes the file before write_all fills it). Don't overwrite —
-                // that would reopen the split-id race. Go through the exclusive
-                // path, which reads the winner's id back.
-                return create_vault_id_exclusive(&path).await;
+                // Every writer holds this lock, so an empty file seen here is
+                // an orphan from a crash between create and write — not a
+                // live writer mid-write. Clear it so the publish below works
+                // on every platform (Windows' rename won't replace).
+                std::fs::remove_file(path)?;
+            } else {
+                // Corrupt: keep the evidence as `vault-id.corrupt` instead of
+                // silently destroying it.
+                let backup = path.with_extension("corrupt");
+                let _ = std::fs::remove_file(&backup);
+                std::fs::rename(path, &backup)?;
             }
-            // Non-empty but unparseable — genuinely corrupt.
-            heal_corrupt_vault_id(&path).await
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            create_vault_id_exclusive(&path).await
-        }
-        Err(e) => Err(FSError::ReadFileError(e)),
-    }
-}
-
-/// Heals a corrupt (non-empty, unparseable) vault-id file without reopening
-/// the split-id race: an atomic `rename` moves the corrupt file aside, and —
-/// because a rename succeeds for exactly one process — elects a single healer.
-/// Winner and losers alike then converge through the exclusive-create path,
-/// whose `create_new` can only succeed once, so every concurrent caller ends
-/// up with the same id. The corrupt content is kept as `vault-id.corrupt` for
-/// inspection instead of being silently overwritten.
-async fn heal_corrupt_vault_id(path: &Path) -> Result<VaultId, FSError> {
-    let backup = path.with_extension("corrupt");
-    // Clear any stale backup first: Windows' rename refuses to replace an
-    // existing destination (harmlessly racy — the backup is best-effort).
-    let _ = tokio::fs::remove_file(&backup).await;
-    match tokio::fs::rename(path, &backup).await {
-        // We won the election and moved the corrupt file aside…
-        Ok(()) => {}
-        // …or another healer got there first; either way the id now comes
-        // from the exclusive create below.
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(FSError::ReadFileError(e)),
     }
-    create_vault_id_exclusive(path).await
-}
 
-/// Creates the vault-id file exclusively so two concurrent first-openers can't
-/// each persist a different id (a split id would orphan a RAG collection).
-/// Whoever wins the create writes theirs; anyone who loses the race reads the
-/// winner's id back.
-async fn create_vault_id_exclusive(path: &Path) -> Result<VaultId, FSError> {
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
+    // The path is vacant; publish a fresh id atomically so lock-free
+    // fast-path readers can never observe a partial write.
     let id = VaultId::new_random();
-    match tokio::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .await
-    {
-        Ok(mut file) => {
-            use tokio::io::AsyncWriteExt;
-            file.write_all(id.to_string().as_bytes()).await?;
-            file.flush().await?;
-            Ok(id)
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            // Lost the create race. Read the winner's id back, tolerating a
-            // brief window where the file exists but the winner has not written
-            // yet (empty).
-            for attempt in 0..50 {
-                let body = tokio::fs::read_to_string(path).await?;
-                let trimmed = body.trim();
-                if let Ok(uuid) = Uuid::from_str(trimmed) {
-                    return Ok(VaultId(uuid));
-                }
-                if !trimmed.is_empty() {
-                    break; // non-empty & invalid → genuinely corrupt
-                }
-                if attempt < 49 {
-                    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-                }
-            }
-            Err(FSError::SerializationError(format!(
-                "invalid vault id at {path:?}"
-            )))
-        }
-        Err(e) => Err(FSError::ReadFileError(e)),
-    }
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, id.to_string())?;
+    std::fs::rename(&tmp, path)?;
+    Ok(id)
 }
 
 #[cfg(test)]
@@ -164,6 +144,37 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(backup, "not-a-uuid");
+    }
+
+    #[tokio::test]
+    async fn orphaned_empty_file_self_heals() {
+        // A creator crashing between create_new and write_all leaves a
+        // zero-byte file; with nobody left to fill it, the empty-file wait
+        // must fall through to the heal election instead of wedging forever.
+        let dir = tempfile::TempDir::new().unwrap();
+        let kimun = dir.path().join(".kimun");
+        tokio::fs::create_dir_all(&kimun).await.unwrap();
+        tokio::fs::write(kimun.join("vault-id"), "").await.unwrap();
+
+        let id = read_or_create_vault_id(dir.path()).await.unwrap();
+        let again = read_or_create_vault_id(dir.path()).await.unwrap();
+        assert_eq!(id, again);
+    }
+
+    #[tokio::test]
+    async fn straggler_settle_never_discards_a_valid_id() {
+        // The straggler scenario: a process that observed corrupt/missing
+        // content reaches the settle path AFTER another process already wrote
+        // a valid id. The under-lock re-read must adopt that id, not mint a
+        // fresh one (which would split the vault across two collections).
+        let dir = tempfile::TempDir::new().unwrap();
+        let settled = read_or_create_vault_id(dir.path()).await.unwrap();
+
+        let path = vault_id_path(dir.path());
+        let straggler = settle_vault_id(&path).unwrap();
+        assert_eq!(straggler, settled, "settle must adopt the existing id");
+        // And the id on disk is unchanged.
+        assert_eq!(read_or_create_vault_id(dir.path()).await.unwrap(), settled);
     }
 
     #[tokio::test]

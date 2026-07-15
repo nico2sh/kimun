@@ -342,43 +342,49 @@ impl KimunRag {
         // A changed note is re-split wholesale, but a small edit leaves most
         // sub-chunks textually identical — pull the old rows before deleting
         // them so unchanged sub-chunks reuse their stored vector instead of a
-        // fresh embedder round-trip. Keyed by (title, text): exactly the
-        // inputs the embedder sees.
-        let mut vector_cache: HashMap<(String, String), Vec<f32>> = HashMap::new();
+        // fresh embedder round-trip. Keyed by title + text: exactly the inputs
+        // the embedder sees. `remove` on lookup moves the vector out (a
+        // duplicate identical chunk in one note just re-embeds — rare and
+        // harmless).
+        let cache_key = |title: &str, text: &str| format!("{title}\u{0}{text}");
+        let mut vector_cache: HashMap<String, Vec<f32>> = HashMap::new();
         if !stale_paths.is_empty() {
             for row in self
                 .store
                 .chunks_with_vectors(collection.as_str(), &stale_paths)
                 .await?
             {
-                vector_cache.insert((row.chunk.title.clone(), row.chunk.text.clone()), row.vector);
+                let EmbeddedChunk { chunk, vector } = row;
+                vector_cache.insert(cache_key(&chunk.title, &chunk.text), vector);
             }
             self.store.delete(collection.as_str(), &stale_paths).await?;
         }
 
-        // Sub-split sections to the embedding window, then embed and store each
+        // Sub-split sections to the embedding window, then embed each
         // sub-chunk 1:1 — so a row's stored text is exactly the text that
         // produced its vector.
         let owned: Vec<KimunDoc> = to_index.into_iter().cloned().collect();
         let chunks = FlattenedChunk::from_chunks_split(&owned, CHUNK_TARGET, CHUNK_MAX);
         debug!("{} docs split to {} chunks", owned.len(), chunks.len());
 
-        let mut reused: Vec<EmbeddedChunk> = Vec::new();
+        let mut rows: Vec<EmbeddedChunk> = Vec::with_capacity(chunks.len());
         let mut to_embed: Vec<FlattenedChunk> = Vec::new();
         for chunk in chunks {
-            match vector_cache.get(&(chunk.title.clone(), chunk.text.clone())) {
-                Some(vector) => reused.push(EmbeddedChunk {
-                    vector: vector.clone(),
-                    chunk,
-                }),
+            match vector_cache.remove(&cache_key(&chunk.title, &chunk.text)) {
+                Some(vector) => rows.push(EmbeddedChunk { vector, chunk }),
                 None => to_embed.push(chunk),
             }
         }
-        if !reused.is_empty() {
-            debug!("Reusing {} stored vectors for unchanged chunks", reused.len());
-            self.store.store(collection.as_str(), &reused).await?;
+        if !rows.is_empty() {
+            debug!("Reusing {} stored vectors for unchanged chunks", rows.len());
         }
 
+        // Embed EVERYTHING before storing ANYTHING. The old rows are already
+        // deleted, so a note must end this pass either fully present at its
+        // new hash or wholly absent: absent notes drop out of /hashes and the
+        // client's reconcile re-pushes them (self-healing), while a partial
+        // store at the new hash would read as complete (hash == hash) and the
+        // missing chunks would never be repaired.
         for batch in to_embed.chunks(EMBED_BATCH) {
             let embeddings = self.embedder.generate_embeddings(batch).await?;
             if embeddings.len() != batch.len() {
@@ -388,15 +394,29 @@ impl KimunRag {
                     batch.len()
                 )));
             }
-            let rows: Vec<EmbeddedChunk> = batch
-                .iter()
-                .zip(embeddings)
-                .map(|(chunk, vector)| EmbeddedChunk {
-                    chunk: chunk.clone(),
-                    vector,
-                })
-                .collect();
-            self.store.store(collection.as_str(), &rows).await?;
+            rows.extend(
+                batch
+                    .iter()
+                    .zip(embeddings)
+                    .map(|(chunk, vector)| EmbeddedChunk {
+                        chunk: chunk.clone(),
+                        vector,
+                    }),
+            );
+        }
+
+        // Store per note, and each store() call is atomic in both backends
+        // (one SQLite tx / one Qdrant upsert) — so a mid-loop failure leaves
+        // every note either complete or absent, never partial.
+        let mut by_path: HashMap<String, Vec<EmbeddedChunk>> = HashMap::new();
+        for row in rows {
+            by_path
+                .entry(row.chunk.doc_path.clone())
+                .or_default()
+                .push(row);
+        }
+        for note_rows in by_path.into_values() {
+            self.store.store(collection.as_str(), &note_rows).await?;
         }
 
         Ok(stats)
@@ -603,7 +623,10 @@ pub(crate) mod test_support {
                 collection.to_string(),
                 rows.iter().map(|r| r.chunk.doc_path.clone()).collect(),
             ));
-            self.stored_rows.lock().unwrap().extend(rows.iter().cloned());
+            self.stored_rows
+                .lock()
+                .unwrap()
+                .extend(rows.iter().cloned());
             Ok(())
         }
         async fn chunks_with_vectors(
@@ -935,7 +958,71 @@ mod tests {
         assert_eq!(alpha.chunk.doc_hash, "h2");
         let gamma = rows.iter().find(|r| r.chunk.text == "gamma").unwrap();
         assert_eq!(gamma.chunk.doc_hash, "h2");
-        assert!(!rows.iter().any(|r| r.chunk.text == "beta"), "stale chunk gone");
+        assert!(
+            !rows.iter().any(|r| r.chunk.text == "beta"),
+            "stale chunk gone"
+        );
+    }
+
+    #[tokio::test]
+    async fn index_stores_nothing_when_embedding_fails() {
+        /// Always errors — simulates a rate-limited / dead embedder.
+        struct FailingEmbedder;
+        #[async_trait::async_trait]
+        impl Embedder for FailingEmbedder {
+            async fn generate_embeddings(
+                &self,
+                _: &[FlattenedChunk],
+            ) -> anyhow::Result<Vec<Vec<f32>>> {
+                anyhow::bail!("embedder down")
+            }
+            async fn prompt_embedding(&self, _: &str) -> anyhow::Result<Vec<f32>> {
+                anyhow::bail!("embedder down")
+            }
+            fn dimension(&self) -> usize {
+                8
+            }
+        }
+
+        // The store holds a.md@h1 with one reusable chunk ("alpha").
+        let store = Arc::new(FakeVectorStore {
+            notes: [note("a.md", "h1")].into(),
+            chunk_rows: vec![EmbeddedChunk {
+                chunk: FlattenedChunk {
+                    doc_path: "a.md".to_string(),
+                    doc_hash: "h1".to_string(),
+                    title: "T".to_string(),
+                    text: "alpha".to_string(),
+                    date: None,
+                },
+                vector: vec![9.0; 8],
+            }],
+            ..Default::default()
+        });
+        let rag = KimunRag::new(store.clone(), Arc::new(FailingEmbedder), None);
+
+        // a.md changes: "alpha" reusable, "gamma" needs the (dead) embedder.
+        let doc = KimunDoc {
+            path: "a.md".to_string(),
+            hash: "h2".to_string(),
+            sections: vec![
+                KimunSection {
+                    title: "T".to_string(),
+                    text: "alpha".to_string(),
+                },
+                KimunSection {
+                    title: "T".to_string(),
+                    text: "gamma".to_string(),
+                },
+            ],
+        };
+        assert!(rag.index(&key("v"), &[doc]).await.is_err());
+
+        // All-or-nothing: NO rows stored — not even the reusable one. A
+        // partial store at h2 would make /hashes report the note complete
+        // and reconcile would never repair the missing chunk.
+        assert!(store.stored_rows.lock().unwrap().is_empty());
+        assert!(store.stored.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

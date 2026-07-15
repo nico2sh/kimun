@@ -150,11 +150,9 @@ impl VecQdrant {
             .map(|s| s.to_string())
             .unwrap_or_default();
 
-        let date = date_str
-            .filter(|ds| !ds.is_empty())
-            .and_then(|ds| {
-                chrono::NaiveDate::parse_from_str(ds, crate::document::JOURNAL_DATE_FORMAT).ok()
-            });
+        let date = date_str.filter(|ds| !ds.is_empty()).and_then(|ds| {
+            chrono::NaiveDate::parse_from_str(ds, crate::document::JOURNAL_DATE_FORMAT).ok()
+        });
 
         FlattenedChunk {
             doc_path: path,
@@ -255,8 +253,7 @@ impl VectorStore for VecQdrant {
                 use qdrant_client::qdrant::vector_output::Vector as VectorOut;
                 // Collections here hold a single unnamed dense vector per
                 // point (see ensure_collection); anything else is skipped.
-                let Some(VectorOut::Dense(dense)) =
-                    p.vectors.as_ref().and_then(|v| v.get_vector())
+                let Some(VectorOut::Dense(dense)) = p.vectors.as_ref().and_then(|v| v.get_vector())
                 else {
                     continue;
                 };

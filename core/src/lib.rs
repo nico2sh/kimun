@@ -1559,7 +1559,11 @@ mod tests {
         let changes = obs.recorded();
         for (old, new, hash) in [
             ("/old_dir/direct.md", "/new_dir/direct.md", direct.hash),
-            ("/old_dir/sub/nested.md", "/new_dir/sub/nested.md", nested.hash),
+            (
+                "/old_dir/sub/nested.md",
+                "/new_dir/sub/nested.md",
+                nested.hash,
+            ),
         ] {
             assert!(
                 changes.contains(&NoteChange::Delete {
