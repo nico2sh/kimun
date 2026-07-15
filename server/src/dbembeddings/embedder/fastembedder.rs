@@ -32,15 +32,15 @@ impl FastEmbedder {
     }
 }
 
-/// Every bundled fastembed model as `(model code, dimension)`, sorted
-/// alphabetically by code — feeds the web UI's model dropdown so choosing a
-/// local model is always explicit (adr/0024).
-pub fn supported_models() -> Vec<(String, usize)> {
+/// Every bundled fastembed model as `(model code, dimension, description)`,
+/// sorted alphabetically by code — feeds the web UI's model dropdown so
+/// choosing a local model is always explicit (adr/0024).
+pub fn supported_models() -> Vec<(String, usize, String)> {
     let mut models: Vec<_> = TextEmbedding::list_supported_models()
         .into_iter()
-        .map(|i| (i.model_code, i.dim))
+        .map(|i| (i.model_code, i.dim, i.description))
         .collect();
-    models.sort_by_key(|(code, _)| code.to_lowercase());
+    models.sort_by_key(|(code, _, _)| code.to_lowercase());
     models
 }
 
@@ -175,14 +175,18 @@ mod tests {
         assert!(
             models
                 .iter()
-                .any(|(code, dim)| code == "Xenova/bge-small-en-v1.5" && *dim == 384)
+                .any(|(code, dim, _)| code == "Xenova/bge-small-en-v1.5" && *dim == 384)
+        );
+        assert!(
+            models.iter().all(|(_, _, desc)| !desc.is_empty()),
+            "every model should carry a description"
         );
     }
 
     #[test]
     fn supported_models_is_sorted_alphabetically() {
         let models = supported_models();
-        let codes: Vec<String> = models.iter().map(|(c, _)| c.to_lowercase()).collect();
+        let codes: Vec<String> = models.iter().map(|(c, _, _)| c.to_lowercase()).collect();
         let mut sorted = codes.clone();
         sorted.sort();
         assert_eq!(codes, sorted);

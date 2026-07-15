@@ -579,12 +579,15 @@ fn config_markup(state: &AppState, c: &RagConfig, flash: Option<Markup>) -> Mark
                     label { "Model" }
                     select name="fastembed_model" {
                         option value="" selected[current_fastembed.is_empty()] { "— pick a model —" }
-                        @for (code, dim) in &fastembed_models {
-                            option value=(code) selected[code.eq_ignore_ascii_case(&current_fastembed)] {
+                        @for (code, dim, desc) in &fastembed_models {
+                            option value=(code) selected[code.eq_ignore_ascii_case(&current_fastembed)] title=(desc) data-desc=(desc) {
                                 (code) " (" (dim) " dims)"
                             }
                         }
                     }
+                    // Filled by the page script with the selected option's
+                    // data-desc; hover on an option shows it too (title).
+                    p .muted #fastembed-desc {}
                 }
                 div data-embedder="http" {
                     div .row {
@@ -684,6 +687,17 @@ const bindVisibility = (selectName, attr) => {
 bindVisibility('embedder_provider', 'embedder');
 bindVisibility('vector_db', 'vectordb');
 bindVisibility('provider', 'llm');
+const bindDesc = (selectName, targetId) => {
+  const sel = document.querySelector('select[name="' + selectName + '"]');
+  const out = document.getElementById(targetId);
+  const apply = () => {
+    out.textContent = sel.selectedOptions[0].getAttribute('data-desc') || '';
+  };
+  sel.addEventListener('change', apply);
+  window.addEventListener('pageshow', apply);
+  apply();
+};
+bindDesc('fastembed_model', 'fastembed-desc');
 "#))
         }
     };
