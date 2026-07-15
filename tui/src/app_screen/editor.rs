@@ -95,6 +95,9 @@ pub struct EditorScreen {
 
 impl EditorScreen {
     pub fn new(vault: Arc<NoteVault>, path: VaultPath, settings: SharedSettings) -> Self {
+        // Read before taking the settings lock below (rag_configured locks too).
+        // Config changes rebuild this screen, so construction-time is current.
+        let semantic_visible = crate::rag::rag_configured(&settings);
         let s = settings.read().unwrap();
         let kb = s.key_bindings.clone();
         let theme = s.get_theme();
@@ -121,7 +124,7 @@ impl EditorScreen {
             settings,
             icons,
             theme,
-            panels: PanelSet::from_panels(drawer, editor, rail_icons, rail_kb),
+            panels: PanelSet::from_panels(drawer, editor, rail_icons, rail_kb, semantic_visible),
             doc_meta: crate::app_screen::doc_meta::DocMeta::new(vault.clone()),
             update: None,
             rag_status: crate::rag::RagStatus::Disabled,
@@ -1044,9 +1047,18 @@ impl EditorScreen {
                 self.focus_editor();
             }
             AppEvent::OpenDrawerView(view) => {
+                // The rail hides SEM when no server is configured, but the
+                // leader path (`drawer.semantic`) can still request it — gate
+                // here so every route gets the same answer.
+                if view == DrawerView::Semantic && !crate::rag::rag_configured(&self.settings) {
+                    tx.send(AppEvent::FlashMessage(
+                        "Set kimun_server_url in config to use semantic search".into(),
+                    ))
+                    .ok();
+                }
                 // Selecting the already-active view toggles the drawer closed
                 // (spec §3: clicking the active rail item toggles).
-                if self.panels.is_visible(PanelKind::Drawer)
+                else if self.panels.is_visible(PanelKind::Drawer)
                     && self.panels.active_drawer_view() == view
                 {
                     self.panels.hide(PanelKind::Drawer);
@@ -1420,7 +1432,7 @@ impl EditorScreen {
         if self.overlays.is_open() {
             return;
         }
-        if !crate::components::semantic_search::rag_configured(&self.settings) {
+        if !crate::rag::rag_configured(&self.settings) {
             tx.send(AppEvent::FlashMessage(
                 "Set kimun_server_url in config to use Ask (RAG)".into(),
             ))

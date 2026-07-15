@@ -4,6 +4,7 @@
 //! stays network-free; it feeds this crate only through the [`observer`] seam.
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 pub mod dto;
 pub mod observer;
@@ -85,6 +86,20 @@ impl ContextSize {
     }
 }
 
+/// Bound on establishing a TCP/TLS connection. Without it, a black-holing
+/// host (firewalled port, sleeping machine) hangs a probe for the OS default
+/// (minutes) instead of failing over to "offline" promptly.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Bound on a whole request/response exchange. reqwest has NO default here —
+/// a server that accepts the connection but never answers would hang forever.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Looser bound for [`RagClient::push_docs`]: a first sync of a large vault
+/// uploads every document in one request, which can legitimately outlast
+/// [`REQUEST_TIMEOUT`] on a slow link.
+const PUSH_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// HTTP client for one vault's collection on a RAG server.
 #[derive(Clone)]
 pub struct RagClient {
@@ -103,8 +118,15 @@ impl RagClient {
         vault_id: impl Into<String>,
     ) -> Self {
         let base_url = base_url.into().trim_end_matches('/').to_string();
+        let http = reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(REQUEST_TIMEOUT)
+            .build()
+            // Only fails on broken TLS backend/system config; no meaningful
+            // recovery, and it would fail identically for every request.
+            .expect("build HTTP client");
         Self {
-            http: reqwest::Client::new(),
+            http,
             base_url,
             token,
             vault_id: vault_id.into(),
@@ -149,6 +171,7 @@ impl RagClient {
         };
         let resp = self
             .auth(self.http.post(self.url("/api/index/docs")).json(&body))
+            .timeout(PUSH_TIMEOUT)
             .send()
             .await?;
         Ok(Self::ok(resp).await?.json::<JobAccepted>().await?.job_id)

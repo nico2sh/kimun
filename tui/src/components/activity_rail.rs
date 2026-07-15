@@ -19,8 +19,9 @@ use crate::settings::themes::Theme;
 /// Total column width the rail occupies, borders included.
 pub const RAIL_WIDTH: u16 = 7;
 
-/// The rail items in presentation order. CFG is last and pinned to the
-/// bottom of the strip by a spacer.
+/// The full rail catalog in presentation order. CFG is last and pinned to the
+/// bottom of the strip by a spacer. SEM only appears when a RAG server is
+/// configured (the rail is rebuilt with the screen on any config change).
 const ITEMS: [(&str, DrawerView); 7] = [
     ("FIL", DrawerView::Files),
     ("FND", DrawerView::Find),
@@ -50,6 +51,9 @@ fn glyph_for(icons: &crate::settings::icons::Icons, view: DrawerView) -> &'stati
 const CELL_ROWS: u16 = 3;
 
 pub struct ActivityRail {
+    /// The visible items, in presentation order: [`ITEMS`] minus the views
+    /// whose feature is off (SEM without a configured RAG server).
+    items: Vec<(&'static str, DrawerView)>,
     /// The item the keyboard cursor sits on (the item `Enter` opens).
     cursor: usize,
     /// The row each item was drawn at on the last render, for click
@@ -62,8 +66,17 @@ pub struct ActivityRail {
 }
 
 impl ActivityRail {
-    pub fn new(key_bindings: KeyBindings, icons: crate::settings::icons::Icons) -> Self {
+    pub fn new(
+        key_bindings: KeyBindings,
+        icons: crate::settings::icons::Icons,
+        semantic_visible: bool,
+    ) -> Self {
+        let items = ITEMS
+            .into_iter()
+            .filter(|(_, view)| semantic_visible || *view != DrawerView::Semantic)
+            .collect();
         Self {
+            items,
             cursor: 0,
             item_rows: Vec::new(),
             icons,
@@ -73,13 +86,14 @@ impl ActivityRail {
 
     /// The drawer view under the keyboard cursor.
     pub fn cursor_view(&self) -> DrawerView {
-        ITEMS[self.cursor].1
+        self.items[self.cursor].1
     }
 
     /// Move the keyboard cursor onto `view` (e.g. after a click or a leader
     /// path switched the drawer), so rail navigation continues from there.
+    /// A view the rail doesn't show (hidden SEM) leaves the cursor in place.
     pub fn set_cursor(&mut self, view: DrawerView) {
-        if let Some(i) = ITEMS.iter().position(|(_, v)| *v == view) {
+        if let Some(i) = self.items.iter().position(|(_, v)| *v == view) {
             self.cursor = i;
         }
     }
@@ -132,7 +146,7 @@ impl ActivityRail {
                 EventState::Consumed
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                self.cursor = (self.cursor + 1).min(ITEMS.len() - 1);
+                self.cursor = (self.cursor + 1).min(self.items.len() - 1);
                 EventState::Consumed
             }
             KeyCode::Enter => {
@@ -165,7 +179,7 @@ impl ActivityRail {
             .add_modifier(Modifier::BOLD);
 
         // CFG (last item) is pinned to the bottom; the rest stack from the top.
-        let (top_items, bottom_item) = ITEMS.split_at(ITEMS.len() - 1);
+        let (top_items, bottom_item) = self.items.split_at(self.items.len() - 1);
 
         let icons = self.icons.clone();
         let draw = |idx: usize,
@@ -213,7 +227,14 @@ impl ActivityRail {
         // Bottom-pinned CFG.
         let (label, view) = bottom_item[0];
         let cfg_y = inner.bottom().saturating_sub(2).max(y);
-        draw(ITEMS.len() - 1, label, view, cfg_y, f, &mut self.item_rows);
+        draw(
+            self.items.len() - 1,
+            label,
+            view,
+            cfg_y,
+            f,
+            &mut self.item_rows,
+        );
 
         // The active item's marker is the rail's own left border: recolor the
         // border segment beside the active cell green (and thicken it), so
@@ -246,12 +267,17 @@ mod tests {
         InputEvent::Key(KeyEvent::new(code, KeyModifiers::NONE))
     }
 
-    fn test_rail() -> ActivityRail {
+    fn rail_with_semantic(semantic_visible: bool) -> ActivityRail {
         let settings = crate::settings::AppSettings::default();
         ActivityRail::new(
             settings.key_bindings,
             crate::settings::icons::Icons::new(false),
+            semantic_visible,
         )
+    }
+
+    fn test_rail() -> ActivityRail {
+        rail_with_semantic(true)
     }
 
     #[test]
@@ -300,6 +326,29 @@ mod tests {
             .collect();
         assert!(labels.contains(&"\u{2190} focus left".to_string()));
         assert!(labels.contains(&"focus right \u{2192}".to_string()));
+    }
+
+    #[test]
+    fn semantic_hidden_when_no_server_configured() {
+        let mut rail = rail_with_semantic(false);
+        let (tx, _rx) = unbounded_channel();
+
+        // SEM is not on the rail: FND steps straight to TAG.
+        rail.handle_input(&key(KeyCode::Down), &tx);
+        assert_eq!(rail.cursor_view(), DrawerView::Find);
+        rail.handle_input(&key(KeyCode::Down), &tx);
+        assert_eq!(rail.cursor_view(), DrawerView::Tags);
+
+        // Bottom clamp still lands on the pinned CFG.
+        for _ in 0..10 {
+            rail.handle_input(&key(KeyCode::Down), &tx);
+        }
+        assert_eq!(rail.cursor_view(), DrawerView::Config);
+
+        // Pointing the cursor at the hidden view is a no-op.
+        rail.set_cursor(DrawerView::Tags);
+        rail.set_cursor(DrawerView::Semantic);
+        assert_eq!(rail.cursor_view(), DrawerView::Tags);
     }
 
     #[test]

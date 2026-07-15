@@ -1,7 +1,5 @@
-//! Wiring for the optional RAG server (P4). When a server URL is configured,
-//! a background task keeps the current vault in sync and reports connection
-//! status to the UI. Everything talks to the server through `kimun_server_client`;
-//! the TUI only spawns the loop and renders status.
+//! Background sync loop (P4). When a server URL is configured, a spawned task
+//! keeps the current vault in sync and reports connection status to the UI.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -13,6 +11,8 @@ use kimun_server_client::{
 };
 use tokio::task::JoinHandle;
 
+use super::RagStatus;
+use super::client::server_config;
 use crate::components::events::{AppEvent, AppTx};
 use crate::settings::SharedSettings;
 
@@ -24,73 +24,6 @@ const SYNC_INTERVAL: Duration = Duration::from_secs(10);
 /// reconnect forces a reconcile immediately. At 10s × 30 that's ~5 min.
 const RECONCILE_EVERY_N_TICKS: u32 = 30;
 
-/// RAG connection status surfaced in the footer. `Disabled` (no server
-/// configured) is never sent — the loop simply doesn't start — so the footer
-/// shows nothing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RagStatus {
-    Disabled,
-    Offline,
-    /// Reachable but the server has no embedder configured (adr/0024): nothing
-    /// works server-side, so the loop skips pushing and reconciling entirely —
-    /// every call would 503 — and just reports the state.
-    NotConfigured,
-    /// Reachable, a sync pass in flight. `llm_available` carries whether the
-    /// server has an LLM configured (question-answering possible), so Ask stays
-    /// gated consistently while syncing.
-    Syncing {
-        llm_available: bool,
-    },
-    /// Reachable and idle. `llm_available` = the server has an LLM (Q&A on);
-    /// `false` = semantic-only (search only).
-    Online {
-        llm_available: bool,
-    },
-}
-
-/// A completed RAG answer delivered back to the answer overlay via
-/// [`AppEvent::OverlayData(OverlayData::RagAnswerReady)`](crate::components::events::AppEvent).
-#[derive(Debug, Clone)]
-pub struct RagAnswer {
-    pub answer: String,
-    pub sources: Vec<RagSource>,
-}
-
-/// A cited source chunk — enough to render a row and open the note.
-#[derive(Debug, Clone)]
-pub struct RagSource {
-    pub path: kimun_core::nfs::VaultPath,
-    pub title: String,
-}
-
-impl RagStatus {
-    /// Short footer label, or `None` when nothing should show.
-    pub fn label(self) -> Option<&'static str> {
-        match self {
-            RagStatus::Disabled => None,
-            RagStatus::Offline => Some("rag: offline"),
-            RagStatus::NotConfigured => Some("rag: not configured"),
-            RagStatus::Syncing { .. } => Some("rag: syncing"),
-            RagStatus::Online { .. } => Some("rag: online"),
-        }
-    }
-
-    /// Whether question-answering (Ask) is available right now: the server is
-    /// reachable AND has an LLM configured. `false` when offline, disabled, or
-    /// connected to a semantic-only server — the Ask overlay is hidden in those
-    /// cases (adr/0022).
-    pub fn llm_available(self) -> bool {
-        matches!(
-            self,
-            RagStatus::Online {
-                llm_available: true
-            } | RagStatus::Syncing {
-                llm_available: true
-            }
-        )
-    }
-}
-
 /// Spawns the background sync loop for `vault` if a RAG server is configured.
 /// Returns the task handle (abort it when the vault is rebuilt), or `None` when
 /// the feature is off. Status is delivered to the UI via [`AppEvent::RagStatus`].
@@ -99,14 +32,7 @@ pub fn spawn_rag_sync(
     settings: &SharedSettings,
     tx: AppTx,
 ) -> Option<JoinHandle<()>> {
-    let (url, token) = {
-        let settings = settings.read().ok()?;
-        let global = &settings.workspace_config.as_ref()?.global;
-        (
-            global.kimun_server_url.clone()?,
-            global.kimun_server_token.clone(),
-        )
-    };
+    let (url, token) = server_config(settings)?;
 
     Some(tokio::spawn(async move {
         let mut interval = tokio::time::interval(SYNC_INTERVAL);
@@ -178,18 +104,4 @@ pub fn spawn_rag_sync(
             let _ = tx.send(AppEvent::RagStatus(status));
         }
     }))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn not_configured_status_labels_and_gates() {
-        assert_eq!(
-            RagStatus::NotConfigured.label(),
-            Some("rag: not configured")
-        );
-        assert!(!RagStatus::NotConfigured.llm_available());
-    }
 }
