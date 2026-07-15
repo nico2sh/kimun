@@ -216,13 +216,13 @@ impl NoteVault {
         if !workspace_path.exists() {
             return Err(VaultError::VaultPathNotFound {
                 path: path_to_string(&workspace_path),
-            })?;
+            });
         }
         if !workspace_path.is_dir() {
             return Err(VaultError::FSError(FSError::InvalidPath {
                 path: path_to_string(&workspace_path),
                 message: "Path provided is not a directory".to_string(),
-            }))?;
+            }));
         };
 
         let db_path = config
