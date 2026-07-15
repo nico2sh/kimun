@@ -1,5 +1,5 @@
 //! Orchestration: turn observed changes and the vault's authoritative state into
-//! server pushes/deletes. `register` wires the observer; `drain` flushes the
+//! server pushes/deletes. [`RagSync`] wires the observer; `drain` flushes the
 //! dirty-set (the fast path); `reconcile` is the correctness backbone
 //! (adr/0019). All server I/O goes through [`RagTransport`], so this logic is
 //! tested with a fake against a real vault.
@@ -37,19 +37,25 @@ impl ServerCapability {
         }
     }
 
-    /// Whether push/reconcile/search are usable.
-    pub fn search_available(self) -> bool {
-        !matches!(self, ServerCapability::Unconfigured)
-    }
-
     /// Whether question-answering is usable.
     pub fn llm_available(self) -> bool {
         matches!(self, ServerCapability::Full)
     }
 }
 
+/// One `/health` round-trip's worth of facts: what the server can do, and
+/// whether it gates its API behind a bearer token. `/health` itself is
+/// un-gated, so a client with a missing/wrong token still probes fine —
+/// `auth_required` lets it report "unauthorized" up front instead of
+/// discovering a 401 on the first sync call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServerProbe {
+    pub capability: ServerCapability,
+    pub auth_required: bool,
+}
+
 /// Bundles a vault, its dirty-set, and the server client, and drives sync. The
-/// caller (the TUI) owns the schedule: probe [`online`](RagSync::online) to gate
+/// caller (the TUI) owns the schedule: [`probe`](RagSync::probe) to gate
 /// features, and call [`tick`](RagSync::tick) periodically to keep the server in
 /// step.
 pub struct RagSync {
@@ -79,24 +85,29 @@ impl RagSync {
         }
     }
 
-    /// Whether the server is reachable (drives capability gating).
-    pub async fn online(&self) -> bool {
-        self.client.health().await.is_ok()
+    /// Probe reachability, capability, and auth in one `/health` request:
+    /// `None` = offline; otherwise a [`ServerProbe`] carrying the server's
+    /// [`ServerCapability`] — `Unconfigured` (no embedder: don't sync),
+    /// `SemanticOnly` (search, no Q&A), or `Full` — and whether the API
+    /// requires a bearer token.
+    pub async fn probe(&self) -> Option<ServerProbe> {
+        self.client.health().await.ok().map(|h| ServerProbe {
+            capability: ServerCapability::from_health(&h),
+            auth_required: h.auth_required,
+        })
     }
 
-    /// Probe reachability and capability in one `/health` request: `None` =
-    /// offline; otherwise the server's [`ServerCapability`] — `Unconfigured`
-    /// (no embedder: don't sync), `SemanticOnly` (search, no Q&A), or `Full`.
-    pub async fn probe(&self) -> Option<ServerCapability> {
-        self.client
-            .health()
-            .await
-            .ok()
-            .map(|h| ServerCapability::from_health(&h))
+    /// Whether the local index is filled and safe to sync from. `false` while
+    /// a healed/rebuilding index is still empty — syncing then would read "no
+    /// notes" and tear the server collection down (see [`reconcile`]).
+    pub fn index_ready(&self) -> bool {
+        self.vault.index_ready()
     }
 
     /// One sync pass: flush pending changes, then reconcile to repair drift.
-    pub async fn tick(&self) -> Result<(), RagError> {
+    /// Returns `false` when the reconcile was skipped because the local index
+    /// is not ready yet — call again once it is.
+    pub async fn tick(&self) -> Result<bool, RagError> {
         drain(&self.vault, &self.dirty, &self.client).await?;
         reconcile(&self.vault, &self.client).await
     }
@@ -109,8 +120,9 @@ impl RagSync {
     }
 
     /// Full hash-diff reconciliation only — an index-wide read + a full-collection
-    /// hash fetch. The periodic backbone; not needed on every tick.
-    pub async fn reconcile(&self) -> Result<(), RagError> {
+    /// hash fetch. The periodic backbone; not needed on every tick. Returns
+    /// `false` when skipped because the local index is not ready.
+    pub async fn reconcile(&self) -> Result<bool, RagError> {
         reconcile(&self.vault, &self.client).await
     }
 
@@ -129,12 +141,6 @@ impl Drop for RagSync {
     }
 }
 
-/// Registers the RAG observer on the vault and returns the dirty-set it feeds.
-pub fn register(vault: &NoteVault) -> Arc<DirtySet> {
-    let dirty = Arc::new(DirtySet::default());
-    vault.set_index_observer(Arc::new(RagObserver::new(dirty.clone())));
-    dirty
-}
 
 /// Builds the wire document for a note: its canonical path, content hash, and
 /// heading sections pulled from the index. Returns `None` when the note has no
@@ -172,6 +178,12 @@ pub async fn drain<T: RagTransport>(
     dirty: &DirtySet,
     transport: &T,
 ) -> Result<(), RagError> {
+    // An unready (healed/rebuilding) index reads as empty: build_doc would find
+    // no chunks and turn queued upserts into server-side deletes. Leave the
+    // dirty-set queued until the index is filled.
+    if !vault.index_ready() {
+        return Ok(());
+    }
     let ops = dirty.drain();
     if ops.is_empty() {
         return Ok(());
@@ -226,7 +238,15 @@ pub async fn drain<T: RagTransport>(
 
 /// Reconciles the server with the vault: diff hash sets, then push/delete only
 /// the differences. Self-healing — repairs anything the drain path missed.
-pub async fn reconcile<T: RagTransport>(vault: &NoteVault, transport: &T) -> Result<(), RagError> {
+///
+/// Returns `false` (doing nothing) when the local index is not ready: a
+/// healed/rebuilding index reads as an empty vault, and diffing against that
+/// snapshot would put every server doc in `to_delete` — wiping the collection.
+/// Callers should retry once the index is filled.
+pub async fn reconcile<T: RagTransport>(vault: &NoteVault, transport: &T) -> Result<bool, RagError> {
+    if !vault.index_ready() {
+        return Ok(false);
+    }
     let notes = vault
         .get_all_notes()
         .await
@@ -269,7 +289,7 @@ pub async fn reconcile<T: RagTransport>(vault: &NoteVault, transport: &T) -> Res
     if !to_delete.is_empty() {
         transport.delete_paths(to_delete).await?;
     }
-    Ok(())
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -335,8 +355,22 @@ mod tests {
         }
     }
 
+    /// Test-only observer wiring feeding a bare dirty-set, for exercising the
+    /// free `drain`/`reconcile` fns directly. Production always goes through
+    /// [`RagSync::new`], which additionally keeps the observer handle so its
+    /// `Drop` can deregister by identity.
+    fn register(vault: &NoteVault) -> Arc<DirtySet> {
+        let dirty = Arc::new(DirtySet::default());
+        vault.set_index_observer(Arc::new(RagObserver::new(dirty.clone())));
+        dirty
+    }
+
     async fn vault(dir: &std::path::Path) -> NoteVault {
-        NoteVault::new(VaultConfig::new(dir)).await.unwrap()
+        let vault = NoteVault::new(VaultConfig::new(dir)).await.unwrap();
+        // Fill the freshly-healed index so index_ready() holds — the state the
+        // drain/reconcile gates require (mirrors the app's validate_and_init).
+        vault.validate_and_init().await.unwrap();
+        vault
     }
 
     #[tokio::test]
@@ -405,7 +439,7 @@ mod tests {
             .unwrap()
             .insert("/gone.md".to_string(), "oldhash".to_string());
 
-        reconcile(&vault, &transport).await.unwrap();
+        assert!(reconcile(&vault, &transport).await.unwrap());
 
         let pushed = transport.pushed.lock().unwrap();
         assert!(pushed.iter().any(|d| d.path == "/keep.md"));
@@ -413,5 +447,36 @@ mod tests {
             *transport.deleted.lock().unwrap(),
             vec!["/gone.md".to_string()]
         );
+    }
+
+    #[tokio::test]
+    async fn reconcile_skipped_while_index_not_ready() {
+        let dir = TempDir::new().unwrap();
+        // No validate_and_init: the fresh index is healed-but-empty, exactly
+        // the state where a reconcile would read "no local notes" and delete
+        // the whole server collection.
+        let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
+        assert!(!vault.index_ready());
+        let transport = FakeTransport::default();
+        transport
+            .server
+            .lock()
+            .unwrap()
+            .insert("/precious.md".to_string(), "hash".to_string());
+
+        assert!(!reconcile(&vault, &transport).await.unwrap());
+        assert!(transport.deleted.lock().unwrap().is_empty());
+        assert!(transport.pushed.lock().unwrap().is_empty());
+
+        // Drain likewise holds queued ops instead of misreading the empty
+        // index (an upsert would otherwise become a server-side delete).
+        let dirty = register(&vault);
+        dirty.record(&kimun_core::NoteChange::Upsert {
+            path: VaultPath::new("precious.md"),
+            hash: 1,
+        });
+        drain(&vault, &dirty, &transport).await.unwrap();
+        assert_eq!(dirty.len(), 1);
+        assert!(transport.deleted.lock().unwrap().is_empty());
     }
 }

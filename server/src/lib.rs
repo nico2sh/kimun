@@ -339,7 +339,20 @@ impl KimunRag {
             }
         }
 
+        // A changed note is re-split wholesale, but a small edit leaves most
+        // sub-chunks textually identical — pull the old rows before deleting
+        // them so unchanged sub-chunks reuse their stored vector instead of a
+        // fresh embedder round-trip. Keyed by (title, text): exactly the
+        // inputs the embedder sees.
+        let mut vector_cache: HashMap<(String, String), Vec<f32>> = HashMap::new();
         if !stale_paths.is_empty() {
+            for row in self
+                .store
+                .chunks_with_vectors(collection.as_str(), &stale_paths)
+                .await?
+            {
+                vector_cache.insert((row.chunk.title.clone(), row.chunk.text.clone()), row.vector);
+            }
             self.store.delete(collection.as_str(), &stale_paths).await?;
         }
 
@@ -350,7 +363,23 @@ impl KimunRag {
         let chunks = FlattenedChunk::from_chunks_split(&owned, CHUNK_TARGET, CHUNK_MAX);
         debug!("{} docs split to {} chunks", owned.len(), chunks.len());
 
-        for batch in chunks.chunks(EMBED_BATCH) {
+        let mut reused: Vec<EmbeddedChunk> = Vec::new();
+        let mut to_embed: Vec<FlattenedChunk> = Vec::new();
+        for chunk in chunks {
+            match vector_cache.get(&(chunk.title.clone(), chunk.text.clone())) {
+                Some(vector) => reused.push(EmbeddedChunk {
+                    vector: vector.clone(),
+                    chunk,
+                }),
+                None => to_embed.push(chunk),
+            }
+        }
+        if !reused.is_empty() {
+            debug!("Reusing {} stored vectors for unchanged chunks", reused.len());
+            self.store.store(collection.as_str(), &reused).await?;
+        }
+
+        for batch in to_embed.chunks(EMBED_BATCH) {
             let embeddings = self.embedder.generate_embeddings(batch).await?;
             if embeddings.len() != batch.len() {
                 return Err(RagError::Backend(anyhow::anyhow!(
@@ -528,7 +557,12 @@ pub(crate) mod test_support {
     pub(crate) struct FakeVectorStore {
         pub results: Vec<ScoredChunk>,
         pub notes: HashMap<String, IndexedNote>,
+        /// Pre-existing rows served by `chunks_with_vectors` (the embedding
+        /// cache the pipeline may reuse from).
+        pub chunk_rows: Vec<EmbeddedChunk>,
         pub stored: Mutex<Vec<(String, Vec<String>)>>,
+        /// Every row handed to `store`, verbatim.
+        pub stored_rows: Mutex<Vec<EmbeddedChunk>>,
         pub deleted: Mutex<Vec<(String, Vec<String>)>>,
         pub fingerprint: Mutex<Option<String>>,
         pub dropped_all: Mutex<bool>,
@@ -551,7 +585,9 @@ pub(crate) mod test_support {
                     },
                 )],
                 notes: HashMap::new(),
+                chunk_rows: Vec::new(),
                 stored: Mutex::new(Vec::new()),
+                stored_rows: Mutex::new(Vec::new()),
                 deleted: Mutex::new(Vec::new()),
                 fingerprint: Mutex::new(None),
                 dropped_all: Mutex::new(false),
@@ -567,7 +603,20 @@ pub(crate) mod test_support {
                 collection.to_string(),
                 rows.iter().map(|r| r.chunk.doc_path.clone()).collect(),
             ));
+            self.stored_rows.lock().unwrap().extend(rows.iter().cloned());
             Ok(())
+        }
+        async fn chunks_with_vectors(
+            &self,
+            _: &str,
+            paths: &[String],
+        ) -> anyhow::Result<Vec<EmbeddedChunk>> {
+            Ok(self
+                .chunk_rows
+                .iter()
+                .filter(|r| paths.contains(&r.chunk.doc_path))
+                .cloned()
+                .collect())
         }
         async fn delete(&self, collection: &str, paths: &[String]) -> anyhow::Result<()> {
             self.deleted
@@ -813,6 +862,80 @@ mod tests {
         let stored = fake.stored.lock().unwrap().clone();
         assert_eq!(stored.len(), 1);
         assert_eq!(stored[0].1, vec!["b.md".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn index_reuses_stored_vectors_for_unchanged_chunks() {
+        use std::sync::Mutex;
+
+        /// Records every text it embeds, so the test can assert which chunks
+        /// actually hit the embedder.
+        struct RecordingEmbedder(Mutex<Vec<String>>);
+        #[async_trait::async_trait]
+        impl Embedder for RecordingEmbedder {
+            async fn generate_embeddings(
+                &self,
+                content: &[FlattenedChunk],
+            ) -> anyhow::Result<Vec<Vec<f32>>> {
+                let mut calls = self.0.lock().unwrap();
+                calls.extend(content.iter().map(|c| c.text.clone()));
+                Ok(vec![vec![1.0; 8]; content.len()])
+            }
+            async fn prompt_embedding(&self, _: &str) -> anyhow::Result<Vec<f32>> {
+                Ok(vec![1.0; 8])
+            }
+            fn dimension(&self) -> usize {
+                8
+            }
+        }
+
+        let cached = |text: &str, vector: Vec<f32>| EmbeddedChunk {
+            chunk: FlattenedChunk {
+                doc_path: "a.md".to_string(),
+                doc_hash: "h1".to_string(),
+                title: "T".to_string(),
+                text: text.to_string(),
+                date: None,
+            },
+            vector,
+        };
+        let store = Arc::new(FakeVectorStore {
+            notes: [note("a.md", "h1")].into(),
+            chunk_rows: vec![cached("alpha", vec![9.0; 8]), cached("beta", vec![8.0; 8])],
+            ..Default::default()
+        });
+        let embedder = Arc::new(RecordingEmbedder(Mutex::new(Vec::new())));
+        let rag = KimunRag::new(store.clone(), embedder.clone(), None);
+
+        // The note changed (h1 → h2): section "alpha" is untouched, "beta"
+        // became "gamma".
+        let doc = KimunDoc {
+            path: "a.md".to_string(),
+            hash: "h2".to_string(),
+            sections: vec![
+                KimunSection {
+                    title: "T".to_string(),
+                    text: "alpha".to_string(),
+                },
+                KimunSection {
+                    title: "T".to_string(),
+                    text: "gamma".to_string(),
+                },
+            ],
+        };
+        rag.index(&key("v"), &[doc]).await.unwrap();
+
+        // Only the changed chunk reached the embedder.
+        assert_eq!(*embedder.0.lock().unwrap(), vec!["gamma".to_string()]);
+
+        let rows = store.stored_rows.lock().unwrap();
+        let alpha = rows.iter().find(|r| r.chunk.text == "alpha").unwrap();
+        // Reused vector, but re-stamped with the note's NEW hash.
+        assert_eq!(alpha.vector, vec![9.0; 8]);
+        assert_eq!(alpha.chunk.doc_hash, "h2");
+        let gamma = rows.iter().find(|r| r.chunk.text == "gamma").unwrap();
+        assert_eq!(gamma.chunk.doc_hash, "h2");
+        assert!(!rows.iter().any(|r| r.chunk.text == "beta"), "stale chunk gone");
     }
 
     #[tokio::test]

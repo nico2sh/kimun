@@ -116,10 +116,11 @@ impl JobTracker {
         Some(())
     }
 
-    /// Evict jobs older than the retention window. Kept well above the client's
-    /// answer-poll ceiling (~5 min) so a slow-but-live job is never deleted out
-    /// from under a polling client; also bounds a job that a panicking task left
-    /// stuck in `Processing`.
+    /// Evict jobs older than the retention window. Kept above the client's
+    /// answer-poll ceiling (~12 min, `ANSWER_POLL_ATTEMPTS` in
+    /// `kimun_server_client`) so a slow-but-live job is never deleted out
+    /// from under a polling client; also bounds a job that a panicking task
+    /// left stuck in `Processing`.
     pub fn cleanup_old_jobs(&mut self) {
         let now = SystemTime::now();
         let retention = std::time::Duration::from_secs(15 * 60);

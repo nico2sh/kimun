@@ -16,6 +16,11 @@ pub use sync::spawn_rag_sync;
 pub enum RagStatus {
     Disabled,
     Offline,
+    /// Reachable but the server rejects our credentials: it requires a bearer
+    /// token and none is configured, or API calls come back 401/403 (wrong
+    /// token). Distinct from `Offline` so the user learns it's a token
+    /// problem, not an unreachable server.
+    Unauthorized,
     /// Reachable but the server has no embedder configured (adr/0024): nothing
     /// works server-side, so the loop skips pushing and reconciling entirely —
     /// every call would 503 — and just reports the state.
@@ -54,6 +59,7 @@ impl RagStatus {
         match self {
             RagStatus::Disabled => None,
             RagStatus::Offline => Some("rag: offline"),
+            RagStatus::Unauthorized => Some("rag: unauthorized"),
             RagStatus::NotConfigured => Some("rag: not configured"),
             RagStatus::Syncing { .. } => Some("rag: syncing"),
             RagStatus::Online { .. } => Some("rag: online"),
@@ -87,5 +93,11 @@ mod tests {
             Some("rag: not configured")
         );
         assert!(!RagStatus::NotConfigured.llm_available());
+    }
+
+    #[test]
+    fn unauthorized_status_labels_and_gates() {
+        assert_eq!(RagStatus::Unauthorized.label(), Some("rag: unauthorized"));
+        assert!(!RagStatus::Unauthorized.llm_available());
     }
 }

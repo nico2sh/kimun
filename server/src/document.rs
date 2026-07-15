@@ -30,36 +30,28 @@ pub struct FlattenedChunk {
     pub date: Option<chrono::NaiveDate>,
 }
 
+/// The one wire/storage format for journal dates: how they are derived from a
+/// note's filename, formatted into store payloads, and parsed back out. Every
+/// parse/format site in this crate must go through this constant, or stored
+/// dates become unreadable by the site that wasn't updated.
+pub const JOURNAL_DATE_FORMAT: &str = "%Y-%m-%d";
+
+/// The journal date encoded in a note's filename (`…/YYYY-MM-DD.md`), if any.
+///
+/// `path` is the client's wire path — canonical vault-relative form, which
+/// pins `/` and `.md` regardless of the client OS (the server has no
+/// `kimun_core` dependency, so it cannot use `VaultPath` here).
+pub(crate) fn journal_date_from_path(path: &str) -> Option<chrono::NaiveDate> {
+    let filename = path.rsplit('/').next().unwrap_or("");
+    let stem = filename.strip_suffix(".md").unwrap_or(filename);
+    chrono::NaiveDate::parse_from_str(stem, JOURNAL_DATE_FORMAT).ok()
+}
+
 impl FlattenedChunk {
-    pub fn from_chunks(chunks: &[KimunDoc]) -> Vec<FlattenedChunk> {
-        let mut result = vec![];
-        for chunkp in chunks {
-            // Get the last segment of the path (separated by '/')
-            let filename = chunkp.path.rsplit('/').next().unwrap_or("");
-
-            // Remove .md extension
-            let filename_without_ext = filename.strip_suffix(".md").unwrap_or(filename);
-
-            // Try to parse as date in format %Y-%m-%d
-            let date = chrono::NaiveDate::parse_from_str(filename_without_ext, "%Y-%m-%d").ok();
-            for chunk in &chunkp.sections {
-                result.push(FlattenedChunk {
-                    doc_path: chunkp.path.to_owned(),
-                    doc_hash: chunkp.hash.to_owned(),
-                    title: chunk.title.to_owned(),
-                    text: chunk.text.to_owned(),
-                    date,
-                });
-            }
-        }
-
-        result
-    }
-
-    /// Like [`from_chunks`](Self::from_chunks) but further splits each section's
-    /// text to the embedding window (`target`/`max` chars). This is what every
-    /// backend should store: one embedding per sub-chunk, with the sub-chunk's
-    /// own text as payload — so a section longer than the model's token limit is
+    /// Flattens docs to one chunk per sub-split section, each within the
+    /// embedding window (`target`/`max` chars). This is what every backend
+    /// should store: one embedding per sub-chunk, with the sub-chunk's own
+    /// text as payload — so a section longer than the model's token limit is
     /// not silently truncated, and every stored vector matches its stored text.
     pub fn from_chunks_split(
         chunks: &[KimunDoc],
@@ -68,9 +60,7 @@ impl FlattenedChunk {
     ) -> Vec<FlattenedChunk> {
         let mut result = vec![];
         for doc in chunks {
-            let filename = doc.path.rsplit('/').next().unwrap_or("");
-            let filename_without_ext = filename.strip_suffix(".md").unwrap_or(filename);
-            let date = chrono::NaiveDate::parse_from_str(filename_without_ext, "%Y-%m-%d").ok();
+            let date = journal_date_from_path(&doc.path);
             for section in &doc.sections {
                 for piece in crate::split_chunks_for_rag(&section.text, target, max) {
                     result.push(FlattenedChunk {
@@ -87,7 +77,7 @@ impl FlattenedChunk {
     }
 
     pub fn get_date_string(&self) -> Option<String> {
-        self.date.map(|d| d.format("%Y-%m-%d").to_string())
+        self.date.map(|d| d.format(JOURNAL_DATE_FORMAT).to_string())
     }
 }
 

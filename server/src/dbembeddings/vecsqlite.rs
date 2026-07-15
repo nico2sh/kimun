@@ -134,7 +134,9 @@ impl VecSqlite {
             doc_hash: hash,
             title: title.unwrap_or_default(),
             text,
-            date: date.and_then(|d| chrono::NaiveDate::parse_from_str(&d, "%Y-%m-%d").ok()),
+            date: date.and_then(|d| {
+                chrono::NaiveDate::parse_from_str(&d, crate::document::JOURNAL_DATE_FORMAT).ok()
+            }),
         }
     }
 }
@@ -215,6 +217,46 @@ impl VectorStore for VecSqlite {
         }
         query.execute(&self.pool).await?;
         Ok(())
+    }
+
+    async fn chunks_with_vectors(
+        &self,
+        collection: &str,
+        paths: &[String],
+    ) -> anyhow::Result<Vec<EmbeddedChunk>> {
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        let Some((cid, _)) = Self::collection(&self.pool, collection).await? else {
+            return Ok(Vec::new());
+        };
+        let sql = format!(
+            "SELECT path, hash, title, date, text, embedding
+             FROM chunks WHERE collection_id = ? AND path IN ({})",
+            Self::placeholders(paths.len())
+        );
+        let mut query = sqlx::query(&sql).bind(cid);
+        for path in paths {
+            query = query.bind(path);
+        }
+        let rows = query
+            .fetch_all(&self.pool)
+            .await?
+            .into_iter()
+            .map(|r| {
+                let blob: Vec<u8> = r.get(5);
+                EmbeddedChunk {
+                    chunk: Self::chunk_from_parts(r.get(0), r.get(1), r.get(2), r.get(3), r.get(4)),
+                    // Stored normalized; renormalizing on a later store is a
+                    // no-op, so the blob round-trips as-is.
+                    vector: blob
+                        .chunks_exact(4)
+                        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                        .collect(),
+                }
+            })
+            .collect();
+        Ok(rows)
     }
 
     async fn query(
@@ -413,6 +455,12 @@ mod tests {
     async fn conformance_missing_collection() {
         let (_dir, s) = store().await;
         conformance::missing_collection_is_empty_not_error(&s, "nope").await;
+    }
+
+    #[tokio::test]
+    async fn conformance_chunks_with_vectors() {
+        let (_dir, s) = store().await;
+        conformance::chunks_with_vectors_returns_the_notes_rows(&s, "v").await;
     }
 
     #[tokio::test]
