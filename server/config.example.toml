@@ -62,7 +62,19 @@ type = "fastembed"
 # type = "openai"
 # url = "https://api.openai.com/v1"
 # model = "text-embedding-3-small"
-# api_key = "..."                    # or falls back to OPENAI_API_KEY
+# api_key = "..."                    # sent as a bearer token; no env-var fallback
+
+# Mistral (native API is OpenAI-compatible), via the same "openai" type:
+# type = "openai"
+# url = "https://api.mistral.ai/v1"
+# model = "mistral-embed"            # 1024 dims; "codestral-embed" for code-heavy vaults
+# api_key = "..."                    # Mistral API key
+
+# Google Gemini, via its OpenAI-compatibility layer:
+# type = "openai"
+# url = "https://generativelanguage.googleapis.com/v1beta/openai"
+# model = "gemini-embedding-001"     # 3072 dims
+# api_key = "..."                    # Gemini API key
 
 [llm]
 # LLM provider: "gemini", "claude", "openai", or "mistral"
