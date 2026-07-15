@@ -287,10 +287,44 @@ impl LlmConfig {
 pub struct RerankerConfig {
     #[serde(default = "default_reranker_enabled")]
     pub enabled: bool,
-    /// Default number of results kept after reranking. Overridable per request
-    /// via `context_size`.
+    /// Default number of results returned by search/answer — applies whether
+    /// or not reranking is enabled (without a reranker the pool is already
+    /// sorted by vector score, so the cut still keeps the true top matches).
+    /// Overridable per request via `context_size`.
     #[serde(default = "default_reranker_top_k")]
     pub top_k: usize,
+    /// How reranking runs: the local fastembed cross-encoder (default, model
+    /// downloaded on first start) or an external HTTP rerank endpoint. The
+    /// provider fields below are file-only knobs — the web UI form edits only
+    /// `enabled`/`top_k` and carries these unchanged (like embedder prefixes).
+    #[serde(default, rename = "type")]
+    pub provider: RerankerProvider,
+    /// Base URL for `type = "http"`, including the API version where the
+    /// provider has one (e.g. `https://api.cohere.com/v2`); `/rerank` is
+    /// appended. Required for `http`, ignored for `fastembed`.
+    #[serde(default)]
+    pub url: Option<String>,
+    /// Model name for `type = "http"` (e.g. `rerank-v3.5`). Optional — some
+    /// self-hosted servers serve a single model and don't need it.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Bearer token for `type = "http"` endpoints that need one.
+    #[serde(default)]
+    pub api_key: Option<String>,
+}
+
+/// Selects the reranker backend. Unlike the embedder this is not an invariant
+/// of the stored vectors — switching rerankers never invalidates the index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RerankerProvider {
+    /// Local fastembed cross-encoder (BGE-Reranker-Base), no network at query
+    /// time but downloads the model from Hugging Face on first start.
+    #[default]
+    FastEmbed,
+    /// A Cohere/Jina-compatible `POST {url}/rerank` endpoint — covers Cohere,
+    /// Jina AI, Voyage AI, and self-hosted vLLM or Infinity.
+    Http,
 }
 
 // Default value functions
@@ -377,6 +411,10 @@ impl Default for RagConfig {
             reranker: RerankerConfig {
                 enabled: default_reranker_enabled(),
                 top_k: default_reranker_top_k(),
+                provider: RerankerProvider::default(),
+                url: None,
+                model: None,
+                api_key: None,
             },
             auth: AuthConfig::default(),
         }
@@ -742,6 +780,60 @@ provider = "gemini"
     }
 
     #[test]
+    fn reranker_provider_defaults_to_fastembed_and_parses_http() {
+        // Bare [reranker] (and legacy configs) keep the local cross-encoder.
+        let cfg: RagConfig =
+            toml::from_str("[server]\n[vector_db]\ntype = \"qdrant\"\n[reranker]\n").unwrap();
+        assert_eq!(cfg.reranker.provider, RerankerProvider::FastEmbed);
+        assert!(cfg.reranker.url.is_none());
+
+        let cfg: RagConfig = toml::from_str(
+            r#"
+[server]
+[vector_db]
+type = "qdrant"
+[reranker]
+type = "http"
+url = "https://api.cohere.com/v2"
+model = "rerank-v3.5"
+api_key = "k"
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.reranker.provider, RerankerProvider::Http);
+        assert_eq!(cfg.reranker.url.as_deref(), Some("https://api.cohere.com/v2"));
+        assert_eq!(cfg.reranker.model.as_deref(), Some("rerank-v3.5"));
+        assert_eq!(cfg.reranker.api_key.as_deref(), Some("k"));
+    }
+
+    #[test]
+    fn web_form_save_carries_http_reranker_fields() {
+        // The form only edits enabled/top_k; provider fields are file-only
+        // knobs (like embedder prefixes) and must survive a web UI save.
+        let cfg: RagConfig = toml::from_str(
+            "[server]\n[vector_db]\ntype = \"sqlite\"\n[reranker]\ntype = \"http\"\nurl = \"https://api.jina.ai/v1\"\nmodel = \"jina-reranker-v2-base-multilingual\"\n",
+        )
+        .unwrap();
+        let saved = cfg.apply_form(form("none", "")).unwrap();
+        assert_eq!(saved.reranker.provider, RerankerProvider::Http);
+        assert_eq!(saved.reranker.url.as_deref(), Some("https://api.jina.ai/v1"));
+
+        // And the saved config must survive the serialize → reload cycle the
+        // web UI persists through (save_to), including the tagged type field.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("server.toml");
+        saved.save_to(&path).unwrap();
+        let reloaded = RagConfig::from_file(path).unwrap();
+        assert_eq!(reloaded.reranker.provider, RerankerProvider::Http);
+        assert_eq!(reloaded.reranker.url.as_deref(), Some("https://api.jina.ai/v1"));
+        assert_eq!(
+            reloaded.reranker.model.as_deref(),
+            Some("jina-reranker-v2-base-multilingual")
+        );
+        assert!(reloaded.reranker.api_key.is_none());
+    }
+
+    #[test]
     fn config_without_embedder_section_is_unconfigured() {
         // No [embedder] section → None (unconfigured server, adr/0024). The old
         // silent fastembed fallback is gone deliberately.
@@ -885,6 +977,7 @@ token = "secret-token"
         assert_eq!(reloaded.server.port, 9000);
         assert!(!reloaded.reranker.enabled);
         assert_eq!(reloaded.reranker.top_k, 33);
+        assert_eq!(reloaded.reranker.provider, RerankerProvider::FastEmbed);
         assert_eq!(reloaded.auth.token.as_deref(), Some("secret-token"));
         let llm = reloaded.llm.as_ref().expect("llm present");
         assert_eq!(llm.provider(), "claude");

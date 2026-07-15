@@ -456,7 +456,16 @@ async fn dashboard(State(state): State<Arc<AppState>>) -> Markup {
                         @if l.api_key().is_some() { "set in config" } @else { "from environment" }
                     } @else { "—" }
                 }
-                dt { "Reranker" } dd { @if c.reranker.enabled { "on (top_k " (c.reranker.top_k) ")" } @else { "off" } }
+                dt { "Reranker" } dd {
+                    @if c.reranker.enabled {
+                        @match c.reranker.provider {
+                            crate::config::RerankerProvider::FastEmbed => "on: local cross-encoder (top_k ",
+                            crate::config::RerankerProvider::Http => "on: http (top_k ",
+                        }
+                        (c.reranker.top_k) ")"
+                        @if let (crate::config::RerankerProvider::Http, Some(u)) = (c.reranker.provider, c.reranker.url.as_deref()) { " · " (u) }
+                    } @else { "off" }
+                }
                 dt { "Auth" } dd { @if c.auth.token.is_some() { span .badge { "token required" } } @else { span .badge { "open" } } }
             }
         }

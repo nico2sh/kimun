@@ -166,6 +166,14 @@ creates it if missing). Edit it — or use the web UI's Config page — to choos
   ```
 - **Vector store** — embedded SQLite (zero setup, the default) or a
   standalone [Qdrant](https://qdrant.tech) server.
+- **Reranker** — improves result ordering; on by default. Either a local
+  cross-encoder model (downloaded on first start, independent of the embedder
+  choice) or an external rerank API — [Cohere](https://docs.cohere.com/reference/rerank),
+  [Jina AI](https://jina.ai/reranker/),
+  [Voyage AI](https://docs.voyageai.com/reference/reranker-api), or a
+  self-hosted vLLM/Infinity server. (OpenAI, Mistral, Gemini, and Anthropic
+  offer no rerank API.) If the reranker fails to start — for example the
+  model download is blocked by a proxy — the server keeps running without it.
 - **LLM for Ask** — Claude, OpenAI, Gemini, Mistral, or any local
   OpenAI-compatible endpoint (Ollama, llama.cpp, …). Leave unset for a
   semantic-search-only server.

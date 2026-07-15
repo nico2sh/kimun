@@ -1,7 +1,52 @@
+use async_trait::async_trait;
 use fastembed::{RerankInitOptions, RerankerModel, TextRerank};
 use std::sync::{Arc, Mutex};
 
+use crate::config::{RerankerConfig, RerankerProvider};
 use crate::document::FlattenedChunk;
+
+pub mod http;
+
+pub use http::HttpReranker;
+
+/// Reorders a retrieved candidate pool by query relevance and keeps the
+/// `top_k` best. One implementation runs locally (fastembed cross-encoder);
+/// the other calls an external HTTP rerank endpoint. Unlike the [`super::dbembeddings::embedder::Embedder`],
+/// this is not an invariant of the stored vectors — swapping rerankers never
+/// invalidates the index.
+#[async_trait]
+pub trait Reranker: Send + Sync {
+    /// Reranks `results` against `query`; returns the `top_k` best, sorted by
+    /// relevance score descending.
+    async fn rerank(
+        &self,
+        query: &str,
+        results: Vec<(f64, FlattenedChunk)>,
+        top_k: usize,
+    ) -> anyhow::Result<Vec<(f64, FlattenedChunk)>>;
+}
+
+/// Builds the configured reranker. Errors (model download failure, unreachable
+/// endpoint, missing url) are the caller's to handle — the server treats them
+/// as non-fatal and degrades to plain vector ranking.
+pub async fn from_config(cfg: &RerankerConfig) -> anyhow::Result<Arc<dyn Reranker>> {
+    match cfg.provider {
+        RerankerProvider::FastEmbed => Ok(Arc::new(CrossEncoderReranker::new()?)),
+        RerankerProvider::Http => {
+            let url = cfg
+                .url
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("[reranker] type = \"http\" needs a url"))?;
+            Ok(Arc::new(HttpReranker::new(url, cfg.model.clone(), cfg.api_key.clone()).await?))
+        }
+    }
+}
+
+/// The document text a reranker scores — same title+body shape the embedder
+/// indexes, so both backends judge identical inputs.
+pub(crate) fn rerank_document(chunk: &FlattenedChunk) -> String {
+    format!("{}\n{}", chunk.title, chunk.text)
+}
 
 /// Reranker for improving search result quality using cross-encoder models
 pub struct CrossEncoderReranker {
@@ -19,13 +64,16 @@ impl CrossEncoderReranker {
             model: Arc::new(Mutex::new(model)),
         })
     }
+}
 
+#[async_trait]
+impl Reranker for CrossEncoderReranker {
     /// Rerank search results based on query relevance
     /// Returns the top_k results sorted by relevance score
     ///
     /// This operation is CPU-intensive and runs in a blocking thread pool
     /// to avoid blocking the async runtime.
-    pub async fn rerank(
+    async fn rerank(
         &self,
         query: &str,
         results: Vec<(f64, FlattenedChunk)>,
@@ -38,7 +86,7 @@ impl CrossEncoderReranker {
         // Prepare documents for reranking
         let documents: Vec<String> = results
             .iter()
-            .map(|(_, chunk)| format!("{}\n{}", chunk.title, chunk.text))
+            .map(|(_, chunk)| rerank_document(chunk))
             .collect();
 
         let query_owned = query.to_string();
