@@ -36,6 +36,7 @@ Do you want to know more? ⭐️🚀 Check out our official documentation site f
 ## Key Features
 
 * **Blazing Fast Search:** Local Markdown files are automatically indexed into a local SQLite database for (_almost_) instantaneous full-text, structured, and fuzzy search.
+* **Semantic Search & Ask (optional):** Run the companion [Kimün server](server/README.md) to search notes by meaning and ask natural-language questions answered from your own notes (RAG) — local embeddings, local or cloud LLM, your choice.
 * **Zettelkasten-Ready Linkages:** Seamlessly navigate your knowledge base using `[[wikilinks]]` and standard Markdown links with intuitive keyboard shortcuts. Includes backlink support with interactive previews!
 * **AI & MCP Native:** Equipped with a dedicated **Model Context Protocol (MCP) Server** and LLM tools. Let your local or cloud AI models (like Claude Code) scan your notes, run daily reviews, update journals, or synthesize concepts directly.
 * **Two Interfaces:**
@@ -133,7 +134,7 @@ Kimün bridges local notes with next-generation AI assistants. Using its native 
 * **Brainstorm:** Ground an agent's reasoning inside your existing knowledge vault to avoid hallucinations.
 * **Auto-organize:** Let AI tools suggest unlinked but highly relevant notes.
 
-Check the logs to learn how to set up the MCP server, here is an example for Claude Code integration:
+Check the [docs](https://nico2sh.github.io/kimun/using-kimun/ai-mcp-server/) to learn how to set up the MCP server, here is an example for Claude Code integration:
 
 ```bash
 # Claude Code (one-time setup)
@@ -148,6 +149,20 @@ cp -r skills/kimun-cli ~/.claude/skills
 ```
 
 *(Want to check out or share prompts? See the available definitions in the `/skills` directory!)*
+
+### Semantic Search & Ask (RAG Server)
+
+The optional **Kimün server** adds semantic search (find notes by meaning) and **Ask** — questions answered from your notes with sources cited — to the TUI. It is push-only (never reads your disk), hosts many vaults at once, and can run fully local: embedded LanceDB + local embeddings, with an optional LLM (Claude, OpenAI, Gemini, Mistral, or a local OpenAI-compatible endpoint) for question-answering.
+
+```bash
+# Install (Cargo only for now; needs protoc — see server/README.md)
+cargo install --git https://github.com/nico2sh/kimun kimun_server
+
+# Run with working local defaults (LanceDB + local embedder)
+kimun-server --default-config
+```
+
+Then point Kimün at it: Preferences → Server, or `kimun_server_url = "http://localhost:7573"` in the `[global]` section of your config. Full details in the [server README](server/README.md) and the [documentation site](https://nico2sh.github.io/kimun/using-kimun/server/).
 
 ---
 
@@ -168,7 +183,7 @@ Who doesn't love open-source contributions! Whether you want to submit a bug fix
 Kimün stands on the shoulders of giants in the terminal and note-taking ecosystem:
 
 * **UI/UX:** Built with [Ratatui](https://github.com/ratatui/ratatui) & [Ratatui-textarea](https://github.com/ratatui/ratatui-textarea).
-* **Search:** Powered by [Nucleo](https://www.google.com/search?q=https://github.com/0x0ac/nucleo) for ultra-fast fuzzy matching, and [ignore](https://github.com/BurntSushi/ripgrep/tree/master/crates/ignore) for fast directory walking.
+* **Search:** Powered by [Nucleo](https://github.com/helix-editor/nucleo) for ultra-fast fuzzy matching, and [ignore](https://github.com/BurntSushi/ripgrep/tree/master/crates/ignore) for fast directory walking.
 * **Editor Integration:** Leverages [nvim-rs](https://github.com/KillTheMule/nvim-rs) for Neovim synchronization and integration.
 * **Inspiration:** Heavily inspired by [Obsidian](https://obsidian.md/), [Logseq](https://logseq.com/), and [QOwnNotes](https://www.qownnotes.org/).
 

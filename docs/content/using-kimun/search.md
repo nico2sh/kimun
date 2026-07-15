@@ -7,6 +7,8 @@ weight = 13
 
 Search is Kimün's superpower. Every Markdown file in your workspace is indexed, and a small query language lets you slice by content, name, section, path, label, and links.
 
+(Everything here is exact-match search over the local index. For finding notes by *meaning* — and asking questions answered from your notes — see [Semantic Search & Ask](@/using-kimun/server.md).)
+
 The whole grammar fits in one table:
 
 | Want | Short | Long | Example |
