@@ -74,6 +74,7 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/collections", get(collections_page))
         .route("/jobs", get(jobs_page))
         .route("/jobs/fragment", get(jobs_fragment))
+        .route("/logs", get(logs_page))
         .route("/query", get(query_page).post(query_submit))
         .route("/logout", get(logout))
         .route_layer(middleware::from_fn_with_state(state, web_auth));
@@ -249,6 +250,7 @@ fn shell(state: &AppState, active: &str, title: &str, body: Markup) -> Markup {
         ("/config", "Config"),
         ("/collections", "Collections"),
         ("/jobs", "Jobs"),
+        ("/logs", "Logs"),
         ("/query", "Test query"),
     ];
     html! {
@@ -422,7 +424,16 @@ async fn dashboard(State(state): State<Arc<AppState>>) -> Markup {
                 @if active == 0 { "idle" } @else { b { (count_noun(active, "active job")) } }
             }
         }
-        @if c.embedder.is_none() {
+        @if let Some(err) = &state.startup_error {
+            p .flash.err {
+                "Startup failed — the configured embedder could not be initialized, so indexing "
+                "and search are disabled until the problem is fixed and the server restarts. "
+                a href="/logs" { "See the logs" } " or " a href="/config" { "review the config" } "."
+                br;
+                span .mono { (err) }
+            }
+        }
+        @else if c.embedder.is_none() {
             p .flash.err {
                 "This server is unconfigured — no embedder is set, so indexing and search are disabled. "
                 a href="/config" { "Configure an embedder" } "."
@@ -840,6 +851,49 @@ async fn jobs_table(state: &AppState) -> Markup {
 }
 
 // ============================================================================
+// Logs
+// ============================================================================
+
+async fn logs_page(State(state): State<Arc<AppState>>) -> Markup {
+    let entries = state.log_buffer.list();
+    let body = html! {
+        h1 { "Logs" }
+        p .muted {
+            "Warnings and errors since startup, newest first (last "
+            (crate::logbuffer::CAPACITY)
+            " kept in memory — the full log is on the server's stdout/journal)."
+        }
+        @if entries.is_empty() {
+            p .muted { "No warnings or errors since startup." }
+        } @else {
+            table {
+                thead { tr { th { "Time" } th { "Level" } th { "Message" } } }
+                tbody {
+                    @for e in &entries {
+                        tr {
+                            td .mono { (fmt_time(e.time)) }
+                            td {
+                                span class=(if e.level == tracing::Level::ERROR { "status failed" } else { "status" }) {
+                                    (e.level.as_str())
+                                }
+                            }
+                            td .snippet { (e.message) }
+                        }
+                    }
+                }
+            }
+        }
+    };
+    shell(&state, "/logs", "Logs", body)
+}
+
+fn fmt_time(t: std::time::SystemTime) -> String {
+    chrono::DateTime::<chrono::Local>::from(t)
+        .format("%H:%M:%S")
+        .to_string()
+}
+
+// ============================================================================
 // Test query
 // ============================================================================
 
@@ -1209,6 +1263,61 @@ provider = "gemini"
     }
 
     #[tokio::test]
+    async fn degraded_dashboard_shows_startup_error() {
+        let app = app(degraded_state());
+        let resp = app
+            .oneshot(Request::get("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let html = body_text(resp).await;
+        assert!(
+            html.contains("Startup failed"),
+            "dashboard must flag the degraded state"
+        );
+        assert!(
+            html.contains("model download failed: connection refused"),
+            "and show the cause"
+        );
+        assert!(html.contains("/logs"), "and link to the logs page");
+    }
+
+    #[tokio::test]
+    async fn logs_page_shows_buffered_entries() {
+        let state = unconfigured_state();
+        state.log_buffer.push(crate::logbuffer::LogEntry {
+            time: std::time::SystemTime::now(),
+            level: tracing::Level::ERROR,
+            target: "kimun_server".into(),
+            message: "embedding model download failed".into(),
+        });
+        let app = app(state);
+        let resp = app
+            .oneshot(Request::get("/logs").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let html = body_text(resp).await;
+        assert!(html.contains("embedding model download failed"));
+        assert!(html.contains("ERROR"));
+    }
+
+    #[tokio::test]
+    async fn logs_page_empty_state() {
+        let app = app(unconfigured_state());
+        let resp = app
+            .oneshot(Request::get("/logs").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(
+            body_text(resp)
+                .await
+                .contains("No warnings or errors since startup")
+        );
+    }
+
+    #[tokio::test]
     async fn unconfigured_collections_page_shows_banner_not_error() {
         let app = app(unconfigured_state());
         let resp = app
@@ -1410,6 +1519,19 @@ api_key = "gemini-key"
     }
 
     /// An unconfigured server with a writable config path (for the form page).
+    /// Embedder configured but its startup initialization failed → degraded.
+    fn degraded_state() -> Arc<AppState> {
+        let config: RagConfig = toml::from_str(
+            "[server]\n[vector_db]\ntype = \"sqlite\"\n[embedder]\ntype = \"fastembed\"\n[reranker]\n",
+        )
+        .unwrap();
+        assert!(config.embedder.is_some());
+        Arc::new(
+            AppState::new(None, config)
+                .with_startup_error(Some("model download failed: connection refused".into())),
+        )
+    }
+
     fn unconfigured_state_with_path() -> Arc<AppState> {
         let config: RagConfig =
             toml::from_str("[server]\n[vector_db]\ntype = \"sqlite\"\n[reranker]\n").unwrap();

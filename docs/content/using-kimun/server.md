@@ -62,6 +62,18 @@ Linux, a launchd agent on macOS) and restart it automatically on updates:
 curl -fsSL https://kimun.2co.dev/install-server.sh | sh -s -- --service
 ```
 
+To manage the service — for example to restart it after editing the config —
+use `systemctl` on Linux or `launchctl` on macOS:
+
+```sh
+# Linux
+systemctl --user restart kimun-server
+systemctl --user status kimun-server
+
+# macOS
+launchctl kickstart -k "gui/$(id -u)/dev.2co.kimun-server"
+```
+
 ### Docker (homelab, NAS, VPS)
 
 Multi-arch images (amd64, arm64) at `ghcr.io/nico2sh/kimun-server`. A single
