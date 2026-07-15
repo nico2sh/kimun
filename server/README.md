@@ -118,7 +118,12 @@ See `config.example.toml` for the annotated template. Sections:
     default is BGE-Large (1024 dims).
   - `type = "ollama"` — `url`, `model`, optional `doc_prefix`/`query_prefix`.
   - `type = "openai"` — any OpenAI-compatible `/embeddings` endpoint: `url`,
-    `model`, optional `api_key`, `doc_prefix`/`query_prefix`.
+    `model`, optional `api_key`, `doc_prefix`/`query_prefix`. This also covers
+    cloud providers whose embeddings API is OpenAI-compatible — Mistral
+    (`url = "https://api.mistral.ai/v1"`, `model = "mistral-embed"`) and
+    Google Gemini via its OpenAI-compatibility layer
+    (`url = "https://generativelanguage.googleapis.com/v1beta/openai"`,
+    `model = "gemini-embedding-001"`). See `config.example.toml`.
 
   The vector width is detected automatically. **Changing the embedder or model
   invalidates all stored vectors** and forces a re-index — drop the store (the

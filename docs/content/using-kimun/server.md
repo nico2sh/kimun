@@ -141,7 +141,29 @@ creates it if missing). Edit it — or use the web UI's Config page — to choos
 
 - **Embedder** — local [fastembed](https://github.com/Anush008/fastembed-rs)
   models (no network), or an external Ollama / OpenAI-compatible embeddings
-  endpoint.
+  endpoint. The OpenAI-compatible option also covers cloud providers such as
+  [Mistral](https://docs.mistral.ai/api/endpoint/embeddings) (their native API
+  is OpenAI-compatible) and
+  [Google Gemini](https://ai.google.dev/gemini-api/docs/embeddings) (via its
+  OpenAI-compatibility endpoint):
+
+  ```toml
+  # Mistral
+  [embedder]
+  type = "openai"
+  url = "https://api.mistral.ai/v1"
+  model = "mistral-embed"
+  api_key = "..."
+  ```
+
+  ```toml
+  # Google Gemini
+  [embedder]
+  type = "openai"
+  url = "https://generativelanguage.googleapis.com/v1beta/openai"
+  model = "gemini-embedding-001"
+  api_key = "..."
+  ```
 - **Vector store** — embedded SQLite (zero setup, the default) or a
   standalone [Qdrant](https://qdrant.tech) server.
 - **LLM for Ask** — Claude, OpenAI, Gemini, Mistral, or any local
