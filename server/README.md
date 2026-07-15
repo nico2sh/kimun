@@ -30,6 +30,10 @@ curl -fsSL https://kimun.2co.dev/install-server.sh | sh
 curl -fsSL https://kimun.2co.dev/install-server.sh | sh -s -- --service
 ```
 
+Restart the service (e.g. after a config change) with
+`systemctl --user restart kimun-server` on Linux, or
+`launchctl kickstart -k "gui/$(id -u)/dev.2co.kimun-server"` on macOS.
+
 **Docker** (homelab / NAS / VPS) — multi-arch (amd64, arm64); one volume holds
 the config, vector store, and model cache. Update with `docker pull`:
 

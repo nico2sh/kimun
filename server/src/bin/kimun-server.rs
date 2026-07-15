@@ -39,13 +39,16 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize tracing
+    // Initialize tracing. Besides stdout, WARN/ERROR events are copied into an
+    // in-memory ring buffer the web UI serves at /logs.
+    let log_buffer = kimun_server::logbuffer::LogBuffer::new();
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "kimun_server=debug,tower_http=debug".into()),
         )
         .with(tracing_subscriber::fmt::layer())
+        .with(log_buffer.layer())
         .init();
 
     let cli = Cli::parse();
@@ -70,10 +73,27 @@ async fn main() -> anyhow::Result<()> {
     tracing::debug!("Server: {}:{}", config.server.host, config.server.port);
 
     // Create RAG instance based on config. `None` = unconfigured (adr/0024).
+    // A build failure (embedding model download failed, bad LLM key, …) does
+    // NOT abort startup: the server comes up degraded — same 503-everything
+    // behavior as unconfigured — so the web UI stays reachable to show the
+    // error and fix the config.
     tracing::info!("Initializing RAG system...");
-    let rag = create_rag_from_config(&config).await?;
+    let (rag, startup_error) = match create_rag_from_config(&config).await {
+        Ok(rag) => (rag, None),
+        Err(e) => {
+            let msg = format!("{e:#}");
+            tracing::error!(
+                "RAG initialization failed: {msg} — starting DEGRADED: indexing and search are \
+                 disabled. Check http://{}:{}/logs and fix the config at /config, then restart.",
+                config.server.host,
+                config.server.port
+            );
+            (None, Some(msg))
+        }
+    };
     match &rag {
         Some(_) => tracing::info!("RAG system initialized"),
+        None if startup_error.is_some() => {} // error logged above
         None => tracing::warn!(
             "No embedder configured — server is UNCONFIGURED: indexing and search are disabled. \
              Open http://{}:{}/config to set up an embedder (and optionally an LLM).",
@@ -83,7 +103,12 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Create application state
-    let state = Arc::new(AppState::new(rag, config.clone()).with_config_path(config_path));
+    let state = Arc::new(
+        AppState::new(rag, config.clone())
+            .with_config_path(config_path)
+            .with_log_buffer(log_buffer)
+            .with_startup_error(startup_error),
+    );
 
     // Periodically drop completed/old jobs so the tracker doesn't grow for the
     // life of the process.
@@ -148,6 +173,7 @@ async fn main() -> anyhow::Result<()> {
 /// embedder) and no pipeline at all; every data endpoint rejects with 503
 /// until one is configured (adr/0024).
 async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<Option<KimunRag>> {
+    use anyhow::Context;
     use kimun_server::{
         config::{EmbedderConfig, VectorDbConfig},
         dbembeddings::{
@@ -170,7 +196,14 @@ async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<Option<Kim
                 "Using local fastembed embedder (model: {})",
                 model.as_deref().unwrap_or("default BGE-Large")
             );
-            Arc::new(FastEmbedder::new(model.as_deref())?)
+            Arc::new(FastEmbedder::new(model.as_deref()).with_context(|| {
+                format!(
+                    "could not initialize the fastembed embedder (model {}) — the model is \
+                     downloaded on first use, so this usually means the download failed \
+                     (offline? proxy?)",
+                    model.as_deref().unwrap_or("default BGE-Large")
+                )
+            })?)
         }
         EmbedderConfig::Ollama {
             url,
@@ -293,15 +326,23 @@ async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<Option<Kim
 /// Health + capability probe. The client hits this to decide which features to
 /// light up (adr: additive surfaces appear only when the server is reachable).
 /// `embedder: null` = unconfigured (adr/0024); `llm_provider: null` =
-/// semantic-only (adr/0022).
+/// semantic-only (adr/0022). A degraded server (embedder configured but its
+/// initialization failed at startup) reports `embedder: null` too — the
+/// capability is genuinely absent — plus the error under `degraded`.
 async fn health_handler(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
 ) -> axum::Json<serde_json::Value> {
+    let embedder = state
+        .rag
+        .as_ref()
+        .and(state.config.embedder.as_ref())
+        .map(|e| e.provider());
     axum::Json(serde_json::json!({
         "status": "ok",
         "reranker": state.config.reranker.enabled,
-        "embedder": state.config.embedder.as_ref().map(|e| e.provider()),
+        "embedder": embedder,
         "llm_provider": state.config.llm.as_ref().map(|l| l.provider()),
         "auth_required": state.config.auth.token.is_some(),
+        "degraded": state.startup_error,
     }))
 }

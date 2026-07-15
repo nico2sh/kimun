@@ -19,6 +19,13 @@ pub struct AppState {
     /// Where the config was loaded from, so the web UI can persist edits back to
     /// it. `None` disables saving (config supplied without a resolvable path).
     pub config_path: Option<PathBuf>,
+    /// Recent WARN/ERROR events, shown on the web UI's Logs page.
+    pub log_buffer: crate::logbuffer::LogBuffer,
+    /// Why the RAG pipeline failed to build at startup (e.g. the embedding
+    /// model download failed). `Some` means the server is running *degraded*:
+    /// an embedder is configured but `rag` is `None`, so data endpoints reject
+    /// with 503 just like an unconfigured server. Shown on the dashboard.
+    pub startup_error: Option<String>,
     pub job_tracker: Arc<Mutex<JobTracker>>,
     /// Serializes index writes (store/delete) so concurrent jobs on the same
     /// collection can't double-insert chunks or race each other's updates.
@@ -32,6 +39,8 @@ impl AppState {
             rag: rag.map(Arc::new),
             config: Arc::new(config),
             config_path: None,
+            log_buffer: crate::logbuffer::LogBuffer::new(),
+            startup_error: None,
             job_tracker: Arc::new(Mutex::new(JobTracker::new())),
             index_lock: Arc::new(Mutex::new(())),
         }
@@ -46,6 +55,20 @@ impl AppState {
     /// Records the on-disk config path so the web UI can write edits back to it.
     pub fn with_config_path(mut self, path: PathBuf) -> Self {
         self.config_path = Some(path);
+        self
+    }
+
+    /// Attaches the log buffer the tracing layer writes to, so the web UI can
+    /// render recent warnings/errors.
+    pub fn with_log_buffer(mut self, buffer: crate::logbuffer::LogBuffer) -> Self {
+        self.log_buffer = buffer;
+        self
+    }
+
+    /// Records why RAG initialization failed (degraded startup, adr/0024's
+    /// unconfigured behavior with a visible cause).
+    pub fn with_startup_error(mut self, error: Option<String>) -> Self {
+        self.startup_error = error;
         self
     }
 }
