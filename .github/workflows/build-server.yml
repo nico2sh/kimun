@@ -22,12 +22,9 @@ jobs:
             artifact: windows
             artifact_suffix: ""
             binary: kimun-server.exe
-          - name: MacOS Build x64
-            os: macos-latest
-            target: x86_64-apple-darwin
-            artifact: macos
-            artifact_suffix: _intel
-            binary: kimun-server
+          # No Intel Mac (x86_64-apple-darwin) build: fastembed -> ort 2.0.0-rc.12
+          # dropped prebuilt ONNX Runtime binaries for that target after upstream
+          # ONNX Runtime ended x86_64 macOS support.
           - name: MacOS Build arm64
             os: macos-latest
             target: aarch64-apple-darwin
@@ -124,8 +121,6 @@ jobs:
             if [[ "$dirname" == *"windows"* ]]; then
               ARCHIVE_NAME="kimun-server-${VERSION}-windows-x64.zip"
               cd "$dirname" && zip -r "../${ARCHIVE_NAME}" . && cd ..
-            elif [[ "$dirname" == *"intel"* ]]; then
-              tar -czf "kimun-server-${VERSION}-macos-x64.tar.gz" -C "$dirname" .
             elif [[ "$dirname" == *"apple_silicon"* ]]; then
               tar -czf "kimun-server-${VERSION}-macos-arm64.tar.gz" -C "$dirname" .
             elif [[ "$dirname" == *"linux"* && "$dirname" == *"arm64"* ]]; then
