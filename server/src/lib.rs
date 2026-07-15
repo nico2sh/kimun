@@ -22,6 +22,7 @@ pub mod reranker;
 pub mod auth;
 pub mod config;
 pub mod handlers;
+pub mod logbuffer;
 pub mod server_state;
 pub mod webui;
 
