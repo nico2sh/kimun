@@ -16,11 +16,15 @@ name = "kimun-notes"
 git_tag_name = "kimun-notes-v{{ version }}"
 
 # Server ships as GitHub release binaries only (build-server.yml triggers on the
-# tag); it is a binary, not a library, so no crates.io publish.
+# tag); it is a binary, not a library, so no crates.io publish. `publish = false`
+# alone is not enough: release-plz would still consult crates.io for the latest
+# release, find nothing, and treat every run as an unreleased first version —
+# never bumping past it. `git_only` makes it read the kimun_server-v* tags instead.
 [[package]]
 name = "kimun_server"
 git_tag_name = "kimun_server-v{{ version }}"
 publish = false
+git_only = true
 
 # Published to crates.io: kimun-notes depends on it, and crates.io requires all
 # dependencies of a published crate to be published themselves.
