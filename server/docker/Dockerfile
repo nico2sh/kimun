@@ -7,6 +7,12 @@
 # the binary links their glibc (2.39), which debian bookworm (2.36) lacks.
 FROM ubuntu:24.04
 
+# Links the GHCR package to the repository (repo page shows the package, the
+# package page shows the README).
+LABEL org.opencontainers.image.source="https://github.com/nico2sh/kimun" \
+      org.opencontainers.image.description="Kimün RAG server — semantic search and Ask for Kimün vaults" \
+      org.opencontainers.image.licenses="MIT"
+
 # ca-certificates: TLS roots for the embedding-model download and LLM API calls.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
