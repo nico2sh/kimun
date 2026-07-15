@@ -17,36 +17,56 @@ Kimün  ──push docs / delete / query──▶  RAG server ──▶  vector 
                                                     └──▶  LLM (Claude | OpenAI | Gemini | Mistral)
 ```
 
+## Install
+
+Cargo is currently the only install method — the crate is not published to
+crates.io and there are no prebuilt binaries yet. You need a Rust toolchain
+and `protoc` (see [Development](#development) for the protobuf packages):
+
+```bash
+cargo install --git https://github.com/nico2sh/kimun kimun_server
+```
+
+This installs the `kimun-server` binary into `~/.cargo/bin`. From a source
+checkout, `cargo install --path server` does the same.
+
 ## Quick start
 
-The server is the `kimun_server` crate (a member of the Kimün workspace). Run it
-from the repo root with `-p kimun_server`, or from this `server/` directory:
+Start with working local defaults (embedded LanceDB + the local fastembed
+embedder, semantic-only) — no config file needed:
+
+```bash
+kimun-server --default-config
+```
+
+Or run from a config file (see [Configuration](#configuration)):
 
 ```bash
 mkdir -p ~/.config/kimun
 cp server/config.example.toml ~/.config/kimun/server.toml
-# edit ~/.config/kimun/server.toml (see Configuration)
-cargo run --release -p kimun_server --bin kimun-server
+# edit ~/.config/kimun/server.toml, then:
+kimun-server
 ```
 
 Override host/port/config on the CLI:
 
 ```bash
-cargo run -p kimun_server --bin kimun-server -- --config /path/to/server.toml --host 0.0.0.0 --port 7573
+kimun-server --config /path/to/server.toml --host 0.0.0.0 --port 7573
 ```
 
-Or skip the config file entirely and start with working local defaults
-(embedded LanceDB + the local fastembed embedder, semantic-only):
-
-```bash
-cargo run --release -p kimun_server --bin kimun-server -- --default-config
-```
+(Working in the repo instead? Substitute
+`cargo run --release -p kimun_server --bin kimun-server --` for `kimun-server`.)
 
 Open `http://127.0.0.1:7573/` for the [web UI](#web-ui); the API lives under
 `/api` (see [API](#api)).
 
 First run downloads the embedding model (and the reranker, if enabled) — a few
 hundred MB — unless you point `[embedder]` at an external service.
+
+To connect Kimün, set the server address in Preferences (Server section) or in
+`config.toml` — `kimun_server_url = "http://localhost:7573"` under `[global]`,
+plus `kimun_server_token` when the server has an `[auth]` token. See the
+[user documentation](https://nico2sh.github.io/kimun/using-kimun/server/).
 
 ## Configuration
 

@@ -133,7 +133,7 @@ The file has five kinds of contents:
 
 ### `[global]` Section
 
-One field, and it's this one:
+Settings that apply across all workspaces:
 
 ```toml
 [global]
@@ -145,6 +145,8 @@ current_workspace = "default"
 | `current_workspace` | string | *(unset)* | Workspace Kimün loads at startup. Must match a `[workspaces.<name>]` key. |
 | `update_check` | boolean | `true` | Check GitHub for a newer release on launch. Read only at startup. |
 | `mouse` | boolean | `true` | Capture the mouse for in-app use (divider drag, list scroll, click-to-focus). Set `false` to hand the mouse back to your terminal — see [Mouse](#mouse). Read only at startup; also a checkbox in Preferences (`Ctrl+,` → Display). |
+| `kimun_server_url` | string | *(unset)* | Base URL of the optional [Kimün server](@/using-kimun/server.md) (e.g. `"http://localhost:7573"`), which adds semantic search and question-answering. Unset means the feature is off. Also editable in Preferences (`Ctrl+,` → Server). |
+| `kimun_server_token` | string | *(unset)* | Bearer token for the Kimün server, when it requires one. |
 
 (Theme lives at the top level, not here.)
 
