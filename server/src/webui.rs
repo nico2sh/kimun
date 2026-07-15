@@ -860,7 +860,9 @@ async fn query_submit(State(state): State<Arc<AppState>>, Form(f): Form<QueryFor
     query_markup(&state, &collections, &f.vault_id, &f.query, Some(results))
 }
 
-type SearchOutcome = Result<Vec<(f64, String, String)>, String>;
+/// Hits plus the wall-clock milliseconds the search took — the same duration
+/// the API reports as `query_time_ms`.
+type SearchOutcome = Result<(Vec<(f64, String, String)>, u64), String>;
 
 /// The same pipeline the API's `/api/embeddings` runs — the test query shows
 /// exactly what clients get (one row per note, top_k notes).
@@ -873,14 +875,19 @@ async fn run_search(state: &AppState, vault_id: &str, query: &str) -> SearchOutc
     }
     let collection = crate::CollectionKey::parse(vault_id).map_err(|e| e.to_string())?;
     let top_k = state.config.reranker.top_k;
+    let started = std::time::Instant::now();
     let ranked = rag
         .search(&collection, query, top_k)
         .await
         .map_err(|e| e.to_string())?;
-    Ok(ranked
-        .into_iter()
-        .map(|(score, chunk)| (score, chunk.doc_path, chunk.text))
-        .collect())
+    let query_time_ms = started.elapsed().as_millis() as u64;
+    Ok((
+        ranked
+            .into_iter()
+            .map(|(score, chunk)| (score, chunk.doc_path, chunk.text))
+            .collect(),
+        query_time_ms,
+    ))
 }
 
 fn query_markup(
@@ -913,19 +920,35 @@ fn query_markup(
             }
         }
         @if let Some(outcome) = results {
-            @match outcome {
-                Err(e) => p .flash.err { (e) },
-                Ok(hits) if hits.is_empty() => p .muted { "No matches." },
-                Ok(hits) => {
-                    h2 { (count_noun(hits.len(), "result")) }
-                    @for (score, path, text) in &hits {
-                        div .hit {
-                            div { span .mono { (path) } span .score { (format!("{score:.3}")) } }
-                            div .snippet { (truncate(text, 240)) }
+            div #results {
+                @match outcome {
+                    Err(e) => p .flash.err { (e) },
+                    Ok((hits, ms)) if hits.is_empty() => p .muted { (format!("No matches ({ms} ms).")) },
+                    Ok((hits, ms)) => {
+                        h2 { (count_noun(hits.len(), "result")) " " span .muted { (format!("· {ms} ms")) } }
+                        @for (score, path, text) in &hits {
+                            div .hit {
+                                div { span .mono { (path) } span .score { (format!("{score:.3}")) } }
+                                div .snippet { (truncate(text, 240)) }
+                            }
                         }
                     }
                 }
             }
+        }
+        script {
+            (maud::PreEscaped(r#"
+// A submit re-renders the whole page, but the browser keeps the old page
+// visible until the response lands — clear stale results immediately so a
+// slow query never shows the previous answer next to a running search.
+const qform = document.querySelector('form[action="/query"]');
+if (qform) qform.addEventListener('submit', () => {
+  const stale = document.getElementById('results');
+  if (stale) stale.remove();
+  const btn = qform.querySelector('button[type="submit"]');
+  if (btn) { btn.disabled = true; btn.textContent = 'Searching…'; }
+});
+"#))
         }
     };
     shell(state, "/query", "Test query", body)
@@ -1194,6 +1217,28 @@ provider = "gemini"
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         assert!(body_text(resp).await.contains("unconfigured"));
+    }
+
+    #[tokio::test]
+    async fn query_submit_shows_results_and_time() {
+        let app = app(state(None, None));
+        let resp = app
+            .oneshot(
+                Request::post("/query")
+                    .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .body(Body::from("vault_id=vault-1&query=hello"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let html = body_text(resp).await;
+        assert!(html.contains("/notes/a.md"), "fake store's hit rendered");
+        assert!(html.contains(" ms"), "query time shown");
+        assert!(
+            html.contains(r#"id="results""#),
+            "results container present so the page script can clear it on the next submit"
+        );
     }
 
     #[tokio::test]
