@@ -118,9 +118,8 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-      # qemu: the Dockerfile has RUN steps, which execute under emulation for
-      # the arm64 layer.
-      - uses: docker/setup-qemu-action@v3
+      # No qemu: the final stage is COPY-only (certs staged on the build
+      # platform), so the arm64 image assembles without emulation.
       - uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
