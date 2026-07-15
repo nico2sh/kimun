@@ -63,12 +63,6 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      # qdrant-client/lancedb pull in prost-build, which needs a system protoc.
-      - name: Install protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-
       # Cache cargo registry + target/ via Swatinem/rust-cache. Tests are
       # not run here — release-plz only creates tags from main commits, and
       # every main commit has already passed check.yml's test suite.
