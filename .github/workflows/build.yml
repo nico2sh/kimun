@@ -7,7 +7,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_TOOLCHAIN: stable
 
 name: release
 
@@ -16,46 +15,42 @@ jobs:
     strategy:
       matrix:
         include:
+          # `platform` is the release asset platform string; it flows through
+          # the artifact name (dist-<platform>) into archive/asset naming in
+          # create-release, so the two never drift apart.
           - name: Windows Build
             os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact: windows
-            artifact_suffix: ""
+            platform: windows-x64
             binary: kimun.exe
+          # If this Intel Mac build is ever dropped, also update:
+          # .github/homebrew/formula.rb.tmpl, install.sh (macos-x64 mapping),
+          # and tui/src/update/platform.rs — all expect the macos-x64 asset.
           - name: MacOS Build x64
             os: macos-latest
             target: x86_64-apple-darwin
-            artifact: macos
-            artifact_suffix: _intel
+            platform: macos-x64
             binary: kimun
           - name: MacOS Build arm64
             os: macos-latest
             target: aarch64-apple-darwin
-            artifact: macos
-            artifact_suffix: _apple_silicon
+            platform: macos-arm64
             binary: kimun
           - name: Linux Build
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact: linux
-            artifact_suffix: ""
+            platform: linux-x64
             binary: kimun
           - name: Linux Build arm64
             os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-            artifact: linux
-            artifact_suffix: _arm64
+            platform: linux-arm64
             binary: kimun
     runs-on: ${{ matrix.os }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Extract version
-        id: extract_version
-        shell: bash
-        run: echo "version=${GITHUB_REF_NAME#kimun-notes-v}" >> $GITHUB_OUTPUT
 
       # Setup Rust toolchain
       - name: Install Rust
@@ -86,7 +81,7 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Kimun v${{ steps.extract_version.outputs.version }} (${{ matrix.artifact }}${{ matrix.artifact_suffix }})
+          name: dist-${{ matrix.platform }}
           path: dist
 
   create-release:
@@ -94,7 +89,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      packages: write
     outputs:
       version: ${{ steps.extract_version.outputs.version }}
 
@@ -113,51 +107,35 @@ jobs:
       - name: Display structure of downloaded files
         run: ls -R release-artifacts
 
+      # Each build job uploads its artifact as dist-<platform>, so the platform
+      # string is read straight off the directory name — no classification.
       - name: Create compressed archives with consistent naming
         run: |
           set -euo pipefail
+          shopt -s nullglob
           cd release-artifacts
           VERSION="${GITHUB_REF_NAME#kimun-notes-v}"
 
-          for dir in */; do
-            dirname="${dir%/}"
+          dirs=(dist-*/)
+          if [[ ${#dirs[@]} -eq 0 ]]; then
+            echo "::error::no dist-* build artifacts found"
+            exit 1
+          fi
 
-            # Reset per iteration so an unclassified dir can never reuse the
-            # previous iteration's PLATFORM for the raw-binary copy below.
-            PLATFORM=""
-            if [[ "$dirname" == *"windows"* ]]; then
-              PLATFORM="windows-x64"
-              ARCHIVE_NAME="kimun-${VERSION}-${PLATFORM}.zip"
-              cd "$dirname" && zip -r "../${ARCHIVE_NAME}" . && cd ..
-            elif [[ "$dirname" == *"intel"* ]]; then
-              PLATFORM="macos-x64"
-              ARCHIVE_NAME="kimun-${VERSION}-${PLATFORM}.tar.gz"
-              tar -czf "${ARCHIVE_NAME}" -C "$dirname" .
-            elif [[ "$dirname" == *"apple_silicon"* ]]; then
-              PLATFORM="macos-arm64"
-              ARCHIVE_NAME="kimun-${VERSION}-${PLATFORM}.tar.gz"
-              tar -czf "${ARCHIVE_NAME}" -C "$dirname" .
-            elif [[ "$dirname" == *"linux"* && "$dirname" == *"arm64"* ]]; then
-              # Must precede the generic linux branch — arm64 dirs also match *linux*.
-              PLATFORM="linux-arm64"
-              ARCHIVE_NAME="kimun-${VERSION}-${PLATFORM}.tar.gz"
-              tar -czf "${ARCHIVE_NAME}" -C "$dirname" .
-            elif [[ "$dirname" == *"linux"* ]]; then
-              PLATFORM="linux-x64"
-              ARCHIVE_NAME="kimun-${VERSION}-${PLATFORM}.tar.gz"
-              tar -czf "${ARCHIVE_NAME}" -C "$dirname" .
-            else
-              echo "::error::unclassified artifact directory: $dirname"
-              exit 1
-            fi
+          for dir in "${dirs[@]}"; do
+            platform="${dir%/}"
+            platform="${platform#dist-}"
+            base="kimun-${VERSION}-${platform}"
 
             # Raw, uncompressed binary asset for in-app self-update (adr/0014).
             # The running app downloads this directly, checksum-verifies it, and
             # swaps it in place — no client-side archive extraction needed.
-            if [[ "$dirname" == *"windows"* ]]; then
-              cp "$dirname/kimun.exe" "kimun-${VERSION}-${PLATFORM}.exe"
+            if [[ "$platform" == windows-* ]]; then
+              (cd "$dir" && zip -r "../${base}.zip" .)
+              cp "${dir}kimun.exe" "${base}.exe"
             else
-              cp "$dirname/kimun" "kimun-${VERSION}-${PLATFORM}"
+              tar -czf "${base}.tar.gz" -C "$dir" .
+              cp "${dir}kimun" "${base}"
             fi
           done
 
