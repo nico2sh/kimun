@@ -840,12 +840,12 @@ mod tests {
             "".to_string(),      // 22: FenceContent (last row → FenceMarker?)
         ];
         let initial_pb = ParsedBuffer::parse(&initial);
-        eprintln!("initial kinds: {:?}", &initial_pb.kinds);
+        eprintln!("initial kinds: {:?}", initial_pb.kinds);
 
         let mut edited = initial.clone();
         edited[9].push(' ');
         let edited_pb = ParsedBuffer::parse(&edited);
-        eprintln!("edited  kinds: {:?}", &edited_pb.kinds);
+        eprintln!("edited  kinds: {:?}", edited_pb.kinds);
 
         // Compare just the first 10 rows to see where divergence starts
         for i in 0..23 {

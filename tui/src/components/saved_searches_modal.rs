@@ -3,7 +3,7 @@
 //! A query box on top of a list of the vault's saved searches, with a pinned
 //! virtual "Backlinks (current note)" entry at the top. Typing filters by name
 //! and by a leading 1–9 quick-select index (an exact index match ranks first).
-//! Enter emits [`AppEvent::SavedSearchSelected`] (the editor runs the query in
+//! Enter emits [`AppEvent::SavedSearch(SavedSearchFlow::Selected)`] (the editor runs the query in
 //! the panel and closes this overlay itself); Esc emits
 //! [`AppEvent::CloseOverlay`]; Delete removes the selected user entry.
 //!
@@ -22,7 +22,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, Borders, ListItem, Paragraph};
 
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, InputEvent, redraw_callback};
+use crate::components::events::{AppEvent, AppTx, InputEvent, SavedSearchFlow, redraw_callback};
 use crate::components::overlay::{Overlay, OverlayKind};
 use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::components::search_list::{
@@ -244,10 +244,10 @@ impl Overlay for SavedSearchesModal {
             InputEvent::Mouse(mouse) => match self.list.handle_mouse(mouse) {
                 SearchMouse::Activated(_) => {
                     if let Some(item) = self.list.selected_row() {
-                        tx.send(AppEvent::SavedSearchSelected {
+                        tx.send(AppEvent::SavedSearch(SavedSearchFlow::Selected {
                             query: item.query.clone(),
                             name: item.name.clone(),
-                        })
+                        }))
                         .ok();
                     }
                     EventState::Consumed
@@ -275,10 +275,10 @@ impl Overlay for SavedSearchesModal {
                 }
                 KeyReaction::Submit => {
                     if let Some(item) = self.list.selected_row() {
-                        tx.send(AppEvent::SavedSearchSelected {
+                        tx.send(AppEvent::SavedSearch(SavedSearchFlow::Selected {
                             query: item.query.clone(),
                             name: item.name.clone(),
-                        })
+                        }))
                         .ok();
                     }
                     EventState::Consumed
@@ -540,7 +540,7 @@ mod tests {
         assert!(
             events
                 .iter()
-                .any(|e| matches!(e, AppEvent::SavedSearchSelected { .. })),
+                .any(|e| matches!(e, AppEvent::SavedSearch(SavedSearchFlow::Selected { .. }))),
             "expected SavedSearchSelected, got {events:?}"
         );
         assert!(

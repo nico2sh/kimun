@@ -14,7 +14,7 @@ use tokio::task::JoinHandle;
 use crate::components::Component;
 use crate::components::dialogs::ValidationState;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx};
+use crate::components::events::{AppEvent, AppTx, FileOp, OverlayData};
 use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::components::single_line_input::{InputOutcome, SingleLineInput};
 use crate::settings::themes::Theme;
@@ -94,7 +94,7 @@ impl MoveDialog {
     // -----------------------------------------------------------------------
 
     /// Spawn a background task that retrieves all vault directories and sends
-    /// the result as [`AppEvent::MoveDirectoriesLoaded`].
+    /// the result as [`AppEvent::OverlayData(OverlayData::MoveDirectoriesLoaded)`].
     fn schedule_load(&mut self, tx: &AppTx) {
         let vault = Arc::clone(&self.vault);
         let tx_clone = tx.clone();
@@ -108,7 +108,11 @@ impl MoveDialog {
                     .chain(dirs.into_iter().map(|d| d.path))
                     .collect();
                 paths.sort();
-                tx_clone.send(AppEvent::MoveDirectoriesLoaded(paths)).ok();
+                tx_clone
+                    .send(AppEvent::OverlayData(OverlayData::MoveDirectoriesLoaded(
+                        paths,
+                    )))
+                    .ok();
             }
         });
         self.load_task = Some(handle);
@@ -121,7 +125,7 @@ impl MoveDialog {
     /// Abort any in-flight filter task and schedule a new one for the current
     /// value of `self.search_query`.  If the query is empty the full
     /// `all_dirs` list is restored synchronously.  Otherwise the result is
-    /// sent as [`AppEvent::MoveFilterResults`].
+    /// sent as [`AppEvent::OverlayData(OverlayData::MoveFilterResults)`].
     fn schedule_filter(&mut self, tx: &AppTx) {
         if let Some(handle) = self.filter_task.take() {
             handle.abort();
@@ -159,7 +163,9 @@ impl MoveDialog {
             .unwrap_or_default();
 
             let paths = matched_strs.iter().map(VaultPath::new).collect();
-            tx_clone.send(AppEvent::MoveFilterResults(paths)).ok();
+            tx_clone
+                .send(AppEvent::OverlayData(OverlayData::MoveFilterResults(paths)))
+                .ok();
         });
 
         self.filter_task = Some(handle);
@@ -171,7 +177,7 @@ impl MoveDialog {
 
     /// Abort any in-flight validation task and start a new one for the
     /// currently selected directory.  The result is sent as
-    /// [`AppEvent::MoveDestValidation`].  Resets to `Idle` when nothing is selected.
+    /// [`AppEvent::OverlayData(OverlayData::MoveDestValidation)`].  Resets to `Idle` when nothing is selected.
     pub fn spawn_validation(&mut self, tx: &AppTx) {
         if let Some(handle) = self.validation_task.take() {
             handle.abort();
@@ -199,7 +205,9 @@ impl MoveDialog {
             };
             let exists = vault.exists(&candidate).await;
             tx_clone
-                .send(AppEvent::MoveDestValidation { available: !exists })
+                .send(AppEvent::OverlayData(OverlayData::MoveDestValidation {
+                    available: !exists,
+                }))
                 .ok();
         });
 
@@ -268,10 +276,12 @@ impl MoveDialog {
                         let result = vault.rename_entry(&from, &new_path).await;
                         match result {
                             Ok(()) => {
-                                tx2.send(AppEvent::EntryMoved { from, to: new_path }).ok();
+                                tx2.send(AppEvent::FileOp(FileOp::Moved { from, to: new_path }))
+                                    .ok();
                             }
                             Err(e) => {
-                                tx2.send(AppEvent::DialogError(e.to_string())).ok();
+                                tx2.send(AppEvent::OverlayData(OverlayData::Error(e.to_string())))
+                                    .ok();
                             }
                         }
                     });

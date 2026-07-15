@@ -105,6 +105,14 @@ your-workspace/                 ← Your workspace directory
 
 The cache and history locations are configurable — see [Configuration → Files Kimün Stores on Disk](@/getting-started/configuration.md#files-kimun-stores-on-disk).
 
+## Optional: the Kimün Server
+
+Kimün can pair with an optional companion server that adds **semantic search**
+and **AI question-answering** over your notes. It's a separate binary,
+currently installed with Cargo only — see
+[Semantic Search & Ask](@/using-kimun/server.md) for installation and setup.
+Kimün works fully without it.
+
 ## What's Next
 
 You're installed. Now learn your way around the [Terminal UI](@/using-kimun/tui.md), or set up separate [Workspaces](@/getting-started/workspaces.md) for work and personal notes.

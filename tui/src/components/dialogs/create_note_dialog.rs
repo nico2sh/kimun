@@ -10,7 +10,7 @@ use ratatui::widgets::Paragraph;
 
 use crate::components::Component;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, AppTxExt};
+use crate::components::events::{AppEvent, AppTx, AppTxExt, OverlayData};
 use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::settings::themes::Theme;
 
@@ -45,7 +45,9 @@ impl CreateNoteDialog {
                     match vault.load_or_create_note(&path, None).await {
                         Ok((_, created)) => tx_clone.announce_and_open(path, created),
                         Err(e) => {
-                            tx_clone.send(AppEvent::DialogError(e.to_string())).ok();
+                            tx_clone
+                                .send(AppEvent::OverlayData(OverlayData::Error(e.to_string())))
+                                .ok();
                         }
                     }
                 });

@@ -48,6 +48,8 @@ pub enum ActionShortcuts {
     ToggleQueryPanel,
     OpenSavedSearches,
     SaveCurrentQuery,
+    /// The RAG answer overlay (ask a question, get an LLM answer with sources).
+    OpenRagAnswer,
     // Workspace
     SwitchWorkspace,
     // In-buffer find (Ctrl+F by default; reopens / advances to next match if
@@ -82,7 +84,8 @@ impl ActionShortcuts {
             | ActionShortcuts::FileOperations
             | ActionShortcuts::FollowLink
             | ActionShortcuts::QuickNote
-            | ActionShortcuts::FindInBuffer => ShortcutCategory::Notes,
+            | ActionShortcuts::FindInBuffer
+            | ActionShortcuts::OpenRagAnswer => ShortcutCategory::Notes,
 
             ActionShortcuts::Text(_) => ShortcutCategory::TextEditing,
 
@@ -107,6 +110,7 @@ impl ActionShortcuts {
             ActionShortcuts::QuickNote => "Quick note".into(),
             ActionShortcuts::ToggleQueryPanel => "Toggle query drawer".into(),
             ActionShortcuts::OpenSavedSearches => "Saved searches".into(),
+            ActionShortcuts::OpenRagAnswer => "Ask (RAG)".into(),
             ActionShortcuts::SaveCurrentQuery => "Save current query".into(),
             ActionShortcuts::SwitchWorkspace => "Switch workspace".into(),
             ActionShortcuts::FindInBuffer => "Find in note".into(),
@@ -145,6 +149,7 @@ impl Display for ActionShortcuts {
             ActionShortcuts::QuickNote => "QuickNote".to_string(),
             ActionShortcuts::ToggleQueryPanel => "ToggleQueryPanel".to_string(),
             ActionShortcuts::OpenSavedSearches => "OpenSavedSearches".to_string(),
+            ActionShortcuts::OpenRagAnswer => "OpenRagAnswer".to_string(),
             ActionShortcuts::SaveCurrentQuery => "SaveCurrentQuery".to_string(),
             ActionShortcuts::SwitchWorkspace => "SwitchWorkspace".to_string(),
             ActionShortcuts::FindInBuffer => "FindInBuffer".to_string(),
@@ -180,6 +185,7 @@ impl TryFrom<String> for ActionShortcuts {
             "ToggleQueryPanel" => ActionShortcuts::ToggleQueryPanel,
             "ToggleBacklinks" => ActionShortcuts::ToggleQueryPanel,
             "OpenSavedSearches" => ActionShortcuts::OpenSavedSearches,
+            "OpenRagAnswer" => ActionShortcuts::OpenRagAnswer,
             "SaveCurrentQuery" => ActionShortcuts::SaveCurrentQuery,
             "SwitchWorkspace" => ActionShortcuts::SwitchWorkspace,
             "FindInBuffer" => ActionShortcuts::FindInBuffer,

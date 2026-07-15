@@ -36,6 +36,9 @@ pub enum AppEvent {
     // ── App-level messages ───────────────────────────────────────────────────
     Quit,
     Redraw,
+    /// Background RAG sync task reporting its connection/sync status. Rendered
+    /// in the editor footer.
+    RagStatus(crate::rag::RagStatus),
     Autosave,
     /// Background autosave task finished. `saved_revision` carries the
     /// editor's `content_revision` at the moment the save was *issued*
@@ -78,19 +81,9 @@ pub enum AppEvent {
     ExecuteLeaderAction(crate::keys::leader::LeaderAction),
     /// Show a transient footer flash — async tasks report results with it.
     FlashMessage(String),
-    /// A newer release was found by the background update check. Stored on
-    /// `App` and surfaced as a footer indicator on the editor screen.
-    UpdateAvailable(crate::update::UpdateStatus),
-    /// User chose "Update now" in the update dialog → run the self-update.
-    ApplyUpdate,
-    /// User skipped a version in the update dialog → persist the dismissal and
-    /// clear the indicator. Carries the version being skipped.
-    DismissUpdate(String),
-    /// Open the update dialog for the currently-known update (manual check).
-    ShowUpdateDialog,
-    /// Self-update finished installing → clear the pending notice (restart still
-    /// required to run the new binary).
-    UpdateApplied,
+    /// The self-update lifecycle (one owner in main.rs for the app-global
+    /// bookkeeping, one in the editor screen for display).
+    Update(UpdateFlow),
     /// Apply (and optionally persist) a resolved theme — sent by the theme
     /// picker: previews on selection move, persists on Enter. Carries the
     /// full `Theme` so applying never re-reads the themes directory.
@@ -142,33 +135,13 @@ pub enum AppEvent {
     /// e.g. the markdown link generated after a clipboard image is saved as an attachment.
     InsertAtCursor(String),
 
-    // ── File-operation dialog messages ───────────────────────────────────────
-    /// Request to show the file-operations menu (delete / rename / move).
-    ShowFileOpsMenu(VaultPath),
-    /// Request to show the delete confirmation dialog for the given entry.
-    ShowDeleteDialog(VaultPath),
-    /// Request to show the rename dialog for the given entry.
-    ShowRenameDialog(VaultPath),
-    /// Request to show the move dialog for the given entry.
-    ShowMoveDialog(VaultPath),
-    /// Confirmation that the given entry was successfully deleted.
-    EntryDeleted(VaultPath),
-    /// Confirmation that an entry was successfully renamed.
-    EntryRenamed {
-        from: VaultPath,
-        to: VaultPath,
-    },
-    /// Confirmation that an entry was successfully moved.
-    EntryMoved {
-        from: VaultPath,
-        to: VaultPath,
-    },
-    /// Notification that a note was just created at this path. The current
-    /// screen refreshes its sidebar if it is browsing the note's directory.
-    /// Opening the note is a separate concern (the creator emits `OpenPath`).
-    EntryCreated(VaultPath),
-    /// A dialog operation failed; carries a human-readable error message.
-    DialogError(String),
+    /// File-operation requests and confirmations — owned by the editor
+    /// screen's `handle_file_op`.
+    FileOp(FileOp),
+    /// An async result addressed to the open overlay (see **Overlay data** in
+    /// CONTEXT.md). Routed only to the `OverlayHost`; with no (or the wrong)
+    /// overlay open it is stale by definition and dropped.
+    OverlayData(OverlayData),
 
     /// A vault was found to be structurally unusable (conflicts, invalid layout, etc.).
     /// Carries a formatted, human-readable error message.
@@ -179,56 +152,14 @@ pub enum AppEvent {
     /// other files need to change.
     VaultConflict(String),
 
-    // ── Dialog async result messages ─────────────────────────────────────────
-    /// Rename dialog: name availability check result.
-    RenameValidation {
-        available: bool,
-    },
-    /// Move dialog: directory list has loaded.
-    MoveDirectoriesLoaded(Vec<VaultPath>),
-    /// Move dialog: fuzzy filter results are ready.
-    MoveFilterResults(Vec<VaultPath>),
-    /// Move dialog: destination existence check result.
-    MoveDestValidation {
-        available: bool,
-    },
-    /// Save-search dialog: existing saved-search names have loaded (drives
-    /// the update/overwrite/save-new hint).
-    SavedSearchNamesLoaded(Vec<String>),
-
     // ── Workspace messages ──────────────────────────────────────────────
     /// User switched to a different workspace. Carries the workspace name.
     /// Handled by main.rs to rebuild the vault and navigate to StartScreen.
     WorkspaceSwitched(String),
 
-    /// Persist a saved search (emitted by the save-search dialog on submit).
-    /// `source` is the surface the query was sourced from, decided when the
-    /// dialog opened — it drives whether the panel breadcrumb re-pins.
-    SaveSearchConfirmed {
-        name: String,
-        query: String,
-        source: SaveSource,
-    },
-
-    /// A saved search was written to disk (success path of
-    /// `SaveSearchConfirmed`). The editor re-pins the panel breadcrumb here —
-    /// only once the write actually succeeded.
-    SavedSearchPersisted {
-        name: String,
-        query: String,
-        source: SaveSource,
-    },
-
-    /// The background saved-search write failed; surface it to the user.
-    SavedSearchSaveFailed {
-        name: String,
-    },
-
-    /// A saved search was chosen in the Saved Searches modal.
-    SavedSearchSelected {
-        query: String,
-        name: String,
-    },
+    /// The saved-search save/select flow — owned by the editor screen's
+    /// `handle_saved_search`.
+    SavedSearch(SavedSearchFlow),
 
     /// Sort selection changed in the sort dialog — apply live to `target`.
     /// When `persist` is set (sidebar's "save as default"), also write the
@@ -241,6 +172,105 @@ pub enum AppEvent {
         group_directories: bool,
         persist: bool,
     },
+}
+
+/// The self-update lifecycle. Two owners by design: `main.rs` keeps the
+/// app-global copy (seeding later-opened screens, persisting dismissals) and
+/// forwards; the editor screen owns display (footer indicator, dialog).
+#[derive(Debug, Clone)]
+pub enum UpdateFlow {
+    /// A newer release was found by the background update check.
+    Available(crate::update::UpdateStatus),
+    /// User chose "Update now" in the update dialog → run the self-update.
+    Apply,
+    /// User skipped a version in the update dialog → persist the dismissal and
+    /// clear the indicator. Carries the version being skipped.
+    Dismiss(String),
+    /// Open the update dialog for the currently-known update (manual check).
+    ShowDialog,
+    /// Self-update finished installing → clear the pending notice (restart
+    /// still required to run the new binary).
+    Applied,
+}
+
+/// File-operation requests (open a dialog) and confirmations (an operation
+/// succeeded). One owner: the editor screen's `handle_file_op`.
+#[derive(Debug, Clone)]
+pub enum FileOp {
+    /// Request to show the file-operations menu (delete / rename / move).
+    ShowMenu(VaultPath),
+    /// Request to show the delete confirmation dialog for the given entry.
+    ShowDelete(VaultPath),
+    /// Request to show the rename dialog for the given entry.
+    ShowRename(VaultPath),
+    /// Request to show the move dialog for the given entry.
+    ShowMove(VaultPath),
+    /// Notification that a note was just created at this path. The current
+    /// screen refreshes its sidebar if it is browsing the note's directory.
+    /// Opening the note is a separate concern (the creator emits `OpenPath`).
+    Created(VaultPath),
+    /// Confirmation that the given entry was successfully deleted.
+    Deleted(VaultPath),
+    /// Confirmation that an entry was successfully renamed.
+    Renamed { from: VaultPath, to: VaultPath },
+    /// Confirmation that an entry was successfully moved.
+    Moved { from: VaultPath, to: VaultPath },
+}
+
+/// An async result addressed to the open overlay — **Overlay data** in
+/// CONTEXT.md. The `OverlayHost` is the only consumer; arriving with no (or
+/// the wrong) overlay open means the overlay was closed or replaced while
+/// the task ran, so the result is stale and dropped.
+#[derive(Debug, Clone)]
+pub enum OverlayData {
+    /// Rename dialog: name availability check result.
+    RenameValidation { available: bool },
+    /// Move dialog: directory list has loaded.
+    MoveDirectoriesLoaded(Vec<VaultPath>),
+    /// Move dialog: fuzzy filter results are ready.
+    MoveFilterResults(Vec<VaultPath>),
+    /// Move dialog: destination existence check result.
+    MoveDestValidation { available: bool },
+    /// Save-search dialog: existing saved-search names have loaded (drives
+    /// the update/overwrite/save-new hint).
+    SavedSearchNamesLoaded(Vec<String>),
+    /// An overlay-initiated operation failed; carries a human-readable
+    /// error message.
+    Error(String),
+    /// A RAG answer job finished (or failed) — delivered to the answer
+    /// overlay. `request_id` correlates the result to the ask that produced
+    /// it, so a late answer from a closed/superseded ask can't clobber the
+    /// current overlay.
+    RagAnswerReady {
+        request_id: u64,
+        result: std::result::Result<crate::rag::RagAnswer, String>,
+    },
+}
+
+/// The saved-search save/select flow. One owner: the editor screen's
+/// `handle_saved_search`.
+#[derive(Debug, Clone)]
+pub enum SavedSearchFlow {
+    /// Persist a saved search (emitted by the save-search dialog on submit).
+    /// `source` is the surface the query was sourced from, decided when the
+    /// dialog opened — it drives whether the panel breadcrumb re-pins.
+    Confirmed {
+        name: String,
+        query: String,
+        source: SaveSource,
+    },
+    /// A saved search was written to disk (success path of `Confirmed`).
+    /// The editor re-pins the panel breadcrumb here — only once the write
+    /// actually succeeded.
+    Persisted {
+        name: String,
+        query: String,
+        source: SaveSource,
+    },
+    /// The background saved-search write failed; surface it to the user.
+    SaveFailed { name: String },
+    /// A saved search was chosen in the Saved Searches modal.
+    Selected { query: String, name: String },
 }
 
 impl AppEvent {
@@ -300,7 +330,8 @@ pub trait AppTxExt {
 impl AppTxExt for AppTx {
     fn announce_and_open(&self, path: VaultPath, created: bool) {
         if created {
-            self.send(AppEvent::EntryCreated(path.clone())).ok();
+            self.send(AppEvent::FileOp(FileOp::Created(path.clone())))
+                .ok();
         }
         self.send(AppEvent::open(path)).ok();
     }
@@ -322,13 +353,13 @@ mod tests {
 
     fn _assert_new_variants_exist(e: AppEvent) {
         match e {
-            AppEvent::ShowDeleteDialog(_) => {}
-            AppEvent::ShowRenameDialog(_) => {}
-            AppEvent::ShowMoveDialog(_) => {}
-            AppEvent::EntryDeleted(_) => {}
-            AppEvent::EntryRenamed { from: _, to: _ } => {}
-            AppEvent::EntryMoved { from: _, to: _ } => {}
-            AppEvent::DialogError(_) => {}
+            AppEvent::FileOp(FileOp::ShowDelete(_)) => {}
+            AppEvent::FileOp(FileOp::ShowRename(_)) => {}
+            AppEvent::FileOp(FileOp::ShowMove(_)) => {}
+            AppEvent::FileOp(FileOp::Deleted(_)) => {}
+            AppEvent::FileOp(FileOp::Renamed { from: _, to: _ }) => {}
+            AppEvent::FileOp(FileOp::Moved { from: _, to: _ }) => {}
+            AppEvent::OverlayData(OverlayData::Error(_)) => {}
             _ => {}
         }
     }

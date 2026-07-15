@@ -8,7 +8,7 @@ use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
 
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx};
+use crate::components::events::{AppEvent, AppTx, FileOp, OverlayData};
 use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::components::single_line_input::{InputOutcome, SingleLineInput};
 use crate::settings::themes::Theme;
@@ -62,7 +62,7 @@ impl QuickNoteModal {
                     // quick_note always materialises a fresh note — tell the
                     // sidebar so it refreshes if browsing that directory.
                     tx_clone
-                        .send(AppEvent::EntryCreated(details.path.clone()))
+                        .send(AppEvent::FileOp(FileOp::Created(details.path.clone())))
                         .ok();
                     if open_after {
                         tx_clone.send(AppEvent::open(details.path)).ok();
@@ -71,7 +71,9 @@ impl QuickNoteModal {
                     }
                 }
                 Err(e) => {
-                    tx_clone.send(AppEvent::DialogError(e.to_string())).ok();
+                    tx_clone
+                        .send(AppEvent::OverlayData(OverlayData::Error(e.to_string())))
+                        .ok();
                 }
             }
         });

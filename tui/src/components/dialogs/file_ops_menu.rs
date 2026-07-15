@@ -7,7 +7,7 @@ use ratatui::widgets::Paragraph;
 
 use crate::components::Component;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx};
+use crate::components::events::{AppEvent, AppTx, FileOp};
 use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::settings::themes::Theme;
 
@@ -49,15 +49,18 @@ impl FileOpsMenuDialog {
     ) -> EventState {
         match key.code {
             KeyCode::Char('d') | KeyCode::Char('D') => {
-                tx.send(AppEvent::ShowDeleteDialog(self.path.clone())).ok();
+                tx.send(AppEvent::FileOp(FileOp::ShowDelete(self.path.clone())))
+                    .ok();
                 EventState::Consumed
             }
             KeyCode::Char('r') | KeyCode::Char('R') => {
-                tx.send(AppEvent::ShowRenameDialog(self.path.clone())).ok();
+                tx.send(AppEvent::FileOp(FileOp::ShowRename(self.path.clone())))
+                    .ok();
                 EventState::Consumed
             }
             KeyCode::Char('m') | KeyCode::Char('M') => {
-                tx.send(AppEvent::ShowMoveDialog(self.path.clone())).ok();
+                tx.send(AppEvent::FileOp(FileOp::ShowMove(self.path.clone())))
+                    .ok();
                 EventState::Consumed
             }
             KeyCode::Esc => {
@@ -210,8 +213,10 @@ mod tests {
             let state = dialog.handle_key(key, &tx);
 
             assert_eq!(state, EventState::Consumed);
-            let event = rx.try_recv().expect("expected AppEvent::ShowDeleteDialog");
-            assert!(matches!(event, AppEvent::ShowDeleteDialog(_)));
+            let event = rx
+                .try_recv()
+                .expect("expected AppEvent::FileOp(FileOp::ShowDelete)");
+            assert!(matches!(event, AppEvent::FileOp(FileOp::ShowDelete(_))));
         });
     }
 
@@ -230,8 +235,10 @@ mod tests {
             let state = dialog.handle_key(key, &tx);
 
             assert_eq!(state, EventState::Consumed);
-            let event = rx.try_recv().expect("expected AppEvent::ShowRenameDialog");
-            assert!(matches!(event, AppEvent::ShowRenameDialog(_)));
+            let event = rx
+                .try_recv()
+                .expect("expected AppEvent::FileOp(FileOp::ShowRename)");
+            assert!(matches!(event, AppEvent::FileOp(FileOp::ShowRename(_))));
         });
     }
 
@@ -250,8 +257,10 @@ mod tests {
             let state = dialog.handle_key(key, &tx);
 
             assert_eq!(state, EventState::Consumed);
-            let event = rx.try_recv().expect("expected AppEvent::ShowMoveDialog");
-            assert!(matches!(event, AppEvent::ShowMoveDialog(_)));
+            let event = rx
+                .try_recv()
+                .expect("expected AppEvent::FileOp(FileOp::ShowMove)");
+            assert!(matches!(event, AppEvent::FileOp(FileOp::ShowMove(_))));
         });
     }
 }

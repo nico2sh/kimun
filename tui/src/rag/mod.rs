@@ -1,0 +1,103 @@
+//! All wiring for the optional RAG server lives in this module — config
+//! reading, client construction ([`client`]) and the background sync loop
+//! ([`sync`]). Everything talks to the server through `kimun_server_client`;
+//! the rest of the TUI only consumes these helpers and renders status.
+
+mod client;
+mod sync;
+
+pub use client::{rag_client, rag_configured};
+pub use sync::spawn_rag_sync;
+
+/// RAG connection status surfaced in the footer. `Disabled` (no server
+/// configured) is never sent — the loop simply doesn't start — so the footer
+/// shows nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RagStatus {
+    Disabled,
+    Offline,
+    /// Reachable but the server rejects our credentials: it requires a bearer
+    /// token and none is configured, or API calls come back 401/403 (wrong
+    /// token). Distinct from `Offline` so the user learns it's a token
+    /// problem, not an unreachable server.
+    Unauthorized,
+    /// Reachable but the server has no embedder configured (adr/0024): nothing
+    /// works server-side, so the loop skips pushing and reconciling entirely —
+    /// every call would 503 — and just reports the state.
+    NotConfigured,
+    /// Reachable, a sync pass in flight. `llm_available` carries whether the
+    /// server has an LLM configured (question-answering possible), so Ask stays
+    /// gated consistently while syncing.
+    Syncing {
+        llm_available: bool,
+    },
+    /// Reachable and idle. `llm_available` = the server has an LLM (Q&A on);
+    /// `false` = semantic-only (search only).
+    Online {
+        llm_available: bool,
+    },
+}
+
+/// A completed RAG answer delivered back to the answer overlay via
+/// [`AppEvent::OverlayData(OverlayData::RagAnswerReady)`](crate::components::events::AppEvent).
+#[derive(Debug, Clone)]
+pub struct RagAnswer {
+    pub answer: String,
+    pub sources: Vec<RagSource>,
+}
+
+/// A cited source chunk — enough to render a row and open the note.
+#[derive(Debug, Clone)]
+pub struct RagSource {
+    pub path: kimun_core::nfs::VaultPath,
+    pub title: String,
+}
+
+impl RagStatus {
+    /// Short footer label, or `None` when nothing should show.
+    pub fn label(self) -> Option<&'static str> {
+        match self {
+            RagStatus::Disabled => None,
+            RagStatus::Offline => Some("rag: offline"),
+            RagStatus::Unauthorized => Some("rag: unauthorized"),
+            RagStatus::NotConfigured => Some("rag: not configured"),
+            RagStatus::Syncing { .. } => Some("rag: syncing"),
+            RagStatus::Online { .. } => Some("rag: online"),
+        }
+    }
+
+    /// Whether question-answering (Ask) is available right now: the server is
+    /// reachable AND has an LLM configured. `false` when offline, disabled, or
+    /// connected to a semantic-only server — the Ask overlay is hidden in those
+    /// cases (adr/0022).
+    pub fn llm_available(self) -> bool {
+        matches!(
+            self,
+            RagStatus::Online {
+                llm_available: true
+            } | RagStatus::Syncing {
+                llm_available: true
+            }
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn not_configured_status_labels_and_gates() {
+        assert_eq!(
+            RagStatus::NotConfigured.label(),
+            Some("rag: not configured")
+        );
+        assert!(!RagStatus::NotConfigured.llm_available());
+    }
+
+    #[test]
+    fn unauthorized_status_labels_and_gates() {
+        assert_eq!(RagStatus::Unauthorized.label(), Some("rag: unauthorized"));
+        assert!(!RagStatus::Unauthorized.llm_available());
+    }
+}

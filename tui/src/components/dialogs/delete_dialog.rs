@@ -10,7 +10,7 @@ use ratatui::widgets::Paragraph;
 
 use crate::components::Component;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx};
+use crate::components::events::{AppEvent, AppTx, FileOp, OverlayData};
 use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::settings::themes::Theme;
 
@@ -47,10 +47,12 @@ impl DeleteConfirmDialog {
                     let result = vault.delete_entry(&path).await;
                     match result {
                         Ok(()) => {
-                            tx_clone.send(AppEvent::EntryDeleted(path)).ok();
+                            tx_clone.send(AppEvent::FileOp(FileOp::Deleted(path))).ok();
                         }
                         Err(e) => {
-                            tx_clone.send(AppEvent::DialogError(e.to_string())).ok();
+                            tx_clone
+                                .send(AppEvent::OverlayData(OverlayData::Error(e.to_string())))
+                                .ok();
                         }
                     }
                 });

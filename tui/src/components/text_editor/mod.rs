@@ -5,6 +5,8 @@ pub mod nvim_decode;
 pub mod nvim_host;
 pub mod nvim_rpc;
 pub mod parse_incremental;
+mod revisions;
+use revisions::Revisions;
 pub mod snapshot;
 pub mod text_coords;
 pub mod view;
@@ -34,7 +36,7 @@ pub(crate) fn cursor_tuple(ta: &TextArea<'_>) -> (usize, usize) {
 /// revision. Free function (not a method on `TextEditorComponent`) so
 /// production callers that need to mutate other fields of
 /// `TextEditorComponent` afterwards can pass `&self.backend` and
-/// `self.content_revision` directly — the borrow checker can split
+/// `self.revs.current()` directly — the borrow checker can split
 /// borrows across distinct fields but not across method calls.
 fn snapshot_from_backend(
     backend: &BackendState,
@@ -55,8 +57,7 @@ fn snapshot_from_backend(
             };
             let cursor = (cursor_row, snap.cursor.1);
             let lines = snap.lines.clone();
-            let rev = NonZeroU64::new(snap.content_gen.saturating_add(1))
-                .unwrap_or_else(|| NonZeroU64::new(1).unwrap());
+            let rev = Revisions::rev_from_gen(snap.content_gen);
             drop(snap);
             EditorSnapshot::owned(lines, cursor, rev)
         }
@@ -105,7 +106,7 @@ macro_rules! cursor_move {
 
 use self::backend::BackendState;
 use self::markdown::ParsedBuffer;
-use self::nvim_host::{NvimHost, NvimKeyResult};
+use self::nvim_host::NvimHost;
 use self::snapshot::EditorSnapshot;
 use self::view::MarkdownEditorView;
 use crate::util::single_slot_task::SingleSlotTask;
@@ -375,7 +376,7 @@ impl<'a> AutocompleteHost for EditorHostSnapshot<'a> {
 }
 
 /// Free-function builder for `EditorHostSnapshot`. Production
-/// callers pass `&self.backend`, `self.content_revision`,
+/// callers pass `&self.backend`, `self.revs.current()`,
 /// `self.view.last_cursor_screen` directly so the borrow checker
 /// can split borrows from `&mut self.autocomplete`. Returns `None`
 /// on the Nvim backend (autocomplete is Textarea-only).
@@ -402,44 +403,16 @@ pub struct TextEditorComponent {
     /// Tracks the rendered rect to map mouse click coordinates.
     rect: Rect,
     key_bindings: KeyBindings,
-    /// `content_revision` snapshot that matches the on-disk content.
-    /// `Some(content_revision)` after a successful save (or after
-    /// `set_text` loaded a note); `None` when the saved snapshot
-    /// diverges from the current buffer. Compared against
-    /// `content_revision` by `is_dirty()` so the per-frame title bar
-    /// avoids materialising the buffer and so cursor moves (which bump
-    /// `edit_generation` but not `content_revision`) don't flag the
-    /// buffer as dirty.
-    saved_content_rev: Option<NonZeroU64>,
     view: MarkdownEditorView,
-    /// Incremented on every input event that may affect rendering — text
-    /// edits AND cursor/selection moves. Drives view-cache invalidation in
-    /// non-perf-critical paths; do NOT use for dirty tracking (cursor moves
-    /// bump this too).
-    edit_generation: u64,
-    /// Incremented only when the buffer text actually changes (insert,
-    /// delete, paste, undo/redo, autocomplete accept). Cursor-only
-    /// shortcuts (arrows, Home/End, select-all) do NOT bump this. On
-    /// the Nvim backend, `handle_key` does not bump either — the
-    /// reverse-refresh task in `backend.rs` sees `snap.lines` change
-    /// and bumps `snap.content_gen`; the editor mirrors that value
-    /// into `content_revision` at the render sync point. Consumers:
-    ///   - `handle_input` diffs it across a key event to classify the
-    ///     event as a text edit vs. a cursor move without materialising
-    ///     the buffer.
-    ///   - `view.update()` uses the value as the cache-invalidation
-    ///     key, so arrow-key navigation reuses the per-line parse cache
-    ///     instead of rebuilding it.
-    ///   - `AutocompleteHost::content_revision` exposes it as a
-    ///     `NonZeroU64` cache key.
-    ///   - `mark_saved_at_revision` / `is_dirty` use it as the
-    ///     save-correlation token; navigation keys never invalidate a
-    ///     save in flight.
-    ///
-    /// `NonZeroU64` because `Option<NonZeroU64>` is the cleanest way
-    /// to express "no cacheable revision" without a magic-value
-    /// sentinel and without a separate field.
-    content_revision: NonZeroU64,
+    /// The one revision clock plus its comparison snapshots (saved,
+    /// needles) — see [`Revisions`]. `revs.current()` advances iff the
+    /// buffer text changes: `bump_content` on the textarea backend, the
+    /// per-frame `adopt` of the snapshot's revision on the nvim backend
+    /// (the snapshot derives it from the backend's `content_gen` under a
+    /// single lock — the only `content_gen → NonZeroU64` site). Cursor
+    /// moves never touch it, so an in-flight autosave's revision token
+    /// survives navigation, and `view.update` reuses its parse cache.
+    revs: Revisions,
     /// Current selection range in logical (row, byte-col) coordinates.
     /// Only tracked for the Textarea backend; always `None` for Nvim.
     selection: Option<((usize, usize), (usize, usize))>,
@@ -475,10 +448,8 @@ pub struct TextEditorComponent {
     pub wants_context_menu: bool,
     /// Lowercased needles to emphasize in the rendered buffer — set when the
     /// note was opened from a query result (spec §5.1 "search match"), and
-    /// dropped on the first edit (`needles_revision` mismatch).
+    /// dropped on the first edit (`revs.needles_stale()`).
     search_needles: Vec<String>,
-    /// The content revision `search_needles` was set against.
-    needles_revision: Option<NonZeroU64>,
     full_parse_tx: tokio::sync::mpsc::UnboundedSender<(u64, ParsedBuffer)>,
     full_parse_rx: tokio::sync::mpsc::UnboundedReceiver<(u64, ParsedBuffer)>,
     /// `AppTx` clone bound the first time `handle_input` runs, so the
@@ -497,10 +468,8 @@ impl TextEditorComponent {
             ),
             rect: Rect::default(),
             key_bindings,
-            saved_content_rev: NonZeroU64::new(1),
             view: MarkdownEditorView::new(),
-            edit_generation: 0,
-            content_revision: NonZeroU64::new(1).unwrap(),
+            revs: Revisions::new(),
             selection: None,
             clipboard: Clipboard::new().ok(),
             nvim_host: NvimHost::new(),
@@ -511,7 +480,6 @@ impl TextEditorComponent {
             full_parse_task: SingleSlotTask::empty(),
             wants_context_menu: false,
             search_needles: Vec::new(),
-            needles_revision: None,
             full_parse_tx,
             full_parse_rx,
             redraw_tx: None,
@@ -565,7 +533,7 @@ impl TextEditorComponent {
     fn autocomplete_host_snapshot(&self) -> Option<EditorHostSnapshot<'_>> {
         build_editor_host_snapshot(
             &self.backend,
-            self.content_revision,
+            self.revs.current(),
             self.view.last_cursor_screen,
         )
     }
@@ -596,7 +564,7 @@ impl TextEditorComponent {
         // (the controller below) can coexist via field-disjoint borrows.
         let Some(snapshot) = build_editor_host_snapshot(
             &self.backend,
-            self.content_revision,
+            self.revs.current(),
             self.view.last_cursor_screen,
         ) else {
             self.close_autocomplete();
@@ -643,7 +611,7 @@ impl TextEditorComponent {
         // `&mut self.autocomplete` can coexist.
         let Some(snapshot) = build_editor_host_snapshot(
             &self.backend,
-            self.content_revision,
+            self.revs.current(),
             self.view.last_cursor_screen,
         ) else {
             if let Some(c) = self.autocomplete.as_mut() {
@@ -683,11 +651,11 @@ impl TextEditorComponent {
     ///
     /// Production hot paths that also need `&mut self.view` (notably
     /// `render`) must instead inline the snapshot via
-    /// `snapshot_from_backend(&self.backend, self.content_revision)`
+    /// `snapshot_from_backend(&self.backend, self.revs.current())`
     /// so the borrow checker can split the borrows across distinct
     /// fields.
     pub fn view_snapshot(&self) -> EditorSnapshot<'_> {
-        snapshot_from_backend(&self.backend, self.content_revision)
+        snapshot_from_backend(&self.backend, self.revs.current())
     }
 
     /// The cursor's (row, col) without materialising a snapshot — the Nvim
@@ -706,7 +674,7 @@ impl TextEditorComponent {
             .map(|n| n.to_lowercase())
             .filter(|n| !n.is_empty())
             .collect();
-        self.needles_revision = Some(self.content_revision);
+        self.revs.arm_needles();
     }
 
     pub fn set_text(&mut self, text: String) {
@@ -717,7 +685,7 @@ impl TextEditorComponent {
         // save, reloading the same content from disk should clear that
         // flag rather than persist a phantom `[+]` in the title bar.
         if text == self.get_text() {
-            self.saved_content_rev = Some(self.content_revision);
+            self.revs.mark_saved_current();
             if let Some(nvim) = self.backend.as_nvim() {
                 nvim.mark_clean();
             }
@@ -752,31 +720,30 @@ impl TextEditorComponent {
     /// so callers can express "no revision" as `Option<NonZeroU64>::None`
     /// without a magic-value sentinel.
     pub fn content_revision(&self) -> NonZeroU64 {
-        self.content_revision
+        self.revs.current()
     }
 
     /// Mark the buffer as clean iff its current revision still matches
     /// `rev` (i.e. no edits landed between the save being issued and
-    /// completing). Diverged revision → no-op: leave `saved_content_rev`
+    /// completing). Diverged revision → no-op: leave the saved snapshot
     /// alone, because some OTHER mechanism (a synchronous `try_save`
     /// racing this completion) may have already marked a NEWER revision
     /// clean, and a stale completion must not clobber that. `is_dirty`
-    /// already reads true when `saved_content_rev != Some(self.content_revision)`,
-    /// so doing nothing on a mismatch keeps the editor correctly dirty
-    /// without overwriting a legitimately-newer saved snapshot.
+    /// already reads true when the saved snapshot mismatches the current
+    /// revision, so doing nothing on a mismatch keeps the editor correctly
+    /// dirty without overwriting a legitimately-newer saved snapshot.
     pub fn mark_saved_at_revision(&mut self, rev: NonZeroU64) {
-        if rev != self.content_revision {
+        if !self.revs.mark_saved_at(rev) {
             return;
         }
         if let Some(nvim) = self.backend.as_nvim() {
             nvim.mark_clean();
         }
-        self.saved_content_rev = Some(rev);
     }
 
     /// Synchronous mark-saved used by `try_save` and `set_text`. Unlike
     /// `mark_saved_at_revision` (which no-ops on a stale revision because
-    /// it can race a sync mark_saved), this one CLOBBERS `saved_content_rev`
+    /// it can race a sync mark_saved), this one CLOBBERS the saved snapshot
     /// to `None` when the supplied text diverges: the sync caller holds
     /// `&mut self` for the whole save, so there is no concurrent newer
     /// clean state to preserve, and the user typing between
@@ -787,19 +754,19 @@ impl TextEditorComponent {
             if let Some(nvim) = self.backend.as_nvim() {
                 nvim.mark_clean();
             }
-            self.saved_content_rev = Some(self.content_revision);
+            self.revs.mark_saved_current();
         } else {
             // Textarea: divergent save → stay dirty.
-            // Nvim: snapshot's `dirty` was untouched anyway; the Textarea
-            // dirty signal (saved_content_rev) is what is_dirty consults
-            // on the Textarea backend, and we explicitly mark it None here.
-            self.saved_content_rev = None;
+            // Nvim: snapshot's `dirty` was untouched anyway; the saved
+            // snapshot in `revs` is what is_dirty consults on the
+            // Textarea backend, and we explicitly forget it here.
+            self.revs.mark_diverged();
         }
     }
 
     pub fn is_dirty(&self) -> bool {
         match &self.backend {
-            BackendState::Textarea(_) => self.saved_content_rev != Some(self.content_revision),
+            BackendState::Textarea(_) => self.revs.is_dirty(),
             BackendState::Nvim(nvim) => nvim.snapshot().dirty,
         }
     }
@@ -1172,7 +1139,6 @@ impl TextEditorComponent {
         });
         if let Some(row) = row {
             ta.move_cursor(CursorMove::Jump(row as u16, 0));
-            self.bump_cursor();
         }
     }
 
@@ -1291,33 +1257,18 @@ impl TextEditorComponent {
 }
 
 impl TextEditorComponent {
-    /// Bumps `edit_generation` only (cursor/selection moves, mouse clicks
-    /// that do not touch the buffer text). Lets the view invalidate its
-    /// cursor-dependent caches without telling the autocomplete controller
-    /// that the buffer changed.
-    #[inline]
-    fn bump_cursor(&mut self) {
-        self.edit_generation = self.edit_generation.wrapping_add(1);
-    }
-
-    /// Bumps both `edit_generation` and `content_revision`. Use at every
-    /// site that mutates the buffer (insert, delete, paste, undo/redo,
-    /// autocomplete accept) on the Textarea backend. `handle_input` uses
-    /// the `content_revision` delta to detect a real text change without
-    /// materialising the buffer.
+    /// Advances the revision clock. Use at every site that mutates the
+    /// buffer (insert, delete, paste, undo/redo, autocomplete accept) on
+    /// the Textarea backend. `handle_input` uses the revision delta to
+    /// detect a real text change without materialising the buffer.
     ///
     /// Not called by the Nvim path — the reverse-refresh task in
-    /// `backend.rs` bumps `snap.content_gen` on real diffs and the
-    /// editor mirrors that value into `content_revision` at render time.
+    /// `backend.rs` bumps `snap.content_gen` on real diffs, the frame
+    /// snapshot derives its revision from that, and `render` adopts the
+    /// snapshot's value (see the `revs` field doc).
     #[inline]
     fn bump_content(&mut self) {
-        self.edit_generation = self.edit_generation.wrapping_add(1);
-        // NonZeroU64 enforces the skip-zero invariant for free: on
-        // wrap-around from u64::MAX, `NonZeroU64::new(0)` returns None
-        // and we substitute 1. 2^64 edits is astronomical but the
-        // invariant is type-checkable.
-        let next = self.content_revision.get().wrapping_add(1);
-        self.content_revision = NonZeroU64::new(next).unwrap_or(NonZeroU64::new(1).unwrap());
+        self.revs.bump();
     }
 
     /// If the Nvim process has died, fall back to a Textarea with the last known content.
@@ -1343,15 +1294,11 @@ impl TextEditorComponent {
         // EditorScreen level for directional navigation. The pending-Z
         // intercept and quit-command policy live in `nvim_host`.
         let nvim = self.backend.as_nvim()?;
-        let result = self.nvim_host.handle_key(nvim, key, tx);
-
-        // `bump_cursor` bumps only `edit_generation` (the any-input view-cache
-        // counter), and only when a key was actually forwarded. `content_revision`
-        // is mirrored separately in `NvimHost::frame_sync` — see there for why
-        // navigation keys don't invalidate an in-flight save's revision token.
-        if result == NvimKeyResult::Forwarded {
-            self.bump_cursor();
-        }
+        // No revision bump here: navigation keys don't change the buffer,
+        // and content changes surface through the reverse-refresh task's
+        // `content_gen`, adopted from the frame snapshot in `render` — so
+        // an in-flight save's revision token survives navigation.
+        self.nvim_host.handle_key(nvim, key, tx);
         Some(EventState::Consumed)
     }
 
@@ -1634,7 +1581,6 @@ impl TextEditorComponent {
         };
         if handled {
             self.selection = ta.selection_range();
-            self.bump_cursor();
             return EventState::Consumed;
         }
 
@@ -1646,7 +1592,7 @@ impl TextEditorComponent {
         // all navigation and editing shortcuts must be mapped explicitly.
         // Outcome tracks whether the handled shortcut mutated the buffer, only
         // moved the cursor, or did literally nothing (e.g. Ctrl+Z on an empty
-        // undo stack) — so neither `text_revision` nor `edit_generation` is
+        // undo stack) — so the revision clock is not
         // bumped on true no-ops.
         enum ShortcutOutcome {
             NoOp,
@@ -1753,8 +1699,7 @@ impl TextEditorComponent {
         if let Some(kind) = outcome {
             self.selection = ta.selection_range();
             match kind {
-                ShortcutOutcome::NoOp => {}
-                ShortcutOutcome::CursorOnly => self.bump_cursor(),
+                ShortcutOutcome::NoOp | ShortcutOutcome::CursorOnly => {}
                 ShortcutOutcome::TextMutated => self.bump_content(),
             }
             return EventState::Consumed;
@@ -1804,8 +1749,6 @@ impl TextEditorComponent {
         self.selection = ta.selection_range();
         if mutated {
             self.bump_content();
-        } else {
-            self.bump_cursor();
         }
         EventState::Consumed
     }
@@ -1843,7 +1786,6 @@ impl TextEditorComponent {
             } else {
                 None
             };
-            self.bump_cursor();
             return EventState::Consumed;
         }
         // Now extract ta for remaining mouse operations.
@@ -1872,7 +1814,6 @@ impl TextEditorComponent {
         self.selection = ta.selection_range();
         // Mouse handling moves the cursor / selection but does not insert
         // text — `ratatui-textarea` mouse handling is click/drag/scroll only.
-        self.bump_cursor();
         EventState::Consumed
     }
 }
@@ -1990,7 +1931,7 @@ impl Component for TextEditorComponent {
                 if popup_open
                     && let Some(host) = build_editor_host_snapshot(
                         &self.backend,
-                        self.content_revision,
+                        self.revs.current(),
                         self.view.last_cursor_screen,
                     )
                     && let Some(controller) = self.autocomplete.as_mut()
@@ -2054,7 +1995,6 @@ impl Component for TextEditorComponent {
                                 self.selection = Some(((sr, sc), (er, (ec + 1).min(len))));
                             }
                             self.refresh_autocomplete_if_open();
-                            self.edit_generation = self.edit_generation.wrapping_add(1);
                             return EventState::Consumed;
                         }
                         VimKeyOutcome::NoOp => return EventState::Consumed,
@@ -2095,11 +2035,11 @@ impl Component for TextEditorComponent {
                 //     open new popup just because the cursor passed
                 //     over an existing wikilink/hashtag)
                 //   - both unchanged → no autocomplete work needed
-                let text_rev_before = self.content_revision;
+                let text_rev_before = self.revs.current();
                 let cursor_before = self.textarea_cursor();
                 let result = self.handle_textarea_key(key, tx);
                 let cursor_after = self.textarea_cursor();
-                if self.content_revision != text_rev_before {
+                if self.revs.current() != text_rev_before {
                     self.sync_autocomplete();
                 } else if cursor_before != cursor_after {
                     self.refresh_autocomplete_if_open();
@@ -2107,13 +2047,13 @@ impl Component for TextEditorComponent {
                 result
             }
             InputEvent::Mouse(mouse) => {
-                let text_rev_before = self.content_revision;
+                let text_rev_before = self.revs.current();
                 let cursor_before = self.textarea_cursor();
                 let result = self.handle_mouse(mouse);
                 let cursor_after = self.textarea_cursor();
                 // Mouse clicks typically only move the cursor — refresh
                 // (which may close the popup) but do not auto-open.
-                if self.content_revision != text_rev_before {
+                if self.revs.current() != text_rev_before {
                     self.sync_autocomplete();
                 } else if cursor_before != cursor_after {
                     self.refresh_autocomplete_if_open();
@@ -2184,22 +2124,17 @@ impl Component for TextEditorComponent {
         // Store the editor area (not the full rect) so mouse hit-testing ignores
         // clicks on the find-bar row.
         self.rect = editor_rect;
-        // Phase 1: gather per-backend selection + (Nvim only) the
-        // content_gen the refresh task observed. Done before
-        // `view_snapshot()` so the Nvim path's content_revision mirror
-        // lands first.
-        let (selection, nvim_rev_to_mirror) = match &self.backend {
-            BackendState::Textarea(_) => (self.selection, None),
+        // Phase 1: gather the per-backend selection (and, on Nvim, run the
+        // frame housekeeping — resize). The revision is NOT read here: the
+        // snapshot below is the single producer, and `revs` adopts its
+        // value, so dirty tracking and the view always agree in a frame.
+        let selection = match &self.backend {
+            BackendState::Textarea(_) => self.selection,
             BackendState::Nvim(nvim) => {
-                let fs = self
-                    .nvim_host
-                    .frame_sync(nvim, editor_rect.width, editor_rect.height);
-                (fs.selection, fs.rev)
+                self.nvim_host
+                    .frame_sync(nvim, editor_rect.width, editor_rect.height)
             }
         };
-        if let Some(rev) = nvim_rev_to_mirror {
-            self.content_revision = rev;
-        }
         // Drain any completed background full-parse results BEFORE
         // running view.update so a just-finished async parse lands
         // before Gate 1 has a chance to install another placeholder.
@@ -2213,7 +2148,11 @@ impl Component for TextEditorComponent {
         // on Textarea (zero clone), owned on Nvim (lines cloned out
         // from behind the Mutex). Use the free function so the borrow
         // checker can split `&self.backend` from `&mut self.view`.
-        let snap = snapshot_from_backend(&self.backend, self.content_revision);
+        let snap = snapshot_from_backend(&self.backend, self.revs.current());
+        // One revision domain: adopt the snapshot's value (the nvim arm
+        // derived it from the backend's `content_gen` under one lock; the
+        // textarea arm passed `revs.current()` through — a no-op adopt).
+        self.revs.adopt(snap.content_revision);
         self.view.update(&snap, editor_rect, selection);
 
         // If `view.update` cap-tripped on a large buffer it
@@ -2253,12 +2192,9 @@ impl Component for TextEditorComponent {
         // Search-match emphasis (spec §5.1): paint needle matches and task
         // checkboxes over the rendered viewport. Buffer-level post-pass —
         // viewport-only, so large notes pay nothing beyond the visible rows.
-        if self
-            .needles_revision
-            .is_some_and(|r| r != self.content_revision)
-        {
+        if self.revs.needles_stale() {
             self.search_needles.clear();
-            self.needles_revision = None;
+            self.revs.disarm_needles();
         }
         let mut emphasis_needles = self.search_needles.clone();
         if let Some(state) = &self.search {
@@ -2505,9 +2441,8 @@ mod tests {
         editor.set_text("hello world".to_string());
         assert!(!editor.is_dirty());
         let tx = dummy_tx();
-        // Send a cursor-only key (Right arrow). It must bump `edit_generation`
-        // for view-cache invalidation but must NOT bump `text_revision`, so
-        // `is_dirty` stays false.
+        // Send a cursor-only key (Right arrow). It must NOT advance the
+        // revision clock, so `is_dirty` stays false.
         let key = ratatui::crossterm::event::KeyEvent::new(KeyCode::Right, KeyModifiers::NONE);
         let _ = editor.handle_input(&InputEvent::Key(key), &tx);
         assert!(
@@ -2880,11 +2815,11 @@ mod tests {
         ed.set_text("alpha beta".to_string());
         ed.set_search_needles(vec!["Alpha".to_string()]);
         assert_eq!(ed.search_needles, vec!["alpha"]);
-        assert_eq!(ed.needles_revision, Some(ed.content_revision));
+        assert!(!ed.revs.needles_stale());
 
         // An edit bumps the revision; the render-side guard would clear.
         ed.set_text("alpha beta gamma".to_string());
-        assert_ne!(ed.needles_revision, Some(ed.content_revision));
+        assert!(ed.revs.needles_stale());
     }
 
     #[test]

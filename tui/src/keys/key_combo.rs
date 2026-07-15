@@ -100,11 +100,10 @@ impl KeyCombo {
 
     /// Returns `true` for combinations accepted in the config file:
     /// - ctrl/alt (with optional shift) + a letter key (a–z), **or**
-    /// - a bare F-key (F1–F12, no modifier required)
+    /// - a bare F-key (`KeyStrike::is_fkey`, no modifier required)
     pub fn is_valid_binding(&self) -> bool {
-        let is_letter_combo = (self.modifiers.is_ctrl() || self.modifiers.is_alt())
-            && (self.key >= KeyStrike::KeyA && self.key <= KeyStrike::KeyZ
-                || self.key >= KeyStrike::Digit0 && self.key <= KeyStrike::Digit9
+        let is_symbol_combo = (self.modifiers.is_ctrl() || self.modifiers.is_alt())
+            && (self.key >= KeyStrike::Digit0 && self.key <= KeyStrike::Digit9
                 || matches!(
                     self.key,
                     KeyStrike::Comma
@@ -119,22 +118,16 @@ impl KeyCombo {
                         | KeyStrike::Minus
                         | KeyStrike::Equal
                 ));
-        let is_fkey = matches!(
-            self.key,
-            KeyStrike::F1
-                | KeyStrike::F2
-                | KeyStrike::F3
-                | KeyStrike::F4
-                | KeyStrike::F5
-                | KeyStrike::F6
-                | KeyStrike::F7
-                | KeyStrike::F8
-                | KeyStrike::F9
-                | KeyStrike::F10
-                | KeyStrike::F11
-                | KeyStrike::F12
-        );
-        is_letter_combo || is_fkey
+        self.is_letter_chord() || is_symbol_combo || self.key.is_fkey()
+    }
+
+    /// Ctrl/Alt (optional shift) plus a letter key — the chord shape both
+    /// the binding validator and the editor's footer chord flash test for.
+    /// One predicate so the two sites cannot drift.
+    pub fn is_letter_chord(&self) -> bool {
+        (self.modifiers.is_ctrl() || self.modifiers.is_alt())
+            && self.key >= KeyStrike::KeyA
+            && self.key <= KeyStrike::KeyZ
     }
 }
 
