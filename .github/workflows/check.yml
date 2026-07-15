@@ -38,6 +38,13 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      # kimun_server's lancedb/qdrant-client pull in prost-build, which needs
+      # a system protoc (same as build-server.yml).
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: test-linux
@@ -77,6 +84,13 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      # kimun_server's lancedb/qdrant-client pull in prost-build, which needs
+      # a system protoc (same as build-server.yml).
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: Swatinem/rust-cache@v2
         with:
