@@ -25,6 +25,40 @@ It doesn't try to be a bloated, all-in-one life-management tool or a _second bra
 
 ---
 
+## 🚀 Quick Start
+
+Two commands and you're taking notes:
+
+```bash
+# 1. Install (macOS & Linux)
+curl -fsSL https://kimun.2co.dev/install.sh | sh
+
+# 2. Run
+kimun
+```
+
+First launch greets you with a little setup screen — point it at a folder for
+your notes and you're in. Hit `Ctrl+K` to search, `Ctrl+W` to jot something
+down. That's it, really.
+
+Want the fancy extras — searching notes by *meaning* and asking questions that
+get answered from your own notes? That's the optional server. One more command:
+
+```bash
+# 3. (Optional) Semantic search & Ask — installs the server and runs it on login
+curl -fsSL https://kimun.2co.dev/install-server.sh | sh -s -- --service
+```
+
+Then tell Kimün where to find it: Preferences (`Ctrl+,`) → Server →
+`http://localhost:7573`. Kimün works exactly the same without it — just a
+little less magic. Heads up: the server downloads its embedding model on first
+start (a few hundred MB), so give it a minute.
+
+Prefer Homebrew, Cargo, or Docker? All the options are in
+[Installation](#installation) below.
+
+---
+
 ## 📖 Documentation
 
 Do you want to know more? ⭐️🚀 Check out our official documentation site for complete user guides, advanced setup steps, and integration tips:
@@ -56,11 +90,9 @@ Do you want to know more? ⭐️🚀 Check out our official documentation site f
 
 ---
 
-## Quick Start
+## Installation
 
-### Installation
-
-#### Install script (macOS & Linux)
+### Install script (macOS & Linux)
 ```bash
 curl -fsSL https://kimun.2co.dev/install.sh | sh
 ```
@@ -71,14 +103,14 @@ installing. Prefer to inspect first:
 curl -fsSLO https://kimun.2co.dev/install.sh && less install.sh && sh install.sh
 ```
 
-#### Homebrew (macOS & Linux)
+### Homebrew (macOS & Linux)
 ```bash
 brew tap nico2sh/kimun
 brew install kimun
 
 ```
 
-#### Cargo (Rust Ecosystem)
+### Cargo (Rust Ecosystem)
 
 ```bash
 cargo install kimun-notes
@@ -155,12 +187,15 @@ cp -r skills/kimun-cli ~/.claude/skills
 The optional **Kimün server** adds semantic search (find notes by meaning) and **Ask** — questions answered from your notes with sources cited — to the TUI. It is push-only (never reads your disk), hosts many vaults at once, and can run fully local: embedded SQLite + local embeddings, with an optional LLM (Claude, OpenAI, Gemini, Mistral, or a local OpenAI-compatible endpoint) for question-answering.
 
 ```bash
-# Install (Cargo only for now — see server/README.md)
-cargo install --git https://github.com/nico2sh/kimun kimun_server
+# Install script (Linux, macOS Apple Silicon) — re-run to update
+curl -fsSL https://kimun.2co.dev/install-server.sh | sh
 
 # Run with working local defaults (SQLite + local embedder)
 kimun-server --default-config
 ```
+
+Also available as a Docker image (`ghcr.io/nico2sh/kimun-server`) and via
+`cargo install` — see the [server README](server/README.md) for those.
 
 Then point Kimün at it: Preferences → Server, or `kimun_server_url = "http://localhost:7573"` in the `[global]` section of your config. Full details in the [server README](server/README.md) and the [documentation site](https://nico2sh.github.io/kimun/using-kimun/server/).
 

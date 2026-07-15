@@ -19,8 +19,27 @@ Kimün  ──push docs / delete / query──▶  RAG server ──▶  vector 
 
 ## Install
 
-Cargo is currently the only install method — the crate is not published to
-crates.io and there are no prebuilt binaries yet. You need a Rust toolchain:
+Three ways, by preference:
+
+**Script** (Linux, macOS Apple Silicon) — downloads the latest release binary,
+verifies its checksum, installs to `~/.local/bin`. Re-run it to update:
+
+```bash
+curl -fsSL https://kimun.2co.dev/install-server.sh | sh
+# or additionally set up a login service (systemd user unit / launchd agent):
+curl -fsSL https://kimun.2co.dev/install-server.sh | sh -s -- --service
+```
+
+**Docker** (homelab / NAS / VPS) — multi-arch (amd64, arm64); one volume holds
+the config, vector store, and model cache. Update with `docker pull`:
+
+```bash
+docker run -d --name kimun-server -p 7573:7573 \
+  -v kimun-server-data:/data ghcr.io/nico2sh/kimun-server:latest
+```
+
+**Cargo** (from source, any platform with a Rust toolchain — including
+Windows and Intel Macs, which have no prebuilt binary):
 
 ```bash
 cargo install --git https://github.com/nico2sh/kimun kimun_server
@@ -28,6 +47,11 @@ cargo install --git https://github.com/nico2sh/kimun kimun_server
 
 This installs the `kimun-server` binary into `~/.cargo/bin`. From a source
 checkout, `cargo install --path server` does the same.
+
+Windows binaries ship as zips on the
+[releases page](https://github.com/nico2sh/kimun/releases) (`kimun_server-v*`
+tags). There are no Intel Mac binaries — the ONNX runtime dropped
+x86_64 macOS support.
 
 ## Quick start
 

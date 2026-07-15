@@ -1,0 +1,23 @@
+# Kimün RAG server configuration — seeded into /data/server.toml on the
+# container's first start. Edit and restart the container to apply changes
+# (or use the web UI config page). All options:
+# https://github.com/nico2sh/kimun/blob/main/server/config.example.toml
+
+[server]
+# 0.0.0.0 is required to reach the server from outside the container. The
+# container port is published by Docker; add an [auth] token before exposing
+# it beyond your machine, and TLS-terminate with a reverse proxy — the server
+# speaks plain HTTP.
+host = "0.0.0.0"
+port = 7573
+
+[vector_db]
+type = "sqlite"
+path = "/data/rag_sqlite"
+
+[embedder]
+type = "fastembed"
+
+[reranker]
+enabled = true
+top_k = 20

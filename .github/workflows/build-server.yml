@@ -79,6 +79,66 @@ jobs:
           name: dist-${{ matrix.platform }}
           path: dist
 
+  # Multi-arch image from the binaries compiled above — no Rust build in
+  # Docker. buildx picks dist/<TARGETARCH>/kimun-server per platform.
+  docker:
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download linux binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: dist-linux-*
+          path: downloaded
+
+      - name: Arrange binaries by TARGETARCH
+        run: |
+          mkdir -p dist/amd64 dist/arm64
+          cp downloaded/dist-linux-x64/kimun-server dist/amd64/
+          cp downloaded/dist-linux-arm64/kimun-server dist/arm64/
+
+      - name: Compute image tags
+        id: tags
+        run: |
+          VERSION="${GITHUB_REF_NAME#kimun_server-v}"
+          TAGS="ghcr.io/${{ github.repository_owner }}/kimun-server:${VERSION}"
+          # :latest only for stable versions (no pre-release hyphen).
+          if [[ "$VERSION" != *-* ]]; then
+            TAGS="${TAGS}"$'\n'"ghcr.io/${{ github.repository_owner }}/kimun-server:latest"
+          fi
+          {
+            echo "tags<<EOF"
+            echo "$TAGS"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      # qemu: the Dockerfile has RUN steps, which execute under emulation for
+      # the arm64 layer.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: server/docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+
   create-release:
     needs: [build]
     runs-on: ubuntu-latest

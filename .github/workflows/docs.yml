@@ -57,7 +57,9 @@ jobs:
       # https://kimun.2co.dev/install.sh serves it. Single source — not copied
       # into docs/, just into the build output.
       - name: Publish install.sh
-        run: cp install.sh docs/public/install.sh
+        run: |
+          cp install.sh docs/public/install.sh
+          cp install-server.sh docs/public/install-server.sh
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3

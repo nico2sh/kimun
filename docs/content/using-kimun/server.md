@@ -43,15 +43,74 @@ locally, so your notes never have to leave your machine.
 
 ## Installing the server
 
-The server is currently installed with Cargo only (it is not on crates.io and
-there are no prebuilt binaries yet), so you need a
-[Rust toolchain](https://rustup.rs):
+Three ways, by preference:
+
+### Script (Linux, macOS Apple Silicon)
+
+Downloads the latest release binary, verifies its checksum, and installs it
+to `~/.local/bin`. **Re-run the same command to update** — it detects the
+installed version and only downloads when a newer release exists:
+
+```sh
+curl -fsSL https://kimun.2co.dev/install-server.sh | sh
+```
+
+Add `--service` to also run the server on login (a systemd user unit on
+Linux, a launchd agent on macOS) and restart it automatically on updates:
+
+```sh
+curl -fsSL https://kimun.2co.dev/install-server.sh | sh -s -- --service
+```
+
+### Docker (homelab, NAS, VPS)
+
+Multi-arch images (amd64, arm64) at `ghcr.io/nico2sh/kimun-server`. A single
+`/data` volume holds the config file, the vector store, and the embedding
+model cache. **Update with `docker pull`** (or a tool like Watchtower):
+
+```sh
+docker run -d --name kimun-server \
+  -p 7573:7573 \
+  -v kimun-server-data:/data \
+  ghcr.io/nico2sh/kimun-server:latest
+```
+
+Or with compose:
+
+```yaml
+services:
+  kimun-server:
+    image: ghcr.io/nico2sh/kimun-server:latest
+    ports:
+      - "7573:7573"
+    volumes:
+      - kimun-server-data:/data
+    restart: unless-stopped
+
+volumes:
+  kimun-server-data:
+```
+
+The first start seeds `/data/server.toml` with working defaults (embedded
+SQLite + local embedder); edit it — or use the web UI Config page — and
+restart the container to apply. Inside the container the server binds
+`0.0.0.0`, so set an `[auth]` token before publishing the port beyond your
+machine, and put a TLS-terminating reverse proxy in front — the server speaks
+plain HTTP.
+
+### Cargo (from source)
+
+Works anywhere with a [Rust toolchain](https://rustup.rs) — including Windows
+and Intel Macs, which have no prebuilt binary:
 
 ```sh
 cargo install --git https://github.com/nico2sh/kimun kimun_server
 ```
 
 This builds and installs the `kimun-server` binary into `~/.cargo/bin`.
+Windows zips are also on the
+[releases page](https://github.com/nico2sh/kimun/releases) (`kimun_server-v*`
+tags).
 
 ## Running the server
 
