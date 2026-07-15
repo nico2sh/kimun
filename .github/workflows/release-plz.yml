@@ -37,6 +37,10 @@ jobs:
   release-plz-pr:
     name: Release-plz PR
     needs: release-plz-release
+    # Run even when the release job fails: a failed release must still produce
+    # the version-bump PR, otherwise the bump that fixes the release never gets
+    # proposed and every subsequent push fails the same way.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     concurrency:
       group: release-plz
