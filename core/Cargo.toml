@@ -21,7 +21,7 @@ env_logger = "0.11"
 ## Error Handling
 thiserror = "2.0"
 ## DB Stuff
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "macros"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
 ## Vault identity (RAG collection key, persisted in .kimun/)
 uuid = { version = "1", features = ["v4"] }
 ## Browse files

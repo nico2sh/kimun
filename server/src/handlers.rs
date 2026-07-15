@@ -410,7 +410,7 @@ mod tests {
         // before doing any work (adr/0024). /health and /api/job stay live.
         use crate::config::RagConfig;
         let config: RagConfig =
-            toml::from_str("[server]\n[vector_db]\ntype = \"lance\"\n[reranker]\n").unwrap();
+            toml::from_str("[server]\n[vector_db]\ntype = \"sqlite\"\n[reranker]\n").unwrap();
         let state = Arc::new(AppState::new(None, config));
 
         let err = get_embeddings_handler(

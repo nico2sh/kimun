@@ -152,13 +152,13 @@ cp -r skills/kimun-cli ~/.claude/skills
 
 ### Semantic Search & Ask (RAG Server)
 
-The optional **Kimün server** adds semantic search (find notes by meaning) and **Ask** — questions answered from your notes with sources cited — to the TUI. It is push-only (never reads your disk), hosts many vaults at once, and can run fully local: embedded LanceDB + local embeddings, with an optional LLM (Claude, OpenAI, Gemini, Mistral, or a local OpenAI-compatible endpoint) for question-answering.
+The optional **Kimün server** adds semantic search (find notes by meaning) and **Ask** — questions answered from your notes with sources cited — to the TUI. It is push-only (never reads your disk), hosts many vaults at once, and can run fully local: embedded SQLite + local embeddings, with an optional LLM (Claude, OpenAI, Gemini, Mistral, or a local OpenAI-compatible endpoint) for question-answering.
 
 ```bash
-# Install (Cargo only for now; needs protoc — see server/README.md)
+# Install (Cargo only for now — see server/README.md)
 cargo install --git https://github.com/nico2sh/kimun kimun_server
 
-# Run with working local defaults (LanceDB + local embedder)
+# Run with working local defaults (SQLite + local embedder)
 kimun-server --default-config
 ```
 

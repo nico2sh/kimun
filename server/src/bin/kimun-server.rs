@@ -23,7 +23,7 @@ struct Cli {
     #[arg(short, long)]
     config: Option<std::path::PathBuf>,
 
-    /// Start with built-in defaults — embedded LanceDB plus the local
+    /// Start with built-in defaults — embedded SQLite plus the local
     /// fastembed embedder (default model) — without reading a config file.
     #[arg(long, conflicts_with = "config")]
     default_config: bool,
@@ -58,7 +58,7 @@ async fn main() -> anyhow::Result<()> {
         // file is created with these defaults so later file-based starts (and
         // web-UI edits) have a real file; an existing file is left untouched.
         tracing::info!(
-            "--default-config: using built-in defaults (LanceDB + fastembed), not reading a config file"
+            "--default-config: using built-in defaults (SQLite + fastembed), not reading a config file"
         );
         RagConfig::ready_default_persisted(&config_path)?
     } else {
@@ -152,8 +152,8 @@ async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<Option<Kim
         config::{EmbedderConfig, VectorDbConfig},
         dbembeddings::{
             embedder::{Embedder, fastembedder::FastEmbedder, http::HttpEmbedder},
-            veclance::VecLance,
             vecqdrant::VecQdrant,
+            vecsqlite::VecSqlite,
         },
         llmclients::ChatClient,
     };
@@ -217,9 +217,9 @@ async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<Option<Kim
     let store: Arc<dyn kimun_server::dbembeddings::VectorStore + Send + Sync> = match &config
         .vector_db
     {
-        VectorDbConfig::Lance { path } => {
-            tracing::info!("Using LanceDB vector database at {:?}", path);
-            Arc::new(VecLance::new(path, embedder.dimension()).await?)
+        VectorDbConfig::Sqlite { path } => {
+            tracing::info!("Using SQLite vector database at {:?}", path);
+            Arc::new(VecSqlite::new(path, embedder.dimension()).await?)
         }
         VectorDbConfig::Qdrant { url, collection } => {
             tracing::info!(

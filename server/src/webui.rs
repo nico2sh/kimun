@@ -363,8 +363,8 @@ button:hover{background:oklch(88% .13 89)}
 async fn dashboard(State(state): State<Arc<AppState>>) -> Markup {
     let c = &state.config;
     let vector_db = match &c.vector_db {
-        crate::config::VectorDbConfig::Lance { path } => {
-            format!("LanceDB ({})", path.display())
+        crate::config::VectorDbConfig::Sqlite { path } => {
+            format!("SQLite ({})", path.display())
         }
         crate::config::VectorDbConfig::Qdrant { url, collection } => {
             format!("Qdrant ({url}, prefix `{collection}`)")
@@ -529,9 +529,9 @@ fn config_markup(state: &AppState, c: &RagConfig, flash: Option<Markup>) -> Mark
             ..
         })
     );
-    let (current_vector_db, lance_path, qdrant_url, qdrant_collection) = match &c.vector_db {
-        crate::config::VectorDbConfig::Lance { path } => (
-            "lance",
+    let (current_vector_db, sqlite_path, qdrant_url, qdrant_collection) = match &c.vector_db {
+        crate::config::VectorDbConfig::Sqlite { path } => (
+            "sqlite",
             path.display().to_string(),
             String::new(),
             String::new(),
@@ -605,15 +605,15 @@ fn config_markup(state: &AppState, c: &RagConfig, flash: Option<Markup>) -> Mark
                 h2 { "Vector DB" }
                 label { "Backend" }
                 select name="vector_db" {
-                    option value="lance" data-groups="lance" selected[current_vector_db == "lance"] { "LanceDB (embedded, local)" }
+                    option value="sqlite" data-groups="sqlite" selected[current_vector_db == "sqlite"] { "SQLite (embedded, local)" }
                     option value="qdrant" data-groups="qdrant" selected[current_vector_db == "qdrant"] { "Qdrant (server)" }
                 }
                 noscript {
-                    p .muted { "(Without JavaScript all fields are shown: the path applies to LanceDB; URL and collection prefix to Qdrant.)" }
+                    p .muted { "(Without JavaScript all fields are shown: the path applies to SQLite; URL and collection prefix to Qdrant.)" }
                 }
-                div data-vectordb="lance" {
-                    label { "LanceDB path" }
-                    input type="text" name="lance_path" value=(lance_path) placeholder="default: data dir";
+                div data-vectordb="sqlite" {
+                    label { "SQLite path" }
+                    input type="text" name="sqlite_path" value=(sqlite_path) placeholder="default: data dir";
                 }
                 div .row data-vectordb="qdrant" {
                     div { label { "Qdrant URL" } input type="text" name="qdrant_url" value=(qdrant_url) placeholder="http://localhost:6333"; }
@@ -1131,7 +1131,7 @@ provider = "gemini"
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("server.toml");
         let app = app(state(None, Some(path.clone())));
-        let form = "host=127.0.0.1&port=7573&provider=claude&model=my-model&api_key=&embedder_provider=none&fastembed_model=&embedder_url=&embedder_model=&embedder_api_key=&vector_db=qdrant&lance_path=&qdrant_url=&qdrant_collection=&reranker_top_k=20&auth_token=";
+        let form = "host=127.0.0.1&port=7573&provider=claude&model=my-model&api_key=&embedder_provider=none&fastembed_model=&embedder_url=&embedder_model=&embedder_api_key=&vector_db=qdrant&sqlite_path=&qdrant_url=&qdrant_collection=&reranker_top_k=20&auth_token=";
         let resp = app
             .oneshot(
                 Request::post("/config")
@@ -1164,7 +1164,7 @@ provider = "gemini"
     /// An unconfigured server: no embedder in config, no pipeline (adr/0024).
     fn unconfigured_state() -> Arc<AppState> {
         let config: RagConfig =
-            toml::from_str("[server]\n[vector_db]\ntype = \"lance\"\n[reranker]\n").unwrap();
+            toml::from_str("[server]\n[vector_db]\ntype = \"sqlite\"\n[reranker]\n").unwrap();
         assert!(config.embedder.is_none());
         Arc::new(AppState::new(None, config))
     }
@@ -1228,7 +1228,7 @@ api_key = "gemini-key"
             path.clone(),
         ));
         // Switch to openai, leave key blank → must NOT reuse the gemini key.
-        let form = "host=127.0.0.1&port=7573&provider=openai&model=gpt-4o-mini&api_key=&embedder_provider=none&fastembed_model=&embedder_url=&embedder_model=&embedder_api_key=&vector_db=qdrant&lance_path=&qdrant_url=&qdrant_collection=&reranker_top_k=20&auth_token=";
+        let form = "host=127.0.0.1&port=7573&provider=openai&model=gpt-4o-mini&api_key=&embedder_provider=none&fastembed_model=&embedder_url=&embedder_model=&embedder_api_key=&vector_db=qdrant&sqlite_path=&qdrant_url=&qdrant_collection=&reranker_top_k=20&auth_token=";
         let resp = app
             .oneshot(
                 Request::post("/config")
@@ -1258,7 +1258,7 @@ api_key = "gemini-key"
             "[server]\n[vector_db]\ntype = \"qdrant\"\n[llm]\nprovider = \"gemini\"\n[reranker]\n",
             path.clone(),
         ));
-        let form = "host=127.0.0.1&port=99999999&provider=gemini&model=m&api_key=&embedder_provider=none&fastembed_model=&embedder_url=&embedder_model=&embedder_api_key=&vector_db=qdrant&lance_path=&qdrant_url=&qdrant_collection=&reranker_top_k=20&auth_token=";
+        let form = "host=127.0.0.1&port=99999999&provider=gemini&model=m&api_key=&embedder_provider=none&fastembed_model=&embedder_url=&embedder_model=&embedder_api_key=&vector_db=qdrant&sqlite_path=&qdrant_url=&qdrant_collection=&reranker_top_k=20&auth_token=";
         let resp = app
             .oneshot(
                 Request::post("/config")
@@ -1294,7 +1294,7 @@ api_key = "gemini-key"
 "#,
             path.clone(),
         ));
-        let form = "host=127.0.0.1&port=7573&provider=none&model=&api_key=&embedder_provider=none&fastembed_model=&embedder_url=&embedder_model=&embedder_api_key=&vector_db=qdrant&lance_path=&qdrant_url=&qdrant_collection=&reranker_top_k=20&auth_token=";
+        let form = "host=127.0.0.1&port=7573&provider=none&model=&api_key=&embedder_provider=none&fastembed_model=&embedder_url=&embedder_model=&embedder_api_key=&vector_db=qdrant&sqlite_path=&qdrant_url=&qdrant_collection=&reranker_top_k=20&auth_token=";
         let resp = app
             .oneshot(
                 Request::post("/config")
@@ -1338,7 +1338,7 @@ api_key = "gemini-key"
             "[server]\n[vector_db]\ntype = \"qdrant\"\n[reranker]\n",
             path.clone(),
         ));
-        let form = "host=127.0.0.1&port=7573&provider=none&model=&api_key=&embedder_provider=fastembed&fastembed_model=Xenova%2Fbge-small-en-v1.5&embedder_url=&embedder_model=&embedder_api_key=&vector_db=lance&lance_path=%2Fdata%2Flance&qdrant_url=&qdrant_collection=&reranker_top_k=20&auth_token=";
+        let form = "host=127.0.0.1&port=7573&provider=none&model=&api_key=&embedder_provider=fastembed&fastembed_model=Xenova%2Fbge-small-en-v1.5&embedder_url=&embedder_model=&embedder_api_key=&vector_db=sqlite&sqlite_path=%2Fdata%2Fsqlite&qdrant_url=&qdrant_collection=&reranker_top_k=20&auth_token=";
         let resp = app
             .oneshot(
                 Request::post("/config")
@@ -1360,14 +1360,14 @@ api_key = "gemini-key"
         }
         assert!(matches!(
             saved.vector_db,
-            crate::config::VectorDbConfig::Lance { .. }
+            crate::config::VectorDbConfig::Sqlite { .. }
         ));
     }
 
     /// An unconfigured server with a writable config path (for the form page).
     fn unconfigured_state_with_path() -> Arc<AppState> {
         let config: RagConfig =
-            toml::from_str("[server]\n[vector_db]\ntype = \"lance\"\n[reranker]\n").unwrap();
+            toml::from_str("[server]\n[vector_db]\ntype = \"sqlite\"\n[reranker]\n").unwrap();
         Arc::new(
             AppState::new(None, config).with_config_path(std::path::PathBuf::from("/dev/null")),
         )
@@ -1382,7 +1382,7 @@ api_key = "gemini-key"
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("server.toml");
         let app = app(state_from(
-            "[server]\n[vector_db]\ntype = \"lance\"\n[embedder]\ntype = \"fastembed\"\nmodel = \"BGESmallENV15\"\n[reranker]\n",
+            "[server]\n[vector_db]\ntype = \"sqlite\"\n[embedder]\ntype = \"fastembed\"\nmodel = \"BGESmallENV15\"\n[reranker]\n",
             path,
         ));
         let resp = app

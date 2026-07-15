@@ -296,7 +296,7 @@ The **Kimün server**'s one door to everything done with a vault's content (`Kim
 _Avoid_: search pipeline (names one slice), RAG orchestrator, KimunRag as a prose term (the struct, not the concept).
 
 **Vector store**:
-The **Kimün server**'s pure-storage seam (`VectorStore`): adapters (LanceDB, Qdrant) store, delete, and search pre-embedded chunk rows per **collection** — never embed, split, or rank; that is **query pipeline** policy above the seam. Contract pinned by a conformance suite run against every adapter: collections appear lazily on first store, reads/deletes of a missing collection are empty/no-op (never an error — reconciliation may probe a never-pushed vault), query scores are similarities, best-first.
+The **Kimün server**'s pure-storage seam (`VectorStore`): adapters (SQLite, Qdrant) store, delete, and search pre-embedded chunk rows per **collection** — never embed, split, or rank; that is **query pipeline** policy above the seam. Contract pinned by a conformance suite run against every adapter: collections appear lazily on first store, reads/deletes of a missing collection are empty/no-op (never an error — reconciliation may probe a never-pushed vault), query scores are similarities, best-first.
 _Avoid_: embeddings store (it stores vectors it did not make), db/backend (implementation, not the role), index (collides with **NoteIndex**).
 
 **Server client**:

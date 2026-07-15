@@ -4,8 +4,8 @@ use std::{collections::HashMap, fmt::Display};
 
 pub mod embedder;
 
-pub mod veclance;
 pub mod vecqdrant;
+pub mod vecsqlite;
 
 /// Information about an indexed note
 #[derive(Debug, Clone)]
@@ -101,7 +101,7 @@ pub trait VectorStore: Send + Sync {
 }
 
 /// The conformance suite: the [`VectorStore`] contract as executable checks,
-/// written against the trait so every adapter runs the same spec. LanceDB runs
+/// written against the trait so every adapter runs the same spec. SQLite runs
 /// them in plain `cargo test`; Qdrant runs them `#[ignore]`d against a live
 /// server (`QDRANT_URL`, default localhost). A new backend implements the trait
 /// and calls these from its test module.
