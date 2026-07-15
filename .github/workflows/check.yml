@@ -68,6 +68,12 @@ jobs:
           - name: Windows
             os: windows-latest
             target: x86_64-pc-windows-msvc
+          # Covers the aarch64 linux release target — check runs build scripts,
+          # so target-specific breakage (e.g. ort-sys prebuilt availability)
+          # surfaces here instead of at release-tag time.
+          - name: Linux ARM
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
 
     steps:
       - name: Checkout repository
