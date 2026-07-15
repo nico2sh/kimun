@@ -17,6 +17,7 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, OverlayData};
 use crate::components::overlay::{Overlay, OverlayKind, OverlayMsg};
+use crate::components::single_line_input::{InputOutcome, SingleLineInput};
 use crate::rag::{RagAnswer, RagSource, rag_client};
 use crate::settings::SharedSettings;
 use crate::settings::themes::Theme;
@@ -39,7 +40,7 @@ static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 pub struct RagAnswerOverlay {
     vault: Arc<NoteVault>,
     settings: SharedSettings,
-    prompt: String,
+    prompt: SingleLineInput,
     state: State,
     /// Selected source row (in the Answered state).
     selected: usize,
@@ -53,7 +54,7 @@ impl RagAnswerOverlay {
         Self {
             vault,
             settings,
-            prompt: String::new(),
+            prompt: SingleLineInput::new(),
             state: State::Prompt,
             selected: 0,
             request_id: 0,
@@ -62,7 +63,7 @@ impl RagAnswerOverlay {
 
     /// Spawns the ask job; the result comes back via `AppEvent::OverlayData(OverlayData::RagAnswerReady)`.
     fn submit(&mut self, tx: &AppTx) {
-        let query = self.prompt.trim().to_string();
+        let query = self.prompt.value().trim().to_string();
         if query.is_empty() {
             return;
         }
@@ -121,13 +122,9 @@ impl RagAnswerOverlay {
     }
 
     fn handle_prompt_key(&mut self, key: &KeyEvent, tx: &AppTx) -> EventState {
-        match key.code {
-            KeyCode::Enter => self.submit(tx),
-            KeyCode::Backspace => {
-                self.prompt.pop();
-            }
-            KeyCode::Char(c) => self.prompt.push(c),
-            _ => {}
+        // Esc (Cancel) is handled by the overlay-level arm before we get here.
+        if self.prompt.handle_key(key) == InputOutcome::Submit {
+            self.submit(tx);
         }
         EventState::Consumed
     }
@@ -221,19 +218,20 @@ impl Overlay for RagAnswerOverlay {
             .constraints([Constraint::Length(2), Constraint::Min(0)])
             .split(inner);
 
-        let prompt_line = Line::from(vec![
-            Span::styled("? ", Style::default().fg(theme.accent.to_ratatui())),
-            Span::styled(self.prompt.clone(), fg),
-            Span::styled(
-                if matches!(self.state, State::Prompt) {
-                    "▏"
-                } else {
-                    ""
-                },
+        // "? " prefix, then the input widget (which owns caret + h-scroll).
+        let prompt_row = Rect {
+            height: 1,
+            ..rows[0]
+        };
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "? ",
                 Style::default().fg(theme.accent.to_ratatui()),
-            ),
-        ]);
-        f.render_widget(Paragraph::new(prompt_line), rows[0]);
+            ))),
+            prompt_row,
+        );
+        self.prompt
+            .render(f, prompt_row, fg, 2, matches!(self.state, State::Prompt));
 
         match &self.state {
             State::Prompt => {

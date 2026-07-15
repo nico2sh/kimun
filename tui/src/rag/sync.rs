@@ -47,6 +47,9 @@ pub fn spawn_rag_sync(
         // Force a reconcile on the first successful tick and after any offline
         // gap; drain-only in between.
         let mut ticks_since_reconcile = RECONCILE_EVERY_N_TICKS;
+        // Sticky across ticks: the last sync call was rejected with 401/403.
+        // Suppresses the per-tick "syncing" flash while the token stays wrong.
+        let mut auth_failed = false;
 
         loop {
             interval.tick().await;
@@ -66,38 +69,82 @@ pub fn spawn_rag_sync(
             }
             let sync = sync.as_ref().expect("sync established above");
 
-            // One probe drives reachability and capability (adr/0024): offline,
-            // unconfigured (skip sync — the server rejects everything), or
-            // semantic-only/full (llm_available gates Ask).
-            let capability = match sync.probe().await {
-                Some(c) => c,
+            // One probe drives reachability, capability, and auth (adr/0024):
+            // offline, unconfigured (skip sync — the server rejects
+            // everything), or semantic-only/full (llm_available gates Ask).
+            let probe = match sync.probe().await {
+                Some(p) => p,
                 None => {
                     let _ = tx.send(AppEvent::RagStatus(RagStatus::Offline));
                     // Re-establish full consistency on the next successful tick.
                     ticks_since_reconcile = RECONCILE_EVERY_N_TICKS;
+                    auth_failed = false;
                     continue;
                 }
             };
-            if capability == ServerCapability::Unconfigured {
+            if probe.capability == ServerCapability::Unconfigured {
                 let _ = tx.send(AppEvent::RagStatus(RagStatus::NotConfigured));
                 // When an embedder appears, start with a full reconcile.
                 ticks_since_reconcile = RECONCILE_EVERY_N_TICKS;
                 continue;
             }
-            let llm_available = capability.llm_available();
+            // The server gates its API behind a token and none is configured:
+            // every sync call would 401 (`/health` itself is un-gated, which
+            // is why the probe still succeeded). Say so up front instead of
+            // rediscovering it as a failure burst every tick.
+            if probe.auth_required && token.is_none() {
+                let _ = tx.send(AppEvent::RagStatus(RagStatus::Unauthorized));
+                ticks_since_reconcile = RECONCILE_EVERY_N_TICKS;
+                continue;
+            }
+            let llm_available = probe.capability.llm_available();
 
-            let _ = tx.send(AppEvent::RagStatus(RagStatus::Syncing { llm_available }));
+            // The local index is empty while it (re)builds — a healed schema
+            // on first launch, an upgrade, or a manual reindex. Syncing from
+            // that snapshot is destructive (a reconcile reads "no notes" and
+            // would wipe the server collection), so wait, and run a full
+            // reconcile first thing once the index is filled.
+            // While a wrong token keeps failing, skip the transient "syncing"
+            // flash so the footer doesn't flicker syncing ↔ unauthorized.
+            if !auth_failed {
+                let _ = tx.send(AppEvent::RagStatus(RagStatus::Syncing { llm_available }));
+            }
+            if !sync.index_ready() {
+                ticks_since_reconcile = RECONCILE_EVERY_N_TICKS;
+                continue;
+            }
+
             let result = if ticks_since_reconcile >= RECONCILE_EVERY_N_TICKS {
                 ticks_since_reconcile = 0;
-                sync.tick().await // drain + reconcile
+                match sync.tick().await {
+                    // Reconcile skipped: the index flipped to rebuilding
+                    // between the gate above and the pass. Retry next tick.
+                    Ok(false) => {
+                        ticks_since_reconcile = RECONCILE_EVERY_N_TICKS;
+                        Ok(())
+                    }
+                    Ok(true) => Ok(()),
+                    Err(e) => Err(e),
+                }
             } else {
                 ticks_since_reconcile += 1;
                 sync.drain().await // fast path
             };
             let status = match result {
-                Ok(()) => RagStatus::Online { llm_available },
+                Ok(()) => {
+                    auth_failed = false;
+                    RagStatus::Online { llm_available }
+                }
+                // The server rejected our token (401/403): a credentials
+                // problem, not an unreachable server.
+                Err(e) if e.is_auth() => {
+                    log::warn!("RAG server rejected the configured token: {e}");
+                    auth_failed = true;
+                    RagStatus::Unauthorized
+                }
                 Err(e) => {
                     log::debug!("RAG sync failed: {e}");
+                    auth_failed = false;
                     RagStatus::Offline
                 }
             };

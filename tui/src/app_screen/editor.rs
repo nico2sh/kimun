@@ -1439,6 +1439,15 @@ impl EditorScreen {
             .ok();
             return;
         }
+        // A token problem gets its own message — "needs an LLM" would send
+        // the user chasing the wrong config knob.
+        if self.rag_status == crate::rag::RagStatus::Unauthorized {
+            tx.send(AppEvent::FlashMessage(
+                "RAG server requires a valid token; set kimun_server_token in config".into(),
+            ))
+            .ok();
+            return;
+        }
         // Ask needs an LLM: hide it when offline or connected to a semantic-only
         // server (search works, question-answering does not — adr/0022).
         if !self.rag_status.llm_available() {

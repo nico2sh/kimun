@@ -152,7 +152,9 @@ impl VecQdrant {
 
         let date = date_str
             .filter(|ds| !ds.is_empty())
-            .and_then(|ds| chrono::NaiveDate::parse_from_str(ds, "%Y-%m-%d").ok());
+            .and_then(|ds| {
+                chrono::NaiveDate::parse_from_str(ds, crate::document::JOURNAL_DATE_FORMAT).ok()
+            });
 
         FlattenedChunk {
             doc_path: path,
@@ -218,6 +220,54 @@ impl VectorStore for VecQdrant {
             )
             .await?;
         Ok(())
+    }
+
+    async fn chunks_with_vectors(
+        &self,
+        collection: &str,
+        paths: &[String],
+    ) -> anyhow::Result<Vec<EmbeddedChunk>> {
+        let name = self.collection_name(collection);
+        if paths.is_empty() || !self.collection_exists(&name).await? {
+            return Ok(Vec::new());
+        }
+
+        let filter = Filter::must([Condition::matches("path", paths.to_vec())]);
+        let page_size = 200;
+        let mut out = Vec::new();
+        let mut pagination = PaginationStatus::First;
+        while pagination.has_more() {
+            let spb = match pagination {
+                PaginationStatus::Next(point_id) => ScrollPointsBuilder::new(&name)
+                    .filter(filter.clone())
+                    .with_payload(true)
+                    .with_vectors(true)
+                    .offset(point_id)
+                    .limit(page_size),
+                _ => ScrollPointsBuilder::new(&name)
+                    .filter(filter.clone())
+                    .with_payload(true)
+                    .with_vectors(true)
+                    .limit(page_size),
+            };
+            let scroll_result = self.client.scroll(spb).await?;
+            for p in &scroll_result.result {
+                use qdrant_client::qdrant::vector_output::Vector as VectorOut;
+                // Collections here hold a single unnamed dense vector per
+                // point (see ensure_collection); anything else is skipped.
+                let Some(VectorOut::Dense(dense)) =
+                    p.vectors.as_ref().and_then(|v| v.get_vector())
+                else {
+                    continue;
+                };
+                out.push(EmbeddedChunk {
+                    chunk: Self::payload_to_chunk(&p.payload),
+                    vector: dense.data,
+                });
+            }
+            pagination = scroll_result.next_page_offset.into();
+        }
+        Ok(out)
     }
 
     async fn query(
@@ -463,6 +513,13 @@ mod tests {
     async fn conformance_delete() {
         let s = store("delete").await;
         conformance::delete_removes_every_chunk_of_the_note(&s, "v").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a live Qdrant (set QDRANT_URL, default localhost:6334)"]
+    async fn conformance_chunks_with_vectors() {
+        let s = store("chunkvecs").await;
+        conformance::chunks_with_vectors_returns_the_notes_rows(&s, "v").await;
     }
 
     #[tokio::test]

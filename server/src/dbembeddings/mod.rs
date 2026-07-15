@@ -36,6 +36,7 @@ impl Display for IndexedNote {
 /// A chunk together with its embedding — the row a [`VectorStore`] stores.
 /// Produced by the pipeline (which owns splitting and embedding); the store
 /// persists text and vector together so they can never drift apart.
+#[derive(Clone)]
 pub struct EmbeddedChunk {
     pub chunk: FlattenedChunk,
     pub vector: Vec<f32>,
@@ -60,6 +61,17 @@ pub trait VectorStore: Send + Sync {
 
     /// Removes every chunk of the given note paths.
     async fn delete(&self, collection: &str, paths: &[String]) -> anyhow::Result<()>;
+
+    /// Every stored chunk of the given note paths, with its vector. Lets the
+    /// pipeline reuse embeddings for sub-chunks whose text is unchanged when a
+    /// note is re-indexed (a one-line edit re-splits the whole note, but most
+    /// sub-chunks come out identical). Vectors may be returned normalized;
+    /// missing collection → empty, never an error.
+    async fn chunks_with_vectors(
+        &self,
+        collection: &str,
+        paths: &[String],
+    ) -> anyhow::Result<Vec<EmbeddedChunk>>;
 
     /// The `limit` best-matching chunks for `vector`, best-first, scored as
     /// similarities (higher = better).
@@ -223,6 +235,53 @@ pub(crate) mod conformance {
         assert_eq!(notes.len(), 2, "notes, not chunks");
         assert_eq!(notes.get("a.md").unwrap().content_hash, "h1");
         assert_eq!(notes.get("b.md").unwrap().content_hash, "h2");
+    }
+
+    pub(crate) async fn chunks_with_vectors_returns_the_notes_rows(
+        store: &dyn VectorStore,
+        c: &str,
+    ) {
+        // Missing collection → empty, never an error.
+        assert!(
+            store
+                .chunks_with_vectors(c, &["a.md".to_string()])
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        store
+            .store(
+                c,
+                &[
+                    row("a.md", "h1", "alpha part one"),
+                    row("a.md", "h1", "alpha part two"),
+                    row("b.md", "h2", "beta"),
+                ],
+            )
+            .await
+            .unwrap();
+
+        let rows = store
+            .chunks_with_vectors(c, &["a.md".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 2, "only the requested note's chunks");
+        assert!(rows.iter().all(|r| r.chunk.doc_path == "a.md"));
+        for r in &rows {
+            assert_eq!(r.vector.len(), DIM);
+            // The vector must still point the same way as the original (stores
+            // may normalize at rest): cosine of stored vs. original ≈ 1.
+            let original = vector_for(&r.chunk.text);
+            let dot: f32 = r.vector.iter().zip(&original).map(|(a, b)| a * b).sum();
+            let n1: f32 = r.vector.iter().map(|x| x * x).sum::<f32>().sqrt();
+            let n2: f32 = original.iter().map(|x| x * x).sum::<f32>().sqrt();
+            assert!(
+                (dot / (n1 * n2) - 1.0).abs() < 1e-5,
+                "vector for {:?} does not match what was stored",
+                r.chunk.text
+            );
+        }
     }
 
     pub(crate) async fn collections_list_each_vault(store: &dyn VectorStore, c1: &str, c2: &str) {

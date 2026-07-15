@@ -324,10 +324,31 @@ impl NoteIndex {
         to: &VaultPath,
         rewritten: &[(NoteEntryData, String)],
     ) -> Result<(), DBError> {
+        let from = from.canonical();
+        let to = to.canonical();
         let mut tx = self.pool.begin().await?;
-        rename_note(&mut tx, &from.canonical(), &to.canonical()).await?;
+        // Capture the moving note's hash before the rows change, so observers
+        // can be told about the note under its new path (a rename leaves the
+        // content — and therefore the hash — untouched).
+        let moved_hash = if self.has_observer() {
+            note_hash(&mut tx, &from).await?
+        } else {
+            None
+        };
+        rename_note(&mut tx, &from, &to).await?;
         update_notes(&mut tx, rewritten).await?;
         tx.commit().await?;
+        if self.has_observer() {
+            if let Some(hash) = moved_hash {
+                self.emit_delete(&from);
+                self.emit_upsert(&to, hash);
+            }
+            // The backlink victims' content changed: their links were
+            // rewritten to the new name.
+            for (entry, text) in rewritten {
+                self.emit_upsert(&entry.path, NoteDetails::content_data_of(text).hash);
+            }
+        }
         Ok(())
     }
 
@@ -336,9 +357,27 @@ impl NoteIndex {
         from: &VaultPath,
         to: &VaultPath,
     ) -> Result<(), DBError> {
+        let from = from.canonical();
+        let to = to.canonical();
         let mut tx = self.pool.begin().await?;
-        rename_directory(&mut tx, &from.canonical(), &to.canonical()).await?;
+        // Capture the affected notes before the prefix rewrite, so observers
+        // learn both sides of every move.
+        let moved = if self.has_observer() {
+            notes_under(&mut tx, &from).await?
+        } else {
+            Vec::new()
+        };
+        rename_directory(&mut tx, &from, &to).await?;
         tx.commit().await?;
+        let from_prefix = dir_prefix(&from);
+        let to_prefix = dir_prefix(&to);
+        for (path, hash) in moved {
+            self.emit_delete(&path);
+            // Mirror the SQL prefix rewrite to obtain the post-rename path.
+            if let Some(rest) = path.to_string().strip_prefix(&from_prefix) {
+                self.emit_upsert(&VaultPath::new(format!("{to_prefix}{rest}")), hash);
+            }
+        }
         Ok(())
     }
 
@@ -359,8 +398,19 @@ impl NoteIndex {
     ) -> Result<(), DBError> {
         let canonical: Vec<VaultPath> = directories.iter().map(|p| p.canonical()).collect();
         let mut tx = self.pool.begin().await?;
+        // Capture the contained notes before the rows go, so observers get a
+        // Delete per note — same contract as delete_notes above.
+        let mut removed = Vec::new();
+        if self.has_observer() {
+            for directory in &canonical {
+                removed.extend(notes_under(&mut tx, directory).await?);
+            }
+        }
         delete_directories(&mut tx, &canonical).await?;
         tx.commit().await?;
+        for (path, _) in removed {
+            self.emit_delete(&path);
+        }
         Ok(())
     }
 
@@ -1854,6 +1904,53 @@ fn fts4_quote(term: &str) -> String {
     format!("\"{}\"", escaped)
 }
 
+/// A directory path in the form the prefix `LIKE` predicates use: its
+/// canonical string with a trailing separator, so `<prefix> || '%'` matches
+/// exactly the rows under (not merely named like) the directory.
+fn dir_prefix(path: &VaultPath) -> String {
+    let s = path.to_string();
+    if s.ends_with(PATH_SEPARATOR) {
+        s
+    } else {
+        format!("{s}{PATH_SEPARATOR}")
+    }
+}
+
+/// The stored content hash of one indexed note, or `None` when the path has
+/// no row. Read inside the caller's transaction so it reflects pre-mutation
+/// state.
+async fn note_hash(
+    tx: &mut Transaction<'_, Sqlite>,
+    path: &VaultPath,
+) -> Result<Option<u64>, DBError> {
+    let hash: Option<String> = sqlx::query_scalar("SELECT hash FROM notes WHERE path = ?")
+        .bind(path.to_string())
+        .fetch_optional(&mut **tx)
+        .await?;
+    // A non-numeric hash is a corrupt row; 0 keeps the observer informed and
+    // merely forces the consumer to treat the note as changed.
+    Ok(hash.map(|h| h.parse().unwrap_or(0)))
+}
+
+/// `(path, hash)` of every indexed note under `directory` (recursively),
+/// captured inside the caller's transaction so the rename/delete wrappers can
+/// emit observer events for exactly the rows their SQL is about to touch.
+async fn notes_under(
+    tx: &mut Transaction<'_, Sqlite>,
+    directory: &VaultPath,
+) -> Result<Vec<(VaultPath, u64)>, DBError> {
+    let pattern = escape_like_pattern(&dir_prefix(directory));
+    let rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT path, hash FROM notes WHERE path LIKE (? || '%') ESCAPE '\\'")
+            .bind(&pattern)
+            .fetch_all(&mut **tx)
+            .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(path, hash)| (VaultPath::new(&path), hash.parse().unwrap_or(0)))
+        .collect())
+}
+
 /// Escapes SQLite LIKE pattern metacharacters (`\`, `%`, `_`) in `s` so the
 /// result can be used as a safe literal prefix before appending `%`.
 /// Must be paired with `ESCAPE '\\'` in the SQL clause.
@@ -1928,24 +2025,27 @@ async fn rename_directory(
     from: &VaultPath,
     to: &VaultPath,
 ) -> Result<(), DBError> {
-    let from = {
-        let s = from.to_string();
-        if s.ends_with(PATH_SEPARATOR) {
-            s
-        } else {
-            s + &PATH_SEPARATOR.to_string()
-        }
-    };
-    let to = {
-        let s = to.to_string();
-        if s.ends_with(PATH_SEPARATOR) {
-            s
-        } else {
-            s + &PATH_SEPARATOR.to_string()
-        }
-    };
+    // Stored (no trailing separator) form for exact basePath matches, and the
+    // prefix form for everything nested deeper.
+    let from_base = from.to_string();
+    let to_base = to.to_string();
+    let from = dir_prefix(from);
+    let to = dir_prefix(to);
 
     let from_escaped = escape_like_pattern(&from);
+
+    // Direct children: their basePath equals `from` exactly (basePath is
+    // stored without a trailing separator), so the prefix LIKE below cannot
+    // match them.
+    sqlx::query(
+        "UPDATE notes SET path = ? || SUBSTR(path, LENGTH(?) + 1), basePath = ? WHERE basePath = ?",
+    )
+    .bind(&to)
+    .bind(&from)
+    .bind(&to_base)
+    .bind(&from_base)
+    .execute(&mut **tx)
+    .await?;
 
     let notes_sql = "UPDATE notes SET path = ? || SUBSTR(path, LENGTH(?) + 1), basePath = ? || SUBSTR(basePath, LENGTH(?) + 1) WHERE basePath LIKE (? || '%') ESCAPE '\\'";
     sqlx::query(notes_sql)
@@ -2006,13 +2106,7 @@ async fn delete_directory(
     tx: &mut Transaction<'_, Sqlite>,
     directory_path: &VaultPath,
 ) -> Result<(), DBError> {
-    let path_str = directory_path.to_string();
-    let normalized = if path_str.ends_with(PATH_SEPARATOR) {
-        path_str
-    } else {
-        format!("{path_str}{PATH_SEPARATOR}")
-    };
-    let pattern = escape_like_pattern(&normalized);
+    let pattern = escape_like_pattern(&dir_prefix(directory_path));
 
     sqlx::query("DELETE FROM notes WHERE path LIKE (? || '%') ESCAPE '\\'")
         .bind(&pattern)
@@ -3244,6 +3338,50 @@ mod tests {
         assert_eq!(
             new_rows.into_iter().map(|(n,)| n).collect::<Vec<_>>(),
             vec!["foo".to_string()],
+        );
+
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn rename_directory_renames_direct_children_note_rows() {
+        use crate::nfs::{NoteEntryData, VaultPath};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("kimun.sqlite");
+        let db = super::NoteIndex::open(&db_path).await.unwrap();
+
+        // One note directly in the renamed directory, one nested deeper.
+        let mut tx = db.pool().begin().await.unwrap();
+        for path in ["/old_dir/note.md", "/old_dir/sub/deep.md"] {
+            let entry = NoteEntryData {
+                path: VaultPath::note_path_from(path),
+                size: 10,
+                modified_secs: 0,
+            };
+            super::insert_notes(&mut tx, &[(entry, "content".to_string())])
+                .await
+                .unwrap();
+        }
+        super::rename_directory(
+            &mut tx,
+            &VaultPath::new("/old_dir"),
+            &VaultPath::new("/new_dir"),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        let rows: Vec<(String, String)> =
+            sqlx::query_as("SELECT path, basePath FROM notes ORDER BY path")
+                .fetch_all(db.pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                ("/new_dir/note.md".to_string(), "/new_dir".to_string()),
+                ("/new_dir/sub/deep.md".to_string(), "/new_dir/sub".to_string()),
+            ],
         );
 
         db.close().await;

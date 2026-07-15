@@ -54,19 +54,37 @@ pub async fn read_or_create_vault_id(workspace_path: &Path) -> Result<VaultId, F
                 // path, which reads the winner's id back.
                 return create_vault_id_exclusive(&path).await;
             }
-            // Non-empty but unparseable — genuinely corrupt; overwrite in place.
-            if let Some(parent) = path.parent() {
-                tokio::fs::create_dir_all(parent).await?;
-            }
-            let id = VaultId::new_random();
-            tokio::fs::write(&path, id.to_string()).await?;
-            Ok(id)
+            // Non-empty but unparseable — genuinely corrupt.
+            heal_corrupt_vault_id(&path).await
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             create_vault_id_exclusive(&path).await
         }
         Err(e) => Err(FSError::ReadFileError(e)),
     }
+}
+
+/// Heals a corrupt (non-empty, unparseable) vault-id file without reopening
+/// the split-id race: an atomic `rename` moves the corrupt file aside, and —
+/// because a rename succeeds for exactly one process — elects a single healer.
+/// Winner and losers alike then converge through the exclusive-create path,
+/// whose `create_new` can only succeed once, so every concurrent caller ends
+/// up with the same id. The corrupt content is kept as `vault-id.corrupt` for
+/// inspection instead of being silently overwritten.
+async fn heal_corrupt_vault_id(path: &Path) -> Result<VaultId, FSError> {
+    let backup = path.with_extension("corrupt");
+    // Clear any stale backup first: Windows' rename refuses to replace an
+    // existing destination (harmlessly racy — the backup is best-effort).
+    let _ = tokio::fs::remove_file(&backup).await;
+    match tokio::fs::rename(path, &backup).await {
+        // We won the election and moved the corrupt file aside…
+        Ok(()) => {}
+        // …or another healer got there first; either way the id now comes
+        // from the exclusive create below.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(FSError::ReadFileError(e)),
+    }
+    create_vault_id_exclusive(path).await
 }
 
 /// Creates the vault-id file exclusively so two concurrent first-openers can't
@@ -141,5 +159,42 @@ mod tests {
         // Rewritten to a valid id, stable thereafter.
         let again = read_or_create_vault_id(dir.path()).await.unwrap();
         assert_eq!(id, again);
+        // The corrupt content was moved aside, not silently destroyed.
+        let backup = tokio::fs::read_to_string(kimun.join("vault-id.corrupt"))
+            .await
+            .unwrap();
+        assert_eq!(backup, "not-a-uuid");
+    }
+
+    #[tokio::test]
+    async fn concurrent_heals_of_a_corrupt_file_converge_on_one_id() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let kimun = dir.path().join(".kimun");
+        tokio::fs::create_dir_all(&kimun).await.unwrap();
+        tokio::fs::write(kimun.join("vault-id"), "not-a-uuid")
+            .await
+            .unwrap();
+
+        // Concurrent readers of the same corrupt file must all converge on a
+        // single healed id — the rename election guarantees one healer, the
+        // exclusive create guarantees one writer.
+        let workspace = dir.path().to_path_buf();
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let workspace = workspace.clone();
+                tokio::spawn(async move { read_or_create_vault_id(&workspace).await.unwrap() })
+            })
+            .collect();
+        let mut ids = Vec::new();
+        for handle in handles {
+            ids.push(handle.await.unwrap());
+        }
+        assert!(
+            ids.windows(2).all(|w| w[0] == w[1]),
+            "all concurrent readers must get the same id: {ids:?}"
+        );
+        // And the winner's id is what persists on disk.
+        let on_disk = read_or_create_vault_id(&workspace).await.unwrap();
+        assert_eq!(on_disk, ids[0]);
     }
 }

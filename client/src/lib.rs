@@ -34,6 +34,21 @@ pub enum RagError {
     Protocol(String),
 }
 
+impl RagError {
+    /// Whether this is an authentication/authorization rejection (401/403) —
+    /// a token problem, not an unreachable server. Callers should surface it
+    /// as such instead of folding it into a generic "offline".
+    pub fn is_auth(&self) -> bool {
+        matches!(
+            self,
+            RagError::Status {
+                status: 401 | 403,
+                ..
+            }
+        )
+    }
+}
+
 /// The subset of server operations the sync orchestration depends on, behind a
 /// trait so it can be exercised with a fake in tests. [`RagClient`] is the real
 /// implementation.
@@ -100,6 +115,23 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// [`REQUEST_TIMEOUT`] on a slow link.
 const PUSH_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// One process-wide HTTP client, so every [`RagClient`] — however short-lived —
+/// shares the same connection pool and keep-alive connections instead of
+/// paying a fresh TCP+TLS handshake per construction.
+fn shared_http() -> reqwest::Client {
+    static HTTP: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    HTTP.get_or_init(|| {
+        reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(REQUEST_TIMEOUT)
+            .build()
+            // Only fails on broken TLS backend/system config; no meaningful
+            // recovery, and it would fail identically for every request.
+            .expect("build HTTP client")
+    })
+    .clone()
+}
+
 /// HTTP client for one vault's collection on a RAG server.
 #[derive(Clone)]
 pub struct RagClient {
@@ -118,15 +150,8 @@ impl RagClient {
         vault_id: impl Into<String>,
     ) -> Self {
         let base_url = base_url.into().trim_end_matches('/').to_string();
-        let http = reqwest::Client::builder()
-            .connect_timeout(CONNECT_TIMEOUT)
-            .timeout(REQUEST_TIMEOUT)
-            .build()
-            // Only fails on broken TLS backend/system config; no meaningful
-            // recovery, and it would fail identically for every request.
-            .expect("build HTTP client");
         Self {
-            http,
+            http: shared_http(),
             base_url,
             token,
             vault_id: vault_id.into(),
@@ -248,14 +273,19 @@ impl RagClient {
         self.poll_answer(&job_id).await
     }
 
-    /// Polls `/api/job/{id}` until the answer job completes or fails. The ceiling
-    /// tracks the server's job-retention window (~5 min) so a slow LLM (large
-    /// context, local model) isn't cut off with a false timeout while its result
-    /// is still coming.
+    /// Poll iterations before giving up on an answer job, at ~1s each: ~12
+    /// minutes, safely inside the server's 15-minute job retention (see
+    /// `server_state.rs`) so a slow LLM (large context, CPU-only local model
+    /// — legitimately several minutes) isn't cut off with a false timeout
+    /// while its result is still coming. Keep this below the retention window:
+    /// past it the job is swept and polling can never succeed.
+    const ANSWER_POLL_ATTEMPTS: u32 = 720;
+
+    /// Polls `/api/job/{id}` until the answer job completes or fails.
     async fn poll_answer(&self, job_id: &str) -> Result<AnswerResult, RagError> {
         let path = format!("/api/job/{job_id}");
         let mut consecutive_errors = 0u32;
-        for _ in 0..300 {
+        for _ in 0..Self::ANSWER_POLL_ATTEMPTS {
             // A transient poll error (network blip, server briefly busy) must not
             // abort an answer that is still being generated — retry, and only
             // give up after a run of consecutive failures.
@@ -296,5 +326,23 @@ impl RagClient {
     async fn poll_once(&self, path: &str) -> Result<JobStatus, RagError> {
         let resp = self.auth(self.http.get(self.url(path))).send().await?;
         Ok(Self::ok(resp).await?.json::<JobStatus>().await?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_auth_matches_only_credential_rejections() {
+        let status = |status| RagError::Status {
+            status,
+            body: String::new(),
+        };
+        assert!(status(401).is_auth());
+        assert!(status(403).is_auth());
+        assert!(!status(500).is_auth());
+        assert!(!status(404).is_auth());
+        assert!(!RagError::Protocol("boom".into()).is_auth());
     }
 }
