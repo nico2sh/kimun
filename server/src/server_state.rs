@@ -26,11 +26,20 @@ pub struct AppState {
     /// an embedder is configured but `rag` is `None`, so data endpoints reject
     /// with 503 just like an unconfigured server. Shown on the dashboard.
     pub startup_error: Option<String>,
+    /// Why the reranker failed to initialize (model download blocked, rerank
+    /// endpoint unreachable). Non-fatal — the server runs with plain vector
+    /// ranking — but surfaced via /health and the dashboard so a
+    /// `reranker: false` is distinguishable from "disabled by config".
+    pub reranker_error: Option<String>,
     pub job_tracker: Arc<Mutex<JobTracker>>,
     /// Serializes index writes (store/delete) so concurrent jobs on the same
     /// collection can't double-insert chunks or race each other's updates.
     /// Queries never take this, so indexing does not block search/answer.
     pub index_lock: Arc<Mutex<()>>,
+    /// Signals the binary's restart loop (adr/0028): the web UI's Restart
+    /// button sends here, the serving loop drains and rebuilds from the saved
+    /// config file. `None` when no loop is wired (tests).
+    restart: Option<tokio::sync::mpsc::Sender<()>>,
 }
 
 impl AppState {
@@ -41,8 +50,10 @@ impl AppState {
             config_path: None,
             log_buffer: crate::logbuffer::LogBuffer::new(),
             startup_error: None,
+            reranker_error: None,
             job_tracker: Arc::new(Mutex::new(JobTracker::new())),
             index_lock: Arc::new(Mutex::new(())),
+            restart: None,
         }
     }
 
@@ -70,6 +81,27 @@ impl AppState {
     pub fn with_startup_error(mut self, error: Option<String>) -> Self {
         self.startup_error = error;
         self
+    }
+
+    /// Records why the (non-fatal) reranker initialization failed.
+    pub fn with_reranker_error(mut self, error: Option<String>) -> Self {
+        self.reranker_error = error;
+        self
+    }
+
+    /// Wires the restart channel the binary's serving loop listens on.
+    pub fn with_restart(mut self, restart: tokio::sync::mpsc::Sender<()>) -> Self {
+        self.restart = Some(restart);
+        self
+    }
+
+    /// Requests an in-process restart: drain, re-read the config file, rebind
+    /// (adr/0028). `false` when no restart loop is wired or one is already in
+    /// flight — the caller should tell the operator to restart manually.
+    pub fn request_restart(&self) -> bool {
+        self.restart
+            .as_ref()
+            .is_some_and(|tx| tx.try_send(()).is_ok())
     }
 }
 

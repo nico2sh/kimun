@@ -287,10 +287,109 @@ impl LlmConfig {
 pub struct RerankerConfig {
     #[serde(default = "default_reranker_enabled")]
     pub enabled: bool,
-    /// Default number of results kept after reranking. Overridable per request
-    /// via `context_size`.
+    /// The `fixed` context cut's size: search notes / answer chunks,
+    /// overridable per request via `context_size`. Ignored by the adaptive
+    /// cuts (`score-range`, `largest-drop`) — there the pool's score shape
+    /// decides (adr/0029).
     #[serde(default = "default_reranker_top_k")]
     pub top_k: usize,
+    /// How reranking runs: the local fastembed cross-encoder (default, model
+    /// downloaded on first start) or an external HTTP rerank endpoint. The
+    /// provider fields below are file-only knobs — the web UI form edits only
+    /// `enabled`/`top_k` and carries these unchanged (like embedder prefixes).
+    #[serde(default, rename = "type")]
+    pub provider: RerankerProvider,
+    /// Base URL for `type = "http"`, including the API version where the
+    /// provider has one (e.g. `https://api.cohere.com/v2`); `/rerank` is
+    /// appended. Required for `http`, ignored for `fastembed`.
+    #[serde(default)]
+    pub url: Option<String>,
+    /// Model name for `type = "http"` (e.g. `rerank-v3.5`). Optional — some
+    /// self-hosted servers serve a single model and don't need it.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Bearer token for `type = "http"` endpoints that need one.
+    #[serde(default)]
+    pub api_key: Option<String>,
+    /// Which **context cut** sizes both retrieval surfaces (adr/0029):
+    /// `search` shows the notes whose best chunk survives it, `answer` feeds
+    /// the chunks that survive it — with or without a reranker. Editable from
+    /// the web UI Config page.
+    #[serde(default)]
+    pub context_cut: ContextCut,
+    /// The score-range cut's normalized cutoff in `0.0..=1.0` (default 0.4):
+    /// chunks at or above this fraction of the pool's (percentile-measured)
+    /// score range survive. Ignored by the other cuts; values outside the
+    /// range are clamped.
+    #[serde(default = "default_score_range_cutoff")]
+    pub score_range_cutoff: f64,
+    /// The largest-drop cut's search window: the gap is looked for at note
+    /// positions `drop_window_min..=drop_window_max` (defaults 3 and 30).
+    /// Ignored by the other cuts; sanitized to `min ≥ 1` and `max ≥ min`.
+    #[serde(default = "default_drop_window_min")]
+    pub drop_window_min: usize,
+    #[serde(default = "default_drop_window_max")]
+    pub drop_window_max: usize,
+}
+
+/// The context cut algorithm — how many retrieved chunks/notes each query
+/// surface returns, applied with or without a reranker (adr/0029). `fixed`
+/// counts; the other two read the pool's score shape (adr/0027).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ContextCut {
+    /// Exactly `top_k` results — search notes / answer chunks — the classic
+    /// count cut.
+    Fixed,
+    /// Min-max normalize the pool's scores; chunks at or above
+    /// `score_range_cutoff` (default 0.4) of the range survive. The range is
+    /// measured between the pool's 5th/95th score percentiles so outlier
+    /// chunks can't stretch it.
+    #[default]
+    ScoreRange,
+    /// Cut at the biggest relative drop between consecutive NOTE scores —
+    /// each distinct note's best chunk, `(s[i] − s[i+1]) / s[i]` — searched
+    /// within the `drop_window_min..=drop_window_max` note positions; every
+    /// chunk at or above the gap-closing note's score is kept. No drop found
+    /// means no cut.
+    LargestDrop,
+}
+
+impl ContextCut {
+    /// The config-file name of the algorithm (`fixed` | `score-range` |
+    /// `largest-drop`) — the web UI shows it next to the cut preview.
+    pub fn label(&self) -> &'static str {
+        match self {
+            ContextCut::Fixed => "fixed",
+            ContextCut::ScoreRange => "score-range",
+            ContextCut::LargestDrop => "largest-drop",
+        }
+    }
+}
+
+/// Selects the reranker backend. Unlike the embedder this is not an invariant
+/// of the stored vectors — switching rerankers never invalidates the index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RerankerProvider {
+    /// Local fastembed cross-encoder (BGE-Reranker-Base), no network at query
+    /// time but downloads the model from Hugging Face on first start.
+    #[default]
+    FastEmbed,
+    /// A Cohere/Jina-compatible `POST {url}/rerank` endpoint — covers Cohere,
+    /// Jina AI, Voyage AI, and self-hosted vLLM or Infinity.
+    Http,
+}
+
+impl RerankerProvider {
+    /// Human-readable backend label — the startup log and the web dashboard
+    /// share it (same pattern as [`EmbedderConfig::provider`]).
+    pub fn label(&self) -> &'static str {
+        match self {
+            RerankerProvider::FastEmbed => "local cross-encoder",
+            RerankerProvider::Http => "http",
+        }
+    }
 }
 
 // Default value functions
@@ -358,6 +457,18 @@ fn default_reranker_top_k() -> usize {
     20
 }
 
+fn default_score_range_cutoff() -> f64 {
+    0.4
+}
+
+fn default_drop_window_min() -> usize {
+    3
+}
+
+fn default_drop_window_max() -> usize {
+    30
+}
+
 /// A zero-config default: SQLite under the data dir, default `127.0.0.1`
 /// bind, no embedder (unconfigured, adr/0024), no LLM, no auth. This is what a
 /// first run with no config file boots from and writes to disk (adr/0022).
@@ -377,6 +488,14 @@ impl Default for RagConfig {
             reranker: RerankerConfig {
                 enabled: default_reranker_enabled(),
                 top_k: default_reranker_top_k(),
+                provider: RerankerProvider::default(),
+                url: None,
+                model: None,
+                api_key: None,
+                context_cut: ContextCut::default(),
+                score_range_cutoff: default_score_range_cutoff(),
+                drop_window_min: default_drop_window_min(),
+                drop_window_max: default_drop_window_max(),
             },
             auth: AuthConfig::default(),
         }
@@ -445,6 +564,19 @@ pub struct ConfigForm {
     #[serde(default)]
     pub reranker_enabled: Option<String>,
     pub reranker_top_k: String,
+    /// `fixed` | `score-range` | `largest-drop`. Defaulted (empty = keep the
+    /// current setting) so form posts predating the field still deserialize.
+    #[serde(default)]
+    pub context_cut: String,
+    /// Strategy knobs; blank keeps the current value (fields hidden for a
+    /// non-selected strategy still post, so blanks only come from stale
+    /// forms predating them).
+    #[serde(default)]
+    pub score_range_cutoff: String,
+    #[serde(default)]
+    pub drop_window_min: String,
+    #[serde(default)]
+    pub drop_window_max: String,
     pub auth_token: String,
 }
 
@@ -465,6 +597,10 @@ impl RagConfig {
         ) else {
             anyhow::bail!("Port and top_k must be whole numbers.");
         };
+        if top_k == 0 {
+            // Under the fixed cut a zero would silently empty every result.
+            anyhow::bail!("top_k must be at least 1.");
+        }
 
         // "none" → semantic-only: clear the LLM entirely rather than writing a
         // keyless provider that would fail the boot key gate (adr/0022).
@@ -616,6 +752,37 @@ impl RagConfig {
         cfg.vector_db = vector_db;
         cfg.reranker.enabled = f.reranker_enabled.is_some();
         cfg.reranker.top_k = top_k;
+        cfg.reranker.context_cut = match f.context_cut.as_str() {
+            // Stale form post predating the field: keep the current setting.
+            "" => self.reranker.context_cut,
+            "fixed" => ContextCut::Fixed,
+            "score-range" => ContextCut::ScoreRange,
+            "largest-drop" => ContextCut::LargestDrop,
+            other => anyhow::bail!("Unknown context cut: {other}"),
+        };
+        cfg.reranker.score_range_cutoff = match f.score_range_cutoff.trim() {
+            "" => self.reranker.score_range_cutoff,
+            s => s
+                .parse::<f64>()
+                .ok()
+                .filter(|v| (0.0..=1.0).contains(v))
+                .ok_or_else(|| {
+                    anyhow::anyhow!("The score-range cutoff must be a number between 0 and 1.")
+                })?,
+        };
+        let window = |value: &str, current: usize| -> anyhow::Result<usize> {
+            match value.trim() {
+                "" => Ok(current),
+                s => s.parse::<usize>().ok().filter(|&v| v >= 1).ok_or_else(|| {
+                    anyhow::anyhow!("The drop window bounds must be whole numbers ≥ 1.")
+                }),
+            }
+        };
+        cfg.reranker.drop_window_min = window(&f.drop_window_min, self.reranker.drop_window_min)?;
+        cfg.reranker.drop_window_max = window(&f.drop_window_max, self.reranker.drop_window_max)?;
+        if cfg.reranker.drop_window_min > cfg.reranker.drop_window_max {
+            anyhow::bail!("The drop window minimum cannot exceed its maximum.");
+        }
         // Blank keeps the current token (the password field is never pre-filled).
         if !f.auth_token.is_empty() {
             cfg.auth.token = Some(f.auth_token);
@@ -739,6 +906,155 @@ provider = "gemini"
         assert_eq!(config.reranker.top_k, 20);
         // Auth is optional; absent by default.
         assert!(config.auth.token.is_none());
+    }
+
+    #[test]
+    fn reranker_provider_defaults_to_fastembed_and_parses_http() {
+        // Bare [reranker] (and legacy configs) keep the local cross-encoder.
+        let cfg: RagConfig =
+            toml::from_str("[server]\n[vector_db]\ntype = \"qdrant\"\n[reranker]\n").unwrap();
+        assert_eq!(cfg.reranker.provider, RerankerProvider::FastEmbed);
+        assert!(cfg.reranker.url.is_none());
+        assert_eq!(cfg.reranker.context_cut, ContextCut::ScoreRange);
+        assert_eq!(cfg.reranker.score_range_cutoff, 0.4);
+
+        let cfg: RagConfig = toml::from_str(
+            "[server]\n[vector_db]\ntype = \"qdrant\"\n[reranker]\nscore_range_cutoff = 0.5\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.reranker.score_range_cutoff, 0.5);
+
+        let cfg: RagConfig = toml::from_str(
+            "[server]\n[vector_db]\ntype = \"qdrant\"\n[reranker]\ncontext_cut = \"largest-drop\"\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.reranker.context_cut, ContextCut::LargestDrop);
+
+        let cfg: RagConfig = toml::from_str(
+            r#"
+[server]
+[vector_db]
+type = "qdrant"
+[reranker]
+type = "http"
+url = "https://api.cohere.com/v2"
+model = "rerank-v3.5"
+api_key = "k"
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.reranker.provider, RerankerProvider::Http);
+        assert_eq!(
+            cfg.reranker.url.as_deref(),
+            Some("https://api.cohere.com/v2")
+        );
+        assert_eq!(cfg.reranker.model.as_deref(), Some("rerank-v3.5"));
+        assert_eq!(cfg.reranker.api_key.as_deref(), Some("k"));
+    }
+
+    #[test]
+    fn web_form_edits_the_context_cut() {
+        let cfg: RagConfig =
+            toml::from_str("[server]\n[vector_db]\ntype = \"sqlite\"\n[reranker]\n").unwrap();
+
+        // The form sends the select's value.
+        let mut f = form("none", "");
+        f.context_cut = "largest-drop".into();
+        assert_eq!(
+            cfg.apply_form(f).unwrap().reranker.context_cut,
+            ContextCut::LargestDrop
+        );
+
+        // A stale form post predating the field (empty value) keeps the
+        // current setting instead of silently resetting it.
+        let cfg: RagConfig = toml::from_str(
+            "[server]\n[vector_db]\ntype = \"sqlite\"\n[reranker]\ncontext_cut = \"largest-drop\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.apply_form(form("none", ""))
+                .unwrap()
+                .reranker
+                .context_cut,
+            ContextCut::LargestDrop
+        );
+
+        // Garbage is a user-facing error, not a silent default.
+        let mut f = form("none", "");
+        f.context_cut = "biggest-elbow".into();
+        assert!(cfg.apply_form(f).is_err());
+    }
+
+    #[test]
+    fn web_form_edits_the_strategy_knobs() {
+        let cfg: RagConfig =
+            toml::from_str("[server]\n[vector_db]\ntype = \"sqlite\"\n[reranker]\n").unwrap();
+        assert_eq!(cfg.reranker.drop_window_min, 3);
+        assert_eq!(cfg.reranker.drop_window_max, 30);
+
+        let mut f = form("none", "");
+        f.context_cut = "fixed".into();
+        f.score_range_cutoff = "0.55".into();
+        f.drop_window_min = "5".into();
+        f.drop_window_max = "40".into();
+        let saved = cfg.apply_form(f).unwrap();
+        assert_eq!(saved.reranker.context_cut, ContextCut::Fixed);
+        assert_eq!(saved.reranker.score_range_cutoff, 0.55);
+        assert_eq!(saved.reranker.drop_window_min, 5);
+        assert_eq!(saved.reranker.drop_window_max, 40);
+
+        // Blanks (stale form) keep current values.
+        let kept = saved.apply_form(form("none", "")).unwrap();
+        assert_eq!(kept.reranker.score_range_cutoff, 0.55);
+        assert_eq!(kept.reranker.drop_window_min, 5);
+
+        // Out-of-range cutoff, zero top_k, and inverted window are
+        // user-facing errors.
+        let mut f = form("none", "");
+        f.score_range_cutoff = "1.5".into();
+        assert!(cfg.apply_form(f).is_err());
+        let mut f = form("none", "");
+        f.reranker_top_k = "0".into();
+        assert!(cfg.apply_form(f).is_err());
+        let mut f = form("none", "");
+        f.drop_window_min = "10".into();
+        f.drop_window_max = "5".into();
+        assert!(cfg.apply_form(f).is_err());
+    }
+
+    #[test]
+    fn web_form_save_carries_http_reranker_fields() {
+        // The form only edits enabled/top_k; provider fields are file-only
+        // knobs (like embedder prefixes) and must survive a web UI save.
+        let cfg: RagConfig = toml::from_str(
+            "[server]\n[vector_db]\ntype = \"sqlite\"\n[reranker]\ntype = \"http\"\nurl = \"https://api.jina.ai/v1\"\nmodel = \"jina-reranker-v2-base-multilingual\"\ncontext_cut = \"largest-drop\"\n",
+        )
+        .unwrap();
+        let saved = cfg.apply_form(form("none", "")).unwrap();
+        assert_eq!(saved.reranker.provider, RerankerProvider::Http);
+        assert_eq!(
+            saved.reranker.url.as_deref(),
+            Some("https://api.jina.ai/v1")
+        );
+        assert_eq!(saved.reranker.context_cut, ContextCut::LargestDrop);
+
+        // And the saved config must survive the serialize → reload cycle the
+        // web UI persists through (save_to), including the tagged type field.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("server.toml");
+        saved.save_to(&path).unwrap();
+        let reloaded = RagConfig::from_file(path).unwrap();
+        assert_eq!(reloaded.reranker.provider, RerankerProvider::Http);
+        assert_eq!(reloaded.reranker.context_cut, ContextCut::LargestDrop);
+        assert_eq!(
+            reloaded.reranker.url.as_deref(),
+            Some("https://api.jina.ai/v1")
+        );
+        assert_eq!(
+            reloaded.reranker.model.as_deref(),
+            Some("jina-reranker-v2-base-multilingual")
+        );
+        assert!(reloaded.reranker.api_key.is_none());
     }
 
     #[test]
@@ -885,6 +1201,7 @@ token = "secret-token"
         assert_eq!(reloaded.server.port, 9000);
         assert!(!reloaded.reranker.enabled);
         assert_eq!(reloaded.reranker.top_k, 33);
+        assert_eq!(reloaded.reranker.provider, RerankerProvider::FastEmbed);
         assert_eq!(reloaded.auth.token.as_deref(), Some("secret-token"));
         let llm = reloaded.llm.as_ref().expect("llm present");
         assert_eq!(llm.provider(), "claude");
@@ -954,6 +1271,10 @@ path = "/data/old_lance"
             qdrant_collection: String::new(),
             reranker_enabled: Some("on".into()),
             reranker_top_k: "20".into(),
+            context_cut: String::new(),
+            score_range_cutoff: String::new(),
+            drop_window_min: String::new(),
+            drop_window_max: String::new(),
             auth_token: String::new(),
         }
     }
