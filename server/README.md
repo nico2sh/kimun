@@ -244,7 +244,10 @@ server-rendered pages, no build step, no external assets. It offers:
 - a **config** page to edit the LLM (provider/model/key), reranker, auth token,
   and bind address — changes are **written to the config file and applied on the
   next restart** (the embedder, vector store, and LLM client are built at
-  startup, so the live instance is never mutated);
+  startup, so the live instance is never mutated). A **Restart server** button
+  applies them in place: the process drains in-flight requests, re-reads the
+  config file, and rebinds (adr/0028) — no service manager needed, and a
+  bind-address change moves the server to the new address;
 - a **collections** list with per-vault indexed-note counts;
 - a **jobs** view (auto-refreshing) for indexing/answer jobs;
 - a **test-query** box that runs a semantic search against a collection.

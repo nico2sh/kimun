@@ -36,6 +36,10 @@ pub struct AppState {
     /// collection can't double-insert chunks or race each other's updates.
     /// Queries never take this, so indexing does not block search/answer.
     pub index_lock: Arc<Mutex<()>>,
+    /// Signals the binary's restart loop (adr/0028): the web UI's Restart
+    /// button sends here, the serving loop drains and rebuilds from the saved
+    /// config file. `None` when no loop is wired (tests).
+    restart: Option<tokio::sync::mpsc::Sender<()>>,
 }
 
 impl AppState {
@@ -49,6 +53,7 @@ impl AppState {
             reranker_error: None,
             job_tracker: Arc::new(Mutex::new(JobTracker::new())),
             index_lock: Arc::new(Mutex::new(())),
+            restart: None,
         }
     }
 
@@ -82,6 +87,21 @@ impl AppState {
     pub fn with_reranker_error(mut self, error: Option<String>) -> Self {
         self.reranker_error = error;
         self
+    }
+
+    /// Wires the restart channel the binary's serving loop listens on.
+    pub fn with_restart(mut self, restart: tokio::sync::mpsc::Sender<()>) -> Self {
+        self.restart = Some(restart);
+        self
+    }
+
+    /// Requests an in-process restart: drain, re-read the config file, rebind
+    /// (adr/0028). `false` when no restart loop is wired or one is already in
+    /// flight — the caller should tell the operator to restart manually.
+    pub fn request_restart(&self) -> bool {
+        self.restart
+            .as_ref()
+            .is_some_and(|tx| tx.try_send(()).is_ok())
     }
 }
 
