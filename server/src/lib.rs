@@ -164,13 +164,14 @@ const EMBED_BATCH: usize = 100;
 /// Candidate pool pulled from the vector store per query, before dedup and
 /// reranking cut it down.
 const CANDIDATE_POOL: usize = 80;
-/// No-reranker `answer` context: a chunk makes the LLM context when its
-/// min-max-normalized score — `(s - s_min) / (s_max - s_min)` over the query's
-/// pool — is at least this. Normalized (not an absolute cutoff) because
-/// absolute cosine bands are embedder-specific; within one query all pool
-/// scores share a scale, so the pool's own spread defines what "relevant"
-/// looks like.
-const NO_RERANK_NORM_CUTOFF: f64 = 0.4;
+/// The score-range cut's default cutoff (config `score_range_cutoff`): a
+/// chunk survives when its min-max-normalized score —
+/// `(s - s_min) / (s_max - s_min)` over the query's ranked pool — is at
+/// least this, on both reranker paths (adr/0029). Normalized (not an
+/// absolute cutoff) because absolute score bands are model-specific; within
+/// one query all pool scores share a scale, so the pool's own spread defines
+/// what "relevant" looks like.
+const SCORE_RANGE_DEFAULT_CUTOFF: f64 = 0.4;
 /// [`score_range_cut`]'s robust range endpoints: the normalization range is
 /// measured between these percentiles of the pool's scores instead of the
 /// absolute min/max, so one stray chunk at either extreme cannot stretch the
@@ -188,7 +189,7 @@ const DROP_WINDOW_MAX: usize = 30;
 /// The query pipeline and its indexing half: the one door to everything the
 /// server does with a vault's content. Owns the embedder, the vector store, the
 /// optional LLM and reranker, and every policy — chunk splitting, embed
-/// batching, dedup, rerank-or-take, the top_k cut, the semantic-only gate. The
+/// batching, dedup, ranking, the context cut, the semantic-only gate. The
 /// store behind it is pure storage (see [`VectorStore`]).
 pub struct KimunRag {
     store: Arc<dyn VectorStore + Send + Sync>,
@@ -197,10 +198,11 @@ pub struct KimunRag {
     /// not (adr/0022).
     llm_client: Option<Arc<dyn LLMClient + Send + Sync>>,
     reranker: Option<Arc<dyn Reranker>>,
-    /// Which **context cut** sizes the no-reranker `answer` context (adr/0027).
+    /// Which **context cut** sizes both query surfaces, on both reranker
+    /// paths (adr/0029).
     context_cut: ContextCut,
     /// The score-range cut's normalized cutoff (config `score_range_cutoff`,
-    /// default [`NO_RERANK_NORM_CUTOFF`]).
+    /// default [`SCORE_RANGE_DEFAULT_CUTOFF`]).
     score_range_cutoff: f64,
     /// The largest-drop cut's note-position search window (config
     /// `drop_window_min`/`drop_window_max`, defaults [`DROP_WINDOW_MIN`] and
@@ -233,7 +235,7 @@ impl KimunRag {
             llm_client,
             reranker: None,
             context_cut: ContextCut::default(),
-            score_range_cutoff: NO_RERANK_NORM_CUTOFF,
+            score_range_cutoff: SCORE_RANGE_DEFAULT_CUTOFF,
             drop_window: (DROP_WINDOW_MIN, DROP_WINDOW_MAX),
             score_scale_warned: std::sync::atomic::AtomicBool::new(false),
             expected_fingerprint: None,
@@ -241,15 +243,16 @@ impl KimunRag {
         }
     }
 
-    /// Select the **context cut** for no-reranker answers (default:
-    /// [`ContextCut::ScoreRange`]).
+    /// Select the **context cut** that sizes search rows and answer contexts
+    /// on both reranker paths (default: [`ContextCut::ScoreRange`],
+    /// adr/0029).
     pub fn with_context_cut(mut self, context_cut: ContextCut) -> Self {
         self.context_cut = context_cut;
         self
     }
 
     /// Tune the score-range cut's normalized cutoff (default
-    /// [`NO_RERANK_NORM_CUTOFF`]); values outside `0.0..=1.0` are clamped and
+    /// [`SCORE_RANGE_DEFAULT_CUTOFF`]); values outside `0.0..=1.0` are clamped and
     /// non-finite values (a TOML `nan`) are ignored — `clamp` would propagate
     /// NaN and every score comparison would fail, silently emptying all
     /// results.
@@ -725,7 +728,7 @@ fn sanitize_scores(scored: Vec<(usize, f64)>) -> (Vec<(usize, f64)>, bool) {
 /// The [`ContextCut::ScoreRange`] cut. No count cut at all — scores are
 /// min-max normalized within the (already [`CANDIDATE_POOL`]-capped) pool and
 /// a chunk survives when its normalized score reaches `cutoff` (config
-/// `score_range_cutoff`, default [`NO_RERANK_NORM_CUTOFF`]): the pool's own
+/// `score_range_cutoff`, default [`SCORE_RANGE_DEFAULT_CUTOFF`]): the pool's own
 /// spread decides how many chunks
 /// are relevant, not a fixed `top_k`. The range is measured between the
 /// [`RANGE_LOW_PERCENTILE`]/[`RANGE_HIGH_PERCENTILE`] scores rather than the
@@ -818,9 +821,9 @@ fn largest_drop_cut_len(sorted: &[ScoredChunk], (window_min, window_max): (usize
 
 /// Deduplicates embedding results by FlattenedChunk (keeping the highest score
 /// per unique chunk) and returns them sorted best-first. Scores are similarities
-/// (higher = better) for both backends, so this ordering is what the
-/// no-reranker cuts ([`score_range_cut`], [`largest_drop_cut`], `search`'s
-/// note-dedup) rely on.
+/// (higher = better) for both backends, so when no reranker reorders the pool
+/// this ordering is what the context cuts ([`score_range_cut_len`],
+/// [`largest_drop_cut_len`], `search`'s note-dedup) rely on.
 fn deduplicate_chunks(results: Vec<ScoredChunk>) -> Vec<ScoredChunk> {
     let original_count = results.len();
     let mut dedup_map: HashMap<FlattenedChunk, f64> = HashMap::new();
@@ -841,8 +844,8 @@ fn deduplicate_chunks(results: Vec<ScoredChunk>) -> Vec<ScoredChunk> {
         .into_iter()
         .map(|(chunk, score)| (score, chunk))
         .collect();
-    // The HashMap destroyed the query's ordering; restore best-first so a
-    // no-reranker `take(top_k)` keeps the actual top matches.
+    // The HashMap destroyed the query's ordering; restore best-first — the
+    // prefix cuts assume it when no reranker reorders the pool.
     deduplicated.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
     debug!(
@@ -1186,7 +1189,7 @@ mod tests {
         // Min-max normalization only sees relative position, so negative
         // scores need no special casing: -0.1 normalizes to 1.0, -0.5 to 0.0.
         let pool: Vec<ScoredChunk> = vec![(-0.1, chunk("/a.md", "a")), (-0.5, chunk("/b.md", "b"))];
-        assert_eq!(score_range_cut_len(&pool, NO_RERANK_NORM_CUTOFF), 1);
+        assert_eq!(score_range_cut_len(&pool, SCORE_RANGE_DEFAULT_CUTOFF), 1);
 
         // Flat scores carry no signal to cut on — everything stays.
         let flat: Vec<ScoredChunk> = vec![
@@ -1194,9 +1197,9 @@ mod tests {
             (0.7, chunk("/b.md", "b")),
             (0.7, chunk("/c.md", "c")),
         ];
-        assert_eq!(score_range_cut_len(&flat, NO_RERANK_NORM_CUTOFF), 3);
+        assert_eq!(score_range_cut_len(&flat, SCORE_RANGE_DEFAULT_CUTOFF), 3);
 
-        assert_eq!(score_range_cut_len(&[], NO_RERANK_NORM_CUTOFF), 0);
+        assert_eq!(score_range_cut_len(&[], SCORE_RANGE_DEFAULT_CUTOFF), 0);
     }
 
     /// A pool of `n` chunks with the given scores, distinct paths.
@@ -1219,7 +1222,7 @@ mod tests {
         scores.extend([0.65; 15]);
         scores.extend([0.60, 0.05]);
         assert_eq!(
-            score_range_cut_len(&pool(&scores), NO_RERANK_NORM_CUTOFF),
+            score_range_cut_len(&pool(&scores), SCORE_RANGE_DEFAULT_CUTOFF),
             4
         );
 
