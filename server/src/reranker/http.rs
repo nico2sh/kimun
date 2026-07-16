@@ -193,7 +193,10 @@ mod tests {
         assert_eq!(headers["authorization"], "Bearer co-key");
         assert_eq!(body["model"], "rerank-v3.5");
         assert_eq!(body["query"], "q");
-        assert_eq!(body["documents"][0], "A\na", "same title+body shape the embedder indexes");
+        assert_eq!(
+            body["documents"][0], "A\na",
+            "same title+body shape the embedder indexes"
+        );
         assert!(
             body.get("top_n").is_none() && body.get("top_k").is_none(),
             "no server-side cut — providers disagree on the parameter name"
@@ -292,6 +295,9 @@ mod tests {
             .rerank("q", &[(0.9, chunk("A", "a")), (0.8, chunk("B", "b"))], 5)
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("1 scores for a 2-document request"));
+        assert!(
+            err.to_string()
+                .contains("1 scores for a 2-document request")
+        );
     }
 }

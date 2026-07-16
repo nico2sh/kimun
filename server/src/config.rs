@@ -334,6 +334,17 @@ pub enum ContextCut {
     LargestDrop,
 }
 
+impl ContextCut {
+    /// The config-file name of the algorithm (`score-range` | `largest-drop`)
+    /// — the web UI shows it next to the cut preview.
+    pub fn label(&self) -> &'static str {
+        match self {
+            ContextCut::ScoreRange => "score-range",
+            ContextCut::LargestDrop => "largest-drop",
+        }
+    }
+}
+
 /// Selects the reranker backend. Unlike the embedder this is not an invariant
 /// of the stored vectors — switching rerankers never invalidates the index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -852,7 +863,10 @@ api_key = "k"
         )
         .unwrap();
         assert_eq!(cfg.reranker.provider, RerankerProvider::Http);
-        assert_eq!(cfg.reranker.url.as_deref(), Some("https://api.cohere.com/v2"));
+        assert_eq!(
+            cfg.reranker.url.as_deref(),
+            Some("https://api.cohere.com/v2")
+        );
         assert_eq!(cfg.reranker.model.as_deref(), Some("rerank-v3.5"));
         assert_eq!(cfg.reranker.api_key.as_deref(), Some("k"));
     }
@@ -877,7 +891,10 @@ api_key = "k"
         )
         .unwrap();
         assert_eq!(
-            cfg.apply_form(form("none", "")).unwrap().reranker.context_cut,
+            cfg.apply_form(form("none", ""))
+                .unwrap()
+                .reranker
+                .context_cut,
             ContextCut::LargestDrop
         );
 
@@ -897,7 +914,10 @@ api_key = "k"
         .unwrap();
         let saved = cfg.apply_form(form("none", "")).unwrap();
         assert_eq!(saved.reranker.provider, RerankerProvider::Http);
-        assert_eq!(saved.reranker.url.as_deref(), Some("https://api.jina.ai/v1"));
+        assert_eq!(
+            saved.reranker.url.as_deref(),
+            Some("https://api.jina.ai/v1")
+        );
         assert_eq!(saved.reranker.context_cut, ContextCut::LargestDrop);
 
         // And the saved config must survive the serialize → reload cycle the
@@ -908,7 +928,10 @@ api_key = "k"
         let reloaded = RagConfig::from_file(path).unwrap();
         assert_eq!(reloaded.reranker.provider, RerankerProvider::Http);
         assert_eq!(reloaded.reranker.context_cut, ContextCut::LargestDrop);
-        assert_eq!(reloaded.reranker.url.as_deref(), Some("https://api.jina.ai/v1"));
+        assert_eq!(
+            reloaded.reranker.url.as_deref(),
+            Some("https://api.jina.ai/v1")
+        );
         assert_eq!(
             reloaded.reranker.model.as_deref(),
             Some("jina-reranker-v2-base-multilingual")

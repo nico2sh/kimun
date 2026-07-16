@@ -78,6 +78,18 @@ pub struct Answer {
     pub sources: Vec<ScoredChunk>,
 }
 
+/// Preview of where the **context cut** (adr/0027) would slice an answer's
+/// LLM context on a query's pool — the web UI's test-query box renders it so
+/// the cut is observable against real vault data. Only produced when no
+/// reranker is active.
+pub struct CutPreview {
+    /// Chunks retrieved into the candidate pool.
+    pub pool_chunks: usize,
+    /// The chunks the configured cut would keep as LLM context; displayed
+    /// search rows are marked by membership.
+    pub context: std::collections::HashSet<FlattenedChunk>,
+}
+
 /// The server's domain error: every way a request can fail, each variant
 /// carrying its meaning rather than a status code. The HTTP mapping lives in
 /// one place (`IntoResponse` in the handlers module): `Validation` → 400,
@@ -282,8 +294,42 @@ impl KimunRag {
         query: &str,
         top_k: usize,
     ) -> Result<Vec<ScoredChunk>, RagError> {
+        Ok(self.search_impl(collection, query, top_k, false).await?.0)
+    }
+
+    /// [`Self::search`] plus a [`CutPreview`] of where the **context cut**
+    /// would slice an answer's LLM context on the same pool (adr/0027) — the
+    /// web UI's test-query box renders it. The preview is `None` whenever a
+    /// reranker is active: answers then use exactly `top_k` chunks and no cut
+    /// runs.
+    pub async fn search_with_cut_preview(
+        &self,
+        collection: &CollectionKey,
+        query: &str,
+        top_k: usize,
+    ) -> Result<(Vec<ScoredChunk>, Option<CutPreview>), RagError> {
+        self.search_impl(collection, query, top_k, true).await
+    }
+
+    async fn search_impl(
+        &self,
+        collection: &CollectionKey,
+        query: &str,
+        top_k: usize,
+        want_preview: bool,
+    ) -> Result<(Vec<ScoredChunk>, Option<CutPreview>), RagError> {
         let raw = self.retrieve(collection, query).await?;
         let pool_size = raw.len();
+        // Computed only on request (the preview clones the pool) and only
+        // when it is true: with a reranker there is no cut to preview.
+        let preview = (want_preview && self.reranker.is_none()).then(|| CutPreview {
+            pool_chunks: pool_size,
+            context: self
+                .cut_context(raw.clone())
+                .into_iter()
+                .map(|(_, chunk)| chunk)
+                .collect(),
+        });
         let ranked = match &self.reranker {
             // A mid-query reranker failure (endpoint 503, network blip) must
             // not fail the request: the vector-ranked pool is already in hand,
@@ -300,7 +346,7 @@ impl KimunRag {
             // `deduplicate_chunks` already sorted best-first.
             None => raw,
         };
-        Ok(dedupe_by_note(ranked, top_k))
+        Ok((dedupe_by_note(ranked, top_k), preview))
     }
 
     /// Question-answering: retrieves the best CHUNKS as context (the LLM wants
@@ -962,7 +1008,10 @@ mod tests {
             ],
             ..Default::default()
         };
-        let answer = rag(store, true).answer(&key("vault-1"), "q", 2).await.unwrap();
+        let answer = rag(store, true)
+            .answer(&key("vault-1"), "q", 2)
+            .await
+            .unwrap();
         assert_eq!(answer.sources.len(), 1);
         assert_eq!(answer.sources[0].1.doc_path, "/a.md");
     }
@@ -971,10 +1020,7 @@ mod tests {
     fn score_range_cut_is_shift_invariant_and_keeps_flat_pools_whole() {
         // Min-max normalization only sees relative position, so negative
         // scores need no special casing: -0.1 normalizes to 1.0, -0.5 to 0.0.
-        let pool: Vec<ScoredChunk> = vec![
-            (-0.1, chunk("/a.md", "a")),
-            (-0.5, chunk("/b.md", "b")),
-        ];
+        let pool: Vec<ScoredChunk> = vec![(-0.1, chunk("/a.md", "a")), (-0.5, chunk("/b.md", "b"))];
         assert_eq!(score_range_cut(pool).len(), 1);
 
         // Flat scores carry no signal to cut on — everything stays.
@@ -1066,6 +1112,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn search_cut_preview_marks_the_answer_context() {
+        // No reranker: the preview says how many pooled chunks an answer
+        // would keep, and which displayed rows are part of that context.
+        let searcher = rag(section_heavy_store(), false);
+        let (hits, preview) = searcher
+            .search_with_cut_preview(&key("v"), "q", 10)
+            .await
+            .unwrap();
+        let preview = preview.expect("no reranker → preview present");
+        assert_eq!(preview.pool_chunks, 5);
+        assert_eq!(
+            preview.context.len(),
+            3,
+            "score-range keeps 0.99/0.98/0.97 of the 0.99..0.70 pool"
+        );
+        // Displayed rows are each note's best chunk: only /a.md's is in the
+        // would-be context; /b.md (0.80) and /c.md (0.70) fall below the cut.
+        assert!(preview.context.contains(&hits[0].1));
+        assert!(!preview.context.contains(&hits[1].1));
+
+        // With a reranker attached, answers use exactly top_k — no preview.
+        let reranked = rag(section_heavy_store(), false).with_reranker(Arc::new(FailingReranker));
+        let (_, preview) = reranked
+            .search_with_cut_preview(&key("v"), "q", 10)
+            .await
+            .unwrap();
+        assert!(preview.is_none());
+    }
+
+    #[tokio::test]
     async fn answer_uses_the_configured_context_cut() {
         // Scores where the two algorithms disagree: score-range keeps 2
         // (min 0.84 / max 1.0 → cutoff 0.92, so 1.00 and 0.93 clear it),
@@ -1079,13 +1155,21 @@ mod tests {
         };
         let default_cut = rag(store(), true);
         assert_eq!(
-            default_cut.answer(&key("v"), "q", 2).await.unwrap().sources.len(),
+            default_cut
+                .answer(&key("v"), "q", 2)
+                .await
+                .unwrap()
+                .sources
+                .len(),
             2,
             "default is score-range"
         );
 
         let elbow = rag(store(), true).with_context_cut(ContextCut::LargestDrop);
-        assert_eq!(elbow.answer(&key("v"), "q", 2).await.unwrap().sources.len(), 4);
+        assert_eq!(
+            elbow.answer(&key("v"), "q", 2).await.unwrap().sources.len(),
+            4
+        );
     }
 
     #[tokio::test]

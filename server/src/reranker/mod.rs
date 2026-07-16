@@ -39,7 +39,9 @@ pub async fn from_config(cfg: &RerankerConfig) -> anyhow::Result<Arc<dyn Reranke
                 .url
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("[reranker] type = \"http\" needs a url"))?;
-            Ok(Arc::new(HttpReranker::new(url, cfg.model.clone(), cfg.api_key.clone()).await?))
+            Ok(Arc::new(
+                HttpReranker::new(url, cfg.model.clone(), cfg.api_key.clone()).await?,
+            ))
         }
     }
 }
