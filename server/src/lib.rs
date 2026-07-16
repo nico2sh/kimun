@@ -252,18 +252,19 @@ impl KimunRag {
     }
 
     /// Tune the score-range cut's normalized cutoff (default
-    /// [`SCORE_RANGE_DEFAULT_CUTOFF`]); values outside `0.0..=1.0` are clamped and
-    /// non-finite values (a TOML `nan`) are ignored — `clamp` would propagate
-    /// NaN and every score comparison would fail, silently emptying all
-    /// results.
+    /// [`SCORE_RANGE_DEFAULT_CUTOFF`]). Values outside `0.0..=1.0` are
+    /// clamped — including a TOML `inf`/`-inf`, which land on 1.0/0.0 (the
+    /// strictest/loosest cut, matching what such configs always did). Only
+    /// NaN is ignored: `clamp` would propagate it and every score comparison
+    /// would fail, silently emptying all results.
     pub fn with_score_range_cutoff(mut self, cutoff: f64) -> Self {
-        if cutoff.is_finite() {
-            self.score_range_cutoff = cutoff.clamp(0.0, 1.0);
-        } else {
+        if cutoff.is_nan() {
             log::warn!(
-                "Ignoring non-finite score_range_cutoff; keeping {}",
+                "Ignoring NaN score_range_cutoff; keeping {}",
                 self.score_range_cutoff
             );
+        } else {
+            self.score_range_cutoff = cutoff.clamp(0.0, 1.0);
         }
         self
     }
@@ -1368,10 +1369,21 @@ mod tests {
     async fn non_finite_cutoff_is_ignored_not_poisonous() {
         // TOML accepts `nan`; a plain clamp would propagate it and every
         // score comparison would fail → all queries silently empty. The
-        // builder ignores non-finite values and keeps the default.
+        // builder ignores NaN and keeps the default.
         let ragged = rag(section_heavy_store(), false).with_score_range_cutoff(f64::NAN);
         let out = ragged.search(&key("v"), "q", 10).await.unwrap();
         assert_eq!(out.len(), 1, "default cutoff still applies");
+
+        // ±inf clamp to 1.0/0.0 — the strictest/loosest cut, preserving what
+        // a pre-existing `score_range_cutoff = inf` config always meant
+        // rather than silently reverting it to the default.
+        let strict = rag(section_heavy_store(), false).with_score_range_cutoff(f64::INFINITY);
+        let out = strict.search(&key("v"), "q", 10).await.unwrap();
+        assert_eq!(out.len(), 1, "inf → cutoff 1.0 keeps only the range top");
+
+        let loose = rag(section_heavy_store(), false).with_score_range_cutoff(f64::NEG_INFINITY);
+        let out = loose.search(&key("v"), "q", 10).await.unwrap();
+        assert_eq!(out.len(), 3, "-inf → cutoff 0.0 keeps the whole pool");
     }
 
     #[tokio::test]
