@@ -289,8 +289,8 @@ pub struct RerankerConfig {
     pub enabled: bool,
     /// Default number of results returned by search/answer, overridable per
     /// request via `context_size`. One exception: `answer` without a reranker
-    /// ignores it — the LLM context size is decided by the pool's normalized
-    /// similarity scores (chunks in the top half of the score range).
+    /// ignores it — the LLM context size is decided by the pool's similarity
+    /// scores via the selected [`Self::context_cut`] algorithm (adr/0027).
     #[serde(default = "default_reranker_top_k")]
     pub top_k: usize,
     /// How reranking runs: the local fastembed cross-encoder (default, model
