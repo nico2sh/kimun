@@ -337,6 +337,8 @@ input::placeholder{color:var(--muted)}
 .check{display:flex;align-items:center;gap:var(--sp-sm)}.check input{width:auto}
 button{margin-top:var(--sp-xl);padding:var(--sp-sm) var(--sp-xl);border:0;border-radius:6px;background:var(--accent);color:oklch(24% .03 85);font:700 .875rem var(--mono);cursor:pointer}
 button:hover{background:oklch(88% .13 89)}
+button.danger{background:var(--err);color:oklch(20% .05 30)}
+button.danger:hover{background:oklch(66% .14 30)}
 .flash{padding:var(--sp-md) var(--sp-lg);border-radius:6px;margin:var(--sp-lg) 0;font-size:.9375rem}
 .flash.ok{background:oklch(76% .1 145/.12);color:var(--ok)}
 .flash.err{background:oklch(74% .12 30/.12);color:var(--err)}
@@ -738,7 +740,7 @@ fn config_markup(state: &AppState, c: &RagConfig, flash: Option<Markup>) -> Mark
         // config file right now (web-saved or hand-edited), so it is useful
         // even when the path is not writable from here.
         form method="post" action="/restart" {
-            button type="submit" { "Restart server now" }
+            button .danger type="submit" { "Restart server now" }
             p .muted {
                 "Drains in-flight requests, reloads the config file, and rebinds — every "
                 "setting applies, including the bind address. The server is briefly "
@@ -1038,12 +1040,12 @@ struct CutSummary {
 }
 
 /// Hits plus the wall-clock milliseconds the search took — the same duration
-/// the API reports as `query_time_ms` — plus the context-cut preview when no
-/// reranker is active.
+/// the API reports as `query_time_ms` — plus the context-cut preview, on
+/// both reranker paths (adr/0029).
 type SearchOutcome = Result<(Vec<(f64, String, String)>, u64, Option<CutSummary>), String>;
 
 /// The same pipeline the API's `/api/embeddings` runs — the test query shows
-/// exactly what clients get (one row per note, top_k notes).
+/// exactly what clients get: one row per note surviving the context cut.
 async fn run_search(state: &AppState, vault_id: &str, query: &str) -> SearchOutcome {
     let Some(rag) = state.rag.as_ref() else {
         return Err("Server unconfigured — configure an embedder first.".into());
@@ -1088,7 +1090,7 @@ fn query_markup(
 ) -> Markup {
     let body = html! {
         h1 { "Test query" }
-        p .muted { "Runs the same pipeline clients get from the API — one row per note, top_k notes." }
+        p .muted { "Runs the same pipeline clients get from the API — one row per surviving note. The configured context cut decides how many: a fixed count under \"fixed\", the pool's score shape under the adaptive cuts." }
         @if state.rag.is_none() {
             p .flash.err {
                 "Server unconfigured — configure an embedder in "
