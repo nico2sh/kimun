@@ -78,10 +78,10 @@ pub struct Answer {
     pub sources: Vec<ScoredChunk>,
 }
 
-/// Preview of where the **context cut** (adr/0027) would slice an answer's
-/// LLM context on a query's pool — the web UI's test-query box renders it so
-/// the cut is observable against real vault data. Only produced when no
-/// reranker is active.
+/// Preview of where the **context cut** slices an answer's LLM context on a
+/// query's ranked pool — the web UI's test-query box renders it so the cut
+/// is observable against real vault data, with or without a reranker
+/// (adr/0029).
 pub struct CutPreview {
     /// Chunks retrieved into the candidate pool.
     pub pool_chunks: usize,
