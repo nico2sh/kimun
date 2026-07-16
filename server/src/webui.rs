@@ -693,10 +693,10 @@ fn config_markup(state: &AppState, c: &RagConfig, flash: Option<Markup>) -> Mark
                     label { "Answer context cut (when no reranker is active)" }
                     select name="context_cut" {
                         option value="score-range" selected[c.reranker.context_cut == crate::config::ContextCut::ScoreRange] {
-                            "score-range — keep the top half of the normalized score range"
+                            "score-range — keep chunks at or above 0.4 of the normalized score range"
                         }
                         option value="largest-drop" selected[c.reranker.context_cut == crate::config::ContextCut::LargestDrop] {
-                            "largest-drop — cut at the biggest relative gap between consecutive scores"
+                            "largest-drop — cut at the biggest relative gap between consecutive note scores"
                         }
                     }
                     p .muted { "Sizes the LLM context for answers from the pool's score shape when no reranker runs — top_k does not apply there. The reranker backend (local model or HTTP endpoint) is a file-only setting; a save here keeps it." }
@@ -1020,6 +1020,9 @@ struct CutSummary {
     /// an already-listed note — the rows show only each note's best one).
     context_chunks: usize,
     pool_chunks: usize,
+    /// Last kept / first dropped pool score — where the cut actually landed,
+    /// which the note-deduped rows usually can't show.
+    boundary: Option<(f64, f64)>,
     algorithm: &'static str,
 }
 
@@ -1052,6 +1055,7 @@ async fn run_search(state: &AppState, vault_id: &str, query: &str) -> SearchOutc
             .count(),
         context_chunks: p.context.len(),
         pool_chunks: p.pool_chunks,
+        boundary: p.boundary,
         algorithm: state.config.reranker.context_cut.label(),
     });
     Ok((
@@ -1103,8 +1107,14 @@ fn query_markup(
                         @if let Some(cut) = &cut {
                             p .muted {
                                 "Answer-context preview (" (cut.algorithm) "): the cut keeps "
-                                (cut.context_chunks) " of " (cut.pool_chunks)
-                                " pooled chunks — rows above the marker contribute to an answer's LLM context."
+                                (cut.context_chunks) " of " (cut.pool_chunks) " pooled chunks"
+                                @if cut.context_chunks > cut.rows_in_context {
+                                    (format!(" ({} are extra sections of listed notes)", cut.context_chunks - cut.rows_in_context))
+                                }
+                                @if let Some((last_kept, first_dropped)) = cut.boundary {
+                                    (format!(" — pool cut at {last_kept:.3} → {first_dropped:.3}"))
+                                }
+                                ". Rows above the marker contribute to an answer's LLM context; the pool interleaves every section of every note, so the cut boundary usually falls between scores no row shows."
                             }
                         }
                         @for (i, (score, path, text)) in hits.iter().enumerate() {

@@ -137,9 +137,10 @@ See `config.example.toml` for the annotated template. Sections:
   overridable per request via `context_size`; `answer` without a reranker
   ignores it — see `context_cut`), `context_cut` (how the no-reranker answer
   context is sized from the pool's score shape: `score-range`, the default,
-  keeps the top half of the min-max-normalized score range; `largest-drop`
-  cuts at the biggest relative score gap found at pool positions 3–30 —
-  adr/0027), and
+  keeps chunks at or above 0.4 of the min-max-normalized score range;
+  `largest-drop` cuts at the biggest relative gap between distinct notes'
+  best scores at note positions 3–30, keeping the gap-closing note and every
+  chunk above it — adr/0027), and
   a backend:
   - `type = "fastembed"` (default) — local cross-encoder, model downloaded
     from Hugging Face on first start regardless of the `[embedder]` choice.

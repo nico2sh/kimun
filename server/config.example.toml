@@ -136,12 +136,13 @@ top_k = 20
 
 # Context cut algorithm for answer when no reranker is active (adr/0027):
 #   "score-range"  (default) — similarity scores are min-max normalized within
-#                   the retrieved pool; chunks in the top half of the range
+#                   the retrieved pool; chunks at or above 0.4 of the range
 #                   join the LLM context.
 #   "largest-drop" — cut at the biggest relative drop between consecutive
-#                   scores ((s[i] - s[i+1]) / s[i]), searched at positions
-#                   3-30 of the (descending) pool; no drop found there means
-#                   no cut.
+#                   NOTE scores (each note's best chunk,
+#                   (s[i] - s[i+1]) / s[i]), searched at note positions 3-30;
+#                   keeps the gap-closing note and every pooled chunk at or
+#                   above its score. No drop found there means no cut.
 # Flat scores mean no relevance boundary: neither algorithm cuts.
 # context_cut = "score-range"
 
