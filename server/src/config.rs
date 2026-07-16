@@ -287,10 +287,10 @@ impl LlmConfig {
 pub struct RerankerConfig {
     #[serde(default = "default_reranker_enabled")]
     pub enabled: bool,
-    /// Default number of results returned by search/answer, overridable per
-    /// request via `context_size`. One exception: `answer` without a reranker
-    /// ignores it — the LLM context size is decided by the pool's similarity
-    /// scores via the selected [`Self::context_cut`] algorithm (adr/0027).
+    /// The `fixed` context cut's size: search notes / answer chunks,
+    /// overridable per request via `context_size`. Ignored by the adaptive
+    /// cuts (`score-range`, `largest-drop`) — there the pool's score shape
+    /// decides (adr/0029).
     #[serde(default = "default_reranker_top_k")]
     pub top_k: usize,
     /// How reranking runs: the local fastembed cross-encoder (default, model
@@ -311,42 +311,56 @@ pub struct RerankerConfig {
     /// Bearer token for `type = "http"` endpoints that need one.
     #[serde(default)]
     pub api_key: Option<String>,
-    /// Which **context cut** sizes the LLM context on `answer` when no
-    /// reranker is active (with a reranker, exactly `top_k` chunks are used
-    /// and no cut runs). Editable from the web UI Config page.
+    /// Which **context cut** sizes both retrieval surfaces (adr/0029):
+    /// `search` shows the notes whose best chunk survives it, `answer` feeds
+    /// the chunks that survive it — with or without a reranker. Editable from
+    /// the web UI Config page.
     #[serde(default)]
     pub context_cut: ContextCut,
     /// The score-range cut's normalized cutoff in `0.0..=1.0` (default 0.4):
     /// chunks at or above this fraction of the pool's (percentile-measured)
-    /// score range join the LLM context. File-only tuning knob, carried by
-    /// web UI saves; values outside the range are clamped.
+    /// score range survive. Ignored by the other cuts; values outside the
+    /// range are clamped.
     #[serde(default = "default_score_range_cutoff")]
     pub score_range_cutoff: f64,
+    /// The largest-drop cut's search window: the gap is looked for at note
+    /// positions `drop_window_min..=drop_window_max` (defaults 3 and 30).
+    /// Ignored by the other cuts; sanitized to `min ≥ 1` and `max ≥ min`.
+    #[serde(default = "default_drop_window_min")]
+    pub drop_window_min: usize,
+    #[serde(default = "default_drop_window_max")]
+    pub drop_window_max: usize,
 }
 
-/// The no-reranker context cut algorithm — how many retrieved chunks become
-/// the LLM context on `answer`, sized by the pool's score shape rather than a
-/// fixed count (see `adr/0027`).
+/// The context cut algorithm — how many retrieved chunks/notes each query
+/// surface returns, applied with or without a reranker (adr/0029). `fixed`
+/// counts; the other two read the pool's score shape (adr/0027).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ContextCut {
-    /// Min-max normalize the pool's scores; chunks at or above 0.4 of the
-    /// range survive. The range is measured between the pool's 5th/95th
-    /// score percentiles so outlier chunks can't stretch it.
+    /// Exactly `top_k` results — search notes / answer chunks — the classic
+    /// count cut.
+    Fixed,
+    /// Min-max normalize the pool's scores; chunks at or above
+    /// `score_range_cutoff` (default 0.4) of the range survive. The range is
+    /// measured between the pool's 5th/95th score percentiles so outlier
+    /// chunks can't stretch it.
     #[default]
     ScoreRange,
     /// Cut at the biggest relative drop between consecutive NOTE scores —
     /// each distinct note's best chunk, `(s[i] − s[i+1]) / s[i]` — searched
-    /// within a fixed position window; every chunk at or above the
-    /// gap-closing note's score is kept. No drop found means no cut.
+    /// within the `drop_window_min..=drop_window_max` note positions; every
+    /// chunk at or above the gap-closing note's score is kept. No drop found
+    /// means no cut.
     LargestDrop,
 }
 
 impl ContextCut {
-    /// The config-file name of the algorithm (`score-range` | `largest-drop`)
-    /// — the web UI shows it next to the cut preview.
+    /// The config-file name of the algorithm (`fixed` | `score-range` |
+    /// `largest-drop`) — the web UI shows it next to the cut preview.
     pub fn label(&self) -> &'static str {
         match self {
+            ContextCut::Fixed => "fixed",
             ContextCut::ScoreRange => "score-range",
             ContextCut::LargestDrop => "largest-drop",
         }
@@ -447,6 +461,14 @@ fn default_score_range_cutoff() -> f64 {
     0.4
 }
 
+fn default_drop_window_min() -> usize {
+    3
+}
+
+fn default_drop_window_max() -> usize {
+    30
+}
+
 /// A zero-config default: SQLite under the data dir, default `127.0.0.1`
 /// bind, no embedder (unconfigured, adr/0024), no LLM, no auth. This is what a
 /// first run with no config file boots from and writes to disk (adr/0022).
@@ -472,6 +494,8 @@ impl Default for RagConfig {
                 api_key: None,
                 context_cut: ContextCut::default(),
                 score_range_cutoff: default_score_range_cutoff(),
+                drop_window_min: default_drop_window_min(),
+                drop_window_max: default_drop_window_max(),
             },
             auth: AuthConfig::default(),
         }
@@ -540,10 +564,19 @@ pub struct ConfigForm {
     #[serde(default)]
     pub reranker_enabled: Option<String>,
     pub reranker_top_k: String,
-    /// `score-range` | `largest-drop`. Defaulted (empty = keep the current
-    /// setting) so form posts predating the field still deserialize.
+    /// `fixed` | `score-range` | `largest-drop`. Defaulted (empty = keep the
+    /// current setting) so form posts predating the field still deserialize.
     #[serde(default)]
     pub context_cut: String,
+    /// Strategy knobs; blank keeps the current value (fields hidden for a
+    /// non-selected strategy still post, so blanks only come from stale
+    /// forms predating them).
+    #[serde(default)]
+    pub score_range_cutoff: String,
+    #[serde(default)]
+    pub drop_window_min: String,
+    #[serde(default)]
+    pub drop_window_max: String,
     pub auth_token: String,
 }
 
@@ -718,10 +751,34 @@ impl RagConfig {
         cfg.reranker.context_cut = match f.context_cut.as_str() {
             // Stale form post predating the field: keep the current setting.
             "" => self.reranker.context_cut,
+            "fixed" => ContextCut::Fixed,
             "score-range" => ContextCut::ScoreRange,
             "largest-drop" => ContextCut::LargestDrop,
             other => anyhow::bail!("Unknown context cut: {other}"),
         };
+        cfg.reranker.score_range_cutoff = match f.score_range_cutoff.trim() {
+            "" => self.reranker.score_range_cutoff,
+            s => s
+                .parse::<f64>()
+                .ok()
+                .filter(|v| (0.0..=1.0).contains(v))
+                .ok_or_else(|| {
+                    anyhow::anyhow!("The score-range cutoff must be a number between 0 and 1.")
+                })?,
+        };
+        let window = |value: &str, current: usize| -> anyhow::Result<usize> {
+            match value.trim() {
+                "" => Ok(current),
+                s => s.parse::<usize>().ok().filter(|&v| v >= 1).ok_or_else(|| {
+                    anyhow::anyhow!("The drop window bounds must be whole numbers ≥ 1.")
+                }),
+            }
+        };
+        cfg.reranker.drop_window_min = window(&f.drop_window_min, self.reranker.drop_window_min)?;
+        cfg.reranker.drop_window_max = window(&f.drop_window_max, self.reranker.drop_window_max)?;
+        if cfg.reranker.drop_window_min > cfg.reranker.drop_window_max {
+            anyhow::bail!("The drop window minimum cannot exceed its maximum.");
+        }
         // Blank keeps the current token (the password field is never pre-filled).
         if !f.auth_token.is_empty() {
             cfg.auth.token = Some(f.auth_token);
@@ -921,6 +978,39 @@ api_key = "k"
         // Garbage is a user-facing error, not a silent default.
         let mut f = form("none", "");
         f.context_cut = "biggest-elbow".into();
+        assert!(cfg.apply_form(f).is_err());
+    }
+
+    #[test]
+    fn web_form_edits_the_strategy_knobs() {
+        let cfg: RagConfig =
+            toml::from_str("[server]\n[vector_db]\ntype = \"sqlite\"\n[reranker]\n").unwrap();
+        assert_eq!(cfg.reranker.drop_window_min, 3);
+        assert_eq!(cfg.reranker.drop_window_max, 30);
+
+        let mut f = form("none", "");
+        f.context_cut = "fixed".into();
+        f.score_range_cutoff = "0.55".into();
+        f.drop_window_min = "5".into();
+        f.drop_window_max = "40".into();
+        let saved = cfg.apply_form(f).unwrap();
+        assert_eq!(saved.reranker.context_cut, ContextCut::Fixed);
+        assert_eq!(saved.reranker.score_range_cutoff, 0.55);
+        assert_eq!(saved.reranker.drop_window_min, 5);
+        assert_eq!(saved.reranker.drop_window_max, 40);
+
+        // Blanks (stale form) keep current values.
+        let kept = saved.apply_form(form("none", "")).unwrap();
+        assert_eq!(kept.reranker.score_range_cutoff, 0.55);
+        assert_eq!(kept.reranker.drop_window_min, 5);
+
+        // Out-of-range cutoff and inverted window are user-facing errors.
+        let mut f = form("none", "");
+        f.score_range_cutoff = "1.5".into();
+        assert!(cfg.apply_form(f).is_err());
+        let mut f = form("none", "");
+        f.drop_window_min = "10".into();
+        f.drop_window_max = "5".into();
         assert!(cfg.apply_form(f).is_err());
     }
 
@@ -1174,6 +1264,9 @@ path = "/data/old_lance"
             reranker_enabled: Some("on".into()),
             reranker_top_k: "20".into(),
             context_cut: String::new(),
+            score_range_cutoff: String::new(),
+            drop_window_min: String::new(),
+            drop_window_max: String::new(),
             auth_token: String::new(),
         }
     }

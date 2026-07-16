@@ -37,10 +37,9 @@ pub struct QueryRequest {
     pub vault_id: String,
     pub query: String,
     /// Overrides the server's default result count when set; otherwise
-    /// `reranker.top_k` from config is used. One exception: `answer` with no
-    /// active reranker ignores it — the configured context cut sizes the LLM
-    /// context from the pool's score shape instead (adr/0027). `search`
-    /// always honors it.
+    /// `reranker.top_k` from config is used. Only meaningful under the
+    /// `fixed` context cut — the adaptive cuts size results from the pool's
+    /// score shape on both surfaces and ignore it (adr/0029).
     #[serde(default)]
     pub context_size: Option<ContextSize>,
 }

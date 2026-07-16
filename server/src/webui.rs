@@ -680,26 +680,47 @@ fn config_markup(state: &AppState, c: &RagConfig, flash: Option<Markup>) -> Mark
             section .group {
                 h2 { "Reranker" }
                 div .check { input type="checkbox" name="reranker_enabled" checked[c.reranker.enabled]; label style="margin:0" { "Enabled" } }
-                label { "Default results (top_k)" }
-                input type="number" name="reranker_top_k" value=(c.reranker.top_k);
-                noscript {
-                    p .muted { "(Without JavaScript all fields are shown: the context cut only applies while the reranker is disabled.)" }
-                }
-                // Shown only while the checkbox is unchecked (page script):
-                // the cut sizes no-reranker answers, so with reranking on it
-                // is inert. Hidden ≠ unsubmitted — the value still posts, so
-                // a save with reranking enabled keeps it.
-                div #context-cut-group {
-                    label { "Answer context cut (when no reranker is active)" }
-                    select name="context_cut" {
-                        option value="score-range" selected[c.reranker.context_cut == crate::config::ContextCut::ScoreRange] {
-                            "score-range — keep chunks at or above 0.4 of the normalized score range"
-                        }
-                        option value="largest-drop" selected[c.reranker.context_cut == crate::config::ContextCut::LargestDrop] {
-                            "largest-drop — cut at the biggest relative gap between consecutive note scores"
-                        }
+                p .muted { "The reranker backend (local model or HTTP endpoint) is a file-only setting; a save here keeps it." }
+            }
+            section .group {
+                h2 { "Context cut" }
+                label { "Strategy" }
+                select name="context_cut" {
+                    option value="fixed" data-groups="fixed" selected[c.reranker.context_cut == crate::config::ContextCut::Fixed] {
+                        "fixed — exactly top_k results, the classic count cut"
                     }
-                    p .muted { "Sizes the LLM context for answers from the pool's score shape when no reranker runs — top_k does not apply there. The reranker backend (local model or HTTP endpoint) is a file-only setting; a save here keeps it." }
+                    option value="score-range" data-groups="score-range" selected[c.reranker.context_cut == crate::config::ContextCut::ScoreRange] {
+                        "score-range — keep chunks above a cutoff of the normalized score range"
+                    }
+                    option value="largest-drop" data-groups="largest-drop" selected[c.reranker.context_cut == crate::config::ContextCut::LargestDrop] {
+                        "largest-drop — cut at the biggest relative gap between consecutive note scores"
+                    }
+                }
+                p .muted { "Sizes both query surfaces from the ranked pool — search shows the notes that survive the cut, answers feed the surviving chunks to the LLM — with or without reranking." }
+                noscript {
+                    p .muted { "(Without JavaScript all knobs are shown; only the selected strategy's applies.)" }
+                }
+                // Hidden knobs still post their values, so a save never
+                // resets a non-selected strategy's tuning.
+                div data-cut="fixed" {
+                    label { "Results (top_k) — search notes / answer chunks" }
+                    input type="number" name="reranker_top_k" value=(c.reranker.top_k);
+                    p .muted { "Per-request context_size (small/medium/large) overrides this under fixed only." }
+                }
+                div data-cut="score-range" {
+                    label { "Normalized cutoff (0..1)" }
+                    input type="number" name="score_range_cutoff" step="0.05" min="0" max="1" value=(c.reranker.score_range_cutoff);
+                    p .muted { "Higher = stricter. The range is measured between the pool's 5th/95th score percentiles." }
+                }
+                div .row data-cut="largest-drop" {
+                    div {
+                        label { "Gap search window — from note position" }
+                        input type="number" name="drop_window_min" min="1" value=(c.reranker.drop_window_min);
+                    }
+                    div {
+                        label { "to note position" }
+                        input type="number" name="drop_window_max" min="1" value=(c.reranker.drop_window_max);
+                    }
                 }
             }
             section .group {
@@ -743,6 +764,7 @@ const bindVisibility = (selectName, attr) => {
 bindVisibility('embedder_provider', 'embedder');
 bindVisibility('vector_db', 'vectordb');
 bindVisibility('provider', 'llm');
+bindVisibility('context_cut', 'cut');
 const bindDesc = (selectName, targetId) => {
   const sel = document.querySelector('select[name="' + selectName + '"]');
   const out = document.getElementById(targetId);
@@ -754,17 +776,6 @@ const bindDesc = (selectName, targetId) => {
   apply();
 };
 bindDesc('fastembed_model', 'fastembed-desc');
-// The context cut only matters while the reranker is off — hide it otherwise.
-// Same pageshow re-apply as bindVisibility (Firefox restores checkbox state
-// after scripts run, without firing 'change').
-const rerankerBox = document.querySelector('input[name="reranker_enabled"]');
-const cutGroup = document.getElementById('context-cut-group');
-const applyCutVisibility = () => {
-  cutGroup.style.display = rerankerBox.checked ? 'none' : '';
-};
-rerankerBox.addEventListener('change', applyCutVisibility);
-window.addEventListener('pageshow', applyCutVisibility);
-applyCutVisibility();
 "#))
         }
     };

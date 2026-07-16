@@ -149,12 +149,21 @@ impl Reranker for CrossEncoderReranker {
         select_top_chunks(
             rerank_results
                 .into_iter()
-                .map(|r| (r.index, r.score as f64))
+                // Raw cross-encoder logits go negative for irrelevant chunks;
+                // sigmoid maps them to 0..1 (order-preserving) so the context
+                // cuts — largest-drop needs a positive base — and the UI see
+                // the same score shape HTTP rerankers return (adr/0029).
+                .map(|r| (r.index, sigmoid(r.score as f64)))
                 .collect(),
             results,
             top_k,
         )
     }
+}
+
+/// Order-preserving squash of a raw logit into `0..1`.
+fn sigmoid(x: f64) -> f64 {
+    1.0 / (1.0 + (-x).exp())
 }
 
 #[cfg(test)]
