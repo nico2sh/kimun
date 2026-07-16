@@ -324,13 +324,14 @@ pub struct RerankerConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ContextCut {
-    /// Min-max normalize the pool's scores; chunks in the top half of the
+    /// Min-max normalize the pool's scores; chunks at or above 0.4 of the
     /// range survive.
     #[default]
     ScoreRange,
-    /// Cut at the biggest relative drop between consecutive scores
-    /// (`(s[i] − s[i+1]) / s[i]`), searched within a fixed position window;
-    /// no drop found means no cut.
+    /// Cut at the biggest relative drop between consecutive NOTE scores —
+    /// each distinct note's best chunk, `(s[i] − s[i+1]) / s[i]` — searched
+    /// within a fixed position window; every chunk at or above the
+    /// gap-closing note's score is kept. No drop found means no cut.
     LargestDrop,
 }
 

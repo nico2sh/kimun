@@ -88,6 +88,11 @@ pub struct CutPreview {
     /// The chunks the configured cut would keep as LLM context; displayed
     /// search rows are marked by membership.
     pub context: std::collections::HashSet<FlattenedChunk>,
+    /// Pool scores of the last kept and first dropped chunk — where the cut
+    /// actually landed. Often invisible in the displayed rows: those are
+    /// note-deduped best chunks, while the pool interleaves every section of
+    /// every note. `None` when nothing was cut.
+    pub boundary: Option<(f64, f64)>,
 }
 
 /// The server's domain error: every way a request can fail, each variant
@@ -165,11 +170,12 @@ const CANDIDATE_POOL: usize = 80;
 /// absolute cosine bands are embedder-specific; within one query all pool
 /// scores share a scale, so the pool's own spread defines what "relevant"
 /// looks like.
-const NO_RERANK_NORM_CUTOFF: f64 = 0.5;
+const NO_RERANK_NORM_CUTOFF: f64 = 0.4;
 /// [`ContextCut::LargestDrop`]'s search window: the biggest score drop is
-/// looked for at cut positions 3..=30 only. Below 3 a spiky top would starve
-/// the context; past 30 the tail's noise produces phantom elbows. A window,
-/// not a keep-clamp — when no drop exists inside it, nothing is cut.
+/// looked for at note positions 3..=30 only (distinct notes, best score
+/// each). Below 3 a spiky top would starve the context; past 30 the tail's
+/// noise produces phantom elbows. A window, not a keep-clamp — when no drop
+/// exists inside it, nothing is cut.
 const DROP_WINDOW_MIN: usize = 3;
 const DROP_WINDOW_MAX: usize = 30;
 
@@ -322,13 +328,17 @@ impl KimunRag {
         let pool_size = raw.len();
         // Computed only on request (the preview clones the pool) and only
         // when it is true: with a reranker there is no cut to preview.
-        let preview = (want_preview && self.reranker.is_none()).then(|| CutPreview {
-            pool_chunks: pool_size,
-            context: self
-                .cut_context(raw.clone())
-                .into_iter()
-                .map(|(_, chunk)| chunk)
-                .collect(),
+        let preview = (want_preview && self.reranker.is_none()).then(|| {
+            let kept = self.cut_context(raw.clone());
+            // Both cuts keep a best-first prefix of the pool, so the boundary
+            // is the prefix edge.
+            let boundary = (!kept.is_empty() && kept.len() < raw.len())
+                .then(|| (kept[kept.len() - 1].0, raw[kept.len()].0));
+            CutPreview {
+                pool_chunks: pool_size,
+                context: kept.into_iter().map(|(_, chunk)| chunk).collect(),
+                boundary,
+            }
         });
         let ranked = match &self.reranker {
             // A mid-query reranker failure (endpoint 503, network blip) must
@@ -627,29 +637,56 @@ fn score_range_cut(mut sorted: Vec<ScoredChunk>) -> Vec<ScoredChunk> {
 /// because absolute gaps scale with the embedder's score band, so the same
 /// shape of pool would cut differently per model; a ratio to the preceding
 /// score is scale-invariant. The window is the *search range* for the drop
-/// (cut positions [`DROP_WINDOW_MIN`]`..=`[`DROP_WINDOW_MAX`]), not a clamp:
+/// (note positions [`DROP_WINDOW_MIN`]`..=`[`DROP_WINDOW_MAX`]), not a clamp:
 /// it stops degenerate elbows (a spiky top yielding a 1-chunk context,
 /// phantom gaps deep in the noise tail), and a window with no drop at all
 /// means no evidence of a relevance boundary — the pool stays whole, same
 /// philosophy as [`score_range_cut`]'s flat rule. Ties cut at the earliest
-/// drop (precision over recall). A non-positive base score makes the ratio
-/// meaningless (zero division, flipped sign) and the pool is sorted, so the
-/// search stops at the first one. `sorted` must be best-first, which
-/// [`deduplicate_chunks`] guarantees.
+/// drop (precision over recall). The note that closes the winning gap is
+/// kept too — a deliberate recall bump at the boundary. A non-positive base
+/// score makes the ratio meaningless (zero division, flipped sign) and the
+/// scores are sorted, so the search stops at the first one. `sorted` must be
+/// best-first, which [`deduplicate_chunks`] guarantees.
+///
+/// The gap is searched over each distinct NOTE's best score, not the raw
+/// chunk pool: a multi-section note interleaves its extra sections between
+/// other notes' scores, filling every chunk-level gap with a staircase of
+/// tiny steps that structurally masks the real elbow. The kept context is
+/// then every pool chunk at or above the gap-closing note's best score, so
+/// kept notes' extra sections ride along.
 fn largest_drop_cut(mut sorted: Vec<ScoredChunk>) -> Vec<ScoredChunk> {
-    let mut best: Option<(f64, usize)> = None; // (relative drop, kept count)
-    for keep in DROP_WINDOW_MIN..=DROP_WINDOW_MAX.min(sorted.len().saturating_sub(1)) {
-        let base = sorted[keep - 1].0;
+    use std::collections::HashSet;
+
+    // First occurrence per note in the best-first pool = that note's best.
+    let mut seen: HashSet<&str> = HashSet::new();
+    let note_best: Vec<f64> = sorted
+        .iter()
+        .filter(|(_, chunk)| seen.insert(chunk.doc_path.as_str()))
+        .map(|(score, _)| *score)
+        .collect();
+
+    // (relative drop, notes above the gap)
+    let mut best: Option<(f64, usize)> = None;
+    for keep in DROP_WINDOW_MIN..=DROP_WINDOW_MAX.min(note_best.len().saturating_sub(1)) {
+        let base = note_best[keep - 1];
         if base <= 0.0 {
             break;
         }
-        let drop = (base - sorted[keep].0) / base;
+        let drop = (base - note_best[keep]) / base;
         if drop > 0.0 && best.is_none_or(|(largest, _)| drop > largest) {
             best = Some((drop, keep));
         }
     }
     if let Some((_, keep)) = best {
-        sorted.truncate(keep);
+        // `keep` notes above the gap + the gap-closing one below it: keep
+        // every chunk scoring at least that note's best (a prefix — the pool
+        // is sorted).
+        let boundary = note_best[keep];
+        let cut = sorted
+            .iter()
+            .take_while(|(score, _)| *score >= boundary)
+            .count();
+        sorted.truncate(cut);
     }
     sorted
 }
@@ -980,8 +1017,8 @@ mod tests {
     async fn answer_keeps_chunk_level_context_cut_by_normalized_score() {
         // The LLM context is CHUNKS — /a.md may fill several slots (no
         // note-dedup) — and without a reranker the cut ignores top_k entirely:
-        // scores are min-max normalized within the pool and the top half
-        // survives. Here min 0.70 / max 0.99 → raw cutoff 0.845, so
+        // scores are min-max normalized within the pool and everything at or
+        // above 0.4 survives. Here min 0.70 / max 0.99 → raw cutoff 0.816, so
         // 0.99/0.98/0.97 stay while 0.80 (normalized 0.34) and 0.70 (0.0)
         // drop, even though the request asked for top_k = 2.
         let rag = rag(section_heavy_store(), true);
@@ -999,7 +1036,7 @@ mod tests {
     async fn answer_without_reranker_has_no_count_floor() {
         // A spiky top score trims the context to the genuinely relevant
         // chunks: 0.4 and 0.3 normalize to 0.17 and 0.0 against a 0.9 top —
-        // below the 0.5 line, out, regardless of the requested top_k.
+        // below the 0.4 line, out, regardless of the requested top_k.
         let store = FakeVectorStore {
             results: vec![
                 (0.90, chunk("/a.md", "a1")),
@@ -1045,9 +1082,10 @@ mod tests {
 
     #[test]
     fn largest_drop_cut_cuts_at_the_biggest_gap_in_the_window() {
-        // Biggest gap sits between positions 5 and 6 → keep 5.
+        // Biggest gap sits between positions 5 and 6 → keep the 5 above it
+        // plus the element that closes the gap → 6.
         let p = pool(&[0.90, 0.89, 0.88, 0.87, 0.86, 0.50, 0.49, 0.48]);
-        assert_eq!(largest_drop_cut(p).len(), 5);
+        assert_eq!(largest_drop_cut(p).len(), 6);
     }
 
     #[test]
@@ -1065,11 +1103,35 @@ mod tests {
     }
 
     #[test]
+    fn largest_drop_cut_sees_through_same_note_staircases() {
+        // /a.md's extra sections (.74/.69/.65) fill the note-level gap with
+        // small chunk steps: a chunk-level search would pick .62→.55
+        // (rel 0.113) as the biggest window gap and keep everything. The gap
+        // must be searched over each note's BEST score — .90/.85/.80/.62/.55
+        // — where .80→.62 (rel 0.225) wins; the gap-closing note /d.md joins
+        // (boundary .62) and every chunk at or above it rides along.
+        let p = vec![
+            (0.90, chunk("/a.md", "s1")),
+            (0.85, chunk("/b.md", "s1")),
+            (0.80, chunk("/c.md", "s1")),
+            (0.74, chunk("/a.md", "s2")),
+            (0.69, chunk("/a.md", "s3")),
+            (0.65, chunk("/a.md", "s4")),
+            (0.62, chunk("/d.md", "s1")),
+            (0.55, chunk("/e.md", "s1")),
+        ];
+        let kept = largest_drop_cut(p);
+        assert_eq!(kept.len(), 7, "everything ≥ the gap-closing note's .62");
+        assert!(kept.iter().all(|(s, _)| *s >= 0.62));
+    }
+
+    #[test]
     fn largest_drop_cut_ties_cut_earliest_and_small_pools_stay_whole() {
-        // Two equal RELATIVE drops of 0.5 — (0.80−0.40)/0.80 at keep 3 and
-        // (0.30−0.15)/0.30 at keep 5 → the earliest wins.
+        // Two equal RELATIVE drops of 0.5 — (0.80−0.40)/0.80 at gap 3 and
+        // (0.30−0.15)/0.30 at gap 5 → the earliest wins, plus the gap-closing
+        // element → 4.
         let p = pool(&[0.90, 0.89, 0.80, 0.40, 0.30, 0.15, 0.10]);
-        assert_eq!(largest_drop_cut(p).len(), 3);
+        assert_eq!(largest_drop_cut(p).len(), 4);
 
         // At or below the window start there is nothing to search.
         assert_eq!(largest_drop_cut(pool(&[0.9, 0.2, 0.1])).len(), 3);
@@ -1127,6 +1189,11 @@ mod tests {
             3,
             "score-range keeps 0.99/0.98/0.97 of the 0.99..0.70 pool"
         );
+        assert_eq!(
+            preview.boundary,
+            Some((0.97, 0.80)),
+            "boundary = last kept / first dropped pool score"
+        );
         // Displayed rows are each note's best chunk: only /a.md's is in the
         // would-be context; /b.md (0.80) and /c.md (0.70) fall below the cut.
         assert!(preview.context.contains(&hits[0].1));
@@ -1144,10 +1211,11 @@ mod tests {
     #[tokio::test]
     async fn answer_uses_the_configured_context_cut() {
         // Scores where the two algorithms disagree: score-range keeps 2
-        // (min 0.84 / max 1.0 → cutoff 0.92, so 1.00 and 0.93 clear it),
-        // largest-drop keeps 4 (relative gaps: 0.02/0.88 at keep 3 vs the
-        // slightly larger 0.02/0.86 at keep 4; the bigger drops at positions
-        // 1 and 2 are outside the search window).
+        // (min 0.84 / max 1.0 → cutoff 0.904, so 1.00 and 0.93 clear it),
+        // largest-drop keeps 5 (relative gaps: 0.02/0.88 at gap 3 vs the
+        // slightly larger 0.02/0.86 at gap 4, plus the gap-closing element;
+        // the bigger drops at positions 1 and 2 are outside the search
+        // window).
         let scores = [1.00, 0.93, 0.88, 0.86, 0.84];
         let store = || FakeVectorStore {
             results: pool(&scores),
@@ -1168,7 +1236,7 @@ mod tests {
         let elbow = rag(store(), true).with_context_cut(ContextCut::LargestDrop);
         assert_eq!(
             elbow.answer(&key("v"), "q", 2).await.unwrap().sources.len(),
-            4
+            5
         );
     }
 
