@@ -171,6 +171,12 @@ const CANDIDATE_POOL: usize = 80;
 /// scores share a scale, so the pool's own spread defines what "relevant"
 /// looks like.
 const NO_RERANK_NORM_CUTOFF: f64 = 0.4;
+/// [`score_range_cut`]'s robust range endpoints: the normalization range is
+/// measured between these percentiles of the pool's scores instead of the
+/// absolute min/max, so one stray chunk at either extreme cannot stretch the
+/// range and move the cutoff. Small pools collapse to plain min-max.
+const RANGE_LOW_PERCENTILE: f64 = 0.05;
+const RANGE_HIGH_PERCENTILE: f64 = 0.95;
 /// [`ContextCut::LargestDrop`]'s search window: the biggest score drop is
 /// looked for at note positions 3..=30 only (distinct notes, best score
 /// each). Below 3 a spiky top would starve the context; past 30 the tail's
@@ -193,6 +199,9 @@ pub struct KimunRag {
     reranker: Option<Arc<dyn Reranker>>,
     /// Which **context cut** sizes the no-reranker `answer` context (adr/0027).
     context_cut: ContextCut,
+    /// The score-range cut's normalized cutoff (config `score_range_cutoff`,
+    /// default [`NO_RERANK_NORM_CUTOFF`]).
+    score_range_cutoff: f64,
     /// The embedder fingerprint this pipeline must find recorded with the
     /// store's data (adr/0025). `None` skips the gate (tests, callers that
     /// enforce it themselves).
@@ -217,6 +226,7 @@ impl KimunRag {
             llm_client,
             reranker: None,
             context_cut: ContextCut::default(),
+            score_range_cutoff: NO_RERANK_NORM_CUTOFF,
             expected_fingerprint: None,
             fingerprint_checked: tokio::sync::OnceCell::new(),
         }
@@ -226,6 +236,13 @@ impl KimunRag {
     /// [`ContextCut::ScoreRange`]).
     pub fn with_context_cut(mut self, context_cut: ContextCut) -> Self {
         self.context_cut = context_cut;
+        self
+    }
+
+    /// Tune the score-range cut's normalized cutoff (default
+    /// [`NO_RERANK_NORM_CUTOFF`]); values outside `0.0..=1.0` are clamped.
+    pub fn with_score_range_cutoff(mut self, cutoff: f64) -> Self {
+        self.score_range_cutoff = cutoff.clamp(0.0, 1.0);
         self
     }
 
@@ -400,7 +417,7 @@ impl KimunRag {
     /// mid-query.
     fn cut_context(&self, raw: Vec<ScoredChunk>) -> Vec<ScoredChunk> {
         match self.context_cut {
-            ContextCut::ScoreRange => score_range_cut(raw),
+            ContextCut::ScoreRange => score_range_cut(raw, self.score_range_cutoff),
             ContextCut::LargestDrop => largest_drop_cut(raw),
         }
     }
@@ -608,21 +625,31 @@ fn dedupe_by_note(ranked: Vec<ScoredChunk>, top_k: usize) -> Vec<ScoredChunk> {
 
 /// The [`ContextCut::ScoreRange`] cut. No count cut at all — scores are
 /// min-max normalized within the (already [`CANDIDATE_POOL`]-capped) pool and
-/// a chunk survives when its normalized score reaches
-/// [`NO_RERANK_NORM_CUTOFF`]: the pool's own spread decides how many chunks
-/// are relevant, not a fixed `top_k`. Normalization is shift/scale invariant,
-/// so negative scores need no special casing; a flat pool (zero range) carries
-/// no signal to cut on and is kept whole. `sorted` must be best-first, which
-/// [`deduplicate_chunks`] guarantees.
-fn score_range_cut(mut sorted: Vec<ScoredChunk>) -> Vec<ScoredChunk> {
-    let (Some(&(max, _)), Some(&(min, _))) = (sorted.first(), sorted.last()) else {
+/// a chunk survives when its normalized score reaches `cutoff` (config
+/// `score_range_cutoff`, default [`NO_RERANK_NORM_CUTOFF`]): the pool's own
+/// spread decides how many chunks
+/// are relevant, not a fixed `top_k`. The range is measured between the
+/// [`RANGE_LOW_PERCENTILE`]/[`RANGE_HIGH_PERCENTILE`] scores rather than the
+/// absolute extremes (winsorized min-max), so a stray chunk at either end
+/// cannot stretch the range and drag the cutoff with it; on small pools the
+/// percentile indices collapse to the actual extremes. Normalization is
+/// shift/scale invariant, so negative scores need no special casing; a flat
+/// range carries no signal to cut on and the pool is kept whole. `sorted`
+/// must be best-first, which [`deduplicate_chunks`] guarantees.
+fn score_range_cut(mut sorted: Vec<ScoredChunk>, cutoff: f64) -> Vec<ScoredChunk> {
+    let n = sorted.len();
+    if n == 0 {
         return sorted;
-    };
-    let range = max - min;
+    }
+    // Best-first order: the high percentile sits near the front, the low one
+    // near the back. floor/ceil bias both endpoints toward the bulk.
+    let high = sorted[((1.0 - RANGE_HIGH_PERCENTILE) * (n - 1) as f64).floor() as usize].0;
+    let low = sorted[((1.0 - RANGE_LOW_PERCENTILE) * (n - 1) as f64).ceil() as usize].0;
+    let range = high - low;
     if range <= 0.0 {
         return sorted;
     }
-    let cutoff = min + NO_RERANK_NORM_CUTOFF * range;
+    let cutoff = low + cutoff * range;
     let keep = sorted
         .iter()
         .take_while(|(score, _)| *score >= cutoff)
@@ -1058,7 +1085,7 @@ mod tests {
         // Min-max normalization only sees relative position, so negative
         // scores need no special casing: -0.1 normalizes to 1.0, -0.5 to 0.0.
         let pool: Vec<ScoredChunk> = vec![(-0.1, chunk("/a.md", "a")), (-0.5, chunk("/b.md", "b"))];
-        assert_eq!(score_range_cut(pool).len(), 1);
+        assert_eq!(score_range_cut(pool, NO_RERANK_NORM_CUTOFF).len(), 1);
 
         // Flat scores carry no signal to cut on — everything stays.
         let flat: Vec<ScoredChunk> = vec![
@@ -1066,9 +1093,9 @@ mod tests {
             (0.7, chunk("/b.md", "b")),
             (0.7, chunk("/c.md", "c")),
         ];
-        assert_eq!(score_range_cut(flat).len(), 3);
+        assert_eq!(score_range_cut(flat, NO_RERANK_NORM_CUTOFF).len(), 3);
 
-        assert!(score_range_cut(Vec::new()).is_empty());
+        assert!(score_range_cut(Vec::new(), NO_RERANK_NORM_CUTOFF).is_empty());
     }
 
     /// A pool of `n` chunks with the given scores, distinct paths.
@@ -1078,6 +1105,29 @@ mod tests {
             .enumerate()
             .map(|(i, &s)| (s, chunk(&format!("/n{i}.md"), "s")))
             .collect()
+    }
+
+    #[test]
+    fn score_range_cut_is_not_stretched_by_extreme_outliers() {
+        // One garbage chunk at 0.05 would stretch a plain min-max range
+        // (cutoff 0.05 + 0.4×0.80 = 0.37 → nearly everything survives). The
+        // percentile endpoints ignore it: over 21 chunks, high = idx 1
+        // (0.84), low = idx 19 (0.60) → cutoff 0.60 + 0.4×0.24 = 0.696 →
+        // only the real head (0.85/0.84/0.75/0.70) survives.
+        let mut scores = vec![0.85, 0.84, 0.75, 0.70];
+        scores.extend([0.65; 15]);
+        scores.extend([0.60, 0.05]);
+        assert_eq!(
+            score_range_cut(pool(&scores), NO_RERANK_NORM_CUTOFF).len(),
+            4
+        );
+
+        // The cutoff is tunable (config score_range_cutoff): at 0.5 the raw
+        // line moves to 0.60 + 0.5×0.24 = 0.72 and the 0.70 chunk drops.
+        let mut scores = vec![0.85, 0.84, 0.75, 0.70];
+        scores.extend([0.65; 15]);
+        scores.extend([0.60, 0.05]);
+        assert_eq!(score_range_cut(pool(&scores), 0.5).len(), 3);
     }
 
     #[test]
