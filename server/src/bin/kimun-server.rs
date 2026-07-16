@@ -37,10 +37,20 @@ struct Cli {
     port: Option<u16>,
 }
 
+/// Why one `run_server` iteration ended: an operator asked for an in-process
+/// restart (drain, reload the config file, rebind — adr/0028), or the process
+/// is done (Ctrl-C).
+enum Shutdown {
+    Restart,
+    Terminate,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize tracing. Besides stdout, WARN/ERROR events are copied into an
-    // in-memory ring buffer the web UI serves at /logs.
+    // Initialize tracing ONCE for the process lifetime. Besides stdout,
+    // WARN/ERROR events are copied into an in-memory ring buffer the web UI
+    // serves at /logs; it survives in-process restarts so the log page shows
+    // what happened across them.
     let log_buffer = kimun_server::logbuffer::LogBuffer::new();
     tracing_subscriber::registry()
         .with(
@@ -53,10 +63,31 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
+    // The restart loop (adr/0028): each iteration builds and serves the whole
+    // server; a web-UI restart drains in-flight requests, then the next
+    // iteration re-reads the config file and rebinds, so every setting —
+    // including the bind address — applies without a supervisor.
+    let mut first_run = true;
+    loop {
+        match run_server(&cli, first_run, log_buffer.clone()).await? {
+            Shutdown::Restart => {
+                tracing::info!("Restart requested — reloading configuration");
+                first_run = false;
+            }
+            Shutdown::Terminate => return Ok(()),
+        }
+    }
+}
+
+async fn run_server(
+    cli: &Cli,
+    first_run: bool,
+    log_buffer: kimun_server::logbuffer::LogBuffer,
+) -> anyhow::Result<Shutdown> {
     // Load configuration (remembering the path so the web UI can persist edits).
     tracing::info!("Loading configuration...");
     let config_path = RagConfig::resolve_path(cli.config.clone());
-    let config = if cli.default_config {
+    let config = if cli.default_config && first_run {
         // Explicit opt-in to local defaults; no file is read. A missing config
         // file is created with these defaults so later file-based starts (and
         // web-UI edits) have a real file; an existing file is left untouched.
@@ -65,9 +96,11 @@ async fn main() -> anyhow::Result<()> {
         );
         RagConfig::ready_default_persisted(&config_path)?
     } else {
-        RagConfig::load(cli.config)?
+        // On an in-process restart the seeded file (plus any web edits) is the
+        // source of truth, --default-config or not.
+        RagConfig::load(cli.config.clone())?
     };
-    let config = config.merge_with_cli(cli.host, cli.port);
+    let config = config.merge_with_cli(cli.host.clone(), cli.port);
 
     tracing::info!("Configuration loaded successfully");
     tracing::debug!("Server: {}:{}", config.server.host, config.server.port);
@@ -103,24 +136,30 @@ async fn main() -> anyhow::Result<()> {
         ),
     }
 
-    // Create application state
+    // Create application state. The restart channel is how the web UI's
+    // Restart button reaches this loop iteration's graceful shutdown.
+    let (restart_tx, mut restart_rx) = tokio::sync::mpsc::channel::<()>(1);
     let state = Arc::new(
         AppState::new(rag, config.clone())
             .with_config_path(config_path)
             .with_log_buffer(log_buffer)
             .with_startup_error(startup_error)
-            .with_reranker_error(reranker_error),
+            .with_reranker_error(reranker_error)
+            .with_restart(restart_tx),
     );
 
     // Periodically drop completed/old jobs so the tracker doesn't grow for the
-    // life of the process.
+    // life of the server. Holds only a Weak: when this iteration's state is
+    // dropped after a restart, the sweep task ends instead of pinning the old
+    // pipeline (embedder, store) in memory forever.
     {
-        let sweep = state.clone();
+        let sweep = Arc::downgrade(&state);
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
             loop {
                 interval.tick().await;
-                sweep.job_tracker.lock().await.cleanup_old_jobs();
+                let Some(state) = sweep.upgrade() else { break };
+                state.job_tracker.lock().await.cleanup_old_jobs();
             }
         });
     }
@@ -165,9 +204,21 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("RAG server listening on {}", addr);
     tracing::info!("Health check available at http://{}/health", addr);
 
-    axum::serve(listener, app).await?;
+    // Serve until the web UI requests a restart or the process gets Ctrl-C;
+    // either way axum drains in-flight requests before returning. The oneshot
+    // smuggles the reason out of the shutdown future.
+    let (reason_tx, reason_rx) = tokio::sync::oneshot::channel();
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            let reason = tokio::select! {
+                _ = restart_rx.recv() => Shutdown::Restart,
+                _ = tokio::signal::ctrl_c() => Shutdown::Terminate,
+            };
+            let _ = reason_tx.send(reason);
+        })
+        .await?;
 
-    Ok(())
+    Ok(reason_rx.await.unwrap_or(Shutdown::Terminate))
 }
 
 /// Builds the query pipeline from config, or `None` on an *unconfigured*

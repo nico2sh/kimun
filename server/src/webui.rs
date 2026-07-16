@@ -6,7 +6,9 @@
 //! and run a test query. Config edits are **persisted to the TOML file and take
 //! effect on restart** — the embedder, vector store, and LLM client are all
 //! built at startup (changing the embedder even changes the vector width), so
-//! the running instance is never mutated live. The page says as much.
+//! the running instance is never mutated live. The page says as much, and the
+//! Restart button triggers that restart in-process (adr/0028): the binary's
+//! serving loop drains, re-reads the file, and rebinds.
 //!
 //! Auth reuses the server's bearer token: a login form exchanges the token for
 //! an `HttpOnly` session cookie holding that same shared secret. With no token
@@ -23,7 +25,7 @@ use axum::{
     },
     middleware::{self, Next},
     response::{IntoResponse, Redirect, Response},
-    routing::get,
+    routing::{get, post},
 };
 use maud::{DOCTYPE, Markup, html};
 use serde::Deserialize;
@@ -71,6 +73,7 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
     let protected = Router::new()
         .route("/", get(dashboard))
         .route("/config", get(config_page).post(config_submit))
+        .route("/restart", post(restart_submit))
         .route("/collections", get(collections_page))
         .route("/jobs", get(jobs_page))
         .route("/jobs/fragment", get(jobs_fragment))
@@ -707,7 +710,18 @@ fn config_markup(state: &AppState, c: &RagConfig, flash: Option<Markup>) -> Mark
             }
             @if can_save {
                 button type="submit" { "Save to config file" }
-                p .muted { "Saved changes take effect the next time the server starts." }
+                p .muted { "Saved changes take effect the next time the server starts — or use Restart below." }
+            }
+        }
+        // Separate form: restart is not a save. Applies whatever is in the
+        // config file right now (web-saved or hand-edited), so it is useful
+        // even when the path is not writable from here.
+        form method="post" action="/restart" {
+            button type="submit" { "Restart server now" }
+            p .muted {
+                "Drains in-flight requests, reloads the config file, and rebinds — every "
+                "setting applies, including the bind address. The server is briefly "
+                "unavailable; connected Kimün clients reconnect on their own."
             }
         }
         script {
@@ -789,11 +803,51 @@ async fn config_submit(
         Ok(()) => config_markup(
             &state,
             &cfg,
-            Some(html! { p .flash.ok { "Saved to " span .mono { (path.display()) } ". Restart the server to apply." } }),
+            Some(html! { p .flash.ok { "Saved to " span .mono { (path.display()) } ". Use the Restart button below to apply now, or restart the server yourself." } }),
         )
         .into_response(),
         Err(e) => err_page(&state, html! { p .flash.err { "Could not write config: " (e) } }),
     }
+}
+
+/// POST /restart — asks the binary's serving loop (adr/0028) to drain
+/// in-flight requests, reload the saved config file, and rebind. Pure
+/// trigger: what changed shows up on the reloaded pages afterwards.
+async fn restart_submit(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    if !same_origin(&headers) {
+        return axum::http::StatusCode::FORBIDDEN.into_response();
+    }
+    if !state.request_restart() {
+        return config_markup(
+            &state,
+            &state.config.clone(),
+            Some(html! { p .flash.err {
+                "In-process restart is not available here — restart the server manually to apply the config."
+            } }),
+        )
+        .into_response();
+    }
+    // Standalone page, no shell: the server goes down right after this
+    // response, so nav links would dead-end anyway. Meta-refresh returns to
+    // the dashboard once the server is back.
+    html! {
+        (DOCTYPE)
+        html {
+            head {
+                meta charset="utf-8";
+                meta http-equiv="refresh" content="4;url=/";
+                title { "Restarting — Kimün server" }
+            }
+            body {
+                p { "Restarting: draining requests, reloading the config file, rebinding." }
+                p {
+                    "Returning to the dashboard in a few seconds. If you changed the "
+                    "bind address, open the server at its new address instead."
+                }
+            }
+        }
+    }
+    .into_response()
 }
 
 // ============================================================================
@@ -1127,6 +1181,54 @@ provider = "gemini"
     async fn body_text(resp: axum::response::Response) -> String {
         let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn restart_without_a_wired_loop_is_an_honest_failure() {
+        // Tests (and any embedding without the binary's loop) have no restart
+        // channel: the endpoint must say so, not pretend to restart.
+        let resp = app(state(None, None))
+            .oneshot(Request::post("/restart").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(body_text(resp).await.contains("not available"));
+    }
+
+    #[tokio::test]
+    async fn restart_signals_the_loop_and_blocks_cross_origin() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let config: RagConfig =
+            toml::from_str("[server]\n[vector_db]\ntype = \"qdrant\"\n[reranker]\n").unwrap();
+        let rag = KimunRag::new(
+            Arc::new(FakeVectorStore::default()),
+            Arc::new(FakeEmbedder),
+            None,
+        );
+        let st = Arc::new(AppState::new(Some(rag), config).with_restart(tx));
+
+        // Cross-origin POST is rejected before anything is signalled.
+        let resp = app(st.clone())
+            .oneshot(
+                Request::post("/restart")
+                    .header(ORIGIN, "http://evil.example")
+                    .header(HOST, "localhost:7573")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert!(rx.try_recv().is_err(), "no signal on a rejected request");
+
+        // Same-origin POST signals the serving loop and says what happens next.
+        let resp = app(st)
+            .oneshot(Request::post("/restart").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(body_text(resp).await.contains("Restarting"));
+        assert!(rx.try_recv().is_ok(), "the loop got the restart signal");
     }
 
     #[tokio::test]

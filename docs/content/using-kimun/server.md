@@ -181,7 +181,10 @@ creates it if missing). Edit it — or use the web UI's Config page — to choos
   binds beyond `127.0.0.1`.
 
 Config edits from the web UI are written to the file and applied on the next
-restart. See the [server README](https://github.com/nico2sh/kimun/tree/main/server)
+restart — the **Restart server** button on the Config page triggers that
+restart in place (the server drains current requests, reloads the file, and
+comes right back; connected Kimün clients reconnect on their own). See the
+[server README](https://github.com/nico2sh/kimun/tree/main/server)
 for the full configuration and API reference.
 
 ```sh
