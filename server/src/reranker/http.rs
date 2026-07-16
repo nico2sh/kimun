@@ -28,9 +28,11 @@ struct RerankRequest<'a> {
     model: Option<&'a str>,
     query: &'a str,
     documents: Vec<String>,
-    // No top_n/top_k: providers rank the full list by default and the caller
-    // truncates locally — Cohere/Jina say `top_n`, Voyage says `top_k`, and
-    // omitting both keeps one request shape for all of them.
+    // No top_n/top_k, and none must ever be added: the pipeline requires one
+    // score per submitted document (validate_scored hard-errors otherwise) —
+    // the context cut sizes results downstream, not a count truncation.
+    // Omitting the parameter also keeps one request shape for all providers
+    // (Cohere/Jina say `top_n`, Voyage says `top_k`).
 }
 
 #[derive(Deserialize)]
