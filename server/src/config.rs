@@ -597,6 +597,10 @@ impl RagConfig {
         ) else {
             anyhow::bail!("Port and top_k must be whole numbers.");
         };
+        if top_k == 0 {
+            // Under the fixed cut a zero would silently empty every result.
+            anyhow::bail!("top_k must be at least 1.");
+        }
 
         // "none" → semantic-only: clear the LLM entirely rather than writing a
         // keyless provider that would fail the boot key gate (adr/0022).
@@ -1004,9 +1008,13 @@ api_key = "k"
         assert_eq!(kept.reranker.score_range_cutoff, 0.55);
         assert_eq!(kept.reranker.drop_window_min, 5);
 
-        // Out-of-range cutoff and inverted window are user-facing errors.
+        // Out-of-range cutoff, zero top_k, and inverted window are
+        // user-facing errors.
         let mut f = form("none", "");
         f.score_range_cutoff = "1.5".into();
+        assert!(cfg.apply_form(f).is_err());
+        let mut f = form("none", "");
+        f.reranker_top_k = "0".into();
         assert!(cfg.apply_form(f).is_err());
         let mut f = form("none", "");
         f.drop_window_min = "10".into();

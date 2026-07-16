@@ -96,8 +96,7 @@ impl Reranker for HttpReranker {
         &self,
         query: &str,
         results: &[(f64, FlattenedChunk)],
-        top_k: usize,
-    ) -> anyhow::Result<Vec<(f64, FlattenedChunk)>> {
+    ) -> anyhow::Result<Vec<(usize, f64)>> {
         if results.is_empty() {
             return Ok(Vec::new());
         }
@@ -106,13 +105,12 @@ impl Reranker for HttpReranker {
             .map(|(_, chunk)| rerank_document(chunk))
             .collect();
         let scored = self.rerank_texts(query, documents).await?;
-        super::select_top_chunks(
+        super::validate_scored(
             scored
                 .into_iter()
                 .map(|r| (r.index, r.relevance_score))
                 .collect(),
-            results,
-            top_k,
+            results.len(),
         )
     }
 }
@@ -179,15 +177,13 @@ mod tests {
                     (0.8, chunk("B", "b")),
                     (0.7, chunk("C", "c")),
                 ],
-                2,
             )
             .await
             .unwrap();
 
-        assert_eq!(out.len(), 2, "truncated to top_k");
-        assert_eq!(out[0].1.title, "C", "highest relevance first");
-        assert_eq!(out[0].0, 0.9);
-        assert_eq!(out[1].1.title, "B");
+        // One (input index, score) pair per document, sorted best-first —
+        // the pipeline cuts and materializes downstream.
+        assert_eq!(out, vec![(2, 0.9), (1, 0.5), (0, 0.1)]);
 
         let (headers, body) = captured.lock().unwrap().take().unwrap();
         assert_eq!(headers["authorization"], "Bearer co-key");
@@ -218,12 +214,11 @@ mod tests {
 
         let r = HttpReranker::new(base, None, None).await.unwrap();
         let out = r
-            .rerank("q", &[(0.9, chunk("A", "a")), (0.8, chunk("B", "b"))], 10)
+            .rerank("q", &[(0.9, chunk("A", "a")), (0.8, chunk("B", "b"))])
             .await
             .unwrap();
 
-        assert_eq!(out[0].1.title, "B");
-        assert_eq!(out[1].1.title, "A");
+        assert_eq!(out, vec![(1, 0.8), (0, 0.2)]);
         let (headers, body) = captured.lock().unwrap().take().unwrap();
         assert!(headers.get("authorization").is_none(), "no key → no bearer");
         assert!(body.get("model").is_none(), "model omitted when unset");
@@ -249,10 +244,7 @@ mod tests {
         .await;
 
         let r = HttpReranker::new(base, None, None).await.unwrap();
-        let err = r
-            .rerank("q", &[(0.9, chunk("A", "a"))], 5)
-            .await
-            .unwrap_err();
+        let err = r.rerank("q", &[(0.9, chunk("A", "a"))]).await.unwrap_err();
         assert!(err.to_string().contains("index 7"));
     }
 
@@ -273,7 +265,7 @@ mod tests {
 
         let r = HttpReranker::new(base, None, None).await.unwrap();
         let err = r
-            .rerank("q", &[(0.9, chunk("A", "a")), (0.8, chunk("B", "b"))], 5)
+            .rerank("q", &[(0.9, chunk("A", "a")), (0.8, chunk("B", "b"))])
             .await
             .unwrap_err();
         assert!(err.to_string().contains("more than once"));
@@ -292,7 +284,7 @@ mod tests {
 
         let r = HttpReranker::new(base, None, None).await.unwrap();
         let err = r
-            .rerank("q", &[(0.9, chunk("A", "a")), (0.8, chunk("B", "b"))], 5)
+            .rerank("q", &[(0.9, chunk("A", "a")), (0.8, chunk("B", "b"))])
             .await
             .unwrap_err();
         assert!(

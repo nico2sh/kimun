@@ -9,23 +9,28 @@ pub mod http;
 
 pub use http::HttpReranker;
 
-/// Reorders a retrieved candidate pool by query relevance and keeps the
-/// `top_k` best. One implementation runs locally (fastembed cross-encoder);
-/// the other calls an external HTTP rerank endpoint. Unlike the [`super::dbembeddings::embedder::Embedder`],
+/// Scores a retrieved candidate pool by query relevance. One implementation
+/// runs locally (fastembed cross-encoder); the other calls an external HTTP
+/// rerank endpoint. Unlike the [`super::dbembeddings::embedder::Embedder`],
 /// this is not an invariant of the stored vectors — swapping rerankers never
 /// invalidates the index.
 #[async_trait]
 pub trait Reranker: Send + Sync {
-    /// Reranks `results` against `query`; returns the `top_k` best, sorted by
-    /// relevance score descending. Borrows the pool so a failed rerank leaves
-    /// it in the caller's hands — the query pipeline falls back to plain
-    /// vector ranking instead of failing the request.
+    /// Scores `results` against `query`; returns one `(input index, score)`
+    /// pair per input, sorted best-first. **Contract: scores are calibrated
+    /// relevance in `0.0..=1.0`, higher = better** — the context cuts and the
+    /// UI assume that scale; adapters own the conversion from their backend's
+    /// native scale (e.g. the cross-encoder sigmoids its raw logits), and the
+    /// pipeline clamps and warns on violations. Returning indices (not
+    /// chunks) keeps the hot path clone-free — the pipeline materializes the
+    /// reordered pool by moving chunks it already owns. Borrows the pool so a
+    /// failed rerank leaves it in the caller's hands — the query pipeline
+    /// falls back to plain vector ranking instead of failing the request.
     async fn rerank(
         &self,
         query: &str,
         results: &[(f64, FlattenedChunk)],
-        top_k: usize,
-    ) -> anyhow::Result<Vec<(f64, FlattenedChunk)>>;
+    ) -> anyhow::Result<Vec<(usize, f64)>>;
 }
 
 /// Builds the configured reranker. Errors (model download failure, unreachable
@@ -53,29 +58,24 @@ pub(crate) fn rerank_document(chunk: &FlattenedChunk) -> String {
 }
 
 /// Shared back half of every reranker: validates the scored `(index, score)`
-/// pairs against the submitted pool (exactly one score per document, each
-/// index in range and unique — a violating backend is a provider bug that
-/// must surface, not silently duplicate or drop chunks), then sorts
-/// best-first and materializes only the `top_k` kept chunks.
-pub(crate) fn select_top_chunks(
+/// pairs against the submitted pool size (exactly one score per document,
+/// each index in range and unique — a violating backend is a provider bug
+/// that must surface, not silently duplicate or drop chunks), then sorts
+/// best-first. No chunks are touched — the pipeline materializes the order.
+pub(crate) fn validate_scored(
     mut scored: Vec<(usize, f64)>,
-    results: &[(f64, FlattenedChunk)],
-    top_k: usize,
-) -> anyhow::Result<Vec<(f64, FlattenedChunk)>> {
-    if scored.len() != results.len() {
+    documents: usize,
+) -> anyhow::Result<Vec<(usize, f64)>> {
+    if scored.len() != documents {
         anyhow::bail!(
-            "rerank returned {} scores for a {}-document request",
+            "rerank returned {} scores for a {documents}-document request",
             scored.len(),
-            results.len()
         );
     }
-    let mut seen = vec![false; results.len()];
+    let mut seen = vec![false; documents];
     for &(index, _) in &scored {
         let slot = seen.get_mut(index).ok_or_else(|| {
-            anyhow::anyhow!(
-                "rerank returned index {index} for a {}-document request",
-                results.len()
-            )
+            anyhow::anyhow!("rerank returned index {index} for a {documents}-document request")
         })?;
         if *slot {
             anyhow::bail!("rerank returned index {index} more than once");
@@ -83,11 +83,7 @@ pub(crate) fn select_top_chunks(
         *slot = true;
     }
     scored.sort_by(|a, b| b.1.total_cmp(&a.1));
-    scored.truncate(top_k);
-    Ok(scored
-        .into_iter()
-        .map(|(index, score)| (score, results[index].1.clone()))
-        .collect())
+    Ok(scored)
 }
 
 /// Reranker for improving search result quality using cross-encoder models
@@ -110,8 +106,7 @@ impl CrossEncoderReranker {
 
 #[async_trait]
 impl Reranker for CrossEncoderReranker {
-    /// Rerank search results based on query relevance
-    /// Returns the top_k results sorted by relevance score
+    /// Rerank search results based on query relevance.
     ///
     /// This operation is CPU-intensive and runs in a blocking thread pool
     /// to avoid blocking the async runtime.
@@ -119,8 +114,7 @@ impl Reranker for CrossEncoderReranker {
         &self,
         query: &str,
         results: &[(f64, FlattenedChunk)],
-        top_k: usize,
-    ) -> anyhow::Result<Vec<(f64, FlattenedChunk)>> {
+    ) -> anyhow::Result<Vec<(usize, f64)>> {
         if results.is_empty() {
             return Ok(Vec::new());
         }
@@ -146,17 +140,16 @@ impl Reranker for CrossEncoderReranker {
         })
         .await??;
 
-        select_top_chunks(
+        validate_scored(
             rerank_results
                 .into_iter()
                 // Raw cross-encoder logits go negative for irrelevant chunks;
-                // sigmoid maps them to 0..1 (order-preserving) so the context
-                // cuts — largest-drop needs a positive base — and the UI see
-                // the same score shape HTTP rerankers return (adr/0029).
+                // sigmoid maps them to 0..1 (order-preserving) — the adapter
+                // owns the conversion from its backend's native scale to the
+                // trait's calibrated 0..1 contract (adr/0029).
                 .map(|r| (r.index, sigmoid(r.score as f64)))
                 .collect(),
-            results,
-            top_k,
+            results.len(),
         )
     }
 }
@@ -198,12 +191,14 @@ mod tests {
         ];
 
         let results = reranker
-            .rerank("programming languages", &chunks, 2)
+            .rerank("programming languages", &chunks)
             .await
             .unwrap();
 
         assert_eq!(results.len(), 2);
-        // The programming-related chunk should rank higher
-        assert!(results[0].1.text.contains("programming"));
+        // The programming-related chunk (input index 0) should rank higher,
+        // with a sigmoid-calibrated score in 0..1.
+        assert_eq!(results[0].0, 0);
+        assert!((0.0..=1.0).contains(&results[0].1));
     }
 }

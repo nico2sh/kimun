@@ -206,6 +206,9 @@ pub struct KimunRag {
     /// `drop_window_min`/`drop_window_max`, defaults [`DROP_WINDOW_MIN`] and
     /// [`DROP_WINDOW_MAX`]).
     drop_window: (usize, usize),
+    /// One-shot marker for the "reranker scores outside 0..1" warning, so a
+    /// misconfigured backend logs once per run instead of per query.
+    score_scale_warned: std::sync::atomic::AtomicBool,
     /// The embedder fingerprint this pipeline must find recorded with the
     /// store's data (adr/0025). `None` skips the gate (tests, callers that
     /// enforce it themselves).
@@ -232,6 +235,7 @@ impl KimunRag {
             context_cut: ContextCut::default(),
             score_range_cutoff: NO_RERANK_NORM_CUTOFF,
             drop_window: (DROP_WINDOW_MIN, DROP_WINDOW_MAX),
+            score_scale_warned: std::sync::atomic::AtomicBool::new(false),
             expected_fingerprint: None,
             fingerprint_checked: tokio::sync::OnceCell::new(),
         }
@@ -245,9 +249,19 @@ impl KimunRag {
     }
 
     /// Tune the score-range cut's normalized cutoff (default
-    /// [`NO_RERANK_NORM_CUTOFF`]); values outside `0.0..=1.0` are clamped.
+    /// [`NO_RERANK_NORM_CUTOFF`]); values outside `0.0..=1.0` are clamped and
+    /// non-finite values (a TOML `nan`) are ignored — `clamp` would propagate
+    /// NaN and every score comparison would fail, silently emptying all
+    /// results.
     pub fn with_score_range_cutoff(mut self, cutoff: f64) -> Self {
-        self.score_range_cutoff = cutoff.clamp(0.0, 1.0);
+        if cutoff.is_finite() {
+            self.score_range_cutoff = cutoff.clamp(0.0, 1.0);
+        } else {
+            log::warn!(
+                "Ignoring non-finite score_range_cutoff; keeping {}",
+                self.score_range_cutoff
+            );
+        }
         self
     }
 
@@ -410,20 +424,51 @@ impl KimunRag {
     /// (endpoint 503, network blip) must not fail the request — the
     /// vector-ranked pool is already in hand, so degrade to it, same policy
     /// as a failed init at startup.
+    ///
+    /// The reranker returns validated `(index, score)` pairs; the reorder
+    /// moves the chunks this function already owns — no clones on the hot
+    /// path. This is also where the trait's calibrated-score contract is
+    /// enforced: scores outside `0.0..=1.0` are clamped (they would break
+    /// the context cuts — largest-drop needs positive bases) with a
+    /// once-per-run warning, since a backend emitting raw logits is
+    /// misconfigured, not fatal.
     async fn rank(&self, query: &str, raw: Vec<ScoredChunk>) -> Vec<ScoredChunk> {
         let Some(reranker) = &self.reranker else {
             // `deduplicate_chunks` already sorted best-first.
             return raw;
         };
-        match reranker.rerank(query, &raw, raw.len()).await {
-            Ok(ranked) => ranked,
+        let order = match reranker.rerank(query, &raw).await {
+            Ok(order) => order,
             Err(e) => {
                 log::warn!(
                     "Reranker failed mid-query ({e:#}); falling back to plain vector ranking"
                 );
-                raw
+                return raw;
             }
+        };
+        if order.iter().any(|(_, score)| !(0.0..=1.0).contains(score))
+            && !self
+                .score_scale_warned
+                .swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            log::warn!(
+                "Reranker returned scores outside 0..1 — clamping. The context cuts assume \
+                 calibrated relevance scores; check the rerank endpoint's score scale"
+            );
         }
+        // Indices were validated by the reranker (one per input, unique, in
+        // range), so every take() hits a full slot.
+        let mut slots: Vec<Option<FlattenedChunk>> =
+            raw.into_iter().map(|(_, chunk)| Some(chunk)).collect();
+        order
+            .into_iter()
+            .map(|(index, score)| {
+                (
+                    score.clamp(0.0, 1.0),
+                    slots[index].take().expect("validated unique index"),
+                )
+            })
+            .collect()
     }
 
     /// How many chunks of the best-first `ranked` pool the configured
@@ -1224,8 +1269,7 @@ mod tests {
             &self,
             _query: &str,
             _results: &[ScoredChunk],
-            _top_k: usize,
-        ) -> anyhow::Result<Vec<ScoredChunk>> {
+        ) -> anyhow::Result<Vec<(usize, f64)>> {
             anyhow::bail!("rerank endpoint returned 503")
         }
     }
@@ -1256,15 +1300,52 @@ mod tests {
             &self,
             _query: &str,
             results: &[ScoredChunk],
-            top_k: usize,
-        ) -> anyhow::Result<Vec<ScoredChunk>> {
-            Ok(results
-                .iter()
-                .enumerate()
-                .map(|(i, (_, c))| (if i == 0 { 0.9 } else { 0.1 }, c.clone()))
-                .take(top_k)
+        ) -> anyhow::Result<Vec<(usize, f64)>> {
+            Ok((0..results.len())
+                .map(|i| (i, if i == 0 { 0.9 } else { 0.1 }))
                 .collect())
         }
+    }
+
+    /// Emits raw logit-scale scores (5.0, 4.0, …) — a half-compatible
+    /// backend violating the trait's 0..1 contract.
+    struct LogitReranker;
+
+    #[async_trait::async_trait]
+    impl Reranker for LogitReranker {
+        async fn rerank(
+            &self,
+            _query: &str,
+            results: &[ScoredChunk],
+        ) -> anyhow::Result<Vec<(usize, f64)>> {
+            Ok((0..results.len()).map(|i| (i, 5.0 - i as f64)).collect())
+        }
+    }
+
+    #[tokio::test]
+    async fn non_finite_cutoff_is_ignored_not_poisonous() {
+        // TOML accepts `nan`; a plain clamp would propagate it and every
+        // score comparison would fail → all queries silently empty. The
+        // builder ignores non-finite values and keeps the default.
+        let ragged = rag(section_heavy_store(), false).with_score_range_cutoff(f64::NAN);
+        let out = ragged.search(&key("v"), "q", 10).await.unwrap();
+        assert_eq!(out.len(), 1, "default cutoff still applies");
+    }
+
+    #[tokio::test]
+    async fn out_of_contract_reranker_scores_are_clamped() {
+        // Scores 5.0/4.0/3.0 violate the 0..1 contract: the pipeline clamps
+        // them (all → 1.0, a flat pool → score-range keeps everything) and
+        // the request still succeeds. Without the clamp, largest-drop would
+        // also see meaningless bases.
+        let store = FakeVectorStore {
+            results: pool(&[0.7, 0.7, 0.7]),
+            ..Default::default()
+        };
+        let ragged = rag(store, true).with_reranker(Arc::new(LogitReranker));
+        let answer = ragged.answer(&key("v"), "q", 2).await.unwrap();
+        assert_eq!(answer.sources.len(), 3, "clamped flat scores → keep all");
+        assert!(answer.sources.iter().all(|(s, _)| *s == 1.0));
     }
 
     #[tokio::test]
