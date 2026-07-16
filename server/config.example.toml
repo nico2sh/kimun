@@ -128,28 +128,38 @@ model = "gemini-2.5-flash-preview-04-17"
 # request to plain vector ranking.
 enabled = true
 
-# Default number of results returned by search/answer, overridable per request
-# via context_size (default: 20). One exception: answer without a reranker
-# ignores it — the context cut below decides the LLM context size from the
-# pool's score shape, not a fixed count.
-top_k = 20
-
-# Context cut algorithm for answer when no reranker is active (adr/0027):
+# Context cut: the one sizing rule for query results (adr/0029). The ranked
+# pool (reranked when reranking is on, vector order otherwise) is cut, then
+# search shows the notes that survive and answer feeds the surviving chunks
+# to the LLM. Strategies, each with its own knobs:
+#   "fixed"        — exactly top_k results (search notes / answer chunks);
+#                   the per-request context_size override applies here only.
 #   "score-range"  (default) — similarity scores are min-max normalized within
 #                   the retrieved pool (range measured between the 5th/95th
 #                   score percentiles, so outliers can't stretch it); chunks
-#                   at or above 0.4 of the range join the LLM context.
+#                   at or above score_range_cutoff of the range survive.
 #   "largest-drop" — cut at the biggest relative drop between consecutive
 #                   NOTE scores (each note's best chunk,
-#                   (s[i] - s[i+1]) / s[i]), searched at note positions 3-30;
-#                   keeps the gap-closing note and every pooled chunk at or
-#                   above its score. No drop found there means no cut.
-# Flat scores mean no relevance boundary: neither algorithm cuts.
+#                   (s[i] - s[i+1]) / s[i]), searched at note positions
+#                   drop_window_min..=drop_window_max; keeps the gap-closing
+#                   note and every pooled chunk at or above its score. No
+#                   drop found there means no cut.
+# For the adaptive strategies flat scores mean no relevance boundary: nothing
+# is cut.
 # context_cut = "score-range"
 
-# Tuning knob for "score-range": the normalized cutoff in 0.0..=1.0
-# (default 0.4). Higher = stricter (fewer chunks). Ignored by "largest-drop".
+# "fixed" strategy: the result count (default: 20).
+top_k = 20
+
+# "score-range" strategy: the normalized cutoff in 0.0..=1.0 (default 0.4).
+# Higher = stricter (fewer chunks).
 # score_range_cutoff = 0.4
+
+# "largest-drop" strategy: the note positions where the gap is searched
+# (defaults 3 and 30). Below the minimum a spiky top would starve results;
+# past the maximum the tail's noise produces phantom elbows.
+# drop_window_min = 3
+# drop_window_max = 30
 
 # Local fastembed cross-encoder (BGE-Reranker-Base), the default. Downloads
 # the model from Hugging Face on first start — independent of the [embedder]

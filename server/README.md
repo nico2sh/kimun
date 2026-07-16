@@ -133,17 +133,17 @@ See `config.example.toml` for the annotated template. Sections:
   `model`, optional `api_key`. The key is server-owned; if omitted it falls back
   to the provider's env var (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
   `GEMINI_API_KEY`, `MISTRAL_API_KEY`). Kimün never sends a key.
-- **`[reranker]`** — `enabled` (default true), `top_k` (default result count,
-  overridable per request via `context_size`; `answer` without a reranker
-  ignores it — see `context_cut`), `context_cut` (how the no-reranker answer
-  context is sized from the pool's score shape: `score-range`, the default,
+- **`[reranker]`** — `enabled` (default true), the **context cut** — the one
+  sizing rule for query results on both surfaces and both reranker paths
+  (adr/0029): `context_cut` picks the strategy, each with its own knobs.
+  `fixed` returns exactly `top_k` results (search notes / answer chunks;
+  per-request `context_size` applies here only). `score-range` (default)
   keeps chunks at or above `score_range_cutoff` (default 0.4) of the
   normalized score range, measured between the pool's 5th/95th score
-  percentiles so outliers can't stretch it;
-  `largest-drop` cuts at the biggest relative gap between distinct notes'
-  best scores at note positions 3–30, keeping the gap-closing note and every
-  chunk above it — adr/0027), and
-  a backend:
+  percentiles so outliers can't stretch it. `largest-drop` cuts at the
+  biggest relative gap between distinct notes' best scores at note positions
+  `drop_window_min..=drop_window_max` (defaults 3–30), keeping the
+  gap-closing note and every chunk above it. And a backend:
   - `type = "fastembed"` (default) — local cross-encoder, model downloaded
     from Hugging Face on first start regardless of the `[embedder]` choice.
   - `type = "http"` — any Cohere/Jina-compatible rerank endpoint (`url`,
@@ -167,7 +167,8 @@ See `config.example.toml` for the annotated template. Sections:
 
 All `/api` routes require the bearer token when one is configured. `context_size`
 is optional (`"small"` = 10, `"medium"` = 20, `"large"` = 40 results); omit it to
-use the configured `reranker.top_k`.
+use the configured `reranker.top_k`. It only applies under the `fixed` context
+cut — the adaptive cuts size results from the pool's score shape (adr/0029).
 
 ### `GET /health`
 

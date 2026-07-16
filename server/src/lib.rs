@@ -202,6 +202,10 @@ pub struct KimunRag {
     /// The score-range cut's normalized cutoff (config `score_range_cutoff`,
     /// default [`NO_RERANK_NORM_CUTOFF`]).
     score_range_cutoff: f64,
+    /// The largest-drop cut's note-position search window (config
+    /// `drop_window_min`/`drop_window_max`, defaults [`DROP_WINDOW_MIN`] and
+    /// [`DROP_WINDOW_MAX`]).
+    drop_window: (usize, usize),
     /// The embedder fingerprint this pipeline must find recorded with the
     /// store's data (adr/0025). `None` skips the gate (tests, callers that
     /// enforce it themselves).
@@ -227,6 +231,7 @@ impl KimunRag {
             reranker: None,
             context_cut: ContextCut::default(),
             score_range_cutoff: NO_RERANK_NORM_CUTOFF,
+            drop_window: (DROP_WINDOW_MIN, DROP_WINDOW_MAX),
             expected_fingerprint: None,
             fingerprint_checked: tokio::sync::OnceCell::new(),
         }
@@ -243,6 +248,15 @@ impl KimunRag {
     /// [`NO_RERANK_NORM_CUTOFF`]); values outside `0.0..=1.0` are clamped.
     pub fn with_score_range_cutoff(mut self, cutoff: f64) -> Self {
         self.score_range_cutoff = cutoff.clamp(0.0, 1.0);
+        self
+    }
+
+    /// Tune the largest-drop cut's note-position search window (defaults
+    /// [`DROP_WINDOW_MIN`]`..=`[`DROP_WINDOW_MAX`]); sanitized to `min ≥ 1`
+    /// and `max ≥ min`.
+    pub fn with_drop_window(mut self, min: usize, max: usize) -> Self {
+        let min = min.max(1);
+        self.drop_window = (min, max.max(min));
         self
     }
 
@@ -303,14 +317,15 @@ impl KimunRag {
         self.llm_client.is_some()
     }
 
-    /// Semantic search: one result per note, `top_k` counts NOTES.
+    /// Semantic search: one row per note. The configured **context cut**
+    /// decides how many (adr/0029): under `fixed`, the classic `top_k` notes;
+    /// under the adaptive cuts, every note whose best chunk survives the cut
+    /// (and `top_k` is ignored).
     ///
     /// Ranks the FULL pool before cutting: semantic search lists notes, but a
     /// single section-heavy note can otherwise fill every chunk slot and
     /// collapse (client-side, one row per note) to a single result.
-    /// Rerank/sort everything, then keep each note's best chunk and take the
-    /// top_k notes. (`answer` keeps chunk-level context — this note-dedup is
-    /// search-only.)
+    /// (`answer` keeps chunk-level context — this note-dedup is search-only.)
     pub async fn search(
         &self,
         collection: &CollectionKey,
@@ -321,10 +336,9 @@ impl KimunRag {
     }
 
     /// [`Self::search`] plus a [`CutPreview`] of where the **context cut**
-    /// would slice an answer's LLM context on the same pool (adr/0027) — the
-    /// web UI's test-query box renders it. The preview is `None` whenever a
-    /// reranker is active: answers then use exactly `top_k` chunks and no cut
-    /// runs.
+    /// slices an answer's LLM context on the same ranked pool — the web UI's
+    /// test-query box renders it. Applies with or without a reranker
+    /// (adr/0029).
     pub async fn search_with_cut_preview(
         &self,
         collection: &CollectionKey,
@@ -342,47 +356,37 @@ impl KimunRag {
         want_preview: bool,
     ) -> Result<(Vec<ScoredChunk>, Option<CutPreview>), RagError> {
         let raw = self.retrieve(collection, query).await?;
-        let pool_size = raw.len();
-        // Computed only on request (the preview clones the pool) and only
-        // when it is true: with a reranker there is no cut to preview.
-        let preview = (want_preview && self.reranker.is_none()).then(|| {
-            let kept = self.cut_context(raw.clone());
-            // Both cuts keep a best-first prefix of the pool, so the boundary
-            // is the prefix edge.
-            let boundary = (!kept.is_empty() && kept.len() < raw.len())
-                .then(|| (kept[kept.len() - 1].0, raw[kept.len()].0));
-            CutPreview {
-                pool_chunks: pool_size,
-                context: kept.into_iter().map(|(_, chunk)| chunk).collect(),
-                boundary,
-            }
+        let ranked = self.rank(query, raw).await;
+        let pool_chunks = ranked.len();
+        let cut = self.cut_len(&ranked, top_k);
+        let preview = want_preview.then(|| CutPreview {
+            pool_chunks,
+            // Every cut keeps a best-first prefix, so the boundary is the
+            // prefix edge.
+            boundary: (cut > 0 && cut < pool_chunks).then(|| (ranked[cut - 1].0, ranked[cut].0)),
+            context: ranked[..cut].iter().map(|(_, c)| c.clone()).collect(),
         });
-        let ranked = match &self.reranker {
-            // A mid-query reranker failure (endpoint 503, network blip) must
-            // not fail the request: the vector-ranked pool is already in hand,
-            // so degrade to it — same policy as a failed init at startup.
-            Some(reranker) => match reranker.rerank(query, &raw, pool_size).await {
-                Ok(ranked) => ranked,
-                Err(e) => {
-                    log::warn!(
-                        "Reranker failed during search ({e:#}); falling back to plain vector ranking"
-                    );
-                    raw
-                }
-            },
-            // `deduplicate_chunks` already sorted best-first.
-            None => raw,
+        let rows = match self.context_cut {
+            // fixed: top_k counts NOTES on the search surface — the classic
+            // walk of the whole ranked pool until top_k distinct notes.
+            ContextCut::Fixed => dedupe_by_note(ranked, top_k),
+            // adaptive: every note whose best chunk survives the cut.
+            _ => {
+                let mut kept = ranked;
+                kept.truncate(cut);
+                dedupe_by_note(kept, usize::MAX)
+            }
         };
-        Ok((dedupe_by_note(ranked, top_k), preview))
+        Ok((rows, preview))
     }
 
     /// Question-answering: retrieves the best CHUNKS as context (the LLM wants
-    /// sections, not one-per-note) and asks the configured LLM. With a
-    /// reranker, exactly `top_k` chunks; without one, `top_k` is ignored and
-    /// the configured context cut decides the context size
-    /// ([`score_range_cut`] / [`largest_drop_cut`]). Fails with [`RagError::SemanticOnly`] when
-    /// no LLM is configured; the gate runs before the vector search so no work
-    /// is thrown away.
+    /// sections, not one-per-note) and asks the configured LLM. The context
+    /// cut sizes the context on the ranked pool — reranked scores when a
+    /// reranker is active, vector scores otherwise (adr/0029); `top_k` only
+    /// applies under the `fixed` cut. Fails with [`RagError::SemanticOnly`]
+    /// when no LLM is configured; the gate runs before the vector search so no
+    /// work is thrown away.
     pub async fn answer(
         &self,
         collection: &CollectionKey,
@@ -391,20 +395,9 @@ impl KimunRag {
     ) -> Result<Answer, RagError> {
         let llm = self.llm_client.clone().ok_or(RagError::SemanticOnly)?;
         let raw = self.retrieve(collection, question).await?;
-        let context = match &self.reranker {
-            // Same mid-query degradation as `search`: a failed rerank falls
-            // back to the no-reranker path instead of failing the request.
-            Some(reranker) => match reranker.rerank(question, &raw, top_k).await {
-                Ok(context) => context,
-                Err(e) => {
-                    log::warn!(
-                        "Reranker failed during answer ({e:#}); falling back to the context cut"
-                    );
-                    self.cut_context(raw)
-                }
-            },
-            None => self.cut_context(raw),
-        };
+        let mut context = self.rank(question, raw).await;
+        let cut = self.cut_len(&context, top_k);
+        context.truncate(cut);
         let text = llm.ask(question, &context).await?;
         Ok(Answer {
             text,
@@ -412,13 +405,35 @@ impl KimunRag {
         })
     }
 
-    /// Applies the configured **context cut** to a best-first pool — the
-    /// no-reranker sizing for `answer`, also the fallback when a rerank fails
-    /// mid-query.
-    fn cut_context(&self, raw: Vec<ScoredChunk>) -> Vec<ScoredChunk> {
+    /// Ranks the retrieved pool: the full pool through the reranker when one
+    /// is active, the vector order otherwise. A mid-query reranker failure
+    /// (endpoint 503, network blip) must not fail the request — the
+    /// vector-ranked pool is already in hand, so degrade to it, same policy
+    /// as a failed init at startup.
+    async fn rank(&self, query: &str, raw: Vec<ScoredChunk>) -> Vec<ScoredChunk> {
+        let Some(reranker) = &self.reranker else {
+            // `deduplicate_chunks` already sorted best-first.
+            return raw;
+        };
+        match reranker.rerank(query, &raw, raw.len()).await {
+            Ok(ranked) => ranked,
+            Err(e) => {
+                log::warn!(
+                    "Reranker failed mid-query ({e:#}); falling back to plain vector ranking"
+                );
+                raw
+            }
+        }
+    }
+
+    /// How many chunks of the best-first `ranked` pool the configured
+    /// **context cut** keeps. Every cut is a prefix cut, so a length is the
+    /// whole answer — callers truncate or slice.
+    fn cut_len(&self, ranked: &[ScoredChunk], top_k: usize) -> usize {
         match self.context_cut {
-            ContextCut::ScoreRange => score_range_cut(raw, self.score_range_cutoff),
-            ContextCut::LargestDrop => largest_drop_cut(raw),
+            ContextCut::Fixed => top_k.min(ranked.len()),
+            ContextCut::ScoreRange => score_range_cut_len(ranked, self.score_range_cutoff),
+            ContextCut::LargestDrop => largest_drop_cut_len(ranked, self.drop_window),
         }
     }
 
@@ -636,10 +651,10 @@ fn dedupe_by_note(ranked: Vec<ScoredChunk>, top_k: usize) -> Vec<ScoredChunk> {
 /// shift/scale invariant, so negative scores need no special casing; a flat
 /// range carries no signal to cut on and the pool is kept whole. `sorted`
 /// must be best-first, which [`deduplicate_chunks`] guarantees.
-fn score_range_cut(mut sorted: Vec<ScoredChunk>, cutoff: f64) -> Vec<ScoredChunk> {
+fn score_range_cut_len(sorted: &[ScoredChunk], cutoff: f64) -> usize {
     let n = sorted.len();
     if n == 0 {
-        return sorted;
+        return 0;
     }
     // Best-first order: the high percentile sits near the front, the low one
     // near the back. floor/ceil bias both endpoints toward the bulk.
@@ -647,15 +662,13 @@ fn score_range_cut(mut sorted: Vec<ScoredChunk>, cutoff: f64) -> Vec<ScoredChunk
     let low = sorted[((1.0 - RANGE_LOW_PERCENTILE) * (n - 1) as f64).ceil() as usize].0;
     let range = high - low;
     if range <= 0.0 {
-        return sorted;
+        return n;
     }
     let cutoff = low + cutoff * range;
-    let keep = sorted
+    sorted
         .iter()
         .take_while(|(score, _)| *score >= cutoff)
-        .count();
-    sorted.truncate(keep);
-    sorted
+        .count()
 }
 
 /// The [`ContextCut::LargestDrop`] cut: find the biggest RELATIVE drop
@@ -681,7 +694,7 @@ fn score_range_cut(mut sorted: Vec<ScoredChunk>, cutoff: f64) -> Vec<ScoredChunk
 /// tiny steps that structurally masks the real elbow. The kept context is
 /// then every pool chunk at or above the gap-closing note's best score, so
 /// kept notes' extra sections ride along.
-fn largest_drop_cut(mut sorted: Vec<ScoredChunk>) -> Vec<ScoredChunk> {
+fn largest_drop_cut_len(sorted: &[ScoredChunk], (window_min, window_max): (usize, usize)) -> usize {
     use std::collections::HashSet;
 
     // First occurrence per note in the best-first pool = that note's best.
@@ -694,7 +707,7 @@ fn largest_drop_cut(mut sorted: Vec<ScoredChunk>) -> Vec<ScoredChunk> {
 
     // (relative drop, notes above the gap)
     let mut best: Option<(f64, usize)> = None;
-    for keep in DROP_WINDOW_MIN..=DROP_WINDOW_MAX.min(note_best.len().saturating_sub(1)) {
+    for keep in window_min.max(1)..=window_max.min(note_best.len().saturating_sub(1)) {
         let base = note_best[keep - 1];
         if base <= 0.0 {
             break;
@@ -704,18 +717,19 @@ fn largest_drop_cut(mut sorted: Vec<ScoredChunk>) -> Vec<ScoredChunk> {
             best = Some((drop, keep));
         }
     }
-    if let Some((_, keep)) = best {
-        // `keep` notes above the gap + the gap-closing one below it: keep
-        // every chunk scoring at least that note's best (a prefix — the pool
-        // is sorted).
-        let boundary = note_best[keep];
-        let cut = sorted
-            .iter()
-            .take_while(|(score, _)| *score >= boundary)
-            .count();
-        sorted.truncate(cut);
+    match best {
+        Some((_, keep)) => {
+            // `keep` notes above the gap + the gap-closing one below it: keep
+            // every chunk scoring at least that note's best (a prefix — the
+            // pool is sorted).
+            let boundary = note_best[keep];
+            sorted
+                .iter()
+                .take_while(|(score, _)| *score >= boundary)
+                .count()
+        }
+        None => sorted.len(),
     }
-    sorted
 }
 
 /// Deduplicates embedding results by FlattenedChunk (keeping the highest score
@@ -1012,7 +1026,8 @@ mod tests {
     async fn search_returns_one_result_per_note_and_top_k_counts_notes() {
         // Chunk-level top_k=2 would return two /a.md chunks → one note after the
         // client's one-row-per-note collapse; search must surface A and B.
-        let rag = rag(section_heavy_store(), false);
+        // (Fixed cut — the strategy where top_k governs the search surface.)
+        let rag = rag(section_heavy_store(), false).with_context_cut(ContextCut::Fixed);
         let out = rag.search(&key("vault-1"), "q", 2).await.unwrap();
         assert_eq!(out.len(), 2, "top_k counts NOTES, not chunks");
         assert_eq!(out[0].1.doc_path, "/a.md");
@@ -1031,7 +1046,9 @@ mod tests {
             ],
             ..Default::default()
         };
+        // Fixed cut: this test is about chunk dedup, not the adaptive cut.
         let out = rag(store, false)
+            .with_context_cut(ContextCut::Fixed)
             .search(&key("vault-1"), "q", 10)
             .await
             .unwrap();
@@ -1085,7 +1102,7 @@ mod tests {
         // Min-max normalization only sees relative position, so negative
         // scores need no special casing: -0.1 normalizes to 1.0, -0.5 to 0.0.
         let pool: Vec<ScoredChunk> = vec![(-0.1, chunk("/a.md", "a")), (-0.5, chunk("/b.md", "b"))];
-        assert_eq!(score_range_cut(pool, NO_RERANK_NORM_CUTOFF).len(), 1);
+        assert_eq!(score_range_cut_len(&pool, NO_RERANK_NORM_CUTOFF), 1);
 
         // Flat scores carry no signal to cut on — everything stays.
         let flat: Vec<ScoredChunk> = vec![
@@ -1093,9 +1110,9 @@ mod tests {
             (0.7, chunk("/b.md", "b")),
             (0.7, chunk("/c.md", "c")),
         ];
-        assert_eq!(score_range_cut(flat, NO_RERANK_NORM_CUTOFF).len(), 3);
+        assert_eq!(score_range_cut_len(&flat, NO_RERANK_NORM_CUTOFF), 3);
 
-        assert!(score_range_cut(Vec::new(), NO_RERANK_NORM_CUTOFF).is_empty());
+        assert_eq!(score_range_cut_len(&[], NO_RERANK_NORM_CUTOFF), 0);
     }
 
     /// A pool of `n` chunks with the given scores, distinct paths.
@@ -1118,24 +1135,29 @@ mod tests {
         scores.extend([0.65; 15]);
         scores.extend([0.60, 0.05]);
         assert_eq!(
-            score_range_cut(pool(&scores), NO_RERANK_NORM_CUTOFF).len(),
+            score_range_cut_len(&pool(&scores), NO_RERANK_NORM_CUTOFF),
             4
         );
 
         // The cutoff is tunable (config score_range_cutoff): at 0.5 the raw
         // line moves to 0.60 + 0.5×0.24 = 0.72 and the 0.70 chunk drops.
-        let mut scores = vec![0.85, 0.84, 0.75, 0.70];
-        scores.extend([0.65; 15]);
-        scores.extend([0.60, 0.05]);
-        assert_eq!(score_range_cut(pool(&scores), 0.5).len(), 3);
+        assert_eq!(score_range_cut_len(&pool(&scores), 0.5), 3);
     }
+
+    /// The default largest-drop window in tuple form, for direct cut tests.
+    const DW: (usize, usize) = (DROP_WINDOW_MIN, DROP_WINDOW_MAX);
 
     #[test]
     fn largest_drop_cut_cuts_at_the_biggest_gap_in_the_window() {
         // Biggest gap sits between positions 5 and 6 → keep the 5 above it
         // plus the element that closes the gap → 6.
         let p = pool(&[0.90, 0.89, 0.88, 0.87, 0.86, 0.50, 0.49, 0.48]);
-        assert_eq!(largest_drop_cut(p).len(), 6);
+        assert_eq!(largest_drop_cut_len(&p, DW), 6);
+
+        // The window is a config knob now: narrowing it to 3..=4 hides the
+        // big gap and the largest in-window drop (0.87→0.86) wins instead —
+        // keep through its gap-closer.
+        assert_eq!(largest_drop_cut_len(&p, (3, 4)), 5);
     }
 
     #[test]
@@ -1144,12 +1166,12 @@ mod tests {
         // between positions 2 and 3 (cut would keep 2 < window min) is not a
         // candidate; the window itself is flat → no elbow → whole pool stays.
         let p = pool(&[0.90, 0.90, 0.20, 0.20, 0.20, 0.20, 0.20]);
-        assert_eq!(largest_drop_cut(p).len(), 7);
+        assert_eq!(largest_drop_cut_len(&p, DW), 7);
 
         // Same beyond the far edge: flat through position 30, cliff at 31.
         let mut scores = vec![0.9; 31];
         scores.extend([0.1; 4]);
-        assert_eq!(largest_drop_cut(pool(&scores)).len(), 35);
+        assert_eq!(largest_drop_cut_len(&pool(&scores), DW), 35);
     }
 
     #[test]
@@ -1170,9 +1192,9 @@ mod tests {
             (0.62, chunk("/d.md", "s1")),
             (0.55, chunk("/e.md", "s1")),
         ];
-        let kept = largest_drop_cut(p);
-        assert_eq!(kept.len(), 7, "everything ≥ the gap-closing note's .62");
-        assert!(kept.iter().all(|(s, _)| *s >= 0.62));
+        let kept = largest_drop_cut_len(&p, DW);
+        assert_eq!(kept, 7, "everything ≥ the gap-closing note's .62");
+        assert!(p[..kept].iter().all(|(s, _)| *s >= 0.62));
     }
 
     #[test]
@@ -1181,16 +1203,16 @@ mod tests {
         // (0.30−0.15)/0.30 at gap 5 → the earliest wins, plus the gap-closing
         // element → 4.
         let p = pool(&[0.90, 0.89, 0.80, 0.40, 0.30, 0.15, 0.10]);
-        assert_eq!(largest_drop_cut(p).len(), 4);
+        assert_eq!(largest_drop_cut_len(&p, DW), 4);
 
         // At or below the window start there is nothing to search.
-        assert_eq!(largest_drop_cut(pool(&[0.9, 0.2, 0.1])).len(), 3);
-        assert!(largest_drop_cut(Vec::new()).is_empty());
+        assert_eq!(largest_drop_cut_len(&pool(&[0.9, 0.2, 0.1]), DW), 3);
+        assert_eq!(largest_drop_cut_len(&[], DW), 0);
 
         // Relative gaps need a positive base: non-positive scores can't form
         // an elbow, so an all-negative pool stays whole.
         let negatives = pool(&[-0.1, -0.2, -0.3, -0.4, -0.5]);
-        assert_eq!(largest_drop_cut(negatives).len(), 5);
+        assert_eq!(largest_drop_cut_len(&negatives, DW), 5);
     }
 
     /// A reranker whose every call fails — the mid-query degradation path.
@@ -1210,17 +1232,66 @@ mod tests {
 
     #[tokio::test]
     async fn search_and_answer_degrade_to_vector_ranking_when_the_reranker_fails() {
-        // search: falls back to the vector-ranked pool → note-dedup still cuts.
+        // search: falls back to the vector-ranked pool, and the cut still
+        // applies — score-range keeps the three /a.md chunks of the
+        // 0.99/0.98/0.97/0.80/0.70 store → one surviving note.
         let searcher = rag(section_heavy_store(), true).with_reranker(Arc::new(FailingReranker));
         let out = searcher.search(&key("v"), "q", 2).await.unwrap();
-        assert_eq!(out.len(), 2, "request succeeds on the raw pool");
+        assert_eq!(out.len(), 1, "request succeeds on the raw pool");
         assert_eq!(out[0].1.doc_path, "/a.md");
 
-        // answer: falls back to the configured context cut (score-range keeps
-        // 3 of the 0.99/0.98/0.97/0.80/0.70 store, same as with no reranker).
+        // answer: same fallback, same cut → 3 chunks of context.
         let answerer = rag(section_heavy_store(), true).with_reranker(Arc::new(FailingReranker));
         let answer = answerer.answer(&key("v"), "q", 2).await.unwrap();
         assert_eq!(answer.sources.len(), 3);
+    }
+
+    /// Scores the first chunk high and the rest low, preserving order — the
+    /// cut must read THESE scores, not the vector ones.
+    struct SpikyReranker;
+
+    #[async_trait::async_trait]
+    impl Reranker for SpikyReranker {
+        async fn rerank(
+            &self,
+            _query: &str,
+            results: &[ScoredChunk],
+            top_k: usize,
+        ) -> anyhow::Result<Vec<ScoredChunk>> {
+            Ok(results
+                .iter()
+                .enumerate()
+                .map(|(i, (_, c))| (if i == 0 { 0.9 } else { 0.1 }, c.clone()))
+                .take(top_k)
+                .collect())
+        }
+    }
+
+    #[tokio::test]
+    async fn the_cut_runs_on_reranked_scores() {
+        // Vector scores are flat (no cut signal at all); the reranker's spiky
+        // scores are what the score-range cut must see → 1-chunk context,
+        // top_k ignored (adr/0029).
+        let store = || FakeVectorStore {
+            results: pool(&[0.7, 0.7, 0.7, 0.7, 0.7]),
+            ..Default::default()
+        };
+        let adaptive = rag(store(), true).with_reranker(Arc::new(SpikyReranker));
+        let answer = adaptive.answer(&key("v"), "q", 4).await.unwrap();
+        assert_eq!(answer.sources.len(), 1, "cut on reranked scores");
+        assert_eq!(answer.sources[0].0, 0.9);
+
+        // fixed keeps exactly top_k reranked chunks — the classic behavior.
+        let fixed = rag(store(), true)
+            .with_reranker(Arc::new(SpikyReranker))
+            .with_context_cut(ContextCut::Fixed);
+        let answer = fixed.answer(&key("v"), "q", 4).await.unwrap();
+        assert_eq!(answer.sources.len(), 4);
+
+        // search with a reranker: only the surviving note shows.
+        let searcher = rag(store(), false).with_reranker(Arc::new(SpikyReranker));
+        let rows = searcher.search(&key("v"), "q", 10).await.unwrap();
+        assert_eq!(rows.len(), 1);
     }
 
     #[tokio::test]
@@ -1244,18 +1315,20 @@ mod tests {
             Some((0.97, 0.80)),
             "boundary = last kept / first dropped pool score"
         );
-        // Displayed rows are each note's best chunk: only /a.md's is in the
-        // would-be context; /b.md (0.80) and /c.md (0.70) fall below the cut.
+        // The search surface now shows exactly the surviving notes: /a.md's
+        // best chunk is in the context, /b.md (0.80) and /c.md (0.70) fell
+        // below the cut — one row.
+        assert_eq!(hits.len(), 1);
         assert!(preview.context.contains(&hits[0].1));
-        assert!(!preview.context.contains(&hits[1].1));
 
-        // With a reranker attached, answers use exactly top_k — no preview.
+        // With a reranker attached the cut (and its preview) still applies —
+        // here the reranker fails, so the cut runs on the vector order.
         let reranked = rag(section_heavy_store(), false).with_reranker(Arc::new(FailingReranker));
         let (_, preview) = reranked
             .search_with_cut_preview(&key("v"), "q", 10)
             .await
             .unwrap();
-        assert!(preview.is_none());
+        assert!(preview.is_some(), "preview on the reranked path too");
     }
 
     #[tokio::test]
