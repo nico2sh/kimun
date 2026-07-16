@@ -127,8 +127,20 @@ model = "gemini-2.5-flash-preview-04-17"
 enabled = true
 
 # Default number of results returned by search/answer, overridable per request
-# via context_size. Applies with or without reranking (default: 20).
+# via context_size (default: 20). One exception: answer without a reranker
+# ignores it — the context cut below decides the LLM context size from the
+# pool's score shape, not a fixed count.
 top_k = 20
+
+# Context cut algorithm for answer when no reranker is active (adr/0027):
+#   "score-range"  (default) — similarity scores are min-max normalized within
+#                   the retrieved pool; chunks in the top half of the range
+#                   join the LLM context.
+#   "largest-drop" — cut at the biggest drop between consecutive scores,
+#                   searched at positions 3-30 of the (descending) pool; no
+#                   drop found there means no cut.
+# Flat scores mean no relevance boundary: neither algorithm cuts.
+# context_cut = "score-range"
 
 # Local fastembed cross-encoder (BGE-Reranker-Base), the default. Downloads
 # the model from Hugging Face on first start — independent of the [embedder]

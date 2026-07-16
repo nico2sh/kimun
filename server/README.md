@@ -133,8 +133,12 @@ See `config.example.toml` for the annotated template. Sections:
   `model`, optional `api_key`. The key is server-owned; if omitted it falls back
   to the provider's env var (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
   `GEMINI_API_KEY`, `MISTRAL_API_KEY`). Kimün never sends a key.
-- **`[reranker]`** — `enabled` (default true), `top_k` (default result count
-  with or without reranking, overridable per request via `context_size`), and
+- **`[reranker]`** — `enabled` (default true), `top_k` (default result count,
+  overridable per request via `context_size`; `answer` without a reranker
+  ignores it — see `context_cut`), `context_cut` (how the no-reranker answer
+  context is sized from the pool's score shape: `score-range`, the default,
+  keeps the top half of the min-max-normalized score range; `largest-drop`
+  cuts at the biggest score gap found at pool positions 3–30 — adr/0027), and
   a backend:
   - `type = "fastembed"` (default) — local cross-encoder, model downloaded
     from Hugging Face on first start regardless of the `[embedder]` choice.
