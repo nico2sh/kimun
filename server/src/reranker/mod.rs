@@ -17,11 +17,13 @@ pub use http::HttpReranker;
 #[async_trait]
 pub trait Reranker: Send + Sync {
     /// Reranks `results` against `query`; returns the `top_k` best, sorted by
-    /// relevance score descending.
+    /// relevance score descending. Borrows the pool so a failed rerank leaves
+    /// it in the caller's hands — the query pipeline falls back to plain
+    /// vector ranking instead of failing the request.
     async fn rerank(
         &self,
         query: &str,
-        results: Vec<(f64, FlattenedChunk)>,
+        results: &[(f64, FlattenedChunk)],
         top_k: usize,
     ) -> anyhow::Result<Vec<(f64, FlattenedChunk)>>;
 }
@@ -46,6 +48,44 @@ pub async fn from_config(cfg: &RerankerConfig) -> anyhow::Result<Arc<dyn Reranke
 /// indexes, so both backends judge identical inputs.
 pub(crate) fn rerank_document(chunk: &FlattenedChunk) -> String {
     format!("{}\n{}", chunk.title, chunk.text)
+}
+
+/// Shared back half of every reranker: validates the scored `(index, score)`
+/// pairs against the submitted pool (exactly one score per document, each
+/// index in range and unique — a violating backend is a provider bug that
+/// must surface, not silently duplicate or drop chunks), then sorts
+/// best-first and materializes only the `top_k` kept chunks.
+pub(crate) fn select_top_chunks(
+    mut scored: Vec<(usize, f64)>,
+    results: &[(f64, FlattenedChunk)],
+    top_k: usize,
+) -> anyhow::Result<Vec<(f64, FlattenedChunk)>> {
+    if scored.len() != results.len() {
+        anyhow::bail!(
+            "rerank returned {} scores for a {}-document request",
+            scored.len(),
+            results.len()
+        );
+    }
+    let mut seen = vec![false; results.len()];
+    for &(index, _) in &scored {
+        let slot = seen.get_mut(index).ok_or_else(|| {
+            anyhow::anyhow!(
+                "rerank returned index {index} for a {}-document request",
+                results.len()
+            )
+        })?;
+        if *slot {
+            anyhow::bail!("rerank returned index {index} more than once");
+        }
+        *slot = true;
+    }
+    scored.sort_by(|a, b| b.1.total_cmp(&a.1));
+    scored.truncate(top_k);
+    Ok(scored
+        .into_iter()
+        .map(|(index, score)| (score, results[index].1.clone()))
+        .collect())
 }
 
 /// Reranker for improving search result quality using cross-encoder models
@@ -76,11 +116,11 @@ impl Reranker for CrossEncoderReranker {
     async fn rerank(
         &self,
         query: &str,
-        results: Vec<(f64, FlattenedChunk)>,
+        results: &[(f64, FlattenedChunk)],
         top_k: usize,
     ) -> anyhow::Result<Vec<(f64, FlattenedChunk)>> {
         if results.is_empty() {
-            return Ok(results);
+            return Ok(Vec::new());
         }
 
         // Prepare documents for reranking
@@ -104,22 +144,14 @@ impl Reranker for CrossEncoderReranker {
         })
         .await??;
 
-        // Sort by score and take top_k
-        let mut scored_results: Vec<(f64, FlattenedChunk)> = rerank_results
-            .into_iter()
-            .map(|result| {
-                let original_chunk = &results[result.index].1;
-                (result.score as f64, original_chunk.clone())
-            })
-            .collect();
-
-        // Sort by score descending
-        scored_results.sort_by(|(score_a, _), (score_b, _)| score_b.partial_cmp(score_a).unwrap());
-
-        // Take top_k
-        scored_results.truncate(top_k);
-
-        Ok(scored_results)
+        select_top_chunks(
+            rerank_results
+                .into_iter()
+                .map(|r| (r.index, r.score as f64))
+                .collect(),
+            results,
+            top_k,
+        )
     }
 }
 
@@ -155,7 +187,7 @@ mod tests {
         ];
 
         let results = reranker
-            .rerank("programming languages", chunks, 2)
+            .rerank("programming languages", &chunks, 2)
             .await
             .unwrap();
 

@@ -120,10 +120,12 @@ model = "gemini-2.5-flash-preview-04-17"
 # model = "mistral-large-latest"
 
 [reranker]
-# Enable reranking for better result ordering (default: true). If the reranker
-# fails to initialize (model download blocked, endpoint unreachable), the
-# server logs a warning and keeps running without reranking; /health then
-# reports "reranker": false.
+# Enable reranking for better result ordering (default: true). Reranker
+# failure is never fatal: if it fails to initialize (model download blocked,
+# endpoint unreachable) the server logs a warning and keeps running without
+# reranking — /health then reports "reranker": false with the reason under
+# "reranker_error" — and a rerank call failing mid-query degrades that
+# request to plain vector ranking.
 enabled = true
 
 # Default number of results returned by search/answer, overridable per request
@@ -136,9 +138,10 @@ top_k = 20
 #   "score-range"  (default) — similarity scores are min-max normalized within
 #                   the retrieved pool; chunks in the top half of the range
 #                   join the LLM context.
-#   "largest-drop" — cut at the biggest drop between consecutive scores,
-#                   searched at positions 3-30 of the (descending) pool; no
-#                   drop found there means no cut.
+#   "largest-drop" — cut at the biggest relative drop between consecutive
+#                   scores ((s[i] - s[i+1]) / s[i]), searched at positions
+#                   3-30 of the (descending) pool; no drop found there means
+#                   no cut.
 # Flat scores mean no relevance boundary: neither algorithm cuts.
 # context_cut = "score-range"
 

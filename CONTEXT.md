@@ -296,7 +296,7 @@ The **Kimün server**'s one door to everything done with a vault's content (`Kim
 _Avoid_: search pipeline (names one slice), RAG orchestrator, KimunRag as a prose term (the struct, not the concept).
 
 **Context cut**:
-The **query pipeline**'s rule for how many retrieved chunks become the LLM context on an **answer** when no reranker is active: sized by the shape of the pool's similarity scores, never by a fixed count, so the request's top_k does not apply there. Selectable by name — *score-range* keeps the chunks in the top half of the pool's normalized score range; *largest-drop* cuts at the biggest gap between consecutive scores found inside a fixed search window. Flat scores mean no evidence of a relevance boundary, so neither algorithm cuts.
+The **query pipeline**'s rule for how many retrieved chunks become the LLM context on an **answer** when no reranker is active: sized by the shape of the pool's similarity scores, never by a fixed count, so the request's top_k does not apply there. Selectable by name — *score-range* keeps the chunks in the top half of the pool's normalized score range; *largest-drop* cuts at the biggest relative gap between consecutive scores found inside a fixed search window. Flat scores mean no evidence of a relevance boundary, so neither algorithm cuts.
 _Avoid_: truncation (implies a fixed count), threshold (one algorithm's mechanism, not the concept), top_k (the count it deliberately ignores).
 
 **Vector store**:

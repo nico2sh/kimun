@@ -138,7 +138,8 @@ See `config.example.toml` for the annotated template. Sections:
   ignores it — see `context_cut`), `context_cut` (how the no-reranker answer
   context is sized from the pool's score shape: `score-range`, the default,
   keeps the top half of the min-max-normalized score range; `largest-drop`
-  cuts at the biggest score gap found at pool positions 3–30 — adr/0027), and
+  cuts at the biggest relative score gap found at pool positions 3–30 —
+  adr/0027), and
   a backend:
   - `type = "fastembed"` (default) — local cross-encoder, model downloaded
     from Hugging Face on first start regardless of the `[embedder]` choice.
@@ -151,10 +152,13 @@ See `config.example.toml` for the annotated template. Sections:
     Gemini, and Anthropic offer no rerank API — Anthropic points to Voyage
     for embeddings and reranking. See `config.example.toml` for each.
 
-  Reranker initialization failure (blocked model download, unreachable
-  endpoint) is non-fatal: the server logs a warning and runs without
-  reranking (`/health` reports `"reranker": false`). Unlike the embedder,
-  switching rerankers never invalidates stored vectors.
+  Reranker failure is non-fatal, at startup and at query time alike: an
+  initialization failure (blocked model download, unreachable endpoint) logs
+  a warning and the server runs without reranking (`/health` reports
+  `"reranker": false` with the reason under `"reranker_error"`), and a rerank
+  call failing mid-query degrades that request to plain vector ranking
+  instead of failing it. Unlike the embedder, switching rerankers never
+  invalidates stored vectors.
 
 ## API
 
@@ -167,8 +171,11 @@ use the configured `reranker.top_k`.
 Capability probe. Returns JSON:
 
 ```json
-{ "status": "ok", "reranker": true, "llm_provider": "claude", "auth_required": true }
+{ "status": "ok", "reranker": true, "reranker_error": null, "llm_provider": "claude", "auth_required": true }
 ```
+
+`reranker` reports the *active* reranker: `false` with a non-null
+`reranker_error` means one is configured but failed to initialize.
 
 ### `POST /api/index/docs`
 
