@@ -21,7 +21,8 @@ pub trait Reranker: Send + Sync {
     /// relevance in `0.0..=1.0`, higher = better** — the context cuts and the
     /// UI assume that scale; adapters own the conversion from their backend's
     /// native scale (e.g. the cross-encoder sigmoids its raw logits), and the
-    /// pipeline clamps and warns on violations. Returning indices (not
+    /// pipeline sigmoid-normalizes violating batches (zeroing non-finite
+    /// scores) with a warning. Returning indices (not
     /// chunks) keeps the hot path clone-free — the pipeline materializes the
     /// reordered pool by moving chunks it already owns. Borrows the pool so a
     /// failed rerank leaves it in the caller's hands — the query pipeline
@@ -135,7 +136,10 @@ impl Reranker for CrossEncoderReranker {
 
             // Create Vec<&String> which satisfies AsRef<[&String]>
             let doc_refs: Vec<&String> = documents.iter().collect();
-            let results = model_guard.rerank(&query_owned, doc_refs, true, None)?;
+            // return_documents = false: the pipeline consumes only
+            // (index, score) — echoing every candidate's text back would
+            // clone ~80 documents per query for nothing.
+            let results = model_guard.rerank(&query_owned, doc_refs, false, None)?;
             Ok(results)
         })
         .await??;
@@ -154,8 +158,10 @@ impl Reranker for CrossEncoderReranker {
     }
 }
 
-/// Order-preserving squash of a raw logit into `0..1`.
-fn sigmoid(x: f64) -> f64 {
+/// Order-preserving squash of a raw logit into `0..1`. Also used by the
+/// pipeline to normalize a score batch that violates the trait's 0..1
+/// contract — monotonic, so the ranking survives.
+pub(crate) fn sigmoid(x: f64) -> f64 {
     1.0 / (1.0 + (-x).exp())
 }
 

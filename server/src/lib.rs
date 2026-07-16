@@ -11,7 +11,7 @@ use crate::config::ContextCut;
 use crate::document::{FlattenedChunk, KimunDoc};
 
 // Re-export commonly used types and functions
-use crate::reranker::Reranker;
+use crate::reranker::{Reranker, sigmoid, validate_scored};
 pub use document::{KimunSection, split_chunks_for_rag};
 
 pub mod dbembeddings;
@@ -383,7 +383,9 @@ impl KimunRag {
         let rows = match self.context_cut {
             // fixed: top_k counts NOTES on the search surface — the classic
             // walk of the whole ranked pool until top_k distinct notes.
-            ContextCut::Fixed => dedupe_by_note(ranked, top_k),
+            // Floored to 1 like cut_len: a file-sourced zero must not
+            // silently empty every search.
+            ContextCut::Fixed => dedupe_by_note(ranked, top_k.max(1)),
             // adaptive: every note whose best chunk survives the cut.
             _ => {
                 let mut kept = ranked;
@@ -420,24 +422,45 @@ impl KimunRag {
     }
 
     /// Ranks the retrieved pool: the full pool through the reranker when one
-    /// is active, the vector order otherwise. A mid-query reranker failure
-    /// (endpoint 503, network blip) must not fail the request — the
-    /// vector-ranked pool is already in hand, so degrade to it, same policy
-    /// as a failed init at startup.
+    /// is active, the vector order otherwise. Any reranker misbehavior —
+    /// a failed call (endpoint 503, network blip) or a malformed return
+    /// (wrong count, duplicate or out-of-range index) — must not fail the
+    /// request: the vector-ranked pool is already in hand, so degrade to it,
+    /// same policy as a failed init at startup.
     ///
-    /// The reranker returns validated `(index, score)` pairs; the reorder
+    /// The `(index, score)` pairs are validated HERE, at the one consumption
+    /// point ([`validate_scored`] — count, uniqueness, range, sort), so no
+    /// impl can bypass the invariants the materialization relies on. The
+    /// trait's calibrated-score contract is enforced here too: a batch with
+    /// scores outside `0.0..=1.0` is sigmoid-normalized (order-preserving —
+    /// a plain clamp would flatten logit-scale batches into an uncuttable
+    /// 1.0 plateau) and non-finite scores drop to 0.0 (NaN would poison
+    /// every cut comparison), with a once-per-run warning. The reorder then
     /// moves the chunks this function already owns — no clones on the hot
-    /// path. This is also where the trait's calibrated-score contract is
-    /// enforced: scores outside `0.0..=1.0` are clamped (they would break
-    /// the context cuts — largest-drop needs positive bases) with a
-    /// once-per-run warning, since a backend emitting raw logits is
-    /// misconfigured, not fatal.
+    /// path.
     async fn rank(&self, query: &str, raw: Vec<ScoredChunk>) -> Vec<ScoredChunk> {
         let Some(reranker) = &self.reranker else {
             // `deduplicate_chunks` already sorted best-first.
             return raw;
         };
-        let order = match reranker.rerank(query, &raw).await {
+        let order = match reranker.rerank(query, &raw).await.and_then(|scored| {
+            let (scored, violated) = sanitize_scores(scored);
+            if violated
+                && !self
+                    .score_scale_warned
+                    .swap(true, std::sync::atomic::Ordering::Relaxed)
+            {
+                log::warn!(
+                    "Reranker returned scores outside 0..1 — normalized (sigmoid; non-finite → 0). \
+                     The context cuts assume calibrated relevance scores; check the rerank \
+                     endpoint's score scale"
+                );
+            }
+            // Re-validates (and re-sorts, now on sanitized scores) even
+            // though in-tree impls already did: the trait is public and the
+            // materialization below must never panic on a stranger's impl.
+            validate_scored(scored, raw.len())
+        }) {
             Ok(order) => order,
             Err(e) => {
                 log::warn!(
@@ -446,37 +469,23 @@ impl KimunRag {
                 return raw;
             }
         };
-        if order.iter().any(|(_, score)| !(0.0..=1.0).contains(score))
-            && !self
-                .score_scale_warned
-                .swap(true, std::sync::atomic::Ordering::Relaxed)
-        {
-            log::warn!(
-                "Reranker returned scores outside 0..1 — clamping. The context cuts assume \
-                 calibrated relevance scores; check the rerank endpoint's score scale"
-            );
-        }
-        // Indices were validated by the reranker (one per input, unique, in
-        // range), so every take() hits a full slot.
+        // Indices were validated above — every take() hits a full slot.
         let mut slots: Vec<Option<FlattenedChunk>> =
             raw.into_iter().map(|(_, chunk)| Some(chunk)).collect();
         order
             .into_iter()
-            .map(|(index, score)| {
-                (
-                    score.clamp(0.0, 1.0),
-                    slots[index].take().expect("validated unique index"),
-                )
-            })
+            .map(|(index, score)| (score, slots[index].take().expect("validated unique index")))
             .collect()
     }
 
     /// How many chunks of the best-first `ranked` pool the configured
     /// **context cut** keeps. Every cut is a prefix cut, so a length is the
-    /// whole answer — callers truncate or slice.
+    /// whole answer — callers truncate or slice. `top_k` is floored to 1:
+    /// the web form rejects 0, but a hand-edited config file bypasses that
+    /// gate, and under `fixed` a zero would silently empty every result.
     fn cut_len(&self, ranked: &[ScoredChunk], top_k: usize) -> usize {
         match self.context_cut {
-            ContextCut::Fixed => top_k.min(ranked.len()),
+            ContextCut::Fixed => top_k.max(1).min(ranked.len()),
             ContextCut::ScoreRange => score_range_cut_len(ranked, self.score_range_cutoff),
             ContextCut::LargestDrop => largest_drop_cut_len(ranked, self.drop_window),
         }
@@ -681,6 +690,36 @@ fn dedupe_by_note(ranked: Vec<ScoredChunk>, top_k: usize) -> Vec<ScoredChunk> {
         }
     }
     out
+}
+
+/// The pipeline half of the reranker score contract: scores must be
+/// calibrated `0..=1`. A batch violating that is sigmoid-normalized —
+/// monotonic, so the ranking survives, unlike a clamp that would flatten a
+/// logit-scale batch into an uncuttable plateau at 1.0 — and non-finite
+/// scores drop to 0.0 (NaN survives both sigmoid and clamp, and one NaN in
+/// the pool poisons every cut comparison into keeping nothing). The bool
+/// reports whether a violation was seen, for the once-per-run warning.
+fn sanitize_scores(scored: Vec<(usize, f64)>) -> (Vec<(usize, f64)>, bool) {
+    let violated = scored
+        .iter()
+        .any(|(_, score)| !score.is_finite() || !(0.0..=1.0).contains(score));
+    if !violated {
+        return (scored, false);
+    }
+    let sane = scored
+        .into_iter()
+        .map(|(index, score)| {
+            (
+                index,
+                if score.is_finite() {
+                    sigmoid(score)
+                } else {
+                    0.0
+                },
+            )
+        })
+        .collect();
+    (sane, true)
 }
 
 /// The [`ContextCut::ScoreRange`] cut. No count cut at all — scores are
@@ -1333,19 +1372,125 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn out_of_contract_reranker_scores_are_clamped() {
-        // Scores 5.0/4.0/3.0 violate the 0..1 contract: the pipeline clamps
-        // them (all → 1.0, a flat pool → score-range keeps everything) and
-        // the request still succeeds. Without the clamp, largest-drop would
-        // also see meaningless bases.
+    async fn out_of_contract_reranker_scores_are_sigmoid_normalized() {
+        // Scores 5.0/4.0/3.0 violate the 0..1 contract. The pipeline squashes
+        // the whole batch through a sigmoid — order-preserving, so the cuts
+        // still see the contrast (a clamp would flatten everything into an
+        // uncuttable 1.0 plateau and keep the whole pool): σ(5)≈.993,
+        // σ(4)≈.982, σ(3)≈.953 → score-range cutoff ≈ .969 keeps 2.
         let store = FakeVectorStore {
             results: pool(&[0.7, 0.7, 0.7]),
             ..Default::default()
         };
         let ragged = rag(store, true).with_reranker(Arc::new(LogitReranker));
         let answer = ragged.answer(&key("v"), "q", 2).await.unwrap();
-        assert_eq!(answer.sources.len(), 3, "clamped flat scores → keep all");
-        assert!(answer.sources.iter().all(|(s, _)| *s == 1.0));
+        assert_eq!(answer.sources.len(), 2, "normalized scores keep the cut");
+        assert!(
+            answer
+                .sources
+                .iter()
+                .all(|(s, _)| (0.0..=1.0).contains(s) && *s < 1.0)
+        );
+    }
+
+    /// First chunk gets a NaN score — the value that survives both sigmoid
+    /// and clamp, and poisons every cut comparison if it reaches the pool.
+    struct NanReranker;
+
+    #[async_trait::async_trait]
+    impl Reranker for NanReranker {
+        async fn rerank(
+            &self,
+            _query: &str,
+            results: &[ScoredChunk],
+        ) -> anyhow::Result<Vec<(usize, f64)>> {
+            Ok((0..results.len())
+                .map(|i| {
+                    (
+                        i,
+                        if i == 0 {
+                            f64::NAN
+                        } else {
+                            0.9 - i as f64 * 0.1
+                        },
+                    )
+                })
+                .collect())
+        }
+    }
+
+    #[tokio::test]
+    async fn nan_reranker_scores_do_not_empty_results() {
+        // A NaN score used to slip through the clamp, sort to the pool head,
+        // and turn every cut comparison false — all queries silently empty.
+        // Sanitizing maps it to 0.0 (bottom); the rest of the batch ranks.
+        let store = FakeVectorStore {
+            results: pool(&[0.7, 0.7, 0.7]),
+            ..Default::default()
+        };
+        let ragged = rag(store, true).with_reranker(Arc::new(NanReranker));
+        let answer = ragged.answer(&key("v"), "q", 3).await.unwrap();
+        assert!(!answer.sources.is_empty(), "NaN must not empty the results");
+        assert!(answer.sources.iter().all(|(s, _)| s.is_finite()));
+    }
+
+    /// A broken impl that skipped validation: one duplicate index per pair.
+    struct DuplicateIndexReranker;
+
+    #[async_trait::async_trait]
+    impl Reranker for DuplicateIndexReranker {
+        async fn rerank(
+            &self,
+            _query: &str,
+            results: &[ScoredChunk],
+        ) -> anyhow::Result<Vec<(usize, f64)>> {
+            Ok((0..results.len()).map(|_| (0, 0.5)).collect())
+        }
+    }
+
+    /// An impl still following the OLD trait contract: returns only its
+    /// top-1 pair instead of one per input.
+    struct ShortReranker;
+
+    #[async_trait::async_trait]
+    impl Reranker for ShortReranker {
+        async fn rerank(
+            &self,
+            _query: &str,
+            _results: &[ScoredChunk],
+        ) -> anyhow::Result<Vec<(usize, f64)>> {
+            Ok(vec![(0, 0.9)])
+        }
+    }
+
+    #[tokio::test]
+    async fn malformed_reranker_output_degrades_instead_of_panicking() {
+        // rank() re-validates at the consumption point: a duplicate index or
+        // a short return (both bypassing validate_scored) must fall back to
+        // the vector-ranked pool — never panic, never silently shrink it.
+        // On section_heavy_store's vector order, score-range keeps the three
+        // /a.md chunks → one search row, same as the failing-reranker test.
+        let dup = rag(section_heavy_store(), true).with_reranker(Arc::new(DuplicateIndexReranker));
+        let out = dup.search(&key("v"), "q", 2).await.unwrap();
+        assert_eq!(out.len(), 1, "duplicate index → vector-order fallback");
+        assert_eq!(out[0].1.doc_path, "/a.md");
+
+        let short = rag(section_heavy_store(), true).with_reranker(Arc::new(ShortReranker));
+        let out = short.search(&key("v"), "q", 2).await.unwrap();
+        assert_eq!(out.len(), 1, "short return → vector-order fallback");
+    }
+
+    #[tokio::test]
+    async fn zero_top_k_from_a_config_file_is_floored() {
+        // apply_form rejects top_k = 0, but a hand-edited TOML bypasses that
+        // gate — the pipeline floors to 1 instead of silently emptying every
+        // fixed-cut result.
+        let fixed = rag(section_heavy_store(), true).with_context_cut(ContextCut::Fixed);
+        assert_eq!(fixed.search(&key("v"), "q", 0).await.unwrap().len(), 1);
+        assert_eq!(
+            fixed.answer(&key("v"), "q", 0).await.unwrap().sources.len(),
+            1
+        );
     }
 
     #[tokio::test]
