@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/nico2sh/kimun/compare/kimun_server-v0.2.0...kimun_server-v0.3.0) - 2026-07-16
+
+### Added
+
+- dynamic top_k with reranked results
+- score configurable
+- test queries show truncated lists
+- restart server
+- improved gap detection
+- dynamic context cuts
+- embedded models from http
+
+### Fixed
+
+- addressing infinite/non-infinite normalized scores
+- UI improvements
+- sanitize scores on rerank
+- small correctness
+
+### Other
+
+- fixed docs
+- rerank trait manages the cutoff
+- tuned the cutoff algorithms
+- merge locally
+- embedding api examples
+
 ## [0.2.0](https://github.com/nico2sh/kimun/compare/kimun_server-v0.1.0...kimun_server-v0.2.0) - 2026-07-15
 
 ### Added
