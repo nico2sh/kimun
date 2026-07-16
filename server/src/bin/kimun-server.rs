@@ -221,14 +221,13 @@ async fn run_server(
     Ok(reason_rx.await.unwrap_or(Shutdown::Terminate))
 }
 
-/// Builds the query pipeline from config, or `None` on an *unconfigured*
-/// server — no embedder means no vector store (its dimension comes from the
-/// embedder) and no pipeline at all; every data endpoint rejects with 503
-/// until one is configured (adr/0024).
-/// Builds the pipeline from config. `Ok(None)` = unconfigured; the second
-/// tuple field is why the (non-fatal) reranker failed to initialize, if it
-/// did — surfaced via `/health` and the dashboard so `reranker: false` is
-/// distinguishable from "disabled by config".
+/// Builds the query pipeline from config. `Ok(None)` = *unconfigured* — no
+/// embedder means no vector store (its dimension comes from the embedder) and
+/// no pipeline at all; every data endpoint rejects with 503 until one is
+/// configured (adr/0024). The second tuple field is why the (non-fatal)
+/// reranker failed to initialize, if it did — surfaced via `/health` and the
+/// dashboard so `reranker: false` is distinguishable from "disabled by
+/// config".
 async fn create_rag_from_config(
     config: &RagConfig,
 ) -> anyhow::Result<Option<(KimunRag, Option<String>)>> {
