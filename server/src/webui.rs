@@ -1010,9 +1010,23 @@ async fn query_submit(State(state): State<Arc<AppState>>, Form(f): Form<QueryFor
     query_markup(&state, &collections, &f.vault_id, &f.query, Some(results))
 }
 
+/// Where the **context cut** would slice an answer on this query — rendered
+/// as a divider in the result list plus a summary line (adr/0027).
+struct CutSummary {
+    /// Displayed rows whose chunk made the would-be LLM context (they form a
+    /// prefix: rows and context are cut from the same score-ordered pool).
+    rows_in_context: usize,
+    /// Chunks the cut keeps (counts every chunk, including extra sections of
+    /// an already-listed note — the rows show only each note's best one).
+    context_chunks: usize,
+    pool_chunks: usize,
+    algorithm: &'static str,
+}
+
 /// Hits plus the wall-clock milliseconds the search took — the same duration
-/// the API reports as `query_time_ms`.
-type SearchOutcome = Result<(Vec<(f64, String, String)>, u64), String>;
+/// the API reports as `query_time_ms` — plus the context-cut preview when no
+/// reranker is active.
+type SearchOutcome = Result<(Vec<(f64, String, String)>, u64, Option<CutSummary>), String>;
 
 /// The same pipeline the API's `/api/embeddings` runs — the test query shows
 /// exactly what clients get (one row per note, top_k notes).
@@ -1026,17 +1040,27 @@ async fn run_search(state: &AppState, vault_id: &str, query: &str) -> SearchOutc
     let collection = crate::CollectionKey::parse(vault_id).map_err(|e| e.to_string())?;
     let top_k = state.config.reranker.top_k;
     let started = std::time::Instant::now();
-    let ranked = rag
-        .search(&collection, query, top_k)
+    let (ranked, preview) = rag
+        .search_with_cut_preview(&collection, query, top_k)
         .await
         .map_err(|e| e.to_string())?;
     let query_time_ms = started.elapsed().as_millis() as u64;
+    let cut = preview.map(|p| CutSummary {
+        rows_in_context: ranked
+            .iter()
+            .take_while(|(_, chunk)| p.context.contains(chunk))
+            .count(),
+        context_chunks: p.context.len(),
+        pool_chunks: p.pool_chunks,
+        algorithm: state.config.reranker.context_cut.label(),
+    });
     Ok((
         ranked
             .into_iter()
             .map(|(score, chunk)| (score, chunk.doc_path, chunk.text))
             .collect(),
         query_time_ms,
+        cut,
     ))
 }
 
@@ -1073,13 +1097,27 @@ fn query_markup(
             div #results {
                 @match outcome {
                     Err(e) => p .flash.err { (e) },
-                    Ok((hits, ms)) if hits.is_empty() => p .muted { (format!("No matches ({ms} ms).")) },
-                    Ok((hits, ms)) => {
+                    Ok((hits, ms, _)) if hits.is_empty() => p .muted { (format!("No matches ({ms} ms).")) },
+                    Ok((hits, ms, cut)) => {
                         h2 { (count_noun(hits.len(), "result")) " " span .muted { (format!("· {ms} ms")) } }
-                        @for (score, path, text) in &hits {
+                        @if let Some(cut) = &cut {
+                            p .muted {
+                                "Answer-context preview (" (cut.algorithm) "): the cut keeps "
+                                (cut.context_chunks) " of " (cut.pool_chunks)
+                                " pooled chunks — rows above the marker contribute to an answer's LLM context."
+                            }
+                        }
+                        @for (i, (score, path, text)) in hits.iter().enumerate() {
                             div .hit {
                                 div { span .mono { (path) } span .score { (format!("{score:.3}")) } }
                                 div .snippet { (truncate(text, 240)) }
+                            }
+                            @if let Some(cut) = &cut {
+                                @if i + 1 == cut.rows_in_context && i + 1 < hits.len() {
+                                    div .muted .mono style="border-top: 1px dashed currentColor; margin: 0.5rem 0; padding-top: 0.25rem; text-align: center;" {
+                                        (format!("── answer context cut ({}) ──", cut.algorithm))
+                                    }
+                                }
                             }
                         }
                     }
