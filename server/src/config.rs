@@ -316,6 +316,12 @@ pub struct RerankerConfig {
     /// and no cut runs). Editable from the web UI Config page.
     #[serde(default)]
     pub context_cut: ContextCut,
+    /// The score-range cut's normalized cutoff in `0.0..=1.0` (default 0.4):
+    /// chunks at or above this fraction of the pool's (percentile-measured)
+    /// score range join the LLM context. File-only tuning knob, carried by
+    /// web UI saves; values outside the range are clamped.
+    #[serde(default = "default_score_range_cutoff")]
+    pub score_range_cutoff: f64,
 }
 
 /// The no-reranker context cut algorithm — how many retrieved chunks become
@@ -325,7 +331,8 @@ pub struct RerankerConfig {
 #[serde(rename_all = "kebab-case")]
 pub enum ContextCut {
     /// Min-max normalize the pool's scores; chunks at or above 0.4 of the
-    /// range survive.
+    /// range survive. The range is measured between the pool's 5th/95th
+    /// score percentiles so outlier chunks can't stretch it.
     #[default]
     ScoreRange,
     /// Cut at the biggest relative drop between consecutive NOTE scores —
@@ -436,6 +443,10 @@ fn default_reranker_top_k() -> usize {
     20
 }
 
+fn default_score_range_cutoff() -> f64 {
+    0.4
+}
+
 /// A zero-config default: SQLite under the data dir, default `127.0.0.1`
 /// bind, no embedder (unconfigured, adr/0024), no LLM, no auth. This is what a
 /// first run with no config file boots from and writes to disk (adr/0022).
@@ -460,6 +471,7 @@ impl Default for RagConfig {
                 model: None,
                 api_key: None,
                 context_cut: ContextCut::default(),
+                score_range_cutoff: default_score_range_cutoff(),
             },
             auth: AuthConfig::default(),
         }
@@ -843,6 +855,13 @@ provider = "gemini"
         assert_eq!(cfg.reranker.provider, RerankerProvider::FastEmbed);
         assert!(cfg.reranker.url.is_none());
         assert_eq!(cfg.reranker.context_cut, ContextCut::ScoreRange);
+        assert_eq!(cfg.reranker.score_range_cutoff, 0.4);
+
+        let cfg: RagConfig = toml::from_str(
+            "[server]\n[vector_db]\ntype = \"qdrant\"\n[reranker]\nscore_range_cutoff = 0.5\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.reranker.score_range_cutoff, 0.5);
 
         let cfg: RagConfig = toml::from_str(
             "[server]\n[vector_db]\ntype = \"qdrant\"\n[reranker]\ncontext_cut = \"largest-drop\"\n",

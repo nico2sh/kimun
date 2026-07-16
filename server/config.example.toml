@@ -136,8 +136,9 @@ top_k = 20
 
 # Context cut algorithm for answer when no reranker is active (adr/0027):
 #   "score-range"  (default) — similarity scores are min-max normalized within
-#                   the retrieved pool; chunks at or above 0.4 of the range
-#                   join the LLM context.
+#                   the retrieved pool (range measured between the 5th/95th
+#                   score percentiles, so outliers can't stretch it); chunks
+#                   at or above 0.4 of the range join the LLM context.
 #   "largest-drop" — cut at the biggest relative drop between consecutive
 #                   NOTE scores (each note's best chunk,
 #                   (s[i] - s[i+1]) / s[i]), searched at note positions 3-30;
@@ -145,6 +146,10 @@ top_k = 20
 #                   above its score. No drop found there means no cut.
 # Flat scores mean no relevance boundary: neither algorithm cuts.
 # context_cut = "score-range"
+
+# Tuning knob for "score-range": the normalized cutoff in 0.0..=1.0
+# (default 0.4). Higher = stricter (fewer chunks). Ignored by "largest-drop".
+# score_range_cutoff = 0.4
 
 # Local fastembed cross-encoder (BGE-Reranker-Base), the default. Downloads
 # the model from Hugging Face on first start — independent of the [embedder]

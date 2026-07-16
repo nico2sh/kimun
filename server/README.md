@@ -137,7 +137,9 @@ See `config.example.toml` for the annotated template. Sections:
   overridable per request via `context_size`; `answer` without a reranker
   ignores it — see `context_cut`), `context_cut` (how the no-reranker answer
   context is sized from the pool's score shape: `score-range`, the default,
-  keeps chunks at or above 0.4 of the min-max-normalized score range;
+  keeps chunks at or above `score_range_cutoff` (default 0.4) of the
+  normalized score range, measured between the pool's 5th/95th score
+  percentiles so outliers can't stretch it;
   `largest-drop` cuts at the biggest relative gap between distinct notes'
   best scores at note positions 3–30, keeping the gap-closing note and every
   chunk above it — adr/0027), and
