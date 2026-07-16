@@ -313,7 +313,7 @@ pub struct RerankerConfig {
     pub api_key: Option<String>,
     /// Which **context cut** sizes the LLM context on `answer` when no
     /// reranker is active (with a reranker, exactly `top_k` chunks are used
-    /// and no cut runs). File-only knob, carried by web UI saves.
+    /// and no cut runs). Editable from the web UI Config page.
     #[serde(default)]
     pub context_cut: ContextCut,
 }
@@ -328,8 +328,9 @@ pub enum ContextCut {
     /// range survive.
     #[default]
     ScoreRange,
-    /// Cut at the biggest drop between consecutive scores, searched within a
-    /// fixed position window; no drop found means no cut.
+    /// Cut at the biggest relative drop between consecutive scores
+    /// (`(s[i] − s[i+1]) / s[i]`), searched within a fixed position window;
+    /// no drop found means no cut.
     LargestDrop,
 }
 
@@ -345,6 +346,17 @@ pub enum RerankerProvider {
     /// A Cohere/Jina-compatible `POST {url}/rerank` endpoint — covers Cohere,
     /// Jina AI, Voyage AI, and self-hosted vLLM or Infinity.
     Http,
+}
+
+impl RerankerProvider {
+    /// Human-readable backend label — the startup log and the web dashboard
+    /// share it (same pattern as [`EmbedderConfig::provider`]).
+    pub fn label(&self) -> &'static str {
+        match self {
+            RerankerProvider::FastEmbed => "local cross-encoder",
+            RerankerProvider::Http => "http",
+        }
+    }
 }
 
 // Default value functions
@@ -504,6 +516,10 @@ pub struct ConfigForm {
     #[serde(default)]
     pub reranker_enabled: Option<String>,
     pub reranker_top_k: String,
+    /// `score-range` | `largest-drop`. Defaulted (empty = keep the current
+    /// setting) so form posts predating the field still deserialize.
+    #[serde(default)]
+    pub context_cut: String,
     pub auth_token: String,
 }
 
@@ -675,6 +691,13 @@ impl RagConfig {
         cfg.vector_db = vector_db;
         cfg.reranker.enabled = f.reranker_enabled.is_some();
         cfg.reranker.top_k = top_k;
+        cfg.reranker.context_cut = match f.context_cut.as_str() {
+            // Stale form post predating the field: keep the current setting.
+            "" => self.reranker.context_cut,
+            "score-range" => ContextCut::ScoreRange,
+            "largest-drop" => ContextCut::LargestDrop,
+            other => anyhow::bail!("Unknown context cut: {other}"),
+        };
         // Blank keeps the current token (the password field is never pre-filled).
         if !f.auth_token.is_empty() {
             cfg.auth.token = Some(f.auth_token);
@@ -832,6 +855,36 @@ api_key = "k"
         assert_eq!(cfg.reranker.url.as_deref(), Some("https://api.cohere.com/v2"));
         assert_eq!(cfg.reranker.model.as_deref(), Some("rerank-v3.5"));
         assert_eq!(cfg.reranker.api_key.as_deref(), Some("k"));
+    }
+
+    #[test]
+    fn web_form_edits_the_context_cut() {
+        let cfg: RagConfig =
+            toml::from_str("[server]\n[vector_db]\ntype = \"sqlite\"\n[reranker]\n").unwrap();
+
+        // The form sends the select's value.
+        let mut f = form("none", "");
+        f.context_cut = "largest-drop".into();
+        assert_eq!(
+            cfg.apply_form(f).unwrap().reranker.context_cut,
+            ContextCut::LargestDrop
+        );
+
+        // A stale form post predating the field (empty value) keeps the
+        // current setting instead of silently resetting it.
+        let cfg: RagConfig = toml::from_str(
+            "[server]\n[vector_db]\ntype = \"sqlite\"\n[reranker]\ncontext_cut = \"largest-drop\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.apply_form(form("none", "")).unwrap().reranker.context_cut,
+            ContextCut::LargestDrop
+        );
+
+        // Garbage is a user-facing error, not a silent default.
+        let mut f = form("none", "");
+        f.context_cut = "biggest-elbow".into();
+        assert!(cfg.apply_form(f).is_err());
     }
 
     #[test]
@@ -1077,6 +1130,7 @@ path = "/data/old_lance"
             qdrant_collection: String::new(),
             reranker_enabled: Some("on".into()),
             reranker_top_k: "20".into(),
+            context_cut: String::new(),
             auth_token: String::new(),
         }
     }

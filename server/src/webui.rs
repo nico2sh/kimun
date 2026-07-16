@@ -413,6 +413,7 @@ async fn dashboard(State(state): State<Arc<AppState>>) -> Markup {
         }
         None => None,
     };
+    let reranker_active = state.rag.as_ref().is_some_and(|r| r.has_reranker());
     let body = html! {
         h1 { "Dashboard" }
         @if let Some((cols, notes, active)) = glance {
@@ -457,13 +458,15 @@ async fn dashboard(State(state): State<Arc<AppState>>) -> Markup {
                     } @else { "—" }
                 }
                 dt { "Reranker" } dd {
-                    @if c.reranker.enabled {
-                        @match c.reranker.provider {
-                            crate::config::RerankerProvider::FastEmbed => "on: local cross-encoder (top_k ",
-                            crate::config::RerankerProvider::Http => "on: http (top_k ",
-                        }
-                        (c.reranker.top_k) ")"
-                        @if let (crate::config::RerankerProvider::Http, Some(u)) = (c.reranker.provider, c.reranker.url.as_deref()) { " · " (u) }
+                    // Actual state, not config — matches /health: an enabled
+                    // reranker whose init failed must not read as "on".
+                    @if reranker_active {
+                        "on: " (c.reranker.provider.label()) " (top_k " (c.reranker.top_k) ")"
+                        @if let Some(u) = c.reranker.url.as_deref() { " · " (u) }
+                    } @else if c.reranker.enabled {
+                        "enabled but failed to start — using plain vector ranking. "
+                        a href="/logs" { "See the logs" } "."
+                        @if let Some(err) = &state.reranker_error { br; span .mono { (err) } }
                     } @else { "off" }
                 }
                 dt { "Auth" } dd { @if c.auth.token.is_some() { span .badge { "token required" } } @else { span .badge { "open" } } }
@@ -676,6 +679,25 @@ fn config_markup(state: &AppState, c: &RagConfig, flash: Option<Markup>) -> Mark
                 div .check { input type="checkbox" name="reranker_enabled" checked[c.reranker.enabled]; label style="margin:0" { "Enabled" } }
                 label { "Default results (top_k)" }
                 input type="number" name="reranker_top_k" value=(c.reranker.top_k);
+                noscript {
+                    p .muted { "(Without JavaScript all fields are shown: the context cut only applies while the reranker is disabled.)" }
+                }
+                // Shown only while the checkbox is unchecked (page script):
+                // the cut sizes no-reranker answers, so with reranking on it
+                // is inert. Hidden ≠ unsubmitted — the value still posts, so
+                // a save with reranking enabled keeps it.
+                div #context-cut-group {
+                    label { "Answer context cut (when no reranker is active)" }
+                    select name="context_cut" {
+                        option value="score-range" selected[c.reranker.context_cut == crate::config::ContextCut::ScoreRange] {
+                            "score-range — keep the top half of the normalized score range"
+                        }
+                        option value="largest-drop" selected[c.reranker.context_cut == crate::config::ContextCut::LargestDrop] {
+                            "largest-drop — cut at the biggest relative gap between consecutive scores"
+                        }
+                    }
+                    p .muted { "Sizes the LLM context for answers from the pool's score shape when no reranker runs — top_k does not apply there. The reranker backend (local model or HTTP endpoint) is a file-only setting; a save here keeps it." }
+                }
             }
             section .group {
                 h2 { "Auth" }
@@ -718,6 +740,17 @@ const bindDesc = (selectName, targetId) => {
   apply();
 };
 bindDesc('fastembed_model', 'fastembed-desc');
+// The context cut only matters while the reranker is off — hide it otherwise.
+// Same pageshow re-apply as bindVisibility (Firefox restores checkbox state
+// after scripts run, without firing 'change').
+const rerankerBox = document.querySelector('input[name="reranker_enabled"]');
+const cutGroup = document.getElementById('context-cut-group');
+const applyCutVisibility = () => {
+  cutGroup.style.display = rerankerBox.checked ? 'none' : '';
+};
+rerankerBox.addEventListener('change', applyCutVisibility);
+window.addEventListener('pageshow', applyCutVisibility);
+applyCutVisibility();
 "#))
         }
     };

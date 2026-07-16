@@ -95,37 +95,25 @@ impl Reranker for HttpReranker {
     async fn rerank(
         &self,
         query: &str,
-        results: Vec<(f64, FlattenedChunk)>,
+        results: &[(f64, FlattenedChunk)],
         top_k: usize,
     ) -> anyhow::Result<Vec<(f64, FlattenedChunk)>> {
         if results.is_empty() {
-            return Ok(results);
+            return Ok(Vec::new());
         }
         let documents = results
             .iter()
             .map(|(_, chunk)| rerank_document(chunk))
             .collect();
         let scored = self.rerank_texts(query, documents).await?;
-
-        let mut reranked = scored
-            .into_iter()
-            .map(|r| {
-                let chunk = results
-                    .get(r.index)
-                    .map(|(_, c)| c.clone())
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "rerank endpoint returned index {} for a {}-document request",
-                            r.index,
-                            results.len()
-                        )
-                    })?;
-                Ok((r.relevance_score, chunk))
-            })
-            .collect::<anyhow::Result<Vec<_>>>()?;
-        reranked.sort_by(|(a, _), (b, _)| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-        reranked.truncate(top_k);
-        Ok(reranked)
+        super::select_top_chunks(
+            scored
+                .into_iter()
+                .map(|r| (r.index, r.relevance_score))
+                .collect(),
+            results,
+            top_k,
+        )
     }
 }
 
@@ -186,7 +174,7 @@ mod tests {
         let out = r
             .rerank(
                 "q",
-                vec![
+                &[
                     (0.9, chunk("A", "a")),
                     (0.8, chunk("B", "b")),
                     (0.7, chunk("C", "c")),
@@ -227,7 +215,7 @@ mod tests {
 
         let r = HttpReranker::new(base, None, None).await.unwrap();
         let out = r
-            .rerank("q", vec![(0.9, chunk("A", "a")), (0.8, chunk("B", "b"))], 10)
+            .rerank("q", &[(0.9, chunk("A", "a")), (0.8, chunk("B", "b"))], 10)
             .await
             .unwrap();
 
@@ -259,9 +247,51 @@ mod tests {
 
         let r = HttpReranker::new(base, None, None).await.unwrap();
         let err = r
-            .rerank("q", vec![(0.9, chunk("A", "a"))], 5)
+            .rerank("q", &[(0.9, chunk("A", "a"))], 5)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("index 7"));
+    }
+
+    /// A duplicate index would silently duplicate one chunk and drop another —
+    /// same provider-bug class as out-of-range, same treatment. (The probe is
+    /// unaffected: it bypasses validation via rerank_texts.)
+    #[tokio::test]
+    async fn duplicate_index_is_an_error() {
+        let captured: Captured = Arc::new(Mutex::new(None));
+        let base = mock_endpoint(
+            serde_json::json!({"results": [
+                {"index": 0, "relevance_score": 0.9},
+                {"index": 0, "relevance_score": 0.8}
+            ]}),
+            captured.clone(),
+        )
+        .await;
+
+        let r = HttpReranker::new(base, None, None).await.unwrap();
+        let err = r
+            .rerank("q", &[(0.9, chunk("A", "a")), (0.8, chunk("B", "b"))], 5)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("more than once"));
+    }
+
+    /// Fewer scores than documents means chunks silently vanished server-side
+    /// (top_n is deliberately never sent, so a full list is the contract).
+    #[tokio::test]
+    async fn short_response_is_an_error() {
+        let captured: Captured = Arc::new(Mutex::new(None));
+        let base = mock_endpoint(
+            serde_json::json!({"results": [{"index": 0, "relevance_score": 0.9}]}),
+            captured.clone(),
+        )
+        .await;
+
+        let r = HttpReranker::new(base, None, None).await.unwrap();
+        let err = r
+            .rerank("q", &[(0.9, chunk("A", "a")), (0.8, chunk("B", "b"))], 5)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("1 scores for a 2-document request"));
     }
 }
