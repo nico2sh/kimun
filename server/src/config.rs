@@ -287,10 +287,10 @@ impl LlmConfig {
 pub struct RerankerConfig {
     #[serde(default = "default_reranker_enabled")]
     pub enabled: bool,
-    /// Default number of results returned by search/answer — applies whether
-    /// or not reranking is enabled (without a reranker the pool is already
-    /// sorted by vector score, so the cut still keeps the true top matches).
-    /// Overridable per request via `context_size`.
+    /// Default number of results returned by search/answer, overridable per
+    /// request via `context_size`. One exception: `answer` without a reranker
+    /// ignores it — the LLM context size is decided by the pool's normalized
+    /// similarity scores (chunks in the top half of the score range).
     #[serde(default = "default_reranker_top_k")]
     pub top_k: usize,
     /// How reranking runs: the local fastembed cross-encoder (default, model
@@ -311,6 +311,26 @@ pub struct RerankerConfig {
     /// Bearer token for `type = "http"` endpoints that need one.
     #[serde(default)]
     pub api_key: Option<String>,
+    /// Which **context cut** sizes the LLM context on `answer` when no
+    /// reranker is active (with a reranker, exactly `top_k` chunks are used
+    /// and no cut runs). File-only knob, carried by web UI saves.
+    #[serde(default)]
+    pub context_cut: ContextCut,
+}
+
+/// The no-reranker context cut algorithm — how many retrieved chunks become
+/// the LLM context on `answer`, sized by the pool's score shape rather than a
+/// fixed count (see `adr/0027`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ContextCut {
+    /// Min-max normalize the pool's scores; chunks in the top half of the
+    /// range survive.
+    #[default]
+    ScoreRange,
+    /// Cut at the biggest drop between consecutive scores, searched within a
+    /// fixed position window; no drop found means no cut.
+    LargestDrop,
 }
 
 /// Selects the reranker backend. Unlike the embedder this is not an invariant
@@ -415,6 +435,7 @@ impl Default for RagConfig {
                 url: None,
                 model: None,
                 api_key: None,
+                context_cut: ContextCut::default(),
             },
             auth: AuthConfig::default(),
         }
@@ -786,6 +807,13 @@ provider = "gemini"
             toml::from_str("[server]\n[vector_db]\ntype = \"qdrant\"\n[reranker]\n").unwrap();
         assert_eq!(cfg.reranker.provider, RerankerProvider::FastEmbed);
         assert!(cfg.reranker.url.is_none());
+        assert_eq!(cfg.reranker.context_cut, ContextCut::ScoreRange);
+
+        let cfg: RagConfig = toml::from_str(
+            "[server]\n[vector_db]\ntype = \"qdrant\"\n[reranker]\ncontext_cut = \"largest-drop\"\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.reranker.context_cut, ContextCut::LargestDrop);
 
         let cfg: RagConfig = toml::from_str(
             r#"
@@ -811,12 +839,13 @@ api_key = "k"
         // The form only edits enabled/top_k; provider fields are file-only
         // knobs (like embedder prefixes) and must survive a web UI save.
         let cfg: RagConfig = toml::from_str(
-            "[server]\n[vector_db]\ntype = \"sqlite\"\n[reranker]\ntype = \"http\"\nurl = \"https://api.jina.ai/v1\"\nmodel = \"jina-reranker-v2-base-multilingual\"\n",
+            "[server]\n[vector_db]\ntype = \"sqlite\"\n[reranker]\ntype = \"http\"\nurl = \"https://api.jina.ai/v1\"\nmodel = \"jina-reranker-v2-base-multilingual\"\ncontext_cut = \"largest-drop\"\n",
         )
         .unwrap();
         let saved = cfg.apply_form(form("none", "")).unwrap();
         assert_eq!(saved.reranker.provider, RerankerProvider::Http);
         assert_eq!(saved.reranker.url.as_deref(), Some("https://api.jina.ai/v1"));
+        assert_eq!(saved.reranker.context_cut, ContextCut::LargestDrop);
 
         // And the saved config must survive the serialize → reload cycle the
         // web UI persists through (save_to), including the tagged type field.
@@ -825,6 +854,7 @@ api_key = "k"
         saved.save_to(&path).unwrap();
         let reloaded = RagConfig::from_file(path).unwrap();
         assert_eq!(reloaded.reranker.provider, RerankerProvider::Http);
+        assert_eq!(reloaded.reranker.context_cut, ContextCut::LargestDrop);
         assert_eq!(reloaded.reranker.url.as_deref(), Some("https://api.jina.ai/v1"));
         assert_eq!(
             reloaded.reranker.model.as_deref(),

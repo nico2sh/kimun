@@ -7,6 +7,7 @@ use dbembeddings::{CollectionInfo, EmbeddedChunk, VectorStore};
 use llmclients::LLMClient;
 use log::debug;
 
+use crate::config::ContextCut;
 use crate::document::{FlattenedChunk, KimunDoc};
 
 // Re-export commonly used types and functions
@@ -146,6 +147,19 @@ const EMBED_BATCH: usize = 100;
 /// Candidate pool pulled from the vector store per query, before dedup and
 /// reranking cut it down.
 const CANDIDATE_POOL: usize = 80;
+/// No-reranker `answer` context: a chunk makes the LLM context when its
+/// min-max-normalized score — `(s - s_min) / (s_max - s_min)` over the query's
+/// pool — is at least this. Normalized (not an absolute cutoff) because
+/// absolute cosine bands are embedder-specific; within one query all pool
+/// scores share a scale, so the pool's own spread defines what "relevant"
+/// looks like.
+const NO_RERANK_NORM_CUTOFF: f64 = 0.5;
+/// [`ContextCut::LargestDrop`]'s search window: the biggest score drop is
+/// looked for at cut positions 3..=30 only. Below 3 a spiky top would starve
+/// the context; past 30 the tail's noise produces phantom elbows. A window,
+/// not a keep-clamp — when no drop exists inside it, nothing is cut.
+const DROP_WINDOW_MIN: usize = 3;
+const DROP_WINDOW_MAX: usize = 30;
 
 /// The query pipeline and its indexing half: the one door to everything the
 /// server does with a vault's content. Owns the embedder, the vector store, the
@@ -159,6 +173,8 @@ pub struct KimunRag {
     /// not (adr/0022).
     llm_client: Option<Arc<dyn LLMClient + Send + Sync>>,
     reranker: Option<Arc<dyn Reranker>>,
+    /// Which **context cut** sizes the no-reranker `answer` context (adr/0027).
+    context_cut: ContextCut,
     /// The embedder fingerprint this pipeline must find recorded with the
     /// store's data (adr/0025). `None` skips the gate (tests, callers that
     /// enforce it themselves).
@@ -182,9 +198,17 @@ impl KimunRag {
             embedder,
             llm_client,
             reranker: None,
+            context_cut: ContextCut::default(),
             expected_fingerprint: None,
             fingerprint_checked: tokio::sync::OnceCell::new(),
         }
+    }
+
+    /// Select the **context cut** for no-reranker answers (default:
+    /// [`ContextCut::ScoreRange`]).
+    pub fn with_context_cut(mut self, context_cut: ContextCut) -> Self {
+        self.context_cut = context_cut;
+        self
     }
 
     /// Attach a reranker (built by [`reranker::from_config`]). The caller owns
@@ -268,10 +292,13 @@ impl KimunRag {
         Ok(dedupe_by_note(ranked, top_k))
     }
 
-    /// Question-answering: retrieves the `top_k` best CHUNKS as context (the
-    /// LLM wants sections, not one-per-note) and asks the configured LLM.
-    /// Fails with [`RagError::SemanticOnly`] when no LLM is configured; the
-    /// gate runs before the vector search so no work is thrown away.
+    /// Question-answering: retrieves the best CHUNKS as context (the LLM wants
+    /// sections, not one-per-note) and asks the configured LLM. With a
+    /// reranker, exactly `top_k` chunks; without one, `top_k` is ignored and
+    /// the pool's normalized-score cutoff decides the context size
+    /// ([`adaptive_context_cut`]). Fails with [`RagError::SemanticOnly`] when
+    /// no LLM is configured; the gate runs before the vector search so no work
+    /// is thrown away.
     pub async fn answer(
         &self,
         collection: &CollectionKey,
@@ -282,7 +309,10 @@ impl KimunRag {
         let raw = self.retrieve(collection, question).await?;
         let context = match &self.reranker {
             Some(reranker) => reranker.rerank(question, raw, top_k).await?,
-            None => raw.into_iter().take(top_k).collect(),
+            None => match self.context_cut {
+                ContextCut::ScoreRange => score_range_cut(raw),
+                ContextCut::LargestDrop => largest_drop_cut(raw),
+            },
         };
         let text = llm.ask(question, &context).await?;
         Ok(Answer {
@@ -492,10 +522,58 @@ fn dedupe_by_note(ranked: Vec<ScoredChunk>, top_k: usize) -> Vec<ScoredChunk> {
     out
 }
 
+/// The [`ContextCut::ScoreRange`] cut. No count cut at all — scores are
+/// min-max normalized within the (already [`CANDIDATE_POOL`]-capped) pool and
+/// a chunk survives when its normalized score reaches
+/// [`NO_RERANK_NORM_CUTOFF`]: the pool's own spread decides how many chunks
+/// are relevant, not a fixed `top_k`. Normalization is shift/scale invariant,
+/// so negative scores need no special casing; a flat pool (zero range) carries
+/// no signal to cut on and is kept whole. `sorted` must be best-first, which
+/// [`deduplicate_chunks`] guarantees.
+fn score_range_cut(mut sorted: Vec<ScoredChunk>) -> Vec<ScoredChunk> {
+    let (Some(&(max, _)), Some(&(min, _))) = (sorted.first(), sorted.last()) else {
+        return sorted;
+    };
+    let range = max - min;
+    if range <= 0.0 {
+        return sorted;
+    }
+    let cutoff = min + NO_RERANK_NORM_CUTOFF * range;
+    let keep = sorted
+        .iter()
+        .take_while(|(score, _)| *score >= cutoff)
+        .count();
+    sorted.truncate(keep);
+    sorted
+}
+
+/// The [`ContextCut::LargestDrop`] cut: find the biggest drop between
+/// consecutive scores and cut there — the drop's position alone decides the
+/// kept count. The window is the *search range* for the drop (cut positions
+/// [`DROP_WINDOW`]), not a clamp: it stops degenerate elbows (a spiky top
+/// yielding a 1-chunk context, phantom gaps deep in the noise tail), and a
+/// window with no drop at all means no evidence of a relevance boundary — the
+/// pool stays whole, same philosophy as [`score_range_cut`]'s flat rule. Ties
+/// cut at the earliest drop (precision over recall). `sorted` must be
+/// best-first, which [`deduplicate_chunks`] guarantees.
+fn largest_drop_cut(mut sorted: Vec<ScoredChunk>) -> Vec<ScoredChunk> {
+    let mut best: Option<(f64, usize)> = None; // (drop, kept count)
+    for keep in DROP_WINDOW_MIN..=DROP_WINDOW_MAX.min(sorted.len().saturating_sub(1)) {
+        let drop = sorted[keep - 1].0 - sorted[keep].0;
+        if drop > 0.0 && best.is_none_or(|(largest, _)| drop > largest) {
+            best = Some((drop, keep));
+        }
+    }
+    if let Some((_, keep)) = best {
+        sorted.truncate(keep);
+    }
+    sorted
+}
+
 /// Deduplicates embedding results by FlattenedChunk (keeping the highest score
 /// per unique chunk) and returns them sorted best-first. Scores are similarities
-/// (higher = better) for both backends, so this ordering is what `take(top_k)`
-/// relies on when no reranker is present.
+/// (higher = better) for both backends, so this ordering is what the
+/// no-reranker cuts ([`adaptive_context_cut`], `search`'s note-dedup) rely on.
 fn deduplicate_chunks(results: Vec<ScoredChunk>) -> Vec<ScoredChunk> {
     let original_count = results.len();
     let mut dedup_map: HashMap<FlattenedChunk, f64> = HashMap::new();
@@ -814,17 +892,124 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn answer_keeps_chunk_level_context() {
-        // The LLM context is the top_k CHUNKS — /a.md may fill several slots.
+    async fn answer_keeps_chunk_level_context_cut_by_normalized_score() {
+        // The LLM context is CHUNKS — /a.md may fill several slots (no
+        // note-dedup) — and without a reranker the cut ignores top_k entirely:
+        // scores are min-max normalized within the pool and the top half
+        // survives. Here min 0.70 / max 0.99 → raw cutoff 0.845, so
+        // 0.99/0.98/0.97 stay while 0.80 (normalized 0.34) and 0.70 (0.0)
+        // drop, even though the request asked for top_k = 2.
         let rag = rag(section_heavy_store(), true);
         let answer = rag.answer(&key("vault-1"), "q", 2).await.unwrap();
         assert_eq!(answer.text, "answer");
-        assert_eq!(answer.sources.len(), 2);
+        assert_eq!(answer.sources.len(), 3);
         assert_eq!(answer.sources[0].1.doc_path, "/a.md");
         assert_eq!(
             answer.sources[1].1.doc_path, "/a.md",
             "chunk-level: no note-dedup"
         );
+    }
+
+    #[tokio::test]
+    async fn answer_without_reranker_has_no_count_floor() {
+        // A spiky top score trims the context to the genuinely relevant
+        // chunks: 0.4 and 0.3 normalize to 0.17 and 0.0 against a 0.9 top —
+        // below the 0.5 line, out, regardless of the requested top_k.
+        let store = FakeVectorStore {
+            results: vec![
+                (0.90, chunk("/a.md", "a1")),
+                (0.40, chunk("/b.md", "b1")),
+                (0.30, chunk("/c.md", "c1")),
+            ],
+            ..Default::default()
+        };
+        let answer = rag(store, true).answer(&key("vault-1"), "q", 2).await.unwrap();
+        assert_eq!(answer.sources.len(), 1);
+        assert_eq!(answer.sources[0].1.doc_path, "/a.md");
+    }
+
+    #[test]
+    fn score_range_cut_is_shift_invariant_and_keeps_flat_pools_whole() {
+        // Min-max normalization only sees relative position, so negative
+        // scores need no special casing: -0.1 normalizes to 1.0, -0.5 to 0.0.
+        let pool: Vec<ScoredChunk> = vec![
+            (-0.1, chunk("/a.md", "a")),
+            (-0.5, chunk("/b.md", "b")),
+        ];
+        assert_eq!(score_range_cut(pool).len(), 1);
+
+        // Flat scores carry no signal to cut on — everything stays.
+        let flat: Vec<ScoredChunk> = vec![
+            (0.7, chunk("/a.md", "a")),
+            (0.7, chunk("/b.md", "b")),
+            (0.7, chunk("/c.md", "c")),
+        ];
+        assert_eq!(score_range_cut(flat).len(), 3);
+
+        assert!(score_range_cut(Vec::new()).is_empty());
+    }
+
+    /// A pool of `n` chunks with the given scores, distinct paths.
+    fn pool(scores: &[f64]) -> Vec<ScoredChunk> {
+        scores
+            .iter()
+            .enumerate()
+            .map(|(i, &s)| (s, chunk(&format!("/n{i}.md"), "s")))
+            .collect()
+    }
+
+    #[test]
+    fn largest_drop_cut_cuts_at_the_biggest_gap_in_the_window() {
+        // Biggest gap sits between positions 5 and 6 → keep 5.
+        let p = pool(&[0.90, 0.89, 0.88, 0.87, 0.86, 0.50, 0.49, 0.48]);
+        assert_eq!(largest_drop_cut(p).len(), 5);
+    }
+
+    #[test]
+    fn largest_drop_cut_only_searches_the_window() {
+        // The window is where the drop is SEARCHED, not a keep-clamp. A cliff
+        // between positions 2 and 3 (cut would keep 2 < window min) is not a
+        // candidate; the window itself is flat → no elbow → whole pool stays.
+        let p = pool(&[0.90, 0.90, 0.20, 0.20, 0.20, 0.20, 0.20]);
+        assert_eq!(largest_drop_cut(p).len(), 7);
+
+        // Same beyond the far edge: flat through position 30, cliff at 31.
+        let mut scores = vec![0.9; 31];
+        scores.extend([0.1; 4]);
+        assert_eq!(largest_drop_cut(pool(&scores)).len(), 35);
+    }
+
+    #[test]
+    fn largest_drop_cut_ties_cut_earliest_and_small_pools_stay_whole() {
+        // Two equal 0.30 drops (keep 3 vs keep 5) → the earliest wins.
+        let p = pool(&[0.90, 0.89, 0.88, 0.58, 0.57, 0.27, 0.26]);
+        assert_eq!(largest_drop_cut(p).len(), 3);
+
+        // At or below the window start there is nothing to search.
+        assert_eq!(largest_drop_cut(pool(&[0.9, 0.2, 0.1])).len(), 3);
+        assert!(largest_drop_cut(Vec::new()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn answer_uses_the_configured_context_cut() {
+        // Scores where the two algorithms disagree: score-range keeps 2
+        // (min 0.84 / max 1.0 → cutoff 0.92, so 1.00 and 0.93 clear it),
+        // largest-drop keeps 3 (window drops tie at 0.02 → earliest; the
+        // bigger drops at positions 1 and 2 are outside the search window).
+        let scores = [1.00, 0.93, 0.88, 0.86, 0.84];
+        let store = || FakeVectorStore {
+            results: pool(&scores),
+            ..Default::default()
+        };
+        let default_cut = rag(store(), true);
+        assert_eq!(
+            default_cut.answer(&key("v"), "q", 2).await.unwrap().sources.len(),
+            2,
+            "default is score-range"
+        );
+
+        let elbow = rag(store(), true).with_context_cut(ContextCut::LargestDrop);
+        assert_eq!(elbow.answer(&key("v"), "q", 2).await.unwrap().sources.len(), 3);
     }
 
     #[tokio::test]

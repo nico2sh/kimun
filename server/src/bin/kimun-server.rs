@@ -301,7 +301,9 @@ async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<Option<Kim
             }
         };
 
-    let mut rag = KimunRag::new(store, embedder, llm_client).with_fingerprint(fingerprint);
+    let mut rag = KimunRag::new(store, embedder, llm_client)
+        .with_fingerprint(fingerprint)
+        .with_context_cut(config.reranker.context_cut);
 
     // Enable reranking if configured. Initialization failure (typically: the
     // cross-encoder model download failed — offline, proxy — or an unreachable
