@@ -6,7 +6,9 @@
 //! and run a test query. Config edits are **persisted to the TOML file and take
 //! effect on restart** — the embedder, vector store, and LLM client are all
 //! built at startup (changing the embedder even changes the vector width), so
-//! the running instance is never mutated live. The page says as much.
+//! the running instance is never mutated live. The page says as much, and the
+//! Restart button triggers that restart in-process (adr/0028): the binary's
+//! serving loop drains, re-reads the file, and rebinds.
 //!
 //! Auth reuses the server's bearer token: a login form exchanges the token for
 //! an `HttpOnly` session cookie holding that same shared secret. With no token
@@ -23,7 +25,7 @@ use axum::{
     },
     middleware::{self, Next},
     response::{IntoResponse, Redirect, Response},
-    routing::get,
+    routing::{get, post},
 };
 use maud::{DOCTYPE, Markup, html};
 use serde::Deserialize;
@@ -71,6 +73,7 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
     let protected = Router::new()
         .route("/", get(dashboard))
         .route("/config", get(config_page).post(config_submit))
+        .route("/restart", post(restart_submit))
         .route("/collections", get(collections_page))
         .route("/jobs", get(jobs_page))
         .route("/jobs/fragment", get(jobs_fragment))
@@ -334,6 +337,8 @@ input::placeholder{color:var(--muted)}
 .check{display:flex;align-items:center;gap:var(--sp-sm)}.check input{width:auto}
 button{margin-top:var(--sp-xl);padding:var(--sp-sm) var(--sp-xl);border:0;border-radius:6px;background:var(--accent);color:oklch(24% .03 85);font:700 .875rem var(--mono);cursor:pointer}
 button:hover{background:oklch(88% .13 89)}
+button.danger{background:var(--err);color:oklch(20% .05 30)}
+button.danger:hover{background:oklch(66% .14 30)}
 .flash{padding:var(--sp-md) var(--sp-lg);border-radius:6px;margin:var(--sp-lg) 0;font-size:.9375rem}
 .flash.ok{background:oklch(76% .1 145/.12);color:var(--ok)}
 .flash.err{background:oklch(74% .12 30/.12);color:var(--err)}
@@ -413,6 +418,7 @@ async fn dashboard(State(state): State<Arc<AppState>>) -> Markup {
         }
         None => None,
     };
+    let reranker_active = state.rag.as_ref().is_some_and(|r| r.has_reranker());
     let body = html! {
         h1 { "Dashboard" }
         @if let Some((cols, notes, active)) = glance {
@@ -456,7 +462,18 @@ async fn dashboard(State(state): State<Arc<AppState>>) -> Markup {
                         @if l.api_key().is_some() { "set in config" } @else { "from environment" }
                     } @else { "—" }
                 }
-                dt { "Reranker" } dd { @if c.reranker.enabled { "on (top_k " (c.reranker.top_k) ")" } @else { "off" } }
+                dt { "Reranker" } dd {
+                    // Actual state, not config — matches /health: an enabled
+                    // reranker whose init failed must not read as "on".
+                    @if reranker_active {
+                        "on: " (c.reranker.provider.label()) " (top_k " (c.reranker.top_k) ")"
+                        @if let Some(u) = c.reranker.url.as_deref() { " · " (u) }
+                    } @else if c.reranker.enabled {
+                        "enabled but failed to start — using plain vector ranking. "
+                        a href="/logs" { "See the logs" } "."
+                        @if let Some(err) = &state.reranker_error { br; span .mono { (err) } }
+                    } @else { "off" }
+                }
                 dt { "Auth" } dd { @if c.auth.token.is_some() { span .badge { "token required" } } @else { span .badge { "open" } } }
             }
         }
@@ -665,8 +682,48 @@ fn config_markup(state: &AppState, c: &RagConfig, flash: Option<Markup>) -> Mark
             section .group {
                 h2 { "Reranker" }
                 div .check { input type="checkbox" name="reranker_enabled" checked[c.reranker.enabled]; label style="margin:0" { "Enabled" } }
-                label { "Default results (top_k)" }
-                input type="number" name="reranker_top_k" value=(c.reranker.top_k);
+                p .muted { "The reranker backend (local model or HTTP endpoint) is a file-only setting; a save here keeps it." }
+            }
+            section .group {
+                h2 { "Context cut" }
+                label { "Strategy" }
+                select name="context_cut" {
+                    option value="fixed" data-groups="fixed" selected[c.reranker.context_cut == crate::config::ContextCut::Fixed] {
+                        "fixed — exactly top_k results, the classic count cut"
+                    }
+                    option value="score-range" data-groups="score-range" selected[c.reranker.context_cut == crate::config::ContextCut::ScoreRange] {
+                        "score-range — keep chunks above a cutoff of the normalized score range"
+                    }
+                    option value="largest-drop" data-groups="largest-drop" selected[c.reranker.context_cut == crate::config::ContextCut::LargestDrop] {
+                        "largest-drop — cut at the biggest relative gap between consecutive note scores"
+                    }
+                }
+                p .muted { "Sizes both query surfaces from the ranked pool — search shows the notes that survive the cut, answers feed the surviving chunks to the LLM — with or without reranking." }
+                noscript {
+                    p .muted { "(Without JavaScript all knobs are shown; only the selected strategy's applies.)" }
+                }
+                // Hidden knobs still post their values, so a save never
+                // resets a non-selected strategy's tuning.
+                div data-cut="fixed" {
+                    label { "Results (top_k) — search notes / answer chunks" }
+                    input type="number" name="reranker_top_k" value=(c.reranker.top_k);
+                    p .muted { "Per-request context_size (small/medium/large) overrides this under fixed only." }
+                }
+                div data-cut="score-range" {
+                    label { "Normalized cutoff (0..1)" }
+                    input type="number" name="score_range_cutoff" step="0.05" min="0" max="1" value=(c.reranker.score_range_cutoff);
+                    p .muted { "Higher = stricter. The range is measured between the pool's 5th/95th score percentiles." }
+                }
+                div .row data-cut="largest-drop" {
+                    div {
+                        label { "Gap search window — from note position" }
+                        input type="number" name="drop_window_min" min="1" value=(c.reranker.drop_window_min);
+                    }
+                    div {
+                        label { "to note position" }
+                        input type="number" name="drop_window_max" min="1" value=(c.reranker.drop_window_max);
+                    }
+                }
             }
             section .group {
                 h2 { "Auth" }
@@ -676,7 +733,18 @@ fn config_markup(state: &AppState, c: &RagConfig, flash: Option<Markup>) -> Mark
             }
             @if can_save {
                 button type="submit" { "Save to config file" }
-                p .muted { "Saved changes take effect the next time the server starts." }
+                p .muted { "Saved changes take effect the next time the server starts — or use Restart below." }
+            }
+        }
+        // Separate form: restart is not a save. Applies whatever is in the
+        // config file right now (web-saved or hand-edited), so it is useful
+        // even when the path is not writable from here.
+        form method="post" action="/restart" {
+            button .danger type="submit" { "Restart server now" }
+            p .muted {
+                "Drains in-flight requests, reloads the config file, and rebinds — every "
+                "setting applies, including the bind address. The server is briefly "
+                "unavailable; connected Kimün clients reconnect on their own."
             }
         }
         script {
@@ -698,6 +766,7 @@ const bindVisibility = (selectName, attr) => {
 bindVisibility('embedder_provider', 'embedder');
 bindVisibility('vector_db', 'vectordb');
 bindVisibility('provider', 'llm');
+bindVisibility('context_cut', 'cut');
 const bindDesc = (selectName, targetId) => {
   const sel = document.querySelector('select[name="' + selectName + '"]');
   const out = document.getElementById(targetId);
@@ -747,11 +816,51 @@ async fn config_submit(
         Ok(()) => config_markup(
             &state,
             &cfg,
-            Some(html! { p .flash.ok { "Saved to " span .mono { (path.display()) } ". Restart the server to apply." } }),
+            Some(html! { p .flash.ok { "Saved to " span .mono { (path.display()) } ". Use the Restart button below to apply now, or restart the server yourself." } }),
         )
         .into_response(),
         Err(e) => err_page(&state, html! { p .flash.err { "Could not write config: " (e) } }),
     }
+}
+
+/// POST /restart — asks the binary's serving loop (adr/0028) to drain
+/// in-flight requests, reload the saved config file, and rebind. Pure
+/// trigger: what changed shows up on the reloaded pages afterwards.
+async fn restart_submit(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    if !same_origin(&headers) {
+        return axum::http::StatusCode::FORBIDDEN.into_response();
+    }
+    if !state.request_restart() {
+        return config_markup(
+            &state,
+            &state.config.clone(),
+            Some(html! { p .flash.err {
+                "In-process restart is not available here — restart the server manually to apply the config."
+            } }),
+        )
+        .into_response();
+    }
+    // Standalone page, no shell: the server goes down right after this
+    // response, so nav links would dead-end anyway. Meta-refresh returns to
+    // the dashboard once the server is back.
+    html! {
+        (DOCTYPE)
+        html {
+            head {
+                meta charset="utf-8";
+                meta http-equiv="refresh" content="4;url=/";
+                title { "Restarting — Kimün server" }
+            }
+            body {
+                p { "Restarting: draining requests, reloading the config file, rebinding." }
+                p {
+                    "Returning to the dashboard in a few seconds. If you changed the "
+                    "bind address, open the server at its new address instead."
+                }
+            }
+        }
+    }
+    .into_response()
 }
 
 // ============================================================================
@@ -914,12 +1023,29 @@ async fn query_submit(State(state): State<Arc<AppState>>, Form(f): Form<QueryFor
     query_markup(&state, &collections, &f.vault_id, &f.query, Some(results))
 }
 
+/// Where the **context cut** would slice an answer on this query — rendered
+/// as a divider in the result list plus a summary line (adr/0027).
+struct CutSummary {
+    /// Displayed rows whose chunk made the would-be LLM context (they form a
+    /// prefix: rows and context are cut from the same score-ordered pool).
+    rows_in_context: usize,
+    /// Chunks the cut keeps (counts every chunk, including extra sections of
+    /// an already-listed note — the rows show only each note's best one).
+    context_chunks: usize,
+    pool_chunks: usize,
+    /// Last kept / first dropped pool score — where the cut actually landed,
+    /// which the note-deduped rows usually can't show.
+    boundary: Option<(f64, f64)>,
+    algorithm: &'static str,
+}
+
 /// Hits plus the wall-clock milliseconds the search took — the same duration
-/// the API reports as `query_time_ms`.
-type SearchOutcome = Result<(Vec<(f64, String, String)>, u64), String>;
+/// the API reports as `query_time_ms` — plus the context-cut preview, on
+/// both reranker paths (adr/0029).
+type SearchOutcome = Result<(Vec<(f64, String, String)>, u64, Option<CutSummary>), String>;
 
 /// The same pipeline the API's `/api/embeddings` runs — the test query shows
-/// exactly what clients get (one row per note, top_k notes).
+/// exactly what clients get: one row per note surviving the context cut.
 async fn run_search(state: &AppState, vault_id: &str, query: &str) -> SearchOutcome {
     let Some(rag) = state.rag.as_ref() else {
         return Err("Server unconfigured — configure an embedder first.".into());
@@ -930,17 +1056,28 @@ async fn run_search(state: &AppState, vault_id: &str, query: &str) -> SearchOutc
     let collection = crate::CollectionKey::parse(vault_id).map_err(|e| e.to_string())?;
     let top_k = state.config.reranker.top_k;
     let started = std::time::Instant::now();
-    let ranked = rag
-        .search(&collection, query, top_k)
+    let (ranked, preview) = rag
+        .search_with_cut_preview(&collection, query, top_k)
         .await
         .map_err(|e| e.to_string())?;
     let query_time_ms = started.elapsed().as_millis() as u64;
+    let cut = preview.map(|p| CutSummary {
+        rows_in_context: ranked
+            .iter()
+            .take_while(|(_, chunk)| p.context.contains(chunk))
+            .count(),
+        context_chunks: p.context.len(),
+        pool_chunks: p.pool_chunks,
+        boundary: p.boundary,
+        algorithm: state.config.reranker.context_cut.label(),
+    });
     Ok((
         ranked
             .into_iter()
             .map(|(score, chunk)| (score, chunk.doc_path, chunk.text))
             .collect(),
         query_time_ms,
+        cut,
     ))
 }
 
@@ -953,7 +1090,7 @@ fn query_markup(
 ) -> Markup {
     let body = html! {
         h1 { "Test query" }
-        p .muted { "Runs the same pipeline clients get from the API — one row per note, top_k notes." }
+        p .muted { "Runs the same pipeline clients get from the API — one row per surviving note. The configured context cut decides how many: a fixed count under \"fixed\", the pool's score shape under the adaptive cuts." }
         @if state.rag.is_none() {
             p .flash.err {
                 "Server unconfigured — configure an embedder in "
@@ -977,13 +1114,33 @@ fn query_markup(
             div #results {
                 @match outcome {
                     Err(e) => p .flash.err { (e) },
-                    Ok((hits, ms)) if hits.is_empty() => p .muted { (format!("No matches ({ms} ms).")) },
-                    Ok((hits, ms)) => {
+                    Ok((hits, ms, _)) if hits.is_empty() => p .muted { (format!("No matches ({ms} ms).")) },
+                    Ok((hits, ms, cut)) => {
                         h2 { (count_noun(hits.len(), "result")) " " span .muted { (format!("· {ms} ms")) } }
-                        @for (score, path, text) in &hits {
+                        @if let Some(cut) = &cut {
+                            p .muted {
+                                "Answer-context preview (" (cut.algorithm) "): the cut keeps "
+                                (cut.context_chunks) " of " (cut.pool_chunks) " pooled chunks"
+                                @if cut.context_chunks > cut.rows_in_context {
+                                    (format!(" ({} are extra sections of listed notes)", cut.context_chunks - cut.rows_in_context))
+                                }
+                                @if let Some((last_kept, first_dropped)) = cut.boundary {
+                                    (format!(" — pool cut at {last_kept:.3} → {first_dropped:.3}"))
+                                }
+                                ". Rows above the marker contribute to an answer's LLM context; the pool interleaves every section of every note, so the cut boundary usually falls between scores no row shows."
+                            }
+                        }
+                        @for (i, (score, path, text)) in hits.iter().enumerate() {
                             div .hit {
                                 div { span .mono { (path) } span .score { (format!("{score:.3}")) } }
                                 div .snippet { (truncate(text, 240)) }
+                            }
+                            @if let Some(cut) = &cut {
+                                @if i + 1 == cut.rows_in_context && i + 1 < hits.len() {
+                                    div .muted .mono style="border-top: 1px dashed currentColor; margin: 0.5rem 0; padding-top: 0.25rem; text-align: center;" {
+                                        (format!("── answer context cut ({}) ──", cut.algorithm))
+                                    }
+                                }
                             }
                         }
                     }
@@ -1085,6 +1242,54 @@ provider = "gemini"
     async fn body_text(resp: axum::response::Response) -> String {
         let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn restart_without_a_wired_loop_is_an_honest_failure() {
+        // Tests (and any embedding without the binary's loop) have no restart
+        // channel: the endpoint must say so, not pretend to restart.
+        let resp = app(state(None, None))
+            .oneshot(Request::post("/restart").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(body_text(resp).await.contains("not available"));
+    }
+
+    #[tokio::test]
+    async fn restart_signals_the_loop_and_blocks_cross_origin() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let config: RagConfig =
+            toml::from_str("[server]\n[vector_db]\ntype = \"qdrant\"\n[reranker]\n").unwrap();
+        let rag = KimunRag::new(
+            Arc::new(FakeVectorStore::default()),
+            Arc::new(FakeEmbedder),
+            None,
+        );
+        let st = Arc::new(AppState::new(Some(rag), config).with_restart(tx));
+
+        // Cross-origin POST is rejected before anything is signalled.
+        let resp = app(st.clone())
+            .oneshot(
+                Request::post("/restart")
+                    .header(ORIGIN, "http://evil.example")
+                    .header(HOST, "localhost:7573")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert!(rx.try_recv().is_err(), "no signal on a rejected request");
+
+        // Same-origin POST signals the serving loop and says what happens next.
+        let resp = app(st)
+            .oneshot(Request::post("/restart").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(body_text(resp).await.contains("Restarting"));
+        assert!(rx.try_recv().is_ok(), "the loop got the restart signal");
     }
 
     #[tokio::test]

@@ -88,7 +88,8 @@ Open `http://127.0.0.1:7573/` for the [web UI](#web-ui); the API lives under
 `/api` (see [API](#api)).
 
 First run downloads the embedding model (and the reranker, if enabled) — a few
-hundred MB — unless you point `[embedder]` at an external service.
+hundred MB. Pointing `[embedder]` at an external service skips the embedding
+model, but the reranker model still downloads unless `[reranker]` is disabled.
 
 To connect Kimün, set the server address in Preferences (Server section) or in
 `config.toml` — `kimun_server_url = "http://localhost:7573"` under `[global]`,
@@ -132,22 +133,53 @@ See `config.example.toml` for the annotated template. Sections:
   `model`, optional `api_key`. The key is server-owned; if omitted it falls back
   to the provider's env var (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
   `GEMINI_API_KEY`, `MISTRAL_API_KEY`). Kimün never sends a key.
-- **`[reranker]`** — `enabled` (default true), `top_k` (default result count,
-  overridable per request via `context_size`).
+- **`[reranker]`** — `enabled` (default true), the **context cut** — the one
+  sizing rule for query results on both surfaces and both reranker paths
+  (adr/0029): `context_cut` picks the strategy, each with its own knobs.
+  `fixed` returns exactly `top_k` results (search notes / answer chunks;
+  per-request `context_size` applies here only). `score-range` (default)
+  keeps chunks at or above `score_range_cutoff` (default 0.4) of the
+  normalized score range, measured between the pool's 5th/95th score
+  percentiles so outliers can't stretch it. `largest-drop` cuts at the
+  biggest relative gap between distinct notes' best scores at note positions
+  `drop_window_min..=drop_window_max` (defaults 3–30), keeping the
+  gap-closing note and every chunk above it. And a backend:
+  - `type = "fastembed"` (default) — local cross-encoder, model downloaded
+    from Hugging Face on first start regardless of the `[embedder]` choice.
+  - `type = "http"` — any Cohere/Jina-compatible rerank endpoint (`url`,
+    optional `model`, optional `api_key` sent as a bearer token; `/rerank` is
+    appended to `url`): [Cohere](https://docs.cohere.com/reference/rerank),
+    [Jina AI](https://jina.ai/reranker/),
+    [Voyage AI](https://docs.voyageai.com/reference/reranker-api), or
+    self-hosted [vLLM](https://docs.vllm.ai) / Infinity. OpenAI, Mistral,
+    Gemini, and Anthropic offer no rerank API — Anthropic points to Voyage
+    for embeddings and reranking. See `config.example.toml` for each.
+
+  Reranker failure is non-fatal, at startup and at query time alike: an
+  initialization failure (blocked model download, unreachable endpoint) logs
+  a warning and the server runs without reranking (`/health` reports
+  `"reranker": false` with the reason under `"reranker_error"`), and a rerank
+  call failing mid-query degrades that request to plain vector ranking
+  instead of failing it. Unlike the embedder, switching rerankers never
+  invalidates stored vectors.
 
 ## API
 
 All `/api` routes require the bearer token when one is configured. `context_size`
 is optional (`"small"` = 10, `"medium"` = 20, `"large"` = 40 results); omit it to
-use the configured `reranker.top_k`.
+use the configured `reranker.top_k`. It only applies under the `fixed` context
+cut — the adaptive cuts size results from the pool's score shape (adr/0029).
 
 ### `GET /health`
 
 Capability probe. Returns JSON:
 
 ```json
-{ "status": "ok", "reranker": true, "llm_provider": "claude", "auth_required": true }
+{ "status": "ok", "reranker": true, "reranker_error": null, "llm_provider": "claude", "auth_required": true }
 ```
+
+`reranker` reports the *active* reranker: `false` with a non-null
+`reranker_error` means one is configured but failed to initialize.
 
 ### `POST /api/index/docs`
 
@@ -216,7 +248,10 @@ server-rendered pages, no build step, no external assets. It offers:
 - a **config** page to edit the LLM (provider/model/key), reranker, auth token,
   and bind address — changes are **written to the config file and applied on the
   next restart** (the embedder, vector store, and LLM client are built at
-  startup, so the live instance is never mutated);
+  startup, so the live instance is never mutated). A **Restart server** button
+  applies them in place: the process drains in-flight requests, re-reads the
+  config file, and rebinds (adr/0028) — no service manager needed, and a
+  bind-address change moves the server to the new address;
 - a **collections** list with per-vault indexed-note counts;
 - a **jobs** view (auto-refreshing) for indexing/answer jobs;
 - a **test-query** box that runs a semantic search against a collection.

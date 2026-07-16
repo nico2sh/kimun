@@ -76,6 +76,13 @@ type = "fastembed"
 # model = "gemini-embedding-001"     # 3072 dims
 # api_key = "..."                    # Gemini API key
 
+# Voyage AI (Anthropic has no embeddings API and points to Voyage; the Voyage
+# API is OpenAI-shaped):
+# type = "openai"
+# url = "https://api.voyageai.com/v1"
+# model = "voyage-3.5"
+# api_key = "..."                    # Voyage API key
+
 [llm]
 # LLM provider: "gemini", "claude", "openai", or "mistral"
 provider = "gemini"
@@ -113,8 +120,78 @@ model = "gemini-2.5-flash-preview-04-17"
 # model = "mistral-large-latest"
 
 [reranker]
-# Enable cross-encoder reranking for better results (default: true)
+# Enable reranking for better result ordering (default: true). Reranker
+# failure is never fatal: if it fails to initialize (model download blocked,
+# endpoint unreachable) the server logs a warning and keeps running without
+# reranking — /health then reports "reranker": false with the reason under
+# "reranker_error" — and a rerank call failing mid-query degrades that
+# request to plain vector ranking.
 enabled = true
 
-# Number of results to return after reranking (default: 20)
+# Context cut: the one sizing rule for query results (adr/0029). The ranked
+# pool (reranked when reranking is on, vector order otherwise) is cut, then
+# search shows the notes that survive and answer feeds the surviving chunks
+# to the LLM. Strategies, each with its own knobs:
+#   "fixed"        — exactly top_k results (search notes / answer chunks);
+#                   the per-request context_size override applies here only.
+#   "score-range"  (default) — similarity scores are min-max normalized within
+#                   the retrieved pool (range measured between the 5th/95th
+#                   score percentiles, so outliers can't stretch it); chunks
+#                   at or above score_range_cutoff of the range survive.
+#   "largest-drop" — cut at the biggest relative drop between consecutive
+#                   NOTE scores (each note's best chunk,
+#                   (s[i] - s[i+1]) / s[i]), searched at note positions
+#                   drop_window_min..=drop_window_max; keeps the gap-closing
+#                   note and every pooled chunk at or above its score. No
+#                   drop found there means no cut.
+# For the adaptive strategies flat scores mean no relevance boundary: nothing
+# is cut.
+# context_cut = "score-range"
+
+# "fixed" strategy: the result count (default: 20).
 top_k = 20
+
+# "score-range" strategy: the normalized cutoff in 0.0..=1.0 (default 0.4).
+# Higher = stricter (fewer chunks).
+# score_range_cutoff = 0.4
+
+# "largest-drop" strategy: the note positions where the gap is searched
+# (defaults 3 and 30). Below the minimum a spiky top would starve results;
+# past the maximum the tail's noise produces phantom elbows.
+# drop_window_min = 3
+# drop_window_max = 30
+
+# Local fastembed cross-encoder (BGE-Reranker-Base), the default. Downloads
+# the model from Hugging Face on first start — independent of the [embedder]
+# choice. Set enabled = false (or use type = "http") to skip the download.
+type = "fastembed"
+
+# Or any Cohere/Jina-compatible HTTP rerank endpoint: POST {url}/rerank with
+# {model, query, documents} answered by scored indices. Covers Cohere, Jina,
+# Voyage, and self-hosted vLLM / Infinity. NOT available from OpenAI, Mistral,
+# Gemini, or Anthropic — none of them offers a rerank API (Anthropic points to
+# Voyage). `model` is optional for single-model self-hosted servers; `api_key`
+# is sent as a bearer token.
+#
+# Cohere:
+# type = "http"
+# url = "https://api.cohere.com/v2"
+# model = "rerank-v3.5"
+# api_key = "..."
+#
+# Jina AI:
+# type = "http"
+# url = "https://api.jina.ai/v1"
+# model = "jina-reranker-v2-base-multilingual"
+# api_key = "..."
+#
+# Voyage AI (Anthropic's recommended embeddings/reranking partner):
+# type = "http"
+# url = "https://api.voyageai.com/v1"
+# model = "rerank-2.5"
+# api_key = "..."
+#
+# Self-hosted vLLM (or Infinity at its root URL):
+# type = "http"
+# url = "http://localhost:8000/v1"
+# model = "BAAI/bge-reranker-v2-m3"
