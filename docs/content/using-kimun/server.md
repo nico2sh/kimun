@@ -21,11 +21,14 @@ reachable, the extra capabilities light up automatically.
 - **Semantic search** — a `SEM` view in the drawer (activity rail) that finds
   notes by meaning: searching "how do I deploy" also surfaces the note that
   says "release procedure".
-- **Ask (RAG)** — press `F6` to ask a question in plain language; the server
-  retrieves the most relevant note chunks and has its configured LLM answer
-  from them, citing the source notes. Only available when the server has an
-  LLM configured; with no LLM the server is semantic-search-only and the Ask
-  overlay stays hidden.
+- **Ask** — a conversation with your notes. Switch to the **ASK** entry in the
+  activity rail (or press `F6`) to ask a question in plain language; the
+  server retrieves the most relevant note chunks and has its configured LLM
+  answer from them, citing the source notes inline as `[1]`, `[2]`, … Ask
+  follow-up questions in the same conversation — Kimün keeps the history and
+  sends it along each time. Only available when the server has an LLM
+  configured; with no LLM the server is semantic-search-only and the **ASK**
+  entry stays hidden from the rail.
 - **Automatic sync** — the TUI pushes note content to the server in the
   background (every few seconds) and keeps it reconciled with the vault. The
   footer shows the connection state: `rag: online`, `rag: syncing`,
@@ -40,6 +43,47 @@ The server is **push-only**: it never reads your notes from disk. Kimün sends
 note content to it, and the server stores only embeddings (and answers
 queries). Everything — embeddings, vector store, optionally the LLM — can run
 locally, so your notes never have to leave your machine.
+
+## Asking questions
+
+### Starting a conversation
+
+- Switch to **ASK** in the activity rail, or press `F6`, to jump straight to
+  the question composer.
+- Type a question and press `Enter`. The answer appears below it, with
+  `[1]`, `[2]`, … markers pointing at the notes it drew from.
+- Ask a follow-up in the same box — earlier turns go along with it, so the
+  answer can build on what came before.
+- With the conversation focused, `j`/`k` move between turns; `i` or `/` jumps
+  back to the composer.
+
+### Sources and the reader
+
+- The drawer's **Sources** panel lists the notes behind the selected answer,
+  ranked by relevance.
+- Press `Enter` or `l` on a source to open the reader: the note's text with
+  the retrieved section highlighted.
+- In the reader, `j`/`k` scroll, `h` or `Esc` goes back to the source list,
+  and `o` opens the note in the editor — from either the list or the reader.
+- Clicking a `[n]` citation in the answer jumps the Sources panel straight to
+  that source.
+
+### Acting on an answer
+
+With a turn selected in the conversation:
+
+- `y` — copy the answer to the clipboard (citation markers stripped).
+- `e` — save the answer as a new note; its citations become `[[wikilinks]]`
+  to the source notes, so the saved note joins the rest of your vault.
+- `r` — regenerate the answer, using the same sources.
+
+### When the server goes offline
+
+If the connection drops mid-conversation, asking pauses — the composer shows
+it's unavailable — but the conversation stays exactly as it is. Nothing is
+lost: you can still browse turns, read their sources, copy an answer, or save
+one as a note. Asking a new question or regenerating an answer picks back up
+once the server is reachable again.
 
 ## Installing the server
 
@@ -216,8 +260,8 @@ The server connection is global — every workspace syncs to the same server,
 each into its own collection.
 
 Once configured, Kimün probes the server, starts syncing, and the footer
-shows the connection status. The `SEM` drawer view appears, and `F6` opens
-Ask when the server has an LLM.
+shows the connection status. The `SEM` drawer view appears, and the `ASK`
+rail entry appears once the server has an LLM configured.
 
 ## A note on security
 
