@@ -1,4 +1,5 @@
 pub mod citations;
+pub mod save;
 
 use kimun_core::nfs::VaultPath;
 use kimun_server_client::dto::ChunkResult;
