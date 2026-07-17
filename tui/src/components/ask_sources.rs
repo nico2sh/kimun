@@ -358,7 +358,10 @@ impl SourcesPanel {
             // "2026-04-08Afternoon".
             let mut head_spans = vec![Span::styled(format!("{} ", i + 1), bold)];
             if let Some(date) = &source.date {
-                head_spans.push(Span::styled(format!("{date} · "), date_style));
+                // Bare-date chunks (empty heading) show just the date — no
+                // dangling separator.
+                let sep = if source.heading.is_empty() { "" } else { " · " };
+                head_spans.push(Span::styled(format!("{date}{sep}"), date_style));
             }
             head_spans.push(Span::styled(source.heading.clone(), bold));
             lines.push(style_row(Line::from(head_spans)));
