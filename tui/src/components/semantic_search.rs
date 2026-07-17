@@ -187,6 +187,7 @@ mod tests {
             content: String::new(),
             hash: String::new(),
             similarity_score: score,
+            ordinal: 0,
         }
     }
 
