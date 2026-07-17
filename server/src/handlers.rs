@@ -69,12 +69,22 @@ impl ContextSize {
     }
 }
 
+/// One prior Q&A exchange sent as conversation history. The client strips
+/// citation markers before sending; the server passes pairs through verbatim.
+#[derive(Debug, Deserialize)]
+pub struct HistoryTurn {
+    pub question: String,
+    pub answer: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct AnswerRequest {
     pub vault_id: String,
     pub query: String,
     #[serde(default)]
     pub context_size: Option<ContextSize>,
+    #[serde(default)]
+    pub history: Vec<HistoryTurn>,
 }
 
 #[derive(Debug, Serialize)]
@@ -267,6 +277,11 @@ pub async fn answer_handler(
     }
     let job_id = Uuid::new_v4();
     let top_k = resolve_top_k(request.context_size, state.config.reranker.top_k);
+    let history: Vec<(String, String)> = request
+        .history
+        .into_iter()
+        .map(|t| (t.question, t.answer))
+        .collect();
 
     // Mark job as queued
     state
@@ -286,7 +301,10 @@ pub async fn answer_handler(
             .await
             .update_status(&job_id, JobStatus::Processing);
 
-        match rag.answer(&collection, &request.query, top_k).await {
+        match rag
+            .answer(&collection, &request.query, &history, top_k)
+            .await
+        {
             Ok(answer) => {
                 let sources: Vec<ChunkResult> =
                     answer.sources.into_iter().map(ChunkResult::from).collect();
@@ -385,6 +403,22 @@ pub async fn job_status_handler(
 mod tests {
     use super::*;
 
+    #[test]
+    fn answer_request_parses_without_history() {
+        let r: AnswerRequest = serde_json::from_str(r#"{"vault_id":"v1","query":"q"}"#).unwrap();
+        assert!(r.history.is_empty());
+    }
+
+    #[test]
+    fn answer_request_parses_history_pairs() {
+        let r: AnswerRequest = serde_json::from_str(
+            r#"{"vault_id":"v1","query":"q","history":[{"question":"q1","answer":"a1"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(r.history.len(), 1);
+        assert_eq!(r.history[0].question, "q1");
+    }
+
     /// The status table is the wire contract (the client keys on codes, never on
     /// message text): Validation→400, NotFound→404, SemanticOnly→503, Backend→500.
     #[test]
@@ -456,6 +490,7 @@ mod tests {
                 vault_id: "vault-1".into(),
                 query: "q".into(),
                 context_size: None,
+                history: vec![],
             }),
         )
         .await
