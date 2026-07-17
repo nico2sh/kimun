@@ -16,6 +16,7 @@ pub mod file_list;
 pub mod footer_bar;
 pub mod hints;
 pub mod indexing;
+pub mod markdown_lines;
 pub mod note_browser;
 pub mod overlay;
 pub mod panel;

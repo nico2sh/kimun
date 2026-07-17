@@ -99,6 +99,7 @@ mod tests {
         AskSource {
             path: VaultPath::new(path),
             heading: heading.to_string(),
+            date: None,
             score: 1.0,
             text: String::new(),
             ordinal,
