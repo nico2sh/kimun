@@ -65,6 +65,16 @@ impl RagStatus {
             }
         )
     }
+
+    /// Whether semantic search is usable right now: the server is reachable AND
+    /// has an embedder — i.e. `Online`/`Syncing`, regardless of `llm_available`
+    /// (a semantic-only server still searches). `false` for `Offline`,
+    /// `Unauthorized`, `NotConfigured` and `Disabled`. The SEM rail entry is
+    /// driven by this, mirroring how ASK is driven by `llm_available` — a
+    /// configured-but-unreachable server hides SEM just as it hides ASK.
+    pub fn search_available(self) -> bool {
+        matches!(self, RagStatus::Online { .. } | RagStatus::Syncing { .. })
+    }
 }
 
 #[cfg(test)]
@@ -84,5 +94,27 @@ mod tests {
     fn unauthorized_status_labels_and_gates() {
         assert_eq!(RagStatus::Unauthorized.label(), Some("rag: unauthorized"));
         assert!(!RagStatus::Unauthorized.llm_available());
+    }
+
+    #[test]
+    fn search_available_tracks_reachable_with_embedder() {
+        // Online/Syncing → searchable, whether or not an LLM is configured
+        // (a semantic-only server still searches).
+        assert!(RagStatus::Online { llm_available: false }.search_available());
+        assert!(RagStatus::Online { llm_available: true }.search_available());
+        assert!(RagStatus::Syncing { llm_available: false }.search_available());
+        assert!(RagStatus::Syncing { llm_available: true }.search_available());
+        // Not reachable / no embedder → not searchable.
+        assert!(!RagStatus::Offline.search_available());
+        assert!(!RagStatus::Unauthorized.search_available());
+        assert!(!RagStatus::NotConfigured.search_available());
+        assert!(!RagStatus::Disabled.search_available());
+    }
+
+    #[test]
+    fn semantic_only_server_searches_but_does_not_answer() {
+        let semantic_only = RagStatus::Online { llm_available: false };
+        assert!(semantic_only.search_available(), "SEM must show");
+        assert!(!semantic_only.llm_available(), "ASK must stay hidden");
     }
 }
