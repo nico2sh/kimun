@@ -8,6 +8,7 @@ use kimun_server_client::dto::ChunkResult;
 const HISTORY_WINDOW: usize = 5;
 
 /// A single retrieved chunk backing an answer (CONTEXT.md: **Source**).
+#[derive(Debug)]
 pub struct AskSource {
     pub path: VaultPath,
     pub heading: String,

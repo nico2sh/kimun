@@ -28,7 +28,7 @@ pub enum SaveSource {
 
 /// All events that flow through the system — both input events (from crossterm)
 /// and app-level messages sent by components / screens to the main loop.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum AppEvent {
     Input(InputEvent),
     OpenScreen(ScreenEvent),
@@ -142,6 +142,10 @@ pub enum AppEvent {
     /// CONTEXT.md). Routed only to the `OverlayHost`; with no (or the wrong)
     /// overlay open it is stale by definition and dropped.
     OverlayData(OverlayData),
+    /// An async result addressed to the Ask workspace (see CONTEXT.md: Ask
+    /// workspace). Its own family — Ask is a panel, not an overlay, so it is
+    /// never routed through `OverlayData` (adr/0030).
+    Ask(AskData),
 
     /// A vault was found to be structurally unusable (conflicts, invalid layout, etc.).
     /// Carries a formatted, human-readable error message.
@@ -171,6 +175,23 @@ pub enum AppEvent {
         order: SortOrder,
         group_directories: bool,
         persist: bool,
+    },
+}
+
+/// Async data addressed to the Ask workspace. Its own family — Ask is a
+/// panel, and `OverlayData` is routed only to the OverlayHost (adr/0030).
+#[derive(Debug)]
+pub enum AskData {
+    /// A completed (or failed) answer for the turn with this id. Stale ids
+    /// (cleared thread, superseded regenerate) are dropped by `Thread`.
+    AnswerReady {
+        turn_id: u64,
+        result: Result<(String, Vec<crate::ask::AskSource>), String>,
+    },
+    /// The note text the source reader asked for. `None` = load failed.
+    ReaderNote {
+        path: VaultPath,
+        text: Option<String>,
     },
 }
 
@@ -360,8 +381,33 @@ mod tests {
             AppEvent::FileOp(FileOp::Renamed { from: _, to: _ }) => {}
             AppEvent::FileOp(FileOp::Moved { from: _, to: _ }) => {}
             AppEvent::OverlayData(OverlayData::Error(_)) => {}
+            AppEvent::Ask(AskData::AnswerReady {
+                turn_id: _,
+                result: _,
+            }) => {}
+            AppEvent::Ask(AskData::ReaderNote { path: _, text: _ }) => {}
             _ => {}
         }
+    }
+
+    #[test]
+    fn ask_data_variants_construct() {
+        let _ = AppEvent::Ask(AskData::AnswerReady {
+            turn_id: 1,
+            result: Ok(("answer".to_string(), vec![])),
+        });
+        let _ = AppEvent::Ask(AskData::AnswerReady {
+            turn_id: 2,
+            result: Err("failed".to_string()),
+        });
+        let _ = AppEvent::Ask(AskData::ReaderNote {
+            path: VaultPath::new("note.md"),
+            text: Some("body".to_string()),
+        });
+        let _ = AppEvent::Ask(AskData::ReaderNote {
+            path: VaultPath::new("missing.md"),
+            text: None,
+        });
     }
 
     #[test]
