@@ -231,14 +231,15 @@ fn build_prompt(question: &str, context: &[(f64, FlattenedChunk)]) -> String {
                 .map(|t| t.trim().to_string())
                 .unwrap_or(title);
         }
-        context_string.push_str(&format!(
-            "[{}] {} — \"{}\"\n{}{}\n\n",
-            i + 1,
-            chunk.doc_path,
-            title.trim(),
-            date_line,
-            chunk.text
-        ));
+        let trimmed_title = title.trim();
+        // Omit the ` — "…"` title clause entirely for a blank title, rather
+        // than emitting an empty `— ""` that adds noise and no signal.
+        let header = if trimmed_title.is_empty() {
+            format!("[{}] {}", i + 1, chunk.doc_path)
+        } else {
+            format!("[{}] {} — \"{trimmed_title}\"", i + 1, chunk.doc_path)
+        };
+        context_string.push_str(&format!("{header}\n{date_line}{}\n\n", chunk.text));
     }
 
     format!(
@@ -423,6 +424,20 @@ mod tests {
         assert!(p.contains("cite"), "prompt must instruct citing");
         assert!(p.contains("[n]"), "prompt must name the [n] form");
         assert!(p.contains("how do I start?"));
+    }
+
+    #[test]
+    fn empty_title_chunk_omits_the_title_clause() {
+        let context = vec![chunk("some/path", "   ", "chunk body")];
+        let p = build_prompt("q?", &context);
+        assert!(
+            p.contains("[1] some/path\n"),
+            "blank-title chunk keeps just `[i] path`: {p}"
+        );
+        assert!(
+            !p.contains("— \"\""),
+            "must not emit an empty title clause: {p}"
+        );
     }
 
     /// A captured request: headers plus the raw JSON body the client sent.
