@@ -31,6 +31,13 @@ pub struct DeleteRequest {
     pub paths: Vec<String>,
 }
 
+/// One prior Q&A pair sent as conversation history on `/api/answer`.
+#[derive(Debug, Clone, Serialize)]
+pub struct HistoryTurn {
+    pub question: String,
+    pub answer: String,
+}
+
 /// Body of `POST /api/embeddings` and `POST /api/answer`.
 #[derive(Debug, Serialize)]
 pub struct QueryRequest {
@@ -38,6 +45,8 @@ pub struct QueryRequest {
     pub query: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_size: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub history: Vec<HistoryTurn>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -101,6 +110,30 @@ pub struct AnswerResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn query_request_omits_empty_history() {
+        let req = QueryRequest {
+            vault_id: "v".into(),
+            query: "q".into(),
+            context_size: None,
+            history: vec![],
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(!json.contains("history"), "empty history must not hit the wire: {json}");
+    }
+
+    #[test]
+    fn query_request_serializes_history_pairs() {
+        let req = QueryRequest {
+            vault_id: "v".into(),
+            query: "q".into(),
+            context_size: None,
+            history: vec![HistoryTurn { question: "q1".into(), answer: "a1".into() }],
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains(r#""history":[{"question":"q1","answer":"a1"}]"#));
+    }
 
     #[test]
     fn health_parses_semantic_only_null_llm_provider() {

@@ -76,7 +76,7 @@ impl RagAnswerOverlay {
         tokio::spawn(async move {
             let result = match rag_client(&settings, &vault).await {
                 Some(client) => client
-                    .ask(&query, None)
+                    .ask(&query, &[], None)
                     .await
                     .map(|answer| RagAnswer {
                         answer: answer.answer,
