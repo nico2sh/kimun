@@ -418,7 +418,7 @@ impl KimunRag {
         let mut context = self.rank(question, raw).await;
         let cut = self.cut_len(&context, top_k);
         context.truncate(cut);
-        let text = llm.ask(question, &context).await?;
+        let text = llm.ask(question, &[], &context).await?;
         Ok(Answer {
             text,
             sources: context,
@@ -1051,7 +1051,12 @@ pub(crate) mod test_support {
 
     #[async_trait]
     impl LLMClient for FakeLlm {
-        async fn ask(&self, _: &str, _: &[ScoredChunk]) -> anyhow::Result<String> {
+        async fn ask(
+            &self,
+            _: &str,
+            _: &[(String, String)],
+            _: &[ScoredChunk],
+        ) -> anyhow::Result<String> {
             Ok("answer".into())
         }
     }

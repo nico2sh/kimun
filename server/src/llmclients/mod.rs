@@ -22,6 +22,7 @@ pub trait LLMClient: Send + Sync {
     async fn ask(
         &self,
         question: &str,
+        history: &[(String, String)],
         context: &[(f64, FlattenedChunk)],
     ) -> anyhow::Result<String>;
 }
@@ -83,9 +84,10 @@ impl LLMClient for ChatClient {
     async fn ask(
         &self,
         question: &str,
+        history: &[(String, String)],
         context: &[(f64, FlattenedChunk)],
     ) -> anyhow::Result<String> {
-        let prompt = build_prompt(question, context);
+        let messages = chat_messages(history, build_prompt(question, context));
 
         let request = match &self.wire {
             Wire::OpenAiCompat => self
@@ -95,10 +97,7 @@ impl LLMClient for ChatClient {
                 .json(&ChatRequest {
                     model: self.model.clone(),
                     max_tokens: None,
-                    messages: vec![ChatMessage {
-                        role: "user".to_string(),
-                        content: prompt,
-                    }],
+                    messages,
                 }),
             Wire::Anthropic => self
                 .http
@@ -108,22 +107,27 @@ impl LLMClient for ChatClient {
                 .json(&ChatRequest {
                     model: self.model.clone(),
                     max_tokens: Some(4096),
-                    messages: vec![ChatMessage {
-                        role: "user".to_string(),
-                        content: prompt,
-                    }],
+                    messages,
                 }),
-            Wire::Gemini => self
-                .http
-                .post(format!(
-                    "{}/v1beta/models/{}:generateContent?key={}",
-                    self.base_url, self.model, self.api_key
-                ))
-                .json(&GeminiRequest {
-                    contents: vec![GeminiContent {
-                        parts: vec![GeminiPart { text: prompt }],
-                    }],
-                }),
+            Wire::Gemini => {
+                let contents: Vec<GeminiContent> = messages
+                    .into_iter()
+                    .map(|m| GeminiContent {
+                        role: if m.role == "assistant" {
+                            "model".into()
+                        } else {
+                            "user".into()
+                        },
+                        parts: vec![GeminiPart { text: m.content }],
+                    })
+                    .collect();
+                self.http
+                    .post(format!(
+                        "{}/v1beta/models/{}:generateContent?key={}",
+                        self.base_url, self.model, self.api_key
+                    ))
+                    .json(&GeminiRequest { contents })
+            }
         };
 
         let response = request.send().await?;
@@ -186,6 +190,28 @@ impl LLMClient for ChatClient {
 
         Ok(answer)
     }
+}
+
+/// History pairs + the final RAG prompt as one chat transcript. Shared by the
+/// OpenAI-compat and Anthropic wires; Gemini maps the same list to `contents`
+/// with the "model" role name.
+fn chat_messages(history: &[(String, String)], prompt: String) -> Vec<ChatMessage> {
+    let mut msgs = Vec::with_capacity(history.len() * 2 + 1);
+    for (q, a) in history {
+        msgs.push(ChatMessage {
+            role: "user".into(),
+            content: q.clone(),
+        });
+        msgs.push(ChatMessage {
+            role: "assistant".into(),
+            content: a.clone(),
+        });
+    }
+    msgs.push(ChatMessage {
+        role: "user".into(),
+        content: prompt,
+    });
+    msgs
 }
 
 /// The one RAG prompt, shared by every provider: chunks are numbered `[i]` in
@@ -297,6 +323,7 @@ struct GeminiRequest {
 
 #[derive(Serialize, Deserialize)]
 struct GeminiContent {
+    role: String,
     parts: Vec<GeminiPart>,
 }
 
@@ -348,6 +375,36 @@ mod tests {
                 date: None,
             },
         )
+    }
+
+    #[test]
+    fn history_folds_into_alternating_messages_before_the_prompt() {
+        let history = vec![
+            ("q1".to_string(), "a1".to_string()),
+            ("q2".to_string(), "a2".to_string()),
+        ];
+        let msgs = chat_messages(&history, "PROMPT".to_string());
+        let shape: Vec<(&str, &str)> = msgs
+            .iter()
+            .map(|m| (m.role.as_str(), m.content.as_str()))
+            .collect();
+        assert_eq!(
+            shape,
+            vec![
+                ("user", "q1"),
+                ("assistant", "a1"),
+                ("user", "q2"),
+                ("assistant", "a2"),
+                ("user", "PROMPT"),
+            ]
+        );
+    }
+
+    #[test]
+    fn empty_history_is_a_single_prompt_message() {
+        let msgs = chat_messages(&[], "PROMPT".to_string());
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].role, "user");
     }
 
     #[test]
@@ -414,7 +471,7 @@ mod tests {
         .await;
 
         let answer = client(Wire::OpenAiCompat, base)
-            .ask("q?", &[chunk("/a.md", "A", "body")])
+            .ask("q?", &[], &[chunk("/a.md", "A", "body")])
             .await
             .unwrap();
         assert_eq!(answer, "the answer");
@@ -452,7 +509,10 @@ mod tests {
         )
         .await;
 
-        let answer = client(Wire::Anthropic, base).ask("q?", &[]).await.unwrap();
+        let answer = client(Wire::Anthropic, base)
+            .ask("q?", &[], &[])
+            .await
+            .unwrap();
         assert_eq!(answer, "part one\npart two");
 
         let (headers, body) = captured.lock().unwrap().take().unwrap();
@@ -476,7 +536,10 @@ mod tests {
         )
         .await;
 
-        let answer = client(Wire::Gemini, base).ask("q?", &[]).await.unwrap();
+        let answer = client(Wire::Gemini, base)
+            .ask("q?", &[], &[])
+            .await
+            .unwrap();
         assert_eq!(answer, "gemini answer");
 
         let (headers, body) = captured.lock().unwrap().take().unwrap();
@@ -510,7 +573,7 @@ mod tests {
         });
 
         let err = client(Wire::OpenAiCompat, format!("http://{addr}"))
-            .ask("q?", &[])
+            .ask("q?", &[], &[])
             .await
             .expect_err("401 must surface as an error");
         let msg = err.to_string();
