@@ -6,11 +6,12 @@
 //! with inherent `new`/`hint_shortcuts`/`handle_input`/`render`, no
 //! `Component` impl — `DrawerHost` (Task 11) calls it directly.
 //!
-//! `handle_input` carries a `vault: &NoteVault` the trait signature has no
-//! room for (same reason `ThreadPanel::handle_input` carries a client — see
-//! its module doc): opening the reader needs to spawn a note load.
+//! The panel owns an `Arc<NoteVault>` (opening the reader spawns a note load),
+//! so its `handle_input` matches the plain `Component`-style signature — no
+//! vault threaded through by the caller.
 
 use std::ops::Range;
+use std::sync::Arc;
 
 use kimun_core::NoteVault;
 
@@ -73,10 +74,14 @@ pub struct SourcesPanel {
     /// clears this. Deferred to render because the wrapped-row index of the
     /// highlight depends on the render width, unknown when the load lands.
     reader_autoscroll_pending: bool,
+    /// Vault handle for the reader's note load (`open_reader` spawns a
+    /// `vault.get_note_text`). Owned here so `handle_input` needs no vault
+    /// passed in.
+    vault: Arc<NoteVault>,
 }
 
 impl SourcesPanel {
-    pub fn new() -> Self {
+    pub fn new(vault: Arc<NoteVault>) -> Self {
         Self {
             turn_id: None,
             sources: Vec::new(),
@@ -85,6 +90,7 @@ impl SourcesPanel {
             reader_viewport_height: 0,
             reader_total_rows: 0,
             reader_autoscroll_pending: false,
+            vault,
         }
     }
 
@@ -135,7 +141,7 @@ impl SourcesPanel {
     /// Flips to the reader face for `sources[source_index]` and spawns the
     /// note load — the same async call shape the editor screen's note-open
     /// path uses (`vault.get_note_text`). No-op for an out-of-range index.
-    pub fn open_reader(&mut self, source_index: usize, tx: &AppTx, vault: &NoteVault) {
+    pub fn open_reader(&mut self, source_index: usize, tx: &AppTx) {
         let Some(source) = self.sources.get(source_index) else {
             return;
         };
@@ -148,7 +154,7 @@ impl SourcesPanel {
         // field doc — the wrapped-row target needs the render width).
         self.reader_autoscroll_pending = true;
         let path = source.path.clone();
-        let vault = vault.clone();
+        let vault = self.vault.clone();
         let tx = tx.clone();
         tokio::spawn(async move {
             let text = vault.get_note_text(&path).await.ok();
@@ -208,17 +214,17 @@ impl SourcesPanel {
         }
     }
 
-    pub fn handle_input(&mut self, event: &InputEvent, tx: &AppTx, vault: &NoteVault) -> EventState {
+    pub fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
         let InputEvent::Key(key) = event else {
             return EventState::NotConsumed;
         };
         match &self.face {
-            Face::List => self.handle_list_key(key, tx, vault),
+            Face::List => self.handle_list_key(key, tx),
             Face::Reader { .. } => self.handle_reader_key(key, tx),
         }
     }
 
-    fn handle_list_key(&mut self, key: &KeyEvent, tx: &AppTx, vault: &NoteVault) -> EventState {
+    fn handle_list_key(&mut self, key: &KeyEvent, tx: &AppTx) -> EventState {
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
                 if !self.sources.is_empty() {
@@ -232,7 +238,7 @@ impl SourcesPanel {
             }
             KeyCode::Enter | KeyCode::Char('l') => {
                 if !self.sources.is_empty() {
-                    self.open_reader(self.cursor, tx, vault);
+                    self.open_reader(self.cursor, tx);
                 }
                 EventState::Consumed
             }
@@ -425,12 +431,6 @@ impl SourcesPanel {
     }
 }
 
-impl Default for SourcesPanel {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// A relevance bar for the list face's meta line: filled cells proportional
 /// to `score` (expected `0.0..=1.0`, the server's normalized similarity —
 /// clamped defensively either way).
@@ -510,29 +510,38 @@ mod tests {
         (dir, vault)
     }
 
+    /// A panel over a throwaway vault, for tests that never touch the reader's
+    /// note load. The backing dir is leaked so the vault stays valid for the
+    /// test's lifetime.
+    async fn test_panel() -> SourcesPanel {
+        let (dir, vault) = test_vault().await;
+        std::mem::forget(dir);
+        SourcesPanel::new(Arc::new(vault))
+    }
+
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
-    #[test]
-    fn new_panel_starts_empty_on_the_list_face() {
-        let p = SourcesPanel::new();
+    #[tokio::test]
+    async fn new_panel_starts_empty_on_the_list_face() {
+        let p = test_panel().await;
         assert!(p.sources.is_empty());
         assert!(matches!(p.face, Face::List));
     }
 
-    #[test]
-    fn set_turn_populates_and_resets_to_list_face() {
-        let mut p = SourcesPanel::new();
+    #[tokio::test]
+    async fn set_turn_populates_and_resets_to_list_face() {
+        let mut p = test_panel().await;
         p.set_turn(1, vec![source("a.md", "A", 0.9, "text a")]);
         assert_eq!(p.sources.len(), 1);
         assert_eq!(p.turn_id, Some(1));
         assert!(matches!(p.face, Face::List));
     }
 
-    #[test]
-    fn set_turn_same_id_is_a_noop_and_keeps_cursor() {
-        let mut p = SourcesPanel::new();
+    #[tokio::test]
+    async fn set_turn_same_id_is_a_noop_and_keeps_cursor() {
+        let mut p = test_panel().await;
         p.set_turn(
             1,
             vec![
@@ -548,9 +557,9 @@ mod tests {
         assert_eq!(p.sources[0].heading, "A");
     }
 
-    #[test]
-    fn set_turn_new_id_resets_cursor_and_face() {
-        let mut p = SourcesPanel::new();
+    #[tokio::test]
+    async fn set_turn_new_id_resets_cursor_and_face() {
+        let mut p = test_panel().await;
         p.set_turn(
             1,
             vec![
@@ -565,9 +574,9 @@ mod tests {
         assert_eq!(p.sources[0].heading, "C");
     }
 
-    #[test]
-    fn reader_note_for_the_wrong_path_is_dropped() {
-        let mut p = SourcesPanel::new();
+    #[tokio::test]
+    async fn reader_note_for_the_wrong_path_is_dropped() {
+        let mut p = test_panel().await;
         p.set_turn(1, vec![source("a.md", "A", 0.9, "alpha body")]);
         p.face = Face::Reader {
             source_index: 0,
@@ -587,9 +596,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn reader_note_for_the_right_path_loads_and_highlights() {
-        let mut p = SourcesPanel::new();
+    #[tokio::test]
+    async fn reader_note_for_the_right_path_loads_and_highlights() {
+        let mut p = test_panel().await;
         p.set_turn(
             1,
             vec![source("a.md", "b", 0.9, "beta body")],
@@ -617,9 +626,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn reader_note_load_failure_is_recorded() {
-        let mut p = SourcesPanel::new();
+    #[tokio::test]
+    async fn reader_note_load_failure_is_recorded() {
+        let mut p = test_panel().await;
         p.set_turn(1, vec![source("a.md", "A", 0.9, "alpha body")]);
         p.face = Face::Reader {
             source_index: 0,
@@ -636,9 +645,9 @@ mod tests {
         assert!(matches!(content, ReaderContent::Failed));
     }
 
-    #[test]
-    fn handle_data_ignores_answer_ready() {
-        let mut p = SourcesPanel::new();
+    #[tokio::test]
+    async fn handle_data_ignores_answer_ready() {
+        let mut p = test_panel().await;
         p.set_turn(1, vec![source("a.md", "A", 0.9, "alpha body")]);
         p.face = Face::Reader {
             source_index: 0,
@@ -655,9 +664,9 @@ mod tests {
         assert!(matches!(content, ReaderContent::Loading));
     }
 
-    #[test]
-    fn jk_moves_cursor_within_bounds() {
-        let mut p = SourcesPanel::new();
+    #[tokio::test]
+    async fn jk_moves_cursor_within_bounds() {
+        let mut p = test_panel().await;
         p.set_turn(
             1,
             vec![
@@ -666,22 +675,20 @@ mod tests {
             ],
         );
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let vault = rt.block_on(async { test_vault().await.1 });
 
-        p.handle_input(&InputEvent::Key(key(KeyCode::Char('j'))), &tx, &vault);
+        p.handle_input(&InputEvent::Key(key(KeyCode::Char('j'))), &tx);
         assert_eq!(p.cursor, 1);
-        p.handle_input(&InputEvent::Key(key(KeyCode::Char('j'))), &tx, &vault);
+        p.handle_input(&InputEvent::Key(key(KeyCode::Char('j'))), &tx);
         assert_eq!(p.cursor, 1, "clamped at the last row");
-        p.handle_input(&InputEvent::Key(key(KeyCode::Char('k'))), &tx, &vault);
+        p.handle_input(&InputEvent::Key(key(KeyCode::Char('k'))), &tx);
         assert_eq!(p.cursor, 0);
-        p.handle_input(&InputEvent::Key(key(KeyCode::Char('k'))), &tx, &vault);
+        p.handle_input(&InputEvent::Key(key(KeyCode::Char('k'))), &tx);
         assert_eq!(p.cursor, 0, "clamped at the first row");
     }
 
-    #[test]
-    fn h_and_esc_return_to_list_face() {
-        let mut p = SourcesPanel::new();
+    #[tokio::test]
+    async fn h_and_esc_return_to_list_face() {
+        let mut p = test_panel().await;
         p.set_turn(1, vec![source("a.md", "A", 0.9, "a")]);
         p.face = Face::Reader {
             source_index: 0,
@@ -689,9 +696,7 @@ mod tests {
             scroll: 0,
         };
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let vault = rt.block_on(async { test_vault().await.1 });
-        p.handle_input(&InputEvent::Key(key(KeyCode::Esc)), &tx, &vault);
+        p.handle_input(&InputEvent::Key(key(KeyCode::Esc)), &tx);
         assert!(matches!(p.face, Face::List));
     }
 
@@ -701,10 +706,10 @@ mod tests {
         let path = VaultPath::new("note.md");
         vault.create_note(&path, "# h\nbody text\n").await.unwrap();
 
-        let mut p = SourcesPanel::new();
+        let mut p = SourcesPanel::new(Arc::new(vault));
         p.set_turn(1, vec![source("note.md", "h", 0.9, "body text")]);
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        p.open_reader(0, &tx, &vault);
+        p.open_reader(0, &tx);
         assert!(matches!(p.face, Face::Reader { .. }));
 
         let event = rx.recv().await.expect("open_reader sends a ReaderNote");
@@ -771,10 +776,10 @@ mod tests {
                 .unwrap();
         }
 
-        #[test]
-        fn render_does_not_panic_across_states_and_sizes() {
+        #[tokio::test]
+        async fn render_does_not_panic_across_states_and_sizes() {
             let theme = Theme::default();
-            let mut p = SourcesPanel::new();
+            let mut p = test_panel().await;
             draw(&mut p, &theme, 40, 10, true); // empty list
 
             p.set_turn(
@@ -816,10 +821,10 @@ mod tests {
             draw(&mut p, &theme, 0, 0, true); // zero rect
         }
 
-        #[test]
-        fn reader_scroll_clamps_to_wrapped_row_count() {
+        #[tokio::test]
+        async fn reader_scroll_clamps_to_wrapped_row_count() {
             let theme = Theme::default();
-            let mut p = SourcesPanel::new();
+            let mut p = test_panel().await;
             p.set_turn(1, vec![source("a.md", "h", 0.9, "body")]);
             // A single very long source line that wraps into far more rows than
             // the viewport once rendered narrow.
@@ -849,10 +854,10 @@ mod tests {
             );
         }
 
-        #[test]
-        fn reader_autoscroll_anchors_to_highlighted_row() {
+        #[tokio::test]
+        async fn reader_autoscroll_anchors_to_highlighted_row() {
             let theme = Theme::default();
-            let mut p = SourcesPanel::new();
+            let mut p = test_panel().await;
             p.set_turn(1, vec![source("a.md", "b", 0.9, "beta body")]);
             p.face = Face::Reader {
                 source_index: 0,

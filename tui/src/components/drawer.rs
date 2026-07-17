@@ -66,9 +66,6 @@ pub struct DrawerHost {
     links: LinksPanel,
     outline: OutlinePanel,
     config: ConfigPanel,
-    /// Vault handle for the Ask Sources view's reader load (its `handle_input`
-    /// spawns a note read the trait signature can't thread through).
-    vault: std::sync::Arc<NoteVault>,
 }
 
 impl DrawerHost {
@@ -86,12 +83,12 @@ impl DrawerHost {
             sidebar,
             query,
             semantic,
-            ask_sources: SourcesPanel::new(),
+            // The Sources view owns the vault handle for its reader load.
+            ask_sources: SourcesPanel::new(vault),
             tags,
             links,
             outline,
             config: ConfigPanel::default(),
-            vault,
         }
     }
 
@@ -174,7 +171,7 @@ impl DrawerHost {
                 }
             }
             DrawerView::Semantic => self.semantic.handle_input(event, tx),
-            DrawerView::Ask => self.ask_sources.handle_input(event, tx, &self.vault),
+            DrawerView::Ask => self.ask_sources.handle_input(event, tx),
             DrawerView::Tags => self.tags.handle_input(event, tx),
             DrawerView::Links => self.links.handle_input(event, tx),
             DrawerView::Outline => self.outline.handle_input(event, tx),

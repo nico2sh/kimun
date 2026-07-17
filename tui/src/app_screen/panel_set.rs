@@ -199,20 +199,24 @@ fn kind_at(columns: &[(PanelKind, Rect)], column: u16, row: u16) -> Option<Panel
         .map(|(kind, _)| *kind)
 }
 
-/// The editor area's sum type (ADR-0017, extended by ADR-0030 with a third
-/// arm): the note editor is shown, a read-only attachment view is shown in
-/// its place, or the Ask workspace's conversation thread is shown in its
-/// place. Exactly one arm is active; the note editor's component itself
-/// lives in `PanelSet::editor` for the whole screen lifetime regardless of
-/// which arm is active, so its state (e.g. a live nvim backend, undo
-/// history) survives the round trip.
+/// Which content the editor *area* currently shows — a pure selector, not a
+/// container (ADR-0017, extended by ADR-0030). The heavy stateful panels are
+/// permanent residents of `PanelSet`: the note editor is `PanelSet::editor`
+/// and the Ask workspace's conversation thread is `PanelSet::ask`, each living
+/// for the whole screen lifetime regardless of which content is selected — so
+/// their state (a live nvim backend, undo history, the conversation) survives
+/// switching the area away and back. Only the read-only attachment view is
+/// owned by its arm here, since it carries no state worth preserving. Exactly
+/// one variant is active at a time.
 enum EditorAreaContent {
     Note,
-    // Boxed: `AttachmentView` is much larger than `ThreadPanel` (it can hold
-    // a full text-file preview plus icons/key bindings) — boxing keeps the
-    // enum from ballooning to the size of its biggest arm.
+    // Boxed: `AttachmentView` can hold a full text-file preview plus
+    // icons/key bindings — boxing keeps the enum from ballooning to the size
+    // of that arm.
     Attachment(Box<AttachmentView>),
-    Ask(ThreadPanel),
+    /// Selects the resident `PanelSet::ask` for display (unit — the thread
+    /// panel itself lives on `PanelSet`, not in this variant).
+    Ask,
 }
 
 /// The editor screen's persistent **Panels** — the activity rail, the single
@@ -229,19 +233,20 @@ pub struct PanelSet {
     /// (e.g. a live nvim process) and undo history survive the round trip.
     /// See ADR-0017.
     editor: TextEditorComponent,
+    /// The Ask workspace's conversation thread + composer. Like `editor`, a
+    /// permanent resident: retained for the whole screen lifetime so the
+    /// conversation survives switching the editor area to another view and
+    /// back (adr/0030; ADR-0017 pattern). Owns its own `RagClient`. Shown only
+    /// when `content` is `EditorAreaContent::Ask`.
+    ask: ThreadPanel,
     /// Which content the editor *area* currently shows: the note editor
-    /// (which stays dormant underneath otherwise), a read-only attachment
-    /// view, or the Ask workspace. See `EditorAreaContent`.
+    /// (resident `editor`), a read-only attachment view, or the Ask workspace
+    /// (resident `ask`). See `EditorAreaContent`.
     content: EditorAreaContent,
     /// Current drawer width in columns (divider-draggable).
     drawer_width: u16,
     /// Whether a divider drag is in progress.
     dragging_divider: bool,
-    /// The live RAG client, when the server can answer questions. Threaded
-    /// into the Ask `ThreadPanel`'s inherent `handle_input` (the `Component`
-    /// trait method is a no-op — it has no room for a client). Kept in
-    /// lockstep with the live panel's capability by `set_ask_client`.
-    ask_client: Option<Arc<RagClient>>,
     /// The column each visible panel was drawn into on the last render —
     /// the single source of truth for mouse hit-testing. Empty until the
     /// first render.
@@ -261,10 +266,10 @@ impl PanelSet {
             rail: ActivityRail::new(key_bindings, icons, rail_caps),
             drawer,
             editor,
+            ask: ThreadPanel::new(),
             content: EditorAreaContent::Note,
             drawer_width: DEFAULT_DRAWER_WIDTH,
             dragging_divider: false,
-            ask_client: None,
             column_rects: Vec::new(),
         }
     }
@@ -284,16 +289,13 @@ impl PanelSet {
         self.rail.set_cursor(active);
     }
 
-    /// Set the live RAG client and hold the Ask panel's capability in lockstep
-    /// with it: a present client ⇒ capability on, `None` ⇒ off (adr/0030 — the
-    /// composer disables without evicting the thread). Guarantees a live panel
-    /// never sits `Thinking` behind a missing client.
+    /// The single injection point for the live RAG client: hands it to the
+    /// resident Ask panel, which derives its composer-enabled state from the
+    /// client's presence (adr/0030 — a present client enables submission,
+    /// `None` disables it without evicting the thread). Because the panel is
+    /// resident, one call keeps it correct whether or not Ask is on screen.
     pub fn set_ask_client(&mut self, client: Option<Arc<RagClient>>) {
-        let on = client.is_some();
-        self.ask_client = client;
-        if let EditorAreaContent::Ask(panel) = &mut self.content {
-            panel.set_capability(on);
-        }
+        self.ask.set_client(client);
     }
 
     // ── Order / focus / visibility (delegate to PanelOrder) ─────────────────
@@ -368,11 +370,18 @@ impl PanelSet {
         self.drawer_width = new.clamp(MIN_DRAWER_WIDTH, max_width.max(MIN_DRAWER_WIDTH));
     }
 
+    /// Switch the drawer's active `view` and rail cursor *without* changing
+    /// its visibility — for paths that must not force-reveal a drawer the user
+    /// explicitly hid (e.g. leaving the Ask workspace when a note opens).
+    pub fn switch_drawer_view(&mut self, view: DrawerView) {
+        self.drawer.set_view(view);
+        self.rail.set_cursor(view);
+    }
+
     /// Switch the drawer to `view` and reveal it. Keeps the rail cursor in
     /// step so keyboard navigation continues from the active item.
     pub fn open_drawer_view(&mut self, view: DrawerView) {
-        self.drawer.set_view(view);
-        self.rail.set_cursor(view);
+        self.switch_drawer_view(view);
         self.order.show(PanelKind::Drawer);
     }
 
@@ -407,10 +416,10 @@ impl PanelSet {
     }
 
     /// Return the editor area to the note editor, discarding any attachment.
-    /// No-op when already showing the editor, and — unlike `take_ask` — a
+    /// No-op when already showing the editor, and — unlike `hide_ask` — a
     /// no-op when showing the Ask workspace too: this method's contract is
-    /// specifically about attachments, so it never drops an Ask panel out
-    /// from under the caller (use `take_ask` for that).
+    /// specifically about attachments, so it leaves Ask content alone (use
+    /// `hide_ask` for that).
     pub fn clear_attachment(&mut self) {
         if matches!(self.content, EditorAreaContent::Attachment(_)) {
             self.content = EditorAreaContent::Note;
@@ -431,40 +440,38 @@ impl PanelSet {
         }
     }
 
-    /// Show `panel` in the editor area, replacing any prior attachment/Ask
-    /// content and hiding the note editor. Mirrors `show_attachment`: closes
-    /// the editor's autocomplete and focuses the editor panel.
-    pub fn show_ask(&mut self, panel: ThreadPanel) {
+    /// Select the resident Ask workspace as the editor-area content, hiding
+    /// the note editor. Mirrors `show_attachment`: closes the editor's
+    /// autocomplete and focuses the editor panel. The thread persists by
+    /// residency — this only flips the selector.
+    pub fn show_ask(&mut self) {
         self.editor.close_autocomplete();
-        self.content = EditorAreaContent::Ask(panel);
+        self.content = EditorAreaContent::Ask;
         self.order.focus(PanelKind::Editor);
     }
 
-    /// Take the Ask panel back out of the editor area, returning the editor
-    /// area to the note editor and handing the panel to the caller — so the
-    /// conversation survives the view switch (the caller stashes it and can
-    /// `show_ask` it again later). `None` when Ask isn't currently shown.
-    pub fn take_ask(&mut self) -> Option<ThreadPanel> {
-        match std::mem::replace(&mut self.content, EditorAreaContent::Note) {
-            EditorAreaContent::Ask(panel) => Some(panel),
-            other => {
-                self.content = other;
-                None
-            }
+    /// Return the editor area to the note editor when it's showing Ask. The
+    /// resident thread panel is untouched — its conversation survives. No-op
+    /// for any other content (mirrors `clear_attachment`'s scoping).
+    pub fn hide_ask(&mut self) {
+        if matches!(self.content, EditorAreaContent::Ask) {
+            self.content = EditorAreaContent::Note;
         }
     }
 
-    /// The Ask panel, if the editor area is currently showing it.
-    pub fn ask_mut(&mut self) -> Option<&mut ThreadPanel> {
-        match &mut self.content {
-            EditorAreaContent::Ask(panel) => Some(panel),
-            _ => None,
-        }
+    /// The resident Ask panel (always present; shown only when `content` is
+    /// `Ask`).
+    pub fn ask(&self) -> &ThreadPanel {
+        &self.ask
+    }
+    /// The resident Ask panel, mutably.
+    pub fn ask_mut(&mut self) -> &mut ThreadPanel {
+        &mut self.ask
     }
 
     /// Whether the editor area is currently showing the Ask workspace.
     pub fn is_showing_ask(&self) -> bool {
-        matches!(self.content, EditorAreaContent::Ask(_))
+        matches!(self.content, EditorAreaContent::Ask)
     }
 
     /// The active editor-area content as a `Component` — the attachment view
@@ -475,7 +482,7 @@ impl PanelSet {
     fn editor_area(&self) -> &dyn Component {
         match &self.content {
             EditorAreaContent::Attachment(view) => view.as_ref(),
-            EditorAreaContent::Ask(panel) => panel,
+            EditorAreaContent::Ask => &self.ask,
             EditorAreaContent::Note => &self.editor,
         }
     }
@@ -524,16 +531,13 @@ impl PanelSet {
         }
     }
 
-    /// Deliver an input event to the editor-area content. The Ask arm needs
-    /// the RAG client the `Component` trait can't carry, so it calls the
-    /// inherent `ThreadPanel::handle_input` directly; the others use the
-    /// trait. (Disjoint field borrows: `content` mutably, `ask_client`
-    /// immutably.)
+    /// Deliver an input event to the editor-area content. The Ask arm calls
+    /// the resident panel's inherent `ThreadPanel::handle_input` (it derives
+    /// submission from its own client); the others use the trait. Each arm
+    /// borrows a distinct field, disjoint from `content`.
     fn editor_area_handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
         match &mut self.content {
-            EditorAreaContent::Ask(panel) => {
-                panel.handle_input(event, tx, self.ask_client.as_ref())
-            }
+            EditorAreaContent::Ask => self.ask.handle_input(event, tx),
             EditorAreaContent::Attachment(view) => view.handle_input(event, tx),
             EditorAreaContent::Note => self.editor.handle_input(event, tx),
         }
@@ -658,11 +662,11 @@ impl PanelSet {
                             f.render_widget(block, rect);
                             view.render(f, inner, theme, is_focused);
                         }
-                        EditorAreaContent::Ask(panel) => {
+                        EditorAreaContent::Ask => {
                             let block = panel_block("Ask", theme, is_focused);
                             let inner = block.inner(rect);
                             f.render_widget(block, rect);
-                            panel.render(f, inner, theme, is_focused);
+                            self.ask.render(f, inner, theme, is_focused);
                         }
                         EditorAreaContent::Note => {
                             let title = if self.editor.is_dirty() {
@@ -998,34 +1002,28 @@ mod tests {
         )
     }
 
-    fn test_thread_panel() -> crate::components::ask_thread::ThreadPanel {
-        crate::components::ask_thread::ThreadPanel::new()
-    }
-
     #[tokio::test]
-    async fn ask_content_hides_the_editor_and_take_restores_it() {
+    async fn ask_content_hides_the_editor_and_leaving_restores_it() {
         let mut ps = make_panel_set().await;
         assert!(ps.editor().is_some());
-        ps.show_ask(test_thread_panel());
+        ps.show_ask();
         assert!(ps.editor().is_none());
         assert!(ps.is_showing_ask());
-        let panel = ps.take_ask().expect("panel comes back to the caller");
-        let _ = panel; // thread state survives with it
+        // Leaving Ask returns the note editor; the resident thread survives.
+        ps.hide_ask();
+        assert!(!ps.is_showing_ask());
         assert!(ps.editor().is_some());
     }
 
-    /// Capability⇔client lockstep at the wiring seam: with no client the live
-    /// Ask panel must be capability-off (never a forever-`Thinking` turn), and
-    /// a present client turns it back on.
+    /// `set_ask_client` is the single injection point: it drives the resident
+    /// Ask panel's client, which is its composer-enabled signal. No client ⇒
+    /// disabled (never a forever-`Thinking` turn); a present client ⇒ enabled.
     #[tokio::test]
-    async fn set_ask_client_holds_capability_in_lockstep() {
+    async fn set_ask_client_drives_the_resident_panels_client() {
         let mut ps = make_panel_set().await;
-        ps.show_ask(test_thread_panel());
-        // A fresh panel defaults capability on; dropping the client must flip
-        // it off.
         ps.set_ask_client(None);
-        assert!(!ps.ask_mut().unwrap().capability());
-        // Handing a client back re-enables it. (A bare client over a throwaway
+        assert!(!ps.ask().has_client());
+        // Handing a client back enables it. (A bare client over a throwaway
         // vault id is fine — it's never called here.)
         let client = std::sync::Arc::new(kimun_server_client::RagClient::new(
             "http://localhost:0".to_string(),
@@ -1033,13 +1031,13 @@ mod tests {
             "vault".to_string(),
         ));
         ps.set_ask_client(Some(client));
-        assert!(ps.ask_mut().unwrap().capability());
+        assert!(ps.ask().has_client());
     }
 
     #[tokio::test]
     async fn showing_an_attachment_replaces_ask() {
         let mut ps = make_panel_set().await;
-        ps.show_ask(test_thread_panel());
+        ps.show_ask();
         ps.show_attachment(test_attachment_view());
         assert!(!ps.is_showing_ask());
         assert!(ps.is_showing_attachment());

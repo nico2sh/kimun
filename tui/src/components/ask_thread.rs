@@ -1,19 +1,18 @@
 //! `ThreadPanel` — the editor area's Ask-workspace content (see CONTEXT.md:
-//! **Ask workspace**, **Thread**; adr/0030). Owns the conversation `Thread`
-//! and the docked question composer.
+//! **Ask workspace**, **Thread**; adr/0030). Owns the conversation `Thread`,
+//! the docked question composer, and the live `RagClient` (when the Kimün
+//! server can answer questions).
 //!
-//! `PanelSet` hands this back to its caller via `take_ask` (rather than
-//! dropping it, the way `clear_attachment` drops an `AttachmentView`) so the
-//! conversation survives the user switching to another editor-area view.
+//! The panel is a permanent resident of `PanelSet` (like the note editor —
+//! ADR-0017): its conversation survives the user switching the editor area to
+//! another view because the panel itself is never dropped or moved. Losing the
+//! client (server unreachable / no LLM) disables the composer without evicting
+//! the thread — the thread's answers are already local.
 //!
 //! Input runs through the inherent [`ThreadPanel::handle_input`], not the
-//! `Component` trait method: submitting/regenerating a turn needs an
-//! optional `&Arc<RagClient>` that the generic `dyn Component` dispatch
-//! (`PanelSet::editor_area_mut`) has no way to thread through. Wiring the
-//! editor screen to call this method directly (mirroring the typed
-//! `ask_mut()` accessor) is Task 11's job; the `Component` impl here only
-//! covers `render` (and default no-op input), same boundary Task 8 left it
-//! at.
+//! `Component` trait method: the panel derives everything it needs (enabled
+//! state, submission) from its own `client`, so the trait `render` (and its
+//! default no-op input) is all the generic `dyn Component` dispatch needs.
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -68,11 +67,12 @@ enum RowSlot {
 pub struct ThreadPanel {
     thread: Thread,
     composer: SingleLineInput,
-    /// Whether the Ask capability (Kimün server reachable with an LLM
-    /// configured) is currently available. Losing it disables the composer
-    /// without evicting the thread — the thread's answers are already local
-    /// (CONTEXT.md: **Ask workspace**).
-    capability: bool,
+    /// The live RAG client when the Kimün server can answer questions, else
+    /// `None`. Its presence is the single source of truth for whether the
+    /// composer is enabled: losing the client disables submission without
+    /// evicting the thread (the answers are already local — CONTEXT.md:
+    /// **Ask workspace**).
+    client: Option<Arc<RagClient>>,
     focus: ThreadFocus,
     /// Topmost visible row of the flattened turn-lines list, auto-adjusted on
     /// selection change to keep the selected turn in view.
@@ -93,7 +93,7 @@ impl ThreadPanel {
         Self {
             thread: Thread::default(),
             composer: SingleLineInput::new(),
-            capability: true,
+            client: None,
             focus: ThreadFocus::Composer,
             scroll: 0,
             citation_target: None,
@@ -103,17 +103,16 @@ impl ThreadPanel {
         }
     }
 
-    /// Update whether the Ask capability is currently available. See
-    /// adr/0030: losing capability disables the composer but never evicts
-    /// the thread.
-    pub fn set_capability(&mut self, on: bool) {
-        self.capability = on;
+    /// Set (or clear) the live RAG client — the single injection point
+    /// `PanelSet::set_ask_client` drives. A present client enables the
+    /// composer; `None` disables it without touching the thread (adr/0030).
+    pub fn set_client(&mut self, client: Option<Arc<RagClient>>) {
+        self.client = client;
     }
 
-    /// Whether the Ask capability is currently on — the wiring seam reads this
-    /// to assert capability⇔client lockstep (Task 11).
-    pub fn capability(&self) -> bool {
-        self.capability
+    /// Whether a live RAG client is set — i.e. the composer can submit.
+    pub fn has_client(&self) -> bool {
+        self.client.is_some()
     }
 
     /// Move keyboard focus to the question composer (leader `a a` / the Ask
@@ -138,18 +137,12 @@ impl ThreadPanel {
 
     // ── Input ────────────────────────────────────────────────────────────
 
-    /// Handle an input event. `client` is the live RAG client when the Ask
-    /// capability is up; `None` disables submission/regeneration (their
-    /// synchronous half — pushing/rewinding a turn — still runs, matching
-    /// `capability`, but nothing is ever spawned without a client).
-    pub fn handle_input(
-        &mut self,
-        event: &InputEvent,
-        tx: &AppTx,
-        client: Option<&Arc<RagClient>>,
-    ) -> EventState {
+    /// Handle an input event. Submission/regeneration derive from the panel's
+    /// own `client`: with no client the composer is disabled and nothing is
+    /// ever spawned (no orphaned `Thinking` turn).
+    pub fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
         match event {
-            InputEvent::Key(key) => self.handle_key(key, tx, client),
+            InputEvent::Key(key) => self.handle_key(key, tx),
             InputEvent::Mouse(mouse) => self.handle_mouse(mouse, tx),
             InputEvent::Paste(_) => EventState::NotConsumed,
         }
@@ -169,31 +162,21 @@ impl ThreadPanel {
         // `ReaderNote` is addressed to the source reader (Task 10), not here.
     }
 
-    fn handle_key(
-        &mut self,
-        key: &KeyEvent,
-        tx: &AppTx,
-        client: Option<&Arc<RagClient>>,
-    ) -> EventState {
+    fn handle_key(&mut self, key: &KeyEvent, tx: &AppTx) -> EventState {
         match self.focus {
-            ThreadFocus::Composer => self.handle_composer_key(key, tx, client),
-            ThreadFocus::Turns => self.handle_turns_key(key, tx, client),
+            ThreadFocus::Composer => self.handle_composer_key(key, tx),
+            ThreadFocus::Turns => self.handle_turns_key(key, tx),
         }
     }
 
-    fn handle_composer_key(
-        &mut self,
-        key: &KeyEvent,
-        tx: &AppTx,
-        client: Option<&Arc<RagClient>>,
-    ) -> EventState {
+    fn handle_composer_key(&mut self, key: &KeyEvent, tx: &AppTx) -> EventState {
         if key.code == KeyCode::Esc {
             self.focus = ThreadFocus::Turns;
             return EventState::Consumed;
         }
         match self.composer.handle_key(key) {
             InputOutcome::Submit => {
-                self.submit(tx, client);
+                self.submit(tx);
                 EventState::Consumed
             }
             InputOutcome::NotConsumed => EventState::NotConsumed,
@@ -201,12 +184,7 @@ impl ThreadPanel {
         }
     }
 
-    fn handle_turns_key(
-        &mut self,
-        key: &KeyEvent,
-        tx: &AppTx,
-        client: Option<&Arc<RagClient>>,
-    ) -> EventState {
+    fn handle_turns_key(&mut self, key: &KeyEvent, tx: &AppTx) -> EventState {
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => {
                 self.thread.select_prev();
@@ -229,7 +207,7 @@ impl ThreadPanel {
                 EventState::Consumed
             }
             KeyCode::Char('r') => {
-                self.regenerate_selected(tx, client);
+                self.regenerate_selected(tx);
                 EventState::Consumed
             }
             _ => EventState::NotConsumed,
@@ -310,13 +288,14 @@ impl ThreadPanel {
 
     // ── Turn actions ─────────────────────────────────────────────────────
 
-    /// Pre-spawn half of `submit`, factored out for testability (no
-    /// `RagClient` needed): validates the Ask capability and non-empty
-    /// composer text, pushes a `Thinking` turn, and returns what the spawn
-    /// needs. `None` — and no thread mutation — when the capability is off
-    /// or the composer is (effectively) empty.
+    /// Pre-spawn half of `submit`, factored out for testability: validates
+    /// that a client is present and the composer text is non-empty, pushes a
+    /// `Thinking` turn, and returns what the spawn needs. `None` — and no
+    /// thread mutation — when there is no client or the composer is
+    /// (effectively) empty. Checking the client here (not just in `submit`) is
+    /// what keeps a clientless submit from orphaning a forever-`Thinking` turn.
     fn begin_turn(&mut self) -> Option<PendingTurn> {
-        if !self.capability {
+        if self.client.is_none() {
             return None;
         }
         let question = self.composer.take_text();
@@ -332,19 +311,17 @@ impl ThreadPanel {
         Some((question, history, turn_id))
     }
 
-    /// Submit the composer's question. With a live `client` this spawns the
-    /// ask job, delivering `AppEvent::Ask(AskData::AnswerReady)` on
-    /// completion; without one the turn stays `Thinking` (an
-    /// capability/client mismatch is a caller bug, not something resolved
-    /// here — see the `handle_input` doc comment).
-    fn submit(&mut self, tx: &AppTx, client: Option<&Arc<RagClient>>) {
+    /// Submit the composer's question. `begin_turn` already guarantees a
+    /// client is present (else it pushes no turn), so this spawns the ask job,
+    /// delivering `AppEvent::Ask(AskData::AnswerReady)` on completion.
+    fn submit(&mut self, tx: &AppTx) {
         let Some((question, history, turn_id)) = self.begin_turn() else {
             return;
         };
-        let Some(client) = client else {
+        let Some(client) = self.client.clone() else {
             return;
         };
-        Self::spawn_ask(tx, client, question, history, turn_id);
+        Self::spawn_ask(tx, &client, question, history, turn_id);
     }
 
     /// Rewind the selected turn back to `Thinking` and re-ask its question.
@@ -354,23 +331,22 @@ impl ThreadPanel {
     /// targets, and saved-note wikilinks aligned. (`Thread::regenerate` leaves
     /// the old sources in place while the turn is `Thinking`, so the previous
     /// evidence stays visible during regeneration; only completion swaps them.)
-    /// No-op without capability, without a client, or when the selected turn is
-    /// currently in flight (`Thread::regenerate` rejects that case). Leader `a r`.
-    pub(crate) fn regenerate_selected(&mut self, tx: &AppTx, client: Option<&Arc<RagClient>>) {
-        if !self.capability {
+    /// No-op without a client, or when the selected turn is currently in
+    /// flight (`Thread::regenerate` rejects that case). The client is checked
+    /// first, before any rewind, so a clientless regenerate leaves the turn
+    /// `Done` rather than orphaning it as `Thinking`. Leader `a r`.
+    pub(crate) fn regenerate_selected(&mut self, tx: &AppTx) {
+        let Some(client) = self.client.clone() else {
             return;
-        }
+        };
         let Some(id) = self.thread.selected().map(|t| t.id) else {
             return;
         };
         let Some(question) = self.thread.regenerate(id) else {
             return;
         };
-        let Some(client) = client else {
-            return;
-        };
         let history = self.thread.history();
-        Self::spawn_ask(tx, client, question, history, id);
+        Self::spawn_ask(tx, &client, question, history, id);
     }
 
     /// Spawn the async ask job for `turn_id`: call the RAG client with the
@@ -491,7 +467,8 @@ impl ThreadPanel {
     fn render_composer(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
         self.composer_rect = rect;
 
-        let title = if self.capability {
+        let enabled = self.client.is_some();
+        let title = if enabled {
             "Ask a question"
         } else {
             "server unavailable"
@@ -500,7 +477,7 @@ impl ThreadPanel {
         let inner = block.inner(rect);
         f.render_widget(block, rect);
 
-        let style = if self.capability {
+        let style = if enabled {
             Style::default().fg(theme.fg.to_ratatui())
         } else {
             Style::default()
@@ -508,7 +485,7 @@ impl ThreadPanel {
                 .add_modifier(Modifier::DIM)
         };
         self.composer
-            .render(f, inner, style, 0, focused && self.capability);
+            .render(f, inner, style, 0, focused && enabled);
     }
 }
 
@@ -736,38 +713,51 @@ mod tests {
     use super::*;
     use ratatui::crossterm::event::KeyModifiers;
 
+    /// A throwaway RAG client — never actually called (localhost:0), just
+    /// present so the composer is enabled.
+    fn test_client() -> Arc<RagClient> {
+        Arc::new(RagClient::new(
+            "http://localhost:0".to_string(),
+            None,
+            "vault".to_string(),
+        ))
+    }
+
+    /// An offline panel (no client) with pending composer text.
     fn test_panel() -> ThreadPanel {
         let mut p = ThreadPanel::new();
-        p.set_capability(false);
         p.composer.set_value("q");
         p
     }
 
     fn test_panel_online() -> ThreadPanel {
-        ThreadPanel::new()
+        let mut p = ThreadPanel::new();
+        p.set_client(Some(test_client()));
+        p
     }
 
     fn p_handle_enter(p: &mut ThreadPanel) -> EventState {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-        p.handle_input(&InputEvent::Key(key), &tx, None)
+        p.handle_input(&InputEvent::Key(key), &tx)
     }
 
     #[test]
-    fn new_thread_panel_starts_empty_with_capability_and_composer_focus() {
+    fn new_thread_panel_starts_empty_without_client_and_composer_focus() {
         let panel = ThreadPanel::new();
         assert!(panel.thread().is_empty());
-        assert!(panel.capability);
+        assert!(!panel.has_client());
         assert_eq!(panel.focus, ThreadFocus::Composer);
     }
 
     #[test]
-    fn set_capability_toggles_the_flag() {
+    fn set_client_toggles_the_composer_enable_signal() {
         let mut panel = ThreadPanel::new();
-        panel.set_capability(false);
-        assert!(!panel.capability);
-        panel.set_capability(true);
-        assert!(panel.capability);
+        assert!(!panel.has_client());
+        panel.set_client(Some(test_client()));
+        assert!(panel.has_client());
+        panel.set_client(None);
+        assert!(!panel.has_client());
     }
 
     #[test]
@@ -777,13 +767,16 @@ mod tests {
         assert_eq!(panel.thread().turns().len(), 1);
     }
 
-    #[test]
-    fn enter_submits_only_with_capability() {
-        let mut p = test_panel();
+    #[tokio::test]
+    async fn enter_submits_only_with_a_client() {
+        let mut p = test_panel(); // "q" pending, no client
         let _ = p_handle_enter(&mut p);
-        assert!(p.thread().is_empty(), "no capability → no turn");
+        assert!(p.thread().is_empty(), "no client → no turn");
 
-        p.set_capability(true);
+        // A client enables submission; the composer text (untouched by the
+        // clientless attempt) now pushes a Thinking turn. The spawned job runs
+        // in the background — we only assert the synchronous half here.
+        p.set_client(Some(test_client()));
         let _ = p_handle_enter(&mut p);
         assert_eq!(p.thread().turns().len(), 1);
         assert!(matches!(
@@ -815,8 +808,20 @@ mod tests {
     }
 
     #[test]
+    fn begin_turn_is_none_without_a_client() {
+        let mut p = ThreadPanel::new(); // no client
+        p.composer.set_value("hello");
+        assert!(p.begin_turn().is_none());
+        assert!(
+            p.thread().is_empty(),
+            "no client → no orphaned Thinking turn"
+        );
+    }
+
+    #[test]
     fn begin_turn_is_none_when_composer_empty() {
         let mut p = ThreadPanel::new();
+        p.set_client(Some(test_client()));
         p.composer.set_value("   ");
         assert!(p.begin_turn().is_none());
         assert!(p.thread().is_empty());
@@ -825,8 +830,9 @@ mod tests {
     #[test]
     fn begin_turn_pushes_a_thinking_turn_and_selects_it() {
         let mut p = ThreadPanel::new();
+        p.set_client(Some(test_client()));
         p.composer.set_value("hello");
-        let (question, history, turn_id) = p.begin_turn().expect("capability + non-empty");
+        let (question, history, turn_id) = p.begin_turn().expect("client + non-empty");
         assert_eq!(question, "hello");
         assert!(history.is_empty());
         assert_eq!(p.thread().turns().len(), 1);
@@ -838,7 +844,7 @@ mod tests {
         let mut p = ThreadPanel::new();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
-        let state = p.handle_input(&InputEvent::Key(key), &tx, None);
+        let state = p.handle_input(&InputEvent::Key(key), &tx);
         assert_eq!(state, EventState::Consumed);
         assert_eq!(p.focus, ThreadFocus::Turns);
     }
@@ -854,12 +860,14 @@ mod tests {
 
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let key = KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE);
-        p.handle_input(&InputEvent::Key(key), &tx, None);
+        p.handle_input(&InputEvent::Key(key), &tx);
         assert_eq!(p.thread().selected().unwrap().id, first);
     }
 
     #[test]
-    fn regenerate_without_client_still_rewinds_but_does_not_spawn() {
+    fn regenerate_without_a_client_does_nothing() {
+        // Without a client, regenerate must not even rewind the turn — the
+        // client check comes before the rewind, so no orphaned Thinking turn.
         let mut p = ThreadPanel::new();
         let id = p.thread_mut().ask("q".into());
         p.thread_mut().complete(id, "a".into(), vec![]);
@@ -867,11 +875,11 @@ mod tests {
 
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let key = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE);
-        p.handle_input(&InputEvent::Key(key), &tx, None);
-        assert!(matches!(
-            p.thread().selected().unwrap().status,
-            TurnStatus::Thinking
-        ));
+        p.handle_input(&InputEvent::Key(key), &tx);
+        assert!(
+            matches!(p.thread().selected().unwrap().status, TurnStatus::Done),
+            "no client → the completed turn stays Done"
+        );
         assert_eq!(p.thread().selected().unwrap().id, id);
     }
 
@@ -882,7 +890,7 @@ mod tests {
             p.focus = ThreadFocus::Turns;
             let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
             let key = KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE);
-            p.handle_input(&InputEvent::Key(key), &tx, None);
+            p.handle_input(&InputEvent::Key(key), &tx);
             assert_eq!(p.focus, ThreadFocus::Composer);
         }
     }
@@ -978,6 +986,7 @@ mod tests {
         fn render_does_not_panic_across_states_and_sizes() {
             let theme = Theme::default();
             let mut p = ThreadPanel::new();
+            p.set_client(Some(test_client())); // enabled composer render path
             draw(&mut p, &theme, 40, 10, true); // empty thread
 
             let id = p
@@ -1000,7 +1009,7 @@ mod tests {
             p.thread_mut().fail(id2, "boom".into());
             draw(&mut p, &theme, 40, 10, true); // Error
 
-            p.set_capability(false);
+            p.set_client(None);
             draw(&mut p, &theme, 40, 10, false); // disabled, unfocused
 
             draw(&mut p, &theme, 3, 3, true); // degenerate tiny rect
