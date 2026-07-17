@@ -1,17 +1,18 @@
 //! Pure resolution of a retrieved chunk's location within its source note's
 //! full text, for the Ask workspace's Source reader (CONTEXT.md: **Ask
 //! workspace**, `SourcesPanel`). Three-step resolution, most confident
-//! first: an exact substring match of the retrieved chunk text; the
-//! `ContentChunk` core's own chunker computes for the note (matched by
-//! innermost heading), located by substring; and, only when that chunk's
-//! text can't be found verbatim in the note (e.g. it was normalized
-//! server-side), the heading line itself, highlighted through to the next
-//! heading or the note's end.
+//! first: an exact substring match of the retrieved chunk text (first
+//! occurrence wins on a duplicate); the `ContentChunk` core's own chunker
+//! computes for the note (matched by innermost heading), located by
+//! substring; and, only when that chunk's text can't be found verbatim in
+//! the note (e.g. it was normalized server-side), core's
+//! `note::scan::heading_section_range` — content analysis over raw note
+//! text belongs in core, not the TUI.
 
 use std::ops::Range;
 
 use kimun_core::nfs::VaultPath;
-use kimun_core::note::NoteDetails;
+use kimun_core::note::{NoteDetails, scan};
 
 /// Locates the byte range of the section identified by `heading`/
 /// `chunk_text` within `note_text`. `None` when nothing resolves — the
@@ -36,33 +37,10 @@ pub fn section_range(note_text: &str, heading: &str, chunk_text: &str) -> Option
     }
 
     // Last resort: the chunk's own text isn't a verbatim substring either
-    // (normalization). Fall back to the heading line, highlighted through to
-    // the next heading (any level) or the note's end.
-    heading_line_range(note_text, heading)
-}
-
-/// Locates the Markdown heading line whose text equals `heading`
-/// case-insensitively, and returns the range from that line's start through
-/// to the start of the next heading line, or the note's end.
-fn heading_line_range(note_text: &str, heading: &str) -> Option<Range<usize>> {
-    let mut offset = 0usize;
-    let mut start = None;
-    for line in note_text.split_inclusive('\n') {
-        let stripped = line.strip_suffix('\n').unwrap_or(line);
-        let trimmed = stripped.trim_start();
-        if start.is_none() {
-            if trimmed.starts_with('#') {
-                let text = trimmed.trim_start_matches('#').trim();
-                if text.eq_ignore_ascii_case(heading) {
-                    start = Some(offset);
-                }
-            }
-        } else if trimmed.starts_with('#') {
-            return start.map(|s| s..offset);
-        }
-        offset += line.len();
-    }
-    start.map(|s| s..note_text.len())
+    // (normalization — core's chunker strips diacritics, reformats lists,
+    // etc.). Fall back to the heading line itself; this is core content
+    // analysis, so it lives in `note::scan`, not here.
+    scan::heading_section_range(note_text, heading)
 }
 
 #[cfg(test)]
@@ -99,28 +77,12 @@ mod tests {
         assert!(note[r].contains("second body"));
     }
 
-    // `heading_line_range` (the true last-resort fallback, reached only when
-    // even the chunk's own recomputed text isn't a verbatim substring —
-    // e.g. Markdown escapes core's chunker unescapes) is exercised directly
-    // here rather than through `section_range`, since forcing that exact
-    // scenario end-to-end requires cooking up Markdown whose extracted chunk
-    // text diverges from its source syntax.
     #[test]
-    fn heading_line_range_stops_at_the_next_heading() {
-        let note = "# a\nfirst\n# b\nsecond\n# c\nthird\n";
-        let r = heading_line_range(note, "b").unwrap();
-        assert_eq!(&note[r], "# b\nsecond\n");
-    }
-
-    #[test]
-    fn heading_line_range_runs_to_note_end_when_last() {
-        let note = "# a\nfirst\n# b\nsecond\n";
-        let r = heading_line_range(note, "b").unwrap();
-        assert_eq!(&note[r], "# b\nsecond\n");
-    }
-
-    #[test]
-    fn heading_line_range_none_when_heading_absent() {
-        assert!(heading_line_range("# a\nfirst\n", "missing").is_none());
+    fn section_range_prefers_the_first_occurrence_on_a_duplicate_chunk_text() {
+        // `str::find` returns the first match; document that a repeated
+        // chunk body resolves to its earlier occurrence, not a later one.
+        let note = "# a\nshared body\n# b\nshared body\n";
+        let r = section_range(note, "b", "shared body").unwrap();
+        assert_eq!(r, 4..15, "first occurrence, under heading a, wins");
     }
 }

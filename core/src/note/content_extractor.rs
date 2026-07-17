@@ -1,6 +1,7 @@
 use log::debug;
 use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 use regex::{Captures, Regex};
+use std::ops::Range;
 use std::sync::LazyLock;
 use url::Url;
 
@@ -472,6 +473,74 @@ pub fn is_inside_exclusion_zone(text: &str, byte_offset: usize) -> bool {
 /// link bodies still suppress.
 pub fn is_inside_code_link_or_frontmatter(text: &str, byte_offset: usize) -> bool {
     ExclusionZones::from_text(text).contains_code_link_or_frontmatter(byte_offset)
+}
+
+/// Locates the section belonging to the ATX heading whose text equals
+/// `heading`, for callers that only have a heading string to go on (no
+/// [`ContentChunk`] available) — e.g. the Ask workspace's source reader
+/// (`tui::ask::locate::section_range`), matching a server-returned section
+/// title against the note's raw text when the retrieved chunk text is no
+/// longer a verbatim substring.
+///
+/// Comparison strips diacritics and folds ASCII case on *both* sides:
+/// `heading` may already be core-normalized (e.g. round-tripped through the
+/// server, which indexes diacritics-stripped section titles), while `text`
+/// is the note's raw source — so a note heading of "Café" matches a
+/// `heading` argument of "cafe".
+///
+/// Returns the byte range from the matching heading line's start through to
+/// the start of the next heading line (any level), or the end of `text` if
+/// it's the last section. `None` when no heading line matches.
+pub fn heading_section_range(text: &str, heading: &str) -> Option<Range<usize>> {
+    let needle = crate::utilities::remove_diacritics(heading);
+    let mut offset = 0usize;
+    let mut start = None;
+    for line in text.split_inclusive('\n') {
+        let stripped = line.strip_suffix('\n').unwrap_or(line);
+        if start.is_none() {
+            if let Some(title) = atx_heading_text(stripped) {
+                let normalized = crate::utilities::remove_diacritics(title);
+                if normalized.eq_ignore_ascii_case(&needle) {
+                    start = Some(offset);
+                }
+            }
+        } else if atx_heading_text(stripped).is_some() {
+            return start.map(|s| s..offset);
+        }
+        offset += line.len();
+    }
+    start.map(|s| s..text.len())
+}
+
+/// Recognizes one ATX heading line — 1 to 6 leading `#` characters, then a
+/// space/tab (or end of line), then the heading text — and returns its text
+/// with leading/trailing whitespace and an optional closing `#` run (e.g.
+/// `## Title ##`) trimmed off.
+///
+/// A `#`-run *not* followed by whitespace (`#projects`) is a hashtag, not a
+/// heading, and returns `None` — hashtags are a first-class construct here
+/// ([`label_matches_inner`]), never conflated with headings.
+fn atx_heading_text(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start();
+    let after_hashes = trimmed.trim_start_matches('#');
+    let hash_count = trimmed.len() - after_hashes.len();
+    if !(1..=6).contains(&hash_count) {
+        return None;
+    }
+    if !after_hashes.is_empty() && !after_hashes.starts_with([' ', '\t']) {
+        return None;
+    }
+    let text = after_hashes.trim();
+    let text = match text.trim_end_matches('#').strip_suffix([' ', '\t']) {
+        // A space/tab-preceded trailing `#` run is a closing sequence — drop it.
+        Some(stripped) => stripped.trim_end(),
+        // No preceding space: either there's no trailing `#` run at all
+        // (keep `text` as-is), or the whole heading text is nothing but a
+        // closing run with no title (e.g. `### ###`) — clear it.
+        None if !text.is_empty() && text.bytes().all(|b| b == b'#') => "",
+        None => text,
+    };
+    Some(text)
 }
 
 /// Cached set of byte ranges that suppress autocomplete: frontmatter,
@@ -2980,5 +3049,80 @@ ls -la ./test
     fn exclusion_zone_offset_past_end_returns_false() {
         let text = "short";
         assert!(!is_inside_exclusion_zone(text, text.len() + 5));
+    }
+
+    use super::{atx_heading_text, heading_section_range};
+
+    #[test]
+    fn heading_section_range_stops_at_the_next_heading() {
+        let note = "# a\nfirst\n# b\nsecond\n# c\nthird\n";
+        let r = heading_section_range(note, "b").unwrap();
+        assert_eq!(&note[r], "# b\nsecond\n");
+    }
+
+    #[test]
+    fn heading_section_range_runs_to_note_end_when_last() {
+        // Distinct from the "stops at the next heading" case above: no
+        // trailing heading exists, so the range must reach the note's end.
+        let note = "# a\nfirst\n# b\nsecond and third\nfourth\n";
+        let r = heading_section_range(note, "b").unwrap();
+        assert_eq!(&note[r], "# b\nsecond and third\nfourth\n");
+    }
+
+    #[test]
+    fn heading_section_range_none_when_heading_absent() {
+        assert!(heading_section_range("# a\nfirst\n", "missing").is_none());
+    }
+
+    #[test]
+    fn heading_section_range_matches_diacritics_stripped_and_case_insensitive() {
+        // The note's raw heading keeps its accent; a server-normalized
+        // `heading` argument ("cafe", stripped + lowercased) must still hit.
+        let note = "# Café\nespresso and pastries\n";
+        let r = heading_section_range(note, "cafe").unwrap();
+        assert_eq!(&note[r], "# Café\nespresso and pastries\n");
+    }
+
+    #[test]
+    fn heading_section_range_ignores_a_bare_hashtag_line() {
+        // "#projects" has no space after the `#` run — a hashtag, not a
+        // heading — so it must not satisfy a `heading` lookup of "projects".
+        let note = "#projects\nnot a heading\n";
+        assert!(heading_section_range(note, "projects").is_none());
+    }
+
+    #[test]
+    fn heading_section_range_strips_a_closing_hash_trailer() {
+        let note = "## Title ##\nbody\n";
+        let r = heading_section_range(note, "Title").unwrap();
+        assert_eq!(&note[r], "## Title ##\nbody\n");
+    }
+
+    #[test]
+    fn atx_heading_text_rejects_a_bare_hashtag() {
+        assert_eq!(atx_heading_text("#projects"), None);
+    }
+
+    #[test]
+    fn atx_heading_text_accepts_a_plain_heading() {
+        assert_eq!(atx_heading_text("## Title"), Some("Title"));
+    }
+
+    #[test]
+    fn atx_heading_text_strips_closing_run() {
+        assert_eq!(atx_heading_text("## Title ##"), Some("Title"));
+        assert_eq!(atx_heading_text("# ###"), Some(""));
+    }
+
+    #[test]
+    fn atx_heading_text_keeps_a_trailing_hash_without_preceding_space() {
+        // "C#" (the language) has no space before its trailing `#` — not a
+        // closing sequence, so it must survive verbatim.
+        assert_eq!(atx_heading_text("## C#"), Some("C#"));
+    }
+
+    #[test]
+    fn atx_heading_text_rejects_more_than_six_hashes() {
+        assert_eq!(atx_heading_text("####### Title"), None);
     }
 }
