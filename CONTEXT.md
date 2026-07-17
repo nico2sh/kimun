@@ -185,6 +185,36 @@ _Avoid_: dialog manager (the superseded name), overlay stack (it is single-slot)
 An async result addressed to the open **Overlay** — a dialog's validation verdict, its loaded directory list, a RAG answer, an operation error. One event family (`OverlayData`) routed *only* to the **OverlayHost**, never to a screen's owned handling; an overlay data event arriving with no (or the wrong) overlay open is stale by definition and dropped. This replaces the old convention of giving the active overlay first crack at every app event.
 _Avoid_: dialog event (the RAG answer overlay is not a dialog), validation result (names one kind).
 
+### Ask
+
+**Ask workspace**:
+The question-answering surface, entered from its own **Activity rail** entry: selecting ASK swaps the **Drawer** to the conversation's sources and the editor area to the conversation itself. Not an **Overlay** (the superseded ask surface was) and not a separate screen — it reuses the editor screen's panel layout, the same way the **attachment view** reuses the editor area. The rail entry is only offered when the **Kimün server** is reachable *and* has an LLM configured (full capability) — a *semantic-only* or **unconfigured** server never shows it. Losing that capability mid-use never evicts the user: an open Ask workspace stays readable (its answers are already local) with asking disabled until capability returns; only the rail entry disappears.
+_Avoid_: RAG screen (RAG names the technique, not the surface), ask overlay (the superseded modal), ask view (underspecified — it is a drawer view *plus* an editor-area content).
+
+**Thread**:
+The conversation the **Ask workspace** shows — the ordered sequence of **turns**, oldest first, with the question composer docked at the end. Follow-up questions continue the thread: prior completed turns travel with the new question as conversation history (a bounded recent window, citation markers stripped), so answers can refer back. One thread at a time, in memory only: it survives switching panels and server blips, and dies with the app or a workspace switch — starting a new conversation is an explicit action, never a side effect.
+_Avoid_: chat (imports chat-app expectations), session (collides with app lifetime), Q&A list (misses that turns are linked by history).
+
+**Turn**:
+One question-answer exchange in the **Thread**: the question, its answer, and the sources retrieved *for that question*. Retrieval is per-turn — every question, follow-up or not, gets its own sources; only the LLM sees prior turns. A turn always knows its own evidence: selecting a turn shows *its* sources, not the latest ones.
+_Avoid_: message (a turn is a pair plus its sources), exchange, query (collides with search queries).
+
+**Citation**:
+A `[n]` marker inside an answer tying a claim to the n-th source of its own **Turn**. Citations are mandatory for context-derived claims and absent from model-knowledge ones, so an uncited sentence is readable at a glance as "not from your notes" — the answer may supplement the notes with common knowledge, but only citations carry vault provenance. Citation indices are per-turn; they never point across turns (history strips them).
+_Avoid_: reference (too generic), footnote (citations are inline, not appended), source link (the source is the target, the citation is the marker).
+
+**Sources view**:
+The drawer view of the **Ask workspace**: the ranked sources of the selected **Turn** — section heading, note path, similarity, snippet. Selecting a different turn in the **Thread** repopulates it; it never shows a mix of turns. Flips between its list and the **Source reader**.
+_Avoid_: context panel (context is what the LLM saw, this is its per-note presentation), results (collides with search results).
+
+**Source reader**:
+The **Sources view**'s second face: the full note a source came from, rendered in place of the source list with the retrieved section highlighted, so evidence can be read *without leaving the answer* — the **Thread** stays put. Entered from a source row or a **Citation**; leaving it returns to the list. Read-only: actually editing the note is the editor's job (a separate open-in-editor action leaves the Ask workspace).
+_Avoid_: preview pane (that is the **Query panel**'s), note viewer, reader mode (it is a face of one view, not a mode of the app).
+
+**Saved answer**:
+A real vault note created from a **Turn**'s answer: question as title, answer as body, each **Citation** converted to a `[[wikilink]]` to its source note — so the answer joins the vault's link graph and its provenance survives as **note links** (backlinks from the sources find it). Created through the normal new-note flow and edited in the normal editor; the **Ask workspace** never edits notes itself.
+_Avoid_: exported answer (it is not an export format, it is a note), answer note (ambiguous with a note that merely contains an answer).
+
 ### Indexing
 
 **NoteIndex**:
