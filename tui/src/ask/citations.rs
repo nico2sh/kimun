@@ -3,7 +3,10 @@
 //! answers) all live here; no other module may parse `[n]`.
 
 pub struct CitationSpan {
+    /// Byte range of the whole marker, e.g. `[12]`, brackets included.
     pub range: std::ops::Range<usize>,
+    /// The marker's 1-based citation number (the `n` in `[n]`), used to
+    /// index into a turn's sources (`sources[index - 1]`).
     pub index: usize,
 }
 
@@ -21,6 +24,11 @@ pub fn scan(text: &str) -> Vec<CitationSpan> {
             }
             // at least one digit, closed by ']', not part of '[[…' or '…]]'
             if j > i + 1 && j < bytes.len() && bytes[j] == b']' {
+                // Heuristic, not exact pair matching: this only checks the one
+                // byte on each side, so it can't tell a real `[[wikilink]]`
+                // from an accidental `[[42]` / `[42]]` byte sequence — good
+                // enough in practice since citation markers and wikilinks
+                // don't otherwise collide.
                 let is_bracket_adjacent = (start > 0 && bytes[start - 1] == b'[')
                     || (j + 1 < bytes.len() && bytes[j + 1] == b']');
                 if !is_bracket_adjacent {
@@ -62,16 +70,22 @@ fn rewrite(text: &str, f: impl Fn(&CitationSpan) -> String) -> String {
     for span in scan(text) {
         out.push_str(&text[last..span.range.start]);
         let replacement = f(&span);
+        let mut end = span.range.end;
         if replacement.is_empty() {
-            let next = text[span.range.end..].chars().next();
+            let next = text[end..].chars().next();
             let follows_break = matches!(next, None | Some(' ' | '.' | ',' | ';' | ':' | '!' | '?' | '\n'));
             if follows_break && out.ends_with(' ') {
                 out.pop();
+            } else if next == Some(' ') && (out.is_empty() || out.ends_with('\n')) {
+                // The marker opens the text or a line, so there's no
+                // preceding space to pop — drop the following space instead,
+                // otherwise the result would start with a stray space.
+                end += 1;
             }
         } else {
             out.push_str(&replacement);
         }
-        last = span.range.end;
+        last = end;
     }
     out.push_str(&text[last..]);
     out
@@ -126,5 +140,17 @@ mod tests {
         assert_eq!(strip("a [1] b"), "a b");
         assert_eq!(strip("end [2]."), "end.");
         assert_eq!(strip("tail [3]"), "tail");
+    }
+
+    #[test]
+    fn strip_drops_the_following_space_when_the_marker_opens_the_text() {
+        // No preceding space to pop (the marker is at byte 0), so the fix
+        // must skip the *following* space instead of leaving it behind.
+        assert_eq!(strip("[1] Hello"), "Hello");
+    }
+
+    #[test]
+    fn strip_drops_the_following_space_when_the_marker_opens_a_line() {
+        assert_eq!(strip("a\n[1] b"), "a\nb");
     }
 }

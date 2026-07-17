@@ -11,7 +11,7 @@ use ratatui::crossterm::event::{MouseButton, MouseEventKind};
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 
 use crate::components::Component;
-use crate::components::activity_rail::{ActivityRail, RAIL_WIDTH};
+use crate::components::activity_rail::{ActivityRail, RAIL_WIDTH, RailCaps};
 use crate::components::ask_thread::ThreadPanel;
 use crate::components::attachment_view::AttachmentView;
 use crate::components::drawer::{DrawerHost, DrawerView};
@@ -254,12 +254,11 @@ impl PanelSet {
         editor: TextEditorComponent,
         icons: crate::settings::icons::Icons,
         key_bindings: crate::keys::KeyBindings,
-        semantic_visible: bool,
-        ask_visible: bool,
+        rail_caps: RailCaps,
     ) -> Self {
         Self {
             order: PanelOrder::new(),
-            rail: ActivityRail::new(key_bindings, icons, semantic_visible, ask_visible),
+            rail: ActivityRail::new(key_bindings, icons, rail_caps),
             drawer,
             editor,
             content: EditorAreaContent::Note,
@@ -278,11 +277,10 @@ impl PanelSet {
         &mut self,
         key_bindings: crate::keys::KeyBindings,
         icons: crate::settings::icons::Icons,
-        semantic_visible: bool,
-        ask_visible: bool,
+        rail_caps: RailCaps,
     ) {
         let active = self.drawer.active_view();
-        self.rail = ActivityRail::new(key_bindings, icons, semantic_visible, ask_visible);
+        self.rail = ActivityRail::new(key_bindings, icons, rail_caps);
         self.rail.set_cursor(active);
     }
 
@@ -724,8 +722,10 @@ mod tests {
             editor,
             settings.icons(),
             settings.key_bindings,
-            true,
-            true,
+            RailCaps {
+                semantic: true,
+                ask: true,
+            },
         )
     }
 
