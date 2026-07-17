@@ -16,8 +16,13 @@ pub fn suggested_path(question: &str) -> VaultPath {
 
 /// Renders `turn` as note content: the question as an `# ` title, the answer
 /// with citation markers converted to `[[source]]` wikilinks, and a
-/// `## Sources` footer listing each distinct linked source once, in
-/// first-seen order.
+/// `## Sources` footer.
+///
+/// The footer lists every one of `turn.sources` (deduped by clean name, in
+/// source/rank order), not just the ones the answer actually cited: a source
+/// the model retrieved but under-cited was still part of the turn's evidence,
+/// and provenance must not be silently dropped (CONTEXT.md: **Saved
+/// answer** — "backlinks from the sources find it").
 pub fn note_content(turn: &Turn) -> String {
     let names: Vec<String> = turn
         .sources
@@ -94,6 +99,37 @@ mod tests {
         let beta_pos = sources_section.find("[[beta]]").unwrap();
         assert!(alpha_pos < beta_pos);
         assert_eq!(sources_section.matches("[[alpha]]").count(), 1);
+    }
+
+    #[test]
+    fn note_content_lists_uncited_sources_too() {
+        let turn = turn_with(
+            "q",
+            "only cites the first source [1]",
+            vec![
+                source("projects/alpha.md", "h1"),
+                source("projects/beta.md", "h2"),
+            ],
+        );
+        let body = note_content(&turn);
+        let sources_section = body.split("## Sources").nth(1).unwrap();
+        assert!(sources_section.contains("[[alpha]]"));
+        assert!(
+            sources_section.contains("[[beta]]"),
+            "an uncited source must still appear in the footer: {sources_section:?}"
+        );
+    }
+
+    #[test]
+    fn note_content_dedupes_sources_sharing_a_clean_name() {
+        let turn = turn_with(
+            "q",
+            "cites nothing in particular",
+            vec![source("a/note.md", "h1"), source("b/note.md", "h2")],
+        );
+        let body = note_content(&turn);
+        let sources_section = body.split("## Sources").nth(1).unwrap();
+        assert_eq!(sources_section.matches("[[note]]").count(), 1);
     }
 
     #[test]
