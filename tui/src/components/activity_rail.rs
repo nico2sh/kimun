@@ -20,8 +20,8 @@ use crate::settings::themes::Theme;
 pub const RAIL_WIDTH: u16 = 7;
 
 /// The full rail catalog in presentation order. CFG is last and pinned to the
-/// bottom of the strip by a spacer. SEM only appears when a RAG server is
-/// configured (the rail is rebuilt with the screen on any config change).
+/// bottom of the strip by a spacer. SEM only appears when the server is
+/// reachable for search (the rail is rebuilt on any RAG-status change).
 const ITEMS: [(&str, DrawerView); 8] = [
     ("FIL", DrawerView::Files),
     ("FND", DrawerView::Find),
@@ -59,7 +59,9 @@ const CELL_ROWS: u16 = 3;
 /// SEM and ASK.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RailCaps {
-    /// SEM appears when a RAG server is configured.
+    /// SEM appears when the server is reachable for search (an embedder is
+    /// configured) — `RagStatus::search_available`, mirroring how `ask` tracks
+    /// `RagStatus::llm_available`.
     pub semantic: bool,
     /// ASK appears when the server can answer questions (an LLM configured).
     pub ask: bool,
@@ -67,7 +69,7 @@ pub struct RailCaps {
 
 pub struct ActivityRail {
     /// The visible items, in presentation order: [`ITEMS`] minus the views
-    /// whose feature is off (SEM without a configured RAG server).
+    /// whose feature is off (SEM without a search-reachable server).
     items: Vec<(&'static str, DrawerView)>,
     /// The item the keyboard cursor sits on (the item `Enter` opens).
     cursor: usize,
@@ -101,6 +103,12 @@ impl ActivityRail {
     /// The drawer view under the keyboard cursor.
     pub fn cursor_view(&self) -> DrawerView {
         self.items[self.cursor].1
+    }
+
+    /// Whether `view` is currently on the rail (its feature gate is on).
+    #[cfg(test)]
+    pub fn shows(&self, view: DrawerView) -> bool {
+        self.items.iter().any(|(_, v)| *v == view)
     }
 
     /// Move the keyboard cursor onto `view` (e.g. after a click or a leader

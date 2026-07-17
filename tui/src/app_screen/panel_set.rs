@@ -289,6 +289,12 @@ impl PanelSet {
         self.rail.set_cursor(active);
     }
 
+    /// Whether the activity rail currently shows `view` (feature gate on).
+    #[cfg(test)]
+    pub fn rail_shows(&self, view: DrawerView) -> bool {
+        self.rail.shows(view)
+    }
+
     /// The single injection point for the live RAG client: hands it to the
     /// resident Ask panel, which derives its composer-enabled state from the
     /// client's presence (adr/0030 — a present client enables submission,

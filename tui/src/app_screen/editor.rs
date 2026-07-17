@@ -102,9 +102,6 @@ pub struct EditorScreen {
 
 impl EditorScreen {
     pub fn new(vault: Arc<NoteVault>, path: VaultPath, settings: SharedSettings) -> Self {
-        // Read before taking the settings lock below (rag_configured locks too).
-        // Config changes rebuild this screen, so construction-time is current.
-        let semantic_visible = crate::rag::rag_configured(&settings);
         let s = settings.read().unwrap();
         let kb = s.key_bindings.clone();
         let theme = s.get_theme();
@@ -139,15 +136,16 @@ impl EditorScreen {
             settings,
             icons,
             theme,
-            // Ask starts hidden: no RAG status has arrived yet, so the server's
-            // LLM capability is unknown. The rail rebuilds when it does.
+            // SEM and ASK both start hidden: no RAG status has arrived yet, so
+            // the server's search/LLM capability is unknown. The rail rebuilds
+            // when the first health probe lands (both are status-driven).
             panels: PanelSet::from_panels(
                 drawer,
                 editor,
                 rail_icons,
                 rail_kb,
                 crate::components::activity_rail::RailCaps {
-                    semantic: semantic_visible,
+                    semantic: false,
                     ask: false,
                 },
             ),
@@ -1072,13 +1070,17 @@ impl EditorScreen {
     async fn handle_owned_message(&mut self, msg: AppEvent, tx: &AppTx) {
         match msg {
             AppEvent::RagStatus(status) => {
-                let was_available = self.rag_status.llm_available();
+                let ask_was = self.rag_status.llm_available();
+                let sem_was = self.rag_status.search_available();
                 self.rag_status = status;
-                // The rail's ASK entry and the composer both hinge on whether
-                // the server can answer questions. Rebuild the rail and refresh
-                // the Ask capability only when that flips (adr/0030: an active
-                // Ask view stays put when it drops — only the rail entry goes).
-                if was_available != status.llm_available() {
+                // Both rail entries are live-status-driven: ASK on whether the
+                // server can answer questions, SEM on whether it can search.
+                // Rebuild the rail when either flips (adr/0030: an active view
+                // stays put when its capability drops — only the rail entry
+                // goes). The Ask client only needs refreshing on the ASK flip.
+                let ask_now = status.llm_available();
+                let sem_now = status.search_available();
+                if ask_was != ask_now || sem_was != sem_now {
                     let (kb, icons) = {
                         let s = self.settings.read().unwrap();
                         (s.key_bindings.clone(), s.icons())
@@ -1087,10 +1089,12 @@ impl EditorScreen {
                         kb,
                         icons,
                         crate::components::activity_rail::RailCaps {
-                            semantic: crate::rag::rag_configured(&self.settings),
-                            ask: status.llm_available(),
+                            semantic: sem_now,
+                            ask: ask_now,
                         },
                     );
+                }
+                if ask_was != ask_now {
                     self.refresh_ask_capability().await;
                 }
             }
@@ -1137,14 +1141,16 @@ impl EditorScreen {
                 self.focus_editor();
             }
             AppEvent::OpenDrawerView(view) => {
-                // The rail hides SEM when no server is configured, but the
-                // leader path (`drawer.semantic`) can still request it — gate
-                // here so every route gets the same answer.
-                if view == DrawerView::Semantic && !crate::rag::rag_configured(&self.settings) {
-                    tx.send(AppEvent::FlashMessage(
-                        "Set kimun_server_url in config to use semantic search".into(),
-                    ))
-                    .ok();
+                // The rail hides SEM unless the server is reachable for search,
+                // but the leader path (`drawer.semantic`) can still request it —
+                // gate here so every route gets the same answer.
+                if view == DrawerView::Semantic && !self.rag_status.search_available() {
+                    let msg = if crate::rag::rag_configured(&self.settings) {
+                        "Semantic search needs a reachable server with an embedder"
+                    } else {
+                        "Set kimun_server_url in config to use semantic search"
+                    };
+                    tx.send(AppEvent::FlashMessage(msg.into())).ok();
                 }
                 // ASK needs an LLM-configured server (the rail hides its entry
                 // otherwise); gate every route the same way.
@@ -3405,6 +3411,50 @@ mod tests {
             matches!(turn.status, crate::ask::TurnStatus::Done),
             "the answer completed the turn"
         );
+    }
+
+    /// SEM's rail entry is live-status-driven, exactly like ASK: hidden until a
+    /// health probe reports the server reachable for search, shown for a
+    /// semantic-only server (search works, ASK stays hidden), and hidden again
+    /// when the server drops offline.
+    #[tokio::test]
+    async fn sem_rail_entry_tracks_search_availability() {
+        let (mut screen, _, _, _dir) = test_screen().await;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        // Startup: no status yet → SEM (and ASK) hidden.
+        assert!(!screen.panels.rail_shows(DrawerView::Semantic));
+        assert!(!screen.panels.rail_shows(DrawerView::Ask));
+
+        // Semantic-only server comes online: SEM appears, ASK stays hidden.
+        screen
+            .handle_owned_message(
+                AppEvent::RagStatus(crate::rag::RagStatus::Online {
+                    llm_available: false,
+                }),
+                &tx,
+            )
+            .await;
+        assert!(screen.panels.rail_shows(DrawerView::Semantic));
+        assert!(!screen.panels.rail_shows(DrawerView::Ask));
+
+        // Server drops offline: SEM disappears too (not driven by config).
+        screen
+            .handle_owned_message(AppEvent::RagStatus(crate::rag::RagStatus::Offline), &tx)
+            .await;
+        assert!(!screen.panels.rail_shows(DrawerView::Semantic));
+
+        // LLM-capable server: both SEM and ASK appear.
+        screen
+            .handle_owned_message(
+                AppEvent::RagStatus(crate::rag::RagStatus::Online {
+                    llm_available: true,
+                }),
+                &tx,
+            )
+            .await;
+        assert!(screen.panels.rail_shows(DrawerView::Semantic));
+        assert!(screen.panels.rail_shows(DrawerView::Ask));
     }
 
     /// Leader `a a` (`open_ask_workspace`) gates on `llm_available` only for
