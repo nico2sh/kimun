@@ -406,7 +406,9 @@ impl KimunRag {
     /// reranker is active, vector scores otherwise (adr/0029); `top_k` only
     /// applies under the `fixed` cut. Fails with [`RagError::SemanticOnly`]
     /// when no LLM is configured; the gate runs before the vector search so no
-    /// work is thrown away.
+    /// work is thrown away. `history` (prior question/answer pairs) is
+    /// forwarded verbatim to the LLM call only — it never influences
+    /// retrieval or ranking, which see only `question`.
     pub async fn answer(
         &self,
         collection: &CollectionKey,

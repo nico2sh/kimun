@@ -417,6 +417,7 @@ mod tests {
         .unwrap();
         assert_eq!(r.history.len(), 1);
         assert_eq!(r.history[0].question, "q1");
+        assert_eq!(r.history[0].answer, "a1");
     }
 
     /// The status table is the wire contract (the client keys on codes, never on

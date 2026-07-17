@@ -14,8 +14,8 @@ pub mod sync;
 
 use async_trait::async_trait;
 use dto::{
-    AnswerResult, DeleteRequest, EmbeddingsResponse, Health, IndexDocsRequest, JobAccepted,
-    JobStatus, QueryRequest, WireDoc,
+    AnswerResult, DeleteRequest, EmbeddingsResponse, Health, HistoryTurn, IndexDocsRequest,
+    JobAccepted, JobStatus, QueryRequest, WireDoc,
 };
 
 pub use dto::{ChunkResult, WireSection};
@@ -268,7 +268,7 @@ impl RagClient {
             context_size: context_size.map(|c| c.as_str().to_string()),
             history: history
                 .iter()
-                .map(|(q, a)| dto::HistoryTurn {
+                .map(|(q, a)| HistoryTurn {
                     question: q.clone(),
                     answer: a.clone(),
                 })

@@ -98,10 +98,7 @@ impl SourcesPanel {
         if self.turn_id == Some(turn_id) {
             return;
         }
-        self.turn_id = Some(turn_id);
-        self.sources = sources;
-        self.cursor = 0;
-        self.face = Face::List;
+        self.refresh(turn_id, sources);
     }
 
     /// Force the source list for `turn_id` to `sources`, even when it's the

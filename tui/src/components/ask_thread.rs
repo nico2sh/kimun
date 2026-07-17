@@ -77,11 +77,6 @@ pub struct ThreadPanel {
     /// Topmost visible row of the flattened turn-lines list, auto-adjusted on
     /// selection change to keep the selected turn in view.
     scroll: u16,
-    /// Turn id whose selection changed since the screen last read it (set on
-    /// any j/k move, submit, regenerate, or turn click) — cleared on read via
-    /// `take_selection_dirty`, the signal the editor screen uses to
-    /// resynchronize the Sources drawer.
-    selection_dirty: Option<u64>,
     /// Source row index a citation click asked the Sources drawer to focus —
     /// cleared on read via `take_citation_target`.
     citation_target: Option<usize>,
@@ -101,7 +96,6 @@ impl ThreadPanel {
             capability: true,
             focus: ThreadFocus::Composer,
             scroll: 0,
-            selection_dirty: None,
             citation_target: None,
             turns_rect: Rect::default(),
             composer_rect: Rect::default(),
@@ -128,34 +122,12 @@ impl ThreadPanel {
         self.focus = ThreadFocus::Composer;
     }
 
-    /// Copy the selected turn's answer to the clipboard (leader `a y`).
-    pub fn copy_selected(&self, tx: &AppTx) {
-        self.copy_selected_answer(tx);
-    }
-
-    /// Save the selected turn as a note via the create dialog (leader `a e`).
-    pub fn save_selected(&self, tx: &AppTx) {
-        self.save_selected_as_note(tx);
-    }
-
-    /// Regenerate the selected turn's answer (leader `a r`).
-    pub fn regenerate_selected(&mut self, tx: &AppTx, client: Option<&Arc<RagClient>>) {
-        self.regenerate(tx, client);
-    }
-
     pub fn thread(&self) -> &Thread {
         &self.thread
     }
 
     pub fn thread_mut(&mut self) -> &mut Thread {
         &mut self.thread
-    }
-
-    /// The turn id whose selection changed since this was last called, if
-    /// any — cleared on read. The editor screen calls this after every input
-    /// event to keep the Sources drawer in step with the selected turn.
-    pub fn take_selection_dirty(&mut self) -> Option<u64> {
-        self.selection_dirty.take()
     }
 
     /// The source row a citation click asked to be focused, if any — cleared
@@ -238,12 +210,10 @@ impl ThreadPanel {
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => {
                 self.thread.select_prev();
-                self.selection_dirty = self.thread.selected().map(|t| t.id);
                 EventState::Consumed
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 self.thread.select_next();
-                self.selection_dirty = self.thread.selected().map(|t| t.id);
                 EventState::Consumed
             }
             KeyCode::Char('i') | KeyCode::Char('/') => {
@@ -251,15 +221,15 @@ impl ThreadPanel {
                 EventState::Consumed
             }
             KeyCode::Char('y') => {
-                self.copy_selected_answer(tx);
+                self.copy_selected(tx);
                 EventState::Consumed
             }
             KeyCode::Char('e') => {
-                self.save_selected_as_note(tx);
+                self.save_selected(tx);
                 EventState::Consumed
             }
             KeyCode::Char('r') => {
-                self.regenerate(tx, client);
+                self.regenerate_selected(tx, client);
                 EventState::Consumed
             }
             _ => EventState::NotConsumed,
@@ -326,30 +296,16 @@ impl ThreadPanel {
         }
     }
 
-    /// Move the thread's selection to turn `id`. `Thread` only exposes
-    /// relative `select_prev`/`select_next`, so a click walks there. Marks
-    /// the selection dirty when it actually changes.
+    /// Move the thread's selection to turn `id`. No-op when `id` is already
+    /// selected or unknown.
     fn select_turn(&mut self, id: u64) {
-        let current = self.thread.selected().map(|t| t.id);
-        if current == Some(id) {
+        if self.thread.selected().map(|t| t.id) == Some(id) {
             return;
         }
         let Some(target_idx) = self.thread.turns().iter().position(|t| t.id == id) else {
             return;
         };
-        let current_idx = current
-            .and_then(|cur| self.thread.turns().iter().position(|t| t.id == cur))
-            .unwrap_or(0);
-        if target_idx > current_idx {
-            for _ in 0..(target_idx - current_idx) {
-                self.thread.select_next();
-            }
-        } else {
-            for _ in 0..(current_idx - target_idx) {
-                self.thread.select_prev();
-            }
-        }
-        self.selection_dirty = Some(id);
+        self.thread.select_index(target_idx);
     }
 
     // ── Turn actions ─────────────────────────────────────────────────────
@@ -373,7 +329,6 @@ impl ThreadPanel {
         // isn't load-bearing, but it matches the eventual spawn's intent.
         let history = self.thread.history();
         let turn_id = self.thread.ask(question.clone());
-        self.selection_dirty = Some(turn_id);
         Some((question, history, turn_id))
     }
 
@@ -400,8 +355,8 @@ impl ThreadPanel {
     /// the old sources in place while the turn is `Thinking`, so the previous
     /// evidence stays visible during regeneration; only completion swaps them.)
     /// No-op without capability, without a client, or when the selected turn is
-    /// currently in flight (`Thread::regenerate` rejects that case).
-    fn regenerate(&mut self, tx: &AppTx, client: Option<&Arc<RagClient>>) {
+    /// currently in flight (`Thread::regenerate` rejects that case). Leader `a r`.
+    pub(crate) fn regenerate_selected(&mut self, tx: &AppTx, client: Option<&Arc<RagClient>>) {
         if !self.capability {
             return;
         }
@@ -411,7 +366,6 @@ impl ThreadPanel {
         let Some(question) = self.thread.regenerate(id) else {
             return;
         };
-        self.selection_dirty = Some(id);
         let Some(client) = client else {
             return;
         };
@@ -422,8 +376,8 @@ impl ThreadPanel {
     /// Spawn the async ask job for `turn_id`: call the RAG client with the
     /// question and history, map the answer + freshly retrieved sources, and
     /// deliver an `AskData::AnswerReady` on completion. Shared verbatim by
-    /// `submit` and `regenerate` — both re-retrieve, so both take the fresh
-    /// sources from the response.
+    /// `submit` and `regenerate_selected` — both re-retrieve, so both take the
+    /// fresh sources from the response.
     fn spawn_ask(
         tx: &AppTx,
         client: &Arc<RagClient>,
@@ -448,8 +402,8 @@ impl ThreadPanel {
     }
 
     /// Copy the selected turn's answer (citation markers stripped) to the OS
-    /// clipboard, reusing the editor's `arboard` seam.
-    fn copy_selected_answer(&self, tx: &AppTx) {
+    /// clipboard, reusing the editor's `arboard` seam. Leader `a y`.
+    pub(crate) fn copy_selected(&self, tx: &AppTx) {
         let Some(turn) = self.thread.selected() else {
             return;
         };
@@ -463,8 +417,8 @@ impl ThreadPanel {
 
     /// Open the create-note dialog pre-filled with the selected turn saved as
     /// a note (adr/0030: **Saved answer**). The dialog owns validation and
-    /// the actual create call — this only supplies the path/content.
-    fn save_selected_as_note(&self, tx: &AppTx) {
+    /// the actual create call — this only supplies the path/content. Leader `a e`.
+    pub(crate) fn save_selected(&self, tx: &AppTx) {
         let Some(turn) = self.thread.selected() else {
             return;
         };
@@ -869,7 +823,7 @@ mod tests {
     }
 
     #[test]
-    fn begin_turn_pushes_a_thinking_turn_and_marks_selection_dirty() {
+    fn begin_turn_pushes_a_thinking_turn_and_selects_it() {
         let mut p = ThreadPanel::new();
         p.composer.set_value("hello");
         let (question, history, turn_id) = p.begin_turn().expect("capability + non-empty");
@@ -877,7 +831,6 @@ mod tests {
         assert!(history.is_empty());
         assert_eq!(p.thread().turns().len(), 1);
         assert_eq!(p.thread().selected().unwrap().id, turn_id);
-        assert_eq!(p.take_selection_dirty(), Some(turn_id));
     }
 
     #[test]
@@ -891,20 +844,18 @@ mod tests {
     }
 
     #[test]
-    fn jk_in_turns_moves_selection_and_marks_dirty() {
+    fn jk_in_turns_moves_selection() {
         let mut p = ThreadPanel::new();
         let first = p.thread_mut().ask("a".into());
         p.thread_mut().complete(first, "a!".into(), vec![]);
         let second = p.thread_mut().ask("b".into());
         p.thread_mut().complete(second, "b!".into(), vec![]);
         p.focus = ThreadFocus::Turns;
-        assert_eq!(p.take_selection_dirty(), None);
 
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let key = KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE);
         p.handle_input(&InputEvent::Key(key), &tx, None);
         assert_eq!(p.thread().selected().unwrap().id, first);
-        assert_eq!(p.take_selection_dirty(), Some(first));
     }
 
     #[test]
@@ -921,7 +872,7 @@ mod tests {
             p.thread().selected().unwrap().status,
             TurnStatus::Thinking
         ));
-        assert_eq!(p.take_selection_dirty(), Some(id));
+        assert_eq!(p.thread().selected().unwrap().id, id);
     }
 
     #[test]

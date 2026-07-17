@@ -8,7 +8,8 @@ use kimun_server_client::dto::ChunkResult;
 /// How many trailing `Done` turns feed conversation history sent to the server.
 const HISTORY_WINDOW: usize = 5;
 
-/// A single retrieved chunk backing an answer (CONTEXT.md: **Source**).
+/// A single retrieved chunk backing an answer — one row of a **Turn**'s
+/// sources, shown in CONTEXT.md's **Sources view** / **Source reader**.
 #[derive(Debug, Clone)]
 pub struct AskSource {
     pub path: VaultPath,
@@ -112,6 +113,11 @@ impl Thread {
             .iter()
             .rposition(|t| matches!(t.status, TurnStatus::Thinking | TurnStatus::Streaming))
             .unwrap_or(self.turns.len());
+        // Want the LAST `HISTORY_WINDOW` Dones, not the first: `.rev()` needs
+        // a `DoubleEndedIterator`, which `Filter` only gets because the slice
+        // `.iter()` underneath it is one. `.rev().take(N)` then walks from
+        // the end to grab those last N (in reverse order); the explicit
+        // `.reverse()` below restores chronological order.
         let mut done: Vec<_> = self.turns[..boundary]
             .iter()
             .filter(|t| matches!(t.status, TurnStatus::Done))
@@ -144,6 +150,15 @@ impl Thread {
     /// Select the most recent turn.
     pub fn select_last(&mut self) {
         self.selected = self.turns.len().saturating_sub(1);
+    }
+
+    /// Select the turn at `idx` directly, clamped to the valid range.
+    /// No-op on an empty thread — there is no turn to select.
+    pub fn select_index(&mut self, idx: usize) {
+        if self.turns.is_empty() {
+            return;
+        }
+        self.selected = idx.min(self.turns.len() - 1);
     }
 
     /// Drop all turns, resetting the thread.
@@ -213,6 +228,68 @@ mod tests {
         t.clear();
         assert!(!t.complete(id, "late".into(), vec![]));
         assert!(t.is_empty());
+    }
+
+    #[test]
+    fn stale_fail_is_dropped() {
+        let mut t = Thread::default();
+        let id = t.ask("q".into());
+        t.clear();
+        assert!(!t.fail(id, "late error".into()));
+        assert!(t.is_empty());
+    }
+
+    #[test]
+    fn history_skips_error_turns_but_keeps_the_dones_around_them() {
+        let mut t = Thread::default();
+        done(&mut t, "q0", "a0");
+        let err_id = t.ask("q1".into());
+        t.fail(err_id, "boom".into());
+        done(&mut t, "q2", "a2");
+        let h = t.history();
+        assert_eq!(h.len(), 2, "the Error turn itself is not in history");
+        assert_eq!(h[0].0, "q0");
+        assert_eq!(h[1].0, "q2");
+    }
+
+    #[test]
+    fn regenerate_returns_none_for_unknown_id_or_a_thinking_turn() {
+        let mut t = Thread::default();
+        assert!(t.regenerate(999).is_none(), "unknown id");
+        let id = t.ask("q".into()); // still Thinking
+        assert!(t.regenerate(id).is_none(), "in-flight turn can't regenerate");
+    }
+
+    #[test]
+    fn select_prev_and_select_next_clamp_at_the_ends() {
+        let mut t = Thread::default();
+        done(&mut t, "q0", "a0");
+        done(&mut t, "q1", "a1"); // selected == q1
+
+        t.select_prev();
+        assert_eq!(t.selected().unwrap().question, "q0");
+        t.select_prev(); // already at 0: clamp, no panic
+        assert_eq!(t.selected().unwrap().question, "q0");
+
+        t.select_next();
+        assert_eq!(t.selected().unwrap().question, "q1");
+        t.select_next(); // already at the end: clamp
+        assert_eq!(t.selected().unwrap().question, "q1");
+    }
+
+    #[test]
+    fn select_index_clamps_to_valid_range_and_noops_on_empty() {
+        let mut t = Thread::default();
+        t.select_index(3); // empty thread: no-op, no panic
+        assert!(t.selected().is_none());
+
+        done(&mut t, "q0", "a0");
+        done(&mut t, "q1", "a1");
+        done(&mut t, "q2", "a2");
+        t.select_index(1);
+        assert_eq!(t.selected().unwrap().question, "q1");
+        t.select_index(100);
+        assert_eq!(t.selected().unwrap().question, "q2", "clamps to the last turn");
     }
 
     #[test]

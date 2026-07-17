@@ -110,17 +110,7 @@ impl LLMClient for ChatClient {
                     messages,
                 }),
             Wire::Gemini => {
-                let contents: Vec<GeminiContent> = messages
-                    .into_iter()
-                    .map(|m| GeminiContent {
-                        role: if m.role == "assistant" {
-                            "model".into()
-                        } else {
-                            "user".into()
-                        },
-                        parts: vec![GeminiPart { text: m.content }],
-                    })
-                    .collect();
+                let contents = gemini_contents(messages);
                 self.http
                     .post(format!(
                         "{}/v1beta/models/{}:generateContent?key={}",
@@ -212,6 +202,24 @@ fn chat_messages(history: &[(String, String)], prompt: String) -> Vec<ChatMessag
         content: prompt,
     });
     msgs
+}
+
+/// Maps a chat transcript (`chat_messages`'s output) to Gemini's `contents`
+/// shape: every `"assistant"` role becomes `"model"`, everything else (only
+/// ever `"user"` in practice) stays `"user"`, and each message's text becomes
+/// its single part.
+fn gemini_contents(messages: Vec<ChatMessage>) -> Vec<GeminiContent> {
+    messages
+        .into_iter()
+        .map(|m| GeminiContent {
+            role: if m.role == "assistant" {
+                "model".into()
+            } else {
+                "user".into()
+            },
+            parts: vec![GeminiPart { text: m.content }],
+        })
+        .collect()
 }
 
 /// The one RAG prompt, shared by every provider: chunks are numbered `[i]` in
@@ -399,6 +407,19 @@ mod tests {
                 ("user", "PROMPT"),
             ]
         );
+    }
+
+    #[test]
+    fn gemini_contents_maps_assistant_to_model_and_keeps_the_final_prompt() {
+        let history = vec![
+            ("q1".to_string(), "a1".to_string()),
+            ("q2".to_string(), "a2".to_string()),
+        ];
+        let msgs = chat_messages(&history, "PROMPT".to_string());
+        let contents = gemini_contents(msgs);
+        let roles: Vec<&str> = contents.iter().map(|c| c.role.as_str()).collect();
+        assert_eq!(roles, vec!["user", "model", "user", "model", "user"]);
+        assert_eq!(contents.last().unwrap().parts[0].text, "PROMPT");
     }
 
     #[test]

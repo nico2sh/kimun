@@ -53,6 +53,18 @@ fn glyph_for(icons: &crate::settings::icons::Icons, view: DrawerView) -> &'stati
 /// Rows each rail cell occupies (glyph line + label line + gap).
 const CELL_ROWS: u16 = 3;
 
+/// Which feature-gated rail items are currently visible — a server-status
+/// snapshot passed into `ActivityRail::new`/`PanelSet::rebuild_rail`. Named
+/// fields instead of two positional bools so a caller can't silently swap
+/// SEM and ASK.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RailCaps {
+    /// SEM appears when a RAG server is configured.
+    pub semantic: bool,
+    /// ASK appears when the server can answer questions (an LLM configured).
+    pub ask: bool,
+}
+
 pub struct ActivityRail {
     /// The visible items, in presentation order: [`ITEMS`] minus the views
     /// whose feature is off (SEM without a configured RAG server).
@@ -69,18 +81,13 @@ pub struct ActivityRail {
 }
 
 impl ActivityRail {
-    pub fn new(
-        key_bindings: KeyBindings,
-        icons: crate::settings::icons::Icons,
-        semantic_visible: bool,
-        ask_visible: bool,
-    ) -> Self {
+    pub fn new(key_bindings: KeyBindings, icons: crate::settings::icons::Icons, caps: RailCaps) -> Self {
         let items = ITEMS
             .into_iter()
-            .filter(|(_, view)| semantic_visible || *view != DrawerView::Semantic)
+            .filter(|(_, view)| caps.semantic || *view != DrawerView::Semantic)
             // ASK appears only when the server can answer questions (an LLM is
             // configured); the rail is rebuilt when that changes.
-            .filter(|(_, view)| ask_visible || *view != DrawerView::Ask)
+            .filter(|(_, view)| caps.ask || *view != DrawerView::Ask)
             .collect();
         Self {
             items,
@@ -279,8 +286,10 @@ mod tests {
         ActivityRail::new(
             settings.key_bindings,
             crate::settings::icons::Icons::new(false),
-            semantic_visible,
-            ask_visible,
+            RailCaps {
+                semantic: semantic_visible,
+                ask: ask_visible,
+            },
         )
     }
 

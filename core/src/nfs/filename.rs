@@ -80,6 +80,14 @@ const MAX_TITLE_NAME_LEN: usize = 60;
 /// falls back to `"answer"`. Callers are responsible for assembling this
 /// into a full path (e.g. via `VaultPath`) and applying the note extension.
 ///
+/// This does not make the result independently safe as a filename — passing
+/// it through `VaultPathSlice::new` (in the parent `nfs` module) still
+/// applies its own sanitization (trailing dots, Windows reserved names). The
+/// two layers are intentional, not redundant: this function's char policy
+/// targets a readable slug, `VaultPathSlice::new`'s targets filesystem
+/// safety for *any* input, including names that never went through this
+/// function.
+///
 /// ```
 /// use kimun_core::nfs::filename::note_name_from_title;
 /// assert_eq!(note_name_from_title("How do I Ship v2?"), "how-do-i-ship-v2");
@@ -370,6 +378,14 @@ mod tests {
         );
         assert_eq!(note_name_from_title("///???"), "answer");
         assert!(note_name_from_title(&"x".repeat(200)).len() <= 60);
+    }
+
+    /// Truncation must count chars, not bytes — a `.len() <= 60` check alone
+    /// (as in the ASCII case above) would pass even if truncation sliced
+    /// through the middle of a multi-byte char's UTF-8 encoding.
+    #[test]
+    fn note_name_from_title_truncates_multi_byte_chars_by_char_count() {
+        assert!(note_name_from_title(&"ñ".repeat(100)).chars().count() <= 60);
     }
 
     #[test]
