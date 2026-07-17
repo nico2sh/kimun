@@ -226,6 +226,13 @@ pub enum FileOp {
     ShowRename(VaultPath),
     /// Request to show the move dialog for the given entry.
     ShowMove(VaultPath),
+    /// Request to show the create-note dialog pre-filled with body content —
+    /// the Ask "save as note" action (`e` in `ThreadPanel`, adr/0030). Plain
+    /// creates (follow-link, missing-note open) go straight through
+    /// `ActiveDialog::create_note` inside the editor screen instead, since
+    /// they already hold `vault` and don't need to cross a component
+    /// boundary.
+    ShowCreateWithContent { path: VaultPath, content: String },
     /// Notification that a note was just created at this path. The current
     /// screen refreshes its sidebar if it is browsing the note's directory.
     /// Opening the note is a separate concern (the creator emits `OpenPath`).
@@ -377,6 +384,10 @@ mod tests {
             AppEvent::FileOp(FileOp::ShowDelete(_)) => {}
             AppEvent::FileOp(FileOp::ShowRename(_)) => {}
             AppEvent::FileOp(FileOp::ShowMove(_)) => {}
+            AppEvent::FileOp(FileOp::ShowCreateWithContent {
+                path: _,
+                content: _,
+            }) => {}
             AppEvent::FileOp(FileOp::Deleted(_)) => {}
             AppEvent::FileOp(FileOp::Renamed { from: _, to: _ }) => {}
             AppEvent::FileOp(FileOp::Moved { from: _, to: _ }) => {}

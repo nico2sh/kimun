@@ -275,6 +275,7 @@ impl EditorScreen {
                 self.present_overlay(Box::new(ActiveDialog::create_note(
                     path,
                     self.vault.clone(),
+                    None,
                 )));
             }
             Ok(mut results) if results.len() == 1 => {
@@ -362,6 +363,7 @@ impl EditorScreen {
                     self.present_overlay(Box::new(ActiveDialog::create_note(
                         self.path.clone(),
                         self.vault.clone(),
+                        None,
                     )));
                 } else {
                     tracing::error!("Failed to read note {}: {e}", self.path);
@@ -913,6 +915,13 @@ impl EditorScreen {
                     path,
                     self.vault.clone(),
                     tx,
+                )));
+            }
+            FileOp::ShowCreateWithContent { path, content } => {
+                self.present_overlay(Box::new(ActiveDialog::create_note(
+                    path,
+                    self.vault.clone(),
+                    Some(content),
                 )));
             }
             FileOp::Created(path) => {
