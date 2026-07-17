@@ -20,16 +20,21 @@ pub struct CreateNoteDialog {
     /// Pre-formatted `"  {path}"` for zero-allocation rendering.
     pub path_display: String,
     pub error: Option<String>,
+    /// Body content the created note starts with. `None` creates an empty
+    /// note (the plain create flow); `Some` is the Ask "save as note" action
+    /// (`e` in `ThreadPanel`, adr/0030), which pre-fills the question/answer.
+    pub content: Option<String>,
 }
 
 impl CreateNoteDialog {
-    pub fn new(path: VaultPath, vault: Arc<NoteVault>) -> Self {
+    pub fn new(path: VaultPath, vault: Arc<NoteVault>, content: Option<String>) -> Self {
         let path_display = format!("  {}", path);
         Self {
             path,
             vault,
             path_display,
             error: None,
+            content,
         }
     }
 
@@ -40,9 +45,10 @@ impl CreateNoteDialog {
             KeyCode::Enter => {
                 let path = self.path.clone();
                 let vault = Arc::clone(&self.vault);
+                let content = self.content.clone();
                 let tx_clone = tx.clone();
                 tokio::spawn(async move {
-                    match vault.load_or_create_note(&path, None).await {
+                    match vault.load_or_create_note(&path, content).await {
                         Ok((_, created)) => tx_clone.announce_and_open(path, created),
                         Err(e) => {
                             tx_clone
@@ -140,7 +146,7 @@ mod tests {
                 .expect("vault creation failed"),
         );
         let (_tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
-        let dialog = CreateNoteDialog::new(VaultPath::root(), vault);
+        let dialog = CreateNoteDialog::new(VaultPath::root(), vault, None);
         assert!(dialog.error.is_none());
     }
 
@@ -158,7 +164,7 @@ mod tests {
             let vault = Arc::new(vault);
 
             let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
-            let mut dialog = CreateNoteDialog::new(VaultPath::root(), vault);
+            let mut dialog = CreateNoteDialog::new(VaultPath::root(), vault, None);
 
             let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
             let state = dialog.handle_key(key, &tx);
@@ -187,7 +193,7 @@ mod tests {
             // The async task opens the note (and emits EntryCreated when fresh), but
             // vault.load_or_create_note may fail on the empty tempdir, resulting in
             // DialogError which we don't assert here.
-            let mut dialog = CreateNoteDialog::new(VaultPath::root(), vault);
+            let mut dialog = CreateNoteDialog::new(VaultPath::root(), vault, None);
 
             let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
             let state = dialog.handle_key(key, &tx);
