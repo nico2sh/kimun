@@ -3,6 +3,9 @@
 //! carries no vault or heavy component state and is testable in isolation.
 //! `PanelSet` (below) composes it with the concrete panels.
 
+use std::sync::Arc;
+
+use kimun_server_client::RagClient;
 use ratatui::Frame;
 use ratatui::crossterm::event::{MouseButton, MouseEventKind};
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
@@ -234,6 +237,11 @@ pub struct PanelSet {
     drawer_width: u16,
     /// Whether a divider drag is in progress.
     dragging_divider: bool,
+    /// The live RAG client, when the server can answer questions. Threaded
+    /// into the Ask `ThreadPanel`'s inherent `handle_input` (the `Component`
+    /// trait method is a no-op — it has no room for a client). Kept in
+    /// lockstep with the live panel's capability by `set_ask_client`.
+    ask_client: Option<Arc<RagClient>>,
     /// The column each visible panel was drawn into on the last render —
     /// the single source of truth for mouse hit-testing. Empty until the
     /// first render.
@@ -247,16 +255,46 @@ impl PanelSet {
         icons: crate::settings::icons::Icons,
         key_bindings: crate::keys::KeyBindings,
         semantic_visible: bool,
+        ask_visible: bool,
     ) -> Self {
         Self {
             order: PanelOrder::new(),
-            rail: ActivityRail::new(key_bindings, icons, semantic_visible),
+            rail: ActivityRail::new(key_bindings, icons, semantic_visible, ask_visible),
             drawer,
             editor,
             content: EditorAreaContent::Note,
             drawer_width: DEFAULT_DRAWER_WIDTH,
             dragging_divider: false,
+            ask_client: None,
             column_rects: Vec::new(),
+        }
+    }
+
+    /// Rebuild the activity rail with fresh feature visibility — the runtime
+    /// path for SEM/ASK appearing or disappearing (RAG status change). Keeps
+    /// the rail cursor on the drawer's active view so navigation continues
+    /// from there.
+    pub fn rebuild_rail(
+        &mut self,
+        key_bindings: crate::keys::KeyBindings,
+        icons: crate::settings::icons::Icons,
+        semantic_visible: bool,
+        ask_visible: bool,
+    ) {
+        let active = self.drawer.active_view();
+        self.rail = ActivityRail::new(key_bindings, icons, semantic_visible, ask_visible);
+        self.rail.set_cursor(active);
+    }
+
+    /// Set the live RAG client and hold the Ask panel's capability in lockstep
+    /// with it: a present client ⇒ capability on, `None` ⇒ off (adr/0030 — the
+    /// composer disables without evicting the thread). Guarantees a live panel
+    /// never sits `Thinking` behind a missing client.
+    pub fn set_ask_client(&mut self, client: Option<Arc<RagClient>>) {
+        let on = client.is_some();
+        self.ask_client = client;
+        if let EditorAreaContent::Ask(panel) = &mut self.content {
+            panel.set_capability(on);
         }
     }
 
@@ -271,6 +309,9 @@ impl PanelSet {
     pub fn focused_label(&self) -> &'static str {
         match self.order.focused() {
             PanelKind::Drawer => self.drawer.active_view().label(),
+            // The editor area showing the Ask workspace reads as ASK, not
+            // EDITOR — mirrors the panel frame's "Ask" title.
+            PanelKind::Editor if self.is_showing_ask() => DrawerView::Ask.label(),
             kind => kind.label(),
         }
     }
@@ -440,13 +481,6 @@ impl PanelSet {
             EditorAreaContent::Note => &self.editor,
         }
     }
-    fn editor_area_mut(&mut self) -> &mut dyn Component {
-        match &mut self.content {
-            EditorAreaContent::Attachment(view) => view.as_mut(),
-            EditorAreaContent::Ask(panel) => panel,
-            EditorAreaContent::Note => &mut self.editor,
-        }
-    }
     pub fn query(&self) -> &QueryPanel {
         self.drawer.query()
     }
@@ -455,6 +489,9 @@ impl PanelSet {
     }
     pub fn semantic_mut(&mut self) -> &mut crate::components::semantic_search::SemanticPanel {
         self.drawer.semantic_mut()
+    }
+    pub fn ask_sources_mut(&mut self) -> &mut crate::components::ask_sources::SourcesPanel {
+        self.drawer.ask_sources_mut()
     }
     pub fn tags_mut(&mut self) -> &mut crate::components::drawer_views::TagsPanel {
         self.drawer.tags_mut()
@@ -485,7 +522,22 @@ impl PanelSet {
         match self.order.focused() {
             PanelKind::Rail => self.rail.handle_input(event, tx),
             PanelKind::Drawer => self.drawer.handle_input(event, tx),
-            PanelKind::Editor => self.editor_area_mut().handle_input(event, tx),
+            PanelKind::Editor => self.editor_area_handle_input(event, tx),
+        }
+    }
+
+    /// Deliver an input event to the editor-area content. The Ask arm needs
+    /// the RAG client the `Component` trait can't carry, so it calls the
+    /// inherent `ThreadPanel::handle_input` directly; the others use the
+    /// trait. (Disjoint field borrows: `content` mutably, `ask_client`
+    /// immutably.)
+    fn editor_area_handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
+        match &mut self.content {
+            EditorAreaContent::Ask(panel) => {
+                panel.handle_input(event, tx, self.ask_client.as_ref())
+            }
+            EditorAreaContent::Attachment(view) => view.handle_input(event, tx),
+            EditorAreaContent::Note => self.editor.handle_input(event, tx),
         }
     }
 
@@ -569,7 +621,7 @@ impl PanelSet {
                 self.drawer.handle_mouse(event, tx);
             }
             PanelKind::Editor => {
-                self.editor_area_mut().handle_input(event, tx);
+                self.editor_area_handle_input(event, tx);
             }
         }
         EventState::Consumed
@@ -664,13 +716,15 @@ mod tests {
             std::sync::Arc::new(std::sync::RwLock::new(settings.clone())),
             settings.icons(),
         );
-        let outline = crate::components::drawer_views::OutlinePanel::new(vault, settings.icons());
-        let drawer = DrawerHost::new(sidebar, query, semantic, tags, links, outline);
+        let outline =
+            crate::components::drawer_views::OutlinePanel::new(vault.clone(), settings.icons());
+        let drawer = DrawerHost::new(vault, sidebar, query, semantic, tags, links, outline);
         PanelSet::from_panels(
             drawer,
             editor,
             settings.icons(),
             settings.key_bindings,
+            true,
             true,
         )
     }
@@ -958,6 +1012,28 @@ mod tests {
         let panel = ps.take_ask().expect("panel comes back to the caller");
         let _ = panel; // thread state survives with it
         assert!(ps.editor().is_some());
+    }
+
+    /// Capability⇔client lockstep at the wiring seam: with no client the live
+    /// Ask panel must be capability-off (never a forever-`Thinking` turn), and
+    /// a present client turns it back on.
+    #[tokio::test]
+    async fn set_ask_client_holds_capability_in_lockstep() {
+        let mut ps = make_panel_set().await;
+        ps.show_ask(test_thread_panel());
+        // A fresh panel defaults capability on; dropping the client must flip
+        // it off.
+        ps.set_ask_client(None);
+        assert!(!ps.ask_mut().unwrap().capability());
+        // Handing a client back re-enables it. (A bare client over a throwaway
+        // vault id is fine — it's never called here.)
+        let client = std::sync::Arc::new(kimun_server_client::RagClient::new(
+            "http://localhost:0".to_string(),
+            None,
+            "vault".to_string(),
+        ));
+        ps.set_ask_client(Some(client));
+        assert!(ps.ask_mut().unwrap().capability());
     }
 
     #[tokio::test]

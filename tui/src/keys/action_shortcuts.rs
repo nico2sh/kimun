@@ -110,7 +110,7 @@ impl ActionShortcuts {
             ActionShortcuts::QuickNote => "Quick note".into(),
             ActionShortcuts::ToggleQueryPanel => "Toggle query drawer".into(),
             ActionShortcuts::OpenSavedSearches => "Saved searches".into(),
-            ActionShortcuts::OpenRagAnswer => "Ask (RAG)".into(),
+            ActionShortcuts::OpenRagAnswer => "Ask".into(),
             ActionShortcuts::SaveCurrentQuery => "Save current query".into(),
             ActionShortcuts::SwitchWorkspace => "Switch workspace".into(),
             ActionShortcuts::FindInBuffer => "Find in note".into(),

@@ -91,6 +91,37 @@ impl SourcesPanel {
         self.face = Face::List;
     }
 
+    /// Force the source list for `turn_id` to `sources`, even when it's the
+    /// turn already shown — the answer-completion path, where a `Thinking`
+    /// turn (empty sources) gains its sources once the answer lands. Unlike
+    /// [`set_turn`](Self::set_turn), it never short-circuits on a matching id.
+    /// Resets to the list face at the top.
+    pub fn refresh(&mut self, turn_id: u64, sources: Vec<AskSource>) {
+        self.turn_id = Some(turn_id);
+        self.sources = sources;
+        self.cursor = 0;
+        self.face = Face::List;
+    }
+
+    /// Clear the panel back to its empty list face — the "new conversation"
+    /// action (leader `a n`) drops the old turn's sources.
+    pub fn reset(&mut self) {
+        self.turn_id = None;
+        self.sources = Vec::new();
+        self.cursor = 0;
+        self.face = Face::List;
+    }
+
+    /// Point the list cursor at `source_index` on the list face — a citation
+    /// click in the thread asks the drawer to reveal that exact source. Out of
+    /// range indices are ignored.
+    pub fn focus_source(&mut self, source_index: usize) {
+        if source_index < self.sources.len() {
+            self.cursor = source_index;
+            self.face = Face::List;
+        }
+    }
+
     /// Flips to the reader face for `sources[source_index]` and spawns the
     /// note load — the same async call shape the editor screen's note-open
     /// path uses (`vault.get_note_text`). No-op for an out-of-range index.

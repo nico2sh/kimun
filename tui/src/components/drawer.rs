@@ -7,6 +7,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 
 use crate::components::Component;
+use crate::components::ask_sources::SourcesPanel;
 use crate::components::config_panel::ConfigPanel;
 use crate::components::drawer_views::{LinksPanel, OutlinePanel, TagsPanel};
 use crate::components::event_state::EventState;
@@ -15,6 +16,7 @@ use crate::components::query_panel::QueryPanel;
 use crate::components::semantic_search::SemanticPanel;
 use crate::components::sidebar::SidebarComponent;
 use crate::settings::themes::Theme;
+use kimun_core::NoteVault;
 
 /// The views the activity rail can put in the drawer. Closed set, mirrors
 /// the rail items top to bottom.
@@ -23,6 +25,7 @@ pub enum DrawerView {
     Files,
     Find,
     Semantic,
+    Ask,
     Tags,
     Links,
     Outline,
@@ -36,6 +39,7 @@ impl DrawerView {
             DrawerView::Files => "FILES",
             DrawerView::Find => "FIND",
             DrawerView::Semantic => "SEMANTIC",
+            DrawerView::Ask => "ASK",
             DrawerView::Tags => "TAGS",
             DrawerView::Links => "LINKS",
             DrawerView::Outline => "OUTLINE",
@@ -54,14 +58,22 @@ pub struct DrawerHost {
     sidebar: SidebarComponent,
     query: QueryPanel,
     semantic: SemanticPanel,
+    /// The Ask workspace's Sources drawer view. Its editor-area companion
+    /// (`ThreadPanel`) lives in `PanelSet`; this face lists the selected
+    /// turn's sources and flips to the source reader (adr/0030).
+    ask_sources: SourcesPanel,
     tags: TagsPanel,
     links: LinksPanel,
     outline: OutlinePanel,
     config: ConfigPanel,
+    /// Vault handle for the Ask Sources view's reader load (its `handle_input`
+    /// spawns a note read the trait signature can't thread through).
+    vault: std::sync::Arc<NoteVault>,
 }
 
 impl DrawerHost {
     pub fn new(
+        vault: std::sync::Arc<NoteVault>,
         sidebar: SidebarComponent,
         query: QueryPanel,
         semantic: SemanticPanel,
@@ -74,10 +86,12 @@ impl DrawerHost {
             sidebar,
             query,
             semantic,
+            ask_sources: SourcesPanel::new(),
             tags,
             links,
             outline,
             config: ConfigPanel::default(),
+            vault,
         }
     }
 
@@ -95,6 +109,8 @@ impl DrawerHost {
     /// query input; the list views are filter-as-you-type lists, which read
     /// as lists (spec mockup shows them with ≣).
     pub fn is_text_input(&self) -> bool {
+        // ASK's drawer face is the Sources *list* (the question composer lives
+        // in the editor area), so it reads as a list, not a text input.
         matches!(self.active, DrawerView::Find | DrawerView::Semantic)
     }
 
@@ -119,6 +135,9 @@ impl DrawerHost {
     pub fn semantic_mut(&mut self) -> &mut SemanticPanel {
         &mut self.semantic
     }
+    pub fn ask_sources_mut(&mut self) -> &mut SourcesPanel {
+        &mut self.ask_sources
+    }
     pub fn tags_mut(&mut self) -> &mut TagsPanel {
         &mut self.tags
     }
@@ -134,6 +153,7 @@ impl DrawerHost {
             DrawerView::Files => self.sidebar.hint_shortcuts(),
             DrawerView::Find => self.query.hint_shortcuts(),
             DrawerView::Semantic => self.semantic.hint_shortcuts(),
+            DrawerView::Ask => self.ask_sources.hint_shortcuts(),
             DrawerView::Tags => self.tags.hint_shortcuts(),
             DrawerView::Links => self.links.hint_shortcuts(),
             DrawerView::Outline => self.outline.hint_shortcuts(),
@@ -154,6 +174,7 @@ impl DrawerHost {
                 }
             }
             DrawerView::Semantic => self.semantic.handle_input(event, tx),
+            DrawerView::Ask => self.ask_sources.handle_input(event, tx, &self.vault),
             DrawerView::Tags => self.tags.handle_input(event, tx),
             DrawerView::Links => self.links.handle_input(event, tx),
             DrawerView::Outline => self.outline.handle_input(event, tx),
@@ -182,6 +203,7 @@ impl DrawerHost {
             DrawerView::Files => self.sidebar.render(f, rect, theme, focused),
             DrawerView::Find => self.query.render(f, rect, theme, focused),
             DrawerView::Semantic => self.semantic.render(f, rect, theme, focused),
+            DrawerView::Ask => self.ask_sources.render(f, rect, theme, focused),
             DrawerView::Tags => self.tags.render(f, rect, theme, focused),
             DrawerView::Links => self.links.render(f, rect, theme, focused),
             DrawerView::Outline => self.outline.render(f, rect, theme, focused),
@@ -222,8 +244,9 @@ mod tests {
         let tags = crate::components::drawer_views::TagsPanel::new(vault.clone(), settings.icons());
         let links =
             crate::components::drawer_views::LinksPanel::new(vault.clone(), settings.icons());
-        let outline = crate::components::drawer_views::OutlinePanel::new(vault, settings.icons());
-        DrawerHost::new(sidebar, query, semantic, tags, links, outline)
+        let outline =
+            crate::components::drawer_views::OutlinePanel::new(vault.clone(), settings.icons());
+        DrawerHost::new(vault, sidebar, query, semantic, tags, links, outline)
     }
 
     fn key(code: KeyCode) -> InputEvent {
@@ -288,6 +311,7 @@ mod tests {
             (DrawerView::Files, false),
             (DrawerView::Find, true),
             (DrawerView::Semantic, true),
+            (DrawerView::Ask, false),
             (DrawerView::Tags, false),
             (DrawerView::Links, false),
             (DrawerView::Outline, false),
