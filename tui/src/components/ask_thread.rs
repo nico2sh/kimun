@@ -297,9 +297,7 @@ impl ThreadPanel {
     /// (effectively) empty. Checking the client here (not just in `submit`) is
     /// what keeps a clientless submit from orphaning a forever-`Thinking` turn.
     fn begin_turn(&mut self) -> Option<PendingTurn> {
-        if self.client.is_none() {
-            return None;
-        }
+        self.client.as_ref()?;
         let question = self.composer.take_text();
         let question = question.trim().to_string();
         if question.is_empty() {
