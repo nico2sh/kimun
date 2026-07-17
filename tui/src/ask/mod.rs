@@ -1,4 +1,5 @@
 pub mod citations;
+pub mod locate;
 pub mod save;
 
 use kimun_core::nfs::VaultPath;
