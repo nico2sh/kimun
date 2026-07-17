@@ -6,7 +6,7 @@ those extra capabilities light up.
 
 ## Model
 
-The server is **push-only** (adr/0018): it never reads your notes from disk.
+The server is **push-only**: it never reads your notes from disk.
 Kimün pushes note content to it and the server only stores embeddings and answers
 queries. One server can host **many vaults** at once — each vault is a
 **collection**, keyed by the vault's id (a stable UUID Kimün keeps under
@@ -134,8 +134,8 @@ See `config.example.toml` for the annotated template. Sections:
   to the provider's env var (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
   `GEMINI_API_KEY`, `MISTRAL_API_KEY`). Kimün never sends a key.
 - **`[reranker]`** — `enabled` (default true), the **context cut** — the one
-  sizing rule for query results on both surfaces and both reranker paths
-  (adr/0029): `context_cut` picks the strategy, each with its own knobs.
+  sizing rule for query results on both surfaces and both reranker paths:
+  `context_cut` picks the strategy, each with its own knobs.
   `fixed` returns exactly `top_k` results (search notes / answer chunks;
   per-request `context_size` applies here only). `score-range` (default)
   keeps chunks at or above `score_range_cutoff` (default 0.4) of the
@@ -168,7 +168,7 @@ See `config.example.toml` for the annotated template. Sections:
 All `/api` routes require the bearer token when one is configured. `context_size`
 is optional (`"small"` = 10, `"medium"` = 20, `"large"` = 40 results); omit it to
 use the configured `reranker.top_k`. It only applies under the `fixed` context
-cut — the adaptive cuts size results from the pool's score shape (adr/0029).
+cut — the adaptive cuts size results from the pool's score shape.
 
 ### `GET /health`
 
@@ -250,7 +250,7 @@ server-rendered pages, no build step, no external assets. It offers:
   next restart** (the embedder, vector store, and LLM client are built at
   startup, so the live instance is never mutated). A **Restart server** button
   applies them in place: the process drains in-flight requests, re-reads the
-  config file, and rebinds (adr/0028) — no service manager needed, and a
+  config file, and rebinds — no service manager needed, and a
   bind-address change moves the server to the new address;
 - a **collections** list with per-vault indexed-note counts;
 - a **jobs** view (auto-refreshing) for indexing/answer jobs;
