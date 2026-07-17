@@ -38,21 +38,6 @@ pub enum RagStatus {
     },
 }
 
-/// A completed RAG answer delivered back to the answer overlay via
-/// [`AppEvent::OverlayData(OverlayData::RagAnswerReady)`](crate::components::events::AppEvent).
-#[derive(Debug, Clone)]
-pub struct RagAnswer {
-    pub answer: String,
-    pub sources: Vec<RagSource>,
-}
-
-/// A cited source chunk — enough to render a row and open the note.
-#[derive(Debug, Clone)]
-pub struct RagSource {
-    pub path: kimun_core::nfs::VaultPath,
-    pub title: String,
-}
-
 impl RagStatus {
     /// Short footer label, or `None` when nothing should show.
     pub fn label(self) -> Option<&'static str> {
@@ -68,8 +53,8 @@ impl RagStatus {
 
     /// Whether question-answering (Ask) is available right now: the server is
     /// reachable AND has an LLM configured. `false` when offline, disabled, or
-    /// connected to a semantic-only server — the Ask overlay is hidden in those
-    /// cases (adr/0022).
+    /// connected to a semantic-only server — the ASK rail entry is hidden in
+    /// those cases (adr/0022).
     pub fn llm_available(self) -> bool {
         matches!(
             self,

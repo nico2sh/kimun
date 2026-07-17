@@ -855,6 +855,7 @@ impl EditorScreen {
             }
             EditorOp::OpenHelp => self.open_help(),
             EditorOp::OpenQueryHelp => self.open_query_help(),
+            EditorOp::OpenAsk => self.open_ask_workspace(tx),
         }
     }
 
@@ -863,7 +864,6 @@ impl EditorScreen {
             OverlayOpen::SearchBrowser => self.open_search_browser(tx),
             OverlayOpen::FileFinder => self.open_file_finder(tx),
             OverlayOpen::SavedSearches => self.open_saved_searches(tx),
-            OverlayOpen::RagAnswer => self.open_rag_answer(tx),
             OverlayOpen::CommandPalette => self.open_command_palette(tx),
         }
     }
@@ -1643,7 +1643,7 @@ impl EditorScreen {
     /// Ask shortcut / leader `a a`). The rail hides the ASK entry when the
     /// server can't answer questions, so this shortcut is the only remaining
     /// way in — hence the single `llm_available` gate (adr/0030).
-    fn open_rag_answer(&mut self, tx: &AppTx) {
+    fn open_ask_workspace(&mut self, tx: &AppTx) {
         if self.overlays.is_open() {
             return;
         }
@@ -2016,7 +2016,7 @@ impl EditorScreen {
             }
 
             // +ask — the Ask workspace's conversation actions.
-            LeaderAction::AskFocus => self.open_rag_answer(tx),
+            LeaderAction::AskFocus => self.open_ask_workspace(tx),
             LeaderAction::AskNew => {
                 self.ensure_ask_workspace(tx);
                 if let Some(panel) = self.panels.ask_mut() {
