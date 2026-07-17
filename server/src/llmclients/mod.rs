@@ -188,44 +188,44 @@ impl LLMClient for ChatClient {
     }
 }
 
-/// The one RAG prompt, shared by every provider: answer notes-first, supplement
-/// with common knowledge when the notes fall short, and always distinguish the
-/// two. Each context chunk is framed with its note path, relevance, and (when
-/// the section title starts with one) its date.
+/// The one RAG prompt, shared by every provider: chunks are numbered `[i]` in
+/// sources order, citations are mandatory for note-derived claims, and the
+/// answer may supplement with common knowledge — uncited text IS the signal
+/// that a claim is general knowledge, so the two never blur.
 fn build_prompt(question: &str, context: &[(f64, FlattenedChunk)]) -> String {
     let mut context_string = String::new();
-    for (relevance, chunk) in context {
-        context_string.push_str(&format!(
-            "--- Document: {} (Relevance: {:.4}) ---\n",
-            chunk.doc_path, relevance
-        ));
+    for (i, (_, chunk)) in context.iter().enumerate() {
         let mut title = chunk.title.clone();
+        let mut date_line = String::new();
         if let Some(date) = chunk.get_date_string() {
-            context_string.push_str(&format!("Date: {date}\n"));
+            date_line = format!("Date: {date}\n");
             title = title
                 .trim()
                 .strip_prefix(&date)
-                .map(|t| t.to_string())
+                .map(|t| t.trim().to_string())
                 .unwrap_or(title);
         }
-        if !title.is_empty() {
-            context_string.push_str(&format!("# {title}\n"));
-        }
-        context_string.push_str(&chunk.text);
-        context_string.push_str("\n\n");
+        context_string.push_str(&format!(
+            "[{}] {} — \"{}\"\n{}{}\n\n",
+            i + 1,
+            chunk.doc_path,
+            title.trim(),
+            date_line,
+            chunk.text
+        ));
     }
 
     format!(
         r#"You are an intelligent assistant with access to a personal knowledge base.
-Answer the user's question using the retrieved context first. If the retrieved notes contain relevant information, base your answer primarily on them.
-If the context is incomplete, missing, or can be enriched with widely accepted knowledge about the topic related with the question, supplement the answer with accurate common knowledge.
-Always distinguish between information from the notes and general knowledge.
-If no useful information is available in either, respond with: 'I don't have enough information to answer.'
+Answer the user's question using the numbered context below first; base the answer primarily on it when it is relevant.
+Every claim drawn from the context MUST carry an inline citation in the form [n], where n is the number of the supporting context entry. A sentence may carry several citations.
+You may supplement with accurate, widely accepted common knowledge when the context falls short — never cite [n] for such claims; leaving them uncited is how they are marked as general knowledge.
+Preserve any [[wikilinks]] and #tags that appear in the context verbatim when you quote or reference them.
+If neither the context nor common knowledge suffices, respond with: 'I don't have enough information to answer.'
 
-Retrieved context:
+Context:
 ---------------------
-{context_string}.
----------------------
+{context_string}---------------------
 
 Question: {question}"#
     )
@@ -351,21 +351,21 @@ mod tests {
     }
 
     #[test]
-    fn prompt_frames_each_chunk_and_carries_the_question() {
-        let ctx = vec![
-            chunk("/a.md", "Alpha", "alpha body"),
-            chunk("/b.md", "", "beta body"),
+    fn prompt_numbers_chunks_and_mandates_citations() {
+        let context = vec![
+            chunk("/intro.md", "intro", "alpha text"),
+            chunk("/setup.md", "setup", "beta text"),
         ];
-        let prompt = build_prompt("what is alpha?", &ctx);
-        assert!(prompt.contains("--- Document: /a.md (Relevance: 0.9000) ---"));
-        assert!(prompt.contains("# Alpha\nalpha body"));
-        assert!(prompt.contains("beta body"));
-        assert!(
-            !prompt.contains("# \n"),
-            "empty title must not emit a heading"
-        );
-        assert!(prompt.contains("Question: what is alpha?"));
-        assert!(prompt.contains("personal knowledge base"));
+        let p = build_prompt("how do I start?", &context);
+        // numbered frames, prompt order = sources order
+        let i1 = p.find("[1]").expect("first chunk numbered");
+        let i2 = p.find("[2]").expect("second chunk numbered");
+        assert!(i1 < i2);
+        assert!(p.contains("alpha text") && p.contains("beta text"));
+        // citation contract in the instructions
+        assert!(p.contains("cite"), "prompt must instruct citing");
+        assert!(p.contains("[n]"), "prompt must name the [n] form");
+        assert!(p.contains("how do I start?"));
     }
 
     /// A captured request: headers plus the raw JSON body the client sent.
