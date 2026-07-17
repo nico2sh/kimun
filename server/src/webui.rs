@@ -1847,6 +1847,7 @@ api_key = "gemini-key"
             vault_id: "vault-1".into(),
             query: "hello".into(),
             context_size: None,
+            history: vec![],
         };
         let err = crate::handlers::answer_handler(axum::extract::State(state), axum::Json(req))
             .await

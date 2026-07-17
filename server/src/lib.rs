@@ -411,14 +411,15 @@ impl KimunRag {
         &self,
         collection: &CollectionKey,
         question: &str,
+        history: &[(String, String)],
         top_k: usize,
     ) -> Result<Answer, RagError> {
         let llm = self.llm_client.clone().ok_or(RagError::SemanticOnly)?;
-        let raw = self.retrieve(collection, question).await?;
+        let raw = self.retrieve(collection, question).await?; // retrieval sees ONLY the question
         let mut context = self.rank(question, raw).await;
         let cut = self.cut_len(&context, top_k);
         context.truncate(cut);
-        let text = llm.ask(question, &[], &context).await?;
+        let text = llm.ask(question, history, &context).await?;
         Ok(Answer {
             text,
             sources: context,
@@ -1159,7 +1160,7 @@ mod tests {
         // 0.99/0.98/0.97 stay while 0.80 (normalized 0.34) and 0.70 (0.0)
         // drop, even though the request asked for top_k = 2.
         let rag = rag(section_heavy_store(), true);
-        let answer = rag.answer(&key("vault-1"), "q", 2).await.unwrap();
+        let answer = rag.answer(&key("vault-1"), "q", &[], 2).await.unwrap();
         assert_eq!(answer.text, "answer");
         assert_eq!(answer.sources.len(), 3);
         assert_eq!(answer.sources[0].1.doc_path, "/a.md");
@@ -1183,7 +1184,7 @@ mod tests {
             ..Default::default()
         };
         let answer = rag(store, true)
-            .answer(&key("vault-1"), "q", 2)
+            .answer(&key("vault-1"), "q", &[], 2)
             .await
             .unwrap();
         assert_eq!(answer.sources.len(), 1);
@@ -1334,7 +1335,7 @@ mod tests {
 
         // answer: same fallback, same cut → 3 chunks of context.
         let answerer = rag(section_heavy_store(), true).with_reranker(Arc::new(FailingReranker));
-        let answer = answerer.answer(&key("v"), "q", 2).await.unwrap();
+        let answer = answerer.answer(&key("v"), "q", &[], 2).await.unwrap();
         assert_eq!(answer.sources.len(), 3);
     }
 
@@ -1403,7 +1404,7 @@ mod tests {
             ..Default::default()
         };
         let ragged = rag(store, true).with_reranker(Arc::new(LogitReranker));
-        let answer = ragged.answer(&key("v"), "q", 2).await.unwrap();
+        let answer = ragged.answer(&key("v"), "q", &[], 2).await.unwrap();
         assert_eq!(answer.sources.len(), 2, "normalized scores keep the cut");
         assert!(
             answer
@@ -1449,7 +1450,7 @@ mod tests {
             ..Default::default()
         };
         let ragged = rag(store, true).with_reranker(Arc::new(NanReranker));
-        let answer = ragged.answer(&key("v"), "q", 3).await.unwrap();
+        let answer = ragged.answer(&key("v"), "q", &[], 3).await.unwrap();
         assert!(!answer.sources.is_empty(), "NaN must not empty the results");
         assert!(answer.sources.iter().all(|(s, _)| s.is_finite()));
     }
@@ -1508,7 +1509,12 @@ mod tests {
         let fixed = rag(section_heavy_store(), true).with_context_cut(ContextCut::Fixed);
         assert_eq!(fixed.search(&key("v"), "q", 0).await.unwrap().len(), 1);
         assert_eq!(
-            fixed.answer(&key("v"), "q", 0).await.unwrap().sources.len(),
+            fixed
+                .answer(&key("v"), "q", &[], 0)
+                .await
+                .unwrap()
+                .sources
+                .len(),
             1
         );
     }
@@ -1523,7 +1529,7 @@ mod tests {
             ..Default::default()
         };
         let adaptive = rag(store(), true).with_reranker(Arc::new(SpikyReranker));
-        let answer = adaptive.answer(&key("v"), "q", 4).await.unwrap();
+        let answer = adaptive.answer(&key("v"), "q", &[], 4).await.unwrap();
         assert_eq!(answer.sources.len(), 1, "cut on reranked scores");
         assert_eq!(answer.sources[0].0, 0.9);
 
@@ -1531,7 +1537,7 @@ mod tests {
         let fixed = rag(store(), true)
             .with_reranker(Arc::new(SpikyReranker))
             .with_context_cut(ContextCut::Fixed);
-        let answer = fixed.answer(&key("v"), "q", 4).await.unwrap();
+        let answer = fixed.answer(&key("v"), "q", &[], 4).await.unwrap();
         assert_eq!(answer.sources.len(), 4);
 
         // search with a reranker: only the surviving note shows.
@@ -1593,7 +1599,7 @@ mod tests {
         let default_cut = rag(store(), true);
         assert_eq!(
             default_cut
-                .answer(&key("v"), "q", 2)
+                .answer(&key("v"), "q", &[], 2)
                 .await
                 .unwrap()
                 .sources
@@ -1604,7 +1610,12 @@ mod tests {
 
         let elbow = rag(store(), true).with_context_cut(ContextCut::LargestDrop);
         assert_eq!(
-            elbow.answer(&key("v"), "q", 2).await.unwrap().sources.len(),
+            elbow
+                .answer(&key("v"), "q", &[], 2)
+                .await
+                .unwrap()
+                .sources
+                .len(),
             5
         );
     }
@@ -1613,7 +1624,7 @@ mod tests {
     async fn answer_on_semantic_only_server_is_a_typed_rejection() {
         let rag = rag(section_heavy_store(), false);
         assert!(!rag.can_answer());
-        match rag.answer(&key("vault-1"), "q", 5).await {
+        match rag.answer(&key("vault-1"), "q", &[], 5).await {
             Err(RagError::SemanticOnly) => {}
             other => panic!("expected SemanticOnly, got {:?}", other.map(|a| a.text)),
         }
