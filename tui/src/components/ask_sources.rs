@@ -21,6 +21,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
+use unicode_width::UnicodeWidthStr;
 
 use crate::ask::{AskSource, locate};
 use crate::components::event_state::EventState;
@@ -338,8 +339,10 @@ impl SourcesPanel {
             .fg(theme.fg_bright.to_ratatui())
             .add_modifier(Modifier::BOLD);
         let dim = Style::default().fg(theme.gray.to_ratatui());
+        let date_style = Style::default().fg(theme.color_journal_date.to_ratatui());
         let sel_bg = theme.selection_bg.to_ratatui();
 
+        let inner_width = inner.width as usize;
         let mut lines: Vec<Line<'static>> = Vec::new();
         for (i, source) in self.sources.iter().enumerate() {
             let selected = focused && i == self.cursor;
@@ -350,12 +353,19 @@ impl SourcesPanel {
                     line
                 }
             };
+            // Title line: the rank number, then (for a journal chunk) the date
+            // and heading as distinct, spaced elements — never the wire's glued
+            // "2026-04-08Afternoon".
+            let mut head_spans = vec![Span::styled(format!("{} ", i + 1), bold)];
+            if let Some(date) = &source.date {
+                head_spans.push(Span::styled(format!("{date} · "), date_style));
+            }
+            head_spans.push(Span::styled(source.heading.clone(), bold));
+            lines.push(style_row(Line::from(head_spans)));
+            // Meta line: path, with the similarity as a right-aligned dimmed
+            // percentage.
             lines.push(style_row(Line::from(Span::styled(
-                format!("{} {}", i + 1, source.heading),
-                bold,
-            ))));
-            lines.push(style_row(Line::from(Span::styled(
-                format!("{}  {}", source.path, score_bar(source.score)),
+                meta_line(&source.path.to_string(), source.score, inner_width),
                 dim,
             ))));
         }
@@ -383,7 +393,7 @@ impl SourcesPanel {
         let heading = self
             .sources
             .get(source_index)
-            .map(|s| s.heading.clone())
+            .map(|s| s.display_heading())
             .unwrap_or_else(|| "Source".to_string());
 
         let block = panel_block(&heading, theme, focused);
@@ -433,14 +443,25 @@ impl SourcesPanel {
     }
 }
 
-/// A relevance bar for the list face's meta line: filled cells proportional
-/// to `score` (expected `0.0..=1.0`, the server's normalized similarity —
-/// clamped defensively either way).
-fn score_bar(score: f64) -> String {
-    const WIDTH: usize = 10;
-    let filled = (score.clamp(0.0, 1.0) * WIDTH as f64).round() as usize;
-    let filled = filled.min(WIDTH);
-    format!("{}{}", "█".repeat(filled), "░".repeat(WIDTH - filled))
+/// The similarity as a whole-percent integer for the list meta line (`score`
+/// is the server's normalized `0.0..=1.0` similarity — clamped defensively).
+fn score_percent(score: f64) -> u32 {
+    (score.clamp(0.0, 1.0) * 100.0).round() as u32
+}
+
+/// The list row's meta line: the `path` with the score percentage right-aligned
+/// to `width` columns and dimmed. Falls back to two spaces of separation when
+/// the path alone already fills (or overflows) the width.
+fn meta_line(path: &str, score: f64, width: usize) -> String {
+    let pct = format!("{}%", score_percent(score));
+    let path_w = UnicodeWidthStr::width(path);
+    let pct_w = pct.chars().count();
+    if path_w + pct_w < width {
+        // At least one column of separation (the strict `<` guarantees it).
+        format!("{path}{}{pct}", " ".repeat(width - path_w - pct_w))
+    } else {
+        format!("{path}  {pct}")
+    }
 }
 
 /// Builds the reader face's content rows, wrapping each source line to the
@@ -501,8 +522,20 @@ mod tests {
         AskSource {
             path: VaultPath::new(path),
             heading: heading.to_string(),
+            date: None,
             score,
             text: text.to_string(),
+            ordinal: 0,
+        }
+    }
+
+    fn dated_source(path: &str, heading: &str, date: &str, score: f64) -> AskSource {
+        AskSource {
+            path: VaultPath::new(path),
+            heading: heading.to_string(),
+            date: Some(date.to_string()),
+            score,
+            text: String::new(),
             ordinal: 0,
         }
     }
@@ -524,6 +557,33 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn meta_line_right_aligns_the_score_percentage() {
+        // 0.87 → "87%", right-aligned to width 20 after a 6-col path.
+        let line = meta_line("a.md", 0.87, 20);
+        assert!(line.starts_with("a.md"), "path leads the line");
+        assert!(line.ends_with("87%"), "percentage is right-aligned: {line:?}");
+        assert_eq!(UnicodeWidthStr::width(line.as_str()), 20);
+        // No bar glyphs remain.
+        assert!(!line.contains('█') && !line.contains('░'));
+    }
+
+    #[test]
+    fn meta_line_clamps_and_falls_back_when_the_path_fills_the_width() {
+        // A path wider than the viewport still appends the percentage (no panic,
+        // no negative padding).
+        let line = meta_line("a/very/long/path/that/overflows.md", 1.5, 10);
+        assert!(line.ends_with("100%"), "score clamps to 100%: {line:?}");
+    }
+
+    #[test]
+    fn dated_source_display_heading_separates_date_and_heading() {
+        let s = dated_source("journal/2026-04-08.md", "Afternoon", "2026-04-08", 0.9);
+        assert_eq!(s.display_heading(), "2026-04-08 · Afternoon");
+        // A plain source is unchanged.
+        assert_eq!(source("n.md", "Ideas", 0.5, "").display_heading(), "Ideas");
     }
 
     #[tokio::test]
@@ -788,11 +848,11 @@ mod tests {
             p.set_turn(
                 1,
                 vec![
-                    source("a.md", "Alpha section", 0.9, "alpha body"),
+                    dated_source("journal/2026-04-08.md", "Afternoon", "2026-04-08", 0.9),
                     source("b.md", "Beta section", 0.4, "beta body"),
                 ],
             );
-            draw(&mut p, &theme, 40, 10, true); // populated list
+            draw(&mut p, &theme, 40, 10, true); // populated list (dated + plain)
             p.cursor = 1;
             draw(&mut p, &theme, 40, 3, true); // tiny viewport, scroll path
 

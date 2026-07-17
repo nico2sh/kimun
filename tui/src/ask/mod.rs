@@ -14,6 +14,10 @@ const HISTORY_WINDOW: usize = 5;
 pub struct AskSource {
     pub path: VaultPath,
     pub heading: String,
+    /// The chunk's journal date (`YYYY-MM-DD`), when the note is a dated journal
+    /// entry — carried separately from `heading` so the two render as distinct,
+    /// spaced elements. `None` for a non-journal note.
+    pub date: Option<String>,
     pub score: f64,
     pub text: String,
     /// The 1-based `[n]` citation number this source answers to — the explicit
@@ -28,14 +32,48 @@ impl AskSource {
     /// normalized ONCE, here: a server that sends it wins; a `0` (older server
     /// that omits the field) falls back to `position + 1`, which reproduces the
     /// old vec-order convention. Every consumer downstream sees a real ordinal.
+    ///
+    /// For a journal chunk the wire `title` arrives date-prefixed (e.g.
+    /// `2026-04-08Afternoon` — the date stem glued to the section heading with
+    /// no separator). We strip that prefix here, keeping `date` and `heading`
+    /// separate, mirroring the prompt builder's title handling
+    /// (`llmclients::build_prompt`) so both surfaces agree.
     pub fn from_chunk(position: usize, c: ChunkResult) -> Self {
+        let heading = strip_date_prefix(&c.title, c.date.as_deref());
         Self {
             path: VaultPath::new(&c.path),
-            heading: c.title,
+            heading,
+            date: c.date,
             score: c.similarity_score,
             text: c.content,
             ordinal: if c.ordinal == 0 { position + 1 } else { c.ordinal },
         }
+    }
+
+    /// The heading with its date rejoined for a single-line title (the source
+    /// reader's panel title): `"2026-04-08 · Afternoon"` for a journal entry,
+    /// the bare heading otherwise.
+    pub fn display_heading(&self) -> String {
+        match &self.date {
+            Some(date) if !self.heading.is_empty() => format!("{date} · {}", self.heading),
+            Some(date) => date.clone(),
+            None => self.heading.clone(),
+        }
+    }
+}
+
+/// Strip a leading journal `date` prefix from a wire `title`, mirroring the
+/// server prompt builder's logic (`llmclients::build_prompt`): trim, drop the
+/// date prefix if present, trim again. With no date, or a title that doesn't
+/// start with it, the (trimmed) title is returned unchanged.
+fn strip_date_prefix(title: &str, date: Option<&str>) -> String {
+    let trimmed = title.trim();
+    match date {
+        Some(date) => trimmed
+            .strip_prefix(date)
+            .map(|rest| rest.trim().to_string())
+            .unwrap_or_else(|| trimmed.to_string()),
+        None => trimmed.to_string(),
     }
 }
 
@@ -220,6 +258,7 @@ mod tests {
         AskSource {
             path: VaultPath::new(path),
             heading: "h".into(),
+            date: None,
             score: 1.0,
             text: String::new(),
             ordinal,
@@ -285,6 +324,42 @@ mod tests {
         };
         // Server ordinal wins over position.
         assert_eq!(AskSource::from_chunk(0, wire).ordinal, 7);
+    }
+
+    #[test]
+    fn from_chunk_splits_a_date_prefixed_journal_title() {
+        // The server glues the date stem onto the section heading with no
+        // separator ("2026-04-08Afternoon"); date and heading must come apart.
+        let wire = ChunkResult {
+            path: "journal/2026-04-08.md".into(),
+            title: "2026-04-08Afternoon".into(),
+            date: Some("2026-04-08".into()),
+            content: String::new(),
+            hash: String::new(),
+            similarity_score: 0.9,
+            ordinal: 1,
+        };
+        let src = AskSource::from_chunk(0, wire);
+        assert_eq!(src.heading, "Afternoon");
+        assert_eq!(src.date.as_deref(), Some("2026-04-08"));
+        assert_eq!(src.display_heading(), "2026-04-08 · Afternoon");
+    }
+
+    #[test]
+    fn from_chunk_leaves_a_non_journal_title_unchanged() {
+        let wire = ChunkResult {
+            path: "notes/ideas.md".into(),
+            title: "Project Ideas".into(),
+            date: None,
+            content: String::new(),
+            hash: String::new(),
+            similarity_score: 0.5,
+            ordinal: 1,
+        };
+        let src = AskSource::from_chunk(0, wire);
+        assert_eq!(src.heading, "Project Ideas");
+        assert_eq!(src.date, None);
+        assert_eq!(src.display_heading(), "Project Ideas");
     }
 
     fn done(thread: &mut Thread, q: &str, a: &str) {
@@ -392,6 +467,7 @@ mod tests {
         let src = AskSource {
             path: kimun_core::nfs::VaultPath::new("a.md"),
             heading: "h".into(),
+            date: None,
             score: 0.9,
             text: "body".into(),
             ordinal: 1,

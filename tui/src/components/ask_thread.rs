@@ -37,6 +37,10 @@ use crate::settings::themes::Theme;
 /// Height (in rows) of the docked composer box, borders included.
 const COMPOSER_HEIGHT: u16 = 3;
 
+/// Rows a PageUp/PageDown leaves visible from the previous view (shared
+/// convention with `AttachmentView`).
+const PAGE_OVERLAP: u16 = 2;
+
 /// The synchronous half of a turn kickoff (see `ThreadPanel::begin_turn`):
 /// the question, the history to send with it, and the new turn's id.
 type PendingTurn = (String, Vec<(String, String)>, u64);
@@ -74,9 +78,22 @@ pub struct ThreadPanel {
     /// **Ask workspace**).
     client: Option<Arc<RagClient>>,
     focus: ThreadFocus,
-    /// Topmost visible row of the flattened turn-lines list, auto-adjusted on
-    /// selection change to keep the selected turn in view.
+    /// Topmost visible row of the flattened turn-lines list. While
+    /// `follow_selection` is set the render keeps the selected turn in view;
+    /// content-scroll keys (`PageUp`/`PageDown`/`Home`/`End`) and the wheel take
+    /// it over.
     scroll: u16,
+    /// True while the render owns `scroll` (keep the selected turn in view). A
+    /// content-scroll key or wheel tick clears it; a selection move (`j`/`k`)
+    /// re-arms it. Mirrors `PreviewPane`'s anchored/user-owned split.
+    follow_selection: bool,
+    /// One-shot: the next render scrolls so the selected turn's *end* is visible
+    /// (bottom-follow), set when a turn is added or its answer completes so new
+    /// content comes into view. Cleared by the render that honors it.
+    bottom_follow_pending: bool,
+    /// The turn list's viewport height from the last render — the page size for
+    /// `PageUp`/`PageDown`.
+    turns_height: u16,
     /// Citation `[n]` ordinal a click asked the Sources drawer to focus (NOT a
     /// vec position — the drawer resolves ordinal → row). Cleared on read via
     /// `take_citation_target`.
@@ -97,6 +114,9 @@ impl ThreadPanel {
             client: None,
             focus: ThreadFocus::Composer,
             scroll: 0,
+            follow_selection: true,
+            bottom_follow_pending: false,
+            turns_height: 0,
             citation_target: None,
             turns_rect: Rect::default(),
             composer_rect: Rect::default(),
@@ -153,14 +173,41 @@ impl ThreadPanel {
         if let AskData::AnswerReady { turn_id, result } = data {
             match result {
                 Ok((answer, sources)) => {
-                    self.thread.complete(turn_id, answer, sources);
+                    if self.thread.complete(turn_id, answer, sources) {
+                        // The answer landed: bring its (now full) content into
+                        // view so a long answer doesn't complete off-screen.
+                        self.follow_bottom();
+                    }
                 }
                 Err(e) => {
-                    self.thread.fail(turn_id, e);
+                    if self.thread.fail(turn_id, e) {
+                        self.follow_bottom();
+                    }
                 }
             }
         }
         // `ReaderNote` is addressed to the source reader (Task 10), not here.
+    }
+
+    /// Arm bottom-follow: the next render scrolls the selected turn's end into
+    /// view. Also re-arms selection-follow so a prior manual scroll doesn't
+    /// suppress it.
+    fn follow_bottom(&mut self) {
+        self.follow_selection = true;
+        self.bottom_follow_pending = true;
+    }
+
+    /// Scroll the content by `delta` rows, taking the offset over from the
+    /// selection-follow anchor (mirrors `PreviewPane`'s user-owned scroll). The
+    /// upper bound is clamped by the next render against the wrapped-row total.
+    fn content_scroll_by(&mut self, delta: i32) {
+        self.follow_selection = false;
+        self.bottom_follow_pending = false;
+        self.scroll = if delta < 0 {
+            self.scroll.saturating_sub((-delta) as u16)
+        } else {
+            self.scroll.saturating_add(delta as u16)
+        };
     }
 
     fn handle_key(&mut self, key: &KeyEvent, tx: &AppTx) -> EventState {
@@ -186,13 +233,37 @@ impl ThreadPanel {
     }
 
     fn handle_turns_key(&mut self, key: &KeyEvent, tx: &AppTx) -> EventState {
+        // Page size for content scrolling, leaving a little overlap (mirrors
+        // AttachmentView / the note preview).
+        let page = self.turns_height.saturating_sub(PAGE_OVERLAP).max(1) as i32;
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => {
                 self.thread.select_prev();
+                // A selection move re-arms keep-in-view over any manual scroll.
+                self.follow_selection = true;
                 EventState::Consumed
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 self.thread.select_next();
+                self.follow_selection = true;
+                EventState::Consumed
+            }
+            // Content scrolling for reading within a long turn — plain,
+            // selection-independent, like the preview/attachment surfaces.
+            KeyCode::PageUp => {
+                self.content_scroll_by(-page);
+                EventState::Consumed
+            }
+            KeyCode::PageDown => {
+                self.content_scroll_by(page);
+                EventState::Consumed
+            }
+            KeyCode::Home => {
+                self.content_scroll_by(-(u16::MAX as i32));
+                EventState::Consumed
+            }
+            KeyCode::End => {
+                self.content_scroll_by(u16::MAX as i32);
                 EventState::Consumed
             }
             KeyCode::Char('i') | KeyCode::Char('/') => {
@@ -234,11 +305,11 @@ impl ThreadPanel {
                 EventState::Consumed
             }
             MouseEventKind::ScrollUp if self.turns_rect.contains(pos) => {
-                self.scroll = self.scroll.saturating_sub(1);
+                self.content_scroll_by(-1);
                 EventState::Consumed
             }
             MouseEventKind::ScrollDown if self.turns_rect.contains(pos) => {
-                self.scroll = self.scroll.saturating_add(1);
+                self.content_scroll_by(1);
                 EventState::Consumed
             }
             _ => EventState::NotConsumed,
@@ -308,6 +379,8 @@ impl ThreadPanel {
         // isn't load-bearing, but it matches the eventual spawn's intent.
         let history = self.thread.history();
         let turn_id = self.thread.ask(question.clone());
+        // The new turn is selected; bring it (and its incoming answer) into view.
+        self.follow_bottom();
         Some((question, history, turn_id))
     }
 
@@ -417,33 +490,52 @@ impl ThreadPanel {
     fn render_turns(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
         self.turns_rect = rect;
 
-        let base = Style::default().fg(theme.fg.to_ratatui());
         let bold = Style::default()
             .fg(theme.fg_bright.to_ratatui())
             .add_modifier(Modifier::BOLD);
-        let accent = Style::default().fg(theme.accent.to_ratatui());
         let dim = Style::default().fg(theme.gray.to_ratatui());
         let err = Style::default().fg(theme.red.to_ratatui());
+        let md = crate::components::markdown_lines::MdStyles::from_theme(theme);
 
         let mut rows: Vec<(RowSlot, Line<'static>)> = Vec::new();
         let mut turn_start_row: Vec<(u64, u16)> = Vec::new();
         for turn in self.thread.turns() {
             turn_start_row.push((turn.id, rows.len() as u16));
-            render_turn(turn, rect.width, base, bold, accent, dim, err, &mut rows);
+            render_turn(turn, rect.width, bold, dim, err, &md, &mut rows);
         }
         let total = rows.len() as u16;
         let height = rect.height;
+        self.turns_height = height;
 
-        // Auto-scroll to keep the selected turn's start row in view.
+        // Auto-scroll (while following): bottom-follow pins the selected turn's
+        // end to view (new content just landed); otherwise keep its start in
+        // view. A manual scroll clears `follow_selection`, leaving the offset
+        // alone but for the clamp below.
         if let Some(sel) = self.thread.selected()
             && let Some(&(_, start)) = turn_start_row.iter().find(|(id, _)| *id == sel.id)
         {
-            if start < self.scroll {
-                self.scroll = start;
-            } else if height > 0 && start >= self.scroll + height {
-                self.scroll = start.saturating_sub(height - 1);
+            // End row of the selected turn: one before the next turn's start,
+            // or the last row for the final turn.
+            let end = turn_start_row
+                .iter()
+                .map(|(_, s)| *s)
+                .filter(|s| *s > start)
+                .min()
+                .unwrap_or(total)
+                .saturating_sub(1);
+            if self.bottom_follow_pending {
+                if height > 0 {
+                    self.scroll = end.saturating_sub(height - 1);
+                }
+            } else if self.follow_selection {
+                if start < self.scroll {
+                    self.scroll = start;
+                } else if height > 0 && start >= self.scroll + height {
+                    self.scroll = start.saturating_sub(height - 1);
+                }
             }
         }
+        self.bottom_follow_pending = false;
         self.scroll = self.scroll.min(total.saturating_sub(height));
 
         let selected_id = self.thread.selected().map(|t| t.id);
@@ -528,6 +620,7 @@ impl Component for ThreadPanel {
             ],
             ThreadFocus::Turns => vec![
                 ("j/k".into(), "Select".into()),
+                ("PgUp/PgDn".into(), "Scroll".into()),
                 ("i//".into(), "Compose".into()),
                 ("y".into(), "Copy".into()),
                 ("e".into(), "Save as note".into()),
@@ -544,15 +637,13 @@ impl Component for ThreadPanel {
 /// Render one turn's rows (question + status/body), appending to `out`.
 /// Free function (no `&self` needed) — the "one method per concern" split
 /// `render_turns` delegates to.
-#[allow(clippy::too_many_arguments)]
 fn render_turn(
     turn: &Turn,
     width: u16,
-    base: Style,
     bold: Style,
-    accent: Style,
     dim: Style,
     err: Style,
+    md: &crate::components::markdown_lines::MdStyles,
     out: &mut Vec<(RowSlot, Line<'static>)>,
 ) {
     let question = format!("> {}", turn.question);
@@ -582,46 +673,42 @@ fn render_turn(
                 Line::from(Span::styled("  [r] retry", dim)),
             ));
         }
-        TurnStatus::Done => {
-            for aline in wrap_text(&turn.answer, width) {
-                out.push((
-                    RowSlot::Answer {
-                        turn_id: turn.id,
-                        range: aline.clone(),
-                    },
-                    citation_styled_line(&turn.answer, aline, base, accent),
-                ));
-            }
-        }
+        TurnStatus::Done => render_answer(turn, width, md, out),
     }
     out.push((RowSlot::Turn(turn.id), Line::default()));
 }
 
-/// Build a styled `Line` for one wrapped line of an answer: plain text in
-/// `base`, `[n]` citation markers in `accent`.
-fn citation_styled_line(
-    text: &str,
-    range: Range<usize>,
-    base: Style,
-    accent: Style,
-) -> Line<'static> {
-    let slice = &text[range];
-    let mut spans = Vec::new();
-    let mut last = 0;
-    for c in citations::scan(slice) {
-        if c.range.start > last {
-            spans.push(Span::styled(slice[last..c.range.start].to_string(), base));
+/// Render a `Done` turn's answer as styled markdown rows. Each *logical* source
+/// line is classified (threading fenced-code state) and word-wrapped; each
+/// wrapped slice keeps its byte range into `turn.answer` (so `RowSlot::Answer`
+/// hit-testing stays aligned) and is styled by `markdown_lines::style_slice`.
+/// Markers stay visible, so the wrapped slice's columns still map 1:1 to the
+/// source bytes the citation hit-test walks.
+fn render_answer(
+    turn: &Turn,
+    width: u16,
+    md: &crate::components::markdown_lines::MdStyles,
+    out: &mut Vec<(RowSlot, Line<'static>)>,
+) {
+    use crate::components::markdown_lines;
+    let mut offset = 0usize;
+    let mut in_fence = false;
+    for logical in turn.answer.split_inclusive('\n') {
+        let stripped = logical.strip_suffix('\n').unwrap_or(logical);
+        let kind = markdown_lines::classify(stripped, &mut in_fence);
+        let line_start = offset;
+        for rel in wrap_text(stripped, width) {
+            let abs = (line_start + rel.start)..(line_start + rel.end);
+            out.push((
+                RowSlot::Answer {
+                    turn_id: turn.id,
+                    range: abs.clone(),
+                },
+                markdown_lines::style_slice(&turn.answer[abs], kind, md),
+            ));
         }
-        spans.push(Span::styled(slice[c.range.clone()].to_string(), accent));
-        last = c.range.end;
+        offset += logical.len();
     }
-    if last < slice.len() {
-        spans.push(Span::styled(slice[last..].to_string(), base));
-    }
-    if spans.is_empty() {
-        spans.push(Span::styled(String::new(), base));
-    }
-    Line::from(spans)
 }
 
 /// Map a mouse click's column (relative to the wrapped line's own left edge)
@@ -943,6 +1030,7 @@ mod tests {
             vec![AskSource {
                 path: kimun_core::nfs::VaultPath::new("a.md"),
                 heading: "h".into(),
+                date: None,
                 score: 1.0,
                 text: String::new(),
                 ordinal: 1,
@@ -1021,6 +1109,104 @@ mod tests {
 
             draw(&mut p, &theme, 3, 3, true); // degenerate tiny rect
             draw(&mut p, &theme, 0, 0, true); // zero rect
+        }
+
+        fn turns_key(p: &mut ThreadPanel, code: KeyCode) {
+            let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+            p.handle_input(&InputEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)), &tx);
+        }
+
+        /// A markdown answer (heading + prose citation + fenced code block)
+        /// renders through the row map, and the prose citation stays clickable:
+        /// the rendered answer slices still map 1:1 to the source, so
+        /// `citation_at_column` resolves the marker. (Per-block styling is
+        /// unit-tested in `markdown_lines`.) Covers I2's hit-testing constraint.
+        #[test]
+        fn markdown_answer_keeps_prose_citations_clickable() {
+            let theme = Theme::default();
+            let mut p = ThreadPanel::new();
+            let id = p.thread_mut().ask("q".into());
+            let answer =
+                "# Title\nSee [1] here.\n```\nlet x = arr[9];\n```".to_string();
+            p.thread_mut().complete(
+                id,
+                answer.clone(),
+                vec![AskSource {
+                    path: kimun_core::nfs::VaultPath::new("a.md"),
+                    heading: "h".into(),
+                    date: None,
+                    score: 1.0,
+                    text: String::new(),
+                    ordinal: 1,
+                }],
+            );
+            p.focus = ThreadFocus::Turns;
+            draw(&mut p, &theme, 60, 12, true);
+
+            // Find the rendered answer row carrying the prose `[1]` and hit-test
+            // the marker's column through it.
+            let hit = p.row_map.iter().find_map(|slot| match slot {
+                RowSlot::Answer { range, .. } if answer[range.clone()].contains("[1]") => {
+                    let slice = &answer[range.clone()];
+                    let col = slice.find("[1]").unwrap() as u16 + 1;
+                    Some(citation_at_column(&answer, range.clone(), col))
+                }
+                _ => None,
+            });
+            assert_eq!(
+                hit,
+                Some(Some(1)),
+                "the prose citation resolves through the rendered slice"
+            );
+        }
+
+        /// A completed answer taller than the viewport scrolls so its end is
+        /// visible (bottom-follow), not stuck showing the question.
+        #[test]
+        fn completion_bottom_follows_to_show_the_answer_end() {
+            let theme = Theme::default();
+            let mut p = ThreadPanel::new();
+            p.set_client(Some(test_client()));
+            let id = p.thread_mut().ask("q".into());
+            p.focus = ThreadFocus::Turns;
+            // 10 answer lines. Rows: question(1) + 10 + trailing blank(1) = 12.
+            let answer = (0..10).map(|i| format!("line{i}")).collect::<Vec<_>>().join("\n");
+            p.handle_data(AskData::AnswerReady {
+                turn_id: id,
+                result: Ok((answer, vec![])),
+            });
+            // Terminal height 8 − composer(3) = 5 turn rows. Rows total 12
+            // (question 1 + 10 answer + trailing blank 1) → end pins at 12 − 5 = 7.
+            draw(&mut p, &theme, 60, 8, true);
+            assert_eq!(p.scroll, 7, "bottom-follow shows the answer's end");
+        }
+
+        /// Selecting an off-screen turn brings it into view; content-scroll keys
+        /// clamp to the wrapped-row total.
+        #[test]
+        fn selection_scrolls_into_view_and_content_scroll_clamps() {
+            let theme = Theme::default();
+            let mut p = ThreadPanel::new();
+            for i in 0..8 {
+                let id = p.thread_mut().ask(format!("q{i}"));
+                p.thread_mut().complete(id, format!("a{i}"), vec![]);
+            }
+            p.focus = ThreadFocus::Turns;
+            // Each turn: question(1)+answer(1)+blank(1)=3 rows; 8 turns = 24 rows.
+            // Terminal height 9 − composer(3) = 6 turn rows.
+            draw(&mut p, &theme, 60, 9, true); // selection at the last turn
+
+            // Jump the selection to the first turn: it scrolls to the top.
+            for _ in 0..8 {
+                turns_key(&mut p, KeyCode::Char('k'));
+            }
+            draw(&mut p, &theme, 60, 9, true);
+            assert_eq!(p.scroll, 0, "selecting the first turn scrolled it into view");
+
+            // End scrolls to the bottom, clamped to total − height (24 − 6 = 18).
+            turns_key(&mut p, KeyCode::End);
+            draw(&mut p, &theme, 60, 9, true);
+            assert_eq!(p.scroll, 18, "content scroll clamps to the last page");
         }
     }
 }
