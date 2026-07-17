@@ -186,7 +186,10 @@ impl TryFrom<String> for ActionShortcuts {
             "ToggleQueryPanel" => ActionShortcuts::ToggleQueryPanel,
             "ToggleBacklinks" => ActionShortcuts::ToggleQueryPanel,
             "OpenSavedSearches" => ActionShortcuts::OpenSavedSearches,
-            "OpenAsk" => ActionShortcuts::OpenAsk,
+            // "OpenAsk" is the stable on-disk name; "OpenRagAnswer" is the
+            // legacy name from the pre-workspace Ask overlay, kept so
+            // existing keybinding configs keep working.
+            "OpenAsk" | "OpenRagAnswer" => ActionShortcuts::OpenAsk,
             "SaveCurrentQuery" => ActionShortcuts::SaveCurrentQuery,
             "SwitchWorkspace" => ActionShortcuts::SwitchWorkspace,
             "FindInBuffer" => ActionShortcuts::FindInBuffer,
@@ -423,6 +426,20 @@ mod tests {
         assert_eq!(
             ActionShortcuts::try_from("SaveCurrentQuery".to_string()),
             Ok(ActionShortcuts::SaveCurrentQuery)
+        );
+    }
+
+    #[test]
+    fn open_ask_roundtrip_and_legacy_alias() {
+        assert_eq!(ActionShortcuts::OpenAsk.to_string(), "OpenAsk");
+        assert_eq!(
+            ActionShortcuts::try_from("OpenAsk".to_string()),
+            Ok(ActionShortcuts::OpenAsk)
+        );
+        // legacy name from the pre-workspace Ask overlay still parses
+        assert_eq!(
+            ActionShortcuts::try_from("OpenRagAnswer".to_string()),
+            Ok(ActionShortcuts::OpenAsk)
         );
     }
 
