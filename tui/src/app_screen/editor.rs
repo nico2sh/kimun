@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use kimun_core::NoteVault;
 use kimun_core::error::{FSError, VaultError};
 use kimun_core::nfs::VaultPath;
+use kimun_server_client::RagClient;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
@@ -16,6 +17,7 @@ use crate::app_screen::editor_input::{
 use crate::app_screen::overlay_host::OverlayHost;
 use crate::app_screen::panel_set::PanelSet;
 use crate::app_screen::{AppScreen, ScreenKind};
+use crate::components::ask_thread::ThreadPanel;
 use crate::components::attachment_view::AttachmentView;
 use crate::components::autosave_timer::AutosaveTimer;
 use crate::components::dialogs::ActiveDialog;
@@ -73,6 +75,15 @@ pub struct EditorScreen {
     /// Latest RAG connection/sync status from the background sync task, shown in
     /// the footer. `Disabled` (no server) renders nothing.
     rag_status: crate::rag::RagStatus,
+    /// The Ask workspace's `ThreadPanel` while it isn't the editor-area
+    /// content — parked here so the conversation survives switching to
+    /// another editor-area view (a note, an attachment) and back (adr/0030,
+    /// CONTEXT.md: Thread lifetime). `Some` only while Ask is *not* shown.
+    ask_stash: Option<ThreadPanel>,
+    /// The live RAG client, rebuilt whenever the server's Ask capability
+    /// changes. Held here as the master copy and pushed into `PanelSet`
+    /// (routing) and the stash (capability) so all three stay in lockstep.
+    ask_client: Option<Arc<RagClient>>,
     /// The leader-key sequence state machine (Ctrl-G gateway, spec §8a).
     leader: LeaderEngine,
     /// App event sender, captured on enter — render-side async kicks (the
@@ -113,7 +124,15 @@ impl EditorScreen {
         let tags = TagsPanel::new(vault.clone(), s.icons());
         let links = LinksPanel::new(vault.clone(), s.icons());
         let outline = OutlinePanel::new(vault.clone(), s.icons());
-        let drawer = DrawerHost::new(sidebar, query_panel, semantic, tags, links, outline);
+        let drawer = DrawerHost::new(
+            vault.clone(),
+            sidebar,
+            query_panel,
+            semantic,
+            tags,
+            links,
+            outline,
+        );
         let rail_kb = kb.clone();
         let mut editor = TextEditorComponent::new(kb, &s);
         editor.set_vault(vault.clone());
@@ -124,10 +143,21 @@ impl EditorScreen {
             settings,
             icons,
             theme,
-            panels: PanelSet::from_panels(drawer, editor, rail_icons, rail_kb, semantic_visible),
+            // Ask starts hidden: no RAG status has arrived yet, so the server's
+            // LLM capability is unknown. The rail rebuilds when it does.
+            panels: PanelSet::from_panels(
+                drawer,
+                editor,
+                rail_icons,
+                rail_kb,
+                semantic_visible,
+                false,
+            ),
             doc_meta: crate::app_screen::doc_meta::DocMeta::new(vault.clone()),
             update: None,
             rag_status: crate::rag::RagStatus::Disabled,
+            ask_stash: None,
+            ask_client: None,
             vault,
             path,
             footer,
@@ -335,7 +365,14 @@ impl EditorScreen {
         });
 
         self.path = path.clone();
-        // Returning to a note swaps the editor area back from any attachment.
+        // Returning to a note swaps the editor area back from any attachment,
+        // and stashes any live Ask workspace. `clear_attachment` deliberately
+        // leaves Ask content alone (it only drops attachments), so without the
+        // explicit stash here the thread would stay on screen and the note
+        // would silently fail to appear (carry-forward: open note over Ask).
+        if self.panels.is_showing_ask() {
+            self.ask_stash = self.panels.take_ask();
+        }
         self.panels.clear_attachment();
         // Mark this note's row in the sidebar (clears the previous one).
         self.panels
@@ -732,6 +769,8 @@ impl EditorScreen {
                 // panel under the cursor (one rule for every panel) and the
                 // event is forwarded to that panel for its internal behavior.
                 let state = self.panels.handle_mouse(event, tx);
+                // Ask clicks (turn select, citation) move the drawer's Sources.
+                self.sync_ask_sources();
                 // A selectionless right-click in the editor asks for the
                 // note's context menu — the screen owns the path, so it
                 // opens it here.
@@ -746,6 +785,9 @@ impl EditorScreen {
             }
             EditorIntent::Panel { fallback } => {
                 let state = self.panels.handle_input(event, tx);
+                // Ask keys (j/k select, i/composer, submit) move the drawer's
+                // Sources in step with the thread's selected turn.
+                self.sync_ask_sources();
                 if state == EventState::NotConsumed {
                     match fallback {
                         PanelFallback::None => state,
@@ -1012,8 +1054,27 @@ impl EditorScreen {
     async fn handle_owned_message(&mut self, msg: AppEvent, tx: &AppTx) {
         match msg {
             AppEvent::RagStatus(status) => {
+                let was_available = self.rag_status.llm_available();
                 self.rag_status = status;
+                // The rail's ASK entry and the composer both hinge on whether
+                // the server can answer questions. Rebuild the rail and refresh
+                // the Ask capability only when that flips (adr/0030: an active
+                // Ask view stays put when it drops — only the rail entry goes).
+                if was_available != status.llm_available() {
+                    let (kb, icons) = {
+                        let s = self.settings.read().unwrap();
+                        (s.key_bindings.clone(), s.icons())
+                    };
+                    self.panels.rebuild_rail(
+                        kb,
+                        icons,
+                        crate::rag::rag_configured(&self.settings),
+                        status.llm_available(),
+                    );
+                    self.refresh_ask_capability().await;
+                }
             }
+            AppEvent::Ask(data) => self.handle_ask_data(data),
             // Stale completions (for notes we've navigated away from) fall
             // through to the catch-all and are dropped.
             AppEvent::FlashMessage(msg) => {
@@ -1062,6 +1123,14 @@ impl EditorScreen {
                 if view == DrawerView::Semantic && !crate::rag::rag_configured(&self.settings) {
                     tx.send(AppEvent::FlashMessage(
                         "Set kimun_server_url in config to use semantic search".into(),
+                    ))
+                    .ok();
+                }
+                // ASK needs an LLM-configured server (the rail hides its entry
+                // otherwise); gate every route the same way.
+                else if view == DrawerView::Ask && !self.rag_status.llm_available() {
+                    tx.send(AppEvent::FlashMessage(
+                        "Ask needs an LLM-configured server; this one is semantic-search only".into(),
                     ))
                     .ok();
                 }
@@ -1252,10 +1321,145 @@ impl EditorScreen {
     /// reveal side effects live in `drawer_view_revealed` (the heavy work
     /// that keeps the reveal in the host rather than in `PanelSet`).
     fn open_drawer_view(&mut self, view: DrawerView, tx: &AppTx) {
+        // Keep the editor-area Ask content in lockstep with the drawer view:
+        // entering ASK restores the stashed thread; leaving it stashes the
+        // live one (rules 1 & 2 — thread survives every view switch).
+        self.transition_ask(view);
         let newly_shown = !self.drawer_open_on(view);
         self.panels.open_drawer_view(view);
         self.drawer_view_revealed(view, newly_shown, tx);
-        self.panels.focus(PanelKind::Drawer);
+        // The ASK workspace lives in the editor area; drop the user on the
+        // composer rather than the Sources drawer. Every other view focuses
+        // the drawer as before.
+        if view == DrawerView::Ask {
+            self.panels.focus(PanelKind::Editor);
+        } else {
+            self.panels.focus(PanelKind::Drawer);
+        }
+    }
+
+    /// Ensure the Ask workspace is the editor-area content, for the leader
+    /// `a` conversation actions. Ungated: managing an existing thread works
+    /// even when the server can't answer (the composer stays disabled).
+    fn ensure_ask_workspace(&mut self, tx: &AppTx) {
+        if !self.panels.is_showing_ask() {
+            self.open_drawer_view(DrawerView::Ask, tx);
+        }
+    }
+
+    /// Bring the editor-area Ask content in or out to match a drawer view
+    /// switch. Entering ASK shows the stashed thread (or a fresh one) and
+    /// syncs its Sources; leaving ASK parks the live thread in `ask_stash`.
+    /// Both directions keep the panel's capability tied to the current client.
+    fn transition_ask(&mut self, target: DrawerView) {
+        let showing = self.panels.is_showing_ask();
+        if target == DrawerView::Ask && !showing {
+            let panel = self.ask_stash.take().unwrap_or_default();
+            self.panels.show_ask(panel);
+            self.panels.set_ask_client(self.ask_client.clone());
+            self.sync_ask_sources_from_selected();
+        } else if target != DrawerView::Ask && showing {
+            self.ask_stash = self.panels.take_ask();
+        }
+    }
+
+    /// Push the Ask capability decision (from the current RAG client) into the
+    /// live panel and the stash. Rebuilds the client from config when the
+    /// server can answer questions, else clears it — so capability follows
+    /// client presence everywhere (no forever-`Thinking` turn; carry-forward
+    /// #2). Both the live panel (via `PanelSet`) and the stash are updated.
+    async fn refresh_ask_capability(&mut self) {
+        self.ask_client = if self.rag_status.llm_available() {
+            crate::rag::rag_client(&self.settings, &self.vault)
+                .await
+                .map(Arc::new)
+        } else {
+            None
+        };
+        self.panels.set_ask_client(self.ask_client.clone());
+        if let Some(panel) = self.ask_stash.as_mut() {
+            panel.set_capability(self.ask_client.is_some());
+        }
+    }
+
+    /// Route an Ask async result. Answers may land while the user browses
+    /// FILES, so an answer goes to the live panel *or* the stash; a reader
+    /// note goes to the Sources drawer. A completed answer for the selected
+    /// turn refreshes its sources (rule 3).
+    fn handle_ask_data(&mut self, data: crate::components::events::AskData) {
+        use crate::components::events::AskData;
+        match &data {
+            AskData::AnswerReady { turn_id, .. } => {
+                let turn_id = *turn_id;
+                if let Some(panel) = self.panels.ask_mut() {
+                    panel.handle_data(data);
+                } else if let Some(panel) = self.ask_stash.as_mut() {
+                    panel.handle_data(data);
+                    return; // stashed: no visible Sources drawer to refresh
+                }
+                // Refresh Sources only when the completed turn is the one shown.
+                if let Some(panel) = self.panels.ask_mut() {
+                    let selected = panel.thread().selected().map(|t| t.id);
+                    if selected == Some(turn_id) {
+                        let sources = panel
+                            .thread()
+                            .turns()
+                            .iter()
+                            .find(|t| t.id == turn_id)
+                            .map(|t| t.sources.clone())
+                            .unwrap_or_default();
+                        self.panels.ask_sources_mut().refresh(turn_id, sources);
+                    }
+                }
+            }
+            AskData::ReaderNote { .. } => {
+                self.panels.ask_sources_mut().handle_data(data);
+            }
+        }
+    }
+
+    /// Mirror the live Ask panel's selected turn into the Sources drawer,
+    /// consuming the per-input dirty/citation signals. Called after every Ask
+    /// input event (keyboard and mouse) so the drawer tracks the thread.
+    fn sync_ask_sources(&mut self) {
+        let (dirty, sources, citation) = {
+            let Some(panel) = self.panels.ask_mut() else {
+                return;
+            };
+            let dirty = panel.take_selection_dirty();
+            let citation = panel.take_citation_target();
+            let sources = dirty.map(|id| {
+                panel
+                    .thread()
+                    .turns()
+                    .iter()
+                    .find(|t| t.id == id)
+                    .map(|t| t.sources.clone())
+                    .unwrap_or_default()
+            });
+            (dirty, sources, citation)
+        };
+        if let (Some(id), Some(sources)) = (dirty, sources) {
+            self.panels.ask_sources_mut().set_turn(id, sources);
+        }
+        if let Some(idx) = citation {
+            self.panels.ask_sources_mut().focus_source(idx);
+        }
+    }
+
+    /// Point the Sources drawer at the live thread's currently-selected turn,
+    /// regardless of the dirty flag — the switch-into-Ask sync (rule 1) and
+    /// the post-answer refresh both need the current turn's sources shown.
+    fn sync_ask_sources_from_selected(&mut self) {
+        let selected = self.panels.ask_mut().and_then(|panel| {
+            panel
+                .thread()
+                .selected()
+                .map(|t| (t.id, t.sources.clone()))
+        });
+        if let Some((id, sources)) = selected {
+            self.panels.ask_sources_mut().set_turn(id, sources);
+        }
     }
 
     /// Per-view side effects to run when `view` becomes visible in the
@@ -1435,42 +1639,26 @@ impl EditorScreen {
         self.present_overlay(Box::new(modal));
     }
 
-    /// Open the RAG answer overlay (ask a question). No-op while an overlay is
-    /// open; the overlay itself reports "no server configured" when unusable.
+    /// Switch to the Ask workspace and drop the cursor on the composer (the
+    /// Ask shortcut / leader `a a`). The rail hides the ASK entry when the
+    /// server can't answer questions, so this shortcut is the only remaining
+    /// way in — hence the single `llm_available` gate (adr/0030).
     fn open_rag_answer(&mut self, tx: &AppTx) {
         if self.overlays.is_open() {
             return;
         }
-        if !crate::rag::rag_configured(&self.settings) {
-            tx.send(AppEvent::FlashMessage(
-                "Set kimun_server_url in config to use Ask (RAG)".into(),
-            ))
-            .ok();
-            return;
-        }
-        // A token problem gets its own message — "needs an LLM" would send
-        // the user chasing the wrong config knob.
-        if self.rag_status == crate::rag::RagStatus::Unauthorized {
-            tx.send(AppEvent::FlashMessage(
-                "RAG server requires a valid token; set kimun_server_token in config".into(),
-            ))
-            .ok();
-            return;
-        }
-        // Ask needs an LLM: hide it when offline or connected to a semantic-only
-        // server (search works, question-answering does not — adr/0022).
         if !self.rag_status.llm_available() {
             tx.send(AppEvent::FlashMessage(
-                "Ask (RAG) needs an LLM-configured server; this one is semantic-search only".into(),
+                "Ask needs an LLM-configured server; this one is semantic-search only".into(),
             ))
             .ok();
             return;
         }
-        let overlay = crate::components::rag_answer::RagAnswerOverlay::new(
-            self.vault.clone(),
-            self.settings.clone(),
-        );
-        self.present_overlay(Box::new(overlay));
+        self.open_drawer_view(DrawerView::Ask, tx);
+        if let Some(panel) = self.panels.ask_mut() {
+            panel.focus_composer();
+        }
+        self.panels.focus(PanelKind::Editor);
     }
 
     /// Open the live theme picker (leader `v c` and the CFG rail item). The
@@ -1825,6 +2013,46 @@ impl EditorScreen {
             LeaderAction::NoteYankPath => {
                 let path = self.path.to_string();
                 self.copy_to_clipboard(path, "note path copied", tx);
+            }
+
+            // +ask — the Ask workspace's conversation actions.
+            LeaderAction::AskFocus => self.open_rag_answer(tx),
+            LeaderAction::AskNew => {
+                self.ensure_ask_workspace(tx);
+                if let Some(panel) = self.panels.ask_mut() {
+                    panel.thread_mut().clear();
+                    panel.focus_composer();
+                }
+                self.panels.ask_sources_mut().reset();
+            }
+            LeaderAction::AskCopy => {
+                self.ensure_ask_workspace(tx);
+                if let Some(panel) = self.panels.ask_mut() {
+                    panel.copy_selected(tx);
+                }
+            }
+            LeaderAction::AskSave => {
+                self.ensure_ask_workspace(tx);
+                if let Some(panel) = self.panels.ask_mut() {
+                    panel.save_selected(tx);
+                }
+            }
+            LeaderAction::AskRegenerate => {
+                self.ensure_ask_workspace(tx);
+                let client = self.ask_client.clone();
+                if let Some(panel) = self.panels.ask_mut() {
+                    panel.regenerate_selected(tx, client.as_ref());
+                }
+                self.sync_ask_sources();
+            }
+            LeaderAction::AskSource => {
+                self.ensure_ask_workspace(tx);
+                // The top source of the selected turn — sync the drawer to the
+                // current turn first, then open its first source in the reader.
+                self.sync_ask_sources_from_selected();
+                let vault = self.vault.clone();
+                self.panels.ask_sources_mut().open_reader(0, tx, &vault);
+                self.panels.focus(PanelKind::Drawer);
             }
 
             LeaderAction::Palette => self.open_command_palette(tx),
@@ -2865,6 +3093,141 @@ mod tests {
             screen.panels.sidebar().note_row_title_for_test("alpha.md"),
             Some("New First Line".to_string()),
             "the saved note's row title updated in place"
+        );
+    }
+
+    /// Switching the drawer view Ask → Files → Ask preserves the conversation:
+    /// the thread is stashed on the way out and restored on the way back in,
+    /// turns intact (rules 1 & 2, CONTEXT.md: Thread lifetime).
+    #[tokio::test]
+    async fn ask_drawer_switch_preserves_thread() {
+        let (mut screen, _, _, _dir) = test_screen().await;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        // Enter the Ask workspace and seed a couple of turns.
+        screen.open_drawer_view(DrawerView::Ask, &tx);
+        assert!(screen.panels.is_showing_ask());
+        {
+            let panel = screen.panels.ask_mut().expect("Ask is shown");
+            panel.thread_mut().ask("first?".into());
+            panel.thread_mut().ask("second?".into());
+        }
+        assert_eq!(screen.panels.ask_mut().unwrap().thread().turns().len(), 2);
+
+        // Switch away: the thread must leave the editor area and park in the
+        // stash (not be dropped).
+        screen.open_drawer_view(DrawerView::Files, &tx);
+        assert!(!screen.panels.is_showing_ask());
+        assert!(screen.ask_stash.is_some());
+
+        // Switch back: the same conversation returns.
+        screen.open_drawer_view(DrawerView::Ask, &tx);
+        assert!(screen.panels.is_showing_ask());
+        assert_eq!(
+            screen.panels.ask_mut().unwrap().thread().turns().len(),
+            2,
+            "the conversation survives the round trip"
+        );
+    }
+
+    /// Opening a note from the browser while the Ask workspace is shown must
+    /// swap the editor area to the note (carry-forward: `open_path` calls
+    /// `clear_attachment`, which no-ops on Ask, so the stash is the only thing
+    /// that gets the note on screen) — and the thread survives to be re-shown.
+    #[tokio::test]
+    async fn opening_a_note_over_ask_shows_the_note_and_keeps_the_thread() {
+        let vault = crate::test_support::temp_vault("editor-ask-open").await;
+        vault.validate_and_init().await.unwrap();
+        vault
+            .create_note(&VaultPath::note_path_from("alpha"), "# Alpha\n\nbody")
+            .await
+            .unwrap();
+        let settings = std::sync::Arc::new(std::sync::RwLock::new(
+            crate::settings::AppSettings::default(),
+        ));
+        let mut screen = EditorScreen::new(vault, VaultPath::root(), settings);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        screen.open_drawer_view(DrawerView::Ask, &tx);
+        screen
+            .panels
+            .ask_mut()
+            .unwrap()
+            .thread_mut()
+            .ask("a question?".into());
+        assert!(screen.panels.is_showing_ask());
+
+        // Open a note: the editor area must show it, not the thread.
+        screen
+            .open_path(VaultPath::note_path_from("alpha"), None, &tx)
+            .await;
+        assert!(!screen.panels.is_showing_ask(), "the note replaced Ask");
+        assert!(screen.panels.editor().is_some(), "the note editor is shown");
+
+        // Re-enter Ask: the stashed conversation comes back intact.
+        screen.open_drawer_view(DrawerView::Ask, &tx);
+        assert_eq!(
+            screen.panels.ask_mut().unwrap().thread().turns().len(),
+            1,
+            "the thread survived opening the note"
+        );
+    }
+
+    /// Capability⇔client lockstep at the screen seam: with no LLM-capable
+    /// server there is no client, so both the live panel and the stash must be
+    /// capability-off (never a forever-`Thinking` turn; carry-forward #2).
+    #[tokio::test]
+    async fn refresh_ask_capability_disables_without_a_client() {
+        let (mut screen, _, _, _dir) = test_screen().await;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        // A live panel (fresh panels default capability on) …
+        screen.open_drawer_view(DrawerView::Ask, &tx);
+        // … and a stashed one, both starting capability-on.
+        let mut stashed = ThreadPanel::new();
+        stashed.set_capability(true);
+        screen.ask_stash = Some(stashed);
+
+        // rag_status is Disabled here → no client → capability must drop on both.
+        screen.refresh_ask_capability().await;
+        assert!(
+            !screen.panels.ask_mut().unwrap().capability(),
+            "live panel loses capability without a client"
+        );
+        assert!(
+            !screen.ask_stash.as_ref().unwrap().capability(),
+            "stashed panel loses capability without a client"
+        );
+    }
+
+    /// An answer that lands while the user is browsing FILES (Ask stashed) is
+    /// delivered to the stash, not dropped (rule 3).
+    #[tokio::test]
+    async fn answer_lands_on_the_stash_while_browsing_files() {
+        let (mut screen, _, _, _dir) = test_screen().await;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        screen.open_drawer_view(DrawerView::Ask, &tx);
+        let turn_id = screen
+            .panels
+            .ask_mut()
+            .unwrap()
+            .thread_mut()
+            .ask("q?".into());
+        // Leave Ask: the in-flight turn is now in the stash.
+        screen.open_drawer_view(DrawerView::Files, &tx);
+        assert!(screen.ask_stash.is_some());
+
+        screen.handle_ask_data(crate::components::events::AskData::AnswerReady {
+            turn_id,
+            result: Ok(("the answer".into(), vec![])),
+        });
+
+        let stash = screen.ask_stash.as_ref().unwrap();
+        let turn = stash.thread().turns().iter().find(|t| t.id == turn_id).unwrap();
+        assert!(
+            matches!(turn.status, crate::ask::TurnStatus::Done),
+            "the answer completed the stashed turn"
         );
     }
 }

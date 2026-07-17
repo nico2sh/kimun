@@ -116,6 +116,33 @@ impl ThreadPanel {
         self.capability = on;
     }
 
+    /// Whether the Ask capability is currently on — the wiring seam reads this
+    /// to assert capability⇔client lockstep (Task 11).
+    pub fn capability(&self) -> bool {
+        self.capability
+    }
+
+    /// Move keyboard focus to the question composer (leader `a a` / the Ask
+    /// shortcut land here).
+    pub fn focus_composer(&mut self) {
+        self.focus = ThreadFocus::Composer;
+    }
+
+    /// Copy the selected turn's answer to the clipboard (leader `a y`).
+    pub fn copy_selected(&self, tx: &AppTx) {
+        self.copy_selected_answer(tx);
+    }
+
+    /// Save the selected turn as a note via the create dialog (leader `a e`).
+    pub fn save_selected(&self, tx: &AppTx) {
+        self.save_selected_as_note(tx);
+    }
+
+    /// Regenerate the selected turn's answer (leader `a r`).
+    pub fn regenerate_selected(&mut self, tx: &AppTx, client: Option<&Arc<RagClient>>) {
+        self.regenerate(tx, client);
+    }
+
     pub fn thread(&self) -> &Thread {
         &self.thread
     }
