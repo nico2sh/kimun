@@ -77,8 +77,9 @@ pub struct ThreadPanel {
     /// Topmost visible row of the flattened turn-lines list, auto-adjusted on
     /// selection change to keep the selected turn in view.
     scroll: u16,
-    /// Source row index a citation click asked the Sources drawer to focus —
-    /// cleared on read via `take_citation_target`.
+    /// Citation `[n]` ordinal a click asked the Sources drawer to focus (NOT a
+    /// vec position — the drawer resolves ordinal → row). Cleared on read via
+    /// `take_citation_target`.
     citation_target: Option<usize>,
     /// The turn list's rect from the last render — mouse hit-testing base.
     turns_rect: Rect,
@@ -268,9 +269,10 @@ impl ThreadPanel {
         let Some(citation_idx) = citation_at_column(&turn.answer, range, col) else {
             return;
         };
-        let source_idx = citation_idx.saturating_sub(1);
-        if source_idx < turn.sources.len() {
-            self.citation_target = Some(source_idx);
+        // Resolve `[n]` through the pairing seam (by ordinal, not vec position);
+        // store the ordinal itself — the Sources panel translates it to a row.
+        if turn.source_for_citation(citation_idx).is_some() {
+            self.citation_target = Some(citation_idx);
         }
     }
 
@@ -367,10 +369,15 @@ impl ThreadPanel {
                 .ask(&question, &history, None)
                 .await
                 .map(|a| {
-                    (
-                        a.answer,
-                        a.sources.into_iter().map(AskSource::from).collect(),
-                    )
+                    // Normalize the wire ordinal ONCE here (position → 1-based
+                    // fallback for an older server); downstream sees real ordinals.
+                    let sources = a
+                        .sources
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, c)| AskSource::from_chunk(i, c))
+                        .collect();
+                    (a.answer, sources)
                 })
                 .map_err(|e| e.to_string());
             let _ = tx.send(AppEvent::Ask(AskData::AnswerReady { turn_id, result }));
@@ -940,6 +947,7 @@ mod tests {
                 heading: "h".into(),
                 score: 1.0,
                 text: String::new(),
+                ordinal: 1,
             }],
         );
         let second = p.thread_mut().ask("b".into());
@@ -963,7 +971,8 @@ mod tests {
         };
         p.click_turns(&mouse);
         assert_eq!(p.thread().selected().unwrap().id, first);
-        assert_eq!(p.take_citation_target(), Some(0));
+        // Stores the citation ordinal (`[1]`), resolved through the pairing seam.
+        assert_eq!(p.take_citation_target(), Some(1));
     }
 
     mod rendering {

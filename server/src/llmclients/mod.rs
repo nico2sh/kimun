@@ -23,7 +23,7 @@ pub trait LLMClient: Send + Sync {
         &self,
         question: &str,
         history: &[(String, String)],
-        context: &[(f64, FlattenedChunk)],
+        context: &[(usize, (f64, FlattenedChunk))],
     ) -> anyhow::Result<String>;
 }
 
@@ -85,7 +85,7 @@ impl LLMClient for ChatClient {
         &self,
         question: &str,
         history: &[(String, String)],
-        context: &[(f64, FlattenedChunk)],
+        context: &[(usize, (f64, FlattenedChunk))],
     ) -> anyhow::Result<String> {
         let messages = chat_messages(history, build_prompt(question, context));
 
@@ -226,9 +226,12 @@ fn gemini_contents(messages: Vec<ChatMessage>) -> Vec<GeminiContent> {
 /// sources order, citations are mandatory for note-derived claims, and the
 /// answer may supplement with common knowledge — uncited text IS the signal
 /// that a claim is general knowledge, so the two never blur.
-fn build_prompt(question: &str, context: &[(f64, FlattenedChunk)]) -> String {
+fn build_prompt(question: &str, context: &[(usize, (f64, FlattenedChunk))]) -> String {
     let mut context_string = String::new();
-    for (i, (_, chunk)) in context.iter().enumerate() {
+    // The `[n]` frame is the ordinal ASSIGNED to the pair upstream, never this
+    // loop's position — so the number the model cites is exactly the ordinal the
+    // wire source carries, even if the context were reordered before us.
+    for (ordinal, (_, chunk)) in context.iter() {
         let mut title = chunk.title.clone();
         let mut date_line = String::new();
         if let Some(date) = chunk.get_date_string() {
@@ -243,9 +246,9 @@ fn build_prompt(question: &str, context: &[(f64, FlattenedChunk)]) -> String {
         // Omit the ` — "…"` title clause entirely for a blank title, rather
         // than emitting an empty `— ""` that adds noise and no signal.
         let header = if trimmed_title.is_empty() {
-            format!("[{}] {}", i + 1, chunk.doc_path)
+            format!("[{}] {}", ordinal, chunk.doc_path)
         } else {
-            format!("[{}] {} — \"{trimmed_title}\"", i + 1, chunk.doc_path)
+            format!("[{}] {} — \"{trimmed_title}\"", ordinal, chunk.doc_path)
         };
         context_string.push_str(&format!("{header}\n{date_line}{}\n\n", chunk.text));
     }
@@ -386,6 +389,15 @@ mod tests {
         )
     }
 
+    /// 1-based numbering, exactly as [`RagPipeline::answer`] assigns it.
+    fn numbered(chunks: Vec<(f64, FlattenedChunk)>) -> Vec<(usize, (f64, FlattenedChunk))> {
+        chunks
+            .into_iter()
+            .enumerate()
+            .map(|(i, c)| (i + 1, c))
+            .collect()
+    }
+
     #[test]
     fn history_folds_into_alternating_messages_before_the_prompt() {
         let history = vec![
@@ -431,10 +443,10 @@ mod tests {
 
     #[test]
     fn prompt_numbers_chunks_and_mandates_citations() {
-        let context = vec![
+        let context = numbered(vec![
             chunk("/intro.md", "intro", "alpha text"),
             chunk("/setup.md", "setup", "beta text"),
-        ];
+        ]);
         let p = build_prompt("how do I start?", &context);
         // numbered frames, prompt order = sources order
         let i1 = p.find("[1]").expect("first chunk numbered");
@@ -448,8 +460,27 @@ mod tests {
     }
 
     #[test]
+    fn prompt_frames_use_the_assigned_ordinal_not_loop_position() {
+        // The pairing contract: the `[n]` frame is the ordinal on the pair, not
+        // where the chunk sits in the slice. A deliberately shuffled numbering
+        // (3, 1, 2) must surface verbatim in the prompt — proving the builder
+        // never re-enumerates.
+        let context = vec![
+            (3usize, chunk("/c.md", "c", "gamma text")),
+            (1usize, chunk("/a.md", "a", "alpha text")),
+            (2usize, chunk("/b.md", "b", "beta text")),
+        ];
+        let p = build_prompt("q?", &context);
+        assert!(p.contains("[3] /c.md"), "gamma keeps ordinal 3: {p}");
+        assert!(p.contains("[1] /a.md"), "alpha keeps ordinal 1: {p}");
+        assert!(p.contains("[2] /b.md"), "beta keeps ordinal 2: {p}");
+        // Prompt order follows the slice, but each frame carries its own ordinal.
+        assert!(p.find("gamma text").unwrap() < p.find("alpha text").unwrap());
+    }
+
+    #[test]
     fn empty_title_chunk_omits_the_title_clause() {
-        let context = vec![chunk("some/path", "   ", "chunk body")];
+        let context = numbered(vec![chunk("some/path", "   ", "chunk body")]);
         let p = build_prompt("q?", &context);
         assert!(
             p.contains("[1] some/path\n"),
@@ -507,7 +538,7 @@ mod tests {
         .await;
 
         let answer = client(Wire::OpenAiCompat, base)
-            .ask("q?", &[], &[chunk("/a.md", "A", "body")])
+            .ask("q?", &[], &numbered(vec![chunk("/a.md", "A", "body")]))
             .await
             .unwrap();
         assert_eq!(answer, "the answer");

@@ -1458,8 +1458,8 @@ impl EditorScreen {
         if selected.is_some() && selected != self.last_synced_turn {
             self.sync_ask_sources_from_selected();
         }
-        if let Some(idx) = citation {
-            self.panels.ask_sources_mut().focus_source(idx);
+        if let Some(ordinal) = citation {
+            self.panels.ask_sources_mut().focus_source(ordinal);
         }
     }
 

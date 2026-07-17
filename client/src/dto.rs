@@ -62,6 +62,13 @@ pub struct ChunkResult {
     pub content: String,
     pub hash: String,
     pub similarity_score: f64,
+    /// The 1-based ordinal the server assigned this chunk: the `[n]` citation
+    /// number for an answer's source, or the rank position for a search hit.
+    /// The pairing contract — a consumer keys citations off this, never off vec
+    /// position. `0` means the field was absent (an older server that predates
+    /// it); the TUI normalizes 0 to the 1-based position at conversion.
+    #[serde(default)]
+    pub ordinal: usize,
 }
 
 /// `GET /health` capability probe.
@@ -177,5 +184,21 @@ mod tests {
             r#"{"status":"ok","reranker":true,"llm_provider":"gemini","auth_required":false}"#;
         let health: Health = serde_json::from_str(json).unwrap();
         assert!(health.embedder.is_none());
+    }
+
+    #[test]
+    fn chunk_result_parses_the_ordinal_when_present() {
+        let json = r#"{"path":"a.md","title":"t","date":null,"content":"c","hash":"h","similarity_score":0.9,"ordinal":3}"#;
+        let c: ChunkResult = serde_json::from_str(json).unwrap();
+        assert_eq!(c.ordinal, 3);
+    }
+
+    #[test]
+    fn chunk_result_defaults_ordinal_to_zero_when_absent() {
+        // An older server omits `ordinal`; parsing must still succeed and leave
+        // 0 (the "absent" sentinel the TUI turns into a position fallback).
+        let json = r#"{"path":"a.md","title":"t","date":null,"content":"c","hash":"h","similarity_score":0.9}"#;
+        let c: ChunkResult = serde_json::from_str(json).unwrap();
+        assert_eq!(c.ordinal, 0);
     }
 }

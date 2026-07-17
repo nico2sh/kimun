@@ -5,8 +5,8 @@
 pub struct CitationSpan {
     /// Byte range of the whole marker, e.g. `[12]`, brackets included.
     pub range: std::ops::Range<usize>,
-    /// The marker's 1-based citation number (the `n` in `[n]`), used to
-    /// index into a turn's sources (`sources[index - 1]`).
+    /// The marker's 1-based citation number (the `n` in `[n]`). Resolved to a
+    /// source by ordinal via `Turn::source_for_citation`, never by vec position.
     pub index: usize,
 }
 
@@ -55,11 +55,14 @@ pub fn strip(text: &str) -> String {
     rewrite(text, |_| String::new())
 }
 
-/// Convert in-range `[n]` markers to `[[source_name]]`; keep out-of-range markers untouched.
+/// Convert `[n]` markers to `[[source_name]]` using a names vec addressed by
+/// citation number (`source_names[n - 1]`). A marker whose slot is out of range
+/// OR an empty-string sentinel (a citation number with no backing source — a
+/// gap) is left untouched, so a stray `[n]` never becomes a broken wikilink.
 pub fn link_sources(text: &str, source_names: &[String]) -> String {
     rewrite(text, |span| match source_names.get(span.index - 1) {
-        Some(name) => format!("[[{name}]]"),
-        None => text[span.range.clone()].to_string(),
+        Some(name) if !name.is_empty() => format!("[[{name}]]"),
+        _ => text[span.range.clone()].to_string(),
     })
 }
 

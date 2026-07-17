@@ -128,12 +128,14 @@ impl SourcesPanel {
         self.face = Face::List;
     }
 
-    /// Point the list cursor at `source_index` on the list face — a citation
-    /// click in the thread asks the drawer to reveal that exact source. Out of
-    /// range indices are ignored.
-    pub fn focus_source(&mut self, source_index: usize) {
-        if source_index < self.sources.len() {
-            self.cursor = source_index;
+    /// Point the list cursor at the source with citation `ordinal` on the list
+    /// face — a citation click in the thread asks the drawer to reveal that
+    /// exact source. This is the ordinal→row boundary: the panel lists sources
+    /// in vec order, so it resolves the ordinal to a position by matching, never
+    /// by assuming `ordinal - 1`. An ordinal with no matching source is ignored.
+    pub fn focus_source(&mut self, ordinal: usize) {
+        if let Some(pos) = self.sources.iter().position(|s| s.ordinal == ordinal) {
+            self.cursor = pos;
             self.face = Face::List;
         }
     }
@@ -501,6 +503,7 @@ mod tests {
             heading: heading.to_string(),
             score,
             text: text.to_string(),
+            ordinal: 0,
         }
     }
 

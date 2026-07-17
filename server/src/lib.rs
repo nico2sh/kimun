@@ -72,10 +72,14 @@ impl Display for CollectionKey {
     }
 }
 
-/// The answer to a question, with the chunks the LLM saw as context.
+/// The answer to a question, with the chunks the LLM saw as context. Each
+/// source carries the 1-based **ordinal** the prompt numbered it with (the `[n]`
+/// citation marker) — assigned once, at the single numbering site in
+/// [`RagPipeline::answer`], so the citation↔source pairing is an explicit
+/// contract rather than a shared vec-order convention.
 pub struct Answer {
     pub text: String,
-    pub sources: Vec<ScoredChunk>,
+    pub sources: Vec<(usize, ScoredChunk)>,
 }
 
 /// Preview of where the **context cut** slices an answer's LLM context on a
@@ -421,10 +425,20 @@ impl KimunRag {
         let mut context = self.rank(question, raw).await;
         let cut = self.cut_len(&context, top_k);
         context.truncate(cut);
-        let text = llm.ask(question, history, &context).await?;
+        // Number the context ONCE, here — this ordinal IS the `[n]` the prompt
+        // uses AND the ordinal carried on every wire source. Both the prompt
+        // builder and the sources conversion read this assigned ordinal, so
+        // neither re-enumerates and a later reorder anywhere downstream cannot
+        // silently misattribute a citation (wave2b: explicit pairing contract).
+        let numbered: Vec<(usize, ScoredChunk)> = context
+            .into_iter()
+            .enumerate()
+            .map(|(i, chunk)| (i + 1, chunk))
+            .collect();
+        let text = llm.ask(question, history, &numbered).await?;
         Ok(Answer {
             text,
-            sources: context,
+            sources: numbered,
         })
     }
 
@@ -1058,7 +1072,7 @@ pub(crate) mod test_support {
             &self,
             _: &str,
             _: &[(String, String)],
-            _: &[ScoredChunk],
+            _: &[(usize, ScoredChunk)],
         ) -> anyhow::Result<String> {
             Ok("answer".into())
         }
@@ -1165,11 +1179,14 @@ mod tests {
         let answer = rag.answer(&key("vault-1"), "q", &[], 2).await.unwrap();
         assert_eq!(answer.text, "answer");
         assert_eq!(answer.sources.len(), 3);
-        assert_eq!(answer.sources[0].1.doc_path, "/a.md");
+        assert_eq!(answer.sources[0].1.1.doc_path, "/a.md");
         assert_eq!(
-            answer.sources[1].1.doc_path, "/a.md",
+            answer.sources[1].1.1.doc_path, "/a.md",
             "chunk-level: no note-dedup"
         );
+        // Ordinals are the 1-based `[n]` the prompt numbered each source with.
+        let ordinals: Vec<usize> = answer.sources.iter().map(|(o, _)| *o).collect();
+        assert_eq!(ordinals, vec![1, 2, 3]);
     }
 
     #[tokio::test]
@@ -1190,7 +1207,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(answer.sources.len(), 1);
-        assert_eq!(answer.sources[0].1.doc_path, "/a.md");
+        assert_eq!(answer.sources[0].1.1.doc_path, "/a.md");
     }
 
     #[test]
@@ -1412,7 +1429,7 @@ mod tests {
             answer
                 .sources
                 .iter()
-                .all(|(s, _)| (0.0..=1.0).contains(s) && *s < 1.0)
+                .all(|(_, (s, _))| (0.0..=1.0).contains(s) && *s < 1.0)
         );
     }
 
@@ -1454,7 +1471,7 @@ mod tests {
         let ragged = rag(store, true).with_reranker(Arc::new(NanReranker));
         let answer = ragged.answer(&key("v"), "q", &[], 3).await.unwrap();
         assert!(!answer.sources.is_empty(), "NaN must not empty the results");
-        assert!(answer.sources.iter().all(|(s, _)| s.is_finite()));
+        assert!(answer.sources.iter().all(|(_, (s, _))| s.is_finite()));
     }
 
     /// A broken impl that skipped validation: one duplicate index per pair.
@@ -1533,7 +1550,7 @@ mod tests {
         let adaptive = rag(store(), true).with_reranker(Arc::new(SpikyReranker));
         let answer = adaptive.answer(&key("v"), "q", &[], 4).await.unwrap();
         assert_eq!(answer.sources.len(), 1, "cut on reranked scores");
-        assert_eq!(answer.sources[0].0, 0.9);
+        assert_eq!(answer.sources[0].1.0, 0.9);
 
         // fixed keeps exactly top_k reranked chunks — the classic behavior.
         let fixed = rag(store(), true)

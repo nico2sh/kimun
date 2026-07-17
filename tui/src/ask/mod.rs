@@ -16,15 +16,25 @@ pub struct AskSource {
     pub heading: String,
     pub score: f64,
     pub text: String,
+    /// The 1-based `[n]` citation number this source answers to — the explicit
+    /// pairing every citation lookup keys on, never vec position. Normalized to
+    /// be non-zero at construction (see [`AskSource::from_chunk`]), so no
+    /// downstream lookup ever sees the wire's `0` "absent" sentinel.
+    pub ordinal: usize,
 }
 
-impl From<ChunkResult> for AskSource {
-    fn from(c: ChunkResult) -> Self {
+impl AskSource {
+    /// Build from a wire chunk at 0-based `position` in its list. The ordinal is
+    /// normalized ONCE, here: a server that sends it wins; a `0` (older server
+    /// that omits the field) falls back to `position + 1`, which reproduces the
+    /// old vec-order convention. Every consumer downstream sees a real ordinal.
+    pub fn from_chunk(position: usize, c: ChunkResult) -> Self {
         Self {
             path: VaultPath::new(&c.path),
             heading: c.title,
             score: c.similarity_score,
             text: c.content,
+            ordinal: if c.ordinal == 0 { position + 1 } else { c.ordinal },
         }
     }
 }
@@ -46,6 +56,17 @@ pub struct Turn {
     pub answer: String,
     pub sources: Vec<AskSource>,
     pub status: TurnStatus,
+}
+
+impl Turn {
+    /// Resolve a `[n]` citation to the source it addresses — matched by the
+    /// source's `ordinal`, NOT its position in `sources`. This is the single
+    /// seam every citation lookup goes through, so the pairing survives any
+    /// reorder of the sources vec. `None` for a citation with no matching
+    /// source (a gap — e.g. the model cited `[2]` but ordinal 2 was dropped).
+    pub fn source_for_citation(&self, n: usize) -> Option<&AskSource> {
+        self.sources.iter().find(|s| s.ordinal == n)
+    }
 }
 
 /// The running ask conversation (CONTEXT.md: **Thread**): an ordered list of
@@ -193,6 +214,78 @@ impl Thread {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kimun_server_client::dto::ChunkResult;
+
+    fn ask_source(path: &str, ordinal: usize) -> AskSource {
+        AskSource {
+            path: VaultPath::new(path),
+            heading: "h".into(),
+            score: 1.0,
+            text: String::new(),
+            ordinal,
+        }
+    }
+
+    fn turn_with_sources(sources: Vec<AskSource>) -> Turn {
+        Turn {
+            id: 0,
+            question: "q".into(),
+            answer: String::new(),
+            sources,
+            status: TurnStatus::Done,
+        }
+    }
+
+    #[test]
+    fn source_for_citation_matches_by_ordinal_not_position() {
+        // Sources deliberately shuffled: vec position 0 holds ordinal 3.
+        let turn = turn_with_sources(vec![
+            ask_source("c.md", 3),
+            ask_source("a.md", 1),
+            ask_source("b.md", 2),
+        ]);
+        // `[1]` resolves to the ordinal-1 source, wherever it sits in the vec.
+        assert_eq!(turn.source_for_citation(1).unwrap().path.to_string(), "a.md");
+        assert_eq!(turn.source_for_citation(2).unwrap().path.to_string(), "b.md");
+        assert_eq!(turn.source_for_citation(3).unwrap().path.to_string(), "c.md");
+    }
+
+    #[test]
+    fn source_for_citation_returns_none_for_a_gap() {
+        // Ordinal 2 was dropped: a `[2]` citation has no source to resolve to.
+        let turn = turn_with_sources(vec![ask_source("a.md", 1), ask_source("c.md", 3)]);
+        assert!(turn.source_for_citation(2).is_none());
+    }
+
+    #[test]
+    fn from_chunk_falls_back_to_position_when_ordinal_absent() {
+        let wire = ChunkResult {
+            path: "a.md".into(),
+            title: "t".into(),
+            date: None,
+            content: String::new(),
+            hash: String::new(),
+            similarity_score: 0.9,
+            ordinal: 0, // older server: field absent → 0
+        };
+        // 0-based position 4 → 1-based ordinal 5.
+        assert_eq!(AskSource::from_chunk(4, wire).ordinal, 5);
+    }
+
+    #[test]
+    fn from_chunk_honors_a_server_assigned_ordinal() {
+        let wire = ChunkResult {
+            path: "a.md".into(),
+            title: "t".into(),
+            date: None,
+            content: String::new(),
+            hash: String::new(),
+            similarity_score: 0.9,
+            ordinal: 7,
+        };
+        // Server ordinal wins over position.
+        assert_eq!(AskSource::from_chunk(0, wire).ordinal, 7);
+    }
 
     fn done(thread: &mut Thread, q: &str, a: &str) {
         let id = thread.ask(q.to_string());
@@ -301,6 +394,7 @@ mod tests {
             heading: "h".into(),
             score: 0.9,
             text: "body".into(),
+            ordinal: 1,
         };
         t.complete(id, "a".into(), vec![src]);
         assert_eq!(t.regenerate(id).as_deref(), Some("q"));
