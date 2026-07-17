@@ -265,14 +265,6 @@ pub enum OverlayData {
     /// An overlay-initiated operation failed; carries a human-readable
     /// error message.
     Error(String),
-    /// A RAG answer job finished (or failed) — delivered to the answer
-    /// overlay. `request_id` correlates the result to the ask that produced
-    /// it, so a late answer from a closed/superseded ask can't clobber the
-    /// current overlay.
-    RagAnswerReady {
-        request_id: u64,
-        result: std::result::Result<crate::rag::RagAnswer, String>,
-    },
 }
 
 /// The saved-search save/select flow. One owner: the editor screen's

@@ -256,9 +256,9 @@ fn default_keybindings() -> KeyBindings {
     kb.batch_add()
         .add(KeyStrike::F3, ActionShortcuts::OpenSavedSearches);
 
-    // RAG answer overlay (F6 — free key; the feature is inert without a server).
+    // Ask workspace (F6 — free key; the feature is inert without a server).
     kb.batch_add()
-        .add(KeyStrike::F6, ActionShortcuts::OpenRagAnswer);
+        .add(KeyStrike::F6, ActionShortcuts::OpenAsk);
 
     // Workspace switcher — F5 (moved off F4, which is now Settings).
     kb.batch_add()

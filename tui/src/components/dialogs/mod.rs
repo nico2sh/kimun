@@ -253,7 +253,6 @@ impl Overlay for ActiveDialog {
                 self.set_error(text.clone());
                 OverlayMsg::Consumed
             }
-            _ => OverlayMsg::NotConsumed,
         }
     }
 

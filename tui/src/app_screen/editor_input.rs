@@ -124,7 +124,6 @@ pub enum OverlayOpen {
     SearchBrowser,
     FileFinder,
     SavedSearches,
-    RagAnswer,
     CommandPalette,
 }
 
@@ -168,6 +167,9 @@ pub enum EditorOp {
     ApplyText(TextAction),
     OpenHelp,
     OpenQueryHelp,
+    /// Switch to the Ask workspace and focus its composer (F6 and leader
+    /// `a a`).
+    OpenAsk,
 }
 
 /// Resolve one raw input event into its [`Classification`] under the editor
@@ -334,10 +336,7 @@ pub(crate) fn classify_tail(
                 kind: OverlayKind::SavedSearches,
                 open: OverlayOpen::SavedSearches,
             }),
-            Some(ActionShortcuts::OpenRagAnswer) => Some(EditorIntent::ToggleOverlay {
-                kind: OverlayKind::RagAnswer,
-                open: OverlayOpen::RagAnswer,
-            }),
+            Some(ActionShortcuts::OpenAsk) => Some(EditorIntent::Op(EditorOp::OpenAsk)),
             Some(ActionShortcuts::OpenSortDialog) => {
                 // Sort applies only when a list is focused (the drawer's
                 // Find / Files views). When the editor is focused, do NOT
