@@ -25,6 +25,7 @@ use crate::ask::{AskSource, locate};
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, AskData, InputEvent};
 use crate::components::panel::panel_block;
+use crate::components::preview_highlight::wrap_line;
 use crate::settings::themes::Theme;
 
 /// The source reader's load state for the currently opened source.
@@ -63,6 +64,15 @@ pub struct SourcesPanel {
     face: Face,
     /// Reader viewport height (rows) from the last render — clamps scroll.
     reader_viewport_height: usize,
+    /// Total wrapped rows the reader produced at the last render's width —
+    /// clamps scroll in the same wrapped-row units the scroll offset uses
+    /// (recomputed every render, so a width change re-clamps automatically).
+    reader_total_rows: usize,
+    /// Set when the reader face is (re)opened: the first render that has the
+    /// note loaded anchors `scroll` to the first highlighted wrapped row, then
+    /// clears this. Deferred to render because the wrapped-row index of the
+    /// highlight depends on the render width, unknown when the load lands.
+    reader_autoscroll_pending: bool,
 }
 
 impl SourcesPanel {
@@ -73,14 +83,17 @@ impl SourcesPanel {
             cursor: 0,
             face: Face::List,
             reader_viewport_height: 0,
+            reader_total_rows: 0,
+            reader_autoscroll_pending: false,
         }
     }
 
     /// Repopulates the list for `turn_id` and resets to the list face. A
-    /// repeated call with the same `turn_id` is a no-op — it keeps the
-    /// cursor (and the reader face, if open) exactly as-is, since a turn's
-    /// sources never change once set (`ThreadPanel::regenerate` reuses
-    /// them).
+    /// repeated call with the same `turn_id` is a no-op — it keeps the cursor
+    /// (and the reader face, if open) exactly as-is when a selection sync
+    /// re-points the drawer at the already-shown turn. Regeneration replaces a
+    /// turn's sources with the fresh ones on completion, but that goes through
+    /// [`refresh`](Self::refresh) (which never short-circuits), not here.
     pub fn set_turn(&mut self, turn_id: u64, sources: Vec<AskSource>) {
         if self.turn_id == Some(turn_id) {
             return;
@@ -134,6 +147,9 @@ impl SourcesPanel {
             content: ReaderContent::Loading,
             scroll: 0,
         };
+        // Anchor to the highlighted section on the first loaded render (see the
+        // field doc — the wrapped-row target needs the render width).
+        self.reader_autoscroll_pending = true;
         let path = source.path.clone();
         let vault = vault.clone();
         let tx = tx.clone();
@@ -154,7 +170,7 @@ impl SourcesPanel {
         let Face::Reader {
             source_index,
             content,
-            scroll,
+            ..
         } = &mut self.face
         else {
             return;
@@ -168,10 +184,8 @@ impl SourcesPanel {
         match text {
             Some(loaded) => {
                 let highlight = locate::section_range(&loaded, &source.heading, &source.text);
-                *scroll = highlight
-                    .as_ref()
-                    .map(|r| loaded[..r.start].matches('\n').count())
-                    .unwrap_or(0);
+                // The scroll offset is set at render time (in wrapped-row units,
+                // which need the render width) via `reader_autoscroll_pending`.
                 *content = ReaderContent::Loaded {
                     text: loaded,
                     highlight,
@@ -281,13 +295,16 @@ impl SourcesPanel {
 
     fn reader_scroll_by(&mut self, delta: i64) {
         let viewport = self.reader_viewport_height;
+        // Clamp against the wrapped row count from the last render, not the raw
+        // source-line count — scroll is in wrapped-row units now that long lines
+        // wrap in the reader.
+        let total = self.reader_total_rows;
         let Face::Reader { content, scroll, .. } = &mut self.face else {
             return;
         };
-        let ReaderContent::Loaded { text, .. } = content else {
+        let ReaderContent::Loaded { .. } = content else {
             return;
         };
-        let total = text.lines().count();
         let max = total.saturating_sub(viewport.max(1)) as i64;
         let next = (*scroll as i64 + delta).clamp(0, max.max(0));
         *scroll = next as usize;
@@ -370,7 +387,11 @@ impl SourcesPanel {
         self.reader_viewport_height = inner.height as usize;
 
         let dim = Style::default().fg(theme.gray.to_ratatui());
-        let Face::Reader { content, scroll, .. } = &self.face else {
+        let autoscroll_pending = self.reader_autoscroll_pending;
+        let viewport = inner.height.max(1) as usize;
+        let mut total_rows = 0usize;
+        let mut loaded_rendered = false;
+        let Face::Reader { content, scroll, .. } = &mut self.face else {
             return;
         };
         match content {
@@ -382,9 +403,27 @@ impl SourcesPanel {
                 f.render_widget(Paragraph::new("failed to load note").style(style), inner);
             }
             ReaderContent::Loaded { text, highlight } => {
-                let lines = reader_lines(text, highlight.as_ref(), theme);
+                let (lines, first_highlight) =
+                    reader_lines(text, highlight.as_ref(), inner.width, theme);
+                total_rows = lines.len();
+                loaded_rendered = true;
+                // First loaded render after (re)opening: anchor to the first
+                // highlighted wrapped row.
+                if autoscroll_pending {
+                    *scroll = first_highlight.unwrap_or(0);
+                }
+                // Re-clamp for this width's wrapped total (a width change shrinks
+                // or grows the row count under a persisted offset).
+                let max = total_rows.saturating_sub(viewport);
+                if *scroll > max {
+                    *scroll = max;
+                }
                 f.render_widget(Paragraph::new(lines).scroll((*scroll as u16, 0)), inner);
             }
+        }
+        self.reader_total_rows = total_rows;
+        if loaded_rendered {
+            self.reader_autoscroll_pending = false;
         }
     }
 }
@@ -405,33 +444,50 @@ fn score_bar(score: f64) -> String {
     format!("{}{}", "█".repeat(filled), "░".repeat(WIDTH - filled))
 }
 
-/// Builds the reader face's content lines: each line gets a `▌` accent
-/// prefix when it overlaps `highlight`, a plain two-space indent otherwise.
-fn reader_lines(text: &str, highlight: Option<&Range<usize>>, theme: &Theme) -> Vec<Line<'static>> {
+/// Builds the reader face's content rows, wrapping each source line to the
+/// drawer width so long prose doesn't overflow. Every wrapped segment of a
+/// source line carries the same 2-column prefix: a `▌ ` accent bar when the
+/// source line overlaps `highlight`, a plain two-space indent otherwise.
+/// Returns the rows plus the index of the first highlighted wrapped row (the
+/// auto-scroll anchor), if any. `width` is the drawer's inner width in columns.
+fn reader_lines(
+    text: &str,
+    highlight: Option<&Range<usize>>,
+    width: u16,
+    theme: &Theme,
+) -> (Vec<Line<'static>>, Option<usize>) {
     let normal = Style::default().fg(theme.fg.to_ratatui());
     let accent = Style::default().fg(theme.accent.to_ratatui());
+    // Reserve the 2 prefix columns; `wrap_line` measures in characters.
+    let wrap_width = (width as usize).saturating_sub(2);
     let mut lines = Vec::new();
+    let mut first_highlight = None;
     let mut offset = 0usize;
     for raw_line in text.split_inclusive('\n') {
         let stripped = raw_line.strip_suffix('\n').unwrap_or(raw_line);
         let line_range = offset..offset + stripped.len();
         let is_highlighted =
             highlight.is_some_and(|h| line_range.start < h.end && h.start < line_range.end);
-        let prefix = if is_highlighted {
-            Span::styled("▌ ", accent)
+        let (prefix, prefix_style) = if is_highlighted {
+            ("▌ ", accent)
         } else {
-            Span::styled("  ", normal)
+            ("  ", normal)
         };
-        lines.push(Line::from(vec![
-            prefix,
-            Span::styled(stripped.to_string(), normal),
-        ]));
+        for segment in wrap_line(stripped, wrap_width) {
+            if is_highlighted && first_highlight.is_none() {
+                first_highlight = Some(lines.len());
+            }
+            lines.push(Line::from(vec![
+                Span::styled(prefix, prefix_style),
+                Span::styled(segment, normal),
+            ]));
+        }
         offset += raw_line.len();
     }
     if lines.is_empty() {
         lines.push(Line::default());
     }
-    lines
+    (lines, first_highlight)
 }
 
 #[cfg(test)]
@@ -550,14 +606,15 @@ mod tests {
             path: VaultPath::new("a.md"),
             text: Some("# a\nalpha body\n# b\nbeta body\n".to_string()),
         });
-        let Face::Reader { content, scroll, .. } = &p.face else {
+        let Face::Reader { content, .. } = &p.face else {
             panic!("still in reader face");
         };
         match content {
             ReaderContent::Loaded { text, highlight } => {
                 let r = highlight.clone().expect("chunk resolves");
                 assert_eq!(&text[r], "beta body");
-                assert_eq!(*scroll, 3, "auto-scrolled to the highlighted line");
+                // The scroll offset is now anchored at render time (wrapped-row
+                // units); see `reader_autoscroll_anchors_to_highlighted_row`.
             }
             _ => panic!("expected Loaded"),
         }
@@ -668,6 +725,40 @@ mod tests {
         }
     }
 
+    #[test]
+    fn reader_lines_wraps_a_long_highlighted_line_into_prefixed_rows() {
+        let theme = Theme::default();
+        // One source line (no newline), fully highlighted, longer than the
+        // wrap width (10 cols inner − 2 prefix = 8 chars).
+        let text = "aaaa bbbb cccc dddd eeee";
+        let highlight = Some(0..text.len());
+        let (lines, first) = reader_lines(text, highlight.as_ref(), 10, &theme);
+        assert!(lines.len() > 1, "a long line must wrap into multiple rows");
+        assert_eq!(first, Some(0), "first highlighted wrapped row is the anchor");
+        for line in &lines {
+            assert_eq!(
+                line.spans[0].content, "▌ ",
+                "every wrapped segment keeps the highlight prefix"
+            );
+        }
+    }
+
+    #[test]
+    fn reader_lines_prefixes_normal_and_highlighted_segments_distinctly() {
+        let theme = Theme::default();
+        // Two source lines: the second is highlighted, and long enough to wrap.
+        let text = "short\nlonglonglong wordword tail";
+        let hl_start = text.find("longlonglong").unwrap();
+        let highlight = Some(hl_start..text.len());
+        let (lines, first) = reader_lines(text, highlight.as_ref(), 12, &theme);
+        assert_eq!(lines[0].spans[0].content, "  ", "unhighlighted line indented");
+        let first = first.expect("a highlighted row exists");
+        assert!(lines.len() > first + 1, "highlighted line wrapped");
+        for line in &lines[first..] {
+            assert_eq!(line.spans[0].content, "▌ ");
+        }
+    }
+
     mod rendering {
         use super::*;
         use ratatui::Terminal;
@@ -726,6 +817,65 @@ mod tests {
 
             draw(&mut p, &theme, 3, 3, true); // degenerate tiny rect
             draw(&mut p, &theme, 0, 0, true); // zero rect
+        }
+
+        #[test]
+        fn reader_scroll_clamps_to_wrapped_row_count() {
+            let theme = Theme::default();
+            let mut p = SourcesPanel::new();
+            p.set_turn(1, vec![source("a.md", "h", 0.9, "body")]);
+            // A single very long source line that wraps into far more rows than
+            // the viewport once rendered narrow.
+            let long = "word ".repeat(40);
+            p.face = Face::Reader {
+                source_index: 0,
+                content: ReaderContent::Loaded {
+                    text: long,
+                    highlight: None,
+                },
+                scroll: 0,
+            };
+            draw(&mut p, &theme, 12, 4, true);
+            assert!(
+                p.reader_total_rows > p.reader_viewport_height,
+                "wrapping produced more rows than the viewport"
+            );
+            // Scroll far past the end: it must clamp to wrapped_total − viewport.
+            p.reader_scroll_by(1000);
+            let Face::Reader { scroll, .. } = &p.face else {
+                panic!("still in reader face");
+            };
+            assert_eq!(
+                *scroll,
+                p.reader_total_rows - p.reader_viewport_height,
+                "clamp is in wrapped-row units"
+            );
+        }
+
+        #[test]
+        fn reader_autoscroll_anchors_to_highlighted_row() {
+            let theme = Theme::default();
+            let mut p = SourcesPanel::new();
+            p.set_turn(1, vec![source("a.md", "b", 0.9, "beta body")]);
+            p.face = Face::Reader {
+                source_index: 0,
+                content: ReaderContent::Loaded {
+                    text: "line0\nline1\nbeta body\ntail1\ntail2\ntail3\n".to_string(),
+                    highlight: Some(12..21), // "beta body" is the 3rd source line
+                },
+                scroll: 0,
+            };
+            p.reader_autoscroll_pending = true;
+            // Wide (no wrapping) but short enough that row 2 is scrollable.
+            draw(&mut p, &theme, 40, 5, true);
+            let Face::Reader { scroll, .. } = &p.face else {
+                panic!("still in reader face");
+            };
+            assert_eq!(*scroll, 2, "anchored to the highlighted wrapped row");
+            assert!(
+                !p.reader_autoscroll_pending,
+                "autoscroll intent consumed after the loaded render"
+            );
         }
     }
 }

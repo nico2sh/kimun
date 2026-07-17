@@ -370,9 +370,7 @@ impl EditorScreen {
         // leaves Ask content alone (it only drops attachments), so without the
         // explicit stash here the thread would stay on screen and the note
         // would silently fail to appear (carry-forward: open note over Ask).
-        if self.panels.is_showing_ask() {
-            self.ask_stash = self.panels.take_ask();
-        }
+        self.stash_ask_if_shown();
         self.panels.clear_attachment();
         // Mark this note's row in the sidebar (clears the previous one).
         self.panels
@@ -427,6 +425,17 @@ impl EditorScreen {
         self.autosave.restart(interval, tx.clone());
     }
 
+    /// Stash any live Ask workspace into `ask_stash` before the editor area is
+    /// swapped to another view (a note or an attachment). `clear_attachment`
+    /// and `show_attachment` both leave Ask content alone, so without this
+    /// explicit stash the thread would stay on screen and the new view would
+    /// silently fail to appear (carry-forward: open note/attachment over Ask).
+    fn stash_ask_if_shown(&mut self) {
+        if self.panels.is_showing_ask() {
+            self.ask_stash = self.panels.take_ask();
+        }
+    }
+
     /// Show the attachment at `path` in the editor area's read-only attachment
     /// view (ADR-0017). Saves and unmounts the open note first; while an
     /// attachment is shown there is no open note, so the autosave task is
@@ -445,6 +454,9 @@ impl EditorScreen {
                 };
                 let view = AttachmentView::new(details, icons, kb);
                 self.path = path;
+                // Stash any live Ask workspace so the attachment actually
+                // replaces it (show_attachment leaves Ask content alone).
+                self.stash_ask_if_shown();
                 self.panels.show_attachment(view);
                 self.panels.sidebar_mut().set_open_note(None);
                 tx.send(AppEvent::Redraw).ok();
@@ -3170,6 +3182,51 @@ mod tests {
             screen.panels.ask_mut().unwrap().thread().turns().len(),
             1,
             "the thread survived opening the note"
+        );
+    }
+
+    /// Opening an attachment while the Ask workspace is shown must swap the
+    /// editor area to the attachment view (`show_attachment` leaves Ask content
+    /// alone, so the stash is the only thing that gets it off screen) — and the
+    /// thread survives to be re-shown. Mirrors the open-note-over-Ask case for
+    /// the attachment entry point.
+    #[tokio::test]
+    async fn opening_an_attachment_over_ask_shows_it_and_keeps_the_thread() {
+        let vault = crate::test_support::temp_vault("editor-ask-open-att").await;
+        vault.validate_and_init().await.unwrap();
+        let att_path = VaultPath::new("pic.png");
+        vault
+            .save_attachment(&att_path, b"\x89PNG\r\n\x1a\n")
+            .await
+            .unwrap();
+        let settings = std::sync::Arc::new(std::sync::RwLock::new(
+            crate::settings::AppSettings::default(),
+        ));
+        let mut screen = EditorScreen::new(vault, VaultPath::root(), settings);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        screen.open_drawer_view(DrawerView::Ask, &tx);
+        screen
+            .panels
+            .ask_mut()
+            .unwrap()
+            .thread_mut()
+            .ask("a question?".into());
+        assert!(screen.panels.is_showing_ask());
+
+        // Open an attachment: the editor area must show it, not the thread.
+        screen.open_attachment(att_path, &tx).await;
+        assert!(
+            !screen.panels.is_showing_ask(),
+            "the attachment replaced Ask"
+        );
+
+        // Re-enter Ask: the stashed conversation comes back intact.
+        screen.open_drawer_view(DrawerView::Ask, &tx);
+        assert_eq!(
+            screen.panels.ask_mut().unwrap().thread().turns().len(),
+            1,
+            "the thread survived opening the attachment"
         );
     }
 

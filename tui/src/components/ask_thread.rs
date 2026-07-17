@@ -389,28 +389,18 @@ impl ThreadPanel {
         let Some(client) = client else {
             return;
         };
-        let (tx, client) = (tx.clone(), client.clone());
-        tokio::spawn(async move {
-            let result = client
-                .ask(&question, &history, None)
-                .await
-                .map(|a| {
-                    (
-                        a.answer,
-                        a.sources.into_iter().map(AskSource::from).collect(),
-                    )
-                })
-                .map_err(|e| e.to_string());
-            let _ = tx.send(AppEvent::Ask(AskData::AnswerReady { turn_id, result }));
-        });
+        Self::spawn_ask(tx, client, question, history, turn_id);
     }
 
-    /// Rewind the selected turn back to `Thinking` and re-ask its question,
-    /// reusing its kept sources on completion — the fresh answer replaces
-    /// the text, but the evidence backing it (and any citation numbering
-    /// against it) doesn't change. No-op without capability, without a
-    /// client, or when the selected turn is currently in flight (`Thread::
-    /// regenerate` rejects that case).
+    /// Rewind the selected turn back to `Thinking` and re-ask its question.
+    /// The server always re-retrieves context, so the completion carries fresh
+    /// sources — the `[n]` markers in the new answer are numbered against that
+    /// fresh context, and replacing the turn's sources keeps citations, reader
+    /// targets, and saved-note wikilinks aligned. (`Thread::regenerate` leaves
+    /// the old sources in place while the turn is `Thinking`, so the previous
+    /// evidence stays visible during regeneration; only completion swaps them.)
+    /// No-op without capability, without a client, or when the selected turn is
+    /// currently in flight (`Thread::regenerate` rejects that case).
     fn regenerate(&mut self, tx: &AppTx, client: Option<&Arc<RagClient>>) {
         if !self.capability {
             return;
@@ -425,23 +415,35 @@ impl ThreadPanel {
         let Some(client) = client else {
             return;
         };
-        let existing_sources = self
-            .thread
-            .selected()
-            .map(|t| t.sources.clone())
-            .unwrap_or_default();
         let history = self.thread.history();
+        Self::spawn_ask(tx, client, question, history, id);
+    }
+
+    /// Spawn the async ask job for `turn_id`: call the RAG client with the
+    /// question and history, map the answer + freshly retrieved sources, and
+    /// deliver an `AskData::AnswerReady` on completion. Shared verbatim by
+    /// `submit` and `regenerate` — both re-retrieve, so both take the fresh
+    /// sources from the response.
+    fn spawn_ask(
+        tx: &AppTx,
+        client: &Arc<RagClient>,
+        question: String,
+        history: Vec<(String, String)>,
+        turn_id: u64,
+    ) {
         let (tx, client) = (tx.clone(), client.clone());
         tokio::spawn(async move {
             let result = client
                 .ask(&question, &history, None)
                 .await
-                .map(|a| (a.answer, existing_sources))
+                .map(|a| {
+                    (
+                        a.answer,
+                        a.sources.into_iter().map(AskSource::from).collect(),
+                    )
+                })
                 .map_err(|e| e.to_string());
-            let _ = tx.send(AppEvent::Ask(AskData::AnswerReady {
-                turn_id: id,
-                result,
-            }));
+            let _ = tx.send(AppEvent::Ask(AskData::AnswerReady { turn_id, result }));
         });
     }
 
