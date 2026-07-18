@@ -16,7 +16,7 @@ use crate::components::autocomplete::AutocompleteMode;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, FileOp};
 use crate::components::file_list::{SortField, SortOrder};
-use crate::components::preview_pane::PreviewPane;
+use crate::components::preview_pane::{Highlight, PreviewPane};
 use crate::components::query_vars::{QueryContext, query_has_variables, resolve_query};
 use crate::components::saved_search_breadcrumb::SavedSearchBreadcrumb;
 use crate::components::search_list::{
@@ -765,7 +765,7 @@ impl QueryPanel {
                     &entry.title,
                     &entry.filename,
                     &text,
-                    &needles,
+                    Highlight::Needles(&needles),
                     theme,
                 );
             }
@@ -851,7 +851,8 @@ impl QueryPanel {
                 .clone()
                 .unwrap_or_else(|| entry.context.clone());
             let needles = self.cached_needles().to_vec();
-            self.preview.render_context(f, area, &text, &needles, theme);
+            self.preview
+                .render_context(f, area, &text, Highlight::Needles(&needles), theme);
             // The preview is the engine's content sub-region: wheel events
             // inside it come back as ContentScroll* instead of moving the
             // list.
@@ -1603,6 +1604,56 @@ mod tests {
         panel.handle_mouse(&click(header.x + 1, header.y), &tx);
         assert!(!panel.is_full_expanded());
         assert!(panel.preview.is_collapsed());
+    }
+
+    /// Deliberate unification (preview-pane `Highlight` seam): FIND's Full
+    /// preview now auto-anchors on the first needle match, like the Context
+    /// preview and the Ask Sources range variant already did. Previously Full
+    /// was the one render path that ignored the anchor and always opened at
+    /// the top; mirrors `ask_sources.rs`'s
+    /// `full_preview_anchors_scroll_to_the_highlighted_section`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn full_preview_anchors_scroll_to_first_needle_match() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let vault = crate::test_support::temp_vault("qp-full-anchor").await;
+        vault.validate_and_init().await.unwrap();
+        // The needle is deep enough that anchoring scrolls past the top (the
+        // "two lines of context above the match" rule needs room above it).
+        let mut body = String::new();
+        for i in 0..8 {
+            body.push_str(&format!("line{i}\n"));
+        }
+        body.push_str("#todo widget line\n");
+        for i in 0..8 {
+            body.push_str(&format!("tail{i}\n"));
+        }
+        vault
+            .create_note(&VaultPath::note_path_from("/long.md"), &body)
+            .await
+            .unwrap();
+        let mut panel = make_panel(vault);
+        panel.set_active_query("#todo".to_string());
+        settle(&mut panel).await;
+        assert!(panel.list.selected_row().is_some());
+
+        // Collapsed -> Context -> Full.
+        panel.toggle_expand();
+        panel.toggle_expand();
+        assert!(panel.is_full_expanded());
+
+        let theme = crate::settings::themes::Theme::default();
+        let mut terminal = Terminal::new(TestBackend::new(40, 6)).unwrap();
+        terminal
+            .draw(|f| panel.render(f, f.area(), &theme, true))
+            .unwrap();
+
+        assert!(
+            panel.preview.scroll_offset() > 0,
+            "Full preview anchors on the first needle match, offset={}",
+            panel.preview.scroll_offset()
+        );
     }
 
     /// Every expand-state change must drop the recorded content regions: the

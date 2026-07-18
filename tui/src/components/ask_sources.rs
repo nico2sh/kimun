@@ -34,7 +34,7 @@ use crate::ask::{AskSource, locate};
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, AskData, InputEvent};
 use crate::components::panel::panel_block;
-use crate::components::preview_pane::PreviewPane;
+use crate::components::preview_pane::{Highlight, PreviewPane};
 use crate::components::rich_row::RichRow;
 use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::ActionShortcuts;
@@ -552,17 +552,17 @@ impl SourcesPanel {
                         .get(cursor)
                         .map(|s| (s.display_heading(), s.path.to_string()))
                         .unwrap_or_else(|| ("Source".to_string(), String::new()));
-                    preview.render_full_range(
+                    preview.render_full(
                         f,
                         area,
                         &title,
                         &filename,
                         text,
-                        highlight.as_ref(),
+                        Highlight::Range(highlight.as_ref()),
                         theme,
                     );
                 } else {
-                    preview.render_context_range(f, area, text, highlight.as_ref(), theme);
+                    preview.render_context(f, area, text, Highlight::Range(highlight.as_ref()), theme);
                 }
             }
             Some(LoadedNote {

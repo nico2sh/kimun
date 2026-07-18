@@ -29,6 +29,23 @@ pub enum ExpandState {
     Full,
 }
 
+/// The Preview pane's one "what makes a line hot" seam. FIND highlights query
+/// needles scattered anywhere in a line; Ask Sources highlights one contiguous
+/// byte range (the retrieved section). Every other part of the render — chrome,
+/// wrapping, indent, scroll anchoring — is a single body shared by both; this
+/// enum is the only place that body branches on which kind of highlight is
+/// active.
+pub enum Highlight<'a> {
+    /// FIND: a (wrapped) line is hot if it contains any of these needles,
+    /// case-insensitively; each match renders bold within the line.
+    Needles(&'a [String]),
+    /// Ask Sources: a source line is hot if its byte range intersects this
+    /// one; the whole line renders bold when it does. `None` when no section
+    /// resolved (nothing is hot) — distinct from an empty needle list, which
+    /// is expressed as `Needles(&[])`.
+    Range(Option<&'a Range<usize>>),
+}
+
 /// Scroll state for the expanded content views (Full mode and the half-height
 /// Context preview). The offset is either *anchored* — the Context render
 /// recomputes it from the first needle match each frame — or user-owned after a
@@ -270,7 +287,7 @@ impl PreviewPane {
 
     /// Draw the full-expand chrome (fixed title header + divider), record the
     /// header rect for click-to-collapse, and return the scrollable content
-    /// sub-rect. Shared by [`render_full`] and [`render_full_range`].
+    /// sub-rect. Used by [`render_full`].
     fn render_full_chrome(
         &mut self,
         f: &mut Frame,
@@ -320,6 +337,10 @@ impl PreviewPane {
 
     /// Render the full-screen preview (fixed title + divider, scrollable
     /// content) into `inner`. Records the header rect for click-to-collapse.
+    /// Anchors the initial scroll to the first hot line (deliberate
+    /// unification: FIND's needle preview now anchors like the Context
+    /// preview and the Ask Sources range preview already did — previously
+    /// this variant alone ignored the anchor and always opened at the top).
     #[allow(clippy::too_many_arguments)]
     pub fn render_full(
         &mut self,
@@ -328,45 +349,15 @@ impl PreviewPane {
         title: &str,
         filename: &str,
         text: &str,
-        needles: &[String],
+        highlight: Highlight,
         theme: &Theme,
     ) {
         let bg = theme.bg_panel.to_ratatui();
         let content = self.render_full_chrome(f, inner, title, filename, theme);
         let indent = 2usize;
         let wrap_width = content.width.saturating_sub(indent as u16 + 1) as usize;
-        let (lines, _) = build_lines(text, needles, wrap_width, theme, false, indent);
-        let viewport = content.height as usize;
-        self.scroll.set_max(lines.len().saturating_sub(viewport));
-        f.render_widget(
-            Paragraph::new(lines)
-                .scroll((self.scroll.offset as u16, 0))
-                .style(Style::default().bg(bg)),
-            content,
-        );
-    }
-
-    /// Full-screen preview variant that highlights a contiguous byte `range`
-    /// (the Ask Sources retrieved section) instead of query needles, and
-    /// anchors the initial scroll to that section. Shares the chrome with
-    /// [`render_full`].
-    #[allow(clippy::too_many_arguments)]
-    pub fn render_full_range(
-        &mut self,
-        f: &mut Frame,
-        inner: Rect,
-        title: &str,
-        filename: &str,
-        text: &str,
-        highlight: Option<&Range<usize>>,
-        theme: &Theme,
-    ) {
-        let bg = theme.bg_panel.to_ratatui();
-        let content = self.render_full_chrome(f, inner, title, filename, theme);
-        let indent = 2usize;
-        let wrap_width = content.width.saturating_sub(indent as u16 + 1) as usize;
-        let find = self.scroll.anchored;
-        let (lines, hit) = build_lines_range(text, highlight, wrap_width, theme, find, indent);
+        let find_hit = self.scroll.anchored;
+        let (lines, hit) = build_lines(text, highlight, wrap_width, theme, find_hit, indent);
         let viewport = content.height as usize;
         let total = lines.len();
         self.scroll.set_max(total.saturating_sub(viewport));
@@ -380,52 +371,22 @@ impl PreviewPane {
     }
 
     /// Render the half-height Context preview into `area`, scrolled so the
-    /// first link occurrence shows with context above (while anchored).
+    /// first hot line shows with context above (while anchored).
     pub fn render_context(
         &mut self,
         f: &mut Frame,
         area: Rect,
         text: &str,
-        needles: &[String],
+        highlight: Highlight,
         theme: &Theme,
     ) {
         let bg = theme.bg_panel.to_ratatui();
         let indent = 2usize;
         let wrap_width = area.width.saturating_sub(indent as u16 + 1) as usize;
-        // The link-line scan only matters while anchored (a user-owned scroll
+        // The hit-line scan only matters while anchored (a user-owned scroll
         // never reads it), so skip the per-line work otherwise.
-        let find_link = self.scroll.anchored;
-        let (lines, link_line) = build_lines(text, needles, wrap_width, theme, find_link, indent);
-        let viewport = area.height as usize;
-        let total = lines.len();
-        self.scroll.set_max(total.saturating_sub(viewport));
-        self.scroll
-            .anchor_to_link(link_line.unwrap_or(0), total, viewport);
-        f.render_widget(
-            Paragraph::new(lines)
-                .scroll((self.scroll.offset as u16, 0))
-                .style(Style::default().bg(bg)),
-            area,
-        );
-    }
-
-    /// Half-height Context preview variant that highlights a contiguous byte
-    /// `range` (the Ask Sources retrieved section) instead of query needles,
-    /// anchored so the section's first line shows with context above. Mirrors
-    /// [`render_context`].
-    pub fn render_context_range(
-        &mut self,
-        f: &mut Frame,
-        area: Rect,
-        text: &str,
-        highlight: Option<&Range<usize>>,
-        theme: &Theme,
-    ) {
-        let bg = theme.bg_panel.to_ratatui();
-        let indent = 2usize;
-        let wrap_width = area.width.saturating_sub(indent as u16 + 1) as usize;
-        let find = self.scroll.anchored;
-        let (lines, hit) = build_lines_range(text, highlight, wrap_width, theme, find, indent);
+        let find_hit = self.scroll.anchored;
+        let (lines, hit) = build_lines(text, highlight, wrap_width, theme, find_hit, indent);
         let viewport = area.height as usize;
         let total = lines.len();
         self.scroll.set_max(total.saturating_sub(viewport));
@@ -458,15 +419,21 @@ impl PreviewPane {
     }
 }
 
-/// Build the wrapped, needle-highlighted, indented content lines. When
-/// `find_link` is set, also report the first wrapped-line index carrying a
-/// match (for the Context anchor).
+/// Build the wrapped, highlighted, indented content lines. The per-line hit
+/// test is the only place this branches on [`Highlight`]: needles test each
+/// wrapped line's text for scattered matches (styling each match span bold);
+/// a range tests the *source* line's byte span against the highlighted range
+/// (styling the whole wrapped line bold when it overlaps). Byte offsets are
+/// tracked over `split_inclusive('\n')` (line terminators kept) so a `Range`
+/// highlight maps correctly onto the original text regardless of wrapping.
+/// When `find_hit` is set, also reports the first wrapped-line index carrying
+/// a hit (for the Context/Full anchor); skip the scan once user-scrolled.
 fn build_lines(
     text: &str,
-    needles: &[String],
+    highlight: Highlight,
     wrap_width: usize,
     theme: &Theme,
-    find_link: bool,
+    find_hit: bool,
     indent: usize,
 ) -> (Vec<Line<'static>>, Option<usize>) {
     let bg = theme.bg_panel.to_ratatui();
@@ -476,72 +443,52 @@ fn build_lines(
         .bg(bg)
         .add_modifier(Modifier::BOLD);
     let mut lines = Vec::new();
-    let mut link_line = None;
-    for line in text.lines() {
-        for wline in preview_highlight::wrap_line(line, wrap_width) {
-            // One scan per wrapped line: the link-line probe and the span
-            // styling share it.
-            let ranges = preview_highlight::match_ranges(&wline, needles);
-            if find_link && link_line.is_none() && !ranges.is_empty() {
-                link_line = Some(lines.len());
-            }
-            let mut indented = vec![Span::styled(" ".repeat(indent), Style::default().bg(bg))];
-            indented.extend(preview_highlight::style_ranges(
-                &wline,
-                &ranges,
-                |s, hit| Span::styled(s.to_string(), if hit { bold } else { normal }),
-            ));
-            lines.push(Line::from(indented));
-        }
-    }
-    (lines, link_line)
-}
-
-/// Build wrapped, indented content lines with the byte `highlight` range
-/// rendered in the accent style — the Ask Sources retrieved section, which is a
-/// contiguous span rather than scattered needle matches. Byte offsets are
-/// tracked over `split_inclusive('\n')` (line terminators kept) so the range
-/// maps correctly; a source line overlaps the highlight iff their byte ranges
-/// intersect. When `find_first` is set, reports the first wrapped-line index
-/// inside the highlight (the anchor).
-fn build_lines_range(
-    text: &str,
-    highlight: Option<&Range<usize>>,
-    wrap_width: usize,
-    theme: &Theme,
-    find_first: bool,
-    indent: usize,
-) -> (Vec<Line<'static>>, Option<usize>) {
-    let bg = theme.bg_panel.to_ratatui();
-    let normal = Style::default().fg(theme.gray.to_ratatui()).bg(bg);
-    let accent = Style::default()
-        .fg(theme.accent.to_ratatui())
-        .bg(bg)
-        .add_modifier(Modifier::BOLD);
-    let mut lines = Vec::new();
-    let mut first = None;
+    let mut first_hit = None;
     let mut offset = 0usize;
     for raw in text.split_inclusive('\n') {
         let stripped = raw.strip_suffix('\n').unwrap_or(raw);
         let line_range = offset..offset + stripped.len();
-        let hit =
-            highlight.is_some_and(|h| line_range.start < h.end && h.start < line_range.end);
-        let style = if hit { accent } else { normal };
-        for wline in preview_highlight::wrap_line(stripped, wrap_width) {
-            if find_first && hit && first.is_none() {
-                first = Some(lines.len());
-            }
-            lines.push(Line::from(vec![
-                Span::styled(" ".repeat(indent), Style::default().bg(bg)),
-                Span::styled(wline, style),
-            ]));
-        }
         offset += raw.len();
+
+        match highlight {
+            Highlight::Needles(needles) => {
+                for wline in preview_highlight::wrap_line(stripped, wrap_width) {
+                    // One scan per wrapped line: the hit probe and the span
+                    // styling share it.
+                    let ranges = preview_highlight::match_ranges(&wline, needles);
+                    if find_hit && first_hit.is_none() && !ranges.is_empty() {
+                        first_hit = Some(lines.len());
+                    }
+                    let mut indented =
+                        vec![Span::styled(" ".repeat(indent), Style::default().bg(bg))];
+                    indented.extend(preview_highlight::style_ranges(
+                        &wline,
+                        &ranges,
+                        |s, hit| Span::styled(s.to_string(), if hit { bold } else { normal }),
+                    ));
+                    lines.push(Line::from(indented));
+                }
+            }
+            Highlight::Range(range) => {
+                let hit = range
+                    .is_some_and(|h| line_range.start < h.end && h.start < line_range.end);
+                let style = if hit { bold } else { normal };
+                for wline in preview_highlight::wrap_line(stripped, wrap_width) {
+                    if find_hit && hit && first_hit.is_none() {
+                        first_hit = Some(lines.len());
+                    }
+                    lines.push(Line::from(vec![
+                        Span::styled(" ".repeat(indent), Style::default().bg(bg)),
+                        Span::styled(wline, style),
+                    ]));
+                }
+            }
+        }
     }
     if lines.is_empty() {
         lines.push(Line::default());
     }
-    (lines, first)
+    (lines, first_hit)
 }
 
 #[cfg(test)]
@@ -693,13 +640,19 @@ mod tests {
         assert_eq!(s.offset, 1, "user-owned offset is not re-anchored");
     }
 
+    // The next two tests drive the SAME `build_lines` render path with each
+    // `Highlight` variant, proving the single body serves both: one needle
+    // scan (scattered matches within a line) and one range scan (a
+    // contiguous byte span across lines).
+
     #[test]
-    fn build_lines_reports_first_match_line() {
+    fn build_lines_needles_reports_first_match_line() {
         let theme = Theme::default();
         let text = "alpha\nbeta widget\ngamma";
-        let (lines, link) = build_lines(text, &needles(&["widget"]), 80, &theme, true, 2);
+        let ns = needles(&["widget"]);
+        let (lines, hit) = build_lines(text, Highlight::Needles(&ns), 80, &theme, true, 2);
         assert_eq!(lines.len(), 3);
-        assert_eq!(link, Some(1), "the match is on the second line");
+        assert_eq!(hit, Some(1), "the match is on the second line");
     }
 
     #[test]
@@ -732,7 +685,7 @@ mod tests {
         let text = "line0\nline1\nbeta body\ntail\n";
         let start = text.find("beta body").unwrap();
         let range = start..start + "beta body".len();
-        let (lines, first) = build_lines_range(text, Some(&range), 80, &theme, true, 2);
+        let (lines, first) = build_lines(text, Highlight::Range(Some(&range)), 80, &theme, true, 2);
         assert_eq!(first, Some(2), "anchor is the first highlighted wrapped row");
         // The highlighted content span carries the bold accent modifier; a
         // non-highlighted line does not.
@@ -743,7 +696,7 @@ mod tests {
     #[test]
     fn build_lines_range_no_highlight_reports_no_anchor() {
         let theme = Theme::default();
-        let (_lines, first) = build_lines_range("a\nb\nc\n", None, 80, &theme, true, 2);
+        let (_lines, first) = build_lines("a\nb\nc\n", Highlight::Range(None), 80, &theme, true, 2);
         assert_eq!(first, None);
     }
 }
