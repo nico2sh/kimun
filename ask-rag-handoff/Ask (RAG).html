@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kimün — Ask (RAG)</title>
+<link rel="stylesheet" href="kimun.css">
+<link rel="stylesheet" href="rag.css">
+</head>
+<body class="rag">
+<div class="rag-app">
+  <div class="term">
+
+    <div class="titlebar">
+      <span class="pt">Kimün</span>
+      <span class="bcrumb"><span class="seg">vault</span><span class="sepc">/</span><span class="seg cur">Ask</span></span>
+      <span class="ws"><span class="dot">⊙</span> work</span>
+    </div>
+
+    <div class="rag-work">
+      <!-- activity rail -->
+      <div class="rail rag-rail">
+        <div class="ri"><span class="g">▤</span><span class="lab">FILES</span></div>
+        <div class="ri"><span class="g">⌕</span><span class="lab">FIND</span></div>
+        <div class="ri active" id="railAsk"><span class="g">✦</span><span class="lab">ASK</span></div>
+        <div class="ri"><span class="g">#</span><span class="lab">TAGS</span></div>
+        <div class="ri"><span class="g">↩</span><span class="lab">LINKS</span></div>
+        <div style="flex:1"></div>
+        <div class="ri"><span class="g">⚙</span><span class="lab">CFG</span></div>
+      </div>
+
+      <!-- sources / context -->
+      <div class="panel sources" id="sourcesPanel">
+        <span class="pt">Sources <span class="rt">context</span></span>
+        <div class="pbody" id="sourcesBody"></div>
+      </div>
+
+      <!-- conversation column -->
+      <div class="convo">
+        <div class="panel thread-panel" id="threadPanel">
+          <span class="pt">Ask <span class="rt">· RAG conversation</span></span>
+          <div class="pbody" style="padding:0;">
+            <div class="thread" id="thread"></div>
+          </div>
+        </div>
+
+        <div class="panel composer" id="composerPanel">
+          <span class="pt">Query</span>
+          <div class="pbody">
+            <div class="comp-meta">
+              <span class="kv">retrieval <b>vector · top_k 5</b></span>
+              <span class="kv">model <b>claude-haiku</b></span>
+              <span class="sp"></span>
+              <span class="kv">312 notes indexed</span>
+            </div>
+            <div class="comp-in">
+              <span class="pfx">❯</span>
+              <textarea id="composerInput" rows="1" placeholder="Ask your vault anything — follow-ups keep the conversation…"></textarea>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- which-key leader menu -->
+    <div class="whichkey" id="whichkey" style="display:none;">
+      <div class="wk-head"><span class="seq">Ctrl-K</span><span class="cap">ask menu — pick an action</span><span class="esc">Esc cancel</span></div>
+      <div class="wk-grid">
+        <div class="wk"><span class="kk">a</span><span class="ar">→</span><span class="act">ask / focus query</span></div>
+        <div class="wk"><span class="kk">n</span><span class="ar">→</span><span class="act">new conversation</span></div>
+        <div class="wk"><span class="kk">y</span><span class="ar">→</span><span class="act">copy answer</span></div>
+        <div class="wk"><span class="kk">e</span><span class="ar">→</span><span class="act">edit as note</span></div>
+        <div class="wk"><span class="kk">r</span><span class="ar">→</span><span class="act">regenerate</span></div>
+        <div class="wk"><span class="kk">s</span><span class="ar">→</span><span class="act">open top source</span></div>
+        <div class="wk"><span class="kk">?</span><span class="ar">→</span><span class="act">help</span></div>
+      </div>
+    </div>
+
+    <!-- status bar -->
+    <div class="status">
+      <div class="l1"><span class="mode" id="modeChip">✦ ASK</span><span id="statusKeys"></span></div>
+      <div class="l2"><span>vault: work</span><span>·</span><span>context follows the selected turn</span><span class="sp"></span><span>every key has a click equivalent</span></div>
+    </div>
+
+    <!-- toast + help -->
+    <div class="toast" id="toast"></div>
+    <div class="help-ov" id="helpOv">
+      <div class="help">
+        <h3>✦ Ask — keyboard<span class="sp">Esc / ? to close</span></h3>
+        <div class="help-grid">
+          <div class="col">
+            <h4>Global</h4>
+            <div class="kv"><span class="k">Tab / ⇧Tab</span><span class="v">cycle Query · Thread · Sources</span></div>
+            <div class="kv"><span class="k">Ctrl-K</span><span class="v">leader menu (any focus)</span></div>
+            <div class="kv"><span class="k">Space</span><span class="v">leader menu (in a list)</span></div>
+            <div class="kv"><span class="k">i / /</span><span class="v">jump to the query field</span></div>
+            <div class="kv"><span class="k">?</span><span class="v">this help</span></div>
+            <h4 style="margin-top:9px;">Query field</h4>
+            <div class="kv"><span class="k">⏎</span><span class="v">ask · run retrieval</span></div>
+            <div class="kv"><span class="k">⇧⏎</span><span class="v">newline</span></div>
+            <div class="kv"><span class="k">Esc</span><span class="v">back to thread</span></div>
+          </div>
+          <div class="col">
+            <h4>Thread</h4>
+            <div class="kv"><span class="k">j / k</span><span class="v">move between turns</span></div>
+            <div class="kv"><span class="k">⏎ / l</span><span class="v">jump into sources</span></div>
+            <div class="kv"><span class="k aq">y</span><span class="v">copy answer text</span></div>
+            <div class="kv"><span class="k aq">e</span><span class="v">edit answer as a note</span></div>
+            <div class="kv"><span class="k aq">r</span><span class="v">regenerate answer</span></div>
+            <h4 style="margin-top:9px;">Sources</h4>
+            <div class="kv"><span class="k">j / k</span><span class="v">move through sources</span></div>
+            <div class="kv"><span class="k">⏎ / l</span><span class="v">open note · view chunk</span></div>
+            <div class="kv"><span class="k">h / Esc</span><span class="v">back</span></div>
+            <div class="kv"><span class="k">o</span><span class="v">open note in editor</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script src="rag-vault.js"></script>
+<script src="rag-app.js"></script>
+</body>
+</html>
