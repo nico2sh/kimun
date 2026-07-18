@@ -10,10 +10,10 @@ use std::path::PathBuf;
 
 /// Load settings from either a specific config file path or the default location.
 pub fn load_settings(config_path: Option<PathBuf>) -> Result<AppSettings> {
-    match config_path {
-        Some(path) => AppSettings::load_from_file(path),
-        None => AppSettings::load_from_disk(),
-    }
+    Ok(match config_path {
+        Some(path) => AppSettings::load_from_file(path)?,
+        None => AppSettings::load_from_disk()?,
+    })
 }
 
 /// Resolve workspace configuration from settings, returning the workspace path and name.
