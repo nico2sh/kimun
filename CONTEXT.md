@@ -139,7 +139,7 @@ The right-hand panel of the editor. Shows the list of notes matching an active q
 _Avoid_: backlinks panel (now only the default state), search panel / search sidebar (collide with Ctrl+K and the left-sidebar search box)
 
 **Preview pane**:
-The note-preview surface the **Query panel** shows for its selected result, owning one expand state — **Collapsed** (list only), **Context** (half-height preview below the list), **Full** (preview takes the whole panel) — and the content scroll. The scroll is either *anchored* (the render places it on the first needle match each frame) or *user-owned* once a wheel/key tick moves it; a query edit re-arms the anchor. Context sticks across selection moves (re-anchoring on the new row); Full and a vanished selection collapse. Composed by the panel (which keeps the result list and the engine's wheel-routing region), so the scroll/anchor state machine is testable without a vault.
+The note-preview surface the **Query panel** and the **Sources view** show for their selected row, owning one expand state — **Collapsed** (list only), **Context** (half-height preview below the list), **Full** (preview takes the whole panel) — and the content scroll. The scroll is either *anchored* (the render places it on the first needle match each frame) or *user-owned* once a wheel/key tick moves it; a query edit re-arms the anchor. Context sticks across selection moves (re-anchoring on the new row); Full and a vanished selection collapse. Composed by the panel (which keeps the result list and the engine's wheel-routing region), so the scroll/anchor state machine is testable without a vault.
 _Avoid_: expand state (names one field), content view, preview widget.
 
 ### Editor input
@@ -208,8 +208,8 @@ The drawer view of the **Ask workspace**: the ranked sources of the selected **T
 _Avoid_: context panel (context is what the LLM saw, this is its per-note presentation), results (collides with search results).
 
 **Source reader**:
-The **Sources view**'s second face: the full note a source came from, rendered in place of the source list with the retrieved section highlighted, so evidence can be read *without leaving the answer* — the **Thread** stays put. Entered from a source row or a **Citation**; leaving it returns to the list. Read-only: actually editing the note is the editor's job (a separate open-in-editor action leaves the Ask workspace).
-_Avoid_: preview pane (that is the **Query panel**'s), note viewer, reader mode (it is a face of one view, not a mode of the app).
+The **Sources view**'s reveal of a source's full note — the retrieved section highlighted and scrolled into view — so evidence can be read *without leaving the answer*; the **Thread** stays put. It *is* the **Preview pane** (the same expand cycle and content surface the **Query panel** uses), anchored by the section's range rather than query needles. Entered from a source row or a **Citation**. Read-only: editing the note is the editor's job (open-in-editor leaves the Ask workspace).
+_Avoid_: reader face (the superseded bespoke surface — the reveal is the shared Preview pane now), note viewer.
 
 **Saved answer**:
 A real vault note created from a **Turn**'s answer: question as title, answer as body, each **Citation** converted to a `[[wikilink]]` to its source note — so the answer joins the vault's link graph and its provenance survives as **note links** (backlinks from the sources find it). Created through the normal new-note flow and edited in the normal editor; the **Ask workspace** never edits notes itself.
