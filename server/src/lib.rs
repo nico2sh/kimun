@@ -104,55 +104,33 @@ pub struct CutPreview {
 /// one place (`IntoResponse` in the handlers module): `Validation` → 400,
 /// `NotFound` → 404, `SemanticOnly`/`Unconfigured` → 503 (adr/0022, adr/0024),
 /// `Backend` → 500.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum RagError {
     /// The request itself is malformed (bad vault id, unparseable job id).
+    #[error("{0}")]
     Validation(String),
     /// The named thing doesn't exist (e.g. an expired or unknown job).
+    #[error("{0}")]
     NotFound(String),
     /// No LLM configured — this server answers semantic searches only
     /// (adr/0022).
+    #[error("no LLM configured; this server is semantic-only")]
     SemanticOnly,
     /// No embedder configured — the server is *unconfigured*: no vector store,
     /// no indexing, no search, no answering (adr/0024). Distinct from
     /// [`SemanticOnly`](Self::SemanticOnly) (embedder present, LLM absent) so
     /// the two states never blur.
+    #[error(
+        "no embedder configured; this server is unconfigured — open the web UI to configure one"
+    )]
     Unconfigured,
-    Backend(anyhow::Error),
-}
-
-impl Display for RagError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            RagError::Validation(msg) => write!(f, "{msg}"),
-            RagError::NotFound(msg) => write!(f, "{msg}"),
-            RagError::SemanticOnly => {
-                write!(f, "no LLM configured; this server is semantic-only")
-            }
-            RagError::Unconfigured => {
-                write!(
-                    f,
-                    "no embedder configured; this server is unconfigured — open the web UI to configure one"
-                )
-            }
-            RagError::Backend(e) => write!(f, "{e}"),
-        }
-    }
-}
-
-impl std::error::Error for RagError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            RagError::Backend(e) => Some(e.as_ref()),
-            _ => None,
-        }
-    }
-}
-
-impl From<anyhow::Error> for RagError {
-    fn from(e: anyhow::Error) -> Self {
-        RagError::Backend(e)
-    }
+    /// Decided boundary: `anyhow` is the server's *internal* error currency
+    /// (stores, embedders, rerankers, config); `RagError` is the public
+    /// surface, and this variant is the one funnel between them. The `#[from]`
+    /// keeps `?` working at every internal call site — deliberately, so
+    /// internals never need their own public error types.
+    #[error("{0}")]
+    Backend(#[from] anyhow::Error),
 }
 
 // ── Pipeline policy ─────────────────────────────────────────────────────────

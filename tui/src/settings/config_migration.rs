@@ -4,9 +4,8 @@
 //! version transitions. `ConfigMigration::run` is called once during
 //! `AppSettings::load_from_file` after deserialization.
 
-use color_eyre::eyre;
-
 use super::AppSettings;
+use super::SettingsError;
 use super::workspace_config::{WorkspaceConfig, WorkspaceEntry};
 
 /// Current config version. Bump this when adding a new migration step.
@@ -19,7 +18,7 @@ pub struct ConfigMigration;
 impl ConfigMigration {
     /// Apply all pending migrations to bring `settings` up to
     /// `CURRENT_CONFIG_VERSION`. Returns `true` if any migration ran.
-    pub fn run(settings: &mut AppSettings) -> eyre::Result<bool> {
+    pub fn run(settings: &mut AppSettings) -> Result<bool, SettingsError> {
         let mut migrated = false;
 
         // v1 → v2: workspace_dir → workspace_config
@@ -170,7 +169,7 @@ impl ConfigMigration {
     /// Pre-flight: validates every workspace name; aborts with a single
     /// error listing every bad name. Idempotent: skips any step whose
     /// destination already exists.
-    fn migrate_to_v3(settings: &mut AppSettings) -> eyre::Result<()> {
+    fn migrate_to_v3(settings: &mut AppSettings) -> Result<(), SettingsError> {
         let Some(ref wc) = settings.workspace_config else {
             return Ok(());
         };
@@ -182,17 +181,19 @@ impl ConfigMigration {
             }
         }
         if !invalid.is_empty() {
-            return Err(eyre::eyre!(
+            return Err(SettingsError::Migration(format!(
                 "Cannot migrate to v3: invalid workspace names:\n  - {}",
                 invalid.join("\n  - ")
-            ));
+            )));
         }
 
         if let Some(ref cfg_path) = settings.config_file {
             let bak_path = cfg_path.with_extension("toml.bak.v2");
             if !bak_path.exists() {
                 std::fs::copy(cfg_path, &bak_path).map_err(|e| {
-                    eyre::eyre!("failed to back up config to {:?}: {}", bak_path, e)
+                    SettingsError::Migration(format!(
+                        "failed to back up config to {bak_path:?}: {e}"
+                    ))
                 })?;
                 tracing::info!("backed up v2 config to {:?}", bak_path);
             }
@@ -231,7 +232,9 @@ impl ConfigMigration {
                     );
                 } else {
                     std::fs::create_dir_all(&cache_dir).map_err(|e| {
-                        eyre::eyre!("failed to create cache dir {:?}: {}", cache_dir, e)
+                        SettingsError::Migration(format!(
+                            "failed to create cache dir {cache_dir:?}: {e}"
+                        ))
                     })?;
                     if let Err(rename_err) = std::fs::rename(&old_db, &new_db) {
                         // EXDEV: source and destination on different filesystems —
@@ -240,12 +243,12 @@ impl ConfigMigration {
                             std::fs::copy(&old_db, &new_db)?;
                             std::fs::remove_file(&old_db)?;
                         } else {
-                            return Err(eyre::eyre!(
+                            return Err(SettingsError::Migration(format!(
                                 "failed to move {:?} -> {:?}: {}",
                                 old_db,
                                 new_db,
                                 rename_err
-                            ));
+                            )));
                         }
                     }
                     tracing::info!("migrated {:?} -> {:?}", old_db, new_db);
@@ -279,7 +282,7 @@ impl ConfigMigration {
     /// 2. `workspace_config` already exists — the legacy field is orphaned
     ///    (e.g. from a partial earlier migration). Add it as "default" if no
     ///    workspace already points to the same path.
-    fn migrate_workspace_dir(settings: &mut AppSettings) -> eyre::Result<()> {
+    fn migrate_workspace_dir(settings: &mut AppSettings) -> Result<(), SettingsError> {
         let Some(workspace_dir) = settings.workspace_dir.take() else {
             return Ok(());
         };
@@ -287,10 +290,10 @@ impl ConfigMigration {
         if settings.workspace_config.is_none() {
             // Full Phase 1 → Phase 2 migration.
             if !workspace_dir.exists() {
-                return Err(eyre::eyre!(
+                return Err(SettingsError::Migration(format!(
                     "Cannot migrate: workspace directory {} no longer exists",
                     workspace_dir.display()
-                ));
+                )));
             }
             tracing::info!("Migrating Phase 1 config to Phase 2 format");
             let last_paths: Vec<String> =
