@@ -787,7 +787,7 @@ impl EditorScreen {
                 // event is forwarded to that panel for its internal behavior.
                 let state = self.panels.handle_mouse(event, tx);
                 // Ask clicks (turn select, citation) move the drawer's Sources.
-                self.sync_ask_sources();
+                self.sync_ask_sources(tx);
                 // A selectionless right-click in the editor asks for the
                 // note's context menu — the screen owns the path, so it
                 // opens it here.
@@ -804,7 +804,7 @@ impl EditorScreen {
                 let state = self.panels.handle_input(event, tx);
                 // Ask keys (j/k select, i/composer, submit) move the drawer's
                 // Sources in step with the thread's selected turn.
-                self.sync_ask_sources();
+                self.sync_ask_sources(tx);
                 if state == EventState::NotConsumed {
                     match fallback {
                         PanelFallback::None => state,
@@ -1099,7 +1099,7 @@ impl EditorScreen {
                     self.refresh_ask_capability().await;
                 }
             }
-            AppEvent::Ask(data) => self.handle_ask_data(data),
+            AppEvent::Ask(data) => self.handle_ask_data(data, tx),
             // Stale completions (for notes we've navigated away from) fall
             // through to the catch-all and are dropped.
             AppEvent::FlashMessage(msg) => {
@@ -1351,7 +1351,7 @@ impl EditorScreen {
         // Keep the editor-area Ask content in lockstep with the drawer view:
         // entering ASK restores the stashed thread; leaving it stashes the
         // live one (rules 1 & 2 — thread survives every view switch).
-        self.transition_ask(view);
+        self.transition_ask(view, tx);
         let newly_shown = !self.drawer_open_on(view);
         self.panels.open_drawer_view(view);
         self.drawer_view_revealed(view, newly_shown, tx);
@@ -1386,11 +1386,11 @@ impl EditorScreen {
     /// switch. Entering ASK shows the resident thread and syncs its Sources;
     /// leaving ASK returns the note editor. The thread survives either way by
     /// residency — this only flips the content selector.
-    fn transition_ask(&mut self, target: DrawerView) {
+    fn transition_ask(&mut self, target: DrawerView, tx: &AppTx) {
         let showing = self.panels.is_showing_ask();
         if target == DrawerView::Ask && !showing {
             self.panels.show_ask();
-            self.sync_ask_sources_from_selected();
+            self.sync_ask_sources_from_selected(tx);
         } else if target != DrawerView::Ask && showing {
             self.panels.hide_ask();
         }
@@ -1417,7 +1417,7 @@ impl EditorScreen {
     /// while the user browses FILES). A reader note goes to the Sources
     /// drawer. When Ask *is* shown and the completed turn is the selected one,
     /// its sources are refreshed (rule 3).
-    fn handle_ask_data(&mut self, data: crate::components::events::AskData) {
+    fn handle_ask_data(&mut self, data: crate::components::events::AskData, tx: &AppTx) {
         use crate::components::events::AskData;
         match &data {
             AskData::AnswerReady { turn_id, .. } => {
@@ -1436,7 +1436,7 @@ impl EditorScreen {
                             .find(|t| t.id == turn_id)
                             .map(|t| t.sources.clone())
                             .unwrap_or_default();
-                        self.panels.ask_sources_mut().refresh(turn_id, sources);
+                        self.panels.ask_sources_mut().refresh(turn_id, sources, tx);
                     }
                 }
             }
@@ -1450,7 +1450,7 @@ impl EditorScreen {
     /// it differs from `last_synced_turn`, consuming the per-input citation
     /// signal. Called after every Ask input event (keyboard and mouse) so the
     /// drawer tracks the thread.
-    fn sync_ask_sources(&mut self) {
+    fn sync_ask_sources(&mut self, tx: &AppTx) {
         // Only track the drawer to the thread while Ask is actually on screen.
         if !self.panels.is_showing_ask() {
             return;
@@ -1463,7 +1463,7 @@ impl EditorScreen {
             )
         };
         if selected.is_some() && selected != self.last_synced_turn {
-            self.sync_ask_sources_from_selected();
+            self.sync_ask_sources_from_selected(tx);
         }
         if let Some(ordinal) = citation {
             self.panels.ask_sources_mut().focus_source(ordinal);
@@ -1476,7 +1476,7 @@ impl EditorScreen {
     /// changed) all need the current turn's sources shown. Updates
     /// `last_synced_turn` so a following `sync_ask_sources` call doesn't redo
     /// the same work.
-    fn sync_ask_sources_from_selected(&mut self) {
+    fn sync_ask_sources_from_selected(&mut self, tx: &AppTx) {
         let selected = self
             .panels
             .ask_mut()
@@ -1484,7 +1484,7 @@ impl EditorScreen {
             .selected()
             .map(|t| (t.id, t.sources.clone()));
         if let Some((id, sources)) = selected {
-            self.panels.ask_sources_mut().set_turn(id, sources);
+            self.panels.ask_sources_mut().set_turn(id, sources, tx);
             self.last_synced_turn = Some(id);
         }
     }
@@ -2053,7 +2053,7 @@ impl EditorScreen {
                     panel.thread_mut().clear();
                     panel.focus_composer();
                 });
-                self.panels.ask_sources_mut().reset();
+                self.panels.ask_sources_mut().reset(tx);
             }
             LeaderAction::AskCopy => {
                 self.with_ask_panel(tx, |panel, tx| panel.copy_selected(tx));
@@ -2063,13 +2063,13 @@ impl EditorScreen {
             }
             LeaderAction::AskRegenerate => {
                 self.with_ask_panel(tx, |panel, tx| panel.regenerate_selected(tx));
-                self.sync_ask_sources();
+                self.sync_ask_sources(tx);
             }
             LeaderAction::AskSource => {
                 self.ensure_ask_workspace(tx);
                 // The top source of the selected turn — sync the drawer to the
                 // current turn first, then open its first source in the reader.
-                self.sync_ask_sources_from_selected();
+                self.sync_ask_sources_from_selected(tx);
                 self.panels.ask_sources_mut().open_reader(0, tx);
                 self.panels.focus(PanelKind::Drawer);
             }
@@ -3401,10 +3401,13 @@ mod tests {
         screen.open_drawer_view(DrawerView::Files, &tx);
         assert!(!screen.panels.is_showing_ask());
 
-        screen.handle_ask_data(crate::components::events::AskData::AnswerReady {
-            turn_id,
-            result: Ok(("the answer".into(), vec![])),
-        });
+        screen.handle_ask_data(
+            crate::components::events::AskData::AnswerReady {
+                turn_id,
+                result: Ok(("the answer".into(), vec![])),
+            },
+            &tx,
+        );
 
         let thread = screen.panels.ask().thread();
         let turn = thread.turns().iter().find(|t| t.id == turn_id).unwrap();
