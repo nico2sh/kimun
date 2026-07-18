@@ -20,7 +20,7 @@ use crate::components::preview_pane::{Highlight, PreviewPane};
 use crate::components::query_vars::{QueryContext, query_has_variables, resolve_query};
 use crate::components::saved_search_breadcrumb::SavedSearchBreadcrumb;
 use crate::components::search_list::{
-    Emit, KeyReaction, ResolvingRowSource, RowSource, SearchList, SearchMouse, SearchRow,
+    Emit, Focus, KeyReaction, ResolvingRowSource, RowSource, SearchList, SearchMouse, SearchRow,
     Unresolvable, VaultSuggestions,
 };
 use crate::keys::KeyBindings;
@@ -228,6 +228,13 @@ impl QueryPanel {
                 AutocompleteMode::SearchQuery,
             )
             .intercept(intercept)
+            // List-focus verbs (fire once the user Esc-es into the list): the
+            // same set the Sources drawer uses — `l`/`h` cycle the preview
+            // forward/back, `o` opens, `y` yanks the selected note's path.
+            .list_verb('l')
+            .list_verb('h')
+            .list_verb('o')
+            .list_verb('y')
             .build();
 
         Self {
@@ -519,7 +526,22 @@ impl QueryPanel {
                 self.toggle_expand();
                 EventState::Consumed
             }
-            // Esc bubbles to the editor for focus changes.
+            // List-focus verbs (fired only once the user Esc-es into the list):
+            // the engine reports which char fired; the panel maps it to an
+            // action. `l`/`h` cycle the preview, `o` opens, `y` yanks.
+            KeyReaction::ListVerb(c) => {
+                match c {
+                    'l' => self.toggle_expand(),
+                    'h' => self.collapse_expand(),
+                    'o' => self.open_selected(tx),
+                    'y' => self.yank_selected_path(tx),
+                    _ => {}
+                }
+                self.sync_expand_anchor();
+                EventState::Consumed
+            }
+            // Esc bubbles to the editor for focus changes — reached now only
+            // from list focus (the first Esc entered it).
             KeyReaction::Cancel => EventState::NotConsumed,
             KeyReaction::Unhandled => EventState::NotConsumed,
             KeyReaction::Intercepted(_) => EventState::Consumed,
@@ -635,7 +657,42 @@ impl QueryPanel {
         self.list.set_content_rect(Rect::default());
     }
 
+    /// Step the preview reveal backward (Full → Context → Collapsed): the `h`
+    /// list-focus verb, mirroring `l`'s forward cycle via [`toggle_expand`].
+    fn collapse_expand(&mut self) {
+        let sel = self.list.selected_row().map(|e| e.path.clone());
+        if sel.is_none() {
+            return;
+        }
+        self.preview.collapse_step(sel);
+        self.list.set_content_rect(Rect::default());
+    }
+
+    /// Open the selected result (the `o` list-focus verb), carrying the same
+    /// resolved-needle emphasis as the FollowLink / Ctrl+Enter open paths.
+    fn open_selected(&self, tx: &AppTx) {
+        if let Some(path) = self.selected_path().cloned() {
+            tx.send(AppEvent::OpenPath {
+                path,
+                emphasis: self.emphasis(),
+            })
+            .ok();
+        }
+    }
+
     pub fn hint_shortcuts(&self) -> Vec<(String, String)> {
+        // In list focus, plain letters are verbs — advertise them instead of
+        // the input-focus keybinding hints.
+        if self.list.focus() == Focus::List {
+            return vec![
+                ("j/k".to_string(), "navigate".to_string()),
+                ("h/l".to_string(), "preview".to_string()),
+                ("o".to_string(), "open".to_string()),
+                ("y".to_string(), "yank".to_string()),
+                ("i".to_string(), "filter".to_string()),
+                ("Esc".to_string(), "\u{2190} editor".to_string()),
+            ];
+        }
         crate::components::hints::hints_for(
             &self.key_bindings,
             &[

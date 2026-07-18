@@ -125,9 +125,9 @@ impl<S: ListPanelSpec> QueryListPanel<S> {
                             EventState::Consumed
                         }
                         KeyReaction::Consumed | KeyReaction::Cancel => EventState::Consumed,
-                        KeyReaction::Intercepted(_) | KeyReaction::Unhandled => {
-                            EventState::NotConsumed
-                        }
+                        KeyReaction::Intercepted(_)
+                        | KeyReaction::ListVerb(_)
+                        | KeyReaction::Unhandled => EventState::NotConsumed,
                     }
                 } else {
                     // No filter input: only navigation keys reach the list,

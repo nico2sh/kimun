@@ -117,8 +117,12 @@ _Avoid_: title (the Query panel already has a query-reflective title; the breadc
 ### TUI search surfaces
 
 **SearchList**:
-The one module behind every query-input-over-an-async-loaded-list surface in the TUI — the **note browser**, the **Query panel**, the **Saved Searches modal**, and the directory sidebar. It owns the query input, keyboard navigation, the async-load lifecycle, the autocomplete host, and selection; it emits nothing on its own — callers read the selected row and decide the action. Rich presentation (the Query panel's expand/preview, the note browser's preview pane) composes on top rather than living inside it.
+The one module behind every query-input-over-an-async-loaded-list surface in the TUI — the **note browser**, the **Query panel**, the **Saved Searches modal**, the directory sidebar, and (via **QueryListPanel**) the list-shaped drawer views. It owns the query input, keyboard navigation, the async-load lifecycle, the autocomplete host, selection, and the **list focus** below; it emits nothing on its own — callers read the selected row and decide the action. Rich presentation (the Query panel's expand/preview) composes on top rather than living inside it.
 _Avoid_: list widget, search box (each names only a part)
+
+**List focus**:
+Which half of a **SearchList** owns the keyboard: the query input (typing filters) or the list itself (plain letters are verbs — `j`/`k` navigate, surface-registered letters like `l`/`h`/`o`/`y` act on the selected row). `Esc` moves from input to list; `i` or `/` moves back. Each surface picks its opening focus: search-first surfaces (the **Query panel**, the **note browser**) open on the input; the **Sources view** opens on the list. Letters not registered as verbs do nothing in list focus — they never silently type into the query.
+_Avoid_: input mode / normal mode (vim's names for a different state machine), list mode.
 
 **Row source**:
 The seam that supplies a **SearchList** with the rows for a query. Vault-backed in the app (search, backlinks, saved searches, directory listing), in-memory in tests — so a SearchList is exercised without a real vault. Streaming and one-shot delivery are the same source, not different seams.
