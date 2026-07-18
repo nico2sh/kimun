@@ -628,16 +628,13 @@ impl QueryPanel {
     }
 
     /// Copy the selected result's path to the OS clipboard (`Ctrl+Y`), reusing
-    /// the same `arboard` seam the Sources drawer's yank uses.
+    /// the shared [`crate::components::yank`] seam the Sources drawer's yank
+    /// uses.
     fn yank_selected_path(&self, tx: &AppTx) {
         let Some(path) = self.selected_path().cloned() else {
             return;
         };
-        let msg = match arboard::Clipboard::new().and_then(|mut c| c.set_text(path.to_string())) {
-            Ok(()) => "path copied".to_string(),
-            Err(e) => format!("clipboard: {e}"),
-        };
-        tx.send(AppEvent::FlashMessage(msg)).ok();
+        crate::components::yank(path.to_string(), "path copied", tx);
     }
 
     fn scroll_content(&mut self, key: &KeyEvent) {

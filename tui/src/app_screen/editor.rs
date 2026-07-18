@@ -1866,14 +1866,6 @@ impl EditorScreen {
         EventState::Consumed
     }
 
-    /// Put `text` on the system clipboard, flashing `done` on success.
-    fn copy_to_clipboard(&mut self, text: String, done: &str, tx: &AppTx) {
-        match arboard::Clipboard::new().and_then(|mut c| c.set_text(text)) {
-            Ok(()) => self.footer.flash(done.to_string(), tx),
-            Err(e) => self.footer.flash(format!("clipboard: {e}"), tx),
-        }
-    }
-
     /// Execute a fired leader leaf. Stubs for surfaces that land in later
     /// phases flash a "coming soon" notice instead of silently doing nothing.
     fn execute_leader_action(&mut self, action: LeaderAction, tx: &AppTx) {
@@ -2036,14 +2028,14 @@ impl EditorScreen {
             }
             LeaderAction::NoteCopyWikilink => {
                 let link = format!("[[{}]]", self.path.get_clean_name());
-                self.copy_to_clipboard(link, "wikilink copied", tx);
+                crate::components::yank(link, "wikilink copied", tx);
             }
             LeaderAction::NoteExport => {
                 self.footer.flash("export — coming soon".to_string(), tx);
             }
             LeaderAction::NoteYankPath => {
                 let path = self.path.to_string();
-                self.copy_to_clipboard(path, "note path copied", tx);
+                crate::components::yank(path, "note path copied", tx);
             }
 
             // +ask — the Ask workspace's conversation actions.

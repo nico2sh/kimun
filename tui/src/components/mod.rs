@@ -41,8 +41,26 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 
 use crate::components::event_state::EventState;
-use crate::components::events::{AppTx, InputEvent};
+use crate::components::events::{AppEvent, AppTx, InputEvent};
 use crate::settings::themes::Theme;
+
+/// Put `text` on the OS clipboard and flash the outcome: `done_msg` on
+/// success, `"clipboard: {e}"` on failure. The shared seam for one-shot
+/// yanks (query results, ask answers/sources, editor wikilinks/paths) that
+/// open a fresh `arboard::Clipboard` per call and report through
+/// `AppEvent::FlashMessage`.
+///
+/// `TextEditorComponent` does *not* use this: it caches its own
+/// `arboard::Clipboard` handle (see `text_editor/mod.rs`) because it copies
+/// on every selection change and can't afford to reopen the clipboard each
+/// time — that hot path stays as-is.
+pub fn yank(text: String, done_msg: impl Into<String>, tx: &AppTx) {
+    let msg = match arboard::Clipboard::new().and_then(|mut c| c.set_text(text)) {
+        Ok(()) => done_msg.into(),
+        Err(e) => format!("clipboard: {e}"),
+    };
+    tx.send(AppEvent::FlashMessage(msg)).ok();
+}
 
 /// Centre a popup occupying `percent_x`% × `percent_y`% of `area`.
 /// A centered rect of fixed cell size, clamped to `r` — the counterpart to
@@ -89,6 +107,25 @@ pub trait Component {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn yank_flashes_outcome_on_tx() {
+        // Headless test runs may have no OS clipboard, so this asserts a
+        // FlashMessage arrives either way — success or the "clipboard: {e}"
+        // error form — not which one.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        yank("hello".to_string(), "hello copied", &tx);
+        let ev = rx.try_recv().expect("yank sends exactly one event");
+        match ev {
+            AppEvent::FlashMessage(msg) => {
+                assert!(
+                    msg == "hello copied" || msg.starts_with("clipboard: "),
+                    "unexpected flash message: {msg}"
+                );
+            }
+            other => panic!("expected FlashMessage, got {other:?}"),
+        }
+    }
 
     #[test]
     fn centered_rect_is_centered() {

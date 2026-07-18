@@ -483,17 +483,14 @@ impl ThreadPanel {
     }
 
     /// Copy the selected turn's answer (citation markers stripped) to the OS
-    /// clipboard, reusing the editor's `arboard` seam. Leader `a y`.
+    /// clipboard, reusing the shared [`crate::components::yank`] seam.
+    /// Leader `a y`.
     pub(crate) fn copy_selected(&self, tx: &AppTx) {
         let Some(turn) = self.thread.selected() else {
             return;
         };
         let text = citations::strip(&turn.answer);
-        let msg = match arboard::Clipboard::new().and_then(|mut c| c.set_text(text)) {
-            Ok(()) => "answer copied".to_string(),
-            Err(e) => format!("clipboard: {e}"),
-        };
-        tx.send(AppEvent::FlashMessage(msg)).ok();
+        crate::components::yank(text, "answer copied", tx);
     }
 
     /// Open the create-note dialog pre-filled with the selected turn saved as
