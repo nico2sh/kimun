@@ -653,18 +653,14 @@ impl SourcesPanel {
         }
     }
 
-    /// Copy the selected source's path to the OS clipboard, reusing the same
-    /// `arboard` seam `ThreadPanel` and the FIND drawer use.
+    /// Copy the selected source's path to the OS clipboard, reusing the
+    /// shared [`crate::components::yank`] seam `ThreadPanel` and the FIND
+    /// drawer use.
     fn yank_selected_path(&self, tx: &AppTx) {
         let Some(source) = self.selected_source() else {
             return;
         };
-        let text = source.path.to_string();
-        let msg = match arboard::Clipboard::new().and_then(|mut c| c.set_text(text)) {
-            Ok(()) => "path copied".to_string(),
-            Err(e) => format!("clipboard: {e}"),
-        };
-        tx.send(AppEvent::FlashMessage(msg)).ok();
+        crate::components::yank(source.path.to_string(), "path copied", tx);
     }
 
     pub fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
