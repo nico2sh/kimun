@@ -11,8 +11,8 @@ use ratatui::widgets::Paragraph;
 
 use crate::app_screen::ask::AskCoordinator;
 use crate::app_screen::editor_input::{
-    Classification, CycleDir, DialogRequest, EditorIntent, EditorOp, InputCtx, OverlayOpen,
-    PanelFallback, classify,
+    Classification, CycleDir, EditorIntent, EditorOp, InputCtx, OverlayOpen, PanelFallback,
+    classify,
 };
 use crate::app_screen::overlay_host::OverlayHost;
 use crate::app_screen::panel_set::PanelSet;
@@ -758,12 +758,12 @@ impl EditorScreen {
                 if self.overlays.active_kind() == Some(kind) {
                     self.dismiss_overlay();
                 } else {
-                    self.open_overlay_for(open, tx);
+                    self.open_overlay(open, tx);
                 }
                 EventState::Consumed
             }
-            EditorIntent::OpenDialog(request) => {
-                self.open_dialog_for(request);
+            EditorIntent::OpenOverlay(open) => {
+                self.open_overlay(open, tx);
                 EventState::Consumed
             }
             EditorIntent::Overlay => self.overlays.handle_input(event, tx),
@@ -845,7 +845,6 @@ impl EditorScreen {
                     )));
                 }
             }
-            EditorOp::OpenWorkspaceSwitcher => self.open_workspace_switcher(),
             EditorOp::FindInBuffer => {
                 if let Some(ed) = self.panels.editor_mut() {
                     ed.open_or_advance_search();
@@ -856,44 +855,106 @@ impl EditorScreen {
                     ed.apply_text_action(text_action);
                 }
             }
-            EditorOp::OpenHelp => self.open_help(),
-            EditorOp::OpenQueryHelp => self.open_query_help(),
             EditorOp::OpenAsk => self.open_ask_workspace(tx),
         }
     }
 
-    fn open_overlay_for(&mut self, open: OverlayOpen, tx: &AppTx) {
-        match open {
-            OverlayOpen::SearchBrowser => self.open_search_browser(tx),
-            OverlayOpen::FileFinder => self.open_file_finder(tx),
-            OverlayOpen::SavedSearches => self.open_saved_searches(tx),
-            OverlayOpen::CommandPalette => self.open_command_palette(tx),
+    /// The one door for every overlay the screen can open: guard (no overlay
+    /// over an open overlay), build the recipe, present it. Opens that need
+    /// more than construction (the Ask workspace's capability gate, drawer
+    /// views) are not overlays and keep their own methods.
+    fn open_overlay(&mut self, open: OverlayOpen, tx: &AppTx) {
+        if self.overlays.is_open() {
+            return;
         }
+        let overlay = self.build_overlay(open, tx);
+        self.present_overlay(overlay);
     }
 
-    fn open_dialog_for(&mut self, request: DialogRequest) {
-        match request {
-            DialogRequest::SortQuery => {
-                let (field, order) = self.panels.query().current_order();
-                self.present_overlay(Box::new(ActiveDialog::sort(
-                    SortTarget::Query,
-                    field,
-                    order,
-                    false,
-                )));
+    /// Construction recipes for [`OverlayOpen`] — the single site answering
+    /// "what overlays exist and how is each built". Reads screen state (vault,
+    /// settings, open note, panel sort/order seeds) but never mutates it;
+    /// presentation and the open-guard live in [`Self::open_overlay`].
+    fn build_overlay(&self, open: OverlayOpen, tx: &AppTx) -> Box<dyn Overlay> {
+        let s = self.settings.read().unwrap();
+        match open {
+            // The note-browser modal over the full-text search provider
+            // (Ctrl-K and the leader's find paths).
+            OverlayOpen::SearchBrowser => {
+                let provider = resolving_search_source(
+                    self.vault.clone(),
+                    s.current_last_paths(),
+                    Some(self.path.clone()),
+                );
+                Box::new(NoteBrowserModal::new(
+                    "Note Browser",
+                    BrowserScope::Query,
+                    provider,
+                    self.vault.clone(),
+                    s.key_bindings.clone(),
+                    s.icons(),
+                    tx.clone(),
+                ))
             }
-            DialogRequest::SortSidebar => {
+            // The note-browser modal over the fuzzy file finder (Ctrl-O and
+            // the leader's `f f`).
+            OverlayOpen::FileFinder => {
+                let current_dir = self.path.get_parent_path().0;
+                let provider = FileFinderProvider::new(self.vault.clone(), current_dir);
+                Box::new(NoteBrowserModal::new(
+                    "Find Note",
+                    BrowserScope::Files,
+                    provider,
+                    self.vault.clone(),
+                    s.key_bindings.clone(),
+                    s.icons(),
+                    tx.clone(),
+                ))
+            }
+            // F3 and leader `f s`.
+            OverlayOpen::SavedSearches => Box::new(SavedSearchesModal::new(
+                self.vault.clone(),
+                s.key_bindings.clone(),
+                s.icons(),
+                tx.clone(),
+            )),
+            // Ctrl+Shift+P and leader `p`.
+            OverlayOpen::CommandPalette => {
+                let gateway = s
+                    .key_bindings
+                    .first_combo_for(&ActionShortcuts::Leader)
+                    .unwrap_or_else(|| "leader".to_string());
+                Box::new(
+                    crate::components::command_palette::CommandPaletteModal::new(
+                        &s.leader_tree(),
+                        &gateway,
+                        s.icons(),
+                        tx.clone(),
+                    ),
+                )
+            }
+            // SwitchWorkspace action and leader `v s`.
+            OverlayOpen::WorkspaceSwitcher => Box::new(ActiveDialog::workspace_switcher(&s)),
+            // Leader `v t` and inside CFG via `t`; the full settings screen
+            // stays on the OpenSettings binding.
+            OverlayOpen::ThemePicker => Box::new(ActiveDialog::theme_picker(&s)),
+            OverlayOpen::Help => Box::new(ActiveDialog::help(&s.key_bindings)),
+            OverlayOpen::QueryHelp => Box::new(ActiveDialog::query_syntax()),
+            OverlayOpen::Cheatsheet => Box::new(ActiveDialog::cheatsheet(&s)),
+            OverlayOpen::SortQuery => {
+                let (field, order) = self.panels.query().current_order();
+                Box::new(ActiveDialog::sort(SortTarget::Query, field, order, false))
+            }
+            OverlayOpen::SortSidebar => {
                 let (field, order) = self.panels.sidebar().current_sort();
-                self.present_overlay(Box::new(ActiveDialog::sort(
+                Box::new(ActiveDialog::sort(
                     SortTarget::Sidebar,
                     field,
                     order,
                     self.panels.sidebar().group_dirs(),
-                )));
+                ))
             }
-            DialogRequest::QuickNote => {
-                self.present_overlay(Box::new(ActiveDialog::quick_note(self.vault.clone())));
-            }
+            OverlayOpen::QuickNote => Box::new(ActiveDialog::quick_note(self.vault.clone())),
         }
     }
 
@@ -1496,63 +1557,6 @@ impl EditorScreen {
         });
     }
 
-    /// Open the workspace switcher (SwitchWorkspace action and leader `v s`).
-    /// No-op while an overlay is open.
-    fn open_workspace_switcher(&mut self) {
-        if self.overlays.is_open() {
-            return;
-        }
-        let s = self.settings.read().unwrap();
-        let dialog = ActiveDialog::workspace_switcher(&s);
-        drop(s);
-        self.present_overlay(Box::new(dialog));
-    }
-
-    /// Open the command palette (Ctrl+Shift+P and leader `p`). No-op while
-    /// an overlay is open.
-    fn open_command_palette(&mut self, tx: &AppTx) {
-        if self.overlays.is_open() {
-            return;
-        }
-        let (gateway, icons) = {
-            let s = self.settings.read().unwrap();
-            (
-                s.key_bindings
-                    .first_combo_for(&ActionShortcuts::Leader)
-                    .unwrap_or_else(|| "leader".to_string()),
-                s.icons(),
-            )
-        };
-        let tree = {
-            let s = self.settings.read().unwrap();
-            s.leader_tree()
-        };
-        let modal = crate::components::command_palette::CommandPaletteModal::new(
-            &tree,
-            &gateway,
-            icons,
-            tx.clone(),
-        );
-        self.present_overlay(Box::new(modal));
-    }
-
-    /// Open the Saved Searches modal (F3 and leader `f s`). No-op while an
-    /// overlay is open.
-    fn open_saved_searches(&mut self, tx: &AppTx) {
-        if self.overlays.is_open() {
-            return;
-        }
-        let s = self.settings.read().unwrap();
-        let modal = SavedSearchesModal::new(
-            self.vault.clone(),
-            s.key_bindings.clone(),
-            s.icons(),
-            tx.clone(),
-        );
-        drop(s);
-        self.present_overlay(Box::new(modal));
-    }
-
     /// Switch to the Ask workspace and drop the cursor on the composer (the
     /// Ask shortcut / leader `a a`). The rail hides the ASK entry when the
     /// server can't answer questions, so this shortcut is the only remaining
@@ -1577,98 +1581,6 @@ impl EditorScreen {
         }
         self.panels.ask_mut().focus_composer();
         self.panels.focus(PanelKind::Editor);
-    }
-
-    /// Open the live theme picker (leader `v c` and the CFG rail item). The
-    /// full settings screen stays on the OpenSettings binding. No-op while an
-    /// overlay is open.
-    fn open_theme_picker(&mut self) {
-        if self.overlays.is_open() {
-            return;
-        }
-        let s = self.settings.read().unwrap();
-        let dialog = ActiveDialog::theme_picker(&s);
-        drop(s);
-        self.present_overlay(Box::new(dialog));
-    }
-
-    /// Open the flat key-bindings help (F1). No-op while an overlay is open.
-    fn open_help(&mut self) {
-        if self.overlays.is_open() {
-            return;
-        }
-        let s = self.settings.read().unwrap();
-        let dialog = ActiveDialog::help(&s.key_bindings);
-        drop(s);
-        self.present_overlay(Box::new(dialog));
-    }
-
-    /// Open the search query syntax reference (F1 while the Find panel is
-    /// focused). No-op while an overlay is open.
-    fn open_query_help(&mut self) {
-        if self.overlays.is_open() {
-            return;
-        }
-        self.present_overlay(Box::new(ActiveDialog::query_syntax()));
-    }
-
-    /// Open the full leader-tree cheatsheet (leader `?`). No-op while an
-    /// overlay is open.
-    fn open_cheatsheet(&mut self) {
-        if self.overlays.is_open() {
-            return;
-        }
-        let s = self.settings.read().unwrap();
-        let dialog = ActiveDialog::cheatsheet(&s);
-        drop(s);
-        self.present_overlay(Box::new(dialog));
-    }
-
-    /// Open the note-browser modal over the full-text search provider
-    /// (Ctrl-K and the leader's find paths). No-op while an overlay is open.
-    fn open_search_browser(&mut self, tx: &AppTx) {
-        if self.overlays.is_open() {
-            return;
-        }
-        let s = self.settings.read().unwrap();
-        let provider = resolving_search_source(
-            self.vault.clone(),
-            s.current_last_paths(),
-            Some(self.path.clone()),
-        );
-        let modal = NoteBrowserModal::new(
-            "Note Browser",
-            BrowserScope::Query,
-            provider,
-            self.vault.clone(),
-            s.key_bindings.clone(),
-            s.icons(),
-            tx.clone(),
-        );
-        drop(s);
-        self.present_overlay(Box::new(modal));
-    }
-
-    /// Open the note-browser modal over the fuzzy file finder (Ctrl-O and
-    /// the leader's `f f`). No-op while an overlay is open.
-    fn open_file_finder(&mut self, tx: &AppTx) {
-        if self.overlays.is_open() {
-            return;
-        }
-        let current_dir = self.path.get_parent_path().0;
-        let provider = FileFinderProvider::new(self.vault.clone(), current_dir);
-        let s = self.settings.read().unwrap();
-        let modal = NoteBrowserModal::new(
-            "Find Note",
-            BrowserScope::Files,
-            provider,
-            self.vault.clone(),
-            s.key_bindings.clone(),
-            s.icons(),
-            tx.clone(),
-        );
-        drop(s);
-        self.present_overlay(Box::new(modal));
     }
 
     /// Follow the wikilink / tag under the editor cursor (FollowLink action,
@@ -1797,14 +1709,14 @@ impl EditorScreen {
 
             // +find — list-style leaves route to today's pickers; the
             // telescope modal takes them over in phase 08.
-            LeaderAction::FindFiles => self.open_file_finder(tx),
-            LeaderAction::FindGrep => self.open_search_browser(tx),
+            LeaderAction::FindFiles => self.open_overlay(OverlayOpen::FileFinder, tx),
+            LeaderAction::FindGrep => self.open_overlay(OverlayOpen::SearchBrowser, tx),
             LeaderAction::FindTags => self.open_drawer_view(DrawerView::Tags, tx),
             LeaderAction::FindBacklinks => {
                 self.open_find_with_query("<{note}".to_string(), None, tx)
             }
-            LeaderAction::FindSaved => self.open_saved_searches(tx),
-            LeaderAction::FindRecent => self.open_search_browser(tx),
+            LeaderAction::FindSaved => self.open_overlay(OverlayOpen::SavedSearches, tx),
+            LeaderAction::FindRecent => self.open_overlay(OverlayOpen::SearchBrowser, tx),
             LeaderAction::FindHeadings => self.open_drawer_view(DrawerView::Outline, tx),
 
             // +note
@@ -1862,7 +1774,7 @@ impl EditorScreen {
             }
 
             // +vault
-            LeaderAction::VaultSwitch => self.open_workspace_switcher(),
+            LeaderAction::VaultSwitch => self.open_overlay(OverlayOpen::WorkspaceSwitcher, tx),
             LeaderAction::VaultReindex => {
                 // Fast reindex right here — the same pipeline the Settings
                 // screen runs, result surfaced as a footer flash.
@@ -1882,7 +1794,7 @@ impl EditorScreen {
             // `v c` opens the config panel (the CFG drawer); `v t` opens the
             // theme picker directly (also reachable inside CFG via `t`).
             LeaderAction::VaultConfig => self.open_drawer_view(DrawerView::Config, tx),
-            LeaderAction::VaultTheme => self.open_theme_picker(),
+            LeaderAction::VaultTheme => self.open_overlay(OverlayOpen::ThemePicker, tx),
             LeaderAction::VaultPreferences => {
                 tx.send(AppEvent::OpenScreen(ScreenEvent::OpenPreferences))
                     .ok();
@@ -1953,8 +1865,8 @@ impl EditorScreen {
                 self.panels.focus(PanelKind::Drawer);
             }
 
-            LeaderAction::Palette => self.open_command_palette(tx),
-            LeaderAction::Help => self.open_cheatsheet(),
+            LeaderAction::Palette => self.open_overlay(OverlayOpen::CommandPalette, tx),
+            LeaderAction::Help => self.open_overlay(OverlayOpen::Cheatsheet, tx),
 
             LeaderAction::NoteSave => {
                 // Flush the periodic autosave immediately (no manual-save
