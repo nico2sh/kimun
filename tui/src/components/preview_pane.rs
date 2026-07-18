@@ -447,6 +447,9 @@ fn build_lines(
     let mut offset = 0usize;
     for raw in text.split_inclusive('\n') {
         let stripped = raw.strip_suffix('\n').unwrap_or(raw);
+        // CRLF notes: drop the carriage return too, so it never reaches
+        // wrapping or highlight matching as a phantom trailing char.
+        let stripped = stripped.strip_suffix('\r').unwrap_or(stripped);
         let line_range = offset..offset + stripped.len();
         offset += raw.len();
 
