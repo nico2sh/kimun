@@ -35,7 +35,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, Mo
     MouseEventKind};
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::widgets::{ListItem, Paragraph};
+use ratatui::widgets::{Block, Borders, ListItem, Paragraph};
 
 use crate::ask::{AskSource, locate};
 use crate::components::event_state::EventState;
@@ -694,18 +694,26 @@ impl SourcesPanel {
             return;
         }
 
-        // A one-row filter input on top when the list half has been left for the
-        // input (typing filters the turn's sources by heading/path).
-        let body = if self.list.focus() == Focus::Input {
-            let rows = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Length(1), Constraint::Min(0)])
-                .split(inner);
-            self.list.render_query(f, rows[0], theme, focused);
-            rows[1]
-        } else {
-            inner
-        };
+        // A bordered filter box on top, converged with FIND's query searchbox
+        // (query_panel.rs): same `Length(3)` box chrome, same `render_query`
+        // call. Always visible — like FIND — rather than only once the user
+        // has left list focus, so the `/` filter affordance always reads.
+        // `render_query` itself dims the field and hides the cursor outside
+        // Input sub-focus (the List-focus work), so no extra styling is
+        // needed here beyond the shared border-focus style.
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(3), Constraint::Min(0)])
+            .split(inner);
+        let filter_block = Block::default()
+            .title(" filter ")
+            .borders(Borders::ALL)
+            .border_style(theme.border_style(focused))
+            .style(theme.panel_style());
+        let filter_inner = filter_block.inner(rows[0]);
+        f.render_widget(filter_block, rows[0]);
+        self.list.render_query(f, filter_inner, theme, focused);
+        let body = rows[1];
 
         // Full: the preview takes the whole body, no list visible. The wheel
         // scrolls the content from anywhere in the panel.
@@ -1453,7 +1461,9 @@ mod tests {
             &noop_tx(),
         );
         p.settle().await;
-        let text = buffer_text(&mut p, 60, 8);
+        // Height grown to fit the always-visible filter box (Length(3)) above
+        // the list plus both two-line rows.
+        let text = buffer_text(&mut p, 60, 11);
         assert!(text.contains("1 "), "rank 1 leads the first row: {text}");
         assert!(text.contains("2 "), "rank 2 leads the second row: {text}");
         assert!(text.contains("90%"), "score percent shown: {text}");
@@ -1464,6 +1474,41 @@ mod tests {
             "date \u{b7} heading separation: {text}"
         );
         assert!(text.contains("Afternoon"), "heading kept: {text}");
+    }
+
+    /// Converged with FIND (query_panel.rs): the filter field is a bordered
+    /// box titled "filter", always visible — even before the user leaves list
+    /// focus for the input — not a bare text line that only appears once `/`
+    /// or `i` is pressed.
+    #[tokio::test]
+    async fn filter_box_is_bordered_and_always_visible() {
+        let mut p = test_panel().await;
+        p.set_turn(1, vec![source("a.md", "Alpha", 0.9, "alpha body")], &noop_tx());
+        p.settle().await;
+
+        // Sources opens on the list (CONTEXT.md "List focus"), but the filter
+        // box must already be on screen — the pre-convergence behavior only
+        // rendered it once focus moved to Input.
+        assert_eq!(p.list.focus(), Focus::List, "Sources opens on the list");
+        let text = buffer_text(&mut p, 40, 10);
+        assert!(
+            text.contains("filter"),
+            "filter box shows in list focus, before `/`/`i`: {text}"
+        );
+        assert!(
+            text.contains('\u{250c}') || text.contains('\u{2500}'),
+            "filter field is boxed (bordered), not a bare line: {text}"
+        );
+
+        // Same boxed chrome once the user reveals the input — no layout
+        // change, just the (already-existing) focused/unfocused input style.
+        p.handle_input(&InputEvent::Key(key(KeyCode::Char('/'))), &noop_tx());
+        assert_eq!(p.list.focus(), Focus::Input);
+        let text = buffer_text(&mut p, 40, 10);
+        assert!(
+            text.contains("filter"),
+            "filter box stays visible in input focus: {text}"
+        );
     }
 
     #[tokio::test]
