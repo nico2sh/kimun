@@ -1,6 +1,11 @@
 //! Bearer-token auth. When a token is configured, every `/api` request must
 //! present `Authorization: Bearer <token>`. When none is configured (localhost
 //! dev), the server is open. `/health` is never gated so liveness probes work.
+//!
+//! The web UI's session-cookie half lives in [`session`] — two mechanisms,
+//! one token source.
+
+pub(crate) mod session;
 
 use std::sync::Arc;
 
