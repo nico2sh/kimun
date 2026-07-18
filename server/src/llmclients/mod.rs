@@ -227,19 +227,45 @@ fn gemini_contents(messages: Vec<ChatMessage>) -> Vec<GeminiContent> {
 /// answer may supplement with common knowledge — uncited text IS the signal
 /// that a claim is general knowledge, so the two never blur.
 ///
-/// When `history` is non-empty the prompt gains a follow-up-handling line: the
-/// preceding turns ride in the chat transcript (see [`chat_messages`]), and a
-/// terse reply ("yes", "go on", "the second one") only makes sense against
-/// them — so the model is told to read the short reply as accepting/continuing
-/// the conversation and to answer the IMPLIED request, drawing on the context
-/// chunks where they fit and the conversation itself otherwise. The line is
-/// omitted for a first turn (empty history), where there is nothing to resolve
-/// a terse reply against.
+/// When `history` is non-empty the prompt gains two mid-conversation aids: a
+/// follow-up-handling line and a one-line recap of the assistant's last message.
+/// The preceding turns ride in the chat transcript (see [`chat_messages`]), and
+/// a terse reply ("yes", "go on", "the second one") only makes sense against
+/// the assistant's PREVIOUS message — usually its closing question or offer. The
+/// follow-up line binds the reply to that message explicitly (continue from it;
+/// do NOT re-answer the user's earlier question), and the recap quotes the tail
+/// of that message immediately before `Question:` so the offer sits physically
+/// next to the terse reply instead of several messages up the transcript. Both
+/// are omitted for a first turn (empty history), where there is nothing to
+/// resolve a terse reply against — the empty-history prompt is byte-identical to
+/// before.
 /// Core's chunk-breadcrumb separator (ASCII Unit Separator, U+001F): the
 /// heading path is flattened into the chunk title joined with this control
 /// char. Mirrored here (the server does not depend on `kimun_core`) so the
 /// prompt can present it as a readable path rather than a raw control char.
 const BREADCRUMB_SEP: char = '\u{1f}';
+
+/// Chars quoted from the END of the assistant's last message in the recap line
+/// (see [`build_prompt`]). ~200 chars is enough to carry a closing question or
+/// offer without pulling in the whole answer.
+const RECAP_TAIL_CHARS: usize = 200;
+
+/// The last `max` chars of `s`, cut on a char boundary (never mid-codepoint).
+/// Shorter strings pass through whole. Used for the mid-conversation recap,
+/// which quotes the END of the assistant's previous message (where its offer
+/// or closing question lives).
+fn tail_chars(s: &str, max: usize) -> String {
+    let total = s.chars().count();
+    if total <= max {
+        return s.to_string();
+    }
+    let start = s
+        .char_indices()
+        .nth(total - max)
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    s[start..].to_string()
+}
 
 fn build_prompt(
     question: &str,
@@ -276,11 +302,27 @@ fn build_prompt(
     }
 
     // Only present mid-conversation: a terse reply is meaningless on a first
-    // turn, so the guidance would just be noise there.
+    // turn, so the guidance would just be noise there. The line binds a short
+    // reply to the assistant's PREVIOUS message (its closing question/offer),
+    // not to the user's earlier question — the failure this fixes was the model
+    // re-answering that earlier question instead of continuing from its offer.
     let followup_line = if history.is_empty() {
         String::new()
     } else {
-        "If the user's message is a short reply to the conversation above (e.g. 'yes', 'go on', 'the second one'), interpret it against that conversation and answer the request it implies, using the context below where it fits and the conversation itself otherwise.\n".to_string()
+        "If the user's latest message is a short or affirmative reply (e.g. 'yes', 'go on', 'the second one'), it responds to your PREVIOUS message above — usually its closing question or offer. Continue from THAT message: carry out what it proposed, and do NOT re-answer the user's earlier question. Draw on the context below where it fits and the conversation itself otherwise.\n".to_string()
+    };
+
+    // Mid-conversation, quote the tail of the assistant's last message right
+    // before `Question:` so its closing offer sits next to the terse reply
+    // instead of several messages up the transcript. Empty history → no recap,
+    // keeping the first-turn prompt byte-identical to before. Citation markers
+    // are already stripped from history answers by the client.
+    let recap = match history.last() {
+        Some((_, prev_a)) => {
+            let tail = tail_chars(prev_a, RECAP_TAIL_CHARS);
+            format!("Your previous message ended: \"{tail}\"\n")
+        }
+        None => String::new(),
     };
 
     format!(
@@ -295,7 +337,7 @@ Context:
 ---------------------
 {context_string}---------------------
 
-Question: {question}"#
+{recap}Question: {question}"#
     )
 }
 
@@ -537,30 +579,95 @@ mod tests {
     }
 
     #[test]
-    fn followup_instruction_appears_only_with_conversation_history() {
+    fn followup_instruction_binds_short_replies_to_the_assistants_last_message() {
         let context = numbered(vec![chunk("/a.md", "A", "body")]);
 
         // First turn (empty history): no follow-up guidance — a terse reply is
         // meaningless with nothing to resolve it against.
         let first = build_prompt("yes", &[], &context);
         assert!(
-            !first.contains("short reply"),
+            !first.contains("your PREVIOUS message"),
             "empty history must not add the follow-up line: {first}"
         );
 
-        // Mid-conversation: the guidance to interpret a terse reply against the
-        // conversation is present.
+        // Mid-conversation: the guidance must bind the terse reply to the
+        // ASSISTANT'S PREVIOUS message and forbid re-answering the earlier
+        // question — the strengthened instruction the fix installs.
         let history = vec![(
             "Should I explain the setup steps?".to_string(),
             "There are three steps; want the details?".to_string(),
         )];
         let mid = build_prompt("yes", &history, &context);
         assert!(
-            mid.contains("short reply"),
-            "history present must add the follow-up line: {mid}"
+            mid.contains("your PREVIOUS message"),
+            "follow-up line must bind the reply to the assistant's previous message: {mid}"
+        );
+        assert!(
+            mid.contains("do NOT re-answer the user's earlier question"),
+            "follow-up line must forbid re-answering the earlier question: {mid}"
         );
         // The raw current question is still the prompt's Question, untouched.
         assert!(mid.contains("Question: yes"));
+    }
+
+    #[test]
+    fn recap_quotes_the_last_answers_tail_only_with_history() {
+        let context = numbered(vec![chunk("/a.md", "A", "body")]);
+
+        // First turn: no recap line at all — byte-identical first-turn prompt.
+        let first = build_prompt("yes", &[], &context);
+        assert!(
+            !first.contains("Your previous message ended:"),
+            "empty history must not add a recap line: {first}"
+        );
+
+        // Mid-conversation: the recap quotes the assistant's last message,
+        // carrying its END (the closing offer) right before the Question.
+        let closing = "Would you like tips on planting or caring for rosemary in your raised beds?";
+        let history = vec![(
+            "tell me more about rosemary seeds".to_string(),
+            format!("Rosemary seeds are slow to germinate. {closing}"),
+        )];
+        let mid = build_prompt("yes", &history, &context);
+        assert!(
+            mid.contains("Your previous message ended:"),
+            "history present must add a recap line: {mid}"
+        );
+        assert!(
+            mid.contains(closing),
+            "recap must carry the answer's TAIL (its closing offer): {mid}"
+        );
+        // The recap sits immediately before the (untouched) Question.
+        let recap_at = mid.find("Your previous message ended:").unwrap();
+        let question_at = mid.find("Question: yes").unwrap();
+        assert!(recap_at < question_at, "recap precedes Question: {mid}");
+    }
+
+    #[test]
+    fn recap_keeps_only_the_tail_of_a_long_answer_on_a_char_boundary() {
+        let context = numbered(vec![chunk("/a.md", "A", "body")]);
+        // A long multi-byte opening then a distinctive closing offer: the recap
+        // drops the opening and keeps the closing, cut on a char boundary.
+        let opening = "é".repeat(RECAP_TAIL_CHARS);
+        let closing = "SHALL_I_CONTINUE?";
+        let history = vec![(
+            "q".to_string(),
+            format!("{opening} {closing}"),
+        )];
+        let mid = build_prompt("yes", &history, &context);
+        assert!(mid.contains(closing), "tail (offer) kept: {mid}");
+        // The full opening cannot survive — it is longer than the tail budget.
+        let recap_es = mid
+            .lines()
+            .find(|l| l.starts_with("Your previous message ended:"))
+            .unwrap()
+            .chars()
+            .filter(|c| *c == 'é')
+            .count();
+        assert!(
+            recap_es < RECAP_TAIL_CHARS,
+            "opening trimmed to fit the tail budget: {recap_es}"
+        );
     }
 
     /// A captured request: headers plus the raw JSON body the client sent.

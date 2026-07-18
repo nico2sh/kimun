@@ -189,12 +189,16 @@ const RANGE_HIGH_PERCENTILE: f64 = 0.95;
 /// exists inside it, nothing is cut.
 const DROP_WINDOW_MIN: usize = 3;
 const DROP_WINDOW_MAX: usize = 30;
-/// Max chars of a previous answer folded into a conversation-conditioned
-/// retrieval query ([`build_retrieval_query`]). An answer can run arbitrarily
-/// long; past this it drowns the rest of the query in the embedding. Sized at
-/// ~⅔ of [`CHUNK_TARGET`] (the embedding window) so the folded turn stays near
-/// one chunk's worth of topical signal and the fresh question still counts.
-const HISTORY_ANSWER_BUDGET: usize = 500;
+/// Chars of a previous answer folded into a conversation-conditioned retrieval
+/// query ([`build_retrieval_query`]), split HEAD + TAIL. An answer can run
+/// arbitrarily long; past `HEAD + TAIL` (~⅔ of [`CHUNK_TARGET`], the embedding
+/// window) it drowns the rest of the query. Split head+tail rather than a plain
+/// prefix: an answer's topic anchor sits at its OPENING while its
+/// offer/conclusion — the thing a terse "yes" actually accepts — sits at its
+/// END, and a head-only cut dropped that end, so retrieval reinforced
+/// re-answering the earlier question instead of continuing from the offer.
+const HISTORY_ANSWER_HEAD: usize = 150;
+const HISTORY_ANSWER_TAIL: usize = 350;
 
 /// The query pipeline and its indexing half: the one door to everything the
 /// server does with a vault's content. Owns the embedder, the vector store, the
@@ -865,26 +869,44 @@ fn largest_drop_cut_len(sorted: &[ScoredChunk], (window_min, window_max): (usize
 ///
 /// Only the last turn is used (not all of `history`): it is the exchange the
 /// follow-up actually responds to, and piling on older turns would dilute the
-/// embedding. The previous answer is truncated to [`HISTORY_ANSWER_BUDGET`]
-/// chars — an answer can be long, and past that it swamps the query's signal.
-/// Deliberately provider-agnostic and LLM-free: no query-rewrite round-trip, so
-/// this works identically on every configured backend and adds no latency.
+/// embedding. The previous answer is condensed to at most
+/// `HISTORY_ANSWER_HEAD + HISTORY_ANSWER_TAIL` chars — END-biased
+/// ([`condense_head_tail`]),
+/// keeping the answer's opening AND its closing: the offer/conclusion a terse
+/// "yes" responds to lives at the END, so a head-only cut steered retrieval
+/// back onto the earlier question. Deliberately provider-agnostic and LLM-free:
+/// no query-rewrite round-trip, so this works identically on every configured
+/// backend and adds no latency.
 fn build_retrieval_query(question: &str, history: &[(String, String)]) -> String {
     let Some((prev_q, prev_a)) = history.last() else {
         return question.to_string();
     };
-    let prev_a = truncate_chars(prev_a, HISTORY_ANSWER_BUDGET);
-    // prev question + truncated prev answer first, current question last.
+    let prev_a = condense_head_tail(prev_a, HISTORY_ANSWER_HEAD, HISTORY_ANSWER_TAIL);
+    // prev question + condensed prev answer first, current question last.
     format!("{prev_q}\n{prev_a}\n{question}")
 }
 
-/// Truncate `s` to at most `max` chars on a char boundary (never mid-codepoint,
-/// so the result is always valid UTF-8 the embedder can accept).
-fn truncate_chars(s: &str, max: usize) -> String {
-    match s.char_indices().nth(max) {
-        Some((idx, _)) => s[..idx].to_string(),
-        None => s.to_string(),
+/// Condense `s` to its first `head` + last `tail` chars, joined by an ellipsis,
+/// when it is longer than `head + tail`; shorter strings pass through whole.
+/// Cuts on char boundaries only (never mid-codepoint), so the result is always
+/// valid UTF-8 the embedder can accept. End-biased on purpose: an answer's
+/// offer/conclusion lives at its end, and a plain prefix truncation drops it.
+fn condense_head_tail(s: &str, head: usize, tail: usize) -> String {
+    let total = s.chars().count();
+    if total <= head + tail {
+        return s.to_string();
     }
+    let head_end = s
+        .char_indices()
+        .nth(head)
+        .map(|(i, _)| i)
+        .unwrap_or(s.len());
+    let tail_start = s
+        .char_indices()
+        .nth(total - tail)
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    format!("{} … {}", &s[..head_end], &s[tail_start..])
 }
 
 /// Deduplicates embedding results by FlattenedChunk (keeping the highest score
@@ -1731,24 +1753,53 @@ mod tests {
     }
 
     #[test]
-    fn conditioned_query_truncates_a_long_previous_answer() {
-        let long_answer = "x".repeat(HISTORY_ANSWER_BUDGET * 3);
-        let history = vec![("prev q".to_string(), long_answer.clone())];
+    fn conditioned_query_condenses_a_long_previous_answer_keeping_the_tail() {
+        // The offer/conclusion a terse "yes" responds to lives at the END of an
+        // answer. A long answer whose closing carries the offer must have that
+        // TAIL survive condensing — a head-only cut (the old behavior) dropped it
+        // and steered retrieval back onto the earlier question.
+        let budget = HISTORY_ANSWER_HEAD + HISTORY_ANSWER_TAIL;
+        let long_answer = format!(
+            "TOPIC_ANCHOR_OPENING{}WOULD_YOU_LIKE_PLANTING_TIPS",
+            "z".repeat(budget * 3)
+        );
+        let history = vec![("prev q".to_string(), long_answer)];
         let q = build_retrieval_query("yes", &history);
-        // The folded answer is capped: the whole query stays far under the
-        // untruncated length, so a long answer can't drown the question.
-        let xs = q.chars().filter(|c| *c == 'x').count();
-        assert_eq!(xs, HISTORY_ANSWER_BUDGET, "previous answer truncated to the budget");
+        // Both ends survive: the opening topic anchor AND the closing offer.
+        assert!(q.contains("TOPIC_ANCHOR_OPENING"), "head (topic) kept: {q}");
+        assert!(
+            q.contains("WOULD_YOU_LIKE_PLANTING_TIPS"),
+            "tail (offer) kept — the head-only cut dropped this: {q}"
+        );
+        // Still capped: the middle filler is dropped, so the query stays small.
+        let zs = q.chars().filter(|c| *c == 'z').count();
+        assert!(
+            zs < budget,
+            "middle filler condensed away, only head+tail 'z's remain: {zs}"
+        );
         assert!(q.contains("prev q") && q.contains("yes"));
     }
 
     #[test]
-    fn conditioned_query_truncation_is_utf8_safe() {
-        // A multi-byte char sitting on the budget boundary must not panic or
-        // split a codepoint.
-        let history = vec![("q".to_string(), "é".repeat(HISTORY_ANSWER_BUDGET + 10))];
+    fn conditioned_query_condensing_is_utf8_safe_at_both_cuts() {
+        // Multi-byte chars sitting on the head AND tail boundaries must not panic
+        // or split a codepoint. Total kept chars = head + tail (all 'é' here).
+        let history = vec![(
+            "q".to_string(),
+            "é".repeat(HISTORY_ANSWER_HEAD + HISTORY_ANSWER_TAIL + 10),
+        )];
         let q = build_retrieval_query("yes", &history);
-        assert_eq!(q.chars().filter(|c| *c == 'é').count(), HISTORY_ANSWER_BUDGET);
+        assert_eq!(
+            q.chars().filter(|c| *c == 'é').count(),
+            HISTORY_ANSWER_HEAD + HISTORY_ANSWER_TAIL
+        );
+    }
+
+    #[test]
+    fn condense_head_tail_passes_short_strings_through_whole() {
+        // At or under head+tail, nothing is dropped and no ellipsis is inserted.
+        let s = "short answer";
+        assert_eq!(condense_head_tail(s, HISTORY_ANSWER_HEAD, HISTORY_ANSWER_TAIL), s);
     }
 
     /// Embedder that records every `prompt_embedding` query string — the
