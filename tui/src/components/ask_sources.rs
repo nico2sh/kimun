@@ -1,34 +1,41 @@
-//! `SourcesPanel` — the Ask workspace's drawer view (CONTEXT.md: **Ask
-//! workspace**, **Source**; adr/0030): a ranked per-turn source list that
+//! `SourcesPanel` — the Ask workspace's drawer view (CONTEXT.md: **Sources
+//! view**, **Source reader**; adr/0030): a ranked per-turn source list that
 //! reveals the full note — the retrieved section highlighted — in an inline
 //! preview, without leaving the answer.
 //!
-//! Converged with the FIND drawer (`query_panel.rs`): the reveal is the shared
-//! [`PreviewPane`] expand cycle (Collapsed → Context → Full → Collapsed), the
-//! rows are the shared [`RichRow`] (enriched with the source's rank + score),
-//! and the keys mirror FIND's — `Enter` cycles, the FollowLink shortcut opens,
-//! `Ctrl+Y` yanks; plain `l`/`h`/`o`/`y` are the vim extras this list can afford
-//! because (unlike FIND) it has no query input capturing letters.
+//! Composes the shared list engine ([`SearchList`]) the same way the FIND
+//! drawer (`query_panel.rs`) does — the panel no longer hand-rolls
+//! `List`/`ListState`, a cursor, selection styling, plain-letter matching, or a
+//! chord pre-intercept. The engine owns navigation, the (new) filter input,
+//! selection, list scroll, the list-focus verbs (`l`/`h`/`o`/`y`), the
+//! FollowLink / `Ctrl+Y` intercepts, and mouse hit-testing; on top of it the
+//! panel composes the shared [`PreviewPane`] reveal (the **Source reader**) and
+//! the per-turn note-load lifecycle.
 //!
-//! Shape mirrors `SemanticPanel` (`semantic_search.rs`): a plain struct with
-//! inherent `new`/`hint_shortcuts`/`handle_input`/`render`, no `Component`
-//! impl — `DrawerHost` calls it directly.
+//! Unlike FIND (which opens on its query input), the Sources view opens on the
+//! list ([`Focus::List`]) — the first production user of `opening_focus`. Its
+//! rows are per-turn in-memory sources, so it composes `SearchList` directly
+//! (over an in-memory [`RowSource`]) rather than through `QueryListPanel`:
+//! `QueryListPanel` is a bare list with no `PreviewPane` and it swallows the
+//! `ListVerb`/`Intercepted` reactions the reveal is driven by.
 //!
-//! The panel owns an `Arc<NoteVault>` (opening the preview spawns a note load),
-//! so its `handle_input` matches the plain `Component`-style signature — no
-//! vault threaded through by the caller.
+//! The per-turn sources live in the engine's row set (there is no parallel
+//! copy): `set_turn`/`refresh`/`reset` rebuild the engine over the turn's rows,
+//! and the directed reveals (`open_reader`/`focus_source`) and note-load
+//! resolution all read them back through the engine.
 
 use std::ops::Range;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyModifiers, MouseEvent, MouseEventKind};
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
+    MouseEventKind};
+use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::widgets::{List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{ListItem, Paragraph};
 
 use crate::ask::{AskSource, locate};
 use crate::components::event_state::EventState;
@@ -36,9 +43,13 @@ use crate::components::events::{AppEvent, AppTx, AskData, InputEvent};
 use crate::components::panel::panel_block;
 use crate::components::preview_pane::{Highlight, PreviewPane};
 use crate::components::rich_row::RichRow;
+use crate::components::search_list::{
+    Emit, Filter, Focus, KeyReaction, RowSource, SearchList, SearchMouse, SearchRow,
+};
 use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::key_combo::KeyCombo;
+use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
 
 /// Rows a PageUp/PageDown leaves visible from the previous view (shared
@@ -72,26 +83,92 @@ struct LoadedNote {
     content: ReaderContent,
 }
 
-/// The Ask workspace's Sources drawer view: a ranked source list with the
-/// shared [`PreviewPane`] revealing the selected source's note below/over it.
+/// One list-engine row: a per-turn source plus its 1-based rank (its position
+/// in the turn's ranked list — kept on the row so it survives filtering). The
+/// [`SearchRow`] bridge draws it as the shared [`RichRow`] and exposes the
+/// heading + path as the fuzzy-filter haystack.
+#[derive(Clone)]
+struct SourceRow {
+    rank: usize,
+    source: AskSource,
+    /// The `heading path` haystack the list's `Filter::Fuzzy` matches, so the
+    /// new filter input narrows the turn's sources by heading or path text.
+    filter_text: String,
+}
+
+impl SourceRow {
+    fn new(rank: usize, source: AskSource) -> Self {
+        let filter_text = format!("{} {}", source.heading, source.path);
+        Self {
+            rank,
+            source,
+            filter_text,
+        }
+    }
+}
+
+impl SearchRow for SourceRow {
+    fn to_list_item(&self, theme: &Theme, _icons: &Icons, _selected: bool) -> ListItem<'static> {
+        source_row(self.rank, &self.source, theme).into_list_item(theme)
+    }
+
+    fn visual_height(&self) -> u16 {
+        // Title line + dim filename line (the date is inline on the title).
+        2
+    }
+
+    fn match_text(&self) -> Option<&str> {
+        Some(&self.filter_text)
+    }
+}
+
+/// The in-memory [`RowSource`] for one turn: it delivers the fixed source rows
+/// once and never reloads on the query — the query is a *local* fuzzy filter
+/// over the loaded rows (`reload_on_query() == false`).
+struct TurnSource {
+    rows: Vec<SourceRow>,
+}
+
+#[async_trait::async_trait]
+impl RowSource<SourceRow> for TurnSource {
+    async fn load(&self, _query: &str, emit: Emit<SourceRow>) {
+        emit.replace(self.rows.clone());
+    }
+    fn reload_on_query(&self) -> bool {
+        false
+    }
+}
+
+/// The Ask workspace's Sources drawer view: a ranked source list (on the shared
+/// [`SearchList`]) with the shared [`PreviewPane`] revealing the selected
+/// source's note below/over it.
 pub struct SourcesPanel {
     turn_id: Option<u64>,
-    sources: Vec<AskSource>,
-    cursor: usize,
+    /// The shared list engine: query/filter input, result list, selection,
+    /// list scroll, list-focus verbs and intercepts. Rebuilt per turn over a
+    /// fresh in-memory [`TurnSource`].
+    list: SearchList<SourceRow>,
     /// The note-preview surface (expand cycle + content scroll + content
-    /// render), shared with the FIND drawer. Driven with the selected source's
-    /// `VaultPath` and fed the located section byte range as the highlight.
+    /// render), shared with the FIND drawer. Anchored by the located section
+    /// byte range as the highlight.
     preview: PreviewPane,
     /// The note load for the currently-anchored source. `None` until a preview
     /// first opens.
     loaded: Option<LoadedNote>,
-    /// Vault handle for the preview's note load (`ensure_loaded` spawns a
+    /// Vault handle for the preview's note load (`ensure_note_load` spawns a
     /// `vault.get_note_text`). Owned here so `handle_input` needs no vault
     /// passed in.
     vault: Arc<NoteVault>,
-    /// The FollowLink combos (default `Ctrl+N`): opening the selected note in
-    /// the editor, converged with FIND's open shortcut.
-    follow_link_combos: Vec<KeyCombo>,
+    icons: Icons,
+    /// Combos the engine intercepts: FollowLink (open) plus `Ctrl+Y` (yank).
+    /// Registered on every rebuilt list.
+    intercept: Vec<KeyCombo>,
+    /// The `Ctrl+Y` combo, kept to route an [`KeyReaction::Intercepted`] to
+    /// yank (any other intercepted combo is a FollowLink → open).
+    ctrl_y_combo: Option<KeyCombo>,
+    /// Shared sender, filled the first time a `tx` arrives; the engine's redraw
+    /// callback reads it so an async row load wakes the render loop.
+    redraw_tx: Arc<Mutex<Option<AppTx>>>,
     /// The preview content viewport height from the last render — the page size
     /// for PageUp/PageDown content scrolling in the Full preview.
     preview_page: u16,
@@ -99,25 +176,35 @@ pub struct SourcesPanel {
 
 impl SourcesPanel {
     pub fn new(vault: Arc<NoteVault>, key_bindings: &KeyBindings) -> Self {
-        let follow_link_combos = key_bindings
-            .to_hashmap()
-            .get(&ActionShortcuts::FollowLink)
-            .cloned()
-            .unwrap_or_default();
+        let map = key_bindings.to_hashmap();
+        let follow = map.get(&ActionShortcuts::FollowLink).cloned().unwrap_or_default();
+        let ctrl_y_combo = crate::keys::key_event_to_combo(&KeyEvent::new(
+            KeyCode::Char('y'),
+            KeyModifiers::CONTROL,
+        ));
+        let mut intercept = follow;
+        if let Some(c) = ctrl_y_combo {
+            intercept.push(c);
+        }
+        let icons = Icons::new(false);
+        let redraw_tx: Arc<Mutex<Option<AppTx>>> = Arc::new(Mutex::new(None));
+        let list = build_list(Vec::new(), &intercept, &icons, &redraw_tx);
         Self {
             turn_id: None,
-            sources: Vec::new(),
-            cursor: 0,
+            list,
             preview: PreviewPane::new(),
             loaded: None,
             vault,
-            follow_link_combos,
+            icons,
+            intercept,
+            ctrl_y_combo,
+            redraw_tx,
             preview_page: 0,
         }
     }
 
     /// Repopulates the list for `turn_id` and collapses the preview. A repeated
-    /// call with the same `turn_id` is a no-op — it keeps the cursor (and the
+    /// call with the same `turn_id` is a no-op — it keeps the selection (and the
     /// preview state) exactly as-is when a selection sync re-points the drawer
     /// at the already-shown turn. Regeneration replaces a turn's sources with
     /// the fresh ones on completion, but that goes through
@@ -136,8 +223,7 @@ impl SourcesPanel {
     /// Collapses the preview and resets to the top.
     pub fn refresh(&mut self, turn_id: u64, sources: Vec<AskSource>) {
         self.turn_id = Some(turn_id);
-        self.sources = sources;
-        self.cursor = 0;
+        self.rebuild_list(sources);
         self.preview.reset();
         self.loaded = None;
     }
@@ -146,44 +232,83 @@ impl SourcesPanel {
     /// conversation" action (leader `a n`) drops the old turn's sources.
     pub fn reset(&mut self) {
         self.turn_id = None;
-        self.sources = Vec::new();
-        self.cursor = 0;
+        self.rebuild_list(Vec::new());
         self.preview.reset();
         self.loaded = None;
     }
 
-    /// Point the list cursor at the source with citation `ordinal` and collapse
-    /// the preview — a citation click in the thread asks the drawer to reveal
-    /// that exact source in the list. This is the ordinal→row boundary: the
-    /// panel lists sources in vec order, so it resolves the ordinal to a
-    /// position by matching, never by assuming `ordinal - 1`. An ordinal with
-    /// no matching source is ignored.
+    /// (Re)build the list engine over `sources` (rank = 1-based position), the
+    /// engine-per-turn pattern: the turn's rows live only in the engine.
+    fn rebuild_list(&mut self, sources: Vec<AskSource>) {
+        let rows: Vec<SourceRow> = sources
+            .into_iter()
+            .enumerate()
+            .map(|(i, s)| SourceRow::new(i + 1, s))
+            .collect();
+        self.list = build_list(rows, &self.intercept, &self.icons, &self.redraw_tx);
+    }
+
+    /// Whether the current turn has any sources — read from the engine's row
+    /// set (the panel keeps no parallel copy).
+    fn has_sources(&self) -> bool {
+        !self.list.rows().is_empty()
+    }
+
+    /// The source at rank position `index` (0-based), from the engine's full
+    /// (unfiltered) row set.
+    fn source_at(&self, index: usize) -> Option<&AskSource> {
+        self.list.rows().get(index).map(|r| &r.source)
+    }
+
+    /// Point the list selection at the source with citation `ordinal` and
+    /// collapse the preview — a citation click in the thread asks the drawer to
+    /// reveal that exact source in the list. This is the ordinal→row boundary:
+    /// the panel lists sources in rank order, so it resolves the ordinal to a
+    /// position by matching the engine's rows, never by assuming `ordinal - 1`.
+    /// An ordinal with no matching source is ignored. Clears any active filter
+    /// so the target is never hidden.
     pub fn focus_source(&mut self, ordinal: usize) {
-        if let Some(pos) = self.sources.iter().position(|s| s.ordinal == ordinal) {
-            self.cursor = pos;
+        self.list.set_query("");
+        self.list.poll();
+        if let Some(pos) = self
+            .list
+            .visible_rows()
+            .iter()
+            .position(|r| r.source.ordinal == ordinal)
+        {
+            self.list.select(pos);
             self.preview.reset();
             self.loaded = None;
         }
     }
 
     /// Reveal `sources[source_index]` in the preview (leader `a s`): point the
-    /// cursor at it and make sure the preview ends *revealed* on that source.
+    /// selection at it and make sure the preview ends *revealed* on that source.
     /// Collapsed opens to the half-height Context preview; an already-open
     /// Context/Full stays at its expand level and re-points onto the new source
     /// (never collapsing the way a plain selection move would). Spawns/refreshes
     /// the note load. No-op for an out-of-range index.
     pub fn open_reader(&mut self, source_index: usize, tx: &AppTx) {
-        if source_index >= self.sources.len() {
+        self.ensure_redraw_tx(tx);
+        self.list.set_query("");
+        self.list.poll();
+        let Some(source) = self.source_at(source_index).cloned() else {
             return;
-        }
-        self.cursor = source_index;
-        let sel = self.selected_path();
+        };
+        self.list.select(source_index);
+        let sel = Some(source.path.clone());
         if self.preview.is_collapsed() {
             self.preview.toggle(sel); // Collapsed -> Context
         } else {
             self.preview.repoint(sel); // keep the expand level, re-anchor here
         }
-        self.ensure_loaded(tx);
+        self.ensure_note_load(
+            source.path.clone(),
+            source.ordinal,
+            source.match_heading().to_string(),
+            source.text.clone(),
+            tx,
+        );
     }
 
     /// Accepts a `ReaderNote` only when the panel is currently awaiting that
@@ -197,13 +322,16 @@ impl SourcesPanel {
         if self.loaded.as_ref().map(|l| &l.path) != Some(&path) {
             return;
         }
-        // Resolve the highlight against the anchored source (prefer the cursor's
-        // row; fall back to any source with this path).
-        let hl_src = self
-            .sources
-            .get(self.cursor)
-            .filter(|s| s.path == path)
-            .or_else(|| self.sources.iter().find(|s| s.path == path))
+        // Resolve the highlight against the anchored source (prefer the one with
+        // the loaded ordinal; fall back to any source with this path) — read
+        // back from the engine's row set.
+        let ord = self.loaded.as_ref().map(|l| l.ordinal);
+        let rows = self.list.rows();
+        let hl_src = rows
+            .iter()
+            .map(|r| &r.source)
+            .find(|s| s.path == path && Some(s.ordinal) == ord)
+            .or_else(|| rows.iter().map(|r| &r.source).find(|s| s.path == path))
             .map(|s| (s.match_heading().to_string(), s.text.clone()));
         let content = match text {
             Some(loaded) => {
@@ -222,12 +350,19 @@ impl SourcesPanel {
     }
 
     pub fn hint_shortcuts(&self) -> Vec<(String, String)> {
+        if self.list.focus() == Focus::Input {
+            return vec![
+                ("Esc".into(), "list".into()),
+                ("type".into(), "filter".into()),
+            ];
+        }
         if self.preview.is_collapsed() {
             vec![
                 ("j/k".into(), "Select".into()),
                 ("Enter/l".into(), "Preview".into()),
                 ("o/^N".into(), "Open".into()),
                 ("y".into(), "Yank".into()),
+                ("i".into(), "Filter".into()),
             ]
         } else {
             vec![
@@ -242,30 +377,16 @@ impl SourcesPanel {
     pub fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
         let key = match event {
             InputEvent::Key(key) => key,
-            // The mouse wheel scrolls the open preview's content (converged with
-            // FIND, where the drawer routes the wheel to the preview region).
-            InputEvent::Mouse(mouse) => return self.handle_mouse(mouse),
+            // The mouse wheel scrolls the open preview's content or the list
+            // (converged with FIND, where the engine routes the wheel).
+            InputEvent::Mouse(mouse) => return self.handle_mouse(mouse, tx),
             _ => return EventState::NotConsumed,
         };
-        // Canonical chords first (converged with FIND): FollowLink opens, Ctrl+Y
-        // yanks — from any reveal state.
-        if let Some(combo) = crate::keys::key_event_to_combo(key)
-            && self.follow_link_combos.contains(&combo)
-        {
-            self.open_selected(tx);
-            return EventState::Consumed;
-        }
-        if matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y'))
-            && key.modifiers.contains(KeyModifiers::CONTROL)
-        {
-            self.yank_selected_path(tx);
-            return EventState::Consumed;
-        }
+        self.ensure_redraw_tx(tx);
 
         // Full takes over the arrow/page keys for content scroll BEFORE the
-        // list sees them (mirrors FIND's `query_panel`). `j`/`k` are left for
-        // list navigation, so the list cursor stays reachable under the full
-        // preview.
+        // engine sees them (mirrors FIND). `j`/`k` reach the engine so the list
+        // cursor stays reachable under the full preview.
         if self.preview.is_full() {
             match key.code {
                 KeyCode::Up => {
@@ -288,73 +409,115 @@ impl SourcesPanel {
             }
         }
 
-        match key.code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                if !self.sources.is_empty() {
-                    self.cursor = (self.cursor + 1).min(self.sources.len() - 1);
+        // Esc ladder: in list focus with the preview revealed, Esc steps the
+        // reveal back (Full → Context → Collapsed) and is consumed; from a
+        // collapsed list the engine's `Cancel` bubbles so the drawer host
+        // returns focus to the thread. (In input focus, Esc first returns to
+        // the list — the engine handles that.)
+        if key.code == KeyCode::Esc
+            && self.list.focus() == Focus::List
+            && !self.preview.is_collapsed()
+        {
+            self.preview.collapse_step(self.selected_path());
+            return EventState::Consumed;
+        }
+
+        match self.list.handle_key(key) {
+            // FollowLink opens; `Ctrl+Y` yanks — the canonical chords, now via
+            // the engine's intercept mechanism instead of a hand-rolled
+            // pre-check. From any focus / reveal state.
+            KeyReaction::Intercepted(c) => {
+                if Some(c) == self.ctrl_y_combo {
+                    self.yank_selected_path(tx);
+                } else {
+                    self.open_selected(tx);
                 }
-                self.sync_preview();
-                self.ensure_loaded(tx);
                 EventState::Consumed
             }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.cursor = self.cursor.saturating_sub(1);
-                self.sync_preview();
-                self.ensure_loaded(tx);
-                EventState::Consumed
-            }
-            // Enter / l — advance the reveal cycle.
-            KeyCode::Enter | KeyCode::Char('l') => {
-                if !self.sources.is_empty() {
+            // Enter (with no autocomplete open) cycles the reveal, like `l`.
+            KeyReaction::Submit => {
+                if self.has_sources() {
                     self.preview.toggle(self.selected_path());
                     self.ensure_loaded(tx);
                 }
                 EventState::Consumed
             }
-            // h — step the reveal cycle back (Collapsed stays Collapsed).
-            KeyCode::Char('h') => {
-                self.preview.collapse_step(self.selected_path());
-                EventState::Consumed
-            }
-            KeyCode::Char('o') => {
-                self.open_selected(tx);
-                EventState::Consumed
-            }
-            KeyCode::Char('y') => {
-                self.yank_selected_path(tx);
-                EventState::Consumed
-            }
-            // Esc steps back one reveal state; from Collapsed it bubbles to the
-            // host so the drawer returns focus to the thread.
-            KeyCode::Esc => {
-                if self.preview.is_collapsed() {
-                    EventState::NotConsumed
-                } else {
-                    self.preview.collapse_step(self.selected_path());
-                    EventState::Consumed
+            // List-focus verbs: `l`/`h` cycle the reveal, `o` opens, `y` yanks.
+            KeyReaction::ListVerb(c) => {
+                match c {
+                    'l' => {
+                        if self.has_sources() {
+                            self.preview.toggle(self.selected_path());
+                            self.ensure_loaded(tx);
+                        }
+                    }
+                    'h' => self.preview.collapse_step(self.selected_path()),
+                    'o' => self.open_selected(tx),
+                    'y' => self.yank_selected_path(tx),
+                    _ => {}
                 }
+                EventState::Consumed
             }
-            _ => EventState::NotConsumed,
+            // A consumed navigation / filter keystroke: re-anchor the preview on
+            // the new selection and refresh its note load (Context sticks across
+            // moves, Full collapses — see [`PreviewPane::sync`]).
+            KeyReaction::Consumed => {
+                self.sync_preview();
+                self.ensure_loaded(tx);
+                EventState::Consumed
+            }
+            // Esc from a collapsed list bubbles so the host returns focus to the
+            // thread.
+            KeyReaction::Cancel | KeyReaction::Unhandled => EventState::NotConsumed,
         }
     }
 
-    /// Route a mouse wheel tick to the open preview's content scroll. The
-    /// whole panel is the wheel region (the Ask drawer has no separate query
-    /// box); a wheel event with the preview collapsed is left unconsumed.
-    fn handle_mouse(&mut self, mouse: &MouseEvent) -> EventState {
-        if self.preview.is_collapsed() {
-            return EventState::NotConsumed;
+    /// Route a mouse event through the engine (converged with FIND): the wheel
+    /// scrolls the open preview's content (inside its region) or the list
+    /// (elsewhere in the panel); a click selects a row, a second click on the
+    /// selected row cycles the reveal.
+    fn handle_mouse(&mut self, mouse: &MouseEvent, tx: &AppTx) -> EventState {
+        self.ensure_redraw_tx(tx);
+        let was_full = self.preview.is_full();
+        self.sync_preview();
+        // In Full the list is not rendered (its recorded rect is stale), so only
+        // the wheel may reach the engine; a click on the header collapses the
+        // reveal, anything else is swallowed.
+        if was_full {
+            match mouse.kind {
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {}
+                MouseEventKind::Down(MouseButton::Left)
+                    if self.preview.full_header_rect().contains(Position {
+                        x: mouse.column,
+                        y: mouse.row,
+                    }) =>
+                {
+                    self.preview.toggle(self.selected_path());
+                    return EventState::Consumed;
+                }
+                _ => return EventState::Consumed,
+            }
         }
-        match mouse.kind {
-            MouseEventKind::ScrollUp => {
+        match self.list.handle_mouse(mouse) {
+            SearchMouse::ContentScrollUp => {
                 self.preview.scroll_up();
                 EventState::Consumed
             }
-            MouseEventKind::ScrollDown => {
+            SearchMouse::ContentScrollDown => {
                 self.preview.scroll_down();
                 EventState::Consumed
             }
-            _ => EventState::NotConsumed,
+            SearchMouse::Activated(_) => {
+                self.preview.toggle(self.selected_path());
+                self.ensure_loaded(tx);
+                EventState::Consumed
+            }
+            SearchMouse::Selected(_) | SearchMouse::Scrolled | SearchMouse::Context(_) => {
+                self.sync_preview();
+                self.ensure_loaded(tx);
+                EventState::Consumed
+            }
+            SearchMouse::None => EventState::NotConsumed,
         }
     }
 
@@ -372,9 +535,15 @@ impl SourcesPanel {
         }
     }
 
+    /// The selected source (read from the engine's selected row, so it is
+    /// correct even under an active filter).
+    fn selected_source(&self) -> Option<&AskSource> {
+        self.list.selected_row().map(|r| &r.source)
+    }
+
     /// The selected source's path, for preview anchoring and open/yank.
     fn selected_path(&self) -> Option<VaultPath> {
-        self.sources.get(self.cursor).map(|s| s.path.clone())
+        self.selected_source().map(|s| s.path.clone())
     }
 
     /// Re-anchor the preview onto the current selection (Context sticks across
@@ -384,7 +553,24 @@ impl SourcesPanel {
         self.preview.sync(sel);
     }
 
-    /// Ensure the preview is backed by the anchored source's note. Three cases,
+    /// Ensure the preview is backed by the *selected* source's note (the
+    /// interactive path — `open_reader` calls [`ensure_note_load`] directly with
+    /// its directed source). No-op while collapsed or with nothing selected.
+    fn ensure_loaded(&mut self, tx: &AppTx) {
+        if self.preview.is_collapsed() {
+            return;
+        }
+        let Some(source) = self.selected_source() else {
+            return;
+        };
+        let path = source.path.clone();
+        let ordinal = source.ordinal;
+        let heading = source.match_heading().to_string();
+        let chunk = source.text.clone();
+        self.ensure_note_load(path, ordinal, heading, chunk, tx);
+    }
+
+    /// Ensure the preview is backed by the given source's note. Three cases,
     /// keyed on the source identity (`path` + `ordinal`), not `path` alone:
     ///
     /// - **Same source** (same path and ordinal): nothing to do.
@@ -393,20 +579,14 @@ impl SourcesPanel {
     ///   and re-anchor — no vault refetch.
     /// - **Different note**: spawn the load, re-keying `loaded` so an earlier
     ///   path's late `ReaderNote` is dropped on arrival.
-    fn ensure_loaded(&mut self, tx: &AppTx) {
-        if self.preview.is_collapsed() {
-            return;
-        }
-        let Some(source) = self.sources.get(self.cursor) else {
-            return;
-        };
-        // Copy out everything needed so the `self.sources` borrow ends here and
-        // the field mutations below are free of it.
-        let path = source.path.clone();
-        let ordinal = source.ordinal;
-        let heading = source.match_heading().to_string();
-        let chunk = source.text.clone();
-
+    fn ensure_note_load(
+        &mut self,
+        path: VaultPath,
+        ordinal: usize,
+        heading: String,
+        chunk: String,
+        tx: &AppTx,
+    ) {
         match &self.loaded {
             Some(l) if l.path == path && l.ordinal == ordinal => return,
             Some(l) if l.path == path => {
@@ -438,17 +618,17 @@ impl SourcesPanel {
     }
 
     /// Open the selected source's note in the editor (plain `o`, or the
-    /// FollowLink shortcut) — from any reveal state.
+    /// FollowLink intercept) — from any reveal state.
     fn open_selected(&self, tx: &AppTx) {
-        if let Some(source) = self.sources.get(self.cursor) {
+        if let Some(source) = self.selected_source() {
             tx.send(AppEvent::open(source.path.clone())).ok();
         }
     }
 
     /// Copy the selected source's path to the OS clipboard, reusing the same
-    /// `arboard` seam `ThreadPanel` uses.
+    /// `arboard` seam `ThreadPanel` and the FIND drawer use.
     fn yank_selected_path(&self, tx: &AppTx) {
-        let Some(source) = self.sources.get(self.cursor) else {
+        let Some(source) = self.selected_source() else {
             return;
         };
         let text = source.path.to_string();
@@ -459,33 +639,68 @@ impl SourcesPanel {
         tx.send(AppEvent::FlashMessage(msg)).ok();
     }
 
+    fn ensure_redraw_tx(&self, tx: &AppTx) {
+        let mut slot = self.redraw_tx.lock().unwrap();
+        if slot.is_none() {
+            *slot = Some(tx.clone());
+        }
+    }
+
     pub fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
+        self.list.poll();
         // Keep the preview anchored to the selection every frame (Context sticks
         // across moves; Full collapses on a change) before laying anything out.
         self.sync_preview();
+        // The whole panel is wheel-scrollable; the content sub-region is
+        // re-recorded (or cleared) by the branch that draws a preview.
+        self.list.set_panel_rect(rect);
+        self.list.set_content_rect(Rect::default());
+        self.preview.clear_header();
 
         let block = panel_block("Sources", theme, focused);
         let inner = block.inner(rect);
         f.render_widget(block, rect);
 
-        if self.sources.is_empty() {
-            let style = Style::default().fg(theme.gray.to_ratatui());
-            f.render_widget(Paragraph::new("no sources — ask something").style(style), inner);
+        // Empty row set: while the turn's initial load is still in flight show
+        // nothing (it lands within a frame); once settled empty, the prompt.
+        if !self.has_sources() {
+            if !self.list.is_loading() {
+                let style = Style::default().fg(theme.gray.to_ratatui());
+                f.render_widget(
+                    Paragraph::new("no sources — ask something").style(style),
+                    inner,
+                );
+            }
             return;
         }
 
-        // Full: the preview takes the whole panel, no list visible.
+        // A one-row filter input on top when the list half has been left for the
+        // input (typing filters the turn's sources by heading/path).
+        let body = if self.list.focus() == Focus::Input {
+            let rows = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(1), Constraint::Min(0)])
+                .split(inner);
+            self.list.render_query(f, rows[0], theme, focused);
+            rows[1]
+        } else {
+            inner
+        };
+
+        // Full: the preview takes the whole body, no list visible. The wheel
+        // scrolls the content from anywhere in the panel.
         if self.preview.is_full() {
-            self.render_preview(f, inner, true, theme);
+            self.list.set_content_rect(rect);
+            self.render_preview(f, body, true, theme);
             return;
         }
 
         // Context: list on top, half-height preview below, divider between.
         if self.preview.is_context() {
-            let max_list = inner.height / 2;
+            let max_list = body.height / 2;
             // Rows are two lines each; cap the list at half the panel but shrink
             // for a short list so the preview gets the rest.
-            let list_height = (self.sources.len() as u16 * 2).min(max_list).max(1);
+            let list_height = (self.list.rows().len() as u16 * 2).min(max_list).max(1);
             let areas = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
@@ -493,8 +708,9 @@ impl SourcesPanel {
                     Constraint::Length(1),
                     Constraint::Min(0),
                 ])
-                .split(inner);
-            self.render_list(f, areas[0], theme);
+                .split(body);
+            self.list.render(f, areas[0], theme, focused);
+            self.list.set_list_rect(areas[0]);
             let gray = theme.gray.to_ratatui();
             let bg = theme.bg_panel.to_ratatui();
             f.render_widget(
@@ -503,44 +719,28 @@ impl SourcesPanel {
                 areas[1],
             );
             self.render_preview(f, areas[2], false, theme);
+            self.list.set_content_rect(areas[2]);
             return;
         }
 
         // Collapsed: list only.
-        self.render_list(f, inner, theme);
-    }
-
-    /// Draw the ranked source list, reusing the shared [`RichRow`] with the
-    /// whole-row selection highlight (`selection_bg`) FIND's list uses.
-    fn render_list(&self, f: &mut Frame, area: Rect, theme: &Theme) {
-        let items: Vec<ListItem> = self
-            .sources
-            .iter()
-            .enumerate()
-            .map(|(i, s)| source_row(i + 1, s, theme).into_list_item(theme))
-            .collect();
-        let mut state = ListState::default();
-        state.select(Some(self.cursor.min(self.sources.len().saturating_sub(1))));
-        let list =
-            List::new(items).highlight_style(Style::default().bg(theme.selection_bg.to_ratatui()));
-        f.render_stateful_widget(list, area, &mut state);
+        self.list.render(f, body, theme, focused);
+        self.list.set_list_rect(body);
     }
 
     /// Feed the anchored source's loaded note into the preview surface (Context
-    /// or Full), or show the load's placeholder. The struct is split into
-    /// disjoint field borrows so the preview reads the loaded note's text as
-    /// `&str` directly — no per-frame full-note clone.
+    /// or Full), or show the load's placeholder.
     fn render_preview(&mut self, f: &mut Frame, area: Rect, full: bool, theme: &Theme) {
         // Record the content viewport for page scrolling: Full spends two rows
         // on the fixed title + divider chrome; Context uses the whole area.
         self.preview_page = area.height.saturating_sub(if full { 2 } else { 0 });
 
-        let cursor = self.cursor;
+        let title_fn = self
+            .list
+            .selected_row()
+            .map(|r| (r.source.display_heading(), r.source.path.to_string()));
         let Self {
-            loaded,
-            preview,
-            sources,
-            ..
+            loaded, preview, ..
         } = self;
         match loaded {
             Some(LoadedNote {
@@ -548,10 +748,8 @@ impl SourcesPanel {
                 ..
             }) => {
                 if full {
-                    let (title, filename) = sources
-                        .get(cursor)
-                        .map(|s| (s.display_heading(), s.path.to_string()))
-                        .unwrap_or_else(|| ("Source".to_string(), String::new()));
+                    let (title, filename) =
+                        title_fn.unwrap_or_else(|| ("Source".to_string(), String::new()));
                     preview.render_full(
                         f,
                         area,
@@ -582,6 +780,43 @@ impl SourcesPanel {
             }
         }
     }
+
+    #[cfg(test)]
+    pub(crate) async fn settle(&mut self) {
+        self.list.poll_until_idle().await;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn match_count(&self) -> usize {
+        self.list.match_count()
+    }
+}
+
+/// (Re)build a [`SearchList`] over the given per-turn rows, wired the same way
+/// on every turn: fuzzy local filter, opening on the list, the `l`/`h`/`o`/`y`
+/// verbs, and the FollowLink / `Ctrl+Y` intercepts.
+fn build_list(
+    rows: Vec<SourceRow>,
+    intercept: &[KeyCombo],
+    icons: &Icons,
+    redraw_tx: &Arc<Mutex<Option<AppTx>>>,
+) -> SearchList<SourceRow> {
+    let slot = redraw_tx.clone();
+    let redraw: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+        if let Some(tx) = slot.lock().unwrap().as_ref() {
+            let _ = tx.send(AppEvent::Redraw);
+        }
+    });
+    SearchList::builder(TurnSource { rows }, redraw)
+        .icons(icons.clone())
+        .filter(Filter::Fuzzy)
+        .opening_focus(Focus::List)
+        .intercept(intercept.to_vec())
+        .list_verb('l')
+        .list_verb('h')
+        .list_verb('o')
+        .list_verb('y')
+        .build()
 }
 
 /// The similarity as a whole-percent integer (`score` is the server's
@@ -628,7 +863,6 @@ mod tests {
     use kimun_core::VaultConfig;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-    use ratatui::crossterm::event::KeyEvent;
     use tempfile::TempDir;
 
     fn source(path: &str, heading: &str, score: f64, text: &str) -> AskSource {
@@ -680,7 +914,9 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::CONTROL)
     }
 
-    fn two_source_panel(p: &mut SourcesPanel) {
+    /// Populate `p` with two sources and drain the engine's initial load so the
+    /// rows (and the seeded selection) are live.
+    async fn two_source_panel(p: &mut SourcesPanel) {
         p.set_turn(
             1,
             vec![
@@ -688,6 +924,25 @@ mod tests {
                 source("b.md", "B", 0.5, "beta body"),
             ],
         );
+        p.settle().await;
+    }
+
+    /// Move the list selection to visible index `i` by driving the engine.
+    async fn select_index(p: &mut SourcesPanel, i: usize) {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        for _ in 0..i {
+            p.handle_input(&InputEvent::Key(key(KeyCode::Char('j'))), &tx);
+        }
+    }
+
+    fn selected_heading(p: &SourcesPanel) -> Option<String> {
+        p.selected_source().map(|s| s.heading.clone())
+    }
+
+    /// Heading of the source at rank position `i` (0-based) in the engine's row
+    /// set — the panel keeps no parallel sources copy.
+    fn nth_heading(p: &SourcesPanel, i: usize) -> Option<String> {
+        p.source_at(i).map(|s| s.heading.clone())
     }
 
     #[test]
@@ -707,7 +962,7 @@ mod tests {
     #[tokio::test]
     async fn new_panel_starts_empty_and_collapsed() {
         let p = test_panel().await;
-        assert!(p.sources.is_empty());
+        assert_eq!(p.match_count(), 0);
         assert!(p.preview.is_collapsed());
     }
 
@@ -715,50 +970,113 @@ mod tests {
     async fn set_turn_populates_and_collapses() {
         let mut p = test_panel().await;
         p.set_turn(1, vec![source("a.md", "A", 0.9, "text a")]);
-        assert_eq!(p.sources.len(), 1);
+        p.settle().await;
         assert_eq!(p.turn_id, Some(1));
+        assert_eq!(p.match_count(), 1, "the engine mirrors the turn's rows");
         assert!(p.preview.is_collapsed());
     }
 
     #[tokio::test]
-    async fn set_turn_same_id_is_a_noop_and_keeps_cursor() {
+    async fn set_turn_same_id_is_a_noop_and_keeps_selection() {
         let mut p = test_panel().await;
-        two_source_panel(&mut p);
-        p.cursor = 1;
+        two_source_panel(&mut p).await;
+        select_index(&mut p, 1).await;
+        assert_eq!(selected_heading(&p).as_deref(), Some("B"));
         p.set_turn(1, vec![source("c.md", "C", 0.1, "text c")]);
-        assert_eq!(p.cursor, 1, "cursor must survive a same-id set_turn");
-        assert_eq!(p.sources.len(), 2, "sources must not be replaced");
-        assert_eq!(p.sources[0].heading, "A");
+        p.settle().await;
+        assert_eq!(
+            selected_heading(&p).as_deref(),
+            Some("B"),
+            "selection must survive a same-id set_turn"
+        );
+        assert_eq!(p.match_count(), 2, "rows must not be replaced");
+        assert_eq!(nth_heading(&p, 0).as_deref(), Some("A"));
     }
 
     #[tokio::test]
-    async fn set_turn_new_id_resets_cursor_and_collapses() {
+    async fn set_turn_new_id_resets_selection_and_collapses() {
         let mut p = test_panel().await;
-        two_source_panel(&mut p);
-        p.cursor = 1;
+        two_source_panel(&mut p).await;
+        select_index(&mut p, 1).await;
         p.preview.toggle(Some(VaultPath::new("a.md")));
         p.set_turn(2, vec![source("c.md", "C", 0.1, "text c")]);
-        assert_eq!(p.cursor, 0);
-        assert_eq!(p.sources.len(), 1);
-        assert_eq!(p.sources[0].heading, "C");
+        p.settle().await;
+        assert_eq!(selected_heading(&p).as_deref(), Some("C"));
+        assert_eq!(p.match_count(), 1);
         assert!(p.preview.is_collapsed());
     }
 
     #[tokio::test]
-    async fn focus_source_points_cursor_by_ordinal_and_collapses() {
+    async fn focus_source_points_selection_by_ordinal_through_the_engine() {
         let mut p = test_panel().await;
         let mut a = source("a.md", "A", 0.9, "a");
         a.ordinal = 3;
         let mut b = source("b.md", "B", 0.5, "b");
         b.ordinal = 7;
         p.set_turn(1, vec![a, b]);
+        p.settle().await;
         p.preview.toggle(Some(VaultPath::new("a.md")));
         p.focus_source(7);
-        assert_eq!(p.cursor, 1, "resolved ordinal 7 to its row, not ordinal-1");
+        assert_eq!(
+            p.selected_source().map(|s| s.ordinal),
+            Some(7),
+            "resolved ordinal 7 to its row through the engine, not ordinal-1"
+        );
+        assert_eq!(selected_heading(&p).as_deref(), Some("B"));
         assert!(p.preview.is_collapsed());
         // An unknown ordinal is ignored.
         p.focus_source(99);
-        assert_eq!(p.cursor, 1);
+        assert_eq!(p.selected_source().map(|s| s.ordinal), Some(7));
+    }
+
+    // ── New filter input (in-memory, heading/path text) ───────────────────
+
+    #[tokio::test]
+    async fn filter_input_narrows_sources_by_heading_or_path_text() {
+        let mut p = test_panel().await;
+        p.set_turn(
+            1,
+            vec![
+                source("alpha.md", "Alpha section", 0.9, "a"),
+                source("beta.md", "Beta section", 0.5, "b"),
+                source("gamma.md", "Gamma section", 0.3, "g"),
+            ],
+        );
+        p.settle().await;
+        assert_eq!(p.match_count(), 3, "no filter shows every source");
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        // `i` reveals the filter input; typing filters by heading text.
+        assert_eq!(p.list.focus(), Focus::List);
+        p.handle_input(&InputEvent::Key(key(KeyCode::Char('i'))), &tx);
+        assert_eq!(p.list.focus(), Focus::Input, "`i` reveals the filter input");
+        for c in ['B', 'e', 't', 'a'] {
+            p.handle_input(&InputEvent::Key(key(KeyCode::Char(c))), &tx);
+        }
+        p.settle().await;
+        assert_eq!(p.match_count(), 1, "typed filter narrows to the match");
+        assert_eq!(selected_heading(&p).as_deref(), Some("Beta section"));
+    }
+
+    #[tokio::test]
+    async fn slash_also_reveals_the_filter_and_matches_path_text() {
+        let mut p = test_panel().await;
+        p.set_turn(
+            1,
+            vec![
+                source("notes/alpha.md", "One", 0.9, "a"),
+                source("journal/beta.md", "Two", 0.5, "b"),
+            ],
+        );
+        p.settle().await;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        p.handle_input(&InputEvent::Key(key(KeyCode::Char('/'))), &tx);
+        assert_eq!(p.list.focus(), Focus::Input, "`/` reveals the filter input");
+        for c in ['j', 'o', 'u', 'r'] {
+            p.handle_input(&InputEvent::Key(key(KeyCode::Char(c))), &tx);
+        }
+        p.settle().await;
+        assert_eq!(p.match_count(), 1, "path text filters too");
+        assert_eq!(selected_heading(&p).as_deref(), Some("Two"));
     }
 
     // ── Reveal cycle (Enter / l / h) ──────────────────────────────────────
@@ -766,7 +1084,7 @@ mod tests {
     #[tokio::test]
     async fn enter_and_l_cycle_forward_h_cycles_back() {
         let mut p = test_panel().await;
-        two_source_panel(&mut p);
+        two_source_panel(&mut p).await;
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         assert!(p.preview.is_collapsed());
 
@@ -792,7 +1110,7 @@ mod tests {
     #[tokio::test]
     async fn esc_steps_back_then_bubbles_to_thread() {
         let mut p = test_panel().await;
-        two_source_panel(&mut p);
+        two_source_panel(&mut p).await;
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         p.preview.toggle(Some(VaultPath::new("a.md"))); // Context
 
@@ -800,33 +1118,34 @@ mod tests {
         assert_eq!(st, EventState::Consumed);
         assert!(p.preview.is_collapsed(), "Esc steps back one reveal state");
 
-        // From Collapsed, Esc bubbles so the host returns focus to the thread.
+        // From Collapsed (list focus), Esc bubbles so the host returns focus to
+        // the thread.
         let st = p.handle_input(&InputEvent::Key(key(KeyCode::Esc)), &tx);
         assert_eq!(st, EventState::NotConsumed, "Collapsed Esc -> back to thread");
     }
 
     #[tokio::test]
-    async fn jk_moves_cursor_within_bounds() {
+    async fn jk_moves_selection_within_bounds() {
         let mut p = test_panel().await;
-        two_source_panel(&mut p);
+        two_source_panel(&mut p).await;
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
 
         p.handle_input(&InputEvent::Key(key(KeyCode::Char('j'))), &tx);
-        assert_eq!(p.cursor, 1);
+        assert_eq!(selected_heading(&p).as_deref(), Some("B"));
         p.handle_input(&InputEvent::Key(key(KeyCode::Char('j'))), &tx);
-        assert_eq!(p.cursor, 1, "clamped at the last row");
+        assert_eq!(selected_heading(&p).as_deref(), Some("B"), "clamped at the last row");
         p.handle_input(&InputEvent::Key(key(KeyCode::Char('k'))), &tx);
-        assert_eq!(p.cursor, 0);
+        assert_eq!(selected_heading(&p).as_deref(), Some("A"));
         p.handle_input(&InputEvent::Key(key(KeyCode::Char('k'))), &tx);
-        assert_eq!(p.cursor, 0, "clamped at the first row");
+        assert_eq!(selected_heading(&p).as_deref(), Some("A"), "clamped at the first row");
     }
 
     // ── Open (o / FollowLink) — from any reveal state ─────────────────────
 
     async fn assert_opens_selected(setup: impl Fn(&mut SourcesPanel), open: KeyEvent) {
         let mut p = test_panel().await;
-        two_source_panel(&mut p);
-        p.cursor = 1;
+        two_source_panel(&mut p).await;
+        select_index(&mut p, 1).await;
         setup(&mut p);
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let st = p.handle_input(&InputEvent::Key(open), &tx);
@@ -881,7 +1200,7 @@ mod tests {
 
     async fn assert_yanks(k: KeyEvent) {
         let mut p = test_panel().await;
-        two_source_panel(&mut p);
+        two_source_panel(&mut p).await;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let st = p.handle_input(&InputEvent::Key(k), &tx);
         assert_eq!(st, EventState::Consumed);
@@ -925,6 +1244,7 @@ mod tests {
     async fn reader_note_for_the_right_path_loads_and_highlights() {
         let mut p = test_panel().await;
         p.set_turn(1, vec![source("a.md", "b", 0.9, "beta body")]);
+        p.settle().await;
         p.loaded = Some(LoadedNote {
             path: VaultPath::new("a.md"),
             ordinal: 0,
@@ -989,6 +1309,7 @@ mod tests {
 
         let mut p = SourcesPanel::new(Arc::new(vault), &key_bindings());
         p.set_turn(1, vec![source("note.md", "h", 0.9, "body text")]);
+        p.settle().await;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         p.open_reader(0, &tx);
         assert!(p.preview.is_context(), "open_reader opens the Context preview");
@@ -1009,7 +1330,7 @@ mod tests {
         let (_dir, vault) = test_vault().await;
         std::mem::forget(_dir);
         let mut p = SourcesPanel::new(Arc::new(vault), &key_bindings());
-        two_source_panel(&mut p);
+        two_source_panel(&mut p).await;
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         p.preview.toggle(Some(VaultPath::new("a.md"))); // Context
         p.ensure_loaded(&tx);
@@ -1051,6 +1372,7 @@ mod tests {
                 source("b.md", "Beta section", 0.42, "beta body"),
             ],
         );
+        p.settle().await;
         let text = buffer_text(&mut p, 60, 8);
         assert!(text.contains("1 "), "rank 1 leads the first row: {text}");
         assert!(text.contains("2 "), "rank 2 leads the second row: {text}");
@@ -1076,8 +1398,9 @@ mod tests {
                 source("b.md", "Beta section", 0.4, "beta body"),
             ],
         );
+        p.settle().await;
         buffer_text(&mut p, 40, 10); // collapsed list
-        p.cursor = 1;
+        select_index(&mut p, 1).await;
         buffer_text(&mut p, 40, 3); // tiny viewport
 
         // Context with a loaded note.
@@ -1116,6 +1439,7 @@ mod tests {
     async fn full_preview_anchors_scroll_to_the_highlighted_section() {
         let mut p = test_panel().await;
         p.set_turn(1, vec![source("a.md", "b", 0.9, "beta body")]);
+        p.settle().await;
         // Open to Full and load a note where the section is several lines down.
         p.preview.toggle(Some(VaultPath::new("a.md"))); // Context
         p.preview.toggle(Some(VaultPath::new("a.md"))); // Full
@@ -1153,7 +1477,7 @@ mod tests {
     #[tokio::test]
     async fn full_down_scrolls_content_not_the_list() {
         let mut p = test_panel().await;
-        two_source_panel(&mut p);
+        two_source_panel(&mut p).await;
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         p.preview.toggle(Some(VaultPath::new("a.md"))); // Context
         p.preview.toggle(Some(VaultPath::new("a.md"))); // Full
@@ -1173,9 +1497,13 @@ mod tests {
         });
         buffer_text(&mut p, 40, 6); // render sets max; anchor at the top
         assert_eq!(p.preview.scroll_offset(), 0);
-        // Down scrolls the preview content; the list cursor stays put.
+        // Down scrolls the preview content; the list selection stays put.
         p.handle_input(&InputEvent::Key(key(KeyCode::Down)), &tx);
-        assert_eq!(p.cursor, 0, "Down in Full scrolls content, not the list");
+        assert_eq!(
+            selected_heading(&p).as_deref(),
+            Some("A"),
+            "Down in Full scrolls content, not the list"
+        );
         assert!(
             p.preview.scroll_offset() > 0,
             "Full + Down scrolled the content, offset={}",
@@ -1184,24 +1512,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn full_j_still_moves_the_list_cursor() {
+    async fn full_j_still_moves_the_list_selection() {
         let mut p = test_panel().await;
-        two_source_panel(&mut p);
+        two_source_panel(&mut p).await;
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         p.preview.toggle(Some(VaultPath::new("a.md"))); // Context
         p.preview.toggle(Some(VaultPath::new("a.md"))); // Full
         assert!(p.preview.is_full());
         // `j` is left for list navigation even under the full preview.
         p.handle_input(&InputEvent::Key(key(KeyCode::Char('j'))), &tx);
-        assert_eq!(p.cursor, 1, "j moves the list cursor in Full");
+        assert_eq!(
+            selected_heading(&p).as_deref(),
+            Some("B"),
+            "j moves the list selection in Full"
+        );
     }
 
     #[tokio::test]
     async fn wheel_scrolls_the_open_preview_and_is_ignored_when_collapsed() {
         let mut p = test_panel().await;
-        two_source_panel(&mut p);
+        two_source_panel(&mut p).await;
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        // Collapsed: the wheel is left unconsumed for the host.
+        // Collapsed with no list rect recorded yet: the wheel misses everything
+        // and is left unconsumed for the host.
         let wheel = |kind| {
             InputEvent::Mouse(MouseEvent {
                 kind,
@@ -1213,7 +1546,7 @@ mod tests {
         assert_eq!(
             p.handle_input(&wheel(MouseEventKind::ScrollDown), &tx),
             EventState::NotConsumed,
-            "collapsed preview does not eat the wheel"
+            "collapsed preview with no recorded rect does not eat the wheel"
         );
         // Open to Full with scrollable content.
         p.preview.toggle(Some(VaultPath::new("a.md")));
@@ -1252,6 +1585,7 @@ mod tests {
         let mut s1 = source("doc.md", "Beta", 0.8, "beta body");
         s1.ordinal = 2;
         p.set_turn(1, vec![s0, s1]);
+        p.settle().await;
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         p.preview.toggle(Some(VaultPath::new("doc.md"))); // Context
         p.ensure_loaded(&tx); // spawns a load for doc.md, ordinal 1
@@ -1306,16 +1640,17 @@ mod tests {
         let mut s1 = source("b.md", "hb", 0.8, "beta text");
         s1.ordinal = 2;
         p.set_turn(1, vec![s0, s1]);
+        p.settle().await;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         // Reveal source 1 in Full.
-        p.cursor = 1;
+        select_index(&mut p, 1).await;
         p.preview.toggle(Some(VaultPath::new("b.md"))); // Context
         p.preview.toggle(Some(VaultPath::new("b.md"))); // Full
         assert!(p.preview.is_full());
         // Directed reveal of source 0 must STAY Full (not collapse) and re-point.
         p.open_reader(0, &tx);
         assert!(p.preview.is_full(), "open_reader keeps the Full reveal");
-        assert_eq!(p.cursor, 0);
+        assert_eq!(selected_heading(&p).as_deref(), Some("ha"));
         // It spawned a load for source 0's note; deliver it and check the section.
         let ev = rx.recv().await.expect("open_reader spawns a ReaderNote");
         let AppEvent::Ask(data) = ev else {

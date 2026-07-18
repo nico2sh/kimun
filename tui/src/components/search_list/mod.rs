@@ -442,6 +442,16 @@ impl<R: SearchRow> SearchList<R> {
         changed
     }
 
+    /// Select the visible row at `pos` (clamped to the visible range); clears
+    /// the selection when the list is empty. The index-based counterpart to
+    /// [`select_next`](Self::select_next)/[`select_prev`](Self::select_prev),
+    /// for surfaces that point the cursor at a specific row (the Sources view's
+    /// citation jump).
+    pub fn select(&mut self, pos: usize) {
+        let n = self.visible_len();
+        self.selected = if n == 0 { None } else { Some(pos.min(n - 1)) };
+    }
+
     pub fn select_next(&mut self) {
         let n = self.visible_len();
         if n == 0 {
