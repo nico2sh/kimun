@@ -189,6 +189,12 @@ const RANGE_HIGH_PERCENTILE: f64 = 0.95;
 /// exists inside it, nothing is cut.
 const DROP_WINDOW_MIN: usize = 3;
 const DROP_WINDOW_MAX: usize = 30;
+/// Max chars of a previous answer folded into a conversation-conditioned
+/// retrieval query ([`build_retrieval_query`]). An answer can run arbitrarily
+/// long; past this it drowns the rest of the query in the embedding. Sized at
+/// ~⅔ of [`CHUNK_TARGET`] (the embedding window) so the folded turn stays near
+/// one chunk's worth of topical signal and the fresh question still counts.
+const HISTORY_ANSWER_BUDGET: usize = 500;
 
 /// The query pipeline and its indexing half: the one door to everything the
 /// server does with a vault's content. Owns the embedder, the vector store, the
@@ -410,9 +416,16 @@ impl KimunRag {
     /// reranker is active, vector scores otherwise (adr/0029); `top_k` only
     /// applies under the `fixed` cut. Fails with [`RagError::SemanticOnly`]
     /// when no LLM is configured; the gate runs before the vector search so no
-    /// work is thrown away. `history` (prior question/answer pairs) is
-    /// forwarded verbatim to the LLM call only — it never influences
-    /// retrieval or ranking, which see only `question`.
+    /// work is thrown away.
+    ///
+    /// `history` (prior question/answer pairs) does two jobs. It is forwarded
+    /// verbatim to the LLM call, and — since a terse follow-up ("yes",
+    /// "go on") embeds against nothing on its own — it also CONDITIONS the
+    /// retrieval/rerank query via [`build_retrieval_query`]: the most recent
+    /// turn is folded in so the search still sees the topic under discussion.
+    /// Only retrieval and ranking see the conditioned query; the prompt's
+    /// "Question:" stays the raw `question`. With empty history the query is
+    /// the raw question, identical to the pre-conditioning behavior.
     pub async fn answer(
         &self,
         collection: &CollectionKey,
@@ -421,8 +434,11 @@ impl KimunRag {
         top_k: usize,
     ) -> Result<Answer, RagError> {
         let llm = self.llm_client.clone().ok_or(RagError::SemanticOnly)?;
-        let raw = self.retrieve(collection, question).await?; // retrieval sees ONLY the question
-        let mut context = self.rank(question, raw).await;
+        // Retrieval/rerank see the conversation-conditioned query, NOT the bare
+        // question — so a terse follow-up still retrieves on-topic context.
+        let query = build_retrieval_query(question, history);
+        let raw = self.retrieve(collection, &query).await?;
+        let mut context = self.rank(&query, raw).await;
         let cut = self.cut_len(&context, top_k);
         context.truncate(cut);
         // Number the context ONCE, here — this ordinal IS the `[n]` the prompt
@@ -834,6 +850,40 @@ fn largest_drop_cut_len(sorted: &[ScoredChunk], (window_min, window_max): (usize
                 .count()
         }
         None => sorted.len(),
+    }
+}
+
+/// Builds the retrieval/rerank query for [`KimunRag::answer`]. With no
+/// conversation history this is the raw `question` verbatim — byte-identical to
+/// the pre-conditioning behavior, so a fresh question retrieves exactly as
+/// before. With history, the MOST RECENT turn (previous question + a truncated
+/// previous answer) is folded in AHEAD of the current question: a terse
+/// follow-up like "yes" or "the second one" carries no retrievable signal
+/// alone, but the turn it answers does. The current question comes LAST so the
+/// embedder's recency weighting keeps it prominent rather than drowned by the
+/// folded turn.
+///
+/// Only the last turn is used (not all of `history`): it is the exchange the
+/// follow-up actually responds to, and piling on older turns would dilute the
+/// embedding. The previous answer is truncated to [`HISTORY_ANSWER_BUDGET`]
+/// chars — an answer can be long, and past that it swamps the query's signal.
+/// Deliberately provider-agnostic and LLM-free: no query-rewrite round-trip, so
+/// this works identically on every configured backend and adds no latency.
+fn build_retrieval_query(question: &str, history: &[(String, String)]) -> String {
+    let Some((prev_q, prev_a)) = history.last() else {
+        return question.to_string();
+    };
+    let prev_a = truncate_chars(prev_a, HISTORY_ANSWER_BUDGET);
+    // prev question + truncated prev answer first, current question last.
+    format!("{prev_q}\n{prev_a}\n{question}")
+}
+
+/// Truncate `s` to at most `max` chars on a char boundary (never mid-codepoint,
+/// so the result is always valid UTF-8 the embedder can accept).
+fn truncate_chars(s: &str, max: usize) -> String {
+    match s.char_indices().nth(max) {
+        Some((idx, _)) => s[..idx].to_string(),
+        None => s.to_string(),
     }
 }
 
@@ -1647,6 +1697,140 @@ mod tests {
             Err(RagError::SemanticOnly) => {}
             other => panic!("expected SemanticOnly, got {:?}", other.map(|a| a.text)),
         }
+    }
+
+    // ── Conversation-conditioned retrieval query (terse follow-up fix) ────────
+
+    #[test]
+    fn conditioned_query_is_the_bare_question_without_history() {
+        // Empty history → byte-identical to the raw question (pre-conditioning
+        // behavior preserved exactly).
+        assert_eq!(build_retrieval_query("how do I deploy?", &[]), "how do I deploy?");
+    }
+
+    #[test]
+    fn conditioned_query_folds_in_the_last_turn_and_keeps_the_question_last() {
+        // A terse follow-up carries no signal alone; the prior turn it answers
+        // does. The conditioned query must contain BOTH the prior turn's
+        // material AND the current question, with the question last (recency).
+        let history = vec![
+            ("old topic".to_string(), "old answer".to_string()),
+            (
+                "Should I explain the retention policy?".to_string(),
+                "It keeps snapshots for 30 days by default.".to_string(),
+            ),
+        ];
+        let q = build_retrieval_query("yes", &history);
+        assert!(q.contains("retention policy"), "prior question folded in: {q}");
+        assert!(q.contains("30 days"), "prior answer folded in: {q}");
+        assert!(q.contains("yes"), "current question present: {q}");
+        // Only the LAST turn conditions the query — the older one is dropped.
+        assert!(!q.contains("old topic"), "only the most recent turn is used: {q}");
+        // Current question sits last for recency weighting.
+        assert!(q.trim_end().ends_with("yes"), "question is last: {q}");
+    }
+
+    #[test]
+    fn conditioned_query_truncates_a_long_previous_answer() {
+        let long_answer = "x".repeat(HISTORY_ANSWER_BUDGET * 3);
+        let history = vec![("prev q".to_string(), long_answer.clone())];
+        let q = build_retrieval_query("yes", &history);
+        // The folded answer is capped: the whole query stays far under the
+        // untruncated length, so a long answer can't drown the question.
+        let xs = q.chars().filter(|c| *c == 'x').count();
+        assert_eq!(xs, HISTORY_ANSWER_BUDGET, "previous answer truncated to the budget");
+        assert!(q.contains("prev q") && q.contains("yes"));
+    }
+
+    #[test]
+    fn conditioned_query_truncation_is_utf8_safe() {
+        // A multi-byte char sitting on the budget boundary must not panic or
+        // split a codepoint.
+        let history = vec![("q".to_string(), "é".repeat(HISTORY_ANSWER_BUDGET + 10))];
+        let q = build_retrieval_query("yes", &history);
+        assert_eq!(q.chars().filter(|c| *c == 'é').count(), HISTORY_ANSWER_BUDGET);
+    }
+
+    /// Embedder that records every `prompt_embedding` query string — the
+    /// observation point for what retrieval actually embedded.
+    struct RecordingEmbedder(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+    #[async_trait::async_trait]
+    impl Embedder for RecordingEmbedder {
+        async fn generate_embeddings(
+            &self,
+            content: &[FlattenedChunk],
+        ) -> anyhow::Result<Vec<Vec<f32>>> {
+            Ok(content.iter().map(|_| vec![1.0; 8]).collect())
+        }
+        async fn prompt_embedding(&self, content: &str) -> anyhow::Result<Vec<f32>> {
+            self.0.lock().unwrap().push(content.to_string());
+            Ok(vec![1.0; 8])
+        }
+        fn dimension(&self) -> usize {
+            8
+        }
+    }
+
+    #[tokio::test]
+    async fn answer_retrieves_on_the_conditioned_query_but_prompts_the_raw_question() {
+        // The observable contract of the fix: with history, retrieval embeds
+        // the conditioned query (prior turn + current question), while the LLM
+        // prompt's Question stays the raw current question.
+        let embedded = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+
+        struct RecordingLlm(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+        #[async_trait::async_trait]
+        impl LLMClient for RecordingLlm {
+            async fn ask(
+                &self,
+                question: &str,
+                _: &[(String, String)],
+                _: &[(usize, ScoredChunk)],
+            ) -> anyhow::Result<String> {
+                self.0.lock().unwrap().push(question.to_string());
+                Ok("answer".into())
+            }
+        }
+
+        let rag = KimunRag::new(
+            Arc::new(section_heavy_store()),
+            Arc::new(RecordingEmbedder(embedded.clone())),
+            Some(Arc::new(RecordingLlm(asked.clone()))),
+        );
+        let history = vec![(
+            "What is the retention policy?".to_string(),
+            "Snapshots are kept 30 days.".to_string(),
+        )];
+        rag.answer(&key("vault-1"), "yes", &history, 2)
+            .await
+            .unwrap();
+
+        let embedded_query = embedded.lock().unwrap()[0].clone();
+        assert!(
+            embedded_query.contains("retention policy") && embedded_query.contains("yes"),
+            "retrieval embedded the conditioned query: {embedded_query}"
+        );
+        // The prompt-side question is the bare follow-up, not the conditioned
+        // blob — the invariant amendment is retrieval-only.
+        assert_eq!(asked.lock().unwrap()[0], "yes");
+    }
+
+    #[tokio::test]
+    async fn answer_without_history_embeds_the_bare_question() {
+        // Regression guard: with no history the embedded query is exactly the
+        // question — the conditioning is inert on a first turn.
+        let embedded = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let rag = KimunRag::new(
+            Arc::new(section_heavy_store()),
+            Arc::new(RecordingEmbedder(embedded.clone())),
+            Some(Arc::new(FakeLlm)),
+        );
+        rag.answer(&key("vault-1"), "how do I deploy?", &[], 2)
+            .await
+            .unwrap();
+        assert_eq!(embedded.lock().unwrap()[0], "how do I deploy?");
     }
 
     fn doc(path: &str, hash: &str, text: &str) -> KimunDoc {
