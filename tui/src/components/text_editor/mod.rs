@@ -700,7 +700,7 @@ impl TextEditorComponent {
                 nvim.set_text(&text);
             }
         }
-        self.backend.vim_reset_to_normal();
+        self.backend.reset_input_state();
         self.bump_content();
         let reconstructed = self.get_text();
         self.mark_saved(reconstructed);
@@ -774,8 +774,8 @@ impl TextEditorComponent {
     /// Whether a bare Space should start the leader (vim Normal mode only).
     /// Returns `false` for the direct textarea backend, the nvim backend,
     /// vim Insert/Visual modes, and any pending state.
-    pub fn vim_space_leads(&self) -> bool {
-        self.backend.vim_space_leads()
+    pub fn space_leads(&self) -> bool {
+        self.backend.space_leads()
     }
 
     /// Returns the link or label target under the cursor, or `None` if the
@@ -859,7 +859,7 @@ impl TextEditorComponent {
     /// range without touching the cursor or live selection. `None` when there
     /// is no selection or no textarea backend.
     fn inclusive_visual_range(&self) -> Option<((usize, usize), (usize, usize))> {
-        let charwise = self.backend.vim_is_charwise_visual();
+        let charwise = self.backend.selection_includes_cursor();
         let ta = self.backend.as_textarea()?;
         let (start, (er, ec)) = ta.selection_range()?;
         let end = if charwise {
@@ -895,12 +895,12 @@ impl TextEditorComponent {
     /// excludes the char under the cursor, but vim treats the selection as
     /// inclusive. Extend the selection end by one so out-of-engine consumers
     /// (paste-over-selection, bold/italic/strikethrough wrap) act on the WHOLE
-    /// visual range — mirrors the highlight path (see `vim_is_charwise_visual`)
+    /// visual range — mirrors the highlight path (see `selection_includes_cursor`)
     /// and the vim engine's own `select_range(.., inclusive=true)`. No-op
     /// outside charwise Visual (Direct/Insert/VisualLine/Nvim), where the
     /// half-open range is already what callers want.
     fn extend_visual_selection_inclusive(&mut self) {
-        if !self.backend.vim_is_charwise_visual() {
+        if !self.backend.selection_includes_cursor() {
             return;
         }
         if let Some((start, end)) = self.inclusive_visual_range()
@@ -1983,7 +1983,7 @@ impl Component for TextEditorComponent {
                             // char under the cursor is visually included (vim inclusive).
                             // VisualLine uses a separate rendering path (full-line) and
                             // is left unchanged.
-                            if self.backend.vim_is_charwise_visual()
+                            if self.backend.selection_includes_cursor()
                                 && let Some(((sr, sc), (er, ec))) = self.selection
                             {
                                 let len = self
@@ -2095,7 +2095,7 @@ impl Component for TextEditorComponent {
                     .as_textarea()
                     .and_then(|ta| ta.selection_range())
                     .is_some_and(|(s, e)| s != e);
-                self.backend.vim_sync_mouse_selection(has_sel);
+                self.backend.sync_mouse_selection(has_sel);
                 result
             }
             // Bracketed paste is intercepted by EditorScreen so it can run the
@@ -2268,7 +2268,7 @@ impl Component for TextEditorComponent {
         // "f", ">"), append it to the label so the user can see what they have
         // typed so far.
         if let Some(mut label) = self.backend.mode_label() {
-            if let Some(p) = self.backend.vim_pending_hint() {
+            if let Some(p) = self.backend.pending_input_hint() {
                 label = format!("{label}  {p}");
             }
             let mut hints = vec![(String::new(), label)];
@@ -3576,7 +3576,7 @@ mod tests {
     /// uses `.is_some_and(|(s, e)| s != e)` to require a non-empty selection
     /// before treating it as "real" (mirrors the same guard at ~line 1014).
     ///
-    /// We test `vim_sync_mouse_selection` directly (the exact code that was
+    /// We test `sync_mouse_selection` directly (the exact code that was
     /// broken) rather than routing through `handle_input` → `handle_mouse`,
     /// which needs a fully rendered view to resolve screen→logical coordinates.
     #[test]
@@ -3589,7 +3589,7 @@ mod tests {
 
         // A bare click leaves has_sel == false (collapsed selection filtered
         // out by the is_some_and guard).  Sync with no selection must keep Normal.
-        editor.backend.vim_sync_mouse_selection(false);
+        editor.backend.sync_mouse_selection(false);
         assert_eq!(
             vim_mode(&editor),
             EditorMode::Normal,
@@ -3607,7 +3607,7 @@ mod tests {
         assert_eq!(vim_mode(&editor), EditorMode::Normal);
 
         // A drag with start != end yields has_sel == true.
-        editor.backend.vim_sync_mouse_selection(true);
+        editor.backend.sync_mouse_selection(true);
         assert_eq!(
             vim_mode(&editor),
             EditorMode::Visual,

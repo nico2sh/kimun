@@ -679,7 +679,7 @@ impl EditorScreen {
             leader_pending: self.leader.is_pending(),
             focused: self.panels.focused(),
             drawer_view: self.panels.active_drawer_view(),
-            vim_space_leads: self.panels.editor().is_some_and(|e| e.vim_space_leads()),
+            space_leads: self.panels.editor().is_some_and(|e| e.space_leads()),
         }
     }
 
