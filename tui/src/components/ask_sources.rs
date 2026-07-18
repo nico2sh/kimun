@@ -25,7 +25,7 @@
 //! resolution all read them back through the engine.
 
 use std::ops::Range;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
@@ -39,7 +39,7 @@ use ratatui::widgets::{ListItem, Paragraph};
 
 use crate::ask::{AskSource, locate};
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, AskData, InputEvent};
+use crate::components::events::{AppEvent, AppTx, AskData, InputEvent, redraw_callback};
 use crate::components::panel::panel_block;
 use crate::components::preview_pane::{Highlight, PreviewPane};
 use crate::components::rich_row::RichRow;
@@ -166,9 +166,11 @@ pub struct SourcesPanel {
     /// The `Ctrl+Y` combo, kept to route an [`KeyReaction::Intercepted`] to
     /// yank (any other intercepted combo is a FollowLink → open).
     ctrl_y_combo: Option<KeyCombo>,
-    /// Shared sender, filled the first time a `tx` arrives; the engine's redraw
-    /// callback reads it so an async row load wakes the render loop.
-    redraw_tx: Arc<Mutex<Option<AppTx>>>,
+    /// A citation ordinal to select once the turn's rows land — set by
+    /// [`focus_source`](Self::focus_source) when the rows are not loaded yet (a
+    /// citation click that also switched turns), applied in the poll path and
+    /// cleared on the next turn.
+    pending_focus: Option<usize>,
     /// The preview content viewport height from the last render — the page size
     /// for PageUp/PageDown content scrolling in the Full preview.
     preview_page: u16,
@@ -187,8 +189,10 @@ impl SourcesPanel {
             intercept.push(c);
         }
         let icons = Icons::new(false);
-        let redraw_tx: Arc<Mutex<Option<AppTx>>> = Arc::new(Mutex::new(None));
-        let list = build_list(Vec::new(), &intercept, &icons, &redraw_tx);
+        // The initial (turn-less) list is empty; its load delivers nothing to
+        // paint, so a no-op redraw is enough until the first `set_turn` rebuilds
+        // it with a `tx`-wired redraw.
+        let list = build_list(Vec::new(), &intercept, &icons, Arc::new(|| {}));
         Self {
             turn_id: None,
             list,
@@ -198,7 +202,7 @@ impl SourcesPanel {
             icons,
             intercept,
             ctrl_y_combo,
-            redraw_tx,
+            pending_focus: None,
             preview_page: 0,
         }
     }
@@ -209,11 +213,11 @@ impl SourcesPanel {
     /// at the already-shown turn. Regeneration replaces a turn's sources with
     /// the fresh ones on completion, but that goes through
     /// [`refresh`](Self::refresh) (which never short-circuits), not here.
-    pub fn set_turn(&mut self, turn_id: u64, sources: Vec<AskSource>) {
+    pub fn set_turn(&mut self, turn_id: u64, sources: Vec<AskSource>, tx: &AppTx) {
         if self.turn_id == Some(turn_id) {
             return;
         }
-        self.refresh(turn_id, sources);
+        self.refresh(turn_id, sources, tx);
     }
 
     /// Force the source list for `turn_id` to `sources`, even when it's the
@@ -221,31 +225,40 @@ impl SourcesPanel {
     /// turn (empty sources) gains its sources once the answer lands. Unlike
     /// [`set_turn`](Self::set_turn), it never short-circuits on a matching id.
     /// Collapses the preview and resets to the top.
-    pub fn refresh(&mut self, turn_id: u64, sources: Vec<AskSource>) {
+    pub fn refresh(&mut self, turn_id: u64, sources: Vec<AskSource>, tx: &AppTx) {
         self.turn_id = Some(turn_id);
-        self.rebuild_list(sources);
+        self.pending_focus = None;
+        self.rebuild_list(sources, tx);
         self.preview.reset();
         self.loaded = None;
     }
 
     /// Clear the panel back to its empty, collapsed state — the "new
     /// conversation" action (leader `a n`) drops the old turn's sources.
-    pub fn reset(&mut self) {
+    pub fn reset(&mut self, tx: &AppTx) {
         self.turn_id = None;
-        self.rebuild_list(Vec::new());
+        self.pending_focus = None;
+        self.rebuild_list(Vec::new(), tx);
         self.preview.reset();
         self.loaded = None;
     }
 
     /// (Re)build the list engine over `sources` (rank = 1-based position), the
-    /// engine-per-turn pattern: the turn's rows live only in the engine.
-    fn rebuild_list(&mut self, sources: Vec<AskSource>) {
+    /// engine-per-turn pattern: the turn's rows live only in the engine. The
+    /// engine's redraw callback is wired to `tx` (`redraw_callback`) so the
+    /// async row load's completion repaints the drawer.
+    fn rebuild_list(&mut self, sources: Vec<AskSource>, tx: &AppTx) {
         let rows: Vec<SourceRow> = sources
             .into_iter()
             .enumerate()
             .map(|(i, s)| SourceRow::new(i + 1, s))
             .collect();
-        self.list = build_list(rows, &self.intercept, &self.icons, &self.redraw_tx);
+        self.list = build_list(
+            rows,
+            &self.intercept,
+            &self.icons,
+            redraw_callback(tx.clone()),
+        );
     }
 
     /// Whether the current turn has any sources — read from the engine's row
@@ -268,8 +281,27 @@ impl SourcesPanel {
     /// An ordinal with no matching source is ignored. Clears any active filter
     /// so the target is never hidden.
     pub fn focus_source(&mut self, ordinal: usize) {
-        self.list.set_query("");
+        self.list.set_query(""); // clear any filter so the target is never hidden
+        self.preview.reset();
+        self.loaded = None;
+        self.pending_focus = Some(ordinal);
         self.list.poll();
+        self.apply_pending_focus();
+    }
+
+    /// Apply a pending citation focus once the turn's rows have landed: resolve
+    /// the ordinal to its visible position and select it. Cleared once the load
+    /// has settled (whether or not the ordinal matched — an unknown ordinal is
+    /// ignored). No-op while the rows are still loading, so a cross-turn
+    /// citation click (rebuild + async spawn, then this in the same tick) is
+    /// retried from the poll path when the rows arrive.
+    fn apply_pending_focus(&mut self) {
+        let Some(ordinal) = self.pending_focus else {
+            return;
+        };
+        if self.list.is_loading() {
+            return;
+        }
         if let Some(pos) = self
             .list
             .visible_rows()
@@ -277,9 +309,8 @@ impl SourcesPanel {
             .position(|r| r.source.ordinal == ordinal)
         {
             self.list.select(pos);
-            self.preview.reset();
-            self.loaded = None;
         }
+        self.pending_focus = None;
     }
 
     /// Reveal `sources[source_index]` in the preview (leader `a s`): point the
@@ -289,7 +320,6 @@ impl SourcesPanel {
     /// (never collapsing the way a plain selection move would). Spawns/refreshes
     /// the note load. No-op for an out-of-range index.
     pub fn open_reader(&mut self, source_index: usize, tx: &AppTx) {
-        self.ensure_redraw_tx(tx);
         self.list.set_query("");
         self.list.poll();
         let Some(source) = self.source_at(source_index).cloned() else {
@@ -382,7 +412,6 @@ impl SourcesPanel {
             InputEvent::Mouse(mouse) => return self.handle_mouse(mouse, tx),
             _ => return EventState::NotConsumed,
         };
-        self.ensure_redraw_tx(tx);
 
         // Full takes over the arrow/page keys for content scroll BEFORE the
         // engine sees them (mirrors FIND). `j`/`k` reach the engine so the list
@@ -477,7 +506,6 @@ impl SourcesPanel {
     /// (elsewhere in the panel); a click selects a row, a second click on the
     /// selected row cycles the reveal.
     fn handle_mouse(&mut self, mouse: &MouseEvent, tx: &AppTx) -> EventState {
-        self.ensure_redraw_tx(tx);
         let was_full = self.preview.is_full();
         self.sync_preview();
         // In Full the list is not rendered (its recorded rect is stale), so only
@@ -639,15 +667,11 @@ impl SourcesPanel {
         tx.send(AppEvent::FlashMessage(msg)).ok();
     }
 
-    fn ensure_redraw_tx(&self, tx: &AppTx) {
-        let mut slot = self.redraw_tx.lock().unwrap();
-        if slot.is_none() {
-            *slot = Some(tx.clone());
-        }
-    }
-
     pub fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
         self.list.poll();
+        // Apply a deferred citation focus now that this frame's poll may have
+        // landed the turn's rows.
+        self.apply_pending_focus();
         // Keep the preview anchored to the selection every frame (Context sticks
         // across moves; Full collapses on a change) before laying anything out.
         self.sync_preview();
@@ -784,6 +808,9 @@ impl SourcesPanel {
     #[cfg(test)]
     pub(crate) async fn settle(&mut self) {
         self.list.poll_until_idle().await;
+        // Mirror the render path: a deferred citation focus is applied once the
+        // rows have landed.
+        self.apply_pending_focus();
     }
 
     #[cfg(test)]
@@ -799,14 +826,8 @@ fn build_list(
     rows: Vec<SourceRow>,
     intercept: &[KeyCombo],
     icons: &Icons,
-    redraw_tx: &Arc<Mutex<Option<AppTx>>>,
+    redraw: Arc<dyn Fn() + Send + Sync>,
 ) -> SearchList<SourceRow> {
-    let slot = redraw_tx.clone();
-    let redraw: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
-        if let Some(tx) = slot.lock().unwrap().as_ref() {
-            let _ = tx.send(AppEvent::Redraw);
-        }
-    });
     SearchList::builder(TurnSource { rows }, redraw)
         .icons(icons.clone())
         .filter(Filter::Fuzzy)
@@ -897,6 +918,14 @@ mod tests {
         crate::settings::AppSettings::default().key_bindings.clone()
     }
 
+    /// A throwaway sender for `set_turn`/`refresh` in tests that do not inspect
+    /// the engine's redraw wake (its receiver is dropped, so the redraw send is
+    /// a harmless no-op). Tests that assert on the Redraw event use a live
+    /// channel instead.
+    fn noop_tx() -> AppTx {
+        tokio::sync::mpsc::unbounded_channel().0
+    }
+
     /// A panel over a throwaway vault, for tests that never touch the note load.
     /// The backing dir is leaked so the vault stays valid for the test's
     /// lifetime.
@@ -923,6 +952,7 @@ mod tests {
                 source("a.md", "A", 0.9, "alpha body"),
                 source("b.md", "B", 0.5, "beta body"),
             ],
+            &noop_tx(),
         );
         p.settle().await;
     }
@@ -969,7 +999,7 @@ mod tests {
     #[tokio::test]
     async fn set_turn_populates_and_collapses() {
         let mut p = test_panel().await;
-        p.set_turn(1, vec![source("a.md", "A", 0.9, "text a")]);
+        p.set_turn(1, vec![source("a.md", "A", 0.9, "text a")], &noop_tx());
         p.settle().await;
         assert_eq!(p.turn_id, Some(1));
         assert_eq!(p.match_count(), 1, "the engine mirrors the turn's rows");
@@ -982,7 +1012,7 @@ mod tests {
         two_source_panel(&mut p).await;
         select_index(&mut p, 1).await;
         assert_eq!(selected_heading(&p).as_deref(), Some("B"));
-        p.set_turn(1, vec![source("c.md", "C", 0.1, "text c")]);
+        p.set_turn(1, vec![source("c.md", "C", 0.1, "text c")], &noop_tx());
         p.settle().await;
         assert_eq!(
             selected_heading(&p).as_deref(),
@@ -999,7 +1029,7 @@ mod tests {
         two_source_panel(&mut p).await;
         select_index(&mut p, 1).await;
         p.preview.toggle(Some(VaultPath::new("a.md")));
-        p.set_turn(2, vec![source("c.md", "C", 0.1, "text c")]);
+        p.set_turn(2, vec![source("c.md", "C", 0.1, "text c")], &noop_tx());
         p.settle().await;
         assert_eq!(selected_heading(&p).as_deref(), Some("C"));
         assert_eq!(p.match_count(), 1);
@@ -1013,7 +1043,7 @@ mod tests {
         a.ordinal = 3;
         let mut b = source("b.md", "B", 0.5, "b");
         b.ordinal = 7;
-        p.set_turn(1, vec![a, b]);
+        p.set_turn(1, vec![a, b], &noop_tx());
         p.settle().await;
         p.preview.toggle(Some(VaultPath::new("a.md")));
         p.focus_source(7);
@@ -1029,6 +1059,57 @@ mod tests {
         assert_eq!(p.selected_source().map(|s| s.ordinal), Some(7));
     }
 
+    /// Regression: `refresh` (the answer-completion path) must wire the engine's
+    /// redraw to `tx`, so the async row load's completion wakes the render loop
+    /// — with ZERO prior interaction (no handle_input/open_reader to arm a
+    /// deferred slot). Previously the load landed silently and freshly-ranked
+    /// sources could sit unpainted.
+    #[tokio::test]
+    async fn refresh_load_completion_emits_a_redraw() {
+        let mut p = test_panel().await;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        p.refresh(1, vec![source("a.md", "A", 0.9, "alpha body")], &tx);
+        // Let the engine's row load run to completion (no manual poll, no other
+        // interaction) — its redraw callback must fire on `tx`.
+        p.settle().await;
+        let mut redrew = false;
+        while let Ok(ev) = rx.try_recv() {
+            if matches!(ev, AppEvent::Redraw) {
+                redrew = true;
+            }
+        }
+        assert!(redrew, "refresh's row load must emit a Redraw on completion");
+    }
+
+    /// A cross-turn citation click runs `set_turn` (rebuild + async spawn) then
+    /// `focus_source` in the same tick, before the rows land. The ordinal jump
+    /// must be retried once the load settles, not silently no-op.
+    #[tokio::test]
+    async fn cross_turn_focus_source_applies_once_rows_land() {
+        let mut p = test_panel().await;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut a = source("a.md", "A", 0.9, "a");
+        a.ordinal = 3;
+        let mut b = source("b.md", "B", 0.5, "b");
+        b.ordinal = 7;
+        // New turn + citation focus in the same tick: rows not yet loaded.
+        p.set_turn(2, vec![a, b], &tx);
+        p.focus_source(7);
+        // Nothing selectable yet — the rows are still loading.
+        assert!(
+            p.selected_source().is_none() || p.selected_source().map(|s| s.ordinal) != Some(7),
+            "the ordinal jump is deferred until the rows land"
+        );
+        // Once the load settles, the deferred focus lands on ordinal 7.
+        p.settle().await;
+        assert_eq!(
+            p.selected_source().map(|s| s.ordinal),
+            Some(7),
+            "deferred citation focus applied on load completion"
+        );
+        assert_eq!(selected_heading(&p).as_deref(), Some("B"));
+    }
+
     // ── New filter input (in-memory, heading/path text) ───────────────────
 
     #[tokio::test]
@@ -1041,6 +1122,7 @@ mod tests {
                 source("beta.md", "Beta section", 0.5, "b"),
                 source("gamma.md", "Gamma section", 0.3, "g"),
             ],
+            &noop_tx(),
         );
         p.settle().await;
         assert_eq!(p.match_count(), 3, "no filter shows every source");
@@ -1066,6 +1148,7 @@ mod tests {
                 source("notes/alpha.md", "One", 0.9, "a"),
                 source("journal/beta.md", "Two", 0.5, "b"),
             ],
+            &noop_tx(),
         );
         p.settle().await;
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1224,7 +1307,7 @@ mod tests {
     #[tokio::test]
     async fn reader_note_for_the_wrong_path_is_dropped() {
         let mut p = test_panel().await;
-        p.set_turn(1, vec![source("a.md", "A", 0.9, "alpha body")]);
+        p.set_turn(1, vec![source("a.md", "A", 0.9, "alpha body")], &noop_tx());
         p.loaded = Some(LoadedNote {
             path: VaultPath::new("a.md"),
             ordinal: 0,
@@ -1243,7 +1326,7 @@ mod tests {
     #[tokio::test]
     async fn reader_note_for_the_right_path_loads_and_highlights() {
         let mut p = test_panel().await;
-        p.set_turn(1, vec![source("a.md", "b", 0.9, "beta body")]);
+        p.set_turn(1, vec![source("a.md", "b", 0.9, "beta body")], &noop_tx());
         p.settle().await;
         p.loaded = Some(LoadedNote {
             path: VaultPath::new("a.md"),
@@ -1266,7 +1349,7 @@ mod tests {
     #[tokio::test]
     async fn reader_note_load_failure_is_recorded() {
         let mut p = test_panel().await;
-        p.set_turn(1, vec![source("a.md", "A", 0.9, "alpha body")]);
+        p.set_turn(1, vec![source("a.md", "A", 0.9, "alpha body")], &noop_tx());
         p.loaded = Some(LoadedNote {
             path: VaultPath::new("a.md"),
             ordinal: 0,
@@ -1285,7 +1368,7 @@ mod tests {
     #[tokio::test]
     async fn handle_data_ignores_answer_ready() {
         let mut p = test_panel().await;
-        p.set_turn(1, vec![source("a.md", "A", 0.9, "alpha body")]);
+        p.set_turn(1, vec![source("a.md", "A", 0.9, "alpha body")], &noop_tx());
         p.loaded = Some(LoadedNote {
             path: VaultPath::new("a.md"),
             ordinal: 0,
@@ -1308,7 +1391,7 @@ mod tests {
         vault.create_note(&path, "# h\nbody text\n").await.unwrap();
 
         let mut p = SourcesPanel::new(Arc::new(vault), &key_bindings());
-        p.set_turn(1, vec![source("note.md", "h", 0.9, "body text")]);
+        p.set_turn(1, vec![source("note.md", "h", 0.9, "body text")], &noop_tx());
         p.settle().await;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         p.open_reader(0, &tx);
@@ -1371,6 +1454,7 @@ mod tests {
                 dated_source("journal/2026-04-08.md", "Afternoon", "2026-04-08", 0.9),
                 source("b.md", "Beta section", 0.42, "beta body"),
             ],
+            &noop_tx(),
         );
         p.settle().await;
         let text = buffer_text(&mut p, 60, 8);
@@ -1397,6 +1481,7 @@ mod tests {
                 dated_source("journal/2026-04-08.md", "Afternoon", "2026-04-08", 0.9),
                 source("b.md", "Beta section", 0.4, "beta body"),
             ],
+            &noop_tx(),
         );
         p.settle().await;
         buffer_text(&mut p, 40, 10); // collapsed list
@@ -1438,7 +1523,7 @@ mod tests {
     #[tokio::test]
     async fn full_preview_anchors_scroll_to_the_highlighted_section() {
         let mut p = test_panel().await;
-        p.set_turn(1, vec![source("a.md", "b", 0.9, "beta body")]);
+        p.set_turn(1, vec![source("a.md", "b", 0.9, "beta body")], &noop_tx());
         p.settle().await;
         // Open to Full and load a note where the section is several lines down.
         p.preview.toggle(Some(VaultPath::new("a.md"))); // Context
@@ -1584,7 +1669,7 @@ mod tests {
         s0.ordinal = 1;
         let mut s1 = source("doc.md", "Beta", 0.8, "beta body");
         s1.ordinal = 2;
-        p.set_turn(1, vec![s0, s1]);
+        p.set_turn(1, vec![s0, s1], &noop_tx());
         p.settle().await;
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         p.preview.toggle(Some(VaultPath::new("doc.md"))); // Context
@@ -1639,7 +1724,7 @@ mod tests {
         s0.ordinal = 1;
         let mut s1 = source("b.md", "hb", 0.8, "beta text");
         s1.ordinal = 2;
-        p.set_turn(1, vec![s0, s1]);
+        p.set_turn(1, vec![s0, s1], &noop_tx());
         p.settle().await;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         // Reveal source 1 in Full.
