@@ -43,7 +43,7 @@ pub struct InputCtx {
     /// The active drawer view (regardless of drawer visibility).
     pub drawer_view: DrawerView,
     /// Bare Space starts the leader (vim Normal mode, empty pending state).
-    pub vim_space_leads: bool,
+    pub space_leads: bool,
 }
 
 impl InputCtx {
@@ -420,13 +420,13 @@ pub(crate) fn classify_tail(
     // Vim Normal mode: bare Space is a second leader gateway, but only with
     // an empty pending state so it never shadows Space as a motion/operator
     // argument. Insert/Visual and the other backends keep Space typing a
-    // space (`vim_space_leads` is false for those states).
+    // space (`space_leads` is false for those states).
     if ctx.editor_active()
         && (!ctx.leader_pending || cancel_leader)
         && let InputEvent::Key(key) = event
         && key.code == KeyCode::Char(' ')
         && key.modifiers.is_empty()
-        && ctx.vim_space_leads
+        && ctx.space_leads
     {
         return done(EditorIntent::LeaderStart);
     }
@@ -493,7 +493,7 @@ mod tests {
             leader_pending: false,
             focused: PanelKind::Editor,
             drawer_view: DrawerView::Files,
-            vim_space_leads: false,
+            space_leads: false,
         }
     }
 
@@ -840,11 +840,11 @@ mod tests {
     #[test]
     fn vim_space_starts_leader_only_when_it_leads() {
         let mut cx = ctx();
-        cx.vim_space_leads = true;
+        cx.space_leads = true;
         let c = classify_it(&plain(' '), &cx);
         assert_eq!(c.intent, EditorIntent::LeaderStart);
 
-        cx.vim_space_leads = false;
+        cx.space_leads = false;
         let c = classify_it(&plain(' '), &cx);
         assert_eq!(
             c.intent,
