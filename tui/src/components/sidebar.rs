@@ -494,7 +494,9 @@ impl Component for SidebarComponent {
                     EventState::Consumed
                 }
                 KeyReaction::Consumed | KeyReaction::Cancel => EventState::Consumed,
-                KeyReaction::Intercepted(_) | KeyReaction::Unhandled => EventState::NotConsumed,
+                KeyReaction::Intercepted(_) | KeyReaction::ListVerb(_) | KeyReaction::Unhandled => {
+                    EventState::NotConsumed
+                }
             }
         } else {
             EventState::NotConsumed

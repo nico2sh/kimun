@@ -50,6 +50,16 @@ fn fuzzy_indices<R: SearchRow>(rows: &[R], query: &str) -> Vec<usize> {
     scored.into_iter().map(|(i, _)| i).collect()
 }
 
+/// Which half of a [`SearchList`] owns the keyboard. See CONTEXT.md
+/// (**List focus**). In [`Focus::Input`] typing filters the list; in
+/// [`Focus::List`] plain letters are verbs (`j`/`k` navigate, surface-registered
+/// letters act on the selected row) and never type into the query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Focus {
+    Input,
+    List,
+}
+
 /// Verdict returned by [`SearchList::handle_key`].
 #[derive(Debug, PartialEq, Eq)]
 pub enum KeyReaction {
@@ -57,6 +67,10 @@ pub enum KeyReaction {
     Submit,
     Cancel,
     Intercepted(crate::keys::key_combo::KeyCombo),
+    /// A surface-registered list-focus verb fired on the selected row. The
+    /// engine attaches NO meaning to the char — the caller maps it to an
+    /// action (see [`SearchListBuilder::list_verb`]).
+    ListVerb(char),
     Unhandled,
 }
 
@@ -119,6 +133,17 @@ pub struct SearchList<R: SearchRow> {
     /// Render the query input with §9 syntax highlighting (the FIND drawer
     /// and the telescope modal; plain inputs like the sidebar filter skip it).
     highlight_query: bool,
+    /// Which half owns the keyboard. See [`Focus`] and CONTEXT.md.
+    focus: Focus,
+    /// Whether the list-focus state machine is active for this surface. `true`
+    /// iff the surface opens on the list OR registers at least one verb;
+    /// otherwise `Esc` cancels immediately, byte-identical to a plain input
+    /// list, so surfaces that never opt in keep their exact keystroke behavior.
+    focus_enabled: bool,
+    /// Surface-registered list-focus verb chars. When one is pressed in
+    /// [`Focus::List`], `handle_key` returns [`KeyReaction::ListVerb`]; the
+    /// engine attaches no meaning to them.
+    list_verbs: Vec<char>,
 }
 
 /// Mouse interaction result from [`SearchList::handle_mouse`].
@@ -148,6 +173,8 @@ pub struct SearchListBuilder<R: SearchRow> {
     icons: Icons,
     debounce: Option<std::time::Duration>,
     highlight_query: bool,
+    opening_focus: Focus,
+    list_verbs: Vec<char>,
 }
 
 impl<R: SearchRow> SearchList<R> {
@@ -165,6 +192,8 @@ impl<R: SearchRow> SearchList<R> {
             icons: Icons::new(false),
             debounce: None,
             highlight_query: false,
+            opening_focus: Focus::Input,
+            list_verbs: Vec::new(),
         }
     }
 
@@ -209,7 +238,17 @@ impl<R: SearchRow> SearchList<R> {
             content_rect: Rect::default(),
             applied_generation: 0,
             accepted_saved_search: None,
+            focus: b.opening_focus,
+            // List focus is active when the surface opens on the list or
+            // registers verbs; otherwise the surface keeps plain Esc→Cancel.
+            focus_enabled: b.opening_focus == Focus::List || !b.list_verbs.is_empty(),
+            list_verbs: b.list_verbs,
         }
+    }
+
+    /// Which half currently owns the keyboard. See [`Focus`].
+    pub fn focus(&self) -> Focus {
+        self.focus
     }
 
     pub fn poll(&mut self) {
@@ -513,6 +552,7 @@ impl<R: SearchRow> SearchList<R> {
             }
         }
 
+        // Arrows navigate and Enter submits in BOTH foci (arrows as today).
         match key.code {
             KeyCode::Up => {
                 self.select_prev();
@@ -523,15 +563,51 @@ impl<R: SearchRow> SearchList<R> {
                 return KeyReaction::Consumed;
             }
             KeyCode::Enter => return KeyReaction::Submit,
-            KeyCode::Esc => return KeyReaction::Cancel,
             _ => {}
         }
-        // Drop Ctrl/Alt-modified chars so combos don't leak as text.
+        // Esc: with the list-focus machine active, the first Esc moves Input →
+        // List focus (Consumed); from List focus (and for surfaces that never
+        // opted in) Esc is Cancel, so their keystroke behavior is unchanged.
+        if key.code == KeyCode::Esc {
+            if self.focus_enabled && self.focus == Focus::Input {
+                self.focus = Focus::List;
+                self.close_autocomplete();
+                return KeyReaction::Consumed;
+            }
+            return KeyReaction::Cancel;
+        }
+        // Drop Ctrl/Alt-modified chars so combos don't leak as text (both foci;
+        // registered intercepts already claimed theirs above).
         if let KeyCode::Char(_) = key.code {
             let non_shift = key.modifiers - KeyModifiers::SHIFT;
             if !non_shift.is_empty() {
                 return KeyReaction::Unhandled;
             }
+        }
+        // List focus: plain letters are verbs, never query text.
+        if self.focus == Focus::List {
+            if let KeyCode::Char(c) = key.code {
+                return match c {
+                    // `i` / `/` return to the input (cursor there, typing filters).
+                    'i' | '/' => {
+                        self.focus = Focus::Input;
+                        KeyReaction::Consumed
+                    }
+                    'j' => {
+                        self.select_next();
+                        KeyReaction::Consumed
+                    }
+                    'k' => {
+                        self.select_prev();
+                        KeyReaction::Consumed
+                    }
+                    _ if self.list_verbs.contains(&c) => KeyReaction::ListVerb(c),
+                    // Unregistered letters do NOTHING — never type into the query.
+                    _ => KeyReaction::Consumed,
+                };
+            }
+            // Other keys (Tab, function keys, …) are the surface's to handle.
+            return KeyReaction::Unhandled;
         }
         let outcome = self.input.handle_key(key);
         // Sync/refresh/close the autocomplete popup based on the input outcome.
@@ -568,6 +644,11 @@ impl<R: SearchRow> SearchList<R> {
     }
 
     pub fn render_query(&mut self, f: &mut Frame, area: Rect, theme: &Theme, focused: bool) {
+        // The query input signals focus only when the panel is focused AND the
+        // input half owns the keyboard; in list focus it renders unfocused
+        // (dimmed, cursor hidden). For surfaces that never opt into list focus
+        // `self.focus` is always `Input`, so this is byte-identical to today.
+        let focused = focused && self.focus == Focus::Input;
         let base = Style::default()
             .fg(theme.fg.to_ratatui())
             .bg(theme.bg_panel.to_ratatui());
@@ -833,6 +914,23 @@ impl<R: SearchRow> SearchListBuilder<R> {
     }
     pub fn icons(mut self, icons: Icons) -> Self {
         self.icons = icons;
+        self
+    }
+    /// The focus the surface opens on (default [`Focus::Input`]). Opening on
+    /// [`Focus::List`] also activates the list-focus state machine (so `Esc`
+    /// cancels from the list rather than flipping into it).
+    pub fn opening_focus(mut self, focus: Focus) -> Self {
+        self.opening_focus = focus;
+        self
+    }
+    /// Register a plain letter as a list-focus verb. In [`Focus::List`],
+    /// pressing it returns [`KeyReaction::ListVerb`] with the char; the engine
+    /// attaches no meaning — the caller decides the action. Registering any
+    /// verb activates the list-focus state machine. `j`/`k`/`i`/`/` are
+    /// reserved (navigation and focus switching) and win over a same-letter
+    /// verb.
+    pub fn list_verb(mut self, c: char) -> Self {
+        self.list_verbs.push(c);
         self
     }
     /// Override the autocomplete controller's debounce. Tests use
@@ -1692,6 +1790,151 @@ mod tests {
             list.selected_row().unwrap().name,
             "alpha",
             "first visible row must be selected after reseeding"
+        );
+    }
+
+    // ── List focus ──────────────────────────────────────────────────────
+
+    async fn focus_list(verbs: &[char]) -> SearchList<TestRow> {
+        let src = VecSource {
+            rows: vec![TestRow::new("alpha"), TestRow::new("beta")],
+            reload: false,
+        };
+        let mut b = SearchList::builder(src, noop_redraw()).filter(Filter::Fuzzy);
+        for &c in verbs {
+            b = b.list_verb(c);
+        }
+        let mut list = b.build();
+        list.poll_until_idle().await;
+        list
+    }
+
+    // Registering a verb activates the machine: the first Esc flips Input→List
+    // (Consumed, not Cancel); a second Esc (now in List focus) Cancels.
+    #[tokio::test]
+    async fn esc_enters_list_focus_then_cancels() {
+        let mut list = focus_list(&['l']).await;
+        assert_eq!(list.focus(), Focus::Input);
+        assert_eq!(list.handle_key(&key(KeyCode::Esc)), KeyReaction::Consumed);
+        assert_eq!(list.focus(), Focus::List);
+        assert_eq!(list.handle_key(&key(KeyCode::Esc)), KeyReaction::Cancel);
+        assert_eq!(list.focus(), Focus::List, "Cancel does not change focus");
+    }
+
+    // Surfaces that never opt in keep byte-identical Esc→Cancel and stay Input.
+    #[tokio::test]
+    async fn esc_cancels_immediately_when_focus_disabled() {
+        let mut list = focus_list(&[]).await;
+        assert_eq!(list.handle_key(&key(KeyCode::Esc)), KeyReaction::Cancel);
+        assert_eq!(list.focus(), Focus::Input);
+    }
+
+    // `i` and `/` return from List focus to Input focus.
+    #[tokio::test]
+    async fn i_and_slash_return_to_input_focus() {
+        for ret in ['i', '/'] {
+            let mut list = focus_list(&['l']).await;
+            list.handle_key(&key(KeyCode::Esc)); // → List
+            assert_eq!(list.focus(), Focus::List);
+            assert_eq!(
+                list.handle_key(&key(KeyCode::Char(ret))),
+                KeyReaction::Consumed
+            );
+            assert_eq!(list.focus(), Focus::Input);
+            assert_eq!(list.query(), "", "switching focus must not type a char");
+        }
+    }
+
+    // In List focus `j`/`k` navigate (arrows keep working too).
+    #[tokio::test]
+    async fn list_focus_j_k_navigate() {
+        let mut list = focus_list(&['l']).await;
+        list.handle_key(&key(KeyCode::Esc)); // → List
+        assert_eq!(list.selected_row().unwrap().name, "alpha");
+        assert_eq!(list.handle_key(&key(KeyCode::Char('j'))), KeyReaction::Consumed);
+        assert_eq!(list.selected_row().unwrap().name, "beta");
+        assert_eq!(list.handle_key(&key(KeyCode::Char('k'))), KeyReaction::Consumed);
+        assert_eq!(list.selected_row().unwrap().name, "alpha");
+    }
+
+    // A registered verb fires as ListVerb; an unregistered letter does NOTHING
+    // (Consumed, query untouched) — it never types into the query.
+    #[tokio::test]
+    async fn registered_verb_fires_unregistered_letter_does_nothing() {
+        let mut list = focus_list(&['l', 'o']).await;
+        list.handle_key(&key(KeyCode::Esc)); // → List
+        assert_eq!(
+            list.handle_key(&key(KeyCode::Char('l'))),
+            KeyReaction::ListVerb('l')
+        );
+        assert_eq!(
+            list.handle_key(&key(KeyCode::Char('o'))),
+            KeyReaction::ListVerb('o')
+        );
+        // 'z' is not registered: swallowed, query stays empty.
+        assert_eq!(list.handle_key(&key(KeyCode::Char('z'))), KeyReaction::Consumed);
+        assert_eq!(list.query(), "");
+    }
+
+    // In Input focus, verb letters type into the query exactly as before —
+    // the verb is inert until the user Esc-es into the list.
+    #[tokio::test]
+    async fn verbs_are_inert_in_input_focus() {
+        let mut list = focus_list(&['l', 'o']).await;
+        assert_eq!(list.focus(), Focus::Input);
+        assert_eq!(list.handle_key(&key(KeyCode::Char('l'))), KeyReaction::Consumed);
+        list.poll_until_idle().await;
+        assert_eq!(list.query(), "l", "verb letters still type in Input focus");
+    }
+
+    // Opening on the list starts in List focus; a plain letter with no verb
+    // registered does nothing (never types).
+    #[tokio::test]
+    async fn opening_focus_list_starts_in_list() {
+        let src = VecSource {
+            rows: vec![TestRow::new("alpha"), TestRow::new("beta")],
+            reload: false,
+        };
+        let mut list = SearchList::builder(src, noop_redraw())
+            .filter(Filter::Fuzzy)
+            .opening_focus(Focus::List)
+            .build();
+        list.poll_until_idle().await;
+        assert_eq!(list.focus(), Focus::List);
+        assert_eq!(list.handle_key(&key(KeyCode::Char('a'))), KeyReaction::Consumed);
+        assert_eq!(list.query(), "");
+        // `i` drops to the input where typing filters again.
+        list.handle_key(&key(KeyCode::Char('i')));
+        assert_eq!(list.focus(), Focus::Input);
+        list.handle_key(&key(KeyCode::Char('a')));
+        list.poll_until_idle().await;
+        assert_eq!(list.query(), "a");
+    }
+
+    // Registered intercepts fire in BOTH foci.
+    #[tokio::test]
+    async fn intercept_fires_in_both_foci() {
+        let src = VecSource {
+            rows: vec![TestRow::new("a")],
+            reload: false,
+        };
+        let combo = crate::keys::key_event_to_combo(&key(KeyCode::Enter)).unwrap();
+        let mut list = SearchList::builder(src, noop_redraw())
+            .intercept(vec![combo])
+            .list_verb('l')
+            .build();
+        list.poll_until_idle().await;
+        // Input focus: intercepted.
+        assert_eq!(
+            list.handle_key(&key(KeyCode::Enter)),
+            KeyReaction::Intercepted(combo)
+        );
+        // Flip to List focus, intercept still fires.
+        list.handle_key(&key(KeyCode::Esc));
+        assert_eq!(list.focus(), Focus::List);
+        assert_eq!(
+            list.handle_key(&key(KeyCode::Enter)),
+            KeyReaction::Intercepted(combo)
         );
     }
 }
