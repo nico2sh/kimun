@@ -6,6 +6,8 @@
 //! text + highlight needles; the panel keeps owning the list and the engine's
 //! wheel-routing region (`set_content_rect`).
 
+use std::ops::Range;
+
 use kimun_core::nfs::VaultPath;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -229,19 +231,40 @@ impl PreviewPane {
         self.full_header_rect = Rect::default();
     }
 
-    /// Render the full-screen preview (fixed title + divider, scrollable
-    /// content) into `inner`. Records the header rect for click-to-collapse.
-    #[allow(clippy::too_many_arguments)]
-    pub fn render_full(
+    /// Step the reveal cycle backward: Full → Context → Collapsed, stopping at
+    /// Collapsed (the vim-natural `h` mirror of [`toggle`]). No-op without a
+    /// selection, or already Collapsed.
+    pub fn collapse_step(&mut self, selected: Option<VaultPath>) {
+        if selected.is_none() {
+            return;
+        }
+        self.expand_path = selected;
+        match self.expand {
+            ExpandState::Full => {
+                // Back to the half-height preview, re-anchored on the row.
+                self.scroll.reset();
+                self.expand = ExpandState::Context;
+            }
+            ExpandState::Context => {
+                self.scroll.reset();
+                self.expand = ExpandState::Collapsed;
+            }
+            ExpandState::Collapsed => {}
+        }
+        self.full_header_rect = Rect::default();
+    }
+
+    /// Draw the full-expand chrome (fixed title header + divider), record the
+    /// header rect for click-to-collapse, and return the scrollable content
+    /// sub-rect. Shared by [`render_full`] and [`render_full_range`].
+    fn render_full_chrome(
         &mut self,
         f: &mut Frame,
         inner: Rect,
         title: &str,
         filename: &str,
-        text: &str,
-        needles: &[String],
         theme: &Theme,
-    ) {
+    ) -> Rect {
         let gray = theme.gray.to_ratatui();
         let bg = theme.bg_panel.to_ratatui();
         let title_display = if title.is_empty() { filename } else { title };
@@ -278,17 +301,67 @@ impl PreviewPane {
                 .style(Style::default().fg(gray).bg(bg)),
             parts[1],
         );
+        parts[2]
+    }
 
+    /// Render the full-screen preview (fixed title + divider, scrollable
+    /// content) into `inner`. Records the header rect for click-to-collapse.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_full(
+        &mut self,
+        f: &mut Frame,
+        inner: Rect,
+        title: &str,
+        filename: &str,
+        text: &str,
+        needles: &[String],
+        theme: &Theme,
+    ) {
+        let bg = theme.bg_panel.to_ratatui();
+        let content = self.render_full_chrome(f, inner, title, filename, theme);
         let indent = 2usize;
-        let wrap_width = parts[2].width.saturating_sub(indent as u16 + 1) as usize;
+        let wrap_width = content.width.saturating_sub(indent as u16 + 1) as usize;
         let (lines, _) = build_lines(text, needles, wrap_width, theme, false, indent);
-        let viewport = parts[2].height as usize;
+        let viewport = content.height as usize;
         self.scroll.set_max(lines.len().saturating_sub(viewport));
         f.render_widget(
             Paragraph::new(lines)
                 .scroll((self.scroll.offset as u16, 0))
                 .style(Style::default().bg(bg)),
-            parts[2],
+            content,
+        );
+    }
+
+    /// Full-screen preview variant that highlights a contiguous byte `range`
+    /// (the Ask Sources retrieved section) instead of query needles, and
+    /// anchors the initial scroll to that section. Shares the chrome with
+    /// [`render_full`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_full_range(
+        &mut self,
+        f: &mut Frame,
+        inner: Rect,
+        title: &str,
+        filename: &str,
+        text: &str,
+        highlight: Option<&Range<usize>>,
+        theme: &Theme,
+    ) {
+        let bg = theme.bg_panel.to_ratatui();
+        let content = self.render_full_chrome(f, inner, title, filename, theme);
+        let indent = 2usize;
+        let wrap_width = content.width.saturating_sub(indent as u16 + 1) as usize;
+        let find = self.scroll.anchored;
+        let (lines, hit) = build_lines_range(text, highlight, wrap_width, theme, find, indent);
+        let viewport = content.height as usize;
+        let total = lines.len();
+        self.scroll.set_max(total.saturating_sub(viewport));
+        self.scroll.anchor_to_link(hit.unwrap_or(0), total, viewport);
+        f.render_widget(
+            Paragraph::new(lines)
+                .scroll((self.scroll.offset as u16, 0))
+                .style(Style::default().bg(bg)),
+            content,
         );
     }
 
@@ -314,6 +387,35 @@ impl PreviewPane {
         self.scroll.set_max(total.saturating_sub(viewport));
         self.scroll
             .anchor_to_link(link_line.unwrap_or(0), total, viewport);
+        f.render_widget(
+            Paragraph::new(lines)
+                .scroll((self.scroll.offset as u16, 0))
+                .style(Style::default().bg(bg)),
+            area,
+        );
+    }
+
+    /// Half-height Context preview variant that highlights a contiguous byte
+    /// `range` (the Ask Sources retrieved section) instead of query needles,
+    /// anchored so the section's first line shows with context above. Mirrors
+    /// [`render_context`].
+    pub fn render_context_range(
+        &mut self,
+        f: &mut Frame,
+        area: Rect,
+        text: &str,
+        highlight: Option<&Range<usize>>,
+        theme: &Theme,
+    ) {
+        let bg = theme.bg_panel.to_ratatui();
+        let indent = 2usize;
+        let wrap_width = area.width.saturating_sub(indent as u16 + 1) as usize;
+        let find = self.scroll.anchored;
+        let (lines, hit) = build_lines_range(text, highlight, wrap_width, theme, find, indent);
+        let viewport = area.height as usize;
+        let total = lines.len();
+        self.scroll.set_max(total.saturating_sub(viewport));
+        self.scroll.anchor_to_link(hit.unwrap_or(0), total, viewport);
         f.render_widget(
             Paragraph::new(lines)
                 .scroll((self.scroll.offset as u16, 0))
@@ -379,6 +481,53 @@ fn build_lines(
         }
     }
     (lines, link_line)
+}
+
+/// Build wrapped, indented content lines with the byte `highlight` range
+/// rendered in the accent style — the Ask Sources retrieved section, which is a
+/// contiguous span rather than scattered needle matches. Byte offsets are
+/// tracked over `split_inclusive('\n')` (line terminators kept) so the range
+/// maps correctly; a source line overlaps the highlight iff their byte ranges
+/// intersect. When `find_first` is set, reports the first wrapped-line index
+/// inside the highlight (the anchor).
+fn build_lines_range(
+    text: &str,
+    highlight: Option<&Range<usize>>,
+    wrap_width: usize,
+    theme: &Theme,
+    find_first: bool,
+    indent: usize,
+) -> (Vec<Line<'static>>, Option<usize>) {
+    let bg = theme.bg_panel.to_ratatui();
+    let normal = Style::default().fg(theme.gray.to_ratatui()).bg(bg);
+    let accent = Style::default()
+        .fg(theme.accent.to_ratatui())
+        .bg(bg)
+        .add_modifier(Modifier::BOLD);
+    let mut lines = Vec::new();
+    let mut first = None;
+    let mut offset = 0usize;
+    for raw in text.split_inclusive('\n') {
+        let stripped = raw.strip_suffix('\n').unwrap_or(raw);
+        let line_range = offset..offset + stripped.len();
+        let hit =
+            highlight.is_some_and(|h| line_range.start < h.end && h.start < line_range.end);
+        let style = if hit { accent } else { normal };
+        for wline in preview_highlight::wrap_line(stripped, wrap_width) {
+            if find_first && hit && first.is_none() {
+                first = Some(lines.len());
+            }
+            lines.push(Line::from(vec![
+                Span::styled(" ".repeat(indent), Style::default().bg(bg)),
+                Span::styled(wline, style),
+            ]));
+        }
+        offset += raw.len();
+    }
+    if lines.is_empty() {
+        lines.push(Line::default());
+    }
+    (lines, first)
 }
 
 #[cfg(test)]
@@ -514,5 +663,50 @@ mod tests {
         let (lines, link) = build_lines(text, &needles(&["widget"]), 80, &theme, true, 2);
         assert_eq!(lines.len(), 3);
         assert_eq!(link, Some(1), "the match is on the second line");
+    }
+
+    #[test]
+    fn collapse_step_steps_back_and_stops_at_collapsed() {
+        let mut p = PreviewPane::new();
+        let sel = || Some(path("a"));
+        p.toggle(sel()); // Collapsed -> Context
+        p.toggle(sel()); // Context -> Full
+        assert!(p.is_full());
+        p.collapse_step(sel()); // Full -> Context
+        assert!(p.is_context());
+        p.collapse_step(sel()); // Context -> Collapsed
+        assert!(p.is_collapsed());
+        p.collapse_step(sel()); // Collapsed stays Collapsed (h no-op at bottom)
+        assert!(p.is_collapsed());
+    }
+
+    #[test]
+    fn collapse_step_without_selection_is_noop() {
+        let mut p = PreviewPane::new();
+        p.toggle(Some(path("a")));
+        p.collapse_step(None);
+        assert!(p.is_context(), "no-selection collapse_step must not change state");
+    }
+
+    #[test]
+    fn build_lines_range_highlights_and_anchors_the_section() {
+        let theme = Theme::default();
+        // "beta body" is the third source line; its byte range anchors row 2.
+        let text = "line0\nline1\nbeta body\ntail\n";
+        let start = text.find("beta body").unwrap();
+        let range = start..start + "beta body".len();
+        let (lines, first) = build_lines_range(text, Some(&range), 80, &theme, true, 2);
+        assert_eq!(first, Some(2), "anchor is the first highlighted wrapped row");
+        // The highlighted content span carries the bold accent modifier; a
+        // non-highlighted line does not.
+        assert!(lines[2].spans[1].style.add_modifier.contains(Modifier::BOLD));
+        assert!(!lines[0].spans[1].style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn build_lines_range_no_highlight_reports_no_anchor() {
+        let theme = Theme::default();
+        let (_lines, first) = build_lines_range("a\nb\nc\n", None, 80, &theme, true, 2);
+        assert_eq!(first, None);
     }
 }

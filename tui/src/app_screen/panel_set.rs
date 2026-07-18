@@ -726,7 +726,16 @@ mod tests {
         );
         let outline =
             crate::components::drawer_views::OutlinePanel::new(vault.clone(), settings.icons());
-        let drawer = DrawerHost::new(vault, sidebar, query, semantic, tags, links, outline);
+        let drawer = DrawerHost::new(
+            vault,
+            &settings.key_bindings,
+            sidebar,
+            query,
+            semantic,
+            tags,
+            links,
+            outline,
+        );
         PanelSet::from_panels(
             drawer,
             editor,

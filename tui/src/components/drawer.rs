@@ -69,8 +69,10 @@ pub struct DrawerHost {
 }
 
 impl DrawerHost {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         vault: std::sync::Arc<NoteVault>,
+        key_bindings: &crate::keys::KeyBindings,
         sidebar: SidebarComponent,
         query: QueryPanel,
         semantic: SemanticPanel,
@@ -83,8 +85,9 @@ impl DrawerHost {
             sidebar,
             query,
             semantic,
-            // The Sources view owns the vault handle for its reader load.
-            ask_sources: SourcesPanel::new(vault),
+            // The Sources view owns the vault handle for its note load and the
+            // FollowLink combos for its converged open shortcut.
+            ask_sources: SourcesPanel::new(vault, key_bindings),
             tags,
             links,
             outline,
@@ -243,7 +246,16 @@ mod tests {
             crate::components::drawer_views::LinksPanel::new(vault.clone(), settings.icons());
         let outline =
             crate::components::drawer_views::OutlinePanel::new(vault.clone(), settings.icons());
-        DrawerHost::new(vault, sidebar, query, semantic, tags, links, outline)
+        DrawerHost::new(
+            vault,
+            &settings.key_bindings,
+            sidebar,
+            query,
+            semantic,
+            tags,
+            links,
+            outline,
+        )
     }
 
     fn key(code: KeyCode) -> InputEvent {
