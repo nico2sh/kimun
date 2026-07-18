@@ -18,6 +18,10 @@
 //!   (the per-slice approximation — we never look across the wrap boundary). A
 //!   lone `*` (an unmatched sigil, a bullet, arithmetic) stays visible and does
 //!   not emphasize anything. Sigils inside inline code are literal.
+//! - **Intraword `_` is not emphasis.** Following CommonMark, a `_`/`__` run may
+//!   open only when the char before it is absent/non-alphanumeric and close only
+//!   when the char after it is — so `snake_case` and `foo_bar_baz` identifiers
+//!   render verbatim. `*`/`**` keep the laxer rule (intraword `*` is legal).
 //! - **Citations are the citations module's job.** `[n]` markers are found
 //!   only through [`crate::ask::citations::scan`]; we merely *style* the ranges
 //!   it reports. Code (fenced blocks and inline spans) is never citation-styled.
@@ -231,20 +235,32 @@ struct Delim {
     /// Number of chars (1 or 2).
     len: usize,
     kind: Emph,
+    /// Whether this run may *open* emphasis — always true for `*`/`**`; for
+    /// `_`/`__` only when the preceding char is absent or non-alphanumeric
+    /// (CommonMark's intraword-underscore rule, simplified left-flanking).
+    can_open: bool,
+    /// Whether this run may *close* emphasis — always true for `*`/`**`; for
+    /// `_`/`__` only when the following char is absent or non-alphanumeric.
+    can_close: bool,
 }
 
 /// Decide, per char, which emphasis sigils to *hide* and which chars fall under
 /// bold / italic styling. Delimiters are found outside inline code and paired
-/// sequentially within each kind (1st↔2nd, 3rd↔4th, …); an unmatched trailing
-/// delimiter stays visible and styles nothing. This is the per-slice
-/// approximation — we never pair across the wrap boundary.
+/// within each kind with a stack (nearest matching opener). `*`/`**` open and
+/// close freely (intraword `*` is legal CommonMark); `_`/`__` obey the
+/// intraword rule — a `_` run may only open when the char before it is
+/// absent/non-alphanumeric and only close when the char after it is, so
+/// `snake_case` identifiers are never mangled. An unmatched delimiter stays
+/// visible and styles nothing. This is the per-slice approximation — we never
+/// pair across the wrap boundary.
 fn analyze_emphasis(chars: &[(usize, char)], code_mask: &[bool]) -> (Vec<bool>, Vec<bool>, Vec<bool>) {
     let n = chars.len();
     let mut hidden = vec![false; n];
     let mut bold = vec![false; n];
     let mut italic = vec![false; n];
 
-    // Collect delimiter tokens (greedy: `**`/`__` before `*`/`_`).
+    // Collect delimiter tokens (greedy: `**`/`__` before `*`/`_`), recording
+    // each run's open/close capability from its flanking chars.
     let mut delims: Vec<Delim> = Vec::new();
     let mut k = 0;
     while k < n {
@@ -254,49 +270,51 @@ fn analyze_emphasis(chars: &[(usize, char)], code_mask: &[bool]) -> (Vec<bool>, 
         }
         let ch = chars[k].1;
         let next_same = k + 1 < n && !code_mask[k + 1] && chars[k + 1].1 == ch;
-        match ch {
-            '*' if next_same => {
-                delims.push(Delim { k, len: 2, kind: Emph::DoubleStar });
-                k += 2;
-            }
-            '_' if next_same => {
-                delims.push(Delim { k, len: 2, kind: Emph::DoubleUnder });
-                k += 2;
-            }
-            '*' => {
-                delims.push(Delim { k, len: 1, kind: Emph::Star });
+        let (len, kind) = match ch {
+            '*' if next_same => (2, Emph::DoubleStar),
+            '_' if next_same => (2, Emph::DoubleUnder),
+            '*' => (1, Emph::Star),
+            '_' => (1, Emph::Under),
+            _ => {
                 k += 1;
+                continue;
             }
-            '_' => {
-                delims.push(Delim { k, len: 1, kind: Emph::Under });
-                k += 1;
-            }
-            _ => k += 1,
-        }
+        };
+        let is_under = matches!(kind, Emph::Under | Emph::DoubleUnder);
+        let before = (k > 0).then(|| chars[k - 1].1);
+        let after = chars.get(k + len).map(|&(_, c)| c);
+        let free = |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric());
+        let can_open = !is_under || free(before);
+        let can_close = !is_under || free(after);
+        delims.push(Delim { k, len, kind, can_open, can_close });
+        k += len;
     }
 
-    // Pair each kind sequentially; matched pairs hide their sigils and style the
-    // run between them.
+    // Pair each kind with a stack: a closer binds to the nearest open delimiter
+    // of the same kind. Matched pairs hide their sigils and style the run.
     for kind in [Emph::Star, Emph::Under, Emph::DoubleStar, Emph::DoubleUnder] {
-        let idxs: Vec<usize> = delims
-            .iter()
-            .enumerate()
-            .filter(|(_, d)| d.kind == kind)
-            .map(|(i, _)| i)
-            .collect();
         let is_bold = matches!(kind, Emph::DoubleStar | Emph::DoubleUnder);
-        for pair in idxs.chunks_exact(2) {
-            let (open_k, open_len) = (delims[pair[0]].k, delims[pair[0]].len);
-            let close_k = delims[pair[1]].k;
-            for slot in &mut hidden[open_k..open_k + open_len] {
-                *slot = true;
+        let mut open_stack: Vec<usize> = Vec::new();
+        for (di, d) in delims.iter().enumerate() {
+            if d.kind != kind {
+                continue;
             }
-            for slot in &mut hidden[close_k..close_k + delims[pair[1]].len] {
-                *slot = true;
-            }
-            let run = &mut (if is_bold { &mut bold } else { &mut italic })[open_k + open_len..close_k];
-            for slot in run {
-                *slot = true;
+            if d.can_close && !open_stack.is_empty() {
+                let oi = open_stack.pop().unwrap();
+                let (open_k, open_len) = (delims[oi].k, delims[oi].len);
+                let close_k = d.k;
+                for slot in &mut hidden[open_k..open_k + open_len] {
+                    *slot = true;
+                }
+                for slot in &mut hidden[close_k..close_k + d.len] {
+                    *slot = true;
+                }
+                let run = &mut (if is_bold { &mut bold } else { &mut italic })[open_k + open_len..close_k];
+                for slot in run {
+                    *slot = true;
+                }
+            } else if d.can_open {
+                open_stack.push(di);
             }
         }
     }
@@ -461,5 +479,71 @@ mod tests {
         let s = styles();
         let (_, map) = style_slice_mapped("## Head", LineKind::Heading, &s);
         assert_eq!(map, (0.."## Head".len()).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn intraword_underscores_are_left_verbatim() {
+        let s = styles();
+        // snake_case identifiers must not be mangled: the `_` are intraword, so
+        // they neither open nor close emphasis — kept literal, nothing styled.
+        for src in ["foo_bar_baz", "some__thing__glued"] {
+            let line = style_slice(src, LineKind::Normal, &s);
+            assert_eq!(rendered(&line), src, "{src} stays verbatim");
+            assert!(
+                line.spans.iter().all(|sp| sp.style != s.italic && sp.style != s.bold),
+                "{src} gets no emphasis styling"
+            );
+        }
+    }
+
+    #[test]
+    fn word_boundary_underscores_still_emphasize() {
+        let s = styles();
+        // `_word_` at word boundaries italicizes and hides its sigils.
+        let line = style_slice("_word_", LineKind::Normal, &s);
+        assert_eq!(rendered(&line), "word");
+        let italic: String = line
+            .spans
+            .iter()
+            .filter(|sp| sp.style == s.italic)
+            .map(|sp| sp.content.as_ref())
+            .collect();
+        assert_eq!(italic, "word");
+
+        // `__dunder__` at word boundaries bolds and hides its sigils.
+        let line = style_slice("__dunder__", LineKind::Normal, &s);
+        assert_eq!(rendered(&line), "dunder");
+        let bold: String = line
+            .spans
+            .iter()
+            .filter(|sp| sp.style == s.bold)
+            .map(|sp| sp.content.as_ref())
+            .collect();
+        assert_eq!(bold, "dunder");
+    }
+
+    #[test]
+    fn mixed_line_keeps_snake_case_and_styles_real_emphasis_with_correct_map() {
+        let s = styles();
+        let raw = "snake_case and _real_ emphasis";
+        let (line, map) = style_slice_mapped(raw, LineKind::Normal, &s);
+        // The intraword `_` in snake_case stay; only `_real_`'s sigils are hidden.
+        assert_eq!(rendered(&line), "snake_case and real emphasis");
+        let italic: String = line
+            .spans
+            .iter()
+            .filter(|sp| sp.style == s.italic)
+            .map(|sp| sp.content.as_ref())
+            .collect();
+        assert_eq!(italic, "real", "only the boundary emphasis is styled");
+
+        // The column map still points every rendered char at its source byte:
+        // reconstructing the rendered text via the map reproduces it exactly.
+        let rebuilt: String = map.iter().map(|&b| raw[b..].chars().next().unwrap()).collect();
+        assert_eq!(rebuilt, "snake_case and real emphasis");
+        // The rendered `real` maps back to the source `real` (byte 16), not the
+        // hidden `_` at byte 15.
+        let real_col = rendered(&line).find("real").unwrap();
+        assert_eq!(&raw[map[real_col]..map[real_col] + 4], "real");
     }
 }
