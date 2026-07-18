@@ -181,6 +181,20 @@ impl PreviewPane {
         self.scroll.re_anchor();
     }
 
+    /// Re-point the preview at `selected`, keeping the expand state and
+    /// re-anchoring the scroll from the top — for a *directed* reveal (Ask's
+    /// `open_reader`, or a same-note section change) that must land revealed on
+    /// the requested source rather than collapse the way a plain selection move
+    /// ([`sync`](Self::sync)) would. No-op without a selection.
+    pub fn repoint(&mut self, selected: Option<VaultPath>) {
+        if selected.is_none() {
+            return;
+        }
+        self.expand_path = selected;
+        self.scroll.reset();
+        self.full_header_rect = Rect::default();
+    }
+
     pub fn scroll_up(&mut self) {
         self.scroll.scroll_up();
     }
@@ -598,6 +612,29 @@ mod tests {
         let mut p = PreviewPane::new();
         p.toggle(Some(path("a")));
         assert!(!p.sync(Some(path("a"))), "no change, no region clear");
+    }
+
+    #[test]
+    fn repoint_keeps_full_and_rearms_the_anchor() {
+        let mut p = PreviewPane::new();
+        p.toggle(Some(path("a"))); // Context
+        p.toggle(Some(path("a"))); // Full
+        p.scroll_down();
+        p.force_user_scrolled();
+        assert!(p.is_full() && !p.is_anchored());
+        // A directed re-point at another source stays Full and re-anchors.
+        p.repoint(Some(path("b")));
+        assert!(p.is_full(), "repoint keeps the expand state (unlike sync)");
+        assert!(p.is_anchored(), "repoint re-arms the scroll anchor");
+        assert_eq!(p.scroll_offset(), 0);
+    }
+
+    #[test]
+    fn repoint_without_selection_is_noop() {
+        let mut p = PreviewPane::new();
+        p.toggle(Some(path("a")));
+        p.repoint(None);
+        assert!(p.is_context(), "no-selection repoint must not change state");
     }
 
     #[test]

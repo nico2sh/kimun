@@ -235,6 +235,12 @@ fn gemini_contents(messages: Vec<ChatMessage>) -> Vec<GeminiContent> {
 /// chunks where they fit and the conversation itself otherwise. The line is
 /// omitted for a first turn (empty history), where there is nothing to resolve
 /// a terse reply against.
+/// Core's chunk-breadcrumb separator (ASCII Unit Separator, U+001F): the
+/// heading path is flattened into the chunk title joined with this control
+/// char. Mirrored here (the server does not depend on `kimun_core`) so the
+/// prompt can present it as a readable path rather than a raw control char.
+const BREADCRUMB_SEP: char = '\u{1f}';
+
 fn build_prompt(
     question: &str,
     history: &[(String, String)],
@@ -255,7 +261,10 @@ fn build_prompt(
                 .map(|t| t.trim().to_string())
                 .unwrap_or(title);
         }
-        let trimmed_title = title.trim();
+        // The title is core's chunk breadcrumb: nested headings joined with the
+        // control-char separator (U+001F). Render it readably so no control
+        // char reaches the model, and so a `Chapter › Section` path is legible.
+        let trimmed_title = title.trim().replace(BREADCRUMB_SEP, " \u{203a} ");
         // Omit the ` — "…"` title clause entirely for a blank title, rather
         // than emitting an empty `— ""` that adds noise and no signal.
         let header = if trimmed_title.is_empty() {
@@ -497,6 +506,20 @@ mod tests {
         assert!(p.contains("[2] /b.md"), "beta keeps ordinal 2: {p}");
         // Prompt order follows the slice, but each frame carries its own ordinal.
         assert!(p.find("gamma text").unwrap() < p.find("alpha text").unwrap());
+    }
+
+    #[test]
+    fn nested_breadcrumb_title_renders_readably_without_control_chars() {
+        // A nested-section chunk's title is the breadcrumb joined with U+001F;
+        // the prompt must show `Chapter › Section` and never the raw control char.
+        let title = format!("Chapter{BREADCRUMB_SEP}Section");
+        let context = numbered(vec![chunk("/book.md", &title, "body")]);
+        let p = build_prompt("q?", &[], &context);
+        assert!(
+            p.contains("— \"Chapter \u{203a} Section\""),
+            "readable breadcrumb in the title clause: {p:?}"
+        );
+        assert!(!p.contains('\u{1f}'), "no control char leaks into the prompt");
     }
 
     #[test]

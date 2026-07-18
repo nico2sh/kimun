@@ -25,7 +25,7 @@ use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph};
@@ -41,6 +41,10 @@ use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::key_combo::KeyCombo;
 use crate::settings::themes::Theme;
 
+/// Rows a PageUp/PageDown leaves visible from the previous view (shared
+/// convention with the note preview and the Ask thread).
+const PAGE_OVERLAP: u16 = 2;
+
 /// The load state for the currently-anchored source's note text.
 enum ReaderContent {
     /// The note load is in flight.
@@ -55,11 +59,16 @@ enum ReaderContent {
     Failed,
 }
 
-/// The async note load backing the preview, keyed by `path` for stale-drop: a
-/// selection change (or a new turn) before the load lands must not clobber the
-/// note that is actually anchored now.
+/// The async note load backing the preview. Keyed by `path` for stale-drop of
+/// an in-flight vault load (a selection change, or a new turn, before the load
+/// lands must not clobber the note anchored now), and additionally by the
+/// source `ordinal` so that selecting a *different section of the same note*
+/// re-resolves the highlight against the new heading without a refetch.
 struct LoadedNote {
     path: VaultPath,
+    /// The anchored source's citation ordinal — the section identity within the
+    /// note. Distinguishes two sources sharing a `path` but a different heading.
+    ordinal: usize,
     content: ReaderContent,
 }
 
@@ -83,6 +92,9 @@ pub struct SourcesPanel {
     /// The FollowLink combos (default `Ctrl+N`): opening the selected note in
     /// the editor, converged with FIND's open shortcut.
     follow_link_combos: Vec<KeyCombo>,
+    /// The preview content viewport height from the last render — the page size
+    /// for PageUp/PageDown content scrolling in the Full preview.
+    preview_page: u16,
 }
 
 impl SourcesPanel {
@@ -100,6 +112,7 @@ impl SourcesPanel {
             loaded: None,
             vault,
             follow_link_combos,
+            preview_page: 0,
         }
     }
 
@@ -154,8 +167,11 @@ impl SourcesPanel {
     }
 
     /// Reveal `sources[source_index]` in the preview (leader `a s`): point the
-    /// cursor at it and open the half-height Context preview if collapsed,
-    /// spawning the note load. No-op for an out-of-range index.
+    /// cursor at it and make sure the preview ends *revealed* on that source.
+    /// Collapsed opens to the half-height Context preview; an already-open
+    /// Context/Full stays at its expand level and re-points onto the new source
+    /// (never collapsing the way a plain selection move would). Spawns/refreshes
+    /// the note load. No-op for an out-of-range index.
     pub fn open_reader(&mut self, source_index: usize, tx: &AppTx) {
         if source_index >= self.sources.len() {
             return;
@@ -165,7 +181,7 @@ impl SourcesPanel {
         if self.preview.is_collapsed() {
             self.preview.toggle(sel); // Collapsed -> Context
         } else {
-            self.preview.sync(sel); // re-anchor onto the newly-pointed row
+            self.preview.repoint(sel); // keep the expand level, re-anchor here
         }
         self.ensure_loaded(tx);
     }
@@ -188,7 +204,7 @@ impl SourcesPanel {
             .get(self.cursor)
             .filter(|s| s.path == path)
             .or_else(|| self.sources.iter().find(|s| s.path == path))
-            .map(|s| (s.heading.clone(), s.text.clone()));
+            .map(|s| (s.match_heading().to_string(), s.text.clone()));
         let content = match text {
             Some(loaded) => {
                 let highlight = hl_src
@@ -224,8 +240,12 @@ impl SourcesPanel {
     }
 
     pub fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
-        let InputEvent::Key(key) = event else {
-            return EventState::NotConsumed;
+        let key = match event {
+            InputEvent::Key(key) => key,
+            // The mouse wheel scrolls the open preview's content (converged with
+            // FIND, where the drawer routes the wheel to the preview region).
+            InputEvent::Mouse(mouse) => return self.handle_mouse(mouse),
+            _ => return EventState::NotConsumed,
         };
         // Canonical chords first (converged with FIND): FollowLink opens, Ctrl+Y
         // yanks — from any reveal state.
@@ -240,6 +260,32 @@ impl SourcesPanel {
         {
             self.yank_selected_path(tx);
             return EventState::Consumed;
+        }
+
+        // Full takes over the arrow/page keys for content scroll BEFORE the
+        // list sees them (mirrors FIND's `query_panel`). `j`/`k` are left for
+        // list navigation, so the list cursor stays reachable under the full
+        // preview.
+        if self.preview.is_full() {
+            match key.code {
+                KeyCode::Up => {
+                    self.preview.scroll_up();
+                    return EventState::Consumed;
+                }
+                KeyCode::Down => {
+                    self.preview.scroll_down();
+                    return EventState::Consumed;
+                }
+                KeyCode::PageUp => {
+                    self.scroll_preview_page(true);
+                    return EventState::Consumed;
+                }
+                KeyCode::PageDown => {
+                    self.scroll_preview_page(false);
+                    return EventState::Consumed;
+                }
+                _ => {}
+            }
         }
 
         match key.code {
@@ -292,6 +338,40 @@ impl SourcesPanel {
         }
     }
 
+    /// Route a mouse wheel tick to the open preview's content scroll. The
+    /// whole panel is the wheel region (the Ask drawer has no separate query
+    /// box); a wheel event with the preview collapsed is left unconsumed.
+    fn handle_mouse(&mut self, mouse: &MouseEvent) -> EventState {
+        if self.preview.is_collapsed() {
+            return EventState::NotConsumed;
+        }
+        match mouse.kind {
+            MouseEventKind::ScrollUp => {
+                self.preview.scroll_up();
+                EventState::Consumed
+            }
+            MouseEventKind::ScrollDown => {
+                self.preview.scroll_down();
+                EventState::Consumed
+            }
+            _ => EventState::NotConsumed,
+        }
+    }
+
+    /// Scroll the Full preview by a page (last render's content viewport, less
+    /// a small overlap), `up` toward the top. Single-tick scrolls under the
+    /// hood so the anchor-takeover/clamp rules hold.
+    fn scroll_preview_page(&mut self, up: bool) {
+        let page = self.preview_page.saturating_sub(PAGE_OVERLAP).max(1);
+        for _ in 0..page {
+            if up {
+                self.preview.scroll_up();
+            } else {
+                self.preview.scroll_down();
+            }
+        }
+    }
+
     /// The selected source's path, for preview anchoring and open/yank.
     fn selected_path(&self) -> Option<VaultPath> {
         self.sources.get(self.cursor).map(|s| s.path.clone())
@@ -304,10 +384,15 @@ impl SourcesPanel {
         self.preview.sync(sel);
     }
 
-    /// Spawn the note load for the anchored source when the preview is open and
-    /// the text isn't already loaded (or loading) for that path. Keeps the
-    /// stale-drop discipline: a fresh request re-keys `loaded`, so an earlier
-    /// path's `ReaderNote` is dropped on arrival.
+    /// Ensure the preview is backed by the anchored source's note. Three cases,
+    /// keyed on the source identity (`path` + `ordinal`), not `path` alone:
+    ///
+    /// - **Same source** (same path and ordinal): nothing to do.
+    /// - **Same note, different section** (same path, new ordinal): reuse the
+    ///   already-loaded text, re-resolve the highlight against the new heading,
+    ///   and re-anchor — no vault refetch.
+    /// - **Different note**: spawn the load, re-keying `loaded` so an earlier
+    ///   path's late `ReaderNote` is dropped on arrival.
     fn ensure_loaded(&mut self, tx: &AppTx) {
         if self.preview.is_collapsed() {
             return;
@@ -315,12 +400,33 @@ impl SourcesPanel {
         let Some(source) = self.sources.get(self.cursor) else {
             return;
         };
-        if self.loaded.as_ref().map(|l| &l.path) == Some(&source.path) {
-            return;
-        }
+        // Copy out everything needed so the `self.sources` borrow ends here and
+        // the field mutations below are free of it.
         let path = source.path.clone();
+        let ordinal = source.ordinal;
+        let heading = source.match_heading().to_string();
+        let chunk = source.text.clone();
+
+        match &self.loaded {
+            Some(l) if l.path == path && l.ordinal == ordinal => return,
+            Some(l) if l.path == path => {
+                // Same note, new section: re-resolve the highlight in place and
+                // re-anchor the preview, without a fresh vault load.
+                if let Some(l) = &mut self.loaded {
+                    l.ordinal = ordinal;
+                    if let ReaderContent::Loaded { text, highlight } = &mut l.content {
+                        *highlight = locate::section_range(text, &heading, &chunk);
+                    }
+                }
+                self.preview.re_anchor();
+                return;
+            }
+            _ => {}
+        }
+
         self.loaded = Some(LoadedNote {
             path: path.clone(),
+            ordinal,
             content: ReaderContent::Loading,
         });
         let vault = self.vault.clone();
@@ -421,58 +527,58 @@ impl SourcesPanel {
     }
 
     /// Feed the anchored source's loaded note into the preview surface (Context
-    /// or Full), or show the load's placeholder. Text is cloned out first so the
-    /// `&self.loaded` borrow is dropped before `&mut self.preview`.
+    /// or Full), or show the load's placeholder. The struct is split into
+    /// disjoint field borrows so the preview reads the loaded note's text as
+    /// `&str` directly — no per-frame full-note clone.
     fn render_preview(&mut self, f: &mut Frame, area: Rect, full: bool, theme: &Theme) {
-        enum St {
-            Loading,
-            Failed,
-            Ready(String, Option<Range<usize>>),
-        }
-        let state = match &self.loaded {
-            None
-            | Some(LoadedNote {
-                content: ReaderContent::Loading,
-                ..
-            }) => St::Loading,
-            Some(LoadedNote {
-                content: ReaderContent::Failed,
-                ..
-            }) => St::Failed,
+        // Record the content viewport for page scrolling: Full spends two rows
+        // on the fixed title + divider chrome; Context uses the whole area.
+        self.preview_page = area.height.saturating_sub(if full { 2 } else { 0 });
+
+        let cursor = self.cursor;
+        let Self {
+            loaded,
+            preview,
+            sources,
+            ..
+        } = self;
+        match loaded {
             Some(LoadedNote {
                 content: ReaderContent::Loaded { text, highlight },
                 ..
-            }) => St::Ready(text.clone(), highlight.clone()),
-        };
-        match state {
-            St::Loading => {
-                let dim = Style::default().fg(theme.gray.to_ratatui());
-                f.render_widget(Paragraph::new("loading\u{2026}").style(dim), area);
-            }
-            St::Failed => {
-                let red = Style::default().fg(theme.red.to_ratatui());
-                f.render_widget(Paragraph::new("failed to load note").style(red), area);
-            }
-            St::Ready(text, highlight) => {
+            }) => {
                 if full {
-                    let (title, filename) = self
-                        .sources
-                        .get(self.cursor)
+                    let (title, filename) = sources
+                        .get(cursor)
                         .map(|s| (s.display_heading(), s.path.to_string()))
                         .unwrap_or_else(|| ("Source".to_string(), String::new()));
-                    self.preview.render_full_range(
+                    preview.render_full_range(
                         f,
                         area,
                         &title,
                         &filename,
-                        &text,
+                        text,
                         highlight.as_ref(),
                         theme,
                     );
                 } else {
-                    self.preview
-                        .render_context_range(f, area, &text, highlight.as_ref(), theme);
+                    preview.render_context_range(f, area, text, highlight.as_ref(), theme);
                 }
+            }
+            Some(LoadedNote {
+                content: ReaderContent::Failed,
+                ..
+            }) => {
+                let red = Style::default().fg(theme.red.to_ratatui());
+                f.render_widget(Paragraph::new("failed to load note").style(red), area);
+            }
+            None
+            | Some(LoadedNote {
+                content: ReaderContent::Loading,
+                ..
+            }) => {
+                let dim = Style::default().fg(theme.gray.to_ratatui());
+                f.render_widget(Paragraph::new("loading\u{2026}").style(dim), area);
             }
         }
     }
@@ -802,6 +908,7 @@ mod tests {
         p.set_turn(1, vec![source("a.md", "A", 0.9, "alpha body")]);
         p.loaded = Some(LoadedNote {
             path: VaultPath::new("a.md"),
+            ordinal: 0,
             content: ReaderContent::Loading,
         });
         p.handle_data(AskData::ReaderNote {
@@ -820,6 +927,7 @@ mod tests {
         p.set_turn(1, vec![source("a.md", "b", 0.9, "beta body")]);
         p.loaded = Some(LoadedNote {
             path: VaultPath::new("a.md"),
+            ordinal: 0,
             content: ReaderContent::Loading,
         });
         p.handle_data(AskData::ReaderNote {
@@ -841,6 +949,7 @@ mod tests {
         p.set_turn(1, vec![source("a.md", "A", 0.9, "alpha body")]);
         p.loaded = Some(LoadedNote {
             path: VaultPath::new("a.md"),
+            ordinal: 0,
             content: ReaderContent::Loading,
         });
         p.handle_data(AskData::ReaderNote {
@@ -859,6 +968,7 @@ mod tests {
         p.set_turn(1, vec![source("a.md", "A", 0.9, "alpha body")]);
         p.loaded = Some(LoadedNote {
             path: VaultPath::new("a.md"),
+            ordinal: 0,
             content: ReaderContent::Loading,
         });
         p.handle_data(AskData::AnswerReady {
@@ -974,6 +1084,7 @@ mod tests {
         p.preview.toggle(Some(VaultPath::new("b.md")));
         p.loaded = Some(LoadedNote {
             path: VaultPath::new("b.md"),
+            ordinal: 0,
             content: ReaderContent::Loaded {
                 text: "# Beta\nbeta body\nmore\n".to_string(),
                 highlight: Some(7..16),
@@ -986,11 +1097,13 @@ mod tests {
         // Loading / Failed placeholders.
         p.loaded = Some(LoadedNote {
             path: VaultPath::new("b.md"),
+            ordinal: 0,
             content: ReaderContent::Loading,
         });
         buffer_text(&mut p, 40, 12);
         p.loaded = Some(LoadedNote {
             path: VaultPath::new("b.md"),
+            ordinal: 0,
             content: ReaderContent::Failed,
         });
         buffer_text(&mut p, 40, 12);
@@ -1019,6 +1132,7 @@ mod tests {
         let start = body.find("beta body").unwrap();
         p.loaded = Some(LoadedNote {
             path: VaultPath::new("a.md"),
+            ordinal: 0,
             content: ReaderContent::Loaded {
                 text: body,
                 highlight: Some(start..start + "beta body".len()),
@@ -1032,5 +1146,189 @@ mod tests {
             "preview anchored the scroll to the section, offset={}",
             p.preview.scroll_offset()
         );
+    }
+
+    // ── Full-preview content scroll (F1) ──────────────────────────────────
+
+    #[tokio::test]
+    async fn full_down_scrolls_content_not_the_list() {
+        let mut p = test_panel().await;
+        two_source_panel(&mut p);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        p.preview.toggle(Some(VaultPath::new("a.md"))); // Context
+        p.preview.toggle(Some(VaultPath::new("a.md"))); // Full
+        // A note taller than the viewport with the section at the very top, so
+        // the anchor sits at offset 0 with room to scroll down.
+        let mut body = String::from("alpha body\n");
+        for i in 0..20 {
+            body.push_str(&format!("line{i}\n"));
+        }
+        p.loaded = Some(LoadedNote {
+            path: VaultPath::new("a.md"),
+            ordinal: 0,
+            content: ReaderContent::Loaded {
+                text: body,
+                highlight: Some(0.."alpha body".len()),
+            },
+        });
+        buffer_text(&mut p, 40, 6); // render sets max; anchor at the top
+        assert_eq!(p.preview.scroll_offset(), 0);
+        // Down scrolls the preview content; the list cursor stays put.
+        p.handle_input(&InputEvent::Key(key(KeyCode::Down)), &tx);
+        assert_eq!(p.cursor, 0, "Down in Full scrolls content, not the list");
+        assert!(
+            p.preview.scroll_offset() > 0,
+            "Full + Down scrolled the content, offset={}",
+            p.preview.scroll_offset()
+        );
+    }
+
+    #[tokio::test]
+    async fn full_j_still_moves_the_list_cursor() {
+        let mut p = test_panel().await;
+        two_source_panel(&mut p);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        p.preview.toggle(Some(VaultPath::new("a.md"))); // Context
+        p.preview.toggle(Some(VaultPath::new("a.md"))); // Full
+        assert!(p.preview.is_full());
+        // `j` is left for list navigation even under the full preview.
+        p.handle_input(&InputEvent::Key(key(KeyCode::Char('j'))), &tx);
+        assert_eq!(p.cursor, 1, "j moves the list cursor in Full");
+    }
+
+    #[tokio::test]
+    async fn wheel_scrolls_the_open_preview_and_is_ignored_when_collapsed() {
+        let mut p = test_panel().await;
+        two_source_panel(&mut p);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        // Collapsed: the wheel is left unconsumed for the host.
+        let wheel = |kind| {
+            InputEvent::Mouse(MouseEvent {
+                kind,
+                column: 0,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            })
+        };
+        assert_eq!(
+            p.handle_input(&wheel(MouseEventKind::ScrollDown), &tx),
+            EventState::NotConsumed,
+            "collapsed preview does not eat the wheel"
+        );
+        // Open to Full with scrollable content.
+        p.preview.toggle(Some(VaultPath::new("a.md")));
+        p.preview.toggle(Some(VaultPath::new("a.md")));
+        let mut body = String::from("alpha body\n");
+        for i in 0..20 {
+            body.push_str(&format!("line{i}\n"));
+        }
+        p.loaded = Some(LoadedNote {
+            path: VaultPath::new("a.md"),
+            ordinal: 0,
+            content: ReaderContent::Loaded {
+                text: body,
+                highlight: Some(0.."alpha body".len()),
+            },
+        });
+        buffer_text(&mut p, 40, 6);
+        assert_eq!(
+            p.handle_input(&wheel(MouseEventKind::ScrollDown), &tx),
+            EventState::Consumed,
+            "open preview consumes the wheel"
+        );
+        assert!(p.preview.scroll_offset() > 0, "wheel scrolled the content");
+    }
+
+    // ── Same-note, different-section re-anchor (F2) ───────────────────────
+
+    #[tokio::test]
+    async fn same_note_different_heading_recomputes_highlight_without_reload() {
+        let (_dir, vault) = test_vault().await;
+        std::mem::forget(_dir);
+        let mut p = SourcesPanel::new(Arc::new(vault), &key_bindings());
+        // Two sources in the SAME note, different sections (distinct ordinals).
+        let mut s0 = source("doc.md", "Alpha", 0.9, "alpha body");
+        s0.ordinal = 1;
+        let mut s1 = source("doc.md", "Beta", 0.8, "beta body");
+        s1.ordinal = 2;
+        p.set_turn(1, vec![s0, s1]);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        p.preview.toggle(Some(VaultPath::new("doc.md"))); // Context
+        p.ensure_loaded(&tx); // spawns a load for doc.md, ordinal 1
+        // Deliver the note text (simulating the load landing).
+        let note = "# Alpha\nalpha body\n# Beta\nbeta body\n".to_string();
+        p.handle_data(AskData::ReaderNote {
+            path: VaultPath::new("doc.md"),
+            text: Some(note),
+        });
+        let first = match &p.loaded.as_ref().unwrap().content {
+            ReaderContent::Loaded { text, highlight } => {
+                let r = highlight.clone().expect("section resolves");
+                assert_eq!(&text[r.clone()], "alpha body");
+                r
+            }
+            _ => panic!("expected Loaded"),
+        };
+        // Move to the second source (same note): the highlight re-resolves to
+        // the new section and the loaded note is REUSED (no drop to Loading).
+        p.handle_input(&InputEvent::Key(key(KeyCode::Char('j'))), &tx);
+        match &p.loaded.as_ref().unwrap().content {
+            ReaderContent::Loaded { text, highlight } => {
+                let r = highlight.clone().expect("re-resolved");
+                assert_eq!(&text[r.clone()], "beta body");
+                assert_ne!(r, first, "highlight moved to the new section");
+            }
+            _ => panic!("must reuse the loaded note, not reload"),
+        }
+        assert_eq!(
+            p.loaded.as_ref().unwrap().ordinal,
+            2,
+            "re-keyed to the new source"
+        );
+    }
+
+    // ── open_reader keeps the reveal (F5) ─────────────────────────────────
+
+    #[tokio::test]
+    async fn open_reader_stays_full_and_re_points_to_the_source() {
+        let (_dir, vault) = test_vault().await;
+        vault
+            .create_note(&VaultPath::new("a.md"), "# ha\nalpha text\n")
+            .await
+            .unwrap();
+        vault
+            .create_note(&VaultPath::new("b.md"), "# hb\nbeta text\n")
+            .await
+            .unwrap();
+        let mut p = SourcesPanel::new(Arc::new(vault), &key_bindings());
+        let mut s0 = source("a.md", "ha", 0.9, "alpha text");
+        s0.ordinal = 1;
+        let mut s1 = source("b.md", "hb", 0.8, "beta text");
+        s1.ordinal = 2;
+        p.set_turn(1, vec![s0, s1]);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        // Reveal source 1 in Full.
+        p.cursor = 1;
+        p.preview.toggle(Some(VaultPath::new("b.md"))); // Context
+        p.preview.toggle(Some(VaultPath::new("b.md"))); // Full
+        assert!(p.preview.is_full());
+        // Directed reveal of source 0 must STAY Full (not collapse) and re-point.
+        p.open_reader(0, &tx);
+        assert!(p.preview.is_full(), "open_reader keeps the Full reveal");
+        assert_eq!(p.cursor, 0);
+        // It spawned a load for source 0's note; deliver it and check the section.
+        let ev = rx.recv().await.expect("open_reader spawns a ReaderNote");
+        let AppEvent::Ask(data) = ev else {
+            panic!("expected an Ask event");
+        };
+        p.handle_data(data);
+        match &p.loaded.as_ref().unwrap().content {
+            ReaderContent::Loaded { text, highlight } => {
+                assert_eq!(text, "# ha\nalpha text\n", "source 0's note is shown");
+                let r = highlight.clone().expect("section resolves");
+                assert_eq!(&text[r], "alpha text");
+            }
+            _ => panic!("expected Loaded for source 0"),
+        }
     }
 }

@@ -3,10 +3,15 @@ pub mod locate;
 pub mod save;
 
 use kimun_core::nfs::VaultPath;
+use kimun_core::note::BREADCRUMB_SEP;
 use kimun_server_client::dto::ChunkResult;
 
 /// How many trailing `Done` turns feed conversation history sent to the server.
 const HISTORY_WINDOW: usize = 5;
+
+/// Human-readable joiner for a chunk's nested heading segments, replacing core's
+/// control-char [`BREADCRUMB_SEP`] for display (`"Chapter › Section"`).
+const HEADING_JOINER: &str = " \u{203a} ";
 
 /// A single retrieved chunk backing an answer — one row of a **Turn**'s
 /// sources, shown in CONTEXT.md's **Sources view** / **Source reader**.
@@ -38,8 +43,20 @@ impl AskSource {
     /// no separator). We strip that prefix here, keeping `date` and `heading`
     /// separate, mirroring the prompt builder's title handling
     /// (`llmclients::build_prompt`) so both surfaces agree.
+    ///
+    /// A nested-section chunk's title is core's breadcrumb — the heading path
+    /// joined with the control-char [`BREADCRUMB_SEP`] (`"Chapter\x1fSection"`).
+    /// We split it and re-join with a readable [`HEADING_JOINER`] so the raw
+    /// separator never reaches a Sources row or the reader title; the innermost
+    /// segment (which drives section matching in `locate`) is recovered by
+    /// [`AskSource::match_heading`].
     pub fn from_chunk(position: usize, c: ChunkResult) -> Self {
-        let heading = strip_date_prefix(&c.title, c.date.as_deref());
+        let stripped = strip_date_prefix(&c.title, c.date.as_deref());
+        let heading = stripped
+            .split(BREADCRUMB_SEP)
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(HEADING_JOINER);
         Self {
             path: VaultPath::new(&c.path),
             heading,
@@ -48,6 +65,17 @@ impl AskSource {
             text: c.content,
             ordinal: if c.ordinal == 0 { position + 1 } else { c.ordinal },
         }
+    }
+
+    /// The innermost heading segment — the one that identifies the retrieved
+    /// section within its note, for `locate::section_range`. `heading` is the
+    /// full breadcrumb rejoined with [`HEADING_JOINER`] for display, so section
+    /// matching takes only the last segment (`"Chapter › Section"` → `"Section"`).
+    pub fn match_heading(&self) -> &str {
+        self.heading
+            .rsplit(HEADING_JOINER)
+            .next()
+            .unwrap_or(&self.heading)
     }
 
     /// The heading with its date rejoined for a single-line title (the source
@@ -343,6 +371,49 @@ mod tests {
         assert_eq!(src.heading, "Afternoon");
         assert_eq!(src.date.as_deref(), Some("2026-04-08"));
         assert_eq!(src.display_heading(), "2026-04-08 · Afternoon");
+    }
+
+    #[test]
+    fn from_chunk_renders_a_nested_breadcrumb_title_readably() {
+        // A nested-section chunk's title is core's breadcrumb, joined with the
+        // control-char separator; it must render as "Chapter › Section" and the
+        // raw U+001F must never survive.
+        let wire = ChunkResult {
+            path: "notes/book.md".into(),
+            title: format!("Chapter{}Section", kimun_core::note::BREADCRUMB_SEP),
+            date: None,
+            content: String::new(),
+            hash: String::new(),
+            similarity_score: 0.5,
+            ordinal: 1,
+        };
+        let src = AskSource::from_chunk(0, wire);
+        assert_eq!(src.heading, "Chapter \u{203a} Section");
+        assert!(!src.heading.contains('\u{1f}'), "no control char leaks");
+        assert_eq!(src.display_heading(), "Chapter \u{203a} Section");
+        // Section matching keys on the innermost segment only.
+        assert_eq!(src.match_heading(), "Section");
+    }
+
+    #[test]
+    fn nested_source_locates_via_the_innermost_heading() {
+        use crate::ask::locate;
+        // A note where the retrieved section sits under a nested heading. The
+        // chunk text is absent verbatim, so resolution falls through to the
+        // innermost-heading match — proving `match_heading` feeds `locate`.
+        let wire = ChunkResult {
+            path: "notes/book.md".into(),
+            title: format!("Chapter{}Section", kimun_core::note::BREADCRUMB_SEP),
+            date: None,
+            content: "normalized, not verbatim".into(),
+            hash: String::new(),
+            similarity_score: 0.5,
+            ordinal: 1,
+        };
+        let src = AskSource::from_chunk(0, wire);
+        let note = "# Chapter\nintro\n## Section\nthe real body\n";
+        let r = locate::section_range(note, src.match_heading(), &src.text).unwrap();
+        assert!(note[r].contains("the real body"));
     }
 
     #[test]
