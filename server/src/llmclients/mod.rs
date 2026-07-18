@@ -87,7 +87,7 @@ impl LLMClient for ChatClient {
         history: &[(String, String)],
         context: &[(usize, (f64, FlattenedChunk))],
     ) -> anyhow::Result<String> {
-        let messages = chat_messages(history, build_prompt(question, context));
+        let messages = chat_messages(history, build_prompt(question, history, context));
 
         let request = match &self.wire {
             Wire::OpenAiCompat => self
@@ -226,7 +226,20 @@ fn gemini_contents(messages: Vec<ChatMessage>) -> Vec<GeminiContent> {
 /// sources order, citations are mandatory for note-derived claims, and the
 /// answer may supplement with common knowledge — uncited text IS the signal
 /// that a claim is general knowledge, so the two never blur.
-fn build_prompt(question: &str, context: &[(usize, (f64, FlattenedChunk))]) -> String {
+///
+/// When `history` is non-empty the prompt gains a follow-up-handling line: the
+/// preceding turns ride in the chat transcript (see [`chat_messages`]), and a
+/// terse reply ("yes", "go on", "the second one") only makes sense against
+/// them — so the model is told to read the short reply as accepting/continuing
+/// the conversation and to answer the IMPLIED request, drawing on the context
+/// chunks where they fit and the conversation itself otherwise. The line is
+/// omitted for a first turn (empty history), where there is nothing to resolve
+/// a terse reply against.
+fn build_prompt(
+    question: &str,
+    history: &[(String, String)],
+    context: &[(usize, (f64, FlattenedChunk))],
+) -> String {
     let mut context_string = String::new();
     // The `[n]` frame is the ordinal ASSIGNED to the pair upstream, never this
     // loop's position — so the number the model cites is exactly the ordinal the
@@ -253,10 +266,18 @@ fn build_prompt(question: &str, context: &[(usize, (f64, FlattenedChunk))]) -> S
         context_string.push_str(&format!("{header}\n{date_line}{}\n\n", chunk.text));
     }
 
+    // Only present mid-conversation: a terse reply is meaningless on a first
+    // turn, so the guidance would just be noise there.
+    let followup_line = if history.is_empty() {
+        String::new()
+    } else {
+        "If the user's message is a short reply to the conversation above (e.g. 'yes', 'go on', 'the second one'), interpret it against that conversation and answer the request it implies, using the context below where it fits and the conversation itself otherwise.\n".to_string()
+    };
+
     format!(
         r#"You are an intelligent assistant with access to a personal knowledge base.
 Answer the user's question using the numbered context below first; base the answer primarily on it when it is relevant.
-Every claim drawn from the context MUST carry an inline citation in the form [n], where n is the number of the supporting context entry. A sentence may carry several citations.
+{followup_line}Every claim drawn from the context MUST carry an inline citation in the form [n], where n is the number of the supporting context entry. A sentence may carry several citations.
 You may supplement with accurate, widely accepted common knowledge when the context falls short — never cite [n] for such claims; leaving them uncited is how they are marked as general knowledge.
 Preserve any [[wikilinks]] and #tags that appear in the context verbatim when you quote or reference them.
 If neither the context nor common knowledge suffices, respond with: 'I don't have enough information to answer.'
@@ -447,7 +468,7 @@ mod tests {
             chunk("/intro.md", "intro", "alpha text"),
             chunk("/setup.md", "setup", "beta text"),
         ]);
-        let p = build_prompt("how do I start?", &context);
+        let p = build_prompt("how do I start?", &[], &context);
         // numbered frames, prompt order = sources order
         let i1 = p.find("[1]").expect("first chunk numbered");
         let i2 = p.find("[2]").expect("second chunk numbered");
@@ -470,7 +491,7 @@ mod tests {
             (1usize, chunk("/a.md", "a", "alpha text")),
             (2usize, chunk("/b.md", "b", "beta text")),
         ];
-        let p = build_prompt("q?", &context);
+        let p = build_prompt("q?", &[], &context);
         assert!(p.contains("[3] /c.md"), "gamma keeps ordinal 3: {p}");
         assert!(p.contains("[1] /a.md"), "alpha keeps ordinal 1: {p}");
         assert!(p.contains("[2] /b.md"), "beta keeps ordinal 2: {p}");
@@ -481,7 +502,7 @@ mod tests {
     #[test]
     fn empty_title_chunk_omits_the_title_clause() {
         let context = numbered(vec![chunk("some/path", "   ", "chunk body")]);
-        let p = build_prompt("q?", &context);
+        let p = build_prompt("q?", &[], &context);
         assert!(
             p.contains("[1] some/path\n"),
             "blank-title chunk keeps just `[i] path`: {p}"
@@ -490,6 +511,33 @@ mod tests {
             !p.contains("— \"\""),
             "must not emit an empty title clause: {p}"
         );
+    }
+
+    #[test]
+    fn followup_instruction_appears_only_with_conversation_history() {
+        let context = numbered(vec![chunk("/a.md", "A", "body")]);
+
+        // First turn (empty history): no follow-up guidance — a terse reply is
+        // meaningless with nothing to resolve it against.
+        let first = build_prompt("yes", &[], &context);
+        assert!(
+            !first.contains("short reply"),
+            "empty history must not add the follow-up line: {first}"
+        );
+
+        // Mid-conversation: the guidance to interpret a terse reply against the
+        // conversation is present.
+        let history = vec![(
+            "Should I explain the setup steps?".to_string(),
+            "There are three steps; want the details?".to_string(),
+        )];
+        let mid = build_prompt("yes", &history, &context);
+        assert!(
+            mid.contains("short reply"),
+            "history present must add the follow-up line: {mid}"
+        );
+        // The raw current question is still the prompt's Question, untouched.
+        assert!(mid.contains("Question: yes"));
     }
 
     /// A captured request: headers plus the raw JSON body the client sent.
