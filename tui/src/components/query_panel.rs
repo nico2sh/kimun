@@ -467,6 +467,18 @@ impl QueryPanel {
             }
             return EventState::Consumed;
         }
+        // Ctrl+Y yanks the selected note's path — the canonical yank chord,
+        // converged with the Sources drawer (same `arboard` clipboard seam).
+        // Pre-checked here: the engine drops Ctrl-modified chars as Unhandled,
+        // so this must claim it before that.
+        if key.code == KeyCode::Char('y')
+            && key
+                .modifiers
+                .contains(ratatui::crossterm::event::KeyModifiers::CONTROL)
+        {
+            self.yank_selected_path(tx);
+            return EventState::Consumed;
+        }
         // NOTE: plain Enter is NOT pre-checked here. It must reach the engine
         // so an open autocomplete popup can accept on Enter; only when the
         // popup is closed does the engine return `Submit`, which toggles
@@ -591,6 +603,19 @@ impl QueryPanel {
             }
             SearchMouse::None => EventState::NotConsumed,
         }
+    }
+
+    /// Copy the selected result's path to the OS clipboard (`Ctrl+Y`), reusing
+    /// the same `arboard` seam the Sources drawer's yank uses.
+    fn yank_selected_path(&self, tx: &AppTx) {
+        let Some(path) = self.selected_path().cloned() else {
+            return;
+        };
+        let msg = match arboard::Clipboard::new().and_then(|mut c| c.set_text(path.to_string())) {
+            Ok(()) => "path copied".to_string(),
+            Err(e) => format!("clipboard: {e}"),
+        };
+        tx.send(AppEvent::FlashMessage(msg)).ok();
     }
 
     fn scroll_content(&mut self, key: &KeyEvent) {
@@ -1000,6 +1025,55 @@ mod tests {
         }
         // The index returns canonical (vault-absolute) paths (adr/0021).
         assert_eq!(opened, Some(VaultPath::note_path_from("target").absolute()));
+    }
+
+    /// Ctrl+Y yanks the selected result's path (converged with Sources) — it
+    /// must claim the key before the engine drops it, and emit a flash message.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ctrl_y_yanks_selected_path() {
+        use ratatui::crossterm::event::KeyModifiers;
+        let vault = crate::test_support::temp_vault("qp-ctrl-y").await;
+        vault.validate_and_init().await.unwrap();
+        vault
+            .save_note(&VaultPath::note_path_from("target"), "the note body")
+            .await
+            .unwrap();
+        let mut panel = make_panel(vault);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        panel.apply_query("target".to_string(), None, tx.clone());
+        settle(&mut panel).await;
+        assert!(panel.selected_path().is_some(), "result selected");
+
+        let st = panel.handle_key(&KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL), &tx);
+        assert_eq!(st, EventState::Consumed);
+        let mut flashed = false;
+        while let Ok(ev) = rx.try_recv() {
+            if matches!(ev, AppEvent::FlashMessage(_)) {
+                flashed = true;
+            }
+        }
+        assert!(flashed, "Ctrl+Y emits a flash message (ok or clipboard error)");
+    }
+
+    /// Plain letters (`l`/`h`/`o`/`y`) stay query text in FIND — the query input
+    /// always has focus, so they must edit the query, never trigger the Sources
+    /// vim shortcuts. Guards the asymmetry in the converged key table.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn plain_letters_stay_query_text_in_find() {
+        use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
+        let vault = crate::test_support::temp_vault("qp-letters").await;
+        vault.validate_and_init().await.unwrap();
+        let mut panel = make_panel(vault);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        panel.set_active_query(String::new());
+        for ch in ['l', 'h', 'o', 'y'] {
+            panel.handle_key(&KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE), &tx);
+        }
+        assert_eq!(panel.active_query(), "lhoy", "letters edit the query");
+        assert!(
+            panel.preview.is_collapsed(),
+            "letters must not cycle the preview in FIND"
+        );
     }
 
     /// The memoised highlight needles must follow both cache keys: recompute

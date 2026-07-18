@@ -119,6 +119,7 @@ impl EditorScreen {
         let outline = OutlinePanel::new(vault.clone(), s.icons());
         let drawer = DrawerHost::new(
             vault.clone(),
+            &kb,
             sidebar,
             query_panel,
             semantic,
