@@ -733,14 +733,15 @@ fn separator_line(width: u16, style: Style) -> Line<'static> {
     Line::from(Span::styled("─".repeat(width as usize), style))
 }
 
-/// Render a `Done` turn's answer as styled markdown rows. Each *logical* source
-/// line is classified (threading fenced-code state) and word-wrapped; each
-/// wrapped slice keeps its byte range into `turn.answer` (so `RowSlot::Answer`
-/// hit-testing stays aligned) and is styled by
-/// `markdown_lines::style_slice_mapped`. That styler hides balanced emphasis
-/// sigils, so the rendered columns no longer map 1:1 to the source — the slice's
-/// `col_map` (stored on the `RowSlot`) carries `rendered col → source byte` for
-/// the citation hit-test to walk.
+/// Render a `Done` turn's answer as styled markdown rows. The whole answer is
+/// handed to the editor's buffer-aware markdown model in one pass
+/// (`markdown_lines::classify_block_kinds`), which labels every logical source
+/// line's block role; each line is then word-wrapped and each wrapped slice
+/// keeps its byte range into `turn.answer` (so `RowSlot::Answer` hit-testing
+/// stays aligned) and is styled by `markdown_lines::style_slice_mapped`. That
+/// styler hides balanced emphasis sigils, so the rendered columns no longer map
+/// 1:1 to the source — the slice's `col_map` (stored on the `RowSlot`) carries
+/// `rendered col → source byte` for the citation hit-test to walk.
 fn render_answer(
     turn: &Turn,
     width: u16,
@@ -748,11 +749,20 @@ fn render_answer(
     out: &mut Vec<(RowSlot, Line<'static>)>,
 ) {
     use crate::components::markdown_lines;
+    // One buffer-aware classification pass over the whole answer: split into
+    // logical (newline-free) lines and let the editor model decide each line's
+    // block role (fences, setext, lazy blockquotes all resolved there). The
+    // `split_inclusive` walk below visits the same lines in the same order, so
+    // `kinds` aligns index-for-index.
+    let logicals: Vec<&str> = turn
+        .answer
+        .split_inclusive('\n')
+        .map(|l| l.strip_suffix('\n').unwrap_or(l))
+        .collect();
+    let kinds = markdown_lines::classify_block_kinds(&logicals);
     let mut offset = 0usize;
-    let mut in_fence = false;
-    for logical in turn.answer.split_inclusive('\n') {
+    for (logical, &kind) in turn.answer.split_inclusive('\n').zip(kinds.iter()) {
         let stripped = logical.strip_suffix('\n').unwrap_or(logical);
-        let kind = markdown_lines::classify(stripped, &mut in_fence);
         let line_start = offset;
         for rel in wrap_text(stripped, width) {
             let abs = (line_start + rel.start)..(line_start + rel.end);

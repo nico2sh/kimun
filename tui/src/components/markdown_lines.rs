@@ -26,9 +26,20 @@
 //!   only through [`crate::ask::citations::scan`]; we merely *style* the ranges
 //!   it reports. Code (fenced blocks and inline spans) is never citation-styled.
 //!
-//! The unit of work is one *logical* source line: [`classify`] labels it (while
-//! threading fenced-code-block state), and [`style_slice_mapped`] styles one
-//! wrapped visual slice of it and returns its column map.
+//! The unit of work is one *logical* source line, split across two layers:
+//!
+//! - **Block identity is not ours to decide.** [`classify_block_kinds`] hands
+//!   the whole answer to the editor's buffer-aware markdown model
+//!   ([`crate::components::text_editor::markdown::ParsedBuffer`], the real
+//!   pulldown-cmark classifier) and maps each row's result onto a [`LineKind`].
+//!   There is exactly one opinion about what a line *is*, and it is the
+//!   editor's — so answers and the note editor never disagree, and cross-line
+//!   constructs the model resolves natively (unclosed fences, setext
+//!   underlines, lazily-continued blockquotes) come along for free.
+//! - **Inline styling stays here.** [`style_slice_mapped`] styles one wrapped
+//!   visual slice of a line (given its [`LineKind`]) and returns its column
+//!   map — this is the answer-domain layer (emphasis hiding, citation styling,
+//!   `col_map`) the editor's fully-relaid `ParsedBuffer` render can't provide.
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -39,8 +50,9 @@ use crate::settings::themes::Theme;
 /// The block role of one logical source line.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LineKind {
-    /// A fenced-code delimiter (```` ``` ````/`~~~`) or a line inside a fence:
-    /// styled as code verbatim, with no inline markdown or citation restyling.
+    /// A code line — a fenced-code delimiter (```` ``` ````/`~~~`), a line
+    /// inside a fence, or an indented (4-space/tab) code block: styled as code
+    /// verbatim, with no inline markdown or citation restyling.
     Code,
     /// An ATX heading (`#`..`######`).
     Heading,
@@ -90,38 +102,60 @@ impl MdStyles {
     }
 }
 
-/// Classify one logical (newline-free) source `line`, threading fenced-code
-/// state through `in_fence`: a fence delimiter flips it, and every line while
-/// it is set is [`LineKind::Code`]. Call in source order so the state stays
-/// coherent across lines.
-pub fn classify(line: &str, in_fence: &mut bool) -> LineKind {
-    let trimmed = line.trim_start();
-    if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-        // The fence delimiter line itself renders as code; the state flips for
-        // the lines that follow.
-        *in_fence = !*in_fence;
-        return LineKind::Code;
-    }
-    if *in_fence {
-        return LineKind::Code;
-    }
-    if is_atx_heading(trimmed) {
-        return LineKind::Heading;
-    }
-    if trimmed.starts_with('>') {
-        return LineKind::Quote;
-    }
-    LineKind::Normal
-}
+/// Classify the block role of every logical (newline-free) source `line` in
+/// `lines`, in order, by delegating wholesale to the editor's markdown model
+/// ([`ParsedBuffer::parse`]) — so there is a single, buffer-aware opinion about
+/// block identity shared with the note editor.
+///
+/// Because the model sees the whole answer at once, cross-line constructs the
+/// old per-line scanner could not are handled natively:
+///
+/// - an **unclosed fence** keeps every following line `Code` to end-of-answer;
+/// - a **setext underline** (`Title` then `====`/`----`) tags *both* rows as a
+///   heading. Pulldown spans the heading element across the underline and
+///   resets the *title* row's coarse `LineConstructKind` back to `Plain`, so we
+///   read the heading off each row's per-line `elements`, not the coarse kind;
+/// - a **lazy blockquote continuation** (a bare line folded into a preceding
+///   `>` quote) reports the quote's depth via [`ParsedLine::blockquote_depth`]
+///   and so styles as `Quote`, matching what the editor renders.
+///
+/// Code wins over the heading/quote signals: inside a fenced or indented code
+/// block a `>` or `#` is literal, so the coarse code kinds take precedence.
+pub fn classify_block_kinds(lines: &[&str]) -> Vec<LineKind> {
+    use crate::components::text_editor::markdown::{ElementKind, ParsedBuffer};
+    use crate::components::text_editor::parse_incremental::LineConstructKind;
 
-/// An ATX heading is 1–6 `#` followed by a space or end-of-line.
-fn is_atx_heading(trimmed: &str) -> bool {
-    let hashes = trimmed.chars().take_while(|&c| c == '#').count();
-    (1..=6).contains(&hashes)
-        && trimmed[hashes..]
-            .chars()
-            .next()
-            .is_none_or(|c| c == ' ' || c == '\t')
+    let owned: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+    let parsed = ParsedBuffer::parse(&owned);
+    parsed
+        .lines
+        .iter()
+        .zip(parsed.kinds.iter())
+        .map(|(parsed_line, &kind)| {
+            if matches!(
+                kind,
+                LineConstructKind::FenceMarker
+                    | LineConstructKind::FenceContent
+                    | LineConstructKind::IndentedCode
+            ) {
+                return LineKind::Code;
+            }
+            let is_heading = matches!(kind, LineConstructKind::SetextUnderline)
+                || parsed_line.elements.iter().any(|e| {
+                    matches!(
+                        e.kind,
+                        ElementKind::HeadingH1 | ElementKind::HeadingH2 | ElementKind::HeadingH3
+                    )
+                });
+            if is_heading {
+                LineKind::Heading
+            } else if parsed_line.blockquote_depth().is_some() {
+                LineKind::Quote
+            } else {
+                LineKind::Normal
+            }
+        })
+        .collect()
 }
 
 /// Style one wrapped visual `slice` of a logical line whose block role is
@@ -349,24 +383,83 @@ mod tests {
         style_slice_mapped(slice, kind, styles).0
     }
 
+    /// Classify a single context-free line (its block role does not depend on
+    /// neighbours) through the buffer classifier.
+    fn kind_of(line: &str) -> LineKind {
+        classify_block_kinds(&[line])[0]
+    }
+
     #[test]
     fn classify_toggles_fenced_code_blocks() {
-        let mut fence = false;
-        assert_eq!(classify("```rust", &mut fence), LineKind::Code); // opener
-        assert_eq!(classify("let x = 1;", &mut fence), LineKind::Code); // body
-        assert_eq!(classify("```", &mut fence), LineKind::Code); // closer
-        assert_eq!(classify("after", &mut fence), LineKind::Normal); // out again
+        // Opener, body, closer are all Code; the line after the fence is out.
+        assert_eq!(
+            classify_block_kinds(&["```rust", "let x = 1;", "```", "after"]),
+            vec![LineKind::Code, LineKind::Code, LineKind::Code, LineKind::Normal],
+        );
+    }
+
+    #[test]
+    fn unclosed_fence_keeps_trailing_lines_code() {
+        // An unterminated fence runs to the end of the answer — fence tracking
+        // behaviour is unchanged from the old scanner.
+        assert_eq!(
+            classify_block_kinds(&["```", "still code", "more code"]),
+            vec![LineKind::Code, LineKind::Code, LineKind::Code],
+        );
     }
 
     #[test]
     fn classify_labels_headings_and_quotes() {
-        let mut fence = false;
-        assert_eq!(classify("# Title", &mut fence), LineKind::Heading);
-        assert_eq!(classify("###### h6", &mut fence), LineKind::Heading);
-        assert_eq!(classify("####### too many", &mut fence), LineKind::Normal);
-        assert_eq!(classify("#nospace", &mut fence), LineKind::Normal);
-        assert_eq!(classify("> quoted", &mut fence), LineKind::Quote);
-        assert_eq!(classify("plain text", &mut fence), LineKind::Normal);
+        assert_eq!(kind_of("# Title"), LineKind::Heading);
+        assert_eq!(kind_of("###### h6"), LineKind::Heading);
+        assert_eq!(kind_of("####### too many"), LineKind::Normal);
+        assert_eq!(kind_of("#nospace"), LineKind::Normal);
+        assert_eq!(kind_of("> quoted"), LineKind::Quote);
+        assert_eq!(kind_of("plain text"), LineKind::Normal);
+    }
+
+    #[test]
+    fn setext_underline_styles_title_and_rule_as_heading() {
+        // `Title` + `====` is a setext H1: the editor model spans the heading
+        // across BOTH rows, so both style as a heading even though the title
+        // row carries no `#`. (`----` is a setext H2 the same way.)
+        assert_eq!(
+            classify_block_kinds(&["Title", "===="]),
+            vec![LineKind::Heading, LineKind::Heading],
+        );
+        assert_eq!(
+            classify_block_kinds(&["Title", "----"]),
+            vec![LineKind::Heading, LineKind::Heading],
+        );
+    }
+
+    #[test]
+    fn lazy_blockquote_continuation_styles_as_quote() {
+        // `> a` then a bare `b`: the editor model folds the bare line into the
+        // quote (CommonMark §5.1 lazy continuation), so BOTH style as Quote —
+        // the model is the truth and it says depth 1 on the continuation.
+        assert_eq!(
+            classify_block_kinds(&["> a", "b"]),
+            vec![LineKind::Quote, LineKind::Quote],
+        );
+    }
+
+    #[test]
+    fn blank_line_ends_the_blockquote() {
+        // A blank row ends the quote, so the line after it is not a lazy
+        // continuation (CommonMark §5.1 — pulldown closes the quote at the blank).
+        assert_eq!(
+            classify_block_kinds(&["> a", "", "b"]),
+            vec![LineKind::Quote, LineKind::Normal, LineKind::Normal],
+        );
+    }
+
+    #[test]
+    fn four_space_indent_is_code_per_editor_model() {
+        // The editor model treats a 4-space indent as an indented code block.
+        // The answer renderer now agrees (the old per-line scanner called this
+        // Normal) — a deliberate divergence, encoding the editor model's opinion.
+        assert_eq!(classify_block_kinds(&["    let x = 1;"]), vec![LineKind::Code]);
     }
 
     #[test]
