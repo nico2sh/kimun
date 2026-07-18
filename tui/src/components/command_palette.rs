@@ -3,7 +3,6 @@
 //! [`LeaderAction`] — the palette is a labelled door onto the same actions
 //! the leader sequences fire, never a second implementation.
 
-use async_trait::async_trait;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
@@ -16,7 +15,7 @@ use crate::components::overlay::{Overlay, OverlayKind};
 use crate::components::panel::{ModalBg, ModalSpec, modal_chrome};
 use crate::components::rich_row::RichRow;
 use crate::components::search_list::{
-    Emit, Filter, KeyReaction, RowSource, SearchList, SearchMouse, SearchRow,
+    Filter, KeyReaction, SearchList, SearchMouse, SearchRow, StaticRowSource,
 };
 use crate::keys::leader::{LeaderAction, LeaderNode};
 use crate::settings::icons::Icons;
@@ -82,21 +81,6 @@ pub fn command_entries(tree: &LeaderNode, gateway: &str) -> Vec<CommandEntry> {
     out
 }
 
-struct CommandSource {
-    entries: Vec<CommandEntry>,
-}
-
-#[async_trait]
-impl RowSource<CommandEntry> for CommandSource {
-    async fn load(&self, _query: &str, emit: Emit<CommandEntry>) {
-        emit.replace(self.entries.clone());
-    }
-
-    fn reload_on_query(&self) -> bool {
-        false // load once; the fuzzy filter narrows
-    }
-}
-
 /// The palette modal — same engine as the note browser, command rows.
 pub struct CommandPaletteModal {
     list: SearchList<CommandEntry>,
@@ -104,13 +88,12 @@ pub struct CommandPaletteModal {
 
 impl CommandPaletteModal {
     pub fn new(tree: &LeaderNode, gateway: &str, icons: Icons, tx: AppTx) -> Self {
-        let source = CommandSource {
-            entries: command_entries(tree, gateway),
-        };
-        let list = SearchList::builder(source, redraw_callback(tx))
+        // Static, in-memory rows: build synchronously over the leader-tree
+        // commands (the redraw callback is never fired on this path).
+        let list = SearchList::builder(StaticRowSource, redraw_callback(tx))
             .filter(Filter::Fuzzy)
             .icons(icons)
-            .build();
+            .build_with_rows(command_entries(tree, gateway));
         Self { list }
     }
 

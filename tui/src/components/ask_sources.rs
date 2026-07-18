@@ -15,7 +15,8 @@
 //! Unlike FIND (which opens on its query input), the Sources view opens on the
 //! list ([`Focus::List`]) — the first production user of `opening_focus`. Its
 //! rows are per-turn in-memory sources, so it composes `SearchList` directly
-//! (over an in-memory [`RowSource`]) rather than through `QueryListPanel`:
+//! (built synchronously over a [`StaticRowSource`]) rather than through
+//! `QueryListPanel`:
 //! `QueryListPanel` is a bare list with no `PreviewPane` and it swallows the
 //! `ListVerb`/`Intercepted` reactions the reveal is driven by.
 //!
@@ -44,7 +45,7 @@ use crate::components::panel::panel_block;
 use crate::components::preview_pane::{Highlight, PreviewPane};
 use crate::components::rich_row::RichRow;
 use crate::components::search_list::{
-    Emit, Filter, Focus, KeyReaction, RowSource, SearchList, SearchMouse, SearchRow,
+    Filter, Focus, KeyReaction, SearchList, SearchMouse, SearchRow, StaticRowSource,
 };
 use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::ActionShortcuts;
@@ -122,31 +123,14 @@ impl SearchRow for SourceRow {
     }
 }
 
-/// The in-memory [`RowSource`] for one turn: it delivers the fixed source rows
-/// once and never reloads on the query — the query is a *local* fuzzy filter
-/// over the loaded rows (`reload_on_query() == false`).
-struct TurnSource {
-    rows: Vec<SourceRow>,
-}
-
-#[async_trait::async_trait]
-impl RowSource<SourceRow> for TurnSource {
-    async fn load(&self, _query: &str, emit: Emit<SourceRow>) {
-        emit.replace(self.rows.clone());
-    }
-    fn reload_on_query(&self) -> bool {
-        false
-    }
-}
-
 /// The Ask workspace's Sources drawer view: a ranked source list (on the shared
 /// [`SearchList`]) with the shared [`PreviewPane`] revealing the selected
 /// source's note below/over it.
 pub struct SourcesPanel {
     turn_id: Option<u64>,
     /// The shared list engine: query/filter input, result list, selection,
-    /// list scroll, list-focus verbs and intercepts. Rebuilt per turn over a
-    /// fresh in-memory [`TurnSource`].
+    /// list scroll, list-focus verbs and intercepts. Rebuilt per turn,
+    /// synchronously, over the turn's in-memory rows (a [`StaticRowSource`]).
     list: SearchList<SourceRow>,
     /// The note-preview surface (expand cycle + content scroll + content
     /// render), shared with the FIND drawer. Anchored by the located section
@@ -166,11 +150,6 @@ pub struct SourcesPanel {
     /// The `Ctrl+Y` combo, kept to route an [`KeyReaction::Intercepted`] to
     /// yank (any other intercepted combo is a FollowLink → open).
     ctrl_y_combo: Option<KeyCombo>,
-    /// A citation ordinal to select once the turn's rows land — set by
-    /// [`focus_source`](Self::focus_source) when the rows are not loaded yet (a
-    /// citation click that also switched turns), applied in the poll path and
-    /// cleared on the next turn.
-    pending_focus: Option<usize>,
     /// The preview content viewport height from the last render — the page size
     /// for PageUp/PageDown content scrolling in the Full preview.
     preview_page: u16,
@@ -189,9 +168,9 @@ impl SourcesPanel {
             intercept.push(c);
         }
         let icons = Icons::new(false);
-        // The initial (turn-less) list is empty; its load delivers nothing to
-        // paint, so a no-op redraw is enough until the first `set_turn` rebuilds
-        // it with a `tx`-wired redraw.
+        // The initial (turn-less) list is empty and built synchronously
+        // ([`build_list`] uses `build_with_rows`), so the redraw callback is
+        // never fired — a no-op is harmless by construction.
         let list = build_list(Vec::new(), &intercept, &icons, Arc::new(|| {}));
         Self {
             turn_id: None,
@@ -202,7 +181,6 @@ impl SourcesPanel {
             icons,
             intercept,
             ctrl_y_combo,
-            pending_focus: None,
             preview_page: 0,
         }
     }
@@ -227,7 +205,6 @@ impl SourcesPanel {
     /// Collapses the preview and resets to the top.
     pub fn refresh(&mut self, turn_id: u64, sources: Vec<AskSource>, tx: &AppTx) {
         self.turn_id = Some(turn_id);
-        self.pending_focus = None;
         self.rebuild_list(sources, tx);
         self.preview.reset();
         self.loaded = None;
@@ -237,7 +214,6 @@ impl SourcesPanel {
     /// conversation" action (leader `a n`) drops the old turn's sources.
     pub fn reset(&mut self, tx: &AppTx) {
         self.turn_id = None;
-        self.pending_focus = None;
         self.rebuild_list(Vec::new(), tx);
         self.preview.reset();
         self.loaded = None;
@@ -245,8 +221,10 @@ impl SourcesPanel {
 
     /// (Re)build the list engine over `sources` (rank = 1-based position), the
     /// engine-per-turn pattern: the turn's rows live only in the engine. The
-    /// engine's redraw callback is wired to `tx` (`redraw_callback`) so the
-    /// async row load's completion repaints the drawer.
+    /// rows are applied synchronously ([`build_list`] uses `build_with_rows`),
+    /// so they are present the instant this returns — no async load to wake a
+    /// redraw for. `tx` is still threaded to the engine's (never-fired) redraw
+    /// callback, harmless by construction.
     fn rebuild_list(&mut self, sources: Vec<AskSource>, tx: &AppTx) {
         let rows: Vec<SourceRow> = sources
             .into_iter()
@@ -284,24 +262,10 @@ impl SourcesPanel {
         self.list.set_query(""); // clear any filter so the target is never hidden
         self.preview.reset();
         self.loaded = None;
-        self.pending_focus = Some(ordinal);
-        self.list.poll();
-        self.apply_pending_focus();
-    }
-
-    /// Apply a pending citation focus once the turn's rows have landed: resolve
-    /// the ordinal to its visible position and select it. Cleared once the load
-    /// has settled (whether or not the ordinal matched — an unknown ordinal is
-    /// ignored). No-op while the rows are still loading, so a cross-turn
-    /// citation click (rebuild + async spawn, then this in the same tick) is
-    /// retried from the poll path when the rows arrive.
-    fn apply_pending_focus(&mut self) {
-        let Some(ordinal) = self.pending_focus else {
-            return;
-        };
-        if self.list.is_loading() {
-            return;
-        }
+        // The turn's rows are applied synchronously on rebuild, so the target is
+        // present now: resolve the ordinal to its visible position and select it
+        // inline — no deferral, even for a cross-turn citation click that ran
+        // `set_turn` in the same tick. An unknown ordinal is ignored.
         if let Some(pos) = self
             .list
             .visible_rows()
@@ -310,7 +274,6 @@ impl SourcesPanel {
         {
             self.list.select(pos);
         }
-        self.pending_focus = None;
     }
 
     /// Reveal `sources[source_index]` in the preview (leader `a s`): point the
@@ -321,7 +284,9 @@ impl SourcesPanel {
     /// the note load. No-op for an out-of-range index.
     pub fn open_reader(&mut self, source_index: usize, tx: &AppTx) {
         self.list.set_query("");
-        self.list.poll();
+        // The turn's rows are present synchronously after `set_turn`, so this
+        // resolves on the first press — even when leader `a s` runs `set_turn`
+        // then `open_reader(0)` in the same tick.
         let Some(source) = self.source_at(source_index).cloned() else {
             return;
         };
@@ -665,9 +630,6 @@ impl SourcesPanel {
 
     pub fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
         self.list.poll();
-        // Apply a deferred citation focus now that this frame's poll may have
-        // landed the turn's rows.
-        self.apply_pending_focus();
         // Keep the preview anchored to the selection every frame (Context sticks
         // across moves; Full collapses on a change) before laying anything out.
         self.sync_preview();
@@ -681,16 +643,15 @@ impl SourcesPanel {
         let inner = block.inner(rect);
         f.render_widget(block, rect);
 
-        // Empty row set: while the turn's initial load is still in flight show
-        // nothing (it lands within a frame); once settled empty, the prompt.
-        if !self.has_sources() {
-            if !self.list.is_loading() {
-                let style = Style::default().fg(theme.gray.to_ratatui());
-                f.render_widget(
-                    Paragraph::new("no sources — ask something").style(style),
-                    inner,
-                );
-            }
+        // No sources at all for this turn: the prompt. The row set is applied
+        // synchronously on rebuild, so there is no in-flight load to wait on —
+        // an empty list here means the turn genuinely has no sources.
+        if self.list.rows().is_empty() {
+            let style = Style::default().fg(theme.gray.to_ratatui());
+            f.render_widget(
+                Paragraph::new("no sources — ask something").style(style),
+                inner,
+            );
             return;
         }
 
@@ -715,6 +676,18 @@ impl SourcesPanel {
         self.list.render_query(f, filter_inner, theme, focused);
         let body = rows[1];
 
+        // A zero-match filter: mirror FIND's "No results" (query_panel.rs) so a
+        // narrowed-to-nothing filter reads as a result, not a silent blank.
+        if self.list.visible_rows().is_empty() {
+            let gray = theme.gray.to_ratatui();
+            let bg = theme.bg_panel.to_ratatui();
+            f.render_widget(
+                Paragraph::new("  No results").style(Style::default().fg(gray).bg(bg)),
+                body,
+            );
+            return;
+        }
+
         // Full: the preview takes the whole body, no list visible. The wheel
         // scrolls the content from anywhere in the panel.
         if self.preview.is_full() {
@@ -727,8 +700,11 @@ impl SourcesPanel {
         if self.preview.is_context() {
             let max_list = body.height / 2;
             // Rows are two lines each; cap the list at half the panel but shrink
-            // for a short list so the preview gets the rest.
-            let list_height = (self.list.rows().len() as u16 * 2).min(max_list).max(1);
+            // for a short (or filtered) list so the preview gets the rest. Use
+            // the VISIBLE (filtered) count, like FIND (query_panel.rs), so a
+            // narrowing filter shrinks the list pane.
+            let visible = self.list.visible_rows().len();
+            let list_height = (visible as u16 * 2).min(max_list).max(1);
             let areas = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
@@ -811,10 +787,9 @@ impl SourcesPanel {
 
     #[cfg(test)]
     pub(crate) async fn settle(&mut self) {
+        // The static list is applied synchronously at build, so it is already
+        // idle; this is a no-op kept so tests read the same as the FIND drawer.
         self.list.poll_until_idle().await;
-        // Mirror the render path: a deferred citation focus is applied once the
-        // rows have landed.
-        self.apply_pending_focus();
     }
 
     #[cfg(test)]
@@ -825,14 +800,17 @@ impl SourcesPanel {
 
 /// (Re)build a [`SearchList`] over the given per-turn rows, wired the same way
 /// on every turn: fuzzy local filter, opening on the list, the `l`/`h`/`o`/`y`
-/// verbs, and the FollowLink / `Ctrl+Y` intercepts.
+/// verbs, and the FollowLink / `Ctrl+Y` intercepts. The rows are applied
+/// synchronously (`build_with_rows` over a [`StaticRowSource`]), so they are
+/// live the instant this returns; `redraw` is threaded to the engine but never
+/// fired on this path.
 fn build_list(
     rows: Vec<SourceRow>,
     intercept: &[KeyCombo],
     icons: &Icons,
     redraw: Arc<dyn Fn() + Send + Sync>,
 ) -> SearchList<SourceRow> {
-    SearchList::builder(TurnSource { rows }, redraw)
+    SearchList::builder(StaticRowSource, redraw)
         .icons(icons.clone())
         .filter(Filter::Fuzzy)
         .opening_focus(Focus::List)
@@ -841,7 +819,7 @@ fn build_list(
         .list_verb('h')
         .list_verb('o')
         .list_verb('y')
-        .build()
+        .build_with_rows(rows)
 }
 
 /// The similarity as a whole-percent integer (`score` is the server's
@@ -1063,55 +1041,83 @@ mod tests {
         assert_eq!(p.selected_source().map(|s| s.ordinal), Some(7));
     }
 
-    /// Regression: `refresh` (the answer-completion path) must wire the engine's
-    /// redraw to `tx`, so the async row load's completion wakes the render loop
-    /// — with ZERO prior interaction (no handle_input/open_reader to arm a
-    /// deferred slot). Previously the load landed silently and freshly-ranked
-    /// sources could sit unpainted.
+    /// `refresh` (the answer-completion path) applies the turn's rows
+    /// synchronously — they are present the instant it returns, with ZERO prior
+    /// interaction and no `poll`/`settle`. There is no async row load to wait
+    /// on, so the drawer paints the freshly-ranked sources on the next frame
+    /// without needing a Redraw wake.
     #[tokio::test]
-    async fn refresh_load_completion_emits_a_redraw() {
+    async fn refresh_applies_rows_synchronously_no_redraw_needed() {
         let mut p = test_panel().await;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         p.refresh(1, vec![source("a.md", "A", 0.9, "alpha body")], &tx);
-        // Let the engine's row load run to completion (no manual poll, no other
-        // interaction) — its redraw callback must fire on `tx`.
-        p.settle().await;
-        let mut redrew = false;
+        // No poll, no settle: the rows are live now.
+        assert_eq!(p.match_count(), 1, "refresh's rows are applied synchronously");
+        assert!(!p.list.is_loading(), "no async load is in flight");
+        assert_eq!(nth_heading(&p, 0).as_deref(), Some("A"));
+        // The synchronous path never fires the engine's redraw callback — the
+        // render loop repaints on its own; no Redraw event is required.
+        let mut redraws = 0;
         while let Ok(ev) = rx.try_recv() {
             if matches!(ev, AppEvent::Redraw) {
-                redrew = true;
+                redraws += 1;
             }
         }
-        assert!(redrew, "refresh's row load must emit a Redraw on completion");
+        assert_eq!(redraws, 0, "no Redraw wake is needed for the sync row set");
     }
 
-    /// A cross-turn citation click runs `set_turn` (rebuild + async spawn) then
-    /// `focus_source` in the same tick, before the rows land. The ordinal jump
-    /// must be retried once the load settles, not silently no-op.
+    /// A cross-turn citation click runs `set_turn` (rebuild) then `focus_source`
+    /// in the SAME tick. Because the rows are applied synchronously, the ordinal
+    /// jump lands immediately — no deferral, no `settle` needed.
     #[tokio::test]
-    async fn cross_turn_focus_source_applies_once_rows_land() {
+    async fn cross_turn_focus_source_applies_immediately() {
         let mut p = test_panel().await;
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut a = source("a.md", "A", 0.9, "a");
         a.ordinal = 3;
         let mut b = source("b.md", "B", 0.5, "b");
         b.ordinal = 7;
-        // New turn + citation focus in the same tick: rows not yet loaded.
+        // New turn + citation focus in the same tick: rows are present now.
         p.set_turn(2, vec![a, b], &tx);
         p.focus_source(7);
-        // Nothing selectable yet — the rows are still loading.
-        assert!(
-            p.selected_source().is_none() || p.selected_source().map(|s| s.ordinal) != Some(7),
-            "the ordinal jump is deferred until the rows land"
-        );
-        // Once the load settles, the deferred focus lands on ordinal 7.
-        p.settle().await;
         assert_eq!(
             p.selected_source().map(|s| s.ordinal),
             Some(7),
-            "deferred citation focus applied on load completion"
+            "citation focus applied in the same tick as set_turn"
         );
         assert_eq!(selected_heading(&p).as_deref(), Some("B"));
+    }
+
+    /// Leader `a s` shape: `set_turn(new id)` then `open_reader(0)` in the SAME
+    /// tick. The rows are synchronous, so the preview opens on the requested
+    /// source on the FIRST press (the pre-fix bug needed two presses because the
+    /// rows had not landed when `open_reader` read `source_at(0)`).
+    #[tokio::test]
+    async fn set_turn_then_open_reader_same_tick_opens_first_press() {
+        let (_dir, vault) = test_vault().await;
+        vault
+            .create_note(&VaultPath::new("a.md"), "# ha\nalpha text\n")
+            .await
+            .unwrap();
+        let mut p = SourcesPanel::new(Arc::new(vault), &key_bindings());
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        // Fresh turn + open the top source in the same tick — no settle between.
+        p.set_turn(9, vec![source("a.md", "ha", 0.9, "alpha text")], &tx);
+        p.open_reader(0, &tx);
+        assert!(
+            p.preview.is_context(),
+            "open_reader opens the preview on the first press"
+        );
+        assert_eq!(
+            selected_heading(&p).as_deref(),
+            Some("ha"),
+            "the requested source is selected"
+        );
+        assert_eq!(
+            p.loaded.as_ref().map(|l| l.path.clone()),
+            Some(VaultPath::new("a.md")),
+            "the note load is anchored to the opened source"
+        );
     }
 
     // ── New filter input (in-memory, heading/path text) ───────────────────
@@ -1508,6 +1514,61 @@ mod tests {
         assert!(
             text.contains("filter"),
             "filter box stays visible in input focus: {text}"
+        );
+    }
+
+    /// F3: a filter that matches nothing must render FIND's "No results"
+    /// message, not a silent blank — the row set is non-empty, only the visible
+    /// (filtered) set is empty.
+    #[tokio::test]
+    async fn zero_match_filter_shows_no_results() {
+        let mut p = test_panel().await;
+        p.set_turn(1, vec![source("a.md", "Alpha", 0.9, "body")], &noop_tx());
+        p.settle().await;
+        p.list.set_query("zzznomatch");
+        assert_eq!(p.list.visible_rows().len(), 0, "filter narrows to nothing");
+        let text = buffer_text(&mut p, 40, 10);
+        assert!(
+            text.contains("No results"),
+            "zero-match filter shows the No results message: {text}"
+        );
+    }
+
+    /// F2: the Context list pane is sized by the VISIBLE (filtered) count, so a
+    /// narrowing filter shrinks the list and the preview gets the reclaimed
+    /// space (more of the note is shown).
+    #[tokio::test]
+    async fn context_list_pane_shrinks_when_filter_narrows() {
+        let mut p = test_panel().await;
+        let srcs: Vec<_> = (0..10)
+            .map(|i| source(&format!("n{i}.md"), &format!("Alpha{i}"), 0.9, "body"))
+            .collect();
+        p.set_turn(1, srcs, &noop_tx());
+        p.settle().await;
+        // Open Context on the first source with a long note and NO highlight, so
+        // the preview renders from the top and a taller pane shows more lines.
+        p.preview.toggle(Some(VaultPath::new("n0.md")));
+        let mut text = String::new();
+        for i in 0..40 {
+            text.push_str(&format!("noteline{i}\n"));
+        }
+        p.loaded = Some(LoadedNote {
+            path: VaultPath::new("n0.md"),
+            ordinal: 0,
+            content: ReaderContent::Loaded {
+                text,
+                highlight: None,
+            },
+        });
+        let count_lines = |p: &mut SourcesPanel| buffer_text(p, 40, 20).matches("noteline").count();
+        let before = count_lines(&mut p);
+        // Narrow to a single source: the list pane shrinks, the preview grows.
+        p.list.set_query("Alpha3");
+        assert_eq!(p.list.visible_rows().len(), 1, "filter narrows to one");
+        let after = count_lines(&mut p);
+        assert!(
+            after > before,
+            "preview gained the space the shrunken list gave up: before={before} after={after}"
         );
     }
 

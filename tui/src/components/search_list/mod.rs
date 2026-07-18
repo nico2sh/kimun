@@ -10,7 +10,8 @@ mod seams;
 
 pub use resolving::{ResolvingRowSource, Unresolvable};
 pub use seams::{
-    Emit, Filter, Loaded, RowSource, SearchRow, SuggestionItem, SuggestionSource, VaultSuggestions,
+    Emit, Filter, Loaded, RowSource, SearchRow, StaticRowSource, SuggestionItem, SuggestionSource,
+    VaultSuggestions,
 };
 
 use crate::components::autocomplete::{
@@ -197,9 +198,34 @@ impl<R: SearchRow> SearchList<R> {
         }
     }
 
+    /// The async path: kick off the initial load; rows land on a later `poll`.
     fn new(b: SearchListBuilder<R>) -> Self {
-        let mut loader = LoadEngine::new(b.redraw.clone());
-        loader.start(b.source.clone(), b.initial_query.clone());
+        let mut list = Self::assemble(b);
+        list.loader.start(list.source.clone(), list.query.clone());
+        list
+    }
+
+    /// The synchronous path: apply an in-memory row set and seed the initial
+    /// selection here and now — no async load, no channel, no redraw
+    /// round-trip. The [`LoadEngine`] stays idle (`is_loading()` is false
+    /// immediately), and the source's `load` is never invoked, so a caller can
+    /// read `selected_row()`/`rows()` on the very next line. For static sources
+    /// (`reload_on_query() == false`), where the query is a local filter over
+    /// the built rows. See [`StaticRowSource`].
+    ///
+    /// [`StaticRowSource`]: crate::components::search_list::StaticRowSource
+    fn with_rows(b: SearchListBuilder<R>, rows: Vec<R>) -> Self {
+        let mut list = Self::assemble(b);
+        list.rows = rows;
+        list.recompute_and_seed();
+        list
+    }
+
+    /// Build the struct with an idle loader (no load started). The two entry
+    /// points ([`new`](Self::new)/[`with_rows`](Self::with_rows)) diverge on
+    /// what they do next: spawn an async load, or seed rows synchronously.
+    fn assemble(b: SearchListBuilder<R>) -> Self {
+        let loader = LoadEngine::new(b.redraw.clone());
         let input = SingleLineInput::with_value(&b.initial_query);
         let debounce = b.debounce;
         let autocomplete = b.autocomplete.map(|(suggestions, mode)| {
@@ -952,6 +978,19 @@ impl<R: SearchRow> SearchListBuilder<R> {
     pub fn build(self) -> SearchList<R> {
         SearchList::new(self)
     }
+
+    /// Build synchronously over a known, in-memory row set: the rows are
+    /// applied and the initial selection seeded before this returns — no async
+    /// load, no channel, no redraw round-trip. For static sources
+    /// (`reload_on_query() == false`); the source's `load` is never called, so
+    /// most static consumers pair this with [`StaticRowSource`]. The redraw
+    /// callback passed to [`builder`](SearchList::builder) is never fired on
+    /// this path.
+    ///
+    /// [`StaticRowSource`]: crate::components::search_list::StaticRowSource
+    pub fn build_with_rows(self, rows: Vec<R>) -> SearchList<R> {
+        SearchList::with_rows(self, rows)
+    }
 }
 
 #[cfg(test)]
@@ -1230,6 +1269,21 @@ mod tests {
         // Screen row 0 shows the item at the offset itself.
         list.handle_mouse(&mouse_down_at(2, 0));
         assert_eq!(list.selected_row().unwrap().name, "row3");
+    }
+
+    // The synchronous build seam: `build_with_rows` applies the rows and seeds
+    // the selection in the same call — no poll, no spawn, `is_loading()` false
+    // immediately. This is the static-source path (StaticRowSource); the row
+    // set is readable on the very next line.
+    #[tokio::test]
+    async fn build_with_rows_applies_synchronously_without_a_poll() {
+        let list = SearchList::builder(StaticRowSource, noop_redraw())
+            .filter(Filter::Fuzzy)
+            .build_with_rows(vec![TestRow::new("alpha"), TestRow::new("beta")]);
+        // No poll, no settle: the rows and the seeded selection are live now.
+        assert!(!list.is_loading(), "static build is not loading");
+        assert_eq!(list.rows().len(), 2);
+        assert_eq!(list.selected_row().map(|r| r.name.as_str()), Some("alpha"));
     }
 
     #[tokio::test]
