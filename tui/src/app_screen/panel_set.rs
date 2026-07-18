@@ -261,12 +261,14 @@ impl PanelSet {
         key_bindings: crate::keys::KeyBindings,
         rail_caps: RailCaps,
     ) -> Self {
+        let mut ask = ThreadPanel::new();
+        ask.set_icons(icons.clone());
         Self {
             order: PanelOrder::new(),
             rail: ActivityRail::new(key_bindings, icons, rail_caps),
             drawer,
             editor,
-            ask: ThreadPanel::new(),
+            ask,
             content: EditorAreaContent::Note,
             drawer_width: DEFAULT_DRAWER_WIDTH,
             dragging_divider: false,
@@ -285,6 +287,7 @@ impl PanelSet {
         rail_caps: RailCaps,
     ) {
         let active = self.drawer.active_view();
+        self.ask.set_icons(icons.clone());
         self.rail = ActivityRail::new(key_bindings, icons, rail_caps);
         self.rail.set_cursor(active);
     }

@@ -13,6 +13,8 @@ pub struct Icons {
     // UI chrome icons
     pub info: &'static str,
     pub workspace: &'static str,
+    /// Prompt/chevron glyph marking an Ask turn's question line.
+    pub question_prompt: &'static str,
     // Activity-rail glyphs (one per drawer view)
     pub rail_files: &'static str,
     pub rail_find: &'static str,
@@ -33,6 +35,7 @@ impl Icons {
                 attachment: "",
                 info: "󰋽",
                 workspace: "⊙",
+                question_prompt: "❯",
                 rail_files: "▤",
                 rail_find: "⌕",
                 rail_tags: "#",
@@ -49,6 +52,7 @@ impl Icons {
                 attachment: "[@]",
                 info: "(i)",
                 workspace: "W",
+                question_prompt: ">",
                 rail_files: "=",
                 rail_find: "?",
                 rail_tags: "#",

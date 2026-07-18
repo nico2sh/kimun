@@ -32,6 +32,7 @@ use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, AskData, FileOp, InputEvent};
 use crate::components::panel::panel_block;
 use crate::components::single_line_input::{InputOutcome, SingleLineInput};
+use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
 
 /// Height (in rows) of the docked composer box, borders included.
@@ -60,10 +61,18 @@ enum RowSlot {
     /// A turn's question/status line — clicking anywhere on it selects the
     /// turn.
     Turn(u64),
-    /// One word-wrapped line of a turn's answer body: the turn it belongs to
-    /// plus the line's byte range into `turn.answer`, so a click's column can
-    /// resolve to a specific citation (`citation_at_column`).
-    Answer { turn_id: u64, range: Range<usize> },
+    /// One word-wrapped line of a turn's answer body: the turn it belongs to,
+    /// the line's byte range into `turn.answer`, and the line's column map
+    /// (`rendered char index → byte offset within the sliced range`, from
+    /// `markdown_lines::style_slice_mapped`). Because emphasis sigils are hidden
+    /// in the rendered answer, a click's column no longer maps 1:1 to the source
+    /// bytes — the map resolves it back so `citation_at_column` still lands on
+    /// the right `[n]`.
+    Answer {
+        turn_id: u64,
+        range: Range<usize>,
+        col_map: Vec<usize>,
+    },
 }
 
 /// The Ask workspace's editor-area content: the conversation `Thread` plus
@@ -104,6 +113,9 @@ pub struct ThreadPanel {
     composer_rect: Rect,
     /// Row → data mapping from the last render, scoped to `turns_rect`.
     row_map: Vec<RowSlot>,
+    /// Glyph set (question-prompt chevron, …) resolved from `use_nerd_fonts`.
+    /// Defaults to the ASCII set; `set_icons` swaps in the configured one.
+    icons: Icons,
 }
 
 impl ThreadPanel {
@@ -121,7 +133,14 @@ impl ThreadPanel {
             turns_rect: Rect::default(),
             composer_rect: Rect::default(),
             row_map: Vec::new(),
+            icons: Icons::new(false),
         }
+    }
+
+    /// Swap in the configured glyph set (nerd-font vs ASCII) — the Ask panel is
+    /// resident, so `PanelSet` refreshes it here whenever icons are (re)built.
+    pub fn set_icons(&mut self, icons: Icons) {
+        self.icons = icons;
     }
 
     /// Set (or clear) the live RAG client — the single injection point
@@ -324,20 +343,24 @@ impl ThreadPanel {
         let idx = (mouse.row - self.turns_rect.y) as usize;
         let hit = self.row_map.get(idx).map(|slot| match slot {
             RowSlot::Turn(id) => (*id, None),
-            RowSlot::Answer { turn_id, range } => (*turn_id, Some(range.clone())),
+            RowSlot::Answer {
+                turn_id,
+                range,
+                col_map,
+            } => (*turn_id, Some((range.clone(), col_map.clone()))),
         });
-        let Some((turn_id, answer_range)) = hit else {
+        let Some((turn_id, answer_hit)) = hit else {
             return;
         };
         self.select_turn(turn_id);
-        let Some(range) = answer_range else {
+        let Some((range, col_map)) = answer_hit else {
             return;
         };
         let col = mouse.column.saturating_sub(self.turns_rect.x);
         let Some(turn) = self.thread.selected() else {
             return;
         };
-        let Some(citation_idx) = citation_at_column(&turn.answer, range, col) else {
+        let Some(citation_idx) = citation_at_column(&turn.answer[range], &col_map, col) else {
             return;
         };
         // Resolve `[n]` through the pairing seam (by ordinal, not vec position);
@@ -490,18 +513,35 @@ impl ThreadPanel {
     fn render_turns(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
         self.turns_rect = rect;
 
-        let bold = Style::default()
-            .fg(theme.fg_bright.to_ratatui())
+        // The question line gets a strong identity (accent + bold + a chevron
+        // prompt glyph); turns are parted by a theme-dimmed horizontal rule.
+        let question = Style::default()
+            .fg(theme.accent.to_ratatui())
             .add_modifier(Modifier::BOLD);
+        let separator = Style::default()
+            .fg(theme.gray.to_ratatui())
+            .add_modifier(Modifier::DIM);
         let dim = Style::default().fg(theme.gray.to_ratatui());
         let err = Style::default().fg(theme.red.to_ratatui());
         let md = crate::components::markdown_lines::MdStyles::from_theme(theme);
+        let prompt = self.icons.question_prompt;
 
         let mut rows: Vec<(RowSlot, Line<'static>)> = Vec::new();
         let mut turn_start_row: Vec<(u64, u16)> = Vec::new();
-        for turn in self.thread.turns() {
+        for (i, turn) in self.thread.turns().iter().enumerate() {
             turn_start_row.push((turn.id, rows.len() as u16));
-            render_turn(turn, rect.width, bold, dim, err, &md, &mut rows);
+            render_turn(
+                turn,
+                rect.width,
+                i == 0,
+                prompt,
+                question,
+                separator,
+                dim,
+                err,
+                &md,
+                &mut rows,
+            );
         }
         let total = rows.len() as u16;
         let height = rect.height;
@@ -637,20 +677,29 @@ impl Component for ThreadPanel {
 /// Render one turn's rows (question + status/body), appending to `out`.
 /// Free function (no `&self` needed) — the "one method per concern" split
 /// `render_turns` delegates to.
+#[allow(clippy::too_many_arguments)]
 fn render_turn(
     turn: &Turn,
     width: u16,
-    bold: Style,
+    is_first: bool,
+    prompt: &str,
+    question_style: Style,
+    sep_style: Style,
     dim: Style,
     err: Style,
     md: &crate::components::markdown_lines::MdStyles,
     out: &mut Vec<(RowSlot, Line<'static>)>,
 ) {
-    let question = format!("> {}", turn.question);
+    // A theme-dimmed rule parts each turn from the one above (never before the
+    // first turn). It belongs to this turn — clicking it selects the turn.
+    if !is_first {
+        out.push((RowSlot::Turn(turn.id), separator_line(width, sep_style)));
+    }
+    let question = format!("{prompt} {}", turn.question);
     for qline in wrap_text(&question, width) {
         out.push((
             RowSlot::Turn(turn.id),
-            Line::from(Span::styled(question[qline].to_string(), bold)),
+            Line::from(Span::styled(question[qline].to_string(), question_style)),
         ));
     }
     match &turn.status {
@@ -678,12 +727,19 @@ fn render_turn(
     out.push((RowSlot::Turn(turn.id), Line::default()));
 }
 
+/// A full-width theme-dimmed horizontal rule (`─`) parting two turns.
+fn separator_line(width: u16, style: Style) -> Line<'static> {
+    Line::from(Span::styled("─".repeat(width as usize), style))
+}
+
 /// Render a `Done` turn's answer as styled markdown rows. Each *logical* source
 /// line is classified (threading fenced-code state) and word-wrapped; each
 /// wrapped slice keeps its byte range into `turn.answer` (so `RowSlot::Answer`
-/// hit-testing stays aligned) and is styled by `markdown_lines::style_slice`.
-/// Markers stay visible, so the wrapped slice's columns still map 1:1 to the
-/// source bytes the citation hit-test walks.
+/// hit-testing stays aligned) and is styled by
+/// `markdown_lines::style_slice_mapped`. That styler hides balanced emphasis
+/// sigils, so the rendered columns no longer map 1:1 to the source — the slice's
+/// `col_map` (stored on the `RowSlot`) carries `rendered col → source byte` for
+/// the citation hit-test to walk.
 fn render_answer(
     turn: &Turn,
     width: u16,
@@ -699,31 +755,35 @@ fn render_answer(
         let line_start = offset;
         for rel in wrap_text(stripped, width) {
             let abs = (line_start + rel.start)..(line_start + rel.end);
+            let (line, col_map) = markdown_lines::style_slice_mapped(&turn.answer[abs.clone()], kind, md);
             out.push((
                 RowSlot::Answer {
                     turn_id: turn.id,
-                    range: abs.clone(),
+                    range: abs,
+                    col_map,
                 },
-                markdown_lines::style_slice(&turn.answer[abs], kind, md),
+                line,
             ));
         }
         offset += logical.len();
     }
 }
 
-/// Map a mouse click's column (relative to the wrapped line's own left edge)
-/// to the citation it landed on, if any. `range` must be a line byte range
-/// produced by `wrap_text` over `text` — the same one `render_turn` sliced to
-/// build the line, so clicks resolve against exactly what's on screen.
-fn citation_at_column(text: &str, range: Range<usize>, col: u16) -> Option<usize> {
-    let slice = &text[range];
+/// Map a mouse click's column (relative to the wrapped line's own left edge) to
+/// the citation it landed on, if any. `slice` is the wrapped line's source
+/// text and `map` its `rendered char index → byte offset in slice` column map
+/// (from `style_slice_mapped`): walking `map` by rendered display width steps
+/// past any hidden emphasis sigils, so a click on or after them still resolves
+/// to the right source byte — and thence the right `[n]`.
+fn citation_at_column(slice: &str, map: &[usize], col: u16) -> Option<usize> {
     let mut w: u16 = 0;
-    for (i, ch) in slice.char_indices() {
+    for &raw in map {
+        let ch = slice[raw..].chars().next()?;
         let cw = (ch.width().unwrap_or(0) as u16).max(1);
         if col < w + cw {
             return citations::scan(slice)
                 .into_iter()
-                .find(|c| c.range.contains(&i))
+                .find(|c| c.range.contains(&raw))
                 .map(|c| c.index);
         }
         w += cw;
@@ -1011,13 +1071,37 @@ mod tests {
         assert_eq!(rendered, vec!["a", "b"]);
     }
 
+    /// Identity column map (rendered col == byte offset) for a slice with no
+    /// hidden sigils — the common test fixture.
+    fn identity_map(slice: &str) -> Vec<usize> {
+        slice.char_indices().map(|(i, _)| i).collect()
+    }
+
     #[test]
     fn citation_at_column_finds_the_marker_under_the_click() {
         let text = "Fact [1] more";
-        let idx = citation_at_column(text, 0..text.len(), 5);
+        let map = identity_map(text);
+        let idx = citation_at_column(text, &map, 5);
         assert_eq!(idx, Some(1));
-        let idx = citation_at_column(text, 0..text.len(), 0);
+        let idx = citation_at_column(text, &map, 0);
         assert_eq!(idx, None);
+    }
+
+    /// With emphasis sigils hidden, a click on `[1]`'s *rendered* column must
+    /// still resolve to citation 1 — the col_map steps past the dropped `**`.
+    /// Exercises a line with an emphasis run before the citation.
+    #[test]
+    fn citation_hit_test_resolves_through_hidden_emphasis() {
+        use crate::components::markdown_lines::{self, LineKind, MdStyles};
+        let md = MdStyles::from_theme(&Theme::default());
+        let raw = "**bold** then [1] tail";
+        let (line, col_map) =
+            markdown_lines::style_slice_mapped(raw, LineKind::Normal, &md);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "bold then [1] tail");
+        // The rendered `[1]` starts at column 10 ("bold then " = 10 cols).
+        let col = text.find("[1]").unwrap() as u16 + 1; // inside the marker
+        assert_eq!(citation_at_column(raw, &col_map, col), Some(1));
     }
 
     #[test]
@@ -1040,11 +1124,13 @@ mod tests {
         p.thread_mut().complete(second, "b!".into(), vec![]);
         // Currently selected: `second`. Simulate a render so row_map/turns_rect exist.
         p.turns_rect = Rect::new(0, 0, 40, 20);
+        let answer_slice = "See [1] for it";
         p.row_map = vec![
             RowSlot::Turn(first),
             RowSlot::Answer {
                 turn_id: first,
-                range: 0.."See [1] for it".len(),
+                range: 0..answer_slice.len(),
+                col_map: identity_map(answer_slice),
             },
             RowSlot::Turn(first),
             RowSlot::Turn(second),
@@ -1061,6 +1147,51 @@ mod tests {
         assert_eq!(p.take_citation_target(), Some(1));
     }
 
+    /// A theme-dimmed rule parts turns (never before the first, never trailing
+    /// the last), and the question line stands out — accent+bold with the
+    /// prompt glyph.
+    #[test]
+    fn separators_part_turns_and_question_line_stands_out() {
+        use crate::components::markdown_lines::MdStyles;
+        let theme = Theme::default();
+        let md = MdStyles::from_theme(&theme);
+        let qstyle = Style::default()
+            .fg(theme.accent.to_ratatui())
+            .add_modifier(Modifier::BOLD);
+        let sep = Style::default()
+            .fg(theme.gray.to_ratatui())
+            .add_modifier(Modifier::DIM);
+        let dim = Style::default();
+        let err = Style::default();
+
+        let mut thread = Thread::default();
+        let a = thread.ask("first".into());
+        thread.complete(a, "ans a".into(), vec![]);
+        let b = thread.ask("second".into());
+        thread.complete(b, "ans b".into(), vec![]);
+
+        let mut rows: Vec<(RowSlot, Line<'static>)> = Vec::new();
+        for (i, turn) in thread.turns().iter().enumerate() {
+            render_turn(turn, 40, i == 0, ">", qstyle, sep, dim, err, &md, &mut rows);
+        }
+
+        let is_sep = |l: &Line<'static>| l.spans.iter().any(|s| s.content.contains('─'));
+        // Two turns → exactly one divider, opening the second turn, never last.
+        assert_eq!(rows.iter().filter(|(_, l)| is_sep(l)).count(), 1);
+        assert!(!is_sep(&rows[0].1), "no rule before the first turn");
+        let sep_idx = rows.iter().position(|(_, l)| is_sep(l)).unwrap();
+        assert!(matches!(rows[sep_idx].0, RowSlot::Turn(id) if id == b));
+        assert_ne!(sep_idx, rows.len() - 1, "no rule after the last turn");
+
+        // The question row: prompt glyph + accent-bold styling.
+        let (_, qline) = rows
+            .iter()
+            .find(|(_, l)| l.spans.iter().any(|s| s.content.contains("first")))
+            .unwrap();
+        assert!(qline.spans[0].content.starts_with('>'), "carries the prompt");
+        assert_eq!(qline.spans[0].style, qstyle, "accent + bold");
+    }
+
     mod rendering {
         use super::*;
         use crate::settings::themes::Theme;
@@ -1075,6 +1206,38 @@ mod tests {
                     p.render(f, area, theme, focused);
                 })
                 .unwrap();
+        }
+
+        /// Clicking the separator row that opens a turn selects that turn — the
+        /// rule joins `row_map` as a `Turn(id)` slot.
+        #[test]
+        fn clicking_a_separator_row_selects_its_turn() {
+            let theme = Theme::default();
+            let mut p = ThreadPanel::new();
+            let a = p.thread_mut().ask("first".into());
+            p.thread_mut().complete(a, "aaa".into(), vec![]);
+            let b = p.thread_mut().ask("second".into());
+            p.thread_mut().complete(b, "bbb".into(), vec![]);
+            p.focus = ThreadFocus::Turns;
+            // Select the first turn so a separator click can move selection.
+            p.thread_mut().select_index(0);
+            draw(&mut p, &theme, 40, 12, true);
+
+            // The first visible row mapped to `b` is its opening separator.
+            let sep_row = p
+                .row_map
+                .iter()
+                .position(|s| matches!(s, RowSlot::Turn(id) if *id == b))
+                .expect("turn b has rows on screen");
+            let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+            let mouse = MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 0,
+                row: p.turns_rect.y + sep_row as u16,
+                modifiers: KeyModifiers::NONE,
+            };
+            p.handle_input(&InputEvent::Mouse(mouse), &tx);
+            assert_eq!(p.thread().selected().unwrap().id, b);
         }
 
         #[test]
@@ -1144,12 +1307,14 @@ mod tests {
             draw(&mut p, &theme, 60, 12, true);
 
             // Find the rendered answer row carrying the prose `[1]` and hit-test
-            // the marker's column through it.
+            // the marker's column through its stored col_map.
             let hit = p.row_map.iter().find_map(|slot| match slot {
-                RowSlot::Answer { range, .. } if answer[range.clone()].contains("[1]") => {
+                RowSlot::Answer {
+                    range, col_map, ..
+                } if answer[range.clone()].contains("[1]") => {
                     let slice = &answer[range.clone()];
                     let col = slice.find("[1]").unwrap() as u16 + 1;
-                    Some(citation_at_column(&answer, range.clone(), col))
+                    Some(citation_at_column(slice, col_map, col))
                 }
                 _ => None,
             });
@@ -1192,7 +1357,9 @@ mod tests {
                 p.thread_mut().complete(id, format!("a{i}"), vec![]);
             }
             p.focus = ThreadFocus::Turns;
-            // Each turn: question(1)+answer(1)+blank(1)=3 rows; 8 turns = 24 rows.
+            // First turn: question(1)+answer(1)+blank(1) = 3 rows. Each later
+            // turn adds a leading separator: separator(1)+question(1)+answer(1)+
+            // blank(1) = 4 rows. 8 turns → 3 + 7×4 = 31 rows.
             // Terminal height 9 − composer(3) = 6 turn rows.
             draw(&mut p, &theme, 60, 9, true); // selection at the last turn
 
@@ -1203,10 +1370,10 @@ mod tests {
             draw(&mut p, &theme, 60, 9, true);
             assert_eq!(p.scroll, 0, "selecting the first turn scrolled it into view");
 
-            // End scrolls to the bottom, clamped to total − height (24 − 6 = 18).
+            // End scrolls to the bottom, clamped to total − height (31 − 6 = 25).
             turns_key(&mut p, KeyCode::End);
             draw(&mut p, &theme, 60, 9, true);
-            assert_eq!(p.scroll, 18, "content scroll clamps to the last page");
+            assert_eq!(p.scroll, 25, "content scroll clamps to the last page");
         }
     }
 }
