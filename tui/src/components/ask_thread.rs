@@ -190,16 +190,20 @@ impl ThreadPanel {
 
     pub fn handle_data(&mut self, data: AskData) {
         if let AskData::AnswerReady { turn_id, result } = data {
+            // Bottom-follow only when the turn that just completed is the one
+            // being read: regenerating an older turn while reading another must
+            // not yank the scroll to the completed (unselected) turn's end.
+            let completed_is_selected = self.thread.selected().map(|t| t.id) == Some(turn_id);
             match result {
                 Ok((answer, sources)) => {
-                    if self.thread.complete(turn_id, answer, sources) {
+                    if self.thread.complete(turn_id, answer, sources) && completed_is_selected {
                         // The answer landed: bring its (now full) content into
                         // view so a long answer doesn't complete off-screen.
                         self.follow_bottom();
                     }
                 }
                 Err(e) => {
-                    if self.thread.fail(turn_id, e) {
+                    if self.thread.fail(turn_id, e) && completed_is_selected {
                         self.follow_bottom();
                     }
                 }
@@ -1344,6 +1348,42 @@ mod tests {
             // (question 1 + 10 answer + trailing blank 1) → end pins at 12 − 5 = 7.
             draw(&mut p, &theme, 60, 8, true);
             assert_eq!(p.scroll, 7, "bottom-follow shows the answer's end");
+        }
+
+        /// Completing an UNSELECTED turn (e.g. regenerating an old turn while
+        /// reading another) must not arm bottom-follow — the reader's scroll
+        /// and follow flags stay exactly where they were.
+        #[test]
+        fn completion_of_an_unselected_turn_leaves_scroll_untouched() {
+            let mut p = ThreadPanel::new();
+            p.set_client(Some(test_client()));
+            let old = p.thread_mut().ask("old".into());
+            p.thread_mut().complete(old, "old answer".into(), vec![]);
+            let new = p.thread_mut().ask("new".into());
+            p.thread_mut().complete(new, "new answer".into(), vec![]);
+            // Read the newer turn; take a manual scroll position so we can prove
+            // it survives.
+            p.thread_mut().select_last();
+            p.scroll = 4;
+            p.follow_selection = false;
+            p.bottom_follow_pending = false;
+
+            // The OLDER (unselected) turn completes a regeneration.
+            p.handle_data(AskData::AnswerReady {
+                turn_id: old,
+                result: Ok(("regenerated".into(), vec![])),
+            });
+            assert_eq!(p.scroll, 4, "unselected completion must not move scroll");
+            assert!(!p.follow_selection, "follow flags untouched");
+            assert!(!p.bottom_follow_pending, "bottom-follow not armed");
+
+            // Completing the SELECTED turn does arm bottom-follow, as before.
+            let newer = p.thread_mut().ask("newer".into());
+            p.handle_data(AskData::AnswerReady {
+                turn_id: newer,
+                result: Ok(("visible".into(), vec![])),
+            });
+            assert!(p.bottom_follow_pending, "selected completion follows bottom");
         }
 
         /// Selecting an off-screen turn brings it into view; content-scroll keys

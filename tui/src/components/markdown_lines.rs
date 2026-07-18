@@ -235,22 +235,28 @@ struct Delim {
     /// Number of chars (1 or 2).
     len: usize,
     kind: Emph,
-    /// Whether this run may *open* emphasis — always true for `*`/`**`; for
-    /// `_`/`__` only when the preceding char is absent or non-alphanumeric
-    /// (CommonMark's intraword-underscore rule, simplified left-flanking).
+    /// Whether this run may *open* emphasis. Simplified CommonMark
+    /// left-flanking: a `*`/`**` run may open only when the char *after* it is
+    /// present and non-whitespace (so `width * height` never opens); a `_`/`__`
+    /// run additionally requires the char *before* it to be absent or
+    /// non-alphanumeric (the intraword-underscore rule).
     can_open: bool,
-    /// Whether this run may *close* emphasis — always true for `*`/`**`; for
-    /// `_`/`__` only when the following char is absent or non-alphanumeric.
+    /// Whether this run may *close* emphasis. Simplified CommonMark
+    /// right-flanking: a `*`/`**` run may close only when the char *before* it
+    /// is present and non-whitespace; a `_`/`__` run additionally requires the
+    /// char *after* it to be absent or non-alphanumeric.
     can_close: bool,
 }
 
 /// Decide, per char, which emphasis sigils to *hide* and which chars fall under
 /// bold / italic styling. Delimiters are found outside inline code and paired
-/// within each kind with a stack (nearest matching opener). `*`/`**` open and
-/// close freely (intraword `*` is legal CommonMark); `_`/`__` obey the
-/// intraword rule — a `_` run may only open when the char before it is
-/// absent/non-alphanumeric and only close when the char after it is, so
-/// `snake_case` identifiers are never mangled. An unmatched delimiter stays
+/// within each kind with a stack (nearest matching opener). Every run obeys
+/// simplified CommonMark flanking — it may open only when the following char is
+/// non-whitespace and close only when the preceding char is — so `width *
+/// height * depth` and `match *.rs and *.md` stay verbatim; `_`/`__`
+/// additionally obey the intraword rule (a `_` run may only open when the char
+/// before it is absent/non-alphanumeric and only close when the char after it
+/// is), so `snake_case` identifiers are never mangled. An unmatched delimiter stays
 /// visible and styles nothing. This is the per-slice approximation — we never
 /// pair across the wrap boundary.
 fn analyze_emphasis(chars: &[(usize, char)], code_mask: &[bool]) -> (Vec<bool>, Vec<bool>, Vec<bool>) {
@@ -283,9 +289,13 @@ fn analyze_emphasis(chars: &[(usize, char)], code_mask: &[bool]) -> (Vec<bool>, 
         let is_under = matches!(kind, Emph::Under | Emph::DoubleUnder);
         let before = (k > 0).then(|| chars[k - 1].1);
         let after = chars.get(k + len).map(|&(_, c)| c);
-        let free = |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric());
-        let can_open = !is_under || free(before);
-        let can_close = !is_under || free(after);
+        // Alphanumeric-boundary rule (underscore only) and whitespace-flanking
+        // rule (all kinds): a run left-flanks (can open) when what follows is
+        // non-whitespace, and right-flanks (can close) when what precedes is.
+        let alnum_free = |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric());
+        let non_ws = |c: Option<char>| c.is_some_and(|c| !c.is_whitespace());
+        let can_open = non_ws(after) && (!is_under || alnum_free(before));
+        let can_close = non_ws(before) && (!is_under || alnum_free(after));
         delims.push(Delim { k, len, kind, can_open, can_close });
         k += len;
     }
@@ -439,6 +449,60 @@ mod tests {
             line.spans.iter().all(|sp| sp.style != s.italic),
             "no run is italicized by an unmatched sigil"
         );
+    }
+
+    #[test]
+    fn space_flanked_stars_are_not_emphasis() {
+        let s = styles();
+        // Whitespace on the inner side means neither run can open/close, so the
+        // asterisks stay literal and nothing between them is italicized.
+        for src in ["width * height * depth = volume", "2 * 3 * 4"] {
+            let line = style_slice(src, LineKind::Normal, &s);
+            assert_eq!(rendered(&line), src, "{src} stays verbatim");
+            assert!(
+                line.spans.iter().all(|sp| sp.style != s.italic && sp.style != s.bold),
+                "{src} gets no emphasis styling"
+            );
+        }
+    }
+
+    #[test]
+    fn glob_stars_stay_visible_and_emphasize_nothing() {
+        let s = styles();
+        // `*.rs`/`*.md`: each `*` can open (followed by `.`) but neither can
+        // close (preceded by a space), so no pair forms — both stars survive.
+        let line = style_slice("match *.rs and *.md files", LineKind::Normal, &s);
+        assert_eq!(rendered(&line), "match *.rs and *.md files");
+        assert!(
+            line.spans.iter().all(|sp| sp.style != s.italic && sp.style != s.bold),
+            "glob stars italicize nothing"
+        );
+    }
+
+    #[test]
+    fn real_star_emphasis_still_works() {
+        let s = styles();
+        // `*real*` still italicizes and `**bold**` still bolds — the flanking
+        // rule only rejects whitespace-adjacent runs.
+        let line = style_slice("*real*", LineKind::Normal, &s);
+        assert_eq!(rendered(&line), "real");
+        let italic: String = line
+            .spans
+            .iter()
+            .filter(|sp| sp.style == s.italic)
+            .map(|sp| sp.content.as_ref())
+            .collect();
+        assert_eq!(italic, "real");
+
+        let line = style_slice("**bold**", LineKind::Normal, &s);
+        assert_eq!(rendered(&line), "bold");
+        let bold: String = line
+            .spans
+            .iter()
+            .filter(|sp| sp.style == s.bold)
+            .map(|sp| sp.content.as_ref())
+            .collect();
+        assert_eq!(bold, "bold");
     }
 
     #[test]
