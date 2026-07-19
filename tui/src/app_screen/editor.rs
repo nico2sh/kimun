@@ -131,6 +131,7 @@ impl EditorScreen {
         let leader_engine = LeaderEngine::with_tree(s.leader_tree());
         drop(s);
         let rail_icons = icons.clone();
+        let ask = AskCoordinator::new(settings.clone(), vault.clone());
         Self {
             settings,
             icons,
@@ -151,7 +152,7 @@ impl EditorScreen {
             doc_meta: crate::app_screen::doc_meta::DocMeta::new(vault.clone()),
             update: None,
             rag_status: crate::rag::RagStatus::Disabled,
-            ask: AskCoordinator::default(),
+            ask,
             vault,
             path,
             footer,
@@ -1144,12 +1145,7 @@ impl EditorScreen {
                 }
                 if ask_was != ask_now {
                     self.ask
-                        .refresh_capability(
-                            &mut self.panels,
-                            &self.settings,
-                            &self.vault,
-                            self.rag_status,
-                        )
+                        .refresh_capability(&mut self.panels, self.rag_status)
                         .await;
                 }
             }
@@ -3166,12 +3162,7 @@ mod tests {
         // rag_status is Disabled here → no client → composer disabled.
         screen
             .ask
-            .refresh_capability(
-                &mut screen.panels,
-                &screen.settings,
-                &screen.vault,
-                screen.rag_status,
-            )
+            .refresh_capability(&mut screen.panels, screen.rag_status)
             .await;
         assert!(
             !screen.panels.ask().has_client(),

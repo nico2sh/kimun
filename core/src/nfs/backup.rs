@@ -3,34 +3,6 @@ use std::path::Path;
 use super::{resolve_path_on_disk, VaultPath};
 use crate::error::FSError;
 
-/// Resolves both endpoints, ensures the destination's parent directory exists,
-/// and renames atomically. Returns `FSError::AlreadyExists` if the destination
-/// is occupied (the OS rename would silently overwrite on Linux otherwise).
-pub(super) async fn rename_path<P: AsRef<Path>>(
-    workspace_path: P,
-    from: &VaultPath,
-    to: &VaultPath,
-) -> Result<(), FSError> {
-    let full_from_path = resolve_path_on_disk(&workspace_path, from).await;
-    let (to_parent, to_name) = to.get_parent_path();
-    let to_base = resolve_path_on_disk(&workspace_path, &to_parent).await;
-    let full_to_path = to_base.join(&to_name);
-
-    if matches!(tokio::fs::try_exists(&full_to_path).await, Ok(true)) {
-        return Err(FSError::AlreadyExists {
-            path: to.to_owned(),
-        });
-    }
-
-    match tokio::fs::metadata(&to_base).await {
-        Ok(m) if m.is_dir() => {}
-        _ => {
-            tokio::fs::create_dir_all(&to_base).await?;
-        }
-    }
-    tokio::fs::rename(full_from_path, full_to_path).await?;
-    Ok(())
-}
 /// How long automated-edit backups are retained before the lazy purge reclaims
 /// them. Counted in whole days against the UTC backup date.
 const BACKUP_RETENTION_DAYS: i64 = 30;

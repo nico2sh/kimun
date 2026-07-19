@@ -35,6 +35,26 @@ pub(crate) fn session_value(token: &str) -> String {
     hex
 }
 
+/// The `Set-Cookie` value establishing a session for `token`: the hashed
+/// session value plus the attributes the whole session contract relies on.
+/// The cookie holds the token's hash, not the token — always cookie-safe, and
+/// `HttpOnly` keeps it out of page scripts; `SameSite=Strict` backs up the
+/// same-origin POST guard; `Path=/` must match [`clear_session_cookie`] or
+/// logout would silently fail to delete it.
+pub(crate) fn set_session_cookie(token: &str) -> String {
+    format!(
+        "{SESSION_COOKIE}={}; HttpOnly; SameSite=Strict; Path=/",
+        session_value(token)
+    )
+}
+
+/// The `Set-Cookie` value clearing the session (logout). Carries the same
+/// `Path` as [`set_session_cookie`] — a mismatched path is a different cookie
+/// to the browser and nothing gets deleted.
+pub(crate) fn clear_session_cookie() -> String {
+    format!("{SESSION_COOKIE}=; Max-Age=0; Path=/")
+}
+
 /// Rejects a state-changing POST a browser marks as cross-origin. A same-origin
 /// form POST (or a non-browser client like curl/tests) sends no mismatching
 /// `Origin`, so it passes; a drive-by CSRF from another site is blocked even in
@@ -49,6 +69,20 @@ pub(crate) fn same_origin(headers: &HeaderMap) -> bool {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     origin_host == host
+}
+
+/// Rejects cross-origin state-changing requests on every route it wraps: any
+/// non-GET/HEAD request must pass [`same_origin`]. Layered on the protected
+/// router so a new mutating route cannot ship without CSRF protection — the
+/// guard is structural, not a per-handler convention. The login POST sits
+/// outside the protected router and keeps its inline check.
+pub(crate) async fn csrf_guard(req: Request, next: Next) -> Response {
+    use axum::http::{Method, StatusCode};
+    let method = req.method();
+    if method != Method::GET && method != Method::HEAD && !same_origin(req.headers()) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    next.run(req).await
 }
 
 /// Gates every protected page. Open when no token is configured; otherwise the

@@ -6,12 +6,10 @@ use std::sync::Arc;
 use axum::{
     Form,
     extract::State,
-    http::HeaderMap,
     response::{IntoResponse, Response},
 };
 use maud::{DOCTYPE, Markup, html};
 
-use crate::auth::session::same_origin;
 use crate::config::{ConfigForm, RagConfig};
 use crate::server_state::AppState;
 
@@ -321,12 +319,8 @@ bindDesc('fastembed_model', 'fastembed-desc');
 /// handler.
 pub(super) async fn config_submit(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
     Form(f): Form<ConfigForm>,
 ) -> Response {
-    if !same_origin(&headers) {
-        return axum::http::StatusCode::FORBIDDEN.into_response();
-    }
     let err_page = |state: &AppState, msg: Markup| {
         config_markup(state, &state.config.clone(), Some(msg)).into_response()
     };
@@ -357,13 +351,7 @@ pub(super) async fn config_submit(
 /// POST /restart — asks the binary's serving loop (adr/0028) to drain
 /// in-flight requests, reload the saved config file, and rebind. Pure
 /// trigger: what changed shows up on the reloaded pages afterwards.
-pub(super) async fn restart_submit(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> Response {
-    if !same_origin(&headers) {
-        return axum::http::StatusCode::FORBIDDEN.into_response();
-    }
+pub(super) async fn restart_submit(State(state): State<Arc<AppState>>) -> Response {
     if !state.request_restart() {
         return config_markup(
             &state,
