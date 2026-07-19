@@ -9,9 +9,10 @@ use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
 
+use crate::app_screen::ask::AskCoordinator;
 use crate::app_screen::editor_input::{
-    Classification, CycleDir, DialogRequest, EditorIntent, EditorOp, InputCtx, OverlayOpen,
-    PanelFallback, classify,
+    Classification, CycleDir, EditorIntent, EditorOp, InputCtx, OverlayOpen, PanelFallback,
+    classify,
 };
 use crate::app_screen::overlay_host::OverlayHost;
 use crate::app_screen::panel_set::PanelSet;
@@ -74,12 +75,9 @@ pub struct EditorScreen {
     /// Latest RAG connection/sync status from the background sync task, shown in
     /// the footer. `Disabled` (no server) renders nothing.
     rag_status: crate::rag::RagStatus,
-    /// The turn id last mirrored into the Sources drawer — `sync_ask_sources`
-    /// compares against this instead of a dirty flag on `ThreadPanel`, since
-    /// turn ids are never reused (`Thread::bump` only increments), a stale
-    /// value here can never falsely match a fresh selection. Reset to `None`
-    /// when leaving Ask so re-entering always re-syncs.
-    last_synced_turn: Option<u64>,
+    /// The Ask workspace's coordination layer: Thread↔Sources sync, capability
+    /// refresh, AskData routing, and show/stash transitions (see `ask.rs`).
+    ask: AskCoordinator,
     /// The leader-key sequence state machine (Ctrl-G gateway, spec §8a).
     leader: LeaderEngine,
     /// App event sender, captured on enter — render-side async kicks (the
@@ -133,6 +131,7 @@ impl EditorScreen {
         let leader_engine = LeaderEngine::with_tree(s.leader_tree());
         drop(s);
         let rail_icons = icons.clone();
+        let ask = AskCoordinator::new(settings.clone(), vault.clone());
         Self {
             settings,
             icons,
@@ -153,7 +152,7 @@ impl EditorScreen {
             doc_meta: crate::app_screen::doc_meta::DocMeta::new(vault.clone()),
             update: None,
             rag_status: crate::rag::RagStatus::Disabled,
-            last_synced_turn: None,
+            ask,
             vault,
             path,
             footer,
@@ -423,22 +422,10 @@ impl EditorScreen {
     /// Take the editor area off the Ask workspace before it's swapped to
     /// another view (a note or an attachment). `clear_attachment` and
     /// `show_attachment` both leave Ask content alone, so this is what
-    /// guarantees the new view actually shows. The resident thread panel is
-    /// untouched — the conversation survives by residency.
-    ///
-    /// Also switches the drawer off Ask (to FILES) when it's still showing the
-    /// conversation's Sources: a hidden thread's sources shouldn't linger, and
-    /// leaving the drawer's active view on `Ask` would make the rail's next
-    /// ASK click read as a toggle-off (drawer already "on" Ask) instead of a
-    /// re-open. The switch uses `switch_drawer_view` (not `open_drawer_view`)
-    /// so it never force-reveals a drawer the user explicitly hid.
+    /// guarantees the new view actually shows (see
+    /// `AskCoordinator::hide_if_shown` for the drawer-view rules).
     fn hide_ask_if_shown(&mut self) {
-        if self.panels.is_showing_ask() {
-            self.panels.hide_ask();
-            self.panels.switch_drawer_view(DrawerView::Files);
-            // Force a re-sync on the next Ask entry — see the field doc.
-            self.last_synced_turn = None;
-        }
+        self.ask.hide_if_shown(&mut self.panels);
     }
 
     /// Show the attachment at `path` in the editor area's read-only attachment
@@ -693,7 +680,7 @@ impl EditorScreen {
             leader_pending: self.leader.is_pending(),
             focused: self.panels.focused(),
             drawer_view: self.panels.active_drawer_view(),
-            vim_space_leads: self.panels.editor().is_some_and(|e| e.vim_space_leads()),
+            space_leads: self.panels.editor().is_some_and(|e| e.space_leads()),
         }
     }
 
@@ -772,12 +759,12 @@ impl EditorScreen {
                 if self.overlays.active_kind() == Some(kind) {
                     self.dismiss_overlay();
                 } else {
-                    self.open_overlay_for(open, tx);
+                    self.open_overlay(open, tx);
                 }
                 EventState::Consumed
             }
-            EditorIntent::OpenDialog(request) => {
-                self.open_dialog_for(request);
+            EditorIntent::OpenOverlay(open) => {
+                self.open_overlay(open, tx);
                 EventState::Consumed
             }
             EditorIntent::Overlay => self.overlays.handle_input(event, tx),
@@ -787,7 +774,7 @@ impl EditorScreen {
                 // event is forwarded to that panel for its internal behavior.
                 let state = self.panels.handle_mouse(event, tx);
                 // Ask clicks (turn select, citation) move the drawer's Sources.
-                self.sync_ask_sources(tx);
+                self.ask.sync_sources(&mut self.panels, tx);
                 // A selectionless right-click in the editor asks for the
                 // note's context menu — the screen owns the path, so it
                 // opens it here.
@@ -804,7 +791,7 @@ impl EditorScreen {
                 let state = self.panels.handle_input(event, tx);
                 // Ask keys (j/k select, i/composer, submit) move the drawer's
                 // Sources in step with the thread's selected turn.
-                self.sync_ask_sources(tx);
+                self.ask.sync_sources(&mut self.panels, tx);
                 if state == EventState::NotConsumed {
                     match fallback {
                         PanelFallback::None => state,
@@ -859,7 +846,6 @@ impl EditorScreen {
                     )));
                 }
             }
-            EditorOp::OpenWorkspaceSwitcher => self.open_workspace_switcher(),
             EditorOp::FindInBuffer => {
                 if let Some(ed) = self.panels.editor_mut() {
                     ed.open_or_advance_search();
@@ -870,44 +856,106 @@ impl EditorScreen {
                     ed.apply_text_action(text_action);
                 }
             }
-            EditorOp::OpenHelp => self.open_help(),
-            EditorOp::OpenQueryHelp => self.open_query_help(),
             EditorOp::OpenAsk => self.open_ask_workspace(tx),
         }
     }
 
-    fn open_overlay_for(&mut self, open: OverlayOpen, tx: &AppTx) {
-        match open {
-            OverlayOpen::SearchBrowser => self.open_search_browser(tx),
-            OverlayOpen::FileFinder => self.open_file_finder(tx),
-            OverlayOpen::SavedSearches => self.open_saved_searches(tx),
-            OverlayOpen::CommandPalette => self.open_command_palette(tx),
+    /// The one door for every overlay the screen can open: guard (no overlay
+    /// over an open overlay), build the recipe, present it. Opens that need
+    /// more than construction (the Ask workspace's capability gate, drawer
+    /// views) are not overlays and keep their own methods.
+    fn open_overlay(&mut self, open: OverlayOpen, tx: &AppTx) {
+        if self.overlays.is_open() {
+            return;
         }
+        let overlay = self.build_overlay(open, tx);
+        self.present_overlay(overlay);
     }
 
-    fn open_dialog_for(&mut self, request: DialogRequest) {
-        match request {
-            DialogRequest::SortQuery => {
-                let (field, order) = self.panels.query().current_order();
-                self.present_overlay(Box::new(ActiveDialog::sort(
-                    SortTarget::Query,
-                    field,
-                    order,
-                    false,
-                )));
+    /// Construction recipes for [`OverlayOpen`] — the single site answering
+    /// "what overlays exist and how is each built". Reads screen state (vault,
+    /// settings, open note, panel sort/order seeds) but never mutates it;
+    /// presentation and the open-guard live in [`Self::open_overlay`].
+    fn build_overlay(&self, open: OverlayOpen, tx: &AppTx) -> Box<dyn Overlay> {
+        let s = self.settings.read().unwrap();
+        match open {
+            // The note-browser modal over the full-text search provider
+            // (Ctrl-K and the leader's find paths).
+            OverlayOpen::SearchBrowser => {
+                let provider = resolving_search_source(
+                    self.vault.clone(),
+                    s.current_last_paths(),
+                    Some(self.path.clone()),
+                );
+                Box::new(NoteBrowserModal::new(
+                    "Note Browser",
+                    BrowserScope::Query,
+                    provider,
+                    self.vault.clone(),
+                    s.key_bindings.clone(),
+                    s.icons(),
+                    tx.clone(),
+                ))
             }
-            DialogRequest::SortSidebar => {
+            // The note-browser modal over the fuzzy file finder (Ctrl-O and
+            // the leader's `f f`).
+            OverlayOpen::FileFinder => {
+                let current_dir = self.path.get_parent_path().0;
+                let provider = FileFinderProvider::new(self.vault.clone(), current_dir);
+                Box::new(NoteBrowserModal::new(
+                    "Find Note",
+                    BrowserScope::Files,
+                    provider,
+                    self.vault.clone(),
+                    s.key_bindings.clone(),
+                    s.icons(),
+                    tx.clone(),
+                ))
+            }
+            // F3 and leader `f s`.
+            OverlayOpen::SavedSearches => Box::new(SavedSearchesModal::new(
+                self.vault.clone(),
+                s.key_bindings.clone(),
+                s.icons(),
+                tx.clone(),
+            )),
+            // Ctrl+Shift+P and leader `p`.
+            OverlayOpen::CommandPalette => {
+                let gateway = s
+                    .key_bindings
+                    .first_combo_for(&ActionShortcuts::Leader)
+                    .unwrap_or_else(|| "leader".to_string());
+                Box::new(
+                    crate::components::command_palette::CommandPaletteModal::new(
+                        &s.leader_tree(),
+                        &gateway,
+                        s.icons(),
+                        tx.clone(),
+                    ),
+                )
+            }
+            // SwitchWorkspace action and leader `v s`.
+            OverlayOpen::WorkspaceSwitcher => Box::new(ActiveDialog::workspace_switcher(&s)),
+            // Leader `v t` and inside CFG via `t`; the full settings screen
+            // stays on the OpenSettings binding.
+            OverlayOpen::ThemePicker => Box::new(ActiveDialog::theme_picker(&s)),
+            OverlayOpen::Help => Box::new(ActiveDialog::help(&s.key_bindings)),
+            OverlayOpen::QueryHelp => Box::new(ActiveDialog::query_syntax()),
+            OverlayOpen::Cheatsheet => Box::new(ActiveDialog::cheatsheet(&s)),
+            OverlayOpen::SortQuery => {
+                let (field, order) = self.panels.query().current_order();
+                Box::new(ActiveDialog::sort(SortTarget::Query, field, order, false))
+            }
+            OverlayOpen::SortSidebar => {
                 let (field, order) = self.panels.sidebar().current_sort();
-                self.present_overlay(Box::new(ActiveDialog::sort(
+                Box::new(ActiveDialog::sort(
                     SortTarget::Sidebar,
                     field,
                     order,
                     self.panels.sidebar().group_dirs(),
-                )));
+                ))
             }
-            DialogRequest::QuickNote => {
-                self.present_overlay(Box::new(ActiveDialog::quick_note(self.vault.clone())));
-            }
+            OverlayOpen::QuickNote => Box::new(ActiveDialog::quick_note(self.vault.clone())),
         }
     }
 
@@ -1096,10 +1144,12 @@ impl EditorScreen {
                     );
                 }
                 if ask_was != ask_now {
-                    self.refresh_ask_capability().await;
+                    self.ask
+                        .refresh_capability(&mut self.panels, self.rag_status)
+                        .await;
                 }
             }
-            AppEvent::Ask(data) => self.handle_ask_data(data, tx),
+            AppEvent::Ask(data) => self.ask.handle_data(&mut self.panels, data, tx),
             // Stale completions (for notes we've navigated away from) fall
             // through to the catch-all and are dropped.
             AppEvent::FlashMessage(msg) => {
@@ -1352,7 +1402,7 @@ impl EditorScreen {
         // Keep the editor-area Ask content in lockstep with the drawer view:
         // entering ASK restores the stashed thread; leaving it stashes the
         // live one (rules 1 & 2 — thread survives every view switch).
-        self.transition_ask(view, tx);
+        self.ask.transition(&mut self.panels, view, tx);
         let newly_shown = !self.drawer_open_on(view);
         self.panels.open_drawer_view(view);
         self.drawer_view_revealed(view, newly_shown, tx);
@@ -1381,113 +1431,6 @@ impl EditorScreen {
     fn with_ask_panel(&mut self, tx: &AppTx, f: impl FnOnce(&mut ThreadPanel, &AppTx)) {
         self.ensure_ask_workspace(tx);
         f(self.panels.ask_mut(), tx);
-    }
-
-    /// Select or deselect the editor-area Ask content to match a drawer view
-    /// switch. Entering ASK shows the resident thread and syncs its Sources;
-    /// leaving ASK returns the note editor. The thread survives either way by
-    /// residency — this only flips the content selector.
-    fn transition_ask(&mut self, target: DrawerView, tx: &AppTx) {
-        let showing = self.panels.is_showing_ask();
-        if target == DrawerView::Ask && !showing {
-            self.panels.show_ask();
-            self.sync_ask_sources_from_selected(tx);
-        } else if target != DrawerView::Ask && showing {
-            self.panels.hide_ask();
-        }
-    }
-
-    /// Push the Ask capability decision into the resident panel: rebuild the
-    /// client from config when the server can answer questions, else clear it,
-    /// so the composer-enabled state follows client presence (no
-    /// forever-`Thinking` turn; carry-forward #2). `set_ask_client` is the
-    /// single injection point, so this one call is enough.
-    async fn refresh_ask_capability(&mut self) {
-        let client = if self.rag_status.llm_available() {
-            crate::rag::rag_client(&self.settings, &self.vault)
-                .await
-                .map(Arc::new)
-        } else {
-            None
-        };
-        self.panels.set_ask_client(client);
-    }
-
-    /// Route an Ask async result. The answer always lands on the resident
-    /// thread panel — whether or not Ask is on screen (an answer may complete
-    /// while the user browses FILES). A reader note goes to the Sources
-    /// drawer. When Ask *is* shown and the completed turn is the selected one,
-    /// its sources are refreshed (rule 3).
-    fn handle_ask_data(&mut self, data: crate::components::events::AskData, tx: &AppTx) {
-        use crate::components::events::AskData;
-        match &data {
-            AskData::AnswerReady { turn_id, .. } => {
-                let turn_id = *turn_id;
-                self.panels.ask_mut().handle_data(data);
-                // Refresh Sources only when Ask is shown and the completed turn
-                // is the one selected.
-                if self.panels.is_showing_ask() {
-                    let panel = self.panels.ask_mut();
-                    let selected = panel.thread().selected().map(|t| t.id);
-                    if selected == Some(turn_id) {
-                        let sources = panel
-                            .thread()
-                            .turns()
-                            .iter()
-                            .find(|t| t.id == turn_id)
-                            .map(|t| t.sources.clone())
-                            .unwrap_or_default();
-                        self.panels.ask_sources_mut().refresh(turn_id, sources, tx);
-                    }
-                }
-            }
-            AskData::ReaderNote { .. } => {
-                self.panels.ask_sources_mut().handle_data(data);
-            }
-        }
-    }
-
-    /// Mirror the live Ask panel's selected turn into the Sources drawer when
-    /// it differs from `last_synced_turn`, consuming the per-input citation
-    /// signal. Called after every Ask input event (keyboard and mouse) so the
-    /// drawer tracks the thread.
-    fn sync_ask_sources(&mut self, tx: &AppTx) {
-        // Only track the drawer to the thread while Ask is actually on screen.
-        if !self.panels.is_showing_ask() {
-            return;
-        }
-        let (selected, citation) = {
-            let panel = self.panels.ask_mut();
-            (
-                panel.thread().selected().map(|t| t.id),
-                panel.take_citation_target(),
-            )
-        };
-        if selected.is_some() && selected != self.last_synced_turn {
-            self.sync_ask_sources_from_selected(tx);
-        }
-        if let Some(ordinal) = citation {
-            self.panels.ask_sources_mut().focus_source(ordinal);
-        }
-    }
-
-    /// Point the Sources drawer at the live thread's currently-selected turn,
-    /// unconditionally — the switch-into-Ask sync (rule 1), the post-answer
-    /// refresh, and `sync_ask_sources` above (once it knows the selection
-    /// changed) all need the current turn's sources shown. Updates
-    /// `last_synced_turn` so a following `sync_ask_sources` call doesn't redo
-    /// the same work.
-    fn sync_ask_sources_from_selected(&mut self, tx: &AppTx) {
-        let selected = self
-            .panels
-            .ask_mut()
-            .thread()
-            .selected()
-            .map(|t| (t.id, t.sources.clone()));
-        if let Some((id, sources)) = selected {
-            self.panels.ask_sources_mut().set_turn(id, sources, tx);
-            self.last_synced_turn = Some(id);
-        }
     }
 
     /// Per-view side effects to run when `view` becomes visible in the
@@ -1610,63 +1553,6 @@ impl EditorScreen {
         });
     }
 
-    /// Open the workspace switcher (SwitchWorkspace action and leader `v s`).
-    /// No-op while an overlay is open.
-    fn open_workspace_switcher(&mut self) {
-        if self.overlays.is_open() {
-            return;
-        }
-        let s = self.settings.read().unwrap();
-        let dialog = ActiveDialog::workspace_switcher(&s);
-        drop(s);
-        self.present_overlay(Box::new(dialog));
-    }
-
-    /// Open the command palette (Ctrl+Shift+P and leader `p`). No-op while
-    /// an overlay is open.
-    fn open_command_palette(&mut self, tx: &AppTx) {
-        if self.overlays.is_open() {
-            return;
-        }
-        let (gateway, icons) = {
-            let s = self.settings.read().unwrap();
-            (
-                s.key_bindings
-                    .first_combo_for(&ActionShortcuts::Leader)
-                    .unwrap_or_else(|| "leader".to_string()),
-                s.icons(),
-            )
-        };
-        let tree = {
-            let s = self.settings.read().unwrap();
-            s.leader_tree()
-        };
-        let modal = crate::components::command_palette::CommandPaletteModal::new(
-            &tree,
-            &gateway,
-            icons,
-            tx.clone(),
-        );
-        self.present_overlay(Box::new(modal));
-    }
-
-    /// Open the Saved Searches modal (F3 and leader `f s`). No-op while an
-    /// overlay is open.
-    fn open_saved_searches(&mut self, tx: &AppTx) {
-        if self.overlays.is_open() {
-            return;
-        }
-        let s = self.settings.read().unwrap();
-        let modal = SavedSearchesModal::new(
-            self.vault.clone(),
-            s.key_bindings.clone(),
-            s.icons(),
-            tx.clone(),
-        );
-        drop(s);
-        self.present_overlay(Box::new(modal));
-    }
-
     /// Switch to the Ask workspace and drop the cursor on the composer (the
     /// Ask shortcut / leader `a a`). The rail hides the ASK entry when the
     /// server can't answer questions, so this shortcut is the only remaining
@@ -1691,98 +1577,6 @@ impl EditorScreen {
         }
         self.panels.ask_mut().focus_composer();
         self.panels.focus(PanelKind::Editor);
-    }
-
-    /// Open the live theme picker (leader `v c` and the CFG rail item). The
-    /// full settings screen stays on the OpenSettings binding. No-op while an
-    /// overlay is open.
-    fn open_theme_picker(&mut self) {
-        if self.overlays.is_open() {
-            return;
-        }
-        let s = self.settings.read().unwrap();
-        let dialog = ActiveDialog::theme_picker(&s);
-        drop(s);
-        self.present_overlay(Box::new(dialog));
-    }
-
-    /// Open the flat key-bindings help (F1). No-op while an overlay is open.
-    fn open_help(&mut self) {
-        if self.overlays.is_open() {
-            return;
-        }
-        let s = self.settings.read().unwrap();
-        let dialog = ActiveDialog::help(&s.key_bindings);
-        drop(s);
-        self.present_overlay(Box::new(dialog));
-    }
-
-    /// Open the search query syntax reference (F1 while the Find panel is
-    /// focused). No-op while an overlay is open.
-    fn open_query_help(&mut self) {
-        if self.overlays.is_open() {
-            return;
-        }
-        self.present_overlay(Box::new(ActiveDialog::query_syntax()));
-    }
-
-    /// Open the full leader-tree cheatsheet (leader `?`). No-op while an
-    /// overlay is open.
-    fn open_cheatsheet(&mut self) {
-        if self.overlays.is_open() {
-            return;
-        }
-        let s = self.settings.read().unwrap();
-        let dialog = ActiveDialog::cheatsheet(&s);
-        drop(s);
-        self.present_overlay(Box::new(dialog));
-    }
-
-    /// Open the note-browser modal over the full-text search provider
-    /// (Ctrl-K and the leader's find paths). No-op while an overlay is open.
-    fn open_search_browser(&mut self, tx: &AppTx) {
-        if self.overlays.is_open() {
-            return;
-        }
-        let s = self.settings.read().unwrap();
-        let provider = resolving_search_source(
-            self.vault.clone(),
-            s.current_last_paths(),
-            Some(self.path.clone()),
-        );
-        let modal = NoteBrowserModal::new(
-            "Note Browser",
-            BrowserScope::Query,
-            provider,
-            self.vault.clone(),
-            s.key_bindings.clone(),
-            s.icons(),
-            tx.clone(),
-        );
-        drop(s);
-        self.present_overlay(Box::new(modal));
-    }
-
-    /// Open the note-browser modal over the fuzzy file finder (Ctrl-O and
-    /// the leader's `f f`). No-op while an overlay is open.
-    fn open_file_finder(&mut self, tx: &AppTx) {
-        if self.overlays.is_open() {
-            return;
-        }
-        let current_dir = self.path.get_parent_path().0;
-        let provider = FileFinderProvider::new(self.vault.clone(), current_dir);
-        let s = self.settings.read().unwrap();
-        let modal = NoteBrowserModal::new(
-            "Find Note",
-            BrowserScope::Files,
-            provider,
-            self.vault.clone(),
-            s.key_bindings.clone(),
-            s.icons(),
-            tx.clone(),
-        );
-        drop(s);
-        self.present_overlay(Box::new(modal));
     }
 
     /// Follow the wikilink / tag under the editor cursor (FollowLink action,
@@ -1911,14 +1705,14 @@ impl EditorScreen {
 
             // +find — list-style leaves route to today's pickers; the
             // telescope modal takes them over in phase 08.
-            LeaderAction::FindFiles => self.open_file_finder(tx),
-            LeaderAction::FindGrep => self.open_search_browser(tx),
+            LeaderAction::FindFiles => self.open_overlay(OverlayOpen::FileFinder, tx),
+            LeaderAction::FindGrep => self.open_overlay(OverlayOpen::SearchBrowser, tx),
             LeaderAction::FindTags => self.open_drawer_view(DrawerView::Tags, tx),
             LeaderAction::FindBacklinks => {
                 self.open_find_with_query("<{note}".to_string(), None, tx)
             }
-            LeaderAction::FindSaved => self.open_saved_searches(tx),
-            LeaderAction::FindRecent => self.open_search_browser(tx),
+            LeaderAction::FindSaved => self.open_overlay(OverlayOpen::SavedSearches, tx),
+            LeaderAction::FindRecent => self.open_overlay(OverlayOpen::SearchBrowser, tx),
             LeaderAction::FindHeadings => self.open_drawer_view(DrawerView::Outline, tx),
 
             // +note
@@ -1976,7 +1770,7 @@ impl EditorScreen {
             }
 
             // +vault
-            LeaderAction::VaultSwitch => self.open_workspace_switcher(),
+            LeaderAction::VaultSwitch => self.open_overlay(OverlayOpen::WorkspaceSwitcher, tx),
             LeaderAction::VaultReindex => {
                 // Fast reindex right here — the same pipeline the Settings
                 // screen runs, result surfaced as a footer flash.
@@ -1996,7 +1790,7 @@ impl EditorScreen {
             // `v c` opens the config panel (the CFG drawer); `v t` opens the
             // theme picker directly (also reachable inside CFG via `t`).
             LeaderAction::VaultConfig => self.open_drawer_view(DrawerView::Config, tx),
-            LeaderAction::VaultTheme => self.open_theme_picker(),
+            LeaderAction::VaultTheme => self.open_overlay(OverlayOpen::ThemePicker, tx),
             LeaderAction::VaultPreferences => {
                 tx.send(AppEvent::OpenScreen(ScreenEvent::OpenPreferences))
                     .ok();
@@ -2056,19 +1850,19 @@ impl EditorScreen {
             }
             LeaderAction::AskRegenerate => {
                 self.with_ask_panel(tx, |panel, tx| panel.regenerate_selected(tx));
-                self.sync_ask_sources(tx);
+                self.ask.sync_sources(&mut self.panels, tx);
             }
             LeaderAction::AskSource => {
                 self.ensure_ask_workspace(tx);
                 // The top source of the selected turn — sync the drawer to the
                 // current turn first, then open its first source in the reader.
-                self.sync_ask_sources_from_selected(tx);
+                self.ask.sync_sources_from_selected(&mut self.panels, tx);
                 self.panels.ask_sources_mut().open_reader(0, tx);
                 self.panels.focus(PanelKind::Drawer);
             }
 
-            LeaderAction::Palette => self.open_command_palette(tx),
-            LeaderAction::Help => self.open_cheatsheet(),
+            LeaderAction::Palette => self.open_overlay(OverlayOpen::CommandPalette, tx),
+            LeaderAction::Help => self.open_overlay(OverlayOpen::Cheatsheet, tx),
 
             LeaderAction::NoteSave => {
                 // Flush the periodic autosave immediately (no manual-save
@@ -3144,9 +2938,9 @@ mod tests {
 
     /// An `AskData::AnswerReady` delivered through the screen's real message
     /// pump (`handle_app_message`, the same entry point the app loop uses —
-    /// not `handle_ask_data` called directly) must still land on the
-    /// thread: it should route through `handle_owned_message`'s
-    /// `AppEvent::Ask(data)` arm to `handle_ask_data` end to end.
+    /// not the coordinator's `handle_data` called directly) must still land on
+    /// the thread: it should route through `handle_owned_message`'s
+    /// `AppEvent::Ask(data)` arm to `AskCoordinator::handle_data` end to end.
     #[tokio::test]
     async fn ask_answer_ready_reaches_the_thread_via_the_owned_message_path() {
         let (mut screen, _, _, _dir) = test_screen().await;
@@ -3366,7 +3160,10 @@ mod tests {
         let (mut screen, _, _, _dir) = test_screen().await;
 
         // rag_status is Disabled here → no client → composer disabled.
-        screen.refresh_ask_capability().await;
+        screen
+            .ask
+            .refresh_capability(&mut screen.panels, screen.rag_status)
+            .await;
         assert!(
             !screen.panels.ask().has_client(),
             "the resident Ask panel loses its client without an LLM server"
@@ -3386,7 +3183,8 @@ mod tests {
         screen.open_drawer_view(DrawerView::Files, &tx);
         assert!(!screen.panels.is_showing_ask());
 
-        screen.handle_ask_data(
+        screen.ask.handle_data(
+            &mut screen.panels,
             crate::components::events::AskData::AnswerReady {
                 turn_id,
                 result: Ok(("the answer".into(), vec![])),

@@ -43,7 +43,7 @@ pub struct InputCtx {
     /// The active drawer view (regardless of drawer visibility).
     pub drawer_view: DrawerView,
     /// Bare Space starts the leader (vim Normal mode, empty pending state).
-    pub vim_space_leads: bool,
+    pub space_leads: bool,
 }
 
 impl InputCtx {
@@ -105,8 +105,9 @@ pub enum EditorIntent {
         kind: OverlayKind,
         open: OverlayOpen,
     },
-    /// Present a dialog overlay (the executor reads its seed state).
-    OpenDialog(DialogRequest),
+    /// Present the overlay `OverlayOpen` names (the executor builds it from
+    /// its seed state). No toggle semantics — see `ToggleOverlay` for those.
+    OpenOverlay(OverlayOpen),
     /// Route the event to the open overlay.
     Overlay,
     /// Route the mouse event through the `PanelSet` hit-test path.
@@ -116,7 +117,9 @@ pub enum EditorIntent {
     Panel { fallback: PanelFallback },
 }
 
-/// Which opener a [`EditorIntent::ToggleOverlay`] uses — two actions share
+/// Every overlay the editor screen can open, as a construction recipe the
+/// executor's one `build_overlay` match turns into the live overlay. Distinct
+/// from `OverlayKind` (the *presentation* kind): two recipes share
 /// `OverlayKind::NoteBrowser` (search browser vs file finder), so the kind
 /// alone cannot pick the opener.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -125,10 +128,14 @@ pub enum OverlayOpen {
     FileFinder,
     SavedSearches,
     CommandPalette,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum DialogRequest {
+    WorkspaceSwitcher,
+    ThemePicker,
+    /// The flat key-bindings help (F1).
+    Help,
+    /// The search query syntax reference (F1 over the Find panel).
+    QueryHelp,
+    /// The full leader-tree cheatsheet (leader `?`).
+    Cheatsheet,
     SortQuery,
     SortSidebar,
     QuickNote,
@@ -162,11 +169,8 @@ pub enum EditorOp {
     /// directory — never hides the drawer.
     OpenFileBrowserReveal,
     SaveCurrentQuery,
-    OpenWorkspaceSwitcher,
     FindInBuffer,
     ApplyText(TextAction),
-    OpenHelp,
-    OpenQueryHelp,
     /// Switch to the Ask workspace and focus its composer (F6 and leader
     /// `a a`).
     OpenAsk,
@@ -344,8 +348,8 @@ pub(crate) fn classify_tail(
                 // (e.g. Ctrl+R is redo in the nvim editor).
                 if ctx.focused == PanelKind::Drawer && ctx.overlay.is_none() {
                     Some(match ctx.drawer_view {
-                        DrawerView::Find => EditorIntent::OpenDialog(DialogRequest::SortQuery),
-                        DrawerView::Files => EditorIntent::OpenDialog(DialogRequest::SortSidebar),
+                        DrawerView::Find => EditorIntent::OpenOverlay(OverlayOpen::SortQuery),
+                        DrawerView::Files => EditorIntent::OpenOverlay(OverlayOpen::SortSidebar),
                         _ => EditorIntent::Consume,
                     })
                 } else {
@@ -358,10 +362,10 @@ pub(crate) fn classify_tail(
                 Some(EditorIntent::Op(EditorOp::SaveCurrentQuery))
             }
             Some(ActionShortcuts::SwitchWorkspace) => {
-                Some(EditorIntent::Op(EditorOp::OpenWorkspaceSwitcher))
+                Some(EditorIntent::OpenOverlay(OverlayOpen::WorkspaceSwitcher))
             }
             Some(ActionShortcuts::QuickNote) => Some(if ctx.overlay.is_none() {
-                EditorIntent::OpenDialog(DialogRequest::QuickNote)
+                EditorIntent::OpenOverlay(OverlayOpen::QuickNote)
             } else {
                 EditorIntent::Consume
             }),
@@ -377,10 +381,10 @@ pub(crate) fn classify_tail(
                     // query syntax instead of the flat key-bindings help. All
                     // F-keys are consumed and never forwarded to the editor.
                     if combo.key == KeyStrike::F1 && combo.modifiers.is_empty() {
-                        Some(EditorIntent::Op(if ctx.find_panel_focused() {
-                            EditorOp::OpenQueryHelp
+                        Some(EditorIntent::OpenOverlay(if ctx.find_panel_focused() {
+                            OverlayOpen::QueryHelp
                         } else {
-                            EditorOp::OpenHelp
+                            OverlayOpen::Help
                         }))
                     } else {
                         Some(EditorIntent::Consume)
@@ -416,13 +420,13 @@ pub(crate) fn classify_tail(
     // Vim Normal mode: bare Space is a second leader gateway, but only with
     // an empty pending state so it never shadows Space as a motion/operator
     // argument. Insert/Visual and the other backends keep Space typing a
-    // space (`vim_space_leads` is false for those states).
+    // space (`space_leads` is false for those states).
     if ctx.editor_active()
         && (!ctx.leader_pending || cancel_leader)
         && let InputEvent::Key(key) = event
         && key.code == KeyCode::Char(' ')
         && key.modifiers.is_empty()
-        && ctx.vim_space_leads
+        && ctx.space_leads
     {
         return done(EditorIntent::LeaderStart);
     }
@@ -489,7 +493,7 @@ mod tests {
             leader_pending: false,
             focused: PanelKind::Editor,
             drawer_view: DrawerView::Files,
-            vim_space_leads: false,
+            space_leads: false,
         }
     }
 
@@ -708,7 +712,7 @@ mod tests {
     #[test]
     fn quick_note_opens_dialog_only_without_overlay() {
         let c = classify_it(&ctrl('w'), &ctx());
-        assert_eq!(c.intent, EditorIntent::OpenDialog(DialogRequest::QuickNote));
+        assert_eq!(c.intent, EditorIntent::OpenOverlay(OverlayOpen::QuickNote));
 
         let mut cx = ctx();
         cx.overlay = Some(OverlayKind::Dialog);
@@ -743,13 +747,13 @@ mod tests {
         cx.focused = PanelKind::Drawer;
         cx.drawer_view = DrawerView::Find;
         let c = classify_it(&ctrl('r'), &cx);
-        assert_eq!(c.intent, EditorIntent::OpenDialog(DialogRequest::SortQuery));
+        assert_eq!(c.intent, EditorIntent::OpenOverlay(OverlayOpen::SortQuery));
 
         cx.drawer_view = DrawerView::Files;
         let c = classify_it(&ctrl('r'), &cx);
         assert_eq!(
             c.intent,
-            EditorIntent::OpenDialog(DialogRequest::SortSidebar)
+            EditorIntent::OpenOverlay(OverlayOpen::SortSidebar)
         );
 
         // A drawer view without a sortable list consumes the chord.
@@ -773,13 +777,13 @@ mod tests {
     #[test]
     fn f1_opens_help_or_query_help_by_focus() {
         let c = classify_it(&key(KeyCode::F(1), KeyModifiers::NONE), &ctx());
-        assert_eq!(c.intent, EditorIntent::Op(EditorOp::OpenHelp));
+        assert_eq!(c.intent, EditorIntent::OpenOverlay(OverlayOpen::Help));
 
         let mut cx = ctx();
         cx.focused = PanelKind::Drawer;
         cx.drawer_view = DrawerView::Find;
         let c = classify_it(&key(KeyCode::F(1), KeyModifiers::NONE), &cx);
-        assert_eq!(c.intent, EditorIntent::Op(EditorOp::OpenQueryHelp));
+        assert_eq!(c.intent, EditorIntent::OpenOverlay(OverlayOpen::QueryHelp));
     }
 
     #[test]
@@ -836,11 +840,11 @@ mod tests {
     #[test]
     fn vim_space_starts_leader_only_when_it_leads() {
         let mut cx = ctx();
-        cx.vim_space_leads = true;
+        cx.space_leads = true;
         let c = classify_it(&plain(' '), &cx);
         assert_eq!(c.intent, EditorIntent::LeaderStart);
 
-        cx.vim_space_leads = false;
+        cx.space_leads = false;
         let c = classify_it(&plain(' '), &cx);
         assert_eq!(
             c.intent,

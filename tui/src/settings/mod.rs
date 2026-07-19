@@ -9,7 +9,20 @@ use std::sync::{Arc, RwLock};
 
 use std::fs::{self, File};
 
-use color_eyre::eyre;
+/// Errors from loading and saving settings and themes. Typed at this seam so
+/// callers can match on the failure; the binary's eyre top level (CLI, main)
+/// wraps it automatically via `?`.
+#[derive(Debug, thiserror::Error)]
+pub enum SettingsError {
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error("cannot serialize settings: {0}")]
+    Serialize(#[from] toml::ser::Error),
+    #[error("corrupt theme file: {0}")]
+    CorruptTheme(toml::de::Error),
+    #[error("config migration failed: {0}")]
+    Migration(String),
+}
 
 /// Shared settings handle — all screens and components reference the same instance.
 pub type SharedSettings = Arc<RwLock<AppSettings>>;
@@ -399,12 +412,12 @@ impl AppSettings {
         list
     }
 
-    fn default_config_file_path() -> eyre::Result<PathBuf> {
+    fn default_config_file_path() -> Result<PathBuf, SettingsError> {
         let config_home = get_or_create_config_dir(CONFIG_DIR)?;
         Ok(config_home.join(BASE_CONFIG_FILE))
     }
 
-    fn get_config_file_path(&self) -> eyre::Result<PathBuf> {
+    fn get_config_file_path(&self) -> Result<PathBuf, SettingsError> {
         if let Some(ref path) = self.config_file {
             Ok(path.clone())
         } else {
@@ -412,12 +425,12 @@ impl AppSettings {
         }
     }
 
-    fn get_themes_path() -> eyre::Result<PathBuf> {
+    fn get_themes_path() -> Result<PathBuf, SettingsError> {
         let config_home = get_or_create_config_dir(CONFIG_DIR)?;
         Ok(config_home.join(THEMES_DIR))
     }
 
-    fn load_theme_from_path(path: &std::path::Path) -> eyre::Result<Theme> {
+    fn load_theme_from_path(path: &std::path::Path) -> Result<Theme, SettingsError> {
         let theme_string = fs::read_to_string(path)?;
         match toml::from_str::<Theme>(&theme_string) {
             Ok(theme) => Ok(theme),
@@ -425,12 +438,12 @@ impl AppSettings {
                 // Never delete a user-authored file over a typo — warn and
                 // skip, exactly like load_custom_themes does.
                 tracing::warn!("Skipping unparsable theme file {:?}: {}", path, e);
-                Err(eyre::eyre!("corrupt theme file: {}", e))
+                Err(SettingsError::CorruptTheme(e))
             }
         }
     }
 
-    fn load_default_theme() -> eyre::Result<Theme> {
+    fn load_default_theme() -> Result<Theme, SettingsError> {
         let theme_path = AppSettings::get_themes_path()?.join("default.toml");
         Self::load_theme_from_path(&theme_path)
     }
@@ -500,7 +513,7 @@ impl AppSettings {
             .unwrap_or(true)
     }
 
-    pub fn save_to_disk(&self) -> eyre::Result<()> {
+    pub fn save_to_disk(&self) -> Result<(), SettingsError> {
         tracing::debug!("Saving settings to disk");
         let settings_file_path = self.get_config_file_path()?;
         let mut file = File::create(settings_file_path)?;
@@ -510,7 +523,7 @@ impl AppSettings {
         Ok(())
     }
 
-    pub fn load_from_disk() -> eyre::Result<Self> {
+    pub fn load_from_disk() -> Result<Self, SettingsError> {
         let settings_file_path = Self::default_config_file_path()?;
 
         if !settings_file_path.exists() {
@@ -553,7 +566,7 @@ impl AppSettings {
         }
     }
 
-    pub fn load_from_file(path: PathBuf) -> eyre::Result<Self> {
+    pub fn load_from_file(path: PathBuf) -> Result<Self, SettingsError> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
