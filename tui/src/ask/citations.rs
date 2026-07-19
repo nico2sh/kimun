@@ -34,7 +34,10 @@ pub fn scan(text: &str) -> Vec<CitationSpan> {
                 if !is_bracket_adjacent {
                     let index: usize = text[i + 1..j].parse().unwrap_or(0);
                     if index > 0 {
-                        spans.push(CitationSpan { range: start..j + 1, index });
+                        spans.push(CitationSpan {
+                            range: start..j + 1,
+                            index,
+                        });
                     }
                     i = j + 1;
                     continue;
@@ -76,7 +79,10 @@ fn rewrite(text: &str, f: impl Fn(&CitationSpan) -> String) -> String {
         let mut end = span.range.end;
         if replacement.is_empty() {
             let next = text[end..].chars().next();
-            let follows_break = matches!(next, None | Some(' ' | '.' | ',' | ';' | ':' | '!' | '?' | '\n'));
+            let follows_break = matches!(
+                next,
+                None | Some(' ' | '.' | ',' | ';' | ':' | '!' | '?' | '\n')
+            );
             if follows_break && out.ends_with(' ') {
                 out.pop();
             } else if next == Some(' ') && (out.is_empty() || out.ends_with('\n')) {

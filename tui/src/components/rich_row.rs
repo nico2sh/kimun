@@ -169,7 +169,10 @@ mod tests {
     #[test]
     fn date_renders_before_the_title_with_separator() {
         let theme = Theme::default();
-        let text = render_row(RichRow::new("1", "Afternoon").date("2026-04-08", None), &theme);
+        let text = render_row(
+            RichRow::new("1", "Afternoon").date("2026-04-08", None),
+            &theme,
+        );
         assert!(text.contains("2026-04-08"), "date present: {text}");
         assert!(text.contains('\u{00b7}'), "separator present: {text}");
         assert!(text.contains("Afternoon"), "heading present: {text}");

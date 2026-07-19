@@ -561,7 +561,10 @@ mod tests {
             p.contains("— \"Chapter \u{203a} Section\""),
             "readable breadcrumb in the title clause: {p:?}"
         );
-        assert!(!p.contains('\u{1f}'), "no control char leaks into the prompt");
+        assert!(
+            !p.contains('\u{1f}'),
+            "no control char leaks into the prompt"
+        );
     }
 
     #[test]
@@ -650,10 +653,7 @@ mod tests {
         // drops the opening and keeps the closing, cut on a char boundary.
         let opening = "é".repeat(RECAP_TAIL_CHARS);
         let closing = "SHALL_I_CONTINUE?";
-        let history = vec![(
-            "q".to_string(),
-            format!("{opening} {closing}"),
-        )];
+        let history = vec![("q".to_string(), format!("{opening} {closing}"))];
         let mid = build_prompt("yes", &history, &context);
         assert!(mid.contains(closing), "tail (offer) kept: {mid}");
         // The full opening cannot survive — it is longer than the tail budget.

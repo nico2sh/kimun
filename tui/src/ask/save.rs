@@ -2,10 +2,10 @@
 //! (CONTEXT.md: **Saved answer**). The question becomes the note title, its
 //! citation markers become wikilinks so the note joins the vault link graph.
 
-use kimun_core::nfs::filename::note_name_from_title;
 use kimun_core::nfs::VaultPath;
+use kimun_core::nfs::filename::note_name_from_title;
 
-use super::{citations, Turn};
+use super::{Turn, citations};
 
 /// The default path offered when saving `question` as a note: `ask/<slug>`,
 /// with no extension (the create-note flow applies it, same as any other new
@@ -183,9 +183,18 @@ mod tests {
             ],
         );
         let body = note_content(&turn);
-        assert!(body.contains("first [[alpha]]"), "`[1]` → ordinal-1 source: {body}");
-        assert!(body.contains("second [[beta]]"), "`[2]` → ordinal-2 source: {body}");
-        assert!(body.contains("third [[charlie]]"), "`[3]` → ordinal-3 source: {body}");
+        assert!(
+            body.contains("first [[alpha]]"),
+            "`[1]` → ordinal-1 source: {body}"
+        );
+        assert!(
+            body.contains("second [[beta]]"),
+            "`[2]` → ordinal-2 source: {body}"
+        );
+        assert!(
+            body.contains("third [[charlie]]"),
+            "`[3]` → ordinal-3 source: {body}"
+        );
     }
 
     #[test]
@@ -202,7 +211,10 @@ mod tests {
         );
         let body = note_content(&turn);
         assert!(body.contains("a [[alpha]]"), "{body}");
-        assert!(body.contains("b [2] c"), "gap `[2]` stays a literal marker: {body}");
+        assert!(
+            body.contains("b [2] c"),
+            "gap `[2]` stays a literal marker: {body}"
+        );
         assert!(body.contains("[[charlie]]"), "{body}");
     }
 

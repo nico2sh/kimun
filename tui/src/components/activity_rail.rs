@@ -83,7 +83,11 @@ pub struct ActivityRail {
 }
 
 impl ActivityRail {
-    pub fn new(key_bindings: KeyBindings, icons: crate::settings::icons::Icons, caps: RailCaps) -> Self {
+    pub fn new(
+        key_bindings: KeyBindings,
+        icons: crate::settings::icons::Icons,
+        caps: RailCaps,
+    ) -> Self {
         let items = ITEMS
             .into_iter()
             .filter(|(_, view)| caps.semantic || *view != DrawerView::Semantic)

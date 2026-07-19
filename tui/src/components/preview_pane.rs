@@ -361,7 +361,8 @@ impl PreviewPane {
         let viewport = content.height as usize;
         let total = lines.len();
         self.scroll.set_max(total.saturating_sub(viewport));
-        self.scroll.anchor_to_link(hit.unwrap_or(0), total, viewport);
+        self.scroll
+            .anchor_to_link(hit.unwrap_or(0), total, viewport);
         f.render_widget(
             Paragraph::new(lines)
                 .scroll((self.scroll.offset as u16, 0))
@@ -390,7 +391,8 @@ impl PreviewPane {
         let viewport = area.height as usize;
         let total = lines.len();
         self.scroll.set_max(total.saturating_sub(viewport));
-        self.scroll.anchor_to_link(hit.unwrap_or(0), total, viewport);
+        self.scroll
+            .anchor_to_link(hit.unwrap_or(0), total, viewport);
         f.render_widget(
             Paragraph::new(lines)
                 .scroll((self.scroll.offset as u16, 0))
@@ -473,8 +475,8 @@ fn build_lines(
                 }
             }
             Highlight::Range(range) => {
-                let hit = range
-                    .is_some_and(|h| line_range.start < h.end && h.start < line_range.end);
+                let hit =
+                    range.is_some_and(|h| line_range.start < h.end && h.start < line_range.end);
                 let style = if hit { bold } else { normal };
                 for wline in preview_highlight::wrap_line(stripped, wrap_width) {
                     if find_hit && hit && first_hit.is_none() {
@@ -678,7 +680,10 @@ mod tests {
         let mut p = PreviewPane::new();
         p.toggle(Some(path("a")));
         p.collapse_step(None);
-        assert!(p.is_context(), "no-selection collapse_step must not change state");
+        assert!(
+            p.is_context(),
+            "no-selection collapse_step must not change state"
+        );
     }
 
     #[test]
@@ -689,11 +694,25 @@ mod tests {
         let start = text.find("beta body").unwrap();
         let range = start..start + "beta body".len();
         let (lines, first) = build_lines(text, Highlight::Range(Some(&range)), 80, &theme, true, 2);
-        assert_eq!(first, Some(2), "anchor is the first highlighted wrapped row");
+        assert_eq!(
+            first,
+            Some(2),
+            "anchor is the first highlighted wrapped row"
+        );
         // The highlighted content span carries the bold accent modifier; a
         // non-highlighted line does not.
-        assert!(lines[2].spans[1].style.add_modifier.contains(Modifier::BOLD));
-        assert!(!lines[0].spans[1].style.add_modifier.contains(Modifier::BOLD));
+        assert!(
+            lines[2].spans[1]
+                .style
+                .add_modifier
+                .contains(Modifier::BOLD)
+        );
+        assert!(
+            !lines[0].spans[1]
+                .style
+                .add_modifier
+                .contains(Modifier::BOLD)
+        );
     }
 
     #[test]

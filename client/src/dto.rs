@@ -127,7 +127,10 @@ mod tests {
             history: vec![],
         };
         let json = serde_json::to_string(&req).unwrap();
-        assert!(!json.contains("history"), "empty history must not hit the wire: {json}");
+        assert!(
+            !json.contains("history"),
+            "empty history must not hit the wire: {json}"
+        );
     }
 
     #[test]
@@ -136,7 +139,10 @@ mod tests {
             vault_id: "v".into(),
             query: "q".into(),
             context_size: None,
-            history: vec![HistoryTurn { question: "q1".into(), answer: "a1".into() }],
+            history: vec![HistoryTurn {
+                question: "q1".into(),
+                answer: "a1".into(),
+            }],
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains(r#""history":[{"question":"q1","answer":"a1"}]"#));

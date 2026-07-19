@@ -169,7 +169,11 @@ pub fn classify_block_kinds(lines: &[&str]) -> Vec<LineKind> {
 ///
 /// `slice` must be the exact source text shown on the row (structural markers
 /// included).
-pub fn style_slice_mapped(slice: &str, kind: LineKind, styles: &MdStyles) -> (Line<'static>, Vec<usize>) {
+pub fn style_slice_mapped(
+    slice: &str,
+    kind: LineKind,
+    styles: &MdStyles,
+) -> (Line<'static>, Vec<usize>) {
     match kind {
         LineKind::Code => whole_slice(slice, styles.code),
         LineKind::Heading => whole_slice(slice, styles.heading),
@@ -293,7 +297,10 @@ struct Delim {
 /// is), so `snake_case` identifiers are never mangled. An unmatched delimiter stays
 /// visible and styles nothing. This is the per-slice approximation — we never
 /// pair across the wrap boundary.
-fn analyze_emphasis(chars: &[(usize, char)], code_mask: &[bool]) -> (Vec<bool>, Vec<bool>, Vec<bool>) {
+fn analyze_emphasis(
+    chars: &[(usize, char)],
+    code_mask: &[bool],
+) -> (Vec<bool>, Vec<bool>, Vec<bool>) {
     let n = chars.len();
     let mut hidden = vec![false; n];
     let mut bold = vec![false; n];
@@ -330,7 +337,13 @@ fn analyze_emphasis(chars: &[(usize, char)], code_mask: &[bool]) -> (Vec<bool>, 
         let non_ws = |c: Option<char>| c.is_some_and(|c| !c.is_whitespace());
         let can_open = non_ws(after) && (!is_under || alnum_free(before));
         let can_close = non_ws(before) && (!is_under || alnum_free(after));
-        delims.push(Delim { k, len, kind, can_open, can_close });
+        delims.push(Delim {
+            k,
+            len,
+            kind,
+            can_open,
+            can_close,
+        });
         k += len;
     }
 
@@ -353,7 +366,8 @@ fn analyze_emphasis(chars: &[(usize, char)], code_mask: &[bool]) -> (Vec<bool>, 
                 for slot in &mut hidden[close_k..close_k + d.len] {
                     *slot = true;
                 }
-                let run = &mut (if is_bold { &mut bold } else { &mut italic })[open_k + open_len..close_k];
+                let run = &mut (if is_bold { &mut bold } else { &mut italic })
+                    [open_k + open_len..close_k];
                 for slot in run {
                     *slot = true;
                 }
@@ -394,7 +408,12 @@ mod tests {
         // Opener, body, closer are all Code; the line after the fence is out.
         assert_eq!(
             classify_block_kinds(&["```rust", "let x = 1;", "```", "after"]),
-            vec![LineKind::Code, LineKind::Code, LineKind::Code, LineKind::Normal],
+            vec![
+                LineKind::Code,
+                LineKind::Code,
+                LineKind::Code,
+                LineKind::Normal
+            ],
         );
     }
 
@@ -459,7 +478,10 @@ mod tests {
         // The editor model treats a 4-space indent as an indented code block.
         // The answer renderer now agrees (the old per-line scanner called this
         // Normal) — a deliberate divergence, encoding the editor model's opinion.
-        assert_eq!(classify_block_kinds(&["    let x = 1;"]), vec![LineKind::Code]);
+        assert_eq!(
+            classify_block_kinds(&["    let x = 1;"]),
+            vec![LineKind::Code]
+        );
     }
 
     #[test]
@@ -518,7 +540,10 @@ mod tests {
     #[test]
     fn italic_sigils_are_hidden_for_both_star_and_underscore() {
         let s = styles();
-        for (src, want) in [("an *em* word", "an em word"), ("an _em_ word", "an em word")] {
+        for (src, want) in [
+            ("an *em* word", "an em word"),
+            ("an _em_ word", "an em word"),
+        ] {
             let line = style_slice(src, LineKind::Normal, &s);
             assert_eq!(rendered(&line), want);
             let italic: String = line
@@ -553,7 +578,9 @@ mod tests {
             let line = style_slice(src, LineKind::Normal, &s);
             assert_eq!(rendered(&line), src, "{src} stays verbatim");
             assert!(
-                line.spans.iter().all(|sp| sp.style != s.italic && sp.style != s.bold),
+                line.spans
+                    .iter()
+                    .all(|sp| sp.style != s.italic && sp.style != s.bold),
                 "{src} gets no emphasis styling"
             );
         }
@@ -567,7 +594,9 @@ mod tests {
         let line = style_slice("match *.rs and *.md files", LineKind::Normal, &s);
         assert_eq!(rendered(&line), "match *.rs and *.md files");
         assert!(
-            line.spans.iter().all(|sp| sp.style != s.italic && sp.style != s.bold),
+            line.spans
+                .iter()
+                .all(|sp| sp.style != s.italic && sp.style != s.bold),
             "glob stars italicize nothing"
         );
     }
@@ -647,7 +676,9 @@ mod tests {
             let line = style_slice(src, LineKind::Normal, &s);
             assert_eq!(rendered(&line), src, "{src} stays verbatim");
             assert!(
-                line.spans.iter().all(|sp| sp.style != s.italic && sp.style != s.bold),
+                line.spans
+                    .iter()
+                    .all(|sp| sp.style != s.italic && sp.style != s.bold),
                 "{src} gets no emphasis styling"
             );
         }
@@ -696,7 +727,10 @@ mod tests {
 
         // The column map still points every rendered char at its source byte:
         // reconstructing the rendered text via the map reproduces it exactly.
-        let rebuilt: String = map.iter().map(|&b| raw[b..].chars().next().unwrap()).collect();
+        let rebuilt: String = map
+            .iter()
+            .map(|&b| raw[b..].chars().next().unwrap())
+            .collect();
         assert_eq!(rebuilt, "snake_case and real emphasis");
         // The rendered `real` maps back to the source `real` (byte 16), not the
         // hidden `_` at byte 15.
