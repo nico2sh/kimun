@@ -71,6 +71,10 @@ struct Cadence {
     /// Sticky across ticks: the last sync call was rejected with 401/403.
     /// Suppresses the per-tick "syncing" flash while the token stays wrong.
     auth_failed: bool,
+    /// The probe's Ask capability, remembered by `plan` so `settle` reports a
+    /// status consistent with the flashes emitted the same tick — the one
+    /// derivation lives here, not in the shell.
+    llm_available: bool,
 }
 
 impl Cadence {
@@ -78,6 +82,7 @@ impl Cadence {
         Self {
             ticks_since_reconcile: RECONCILE_EVERY_N_TICKS,
             auth_failed: false,
+            llm_available: false,
         }
     }
 
@@ -112,6 +117,7 @@ impl Cadence {
             return Plan::Skip(RagStatus::Unauthorized);
         }
         let llm_available = probe.capability.llm_available();
+        self.llm_available = llm_available;
 
         // While a wrong token keeps failing, skip the transient "syncing"
         // flash so the footer doesn't flicker syncing ↔ unauthorized.
@@ -136,8 +142,10 @@ impl Cadence {
         Plan::Run { flash, reconcile }
     }
 
-    /// Fold the sync call's outcome into the status to report.
-    fn settle(&mut self, outcome: Outcome, llm_available: bool) -> RagStatus {
+    /// Fold the sync call's outcome into the status to report, using the
+    /// capability `plan` recorded this tick.
+    fn settle(&mut self, outcome: Outcome) -> RagStatus {
+        let llm_available = self.llm_available;
         match outcome {
             Outcome::Synced => {
                 self.auth_failed = false;
@@ -204,7 +212,6 @@ pub fn spawn_rag_sync(
 
             // One probe drives reachability, capability, and auth (adr/0024).
             let probe = sync.probe().await;
-            let llm_available = probe.as_ref().is_some_and(|p| p.capability.llm_available());
 
             let reconcile = match cadence.plan(probe.as_ref(), token.is_some(), sync.index_ready())
             {
@@ -243,7 +250,7 @@ pub fn spawn_rag_sync(
                     Outcome::Failed
                 }
             };
-            let status = cadence.settle(outcome, llm_available);
+            let status = cadence.settle(outcome);
             let _ = tx.send(AppEvent::RagStatus(status));
         }
     }))
@@ -372,7 +379,7 @@ mod tests {
         let p = probe(ServerCapability::Full, true);
         assert!(matches!(c.plan(Some(&p), true, true), Plan::Run { .. }));
         assert_eq!(
-            c.settle(Outcome::AuthRejected, true),
+            c.settle(Outcome::AuthRejected),
             RagStatus::Unauthorized
         );
         // While the token stays wrong: no syncing flash (no footer flicker).
@@ -385,7 +392,7 @@ mod tests {
         );
         // A successful pass clears the stickiness.
         assert_eq!(
-            c.settle(Outcome::Synced, true),
+            c.settle(Outcome::Synced),
             RagStatus::Online {
                 llm_available: true
             }
@@ -402,7 +409,7 @@ mod tests {
         let p = probe(ServerCapability::SemanticOnly, false);
         c.plan(Some(&p), true, true);
         assert_eq!(
-            c.settle(Outcome::SkippedRebuild, false),
+            c.settle(Outcome::SkippedRebuild),
             RagStatus::Syncing {
                 llm_available: false
             }
@@ -422,6 +429,6 @@ mod tests {
         let mut c = Cadence::new();
         let p = probe(ServerCapability::Full, false);
         c.plan(Some(&p), true, true);
-        assert_eq!(c.settle(Outcome::Failed, true), RagStatus::Offline);
+        assert_eq!(c.settle(Outcome::Failed), RagStatus::Offline);
     }
 }

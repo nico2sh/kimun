@@ -16,9 +16,11 @@ use crate::settings::SharedSettings;
 
 /// Coordinates the Ask workspace's moving parts so the screen doesn't have to:
 /// the resident `ThreadPanel`, the Sources drawer, and the background capability
-/// probe all meet here.
-#[derive(Default)]
+/// probe all meet here. Owns cheap clones of the settings and vault handles so
+/// capability refreshes don't thread them through every call.
 pub struct AskCoordinator {
+    settings: SharedSettings,
+    vault: Arc<NoteVault>,
     /// The turn id last mirrored into the Sources drawer — `sync_sources`
     /// compares against this instead of a dirty flag on `ThreadPanel`, since
     /// turn ids are never reused (`Thread::bump` only increments), a stale
@@ -28,6 +30,14 @@ pub struct AskCoordinator {
 }
 
 impl AskCoordinator {
+    pub fn new(settings: SharedSettings, vault: Arc<NoteVault>) -> Self {
+        Self {
+            settings,
+            vault,
+            last_synced_turn: None,
+        }
+    }
+
     /// Select or deselect the editor-area Ask content to match a drawer view
     /// switch. Entering ASK shows the resident thread and syncs its Sources;
     /// leaving ASK returns the note editor. The thread survives either way by
@@ -66,15 +76,11 @@ impl AskCoordinator {
     /// so the composer-enabled state follows client presence (no
     /// forever-`Thinking` turn; carry-forward #2). `set_ask_client` is the
     /// single injection point, so this one call is enough.
-    pub async fn refresh_capability(
-        &self,
-        panels: &mut PanelSet,
-        settings: &SharedSettings,
-        vault: &Arc<NoteVault>,
-        rag_status: RagStatus,
-    ) {
+    pub async fn refresh_capability(&self, panels: &mut PanelSet, rag_status: RagStatus) {
         let client = if rag_status.llm_available() {
-            crate::rag::rag_client(settings, vault).await.map(Arc::new)
+            crate::rag::rag_client(&self.settings, &self.vault)
+                .await
+                .map(Arc::new)
         } else {
             None
         };
@@ -86,7 +92,7 @@ impl AskCoordinator {
     /// while the user browses FILES). A reader note goes to the Sources
     /// drawer. When Ask *is* shown and the completed turn is the selected one,
     /// its sources are refreshed (rule 3).
-    pub fn handle_data(&mut self, panels: &mut PanelSet, data: AskData, tx: &AppTx) {
+    pub fn handle_data(&self, panels: &mut PanelSet, data: AskData, tx: &AppTx) {
         match &data {
             AskData::AnswerReady { turn_id, .. } => {
                 let turn_id = *turn_id;

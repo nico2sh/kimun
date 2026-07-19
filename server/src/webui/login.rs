@@ -12,7 +12,7 @@ use axum::{
 use maud::{DOCTYPE, Markup, html};
 use serde::Deserialize;
 
-use crate::auth::session::{SESSION_COOKIE, redirect_with_cookie, same_origin, session_value};
+use crate::auth::session::{clear_session_cookie, redirect_with_cookie, same_origin, set_session_cookie};
 use crate::server_state::AppState;
 
 use super::shell::styles;
@@ -42,13 +42,7 @@ pub(super) async fn login_submit(
         Some(expected)
             if crate::auth::constant_time_eq(form.token.as_bytes(), expected.as_bytes()) =>
         {
-            // The cookie holds the token's hash, not the token — always
-            // cookie-safe, and HttpOnly keeps it out of page scripts.
-            let cookie = format!(
-                "{SESSION_COOKIE}={}; HttpOnly; SameSite=Strict; Path=/",
-                session_value(expected)
-            );
-            redirect_with_cookie("/", cookie)
+            redirect_with_cookie("/", set_session_cookie(expected))
         }
         Some(_) => login_markup(true).into_response(),
         None => Redirect::to("/").into_response(),
@@ -56,7 +50,7 @@ pub(super) async fn login_submit(
 }
 
 pub(super) async fn logout() -> Response {
-    redirect_with_cookie("/login", format!("{SESSION_COOKIE}=; Max-Age=0; Path=/"))
+    redirect_with_cookie("/login", clear_session_cookie())
 }
 
 fn login_markup(error: bool) -> Markup {

@@ -49,7 +49,10 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/logs", get(logs_page))
         .route("/query", get(query_page).post(query_submit))
         .route("/logout", get(logout))
-        .route_layer(middleware::from_fn_with_state(state, web_auth));
+        .route_layer(middleware::from_fn_with_state(state, web_auth))
+        // Outermost on the protected routes: cross-origin mutating requests
+        // are rejected before auth even runs (see `csrf_guard`).
+        .route_layer(middleware::from_fn(crate::auth::session::csrf_guard));
 
     Router::new()
         .merge(protected)
