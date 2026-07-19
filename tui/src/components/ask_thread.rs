@@ -622,8 +622,7 @@ impl ThreadPanel {
                 .fg(theme.gray.to_ratatui())
                 .add_modifier(Modifier::DIM)
         };
-        self.composer
-            .render(f, inner, style, 0, focused && enabled);
+        self.composer.render(f, inner, style, 0, focused && enabled);
     }
 }
 
@@ -766,7 +765,8 @@ fn render_answer(
         let line_start = offset;
         for rel in wrap_text(stripped, width) {
             let abs = (line_start + rel.start)..(line_start + rel.end);
-            let (line, col_map) = markdown_lines::style_slice_mapped(&turn.answer[abs.clone()], kind, md);
+            let (line, col_map) =
+                markdown_lines::style_slice_mapped(&turn.answer[abs.clone()], kind, md);
             out.push((
                 RowSlot::Answer {
                     turn_id: turn.id,
@@ -1106,8 +1106,7 @@ mod tests {
         use crate::components::markdown_lines::{self, LineKind, MdStyles};
         let md = MdStyles::from_theme(&Theme::default());
         let raw = "**bold** then [1] tail";
-        let (line, col_map) =
-            markdown_lines::style_slice_mapped(raw, LineKind::Normal, &md);
+        let (line, col_map) = markdown_lines::style_slice_mapped(raw, LineKind::Normal, &md);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, "bold then [1] tail");
         // The rendered `[1]` starts at column 10 ("bold then " = 10 cols).
@@ -1199,7 +1198,10 @@ mod tests {
             .iter()
             .find(|(_, l)| l.spans.iter().any(|s| s.content.contains("first")))
             .unwrap();
-        assert!(qline.spans[0].content.starts_with('>'), "carries the prompt");
+        assert!(
+            qline.spans[0].content.starts_with('>'),
+            "carries the prompt"
+        );
         assert_eq!(qline.spans[0].style, qstyle, "accent + bold");
     }
 
@@ -1287,7 +1289,10 @@ mod tests {
 
         fn turns_key(p: &mut ThreadPanel, code: KeyCode) {
             let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-            p.handle_input(&InputEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)), &tx);
+            p.handle_input(
+                &InputEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)),
+                &tx,
+            );
         }
 
         /// A markdown answer (heading + prose citation + fenced code block)
@@ -1300,8 +1305,7 @@ mod tests {
             let theme = Theme::default();
             let mut p = ThreadPanel::new();
             let id = p.thread_mut().ask("q".into());
-            let answer =
-                "# Title\nSee [1] here.\n```\nlet x = arr[9];\n```".to_string();
+            let answer = "# Title\nSee [1] here.\n```\nlet x = arr[9];\n```".to_string();
             p.thread_mut().complete(
                 id,
                 answer.clone(),
@@ -1320,9 +1324,7 @@ mod tests {
             // Find the rendered answer row carrying the prose `[1]` and hit-test
             // the marker's column through its stored col_map.
             let hit = p.row_map.iter().find_map(|slot| match slot {
-                RowSlot::Answer {
-                    range, col_map, ..
-                } if answer[range.clone()].contains("[1]") => {
+                RowSlot::Answer { range, col_map, .. } if answer[range.clone()].contains("[1]") => {
                     let slice = &answer[range.clone()];
                     let col = slice.find("[1]").unwrap() as u16 + 1;
                     Some(citation_at_column(slice, col_map, col))
@@ -1346,7 +1348,10 @@ mod tests {
             let id = p.thread_mut().ask("q".into());
             p.focus = ThreadFocus::Turns;
             // 10 answer lines. Rows: question(1) + 10 + trailing blank(1) = 12.
-            let answer = (0..10).map(|i| format!("line{i}")).collect::<Vec<_>>().join("\n");
+            let answer = (0..10)
+                .map(|i| format!("line{i}"))
+                .collect::<Vec<_>>()
+                .join("\n");
             p.handle_data(AskData::AnswerReady {
                 turn_id: id,
                 result: Ok((answer, vec![])),
@@ -1390,7 +1395,10 @@ mod tests {
                 turn_id: newer,
                 result: Ok(("visible".into(), vec![])),
             });
-            assert!(p.bottom_follow_pending, "selected completion follows bottom");
+            assert!(
+                p.bottom_follow_pending,
+                "selected completion follows bottom"
+            );
         }
 
         /// Selecting an off-screen turn brings it into view; content-scroll keys
@@ -1415,7 +1423,10 @@ mod tests {
                 turns_key(&mut p, KeyCode::Char('k'));
             }
             draw(&mut p, &theme, 60, 9, true);
-            assert_eq!(p.scroll, 0, "selecting the first turn scrolled it into view");
+            assert_eq!(
+                p.scroll, 0,
+                "selecting the first turn scrolled it into view"
+            );
 
             // End scrolls to the bottom, clamped to total − height (31 − 6 = 25).
             turns_key(&mut p, KeyCode::End);

@@ -1727,7 +1727,10 @@ mod tests {
     fn conditioned_query_is_the_bare_question_without_history() {
         // Empty history → byte-identical to the raw question (pre-conditioning
         // behavior preserved exactly).
-        assert_eq!(build_retrieval_query("how do I deploy?", &[]), "how do I deploy?");
+        assert_eq!(
+            build_retrieval_query("how do I deploy?", &[]),
+            "how do I deploy?"
+        );
     }
 
     #[test]
@@ -1743,11 +1746,17 @@ mod tests {
             ),
         ];
         let q = build_retrieval_query("yes", &history);
-        assert!(q.contains("retention policy"), "prior question folded in: {q}");
+        assert!(
+            q.contains("retention policy"),
+            "prior question folded in: {q}"
+        );
         assert!(q.contains("30 days"), "prior answer folded in: {q}");
         assert!(q.contains("yes"), "current question present: {q}");
         // Only the LAST turn conditions the query — the older one is dropped.
-        assert!(!q.contains("old topic"), "only the most recent turn is used: {q}");
+        assert!(
+            !q.contains("old topic"),
+            "only the most recent turn is used: {q}"
+        );
         // Current question sits last for recency weighting.
         assert!(q.trim_end().ends_with("yes"), "question is last: {q}");
     }
@@ -1799,7 +1808,10 @@ mod tests {
     fn condense_head_tail_passes_short_strings_through_whole() {
         // At or under head+tail, nothing is dropped and no ellipsis is inserted.
         let s = "short answer";
-        assert_eq!(condense_head_tail(s, HISTORY_ANSWER_HEAD, HISTORY_ANSWER_TAIL), s);
+        assert_eq!(
+            condense_head_tail(s, HISTORY_ANSWER_HEAD, HISTORY_ANSWER_TAIL),
+            s
+        );
     }
 
     /// Embedder that records every `prompt_embedding` query string — the

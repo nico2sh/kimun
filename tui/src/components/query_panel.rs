@@ -1099,7 +1099,10 @@ mod tests {
         settle(&mut panel).await;
         assert!(panel.selected_path().is_some(), "result selected");
 
-        let st = panel.handle_key(&KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL), &tx);
+        let st = panel.handle_key(
+            &KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL),
+            &tx,
+        );
         assert_eq!(st, EventState::Consumed);
         let mut flashed = false;
         while let Ok(ev) = rx.try_recv() {
@@ -1107,7 +1110,10 @@ mod tests {
                 flashed = true;
             }
         }
-        assert!(flashed, "Ctrl+Y emits a flash message (ok or clipboard error)");
+        assert!(
+            flashed,
+            "Ctrl+Y emits a flash message (ok or clipboard error)"
+        );
     }
 
     /// Plain letters (`l`/`h`/`o`/`y`) stay query text in FIND — the query input

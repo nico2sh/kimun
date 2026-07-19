@@ -63,7 +63,11 @@ impl AskSource {
             date: c.date,
             score: c.similarity_score,
             text: c.content,
-            ordinal: if c.ordinal == 0 { position + 1 } else { c.ordinal },
+            ordinal: if c.ordinal == 0 {
+                position + 1
+            } else {
+                c.ordinal
+            },
         }
     }
 
@@ -312,9 +316,18 @@ mod tests {
             ask_source("b.md", 2),
         ]);
         // `[1]` resolves to the ordinal-1 source, wherever it sits in the vec.
-        assert_eq!(turn.source_for_citation(1).unwrap().path.to_string(), "a.md");
-        assert_eq!(turn.source_for_citation(2).unwrap().path.to_string(), "b.md");
-        assert_eq!(turn.source_for_citation(3).unwrap().path.to_string(), "c.md");
+        assert_eq!(
+            turn.source_for_citation(1).unwrap().path.to_string(),
+            "a.md"
+        );
+        assert_eq!(
+            turn.source_for_citation(2).unwrap().path.to_string(),
+            "b.md"
+        );
+        assert_eq!(
+            turn.source_for_citation(3).unwrap().path.to_string(),
+            "c.md"
+        );
     }
 
     #[test]
@@ -496,7 +509,10 @@ mod tests {
         let mut t = Thread::default();
         assert!(t.regenerate(999).is_none(), "unknown id");
         let id = t.ask("q".into()); // still Thinking
-        assert!(t.regenerate(id).is_none(), "in-flight turn can't regenerate");
+        assert!(
+            t.regenerate(id).is_none(),
+            "in-flight turn can't regenerate"
+        );
     }
 
     #[test]
@@ -528,7 +544,11 @@ mod tests {
         t.select_index(1);
         assert_eq!(t.selected().unwrap().question, "q1");
         t.select_index(100);
-        assert_eq!(t.selected().unwrap().question, "q2", "clamps to the last turn");
+        assert_eq!(
+            t.selected().unwrap().question,
+            "q2",
+            "clamps to the last turn"
+        );
     }
 
     #[test]

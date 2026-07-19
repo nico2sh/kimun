@@ -32,8 +32,9 @@ use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
-    MouseEventKind};
+use ratatui::crossterm::event::{
+    KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, Borders, ListItem, Paragraph};
@@ -158,7 +159,10 @@ pub struct SourcesPanel {
 impl SourcesPanel {
     pub fn new(vault: Arc<NoteVault>, key_bindings: &KeyBindings) -> Self {
         let map = key_bindings.to_hashmap();
-        let follow = map.get(&ActionShortcuts::FollowLink).cloned().unwrap_or_default();
+        let follow = map
+            .get(&ActionShortcuts::FollowLink)
+            .cloned()
+            .unwrap_or_default();
         let ctrl_y_combo = crate::keys::key_event_to_combo(&KeyEvent::new(
             KeyCode::Char('y'),
             KeyModifiers::CONTROL,
@@ -764,7 +768,13 @@ impl SourcesPanel {
                         theme,
                     );
                 } else {
-                    preview.render_context(f, area, text, Highlight::Range(highlight.as_ref()), theme);
+                    preview.render_context(
+                        f,
+                        area,
+                        text,
+                        Highlight::Range(highlight.as_ref()),
+                        theme,
+                    );
                 }
             }
             Some(LoadedNote {
@@ -1052,7 +1062,11 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         p.refresh(1, vec![source("a.md", "A", 0.9, "alpha body")], &tx);
         // No poll, no settle: the rows are live now.
-        assert_eq!(p.match_count(), 1, "refresh's rows are applied synchronously");
+        assert_eq!(
+            p.match_count(),
+            1,
+            "refresh's rows are applied synchronously"
+        );
         assert!(!p.list.is_loading(), "no async load is in flight");
         assert_eq!(nth_heading(&p, 0).as_deref(), Some("A"));
         // The synchronous path never fires the engine's redraw callback — the
@@ -1214,7 +1228,11 @@ mod tests {
         // From Collapsed (list focus), Esc bubbles so the host returns focus to
         // the thread.
         let st = p.handle_input(&InputEvent::Key(key(KeyCode::Esc)), &tx);
-        assert_eq!(st, EventState::NotConsumed, "Collapsed Esc -> back to thread");
+        assert_eq!(
+            st,
+            EventState::NotConsumed,
+            "Collapsed Esc -> back to thread"
+        );
     }
 
     #[tokio::test]
@@ -1226,11 +1244,19 @@ mod tests {
         p.handle_input(&InputEvent::Key(key(KeyCode::Char('j'))), &tx);
         assert_eq!(selected_heading(&p).as_deref(), Some("B"));
         p.handle_input(&InputEvent::Key(key(KeyCode::Char('j'))), &tx);
-        assert_eq!(selected_heading(&p).as_deref(), Some("B"), "clamped at the last row");
+        assert_eq!(
+            selected_heading(&p).as_deref(),
+            Some("B"),
+            "clamped at the last row"
+        );
         p.handle_input(&InputEvent::Key(key(KeyCode::Char('k'))), &tx);
         assert_eq!(selected_heading(&p).as_deref(), Some("A"));
         p.handle_input(&InputEvent::Key(key(KeyCode::Char('k'))), &tx);
-        assert_eq!(selected_heading(&p).as_deref(), Some("A"), "clamped at the first row");
+        assert_eq!(
+            selected_heading(&p).as_deref(),
+            Some("A"),
+            "clamped at the first row"
+        );
     }
 
     // ── Open (o / FollowLink) — from any reveal state ─────────────────────
@@ -1303,7 +1329,10 @@ mod tests {
                 flashed = true;
             }
         }
-        assert!(flashed, "yank emits a flash message (ok or clipboard error)");
+        assert!(
+            flashed,
+            "yank emits a flash message (ok or clipboard error)"
+        );
     }
 
     #[tokio::test]
@@ -1401,11 +1430,18 @@ mod tests {
         vault.create_note(&path, "# h\nbody text\n").await.unwrap();
 
         let mut p = SourcesPanel::new(Arc::new(vault), &key_bindings());
-        p.set_turn(1, vec![source("note.md", "h", 0.9, "body text")], &noop_tx());
+        p.set_turn(
+            1,
+            vec![source("note.md", "h", 0.9, "body text")],
+            &noop_tx(),
+        );
         p.settle().await;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         p.open_reader(0, &tx);
-        assert!(p.preview.is_context(), "open_reader opens the Context preview");
+        assert!(
+            p.preview.is_context(),
+            "open_reader opens the Context preview"
+        );
 
         let event = rx.recv().await.expect("open_reader spawns a ReaderNote");
         let AppEvent::Ask(data) = event else {
@@ -1489,7 +1525,11 @@ mod tests {
     #[tokio::test]
     async fn filter_box_is_bordered_and_always_visible() {
         let mut p = test_panel().await;
-        p.set_turn(1, vec![source("a.md", "Alpha", 0.9, "alpha body")], &noop_tx());
+        p.set_turn(
+            1,
+            vec![source("a.md", "Alpha", 0.9, "alpha body")],
+            &noop_tx(),
+        );
         p.settle().await;
 
         // Sources opens on the list (CONTEXT.md "List focus"), but the filter

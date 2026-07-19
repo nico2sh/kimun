@@ -100,10 +100,30 @@ mod tests {
     fn search_available_tracks_reachable_with_embedder() {
         // Online/Syncing → searchable, whether or not an LLM is configured
         // (a semantic-only server still searches).
-        assert!(RagStatus::Online { llm_available: false }.search_available());
-        assert!(RagStatus::Online { llm_available: true }.search_available());
-        assert!(RagStatus::Syncing { llm_available: false }.search_available());
-        assert!(RagStatus::Syncing { llm_available: true }.search_available());
+        assert!(
+            RagStatus::Online {
+                llm_available: false
+            }
+            .search_available()
+        );
+        assert!(
+            RagStatus::Online {
+                llm_available: true
+            }
+            .search_available()
+        );
+        assert!(
+            RagStatus::Syncing {
+                llm_available: false
+            }
+            .search_available()
+        );
+        assert!(
+            RagStatus::Syncing {
+                llm_available: true
+            }
+            .search_available()
+        );
         // Not reachable / no embedder → not searchable.
         assert!(!RagStatus::Offline.search_available());
         assert!(!RagStatus::Unauthorized.search_available());
@@ -113,7 +133,9 @@ mod tests {
 
     #[test]
     fn semantic_only_server_searches_but_does_not_answer() {
-        let semantic_only = RagStatus::Online { llm_available: false };
+        let semantic_only = RagStatus::Online {
+            llm_available: false,
+        };
         assert!(semantic_only.search_available(), "SEM must show");
         assert!(!semantic_only.llm_available(), "ASK must stay hidden");
     }

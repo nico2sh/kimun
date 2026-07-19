@@ -1157,7 +1157,8 @@ impl EditorScreen {
                 // otherwise); gate every route the same way.
                 else if view == DrawerView::Ask && !self.rag_status.llm_available() {
                     tx.send(AppEvent::FlashMessage(
-                        "Ask needs an LLM-configured server; this one is semantic-search only".into(),
+                        "Ask needs an LLM-configured server; this one is semantic-search only"
+                            .into(),
                     ))
                     .ok();
                 }
@@ -3152,11 +3153,7 @@ mod tests {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
 
         screen.open_drawer_view(DrawerView::Ask, &tx);
-        let id = screen
-            .panels
-            .ask_mut()
-            .thread_mut()
-            .ask("q?".into());
+        let id = screen.panels.ask_mut().thread_mut().ask("q?".into());
 
         screen
             .handle_app_message(
@@ -3384,11 +3381,7 @@ mod tests {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
 
         screen.open_drawer_view(DrawerView::Ask, &tx);
-        let turn_id = screen
-            .panels
-            .ask_mut()
-            .thread_mut()
-            .ask("q?".into());
+        let turn_id = screen.panels.ask_mut().thread_mut().ask("q?".into());
         // Leave Ask: the in-flight turn stays on the resident panel.
         screen.open_drawer_view(DrawerView::Files, &tx);
         assert!(!screen.panels.is_showing_ask());

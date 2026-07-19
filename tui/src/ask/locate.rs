@@ -28,9 +28,10 @@ pub fn section_range(note_text: &str, heading: &str, chunk_text: &str) -> Option
     // Recompute the note's own chunks (core's chunker, not the server's) and
     // find the one whose innermost heading matches.
     let (chunks, _links) = NoteDetails::chunks_and_links_of(&VaultPath::root(), note_text);
-    let chunk = chunks
-        .iter()
-        .find(|c| c.breadcrumb_last().is_some_and(|h| h.eq_ignore_ascii_case(heading)))?;
+    let chunk = chunks.iter().find(|c| {
+        c.breadcrumb_last()
+            .is_some_and(|h| h.eq_ignore_ascii_case(heading))
+    })?;
 
     if let Some(start) = note_text.find(&chunk.text) {
         return Some(start..start + chunk.text.len());

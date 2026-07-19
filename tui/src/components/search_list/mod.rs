@@ -1915,9 +1915,15 @@ mod tests {
         let mut list = focus_list(&['l']).await;
         list.handle_key(&key(KeyCode::Esc)); // → List
         assert_eq!(list.selected_row().unwrap().name, "alpha");
-        assert_eq!(list.handle_key(&key(KeyCode::Char('j'))), KeyReaction::Consumed);
+        assert_eq!(
+            list.handle_key(&key(KeyCode::Char('j'))),
+            KeyReaction::Consumed
+        );
         assert_eq!(list.selected_row().unwrap().name, "beta");
-        assert_eq!(list.handle_key(&key(KeyCode::Char('k'))), KeyReaction::Consumed);
+        assert_eq!(
+            list.handle_key(&key(KeyCode::Char('k'))),
+            KeyReaction::Consumed
+        );
         assert_eq!(list.selected_row().unwrap().name, "alpha");
     }
 
@@ -1936,7 +1942,10 @@ mod tests {
             KeyReaction::ListVerb('o')
         );
         // 'z' is not registered: swallowed, query stays empty.
-        assert_eq!(list.handle_key(&key(KeyCode::Char('z'))), KeyReaction::Consumed);
+        assert_eq!(
+            list.handle_key(&key(KeyCode::Char('z'))),
+            KeyReaction::Consumed
+        );
         assert_eq!(list.query(), "");
     }
 
@@ -1946,7 +1955,10 @@ mod tests {
     async fn verbs_are_inert_in_input_focus() {
         let mut list = focus_list(&['l', 'o']).await;
         assert_eq!(list.focus(), Focus::Input);
-        assert_eq!(list.handle_key(&key(KeyCode::Char('l'))), KeyReaction::Consumed);
+        assert_eq!(
+            list.handle_key(&key(KeyCode::Char('l'))),
+            KeyReaction::Consumed
+        );
         list.poll_until_idle().await;
         assert_eq!(list.query(), "l", "verb letters still type in Input focus");
     }
@@ -1965,7 +1977,10 @@ mod tests {
             .build();
         list.poll_until_idle().await;
         assert_eq!(list.focus(), Focus::List);
-        assert_eq!(list.handle_key(&key(KeyCode::Char('a'))), KeyReaction::Consumed);
+        assert_eq!(
+            list.handle_key(&key(KeyCode::Char('a'))),
+            KeyReaction::Consumed
+        );
         assert_eq!(list.query(), "");
         // `i` drops to the input where typing filters again.
         list.handle_key(&key(KeyCode::Char('i')));
