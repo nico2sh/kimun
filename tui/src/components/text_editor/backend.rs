@@ -196,11 +196,11 @@ impl BackendState {
         true
     }
 
-    /// Reconcile the vim engine mode after a host-driven mouse selection change.
-    /// If a selection now exists and the engine is in Normal, enters Visual.
-    /// If the selection is gone and the engine is in Visual/VisualLine, returns
-    /// to Normal. No-op for Direct / Nvim backends.
-    pub fn vim_sync_mouse_selection(&mut self, has_selection: bool) {
+    /// Reconcile the active input interpreter with a host-driven mouse
+    /// selection change. The vim interpreter tracks it modally (a new
+    /// selection enters Visual, a cleared one returns to Normal); the other
+    /// backends have nothing to reconcile.
+    pub fn sync_mouse_selection(&mut self, has_selection: bool) {
         if let BackendState::Textarea(TextareaBackend {
             input: InputInterpreter::Vim(e),
             ..
@@ -210,27 +210,28 @@ impl BackendState {
         }
     }
 
-    /// True when a bare Space should start the leader: vim backend in Normal
-    /// mode with empty pending state. False for Direct / Nvim backends and for
-    /// vim Insert/Visual modes or any pending state.
-    pub fn vim_space_leads(&self) -> bool {
+    /// True when a bare Space should start the leader sequence. Only the vim
+    /// interpreter ever says yes (Normal mode, empty pending state); for every
+    /// other backend Space is just typing.
+    pub fn space_leads(&self) -> bool {
         matches!(self,
             BackendState::Textarea(TextareaBackend { input: InputInterpreter::Vim(e), .. })
             if e.space_leads())
     }
 
-    /// True when the active backend is the vim interpreter in charwise Visual
-    /// mode (not VisualLine). Used by the highlight path to extend the end col
-    /// by one so the char under the cursor is visually included.
-    pub fn vim_is_charwise_visual(&self) -> bool {
+    /// True when the current selection visually includes the char under the
+    /// cursor, so the highlight path extends the end col by one. Only the vim
+    /// interpreter's charwise Visual mode (not VisualLine) selects this way.
+    pub fn selection_includes_cursor(&self) -> bool {
         matches!(self,
             BackendState::Textarea(TextareaBackend { input: InputInterpreter::Vim(e), .. })
             if *e.mode() == EditorMode::Visual)
     }
 
-    /// Reset the vim interpreter to Normal mode (called when a fresh note is
-    /// loaded). No-op for Direct / Nvim backends.
-    pub fn vim_reset_to_normal(&mut self) {
+    /// Reset any transient input-interpreter state for a freshly loaded note
+    /// (the vim interpreter returns to Normal; the other backends carry no
+    /// such state).
+    pub fn reset_input_state(&mut self) {
         if let BackendState::Textarea(TextareaBackend {
             input: InputInterpreter::Vim(engine),
             ..
@@ -255,10 +256,10 @@ impl BackendState {
         }
     }
 
-    /// The in-progress vim command sequence (count/operator/find/g), for the
-    /// footer hint. Returns `None` for Direct / Nvim backends, or when the
-    /// vim interpreter has no pending state.
-    pub fn vim_pending_hint(&self) -> Option<String> {
+    /// The in-progress input-command hint for the footer (the vim
+    /// interpreter's pending count/operator/find/g sequence). `None` when the
+    /// active backend has no pending sequence.
+    pub fn pending_input_hint(&self) -> Option<String> {
         match self {
             BackendState::Textarea(TextareaBackend {
                 input: InputInterpreter::Vim(e),
@@ -688,13 +689,11 @@ mod tests {
     }
 
     #[test]
-    fn vim_space_leads_only_for_vim_backend() {
+    fn space_leads_only_for_vim_backend() {
         assert!(
-            !BackendState::Textarea(TextareaBackend::direct(TextArea::default())).vim_space_leads()
+            !BackendState::Textarea(TextareaBackend::direct(TextArea::default())).space_leads()
         );
-        assert!(
-            BackendState::Textarea(TextareaBackend::vim(TextArea::default())).vim_space_leads()
-        );
+        assert!(BackendState::Textarea(TextareaBackend::vim(TextArea::default())).space_leads());
     }
 
     #[test]
