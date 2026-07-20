@@ -2591,7 +2591,7 @@ dependencies = [
 
 [[package]]
 name = "kimun-notes"
-version = "0.20.1"
+version = "0.21.0"
 dependencies = [
  "arboard",
  "async-trait",
@@ -2638,7 +2638,7 @@ dependencies = [
 
 [[package]]
 name = "kimun_core"
-version = "0.2.28"
+version = "0.2.29"
 dependencies = [
  "chrono",
  "criterion",
@@ -2664,7 +2664,7 @@ dependencies = [
 
 [[package]]
 name = "kimun_server"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2695,7 +2695,7 @@ dependencies = [
 
 [[package]]
 name = "kimun_server_client"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "kimun_core",

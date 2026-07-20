@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.20.1...kimun-notes-v0.21.0) - 2026-07-20
+
+### Added
+
+- *(tui)* add list focus to SearchList and wire FIND verbs
+- *(ask)* distinct turns and hidden emphasis sigils in answers
+- *(ask)* converge Sources drawer with FIND's preview and rows
+- *(ask)* render answer markdown, thread scrolling, and cleaner sources
+- *(tui)* integrate Ask workspace — rail entry, drawer view, editor wiring, keys
+- *(tui)* add Ask SourcesPanel drawer view with reader face
+- *(tui)* wire ThreadPanel render, input, and ask task
+- *(tui)* editor-area third arm for Ask + AskData events
+- *(ask)* add note_name_from_title core helper and ask::save module
+- *(tui)* add ask domain Thread/Turn/AskSource
+- *(tui)* implement ask::citations module with scan, strip, link_sources
+- add history parameter to RagClient::ask()
+
+### Fixed
+
+- fmt
+- *(tui)* synchronous row-set seam for static Sources list
+- *(tui)* box the Sources filter field like FIND's query searchbox
+- *(tui)* wire Sources redraw through tx and defer cross-turn citation focus
+- *(tui)* strip CR from preview lines on CRLF notes
+- *(ask)* resolve 7 holistic-review findings in the Ask workspace
+- *(ask)* don't italicize intraword underscores in answers
+- *(ask)* no dangling separator on bare-date source rows
+- *(ask)* drive SEM rail entry from live RAG status
+- *(ask)* correct Ask conversation, provenance, reader wrap, and empty-title prompt
+- *(tui)* keep "OpenRagAnswer" parseable as a legacy ActionShortcuts alias
+- *(core,tui)* move Ask source-reader heading fallback into core scan
+- *(tui/ask)* citations module scanner and rewrite logic
+
+### Other
+
+- Merge branch 'worktree-arch-strong-batch' into ask-rag
+- *(tui)* delegate Ask answer block identity to the editor markdown model
+- *(tui)* extract shared yank-to-clipboard helper
+- *(tui)* rebuild Sources view on the shared list engine
+- *(tui)* unify preview pane's needle/range render families
+- *(tui)* use ? operator in begin_turn client guard
+- *(ask)* make citation↔source pairing an explicit ordinal contract
+- *(ask)* single-owner Ask workspace panels
+- *(ask)* cleanup batch — dedupe, derive, test gaps
+- *(tui)* delete the old Ask (RAG) modal overlay
+- *(ask)* confirm Sources footer covers all sources, not just cited ones
+
 ## [0.20.1](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.20.0...kimun-notes-v0.20.1) - 2026-07-15
 
 ### Other
