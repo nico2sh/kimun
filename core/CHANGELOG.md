@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.29](https://github.com/nico2sh/kimun/compare/kimun_core-v0.2.28...kimun_core-v0.2.29) - 2026-07-20
+
+### Added
+
+- *(ask)* add note_name_from_title core helper and ask::save module
+
+### Fixed
+
+- *(core,tui)* move Ask source-reader heading fallback into core scan
+
+### Other
+
+- apply the five confirmed review findings
+- *(core)* split nfs mod.rs into vault_path and backup
+- *(ask)* cleanup batch — dedupe, derive, test gaps
+
 ## [0.2.28](https://github.com/nico2sh/kimun/compare/kimun_core-v0.2.27...kimun_core-v0.2.28) - 2026-07-15
 
 ### Added
