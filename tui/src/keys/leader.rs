@@ -57,6 +57,13 @@ pub enum LeaderAction {
     NoteCopyWikilink,
     NoteExport,
     NoteYankPath,
+    // +ask (a) — the Ask workspace's conversation (adr/0030).
+    AskFocus,
+    AskNew,
+    AskCopy,
+    AskSave,
+    AskRegenerate,
+    AskSource,
     /// Open the command palette.
     Palette,
     // help
@@ -80,6 +87,7 @@ impl LeaderAction {
             LeaderAction::OpenDrawer(DrawerView::Files) => "drawer.files",
             LeaderAction::OpenDrawer(DrawerView::Find) => "drawer.find",
             LeaderAction::OpenDrawer(DrawerView::Semantic) => "drawer.semantic",
+            LeaderAction::OpenDrawer(DrawerView::Ask) => "drawer.ask",
             LeaderAction::OpenDrawer(DrawerView::Tags) => "drawer.tags",
             LeaderAction::OpenDrawer(DrawerView::Links) => "drawer.links",
             LeaderAction::OpenDrawer(DrawerView::Outline) => "drawer.outline",
@@ -119,6 +127,12 @@ impl LeaderAction {
             LeaderAction::NoteCopyWikilink => "this.copy-link",
             LeaderAction::NoteExport => "this.export",
             LeaderAction::NoteYankPath => "this.yank-path",
+            LeaderAction::AskFocus => "ask.focus",
+            LeaderAction::AskNew => "ask.new",
+            LeaderAction::AskCopy => "ask.copy",
+            LeaderAction::AskSave => "ask.save",
+            LeaderAction::AskRegenerate => "ask.regenerate",
+            LeaderAction::AskSource => "ask.source",
             LeaderAction::Palette => "palette",
             LeaderAction::Help => "help",
             LeaderAction::NoteSave => "note.save",
@@ -129,7 +143,7 @@ impl LeaderAction {
     }
 
     /// Every action, for id lookup and docs.
-    pub const ALL: [LeaderAction; 46] = [
+    pub const ALL: [LeaderAction; 52] = [
         LeaderAction::OpenDrawer(DrawerView::Files),
         LeaderAction::OpenDrawer(DrawerView::Find),
         LeaderAction::OpenDrawer(DrawerView::Tags),
@@ -171,6 +185,12 @@ impl LeaderAction {
         LeaderAction::NoteCopyWikilink,
         LeaderAction::NoteExport,
         LeaderAction::NoteYankPath,
+        LeaderAction::AskFocus,
+        LeaderAction::AskNew,
+        LeaderAction::AskCopy,
+        LeaderAction::AskSave,
+        LeaderAction::AskRegenerate,
+        LeaderAction::AskSource,
         LeaderAction::Palette,
         LeaderAction::NoteSave,
         LeaderAction::AppQuit,
@@ -231,6 +251,12 @@ impl LeaderAction {
             LeaderAction::NoteCopyWikilink => "copy wikilink",
             LeaderAction::NoteExport => "export",
             LeaderAction::NoteYankPath => "yank note path",
+            LeaderAction::AskFocus => "focus composer",
+            LeaderAction::AskNew => "new conversation",
+            LeaderAction::AskCopy => "copy answer",
+            LeaderAction::AskSave => "save as note",
+            LeaderAction::AskRegenerate => "regenerate",
+            LeaderAction::AskSource => "open top source",
             LeaderAction::Palette => "command palette",
             LeaderAction::Help => "help / cheatsheet",
             LeaderAction::NoteSave => "write (save now)",
@@ -403,6 +429,20 @@ pub fn leader_tree() -> LeaderNode {
                         // backlinks (core LinkRewrite), so the labels match.
                         ('r', leaf("rename", A::NoteRename)),
                         ('y', leaf("yank note path", A::NoteYankPath)),
+                    ],
+                },
+            ),
+            (
+                'a',
+                Group {
+                    label: "+ask".into(),
+                    children: vec![
+                        ('a', leaf("focus composer", A::AskFocus)),
+                        ('n', leaf("new conversation", A::AskNew)),
+                        ('y', leaf("copy answer", A::AskCopy)),
+                        ('e', leaf("save as note", A::AskSave)),
+                        ('r', leaf("regenerate", A::AskRegenerate)),
+                        ('s', leaf("open top source", A::AskSource)),
                     ],
                 },
             ),
@@ -740,7 +780,7 @@ mod tests {
         let groups: Vec<char> = tree.children().iter().map(|(k, _)| *k).collect();
         assert_eq!(
             groups,
-            vec!['f', 'n', 'l', 'o', 'g', 'v', 'w', 'm', 'p', 'q', '?']
+            vec!['f', 'n', 'l', 'o', 'g', 'v', 'w', 'm', 'a', 'p', 'q', '?']
         );
         // Doubled letters fire the group's most-common action.
         let mut e = LeaderEngine::new();

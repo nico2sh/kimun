@@ -69,12 +69,22 @@ impl ContextSize {
     }
 }
 
+/// One prior Q&A exchange sent as conversation history. The client strips
+/// citation markers before sending; the server passes pairs through verbatim.
+#[derive(Debug, Deserialize)]
+pub struct HistoryTurn {
+    pub question: String,
+    pub answer: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct AnswerRequest {
     pub vault_id: String,
     pub query: String,
     #[serde(default)]
     pub context_size: Option<ContextSize>,
+    #[serde(default)]
+    pub history: Vec<HistoryTurn>,
 }
 
 #[derive(Debug, Serialize)]
@@ -105,10 +115,20 @@ pub struct ChunkResult {
     pub content: String,
     pub hash: String,
     pub similarity_score: f64,
+    /// The 1-based position this chunk holds in its result list — the `[n]`
+    /// citation number for an answer's sources, or the rank position for a
+    /// search hit. Assigned by the caller (never re-derived from vec order on
+    /// either side of the wire), so the citation↔source pairing survives any
+    /// later reorder. Always populated by this server; a `#[serde(default)]` on
+    /// the client covers an older server that omits it.
+    pub ordinal: usize,
 }
 
-impl From<ScoredChunk> for ChunkResult {
-    fn from((score, chunk): ScoredChunk) -> Self {
+impl ChunkResult {
+    /// Materialize a wire chunk with its already-assigned `ordinal` — the one
+    /// numbering site (answer: the `[n]` the prompt used; search: rank
+    /// position) owns the value, this only carries it.
+    fn from_scored(ordinal: usize, (score, chunk): ScoredChunk) -> Self {
         ChunkResult {
             path: chunk.doc_path.clone(),
             title: chunk.title.clone(),
@@ -116,6 +136,7 @@ impl From<ScoredChunk> for ChunkResult {
             hash: chunk.doc_hash.clone(),
             content: chunk.text,
             similarity_score: score,
+            ordinal,
         }
     }
 }
@@ -241,7 +262,12 @@ pub async fn get_embeddings_handler(
         .await?;
     let query_time_ms = started.elapsed().as_millis() as u64;
 
-    let chunks: Vec<ChunkResult> = results.into_iter().map(ChunkResult::from).collect();
+    // Search ordinal = 1-based rank position (best hit first).
+    let chunks: Vec<ChunkResult> = results
+        .into_iter()
+        .enumerate()
+        .map(|(i, scored)| ChunkResult::from_scored(i + 1, scored))
+        .collect();
 
     Ok(Json(EmbeddingsResponse {
         chunks,
@@ -267,6 +293,11 @@ pub async fn answer_handler(
     }
     let job_id = Uuid::new_v4();
     let top_k = resolve_top_k(request.context_size, state.config.reranker.top_k);
+    let history: Vec<(String, String)> = request
+        .history
+        .into_iter()
+        .map(|t| (t.question, t.answer))
+        .collect();
 
     // Mark job as queued
     state
@@ -286,10 +317,19 @@ pub async fn answer_handler(
             .await
             .update_status(&job_id, JobStatus::Processing);
 
-        match rag.answer(&collection, &request.query, top_k).await {
+        match rag
+            .answer(&collection, &request.query, &history, top_k)
+            .await
+        {
             Ok(answer) => {
-                let sources: Vec<ChunkResult> =
-                    answer.sources.into_iter().map(ChunkResult::from).collect();
+                // Ordinal is the `[n]` the prompt numbered each source with,
+                // assigned once in `answer()` — carried straight through, never
+                // re-derived from this vec's order.
+                let sources: Vec<ChunkResult> = answer
+                    .sources
+                    .into_iter()
+                    .map(|(ordinal, scored)| ChunkResult::from_scored(ordinal, scored))
+                    .collect();
                 let result = serde_json::json!({
                     "answer": answer.text,
                     "sources": sources,
@@ -385,6 +425,57 @@ pub async fn job_status_handler(
 mod tests {
     use super::*;
 
+    /// The pairing contract on the wire: whatever ordinal `answer()` assigned
+    /// to each source is the ordinal that reaches the client — even when the
+    /// sources vec is in a different order than the ordinals (a stand-in for any
+    /// future reorder). Mirrors the exact mapping the answer handler runs.
+    #[test]
+    fn answer_sources_serialize_the_assigned_ordinal_not_vec_position() {
+        use crate::document::FlattenedChunk;
+        let flat = |path: &str| FlattenedChunk {
+            doc_path: path.to_string(),
+            doc_hash: "h".to_string(),
+            title: "t".to_string(),
+            text: "body".to_string(),
+            date: None,
+        };
+        // Deliberately shuffled: vec position 0 carries ordinal 3, etc.
+        let sources: Vec<(usize, ScoredChunk)> = vec![
+            (3, (0.9, flat("/c.md"))),
+            (1, (0.8, flat("/a.md"))),
+            (2, (0.7, flat("/b.md"))),
+        ];
+        let chunks: Vec<ChunkResult> = sources
+            .into_iter()
+            .map(|(ordinal, scored)| ChunkResult::from_scored(ordinal, scored))
+            .collect();
+        let json = serde_json::to_value(&chunks).unwrap();
+        // Ordinal travels with the chunk, not with its slice position.
+        assert_eq!(json[0]["path"], "/c.md");
+        assert_eq!(json[0]["ordinal"], 3);
+        assert_eq!(json[1]["path"], "/a.md");
+        assert_eq!(json[1]["ordinal"], 1);
+        assert_eq!(json[2]["path"], "/b.md");
+        assert_eq!(json[2]["ordinal"], 2);
+    }
+
+    #[test]
+    fn answer_request_parses_without_history() {
+        let r: AnswerRequest = serde_json::from_str(r#"{"vault_id":"v1","query":"q"}"#).unwrap();
+        assert!(r.history.is_empty());
+    }
+
+    #[test]
+    fn answer_request_parses_history_pairs() {
+        let r: AnswerRequest = serde_json::from_str(
+            r#"{"vault_id":"v1","query":"q","history":[{"question":"q1","answer":"a1"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(r.history.len(), 1);
+        assert_eq!(r.history[0].question, "q1");
+        assert_eq!(r.history[0].answer, "a1");
+    }
+
     /// The status table is the wire contract (the client keys on codes, never on
     /// message text): Validation→400, NotFound→404, SemanticOnly→503, Backend→500.
     #[test]
@@ -456,6 +547,7 @@ mod tests {
                 vault_id: "vault-1".into(),
                 query: "q".into(),
                 context_size: None,
+                history: vec![],
             }),
         )
         .await

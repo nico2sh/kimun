@@ -68,6 +68,60 @@ pub fn has_invalid_leading_dots(name: &str) -> bool {
 
 const MAX_FILENAME_LEN: usize = 64;
 
+/// Maximum length, in characters, of a title-derived note name (see
+/// [`note_name_from_title`]).
+const MAX_TITLE_NAME_LEN: usize = 60;
+
+/// Derives a filesystem-safe, extension-free note name from an arbitrary
+/// title (e.g. a saved ask question). The title is lowercased; disallowed
+/// characters (per [`is_disallowed_char`]) and whitespace collapse to a
+/// single `-`; the result is trimmed of leading/trailing `-` and truncated
+/// to [`MAX_TITLE_NAME_LEN`] characters on a char boundary. An empty result
+/// falls back to `"answer"`. Callers are responsible for assembling this
+/// into a full path (e.g. via `VaultPath`) and applying the note extension.
+///
+/// This does not make the result independently safe as a filename — passing
+/// it through `VaultPathSlice::new` (in the parent `nfs` module) still
+/// applies its own sanitization (trailing dots, Windows reserved names). The
+/// two layers are intentional, not redundant: this function's char policy
+/// targets a readable slug, `VaultPathSlice::new`'s targets filesystem
+/// safety for *any* input, including names that never went through this
+/// function.
+///
+/// ```
+/// use kimun_core::nfs::filename::note_name_from_title;
+/// assert_eq!(note_name_from_title("How do I Ship v2?"), "how-do-i-ship-v2");
+/// assert_eq!(note_name_from_title("///???"), "answer");
+/// ```
+pub fn note_name_from_title(title: &str) -> String {
+    let mut result = String::with_capacity(title.len());
+    let mut last_was_dash = false;
+    for c in title.chars() {
+        if is_disallowed_char(c) || c.is_whitespace() {
+            if !last_was_dash {
+                result.push('-');
+                last_was_dash = true;
+            }
+        } else {
+            for lower in c.to_lowercase() {
+                result.push(lower);
+            }
+            last_was_dash = false;
+        }
+    }
+    let trimmed = result.trim_matches('-');
+    let truncated = match trimmed.char_indices().nth(MAX_TITLE_NAME_LEN) {
+        Some((byte_idx, _)) => &trimmed[..byte_idx],
+        None => trimmed,
+    };
+    let truncated = truncated.trim_matches('-');
+    if truncated.is_empty() {
+        "answer".to_string()
+    } else {
+        truncated.to_string()
+    }
+}
+
 /// A single way in which a candidate filename violates the cross-platform rule
 /// set. [`validate_filename`] collects every applicable reason rather than
 /// stopping at the first, so the UI can explain all the problems at once.
@@ -314,6 +368,24 @@ mod tests {
             .any(|r| matches!(r, InvalidNameReason::DisallowedChars(_))));
         assert!(reasons.contains(&InvalidNameReason::LeadingOrTrailingWhitespace));
         assert!(reasons.contains(&InvalidNameReason::TrailingDot));
+    }
+
+    #[test]
+    fn note_name_from_title_slugs_and_survives_garbage() {
+        assert_eq!(
+            note_name_from_title("How do I Ship v2?"),
+            "how-do-i-ship-v2"
+        );
+        assert_eq!(note_name_from_title("///???"), "answer");
+        assert!(note_name_from_title(&"x".repeat(200)).len() <= 60);
+    }
+
+    /// Truncation must count chars, not bytes — a `.len() <= 60` check alone
+    /// (as in the ASCII case above) would pass even if truncation sliced
+    /// through the middle of a multi-byte char's UTF-8 encoding.
+    #[test]
+    fn note_name_from_title_truncates_multi_byte_chars_by_char_count() {
+        assert!(note_name_from_title(&"ñ".repeat(100)).chars().count() <= 60);
     }
 
     #[test]

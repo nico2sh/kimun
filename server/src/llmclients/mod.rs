@@ -22,7 +22,8 @@ pub trait LLMClient: Send + Sync {
     async fn ask(
         &self,
         question: &str,
-        context: &[(f64, FlattenedChunk)],
+        history: &[(String, String)],
+        context: &[(usize, (f64, FlattenedChunk))],
     ) -> anyhow::Result<String>;
 }
 
@@ -83,9 +84,10 @@ impl LLMClient for ChatClient {
     async fn ask(
         &self,
         question: &str,
-        context: &[(f64, FlattenedChunk)],
+        history: &[(String, String)],
+        context: &[(usize, (f64, FlattenedChunk))],
     ) -> anyhow::Result<String> {
-        let prompt = build_prompt(question, context);
+        let messages = chat_messages(history, build_prompt(question, history, context));
 
         let request = match &self.wire {
             Wire::OpenAiCompat => self
@@ -95,10 +97,7 @@ impl LLMClient for ChatClient {
                 .json(&ChatRequest {
                     model: self.model.clone(),
                     max_tokens: None,
-                    messages: vec![ChatMessage {
-                        role: "user".to_string(),
-                        content: prompt,
-                    }],
+                    messages,
                 }),
             Wire::Anthropic => self
                 .http
@@ -108,22 +107,17 @@ impl LLMClient for ChatClient {
                 .json(&ChatRequest {
                     model: self.model.clone(),
                     max_tokens: Some(4096),
-                    messages: vec![ChatMessage {
-                        role: "user".to_string(),
-                        content: prompt,
-                    }],
+                    messages,
                 }),
-            Wire::Gemini => self
-                .http
-                .post(format!(
-                    "{}/v1beta/models/{}:generateContent?key={}",
-                    self.base_url, self.model, self.api_key
-                ))
-                .json(&GeminiRequest {
-                    contents: vec![GeminiContent {
-                        parts: vec![GeminiPart { text: prompt }],
-                    }],
-                }),
+            Wire::Gemini => {
+                let contents = gemini_contents(messages);
+                self.http
+                    .post(format!(
+                        "{}/v1beta/models/{}:generateContent?key={}",
+                        self.base_url, self.model, self.api_key
+                    ))
+                    .json(&GeminiRequest { contents })
+            }
         };
 
         let response = request.send().await?;
@@ -188,46 +182,162 @@ impl LLMClient for ChatClient {
     }
 }
 
-/// The one RAG prompt, shared by every provider: answer notes-first, supplement
-/// with common knowledge when the notes fall short, and always distinguish the
-/// two. Each context chunk is framed with its note path, relevance, and (when
-/// the section title starts with one) its date.
-fn build_prompt(question: &str, context: &[(f64, FlattenedChunk)]) -> String {
+/// History pairs + the final RAG prompt as one chat transcript. Shared by the
+/// OpenAI-compat and Anthropic wires; Gemini maps the same list to `contents`
+/// with the "model" role name.
+fn chat_messages(history: &[(String, String)], prompt: String) -> Vec<ChatMessage> {
+    let mut msgs = Vec::with_capacity(history.len() * 2 + 1);
+    for (q, a) in history {
+        msgs.push(ChatMessage {
+            role: "user".into(),
+            content: q.clone(),
+        });
+        msgs.push(ChatMessage {
+            role: "assistant".into(),
+            content: a.clone(),
+        });
+    }
+    msgs.push(ChatMessage {
+        role: "user".into(),
+        content: prompt,
+    });
+    msgs
+}
+
+/// Maps a chat transcript (`chat_messages`'s output) to Gemini's `contents`
+/// shape: every `"assistant"` role becomes `"model"`, everything else (only
+/// ever `"user"` in practice) stays `"user"`, and each message's text becomes
+/// its single part.
+fn gemini_contents(messages: Vec<ChatMessage>) -> Vec<GeminiContent> {
+    messages
+        .into_iter()
+        .map(|m| GeminiContent {
+            role: if m.role == "assistant" {
+                "model".into()
+            } else {
+                "user".into()
+            },
+            parts: vec![GeminiPart { text: m.content }],
+        })
+        .collect()
+}
+
+/// The one RAG prompt, shared by every provider: chunks are numbered `[i]` in
+/// sources order, citations are mandatory for note-derived claims, and the
+/// answer may supplement with common knowledge — uncited text IS the signal
+/// that a claim is general knowledge, so the two never blur.
+///
+/// When `history` is non-empty the prompt gains two mid-conversation aids: a
+/// follow-up-handling line and a one-line recap of the assistant's last message.
+/// The preceding turns ride in the chat transcript (see [`chat_messages`]), and
+/// a terse reply ("yes", "go on", "the second one") only makes sense against
+/// the assistant's PREVIOUS message — usually its closing question or offer. The
+/// follow-up line binds the reply to that message explicitly (continue from it;
+/// do NOT re-answer the user's earlier question), and the recap quotes the tail
+/// of that message immediately before `Question:` so the offer sits physically
+/// next to the terse reply instead of several messages up the transcript. Both
+/// are omitted for a first turn (empty history), where there is nothing to
+/// resolve a terse reply against — the empty-history prompt is byte-identical to
+/// before.
+/// Core's chunk-breadcrumb separator (ASCII Unit Separator, U+001F): the
+/// heading path is flattened into the chunk title joined with this control
+/// char. Mirrored here (the server does not depend on `kimun_core`) so the
+/// prompt can present it as a readable path rather than a raw control char.
+const BREADCRUMB_SEP: char = '\u{1f}';
+
+/// Chars quoted from the END of the assistant's last message in the recap line
+/// (see [`build_prompt`]). ~200 chars is enough to carry a closing question or
+/// offer without pulling in the whole answer.
+const RECAP_TAIL_CHARS: usize = 200;
+
+/// The last `max` chars of `s`, cut on a char boundary (never mid-codepoint).
+/// Shorter strings pass through whole. Used for the mid-conversation recap,
+/// which quotes the END of the assistant's previous message (where its offer
+/// or closing question lives).
+fn tail_chars(s: &str, max: usize) -> String {
+    let total = s.chars().count();
+    if total <= max {
+        return s.to_string();
+    }
+    let start = s
+        .char_indices()
+        .nth(total - max)
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    s[start..].to_string()
+}
+
+fn build_prompt(
+    question: &str,
+    history: &[(String, String)],
+    context: &[(usize, (f64, FlattenedChunk))],
+) -> String {
     let mut context_string = String::new();
-    for (relevance, chunk) in context {
-        context_string.push_str(&format!(
-            "--- Document: {} (Relevance: {:.4}) ---\n",
-            chunk.doc_path, relevance
-        ));
+    // The `[n]` frame is the ordinal ASSIGNED to the pair upstream, never this
+    // loop's position — so the number the model cites is exactly the ordinal the
+    // wire source carries, even if the context were reordered before us.
+    for (ordinal, (_, chunk)) in context.iter() {
         let mut title = chunk.title.clone();
+        let mut date_line = String::new();
         if let Some(date) = chunk.get_date_string() {
-            context_string.push_str(&format!("Date: {date}\n"));
+            date_line = format!("Date: {date}\n");
             title = title
                 .trim()
                 .strip_prefix(&date)
-                .map(|t| t.to_string())
+                .map(|t| t.trim().to_string())
                 .unwrap_or(title);
         }
-        if !title.is_empty() {
-            context_string.push_str(&format!("# {title}\n"));
-        }
-        context_string.push_str(&chunk.text);
-        context_string.push_str("\n\n");
+        // The title is core's chunk breadcrumb: nested headings joined with the
+        // control-char separator (U+001F). Render it readably so no control
+        // char reaches the model, and so a `Chapter › Section` path is legible.
+        let trimmed_title = title.trim().replace(BREADCRUMB_SEP, " \u{203a} ");
+        // Omit the ` — "…"` title clause entirely for a blank title, rather
+        // than emitting an empty `— ""` that adds noise and no signal.
+        let header = if trimmed_title.is_empty() {
+            format!("[{}] {}", ordinal, chunk.doc_path)
+        } else {
+            format!("[{}] {} — \"{trimmed_title}\"", ordinal, chunk.doc_path)
+        };
+        context_string.push_str(&format!("{header}\n{date_line}{}\n\n", chunk.text));
     }
+
+    // Only present mid-conversation: a terse reply is meaningless on a first
+    // turn, so the guidance would just be noise there. The line binds a short
+    // reply to the assistant's PREVIOUS message (its closing question/offer),
+    // not to the user's earlier question — the failure this fixes was the model
+    // re-answering that earlier question instead of continuing from its offer.
+    let followup_line = if history.is_empty() {
+        String::new()
+    } else {
+        "If the user's latest message is a short or affirmative reply (e.g. 'yes', 'go on', 'the second one'), it responds to your PREVIOUS message above — usually its closing question or offer. Continue from THAT message: carry out what it proposed, and do NOT re-answer the user's earlier question. Draw on the context below where it fits and the conversation itself otherwise.\n".to_string()
+    };
+
+    // Mid-conversation, quote the tail of the assistant's last message right
+    // before `Question:` so its closing offer sits next to the terse reply
+    // instead of several messages up the transcript. Empty history → no recap,
+    // keeping the first-turn prompt byte-identical to before. Citation markers
+    // are already stripped from history answers by the client.
+    let recap = match history.last() {
+        Some((_, prev_a)) => {
+            let tail = tail_chars(prev_a, RECAP_TAIL_CHARS);
+            format!("Your previous message ended: \"{tail}\"\n")
+        }
+        None => String::new(),
+    };
 
     format!(
         r#"You are an intelligent assistant with access to a personal knowledge base.
-Answer the user's question using the retrieved context first. If the retrieved notes contain relevant information, base your answer primarily on them.
-If the context is incomplete, missing, or can be enriched with widely accepted knowledge about the topic related with the question, supplement the answer with accurate common knowledge.
-Always distinguish between information from the notes and general knowledge.
-If no useful information is available in either, respond with: 'I don't have enough information to answer.'
+Answer the user's question using the numbered context below first; base the answer primarily on it when it is relevant.
+{followup_line}Every claim drawn from the context MUST carry an inline citation in the form [n], where n is the number of the supporting context entry. A sentence may carry several citations.
+You may supplement with accurate, widely accepted common knowledge when the context falls short — never cite [n] for such claims; leaving them uncited is how they are marked as general knowledge.
+Preserve any [[wikilinks]] and #tags that appear in the context verbatim when you quote or reference them.
+If neither the context nor common knowledge suffices, respond with: 'I don't have enough information to answer.'
 
-Retrieved context:
+Context:
 ---------------------
-{context_string}.
----------------------
+{context_string}---------------------
 
-Question: {question}"#
+{recap}Question: {question}"#
     )
 }
 
@@ -297,6 +407,7 @@ struct GeminiRequest {
 
 #[derive(Serialize, Deserialize)]
 struct GeminiContent {
+    role: String,
     parts: Vec<GeminiPart>,
 }
 
@@ -350,22 +461,213 @@ mod tests {
         )
     }
 
+    /// 1-based numbering, exactly as [`RagPipeline::answer`] assigns it.
+    fn numbered(chunks: Vec<(f64, FlattenedChunk)>) -> Vec<(usize, (f64, FlattenedChunk))> {
+        chunks
+            .into_iter()
+            .enumerate()
+            .map(|(i, c)| (i + 1, c))
+            .collect()
+    }
+
     #[test]
-    fn prompt_frames_each_chunk_and_carries_the_question() {
-        let ctx = vec![
-            chunk("/a.md", "Alpha", "alpha body"),
-            chunk("/b.md", "", "beta body"),
+    fn history_folds_into_alternating_messages_before_the_prompt() {
+        let history = vec![
+            ("q1".to_string(), "a1".to_string()),
+            ("q2".to_string(), "a2".to_string()),
         ];
-        let prompt = build_prompt("what is alpha?", &ctx);
-        assert!(prompt.contains("--- Document: /a.md (Relevance: 0.9000) ---"));
-        assert!(prompt.contains("# Alpha\nalpha body"));
-        assert!(prompt.contains("beta body"));
-        assert!(
-            !prompt.contains("# \n"),
-            "empty title must not emit a heading"
+        let msgs = chat_messages(&history, "PROMPT".to_string());
+        let shape: Vec<(&str, &str)> = msgs
+            .iter()
+            .map(|m| (m.role.as_str(), m.content.as_str()))
+            .collect();
+        assert_eq!(
+            shape,
+            vec![
+                ("user", "q1"),
+                ("assistant", "a1"),
+                ("user", "q2"),
+                ("assistant", "a2"),
+                ("user", "PROMPT"),
+            ]
         );
-        assert!(prompt.contains("Question: what is alpha?"));
-        assert!(prompt.contains("personal knowledge base"));
+    }
+
+    #[test]
+    fn gemini_contents_maps_assistant_to_model_and_keeps_the_final_prompt() {
+        let history = vec![
+            ("q1".to_string(), "a1".to_string()),
+            ("q2".to_string(), "a2".to_string()),
+        ];
+        let msgs = chat_messages(&history, "PROMPT".to_string());
+        let contents = gemini_contents(msgs);
+        let roles: Vec<&str> = contents.iter().map(|c| c.role.as_str()).collect();
+        assert_eq!(roles, vec!["user", "model", "user", "model", "user"]);
+        assert_eq!(contents.last().unwrap().parts[0].text, "PROMPT");
+    }
+
+    #[test]
+    fn empty_history_is_a_single_prompt_message() {
+        let msgs = chat_messages(&[], "PROMPT".to_string());
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].role, "user");
+    }
+
+    #[test]
+    fn prompt_numbers_chunks_and_mandates_citations() {
+        let context = numbered(vec![
+            chunk("/intro.md", "intro", "alpha text"),
+            chunk("/setup.md", "setup", "beta text"),
+        ]);
+        let p = build_prompt("how do I start?", &[], &context);
+        // numbered frames, prompt order = sources order
+        let i1 = p.find("[1]").expect("first chunk numbered");
+        let i2 = p.find("[2]").expect("second chunk numbered");
+        assert!(i1 < i2);
+        assert!(p.contains("alpha text") && p.contains("beta text"));
+        // citation contract in the instructions
+        assert!(p.contains("cite"), "prompt must instruct citing");
+        assert!(p.contains("[n]"), "prompt must name the [n] form");
+        assert!(p.contains("how do I start?"));
+    }
+
+    #[test]
+    fn prompt_frames_use_the_assigned_ordinal_not_loop_position() {
+        // The pairing contract: the `[n]` frame is the ordinal on the pair, not
+        // where the chunk sits in the slice. A deliberately shuffled numbering
+        // (3, 1, 2) must surface verbatim in the prompt — proving the builder
+        // never re-enumerates.
+        let context = vec![
+            (3usize, chunk("/c.md", "c", "gamma text")),
+            (1usize, chunk("/a.md", "a", "alpha text")),
+            (2usize, chunk("/b.md", "b", "beta text")),
+        ];
+        let p = build_prompt("q?", &[], &context);
+        assert!(p.contains("[3] /c.md"), "gamma keeps ordinal 3: {p}");
+        assert!(p.contains("[1] /a.md"), "alpha keeps ordinal 1: {p}");
+        assert!(p.contains("[2] /b.md"), "beta keeps ordinal 2: {p}");
+        // Prompt order follows the slice, but each frame carries its own ordinal.
+        assert!(p.find("gamma text").unwrap() < p.find("alpha text").unwrap());
+    }
+
+    #[test]
+    fn nested_breadcrumb_title_renders_readably_without_control_chars() {
+        // A nested-section chunk's title is the breadcrumb joined with U+001F;
+        // the prompt must show `Chapter › Section` and never the raw control char.
+        let title = format!("Chapter{BREADCRUMB_SEP}Section");
+        let context = numbered(vec![chunk("/book.md", &title, "body")]);
+        let p = build_prompt("q?", &[], &context);
+        assert!(
+            p.contains("— \"Chapter \u{203a} Section\""),
+            "readable breadcrumb in the title clause: {p:?}"
+        );
+        assert!(
+            !p.contains('\u{1f}'),
+            "no control char leaks into the prompt"
+        );
+    }
+
+    #[test]
+    fn empty_title_chunk_omits_the_title_clause() {
+        let context = numbered(vec![chunk("some/path", "   ", "chunk body")]);
+        let p = build_prompt("q?", &[], &context);
+        assert!(
+            p.contains("[1] some/path\n"),
+            "blank-title chunk keeps just `[i] path`: {p}"
+        );
+        assert!(
+            !p.contains("— \"\""),
+            "must not emit an empty title clause: {p}"
+        );
+    }
+
+    #[test]
+    fn followup_instruction_binds_short_replies_to_the_assistants_last_message() {
+        let context = numbered(vec![chunk("/a.md", "A", "body")]);
+
+        // First turn (empty history): no follow-up guidance — a terse reply is
+        // meaningless with nothing to resolve it against.
+        let first = build_prompt("yes", &[], &context);
+        assert!(
+            !first.contains("your PREVIOUS message"),
+            "empty history must not add the follow-up line: {first}"
+        );
+
+        // Mid-conversation: the guidance must bind the terse reply to the
+        // ASSISTANT'S PREVIOUS message and forbid re-answering the earlier
+        // question — the strengthened instruction the fix installs.
+        let history = vec![(
+            "Should I explain the setup steps?".to_string(),
+            "There are three steps; want the details?".to_string(),
+        )];
+        let mid = build_prompt("yes", &history, &context);
+        assert!(
+            mid.contains("your PREVIOUS message"),
+            "follow-up line must bind the reply to the assistant's previous message: {mid}"
+        );
+        assert!(
+            mid.contains("do NOT re-answer the user's earlier question"),
+            "follow-up line must forbid re-answering the earlier question: {mid}"
+        );
+        // The raw current question is still the prompt's Question, untouched.
+        assert!(mid.contains("Question: yes"));
+    }
+
+    #[test]
+    fn recap_quotes_the_last_answers_tail_only_with_history() {
+        let context = numbered(vec![chunk("/a.md", "A", "body")]);
+
+        // First turn: no recap line at all — byte-identical first-turn prompt.
+        let first = build_prompt("yes", &[], &context);
+        assert!(
+            !first.contains("Your previous message ended:"),
+            "empty history must not add a recap line: {first}"
+        );
+
+        // Mid-conversation: the recap quotes the assistant's last message,
+        // carrying its END (the closing offer) right before the Question.
+        let closing = "Would you like tips on planting or caring for rosemary in your raised beds?";
+        let history = vec![(
+            "tell me more about rosemary seeds".to_string(),
+            format!("Rosemary seeds are slow to germinate. {closing}"),
+        )];
+        let mid = build_prompt("yes", &history, &context);
+        assert!(
+            mid.contains("Your previous message ended:"),
+            "history present must add a recap line: {mid}"
+        );
+        assert!(
+            mid.contains(closing),
+            "recap must carry the answer's TAIL (its closing offer): {mid}"
+        );
+        // The recap sits immediately before the (untouched) Question.
+        let recap_at = mid.find("Your previous message ended:").unwrap();
+        let question_at = mid.find("Question: yes").unwrap();
+        assert!(recap_at < question_at, "recap precedes Question: {mid}");
+    }
+
+    #[test]
+    fn recap_keeps_only_the_tail_of_a_long_answer_on_a_char_boundary() {
+        let context = numbered(vec![chunk("/a.md", "A", "body")]);
+        // A long multi-byte opening then a distinctive closing offer: the recap
+        // drops the opening and keeps the closing, cut on a char boundary.
+        let opening = "é".repeat(RECAP_TAIL_CHARS);
+        let closing = "SHALL_I_CONTINUE?";
+        let history = vec![("q".to_string(), format!("{opening} {closing}"))];
+        let mid = build_prompt("yes", &history, &context);
+        assert!(mid.contains(closing), "tail (offer) kept: {mid}");
+        // The full opening cannot survive — it is longer than the tail budget.
+        let recap_es = mid
+            .lines()
+            .find(|l| l.starts_with("Your previous message ended:"))
+            .unwrap()
+            .chars()
+            .filter(|c| *c == 'é')
+            .count();
+        assert!(
+            recap_es < RECAP_TAIL_CHARS,
+            "opening trimmed to fit the tail budget: {recap_es}"
+        );
     }
 
     /// A captured request: headers plus the raw JSON body the client sent.
@@ -414,7 +716,7 @@ mod tests {
         .await;
 
         let answer = client(Wire::OpenAiCompat, base)
-            .ask("q?", &[chunk("/a.md", "A", "body")])
+            .ask("q?", &[], &numbered(vec![chunk("/a.md", "A", "body")]))
             .await
             .unwrap();
         assert_eq!(answer, "the answer");
@@ -452,7 +754,10 @@ mod tests {
         )
         .await;
 
-        let answer = client(Wire::Anthropic, base).ask("q?", &[]).await.unwrap();
+        let answer = client(Wire::Anthropic, base)
+            .ask("q?", &[], &[])
+            .await
+            .unwrap();
         assert_eq!(answer, "part one\npart two");
 
         let (headers, body) = captured.lock().unwrap().take().unwrap();
@@ -476,7 +781,10 @@ mod tests {
         )
         .await;
 
-        let answer = client(Wire::Gemini, base).ask("q?", &[]).await.unwrap();
+        let answer = client(Wire::Gemini, base)
+            .ask("q?", &[], &[])
+            .await
+            .unwrap();
         assert_eq!(answer, "gemini answer");
 
         let (headers, body) = captured.lock().unwrap().take().unwrap();
@@ -510,7 +818,7 @@ mod tests {
         });
 
         let err = client(Wire::OpenAiCompat, format!("http://{addr}"))
-            .ask("q?", &[])
+            .ask("q?", &[], &[])
             .await
             .expect_err("401 must surface as an error");
         let msg = err.to_string();

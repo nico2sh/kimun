@@ -3,12 +3,16 @@
 //! carries no vault or heavy component state and is testable in isolation.
 //! `PanelSet` (below) composes it with the concrete panels.
 
+use std::sync::Arc;
+
+use kimun_server_client::RagClient;
 use ratatui::Frame;
 use ratatui::crossterm::event::{MouseButton, MouseEventKind};
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 
 use crate::components::Component;
-use crate::components::activity_rail::{ActivityRail, RAIL_WIDTH};
+use crate::components::activity_rail::{ActivityRail, RAIL_WIDTH, RailCaps};
+use crate::components::ask_thread::ThreadPanel;
 use crate::components::attachment_view::AttachmentView;
 use crate::components::drawer::{DrawerHost, DrawerView};
 use crate::components::event_state::EventState;
@@ -195,6 +199,26 @@ fn kind_at(columns: &[(PanelKind, Rect)], column: u16, row: u16) -> Option<Panel
         .map(|(kind, _)| *kind)
 }
 
+/// Which content the editor *area* currently shows — a pure selector, not a
+/// container (ADR-0017, extended by ADR-0030). The heavy stateful panels are
+/// permanent residents of `PanelSet`: the note editor is `PanelSet::editor`
+/// and the Ask workspace's conversation thread is `PanelSet::ask`, each living
+/// for the whole screen lifetime regardless of which content is selected — so
+/// their state (a live nvim backend, undo history, the conversation) survives
+/// switching the area away and back. Only the read-only attachment view is
+/// owned by its arm here, since it carries no state worth preserving. Exactly
+/// one variant is active at a time.
+enum EditorAreaContent {
+    Note,
+    // Boxed: `AttachmentView` can hold a full text-file preview plus
+    // icons/key bindings — boxing keeps the enum from ballooning to the size
+    // of that arm.
+    Attachment(Box<AttachmentView>),
+    /// Selects the resident `PanelSet::ask` for display (unit — the thread
+    /// panel itself lives on `PanelSet`, not in this variant).
+    Ask,
+}
+
 /// The editor screen's persistent **Panels** — the activity rail, the single
 /// drawer, and the editor — plus the `PanelOrder` that decides visibility and
 /// which one is focused. Routes input and render to the focused / visible
@@ -205,13 +229,20 @@ pub struct PanelSet {
     rail: ActivityRail,
     drawer: DrawerHost,
     /// The note editor. Retained for the whole screen lifetime — including
-    /// while an attachment is shown — so its backend (e.g. a live nvim
-    /// process) and undo history survive the round trip. See ADR-0017.
+    /// while an attachment or the Ask workspace is shown — so its backend
+    /// (e.g. a live nvim process) and undo history survive the round trip.
+    /// See ADR-0017.
     editor: TextEditorComponent,
-    /// When `Some`, the editor *area* shows this read-only attachment view in
-    /// place of the note editor (which stays dormant underneath). This `Option`
-    /// is the editor area's sum type: Text (`None`) xor Attachment (`Some`).
-    attachment: Option<AttachmentView>,
+    /// The Ask workspace's conversation thread + composer. Like `editor`, a
+    /// permanent resident: retained for the whole screen lifetime so the
+    /// conversation survives switching the editor area to another view and
+    /// back (adr/0030; ADR-0017 pattern). Owns its own `RagClient`. Shown only
+    /// when `content` is `EditorAreaContent::Ask`.
+    ask: ThreadPanel,
+    /// Which content the editor *area* currently shows: the note editor
+    /// (resident `editor`), a read-only attachment view, or the Ask workspace
+    /// (resident `ask`). See `EditorAreaContent`.
+    content: EditorAreaContent,
     /// Current drawer width in columns (divider-draggable).
     drawer_width: u16,
     /// Whether a divider drag is in progress.
@@ -228,18 +259,52 @@ impl PanelSet {
         editor: TextEditorComponent,
         icons: crate::settings::icons::Icons,
         key_bindings: crate::keys::KeyBindings,
-        semantic_visible: bool,
+        rail_caps: RailCaps,
     ) -> Self {
+        let mut ask = ThreadPanel::new();
+        ask.set_icons(icons.clone());
         Self {
             order: PanelOrder::new(),
-            rail: ActivityRail::new(key_bindings, icons, semantic_visible),
+            rail: ActivityRail::new(key_bindings, icons, rail_caps),
             drawer,
             editor,
-            attachment: None,
+            ask,
+            content: EditorAreaContent::Note,
             drawer_width: DEFAULT_DRAWER_WIDTH,
             dragging_divider: false,
             column_rects: Vec::new(),
         }
+    }
+
+    /// Rebuild the activity rail with fresh feature visibility — the runtime
+    /// path for SEM/ASK appearing or disappearing (RAG status change). Keeps
+    /// the rail cursor on the drawer's active view so navigation continues
+    /// from there.
+    pub fn rebuild_rail(
+        &mut self,
+        key_bindings: crate::keys::KeyBindings,
+        icons: crate::settings::icons::Icons,
+        rail_caps: RailCaps,
+    ) {
+        let active = self.drawer.active_view();
+        self.ask.set_icons(icons.clone());
+        self.rail = ActivityRail::new(key_bindings, icons, rail_caps);
+        self.rail.set_cursor(active);
+    }
+
+    /// Whether the activity rail currently shows `view` (feature gate on).
+    #[cfg(test)]
+    pub fn rail_shows(&self, view: DrawerView) -> bool {
+        self.rail.shows(view)
+    }
+
+    /// The single injection point for the live RAG client: hands it to the
+    /// resident Ask panel, which derives its composer-enabled state from the
+    /// client's presence (adr/0030 — a present client enables submission,
+    /// `None` disables it without evicting the thread). Because the panel is
+    /// resident, one call keeps it correct whether or not Ask is on screen.
+    pub fn set_ask_client(&mut self, client: Option<Arc<RagClient>>) {
+        self.ask.set_client(client);
     }
 
     // ── Order / focus / visibility (delegate to PanelOrder) ─────────────────
@@ -253,6 +318,9 @@ impl PanelSet {
     pub fn focused_label(&self) -> &'static str {
         match self.order.focused() {
             PanelKind::Drawer => self.drawer.active_view().label(),
+            // The editor area showing the Ask workspace reads as ASK, not
+            // EDITOR — mirrors the panel frame's "Ask" title.
+            PanelKind::Editor if self.is_showing_ask() => DrawerView::Ask.label(),
             kind => kind.label(),
         }
     }
@@ -311,11 +379,18 @@ impl PanelSet {
         self.drawer_width = new.clamp(MIN_DRAWER_WIDTH, max_width.max(MIN_DRAWER_WIDTH));
     }
 
+    /// Switch the drawer's active `view` and rail cursor *without* changing
+    /// its visibility — for paths that must not force-reveal a drawer the user
+    /// explicitly hid (e.g. leaving the Ask workspace when a note opens).
+    pub fn switch_drawer_view(&mut self, view: DrawerView) {
+        self.drawer.set_view(view);
+        self.rail.set_cursor(view);
+    }
+
     /// Switch the drawer to `view` and reveal it. Keeps the rail cursor in
     /// step so keyboard navigation continues from the active item.
     pub fn open_drawer_view(&mut self, view: DrawerView) {
-        self.drawer.set_view(view);
-        self.rail.set_cursor(view);
+        self.switch_drawer_view(view);
         self.order.show(PanelKind::Drawer);
     }
 
@@ -327,59 +402,97 @@ impl PanelSet {
     pub fn sidebar_mut(&mut self) -> &mut SidebarComponent {
         self.drawer.sidebar_mut()
     }
-    /// The note editor, or `None` while an attachment is shown in its place.
-    /// Callers reaching for the editor cross a mode boundary and must handle
-    /// the attachment case (see ADR-0017).
+    /// The note editor, or `None` while an attachment or the Ask workspace is
+    /// shown in its place. Callers reaching for the editor cross a mode
+    /// boundary and must handle that case (see ADR-0017).
     pub fn editor(&self) -> Option<&TextEditorComponent> {
-        self.attachment.is_none().then_some(&self.editor)
+        matches!(self.content, EditorAreaContent::Note).then_some(&self.editor)
     }
     pub fn editor_mut(&mut self) -> Option<&mut TextEditorComponent> {
-        if self.attachment.is_some() {
+        if !matches!(self.content, EditorAreaContent::Note) {
             return None;
         }
         Some(&mut self.editor)
     }
 
-    /// Show `view` in the editor area, replacing any prior attachment and
-    /// hiding the note editor. Closes the editor's autocomplete so it can't
-    /// linger under the attachment, and focuses the editor panel.
+    /// Show `view` in the editor area, replacing any prior attachment/Ask
+    /// content and hiding the note editor. Closes the editor's autocomplete
+    /// so it can't linger under the attachment, and focuses the editor panel.
     pub fn show_attachment(&mut self, view: AttachmentView) {
         self.editor.close_autocomplete();
-        self.attachment = Some(view);
+        self.content = EditorAreaContent::Attachment(Box::new(view));
         self.order.focus(PanelKind::Editor);
     }
 
     /// Return the editor area to the note editor, discarding any attachment.
-    /// No-op when already showing the editor.
+    /// No-op when already showing the editor, and — unlike `hide_ask` — a
+    /// no-op when showing the Ask workspace too: this method's contract is
+    /// specifically about attachments, so it leaves Ask content alone (use
+    /// `hide_ask` for that).
     pub fn clear_attachment(&mut self) {
-        self.attachment = None;
+        if matches!(self.content, EditorAreaContent::Attachment(_)) {
+            self.content = EditorAreaContent::Note;
+        }
     }
 
     /// Whether the editor area is currently showing an attachment.
     pub fn is_showing_attachment(&self) -> bool {
-        self.attachment.is_some()
+        matches!(self.content, EditorAreaContent::Attachment(_))
     }
 
     /// The vault path of the attachment on show, if any — used to open it with
     /// the OS default program.
     pub fn attachment_path(&self) -> Option<&kimun_core::nfs::VaultPath> {
-        self.attachment.as_ref().map(|v| v.path())
+        match &self.content {
+            EditorAreaContent::Attachment(view) => Some(view.path()),
+            _ => None,
+        }
+    }
+
+    /// Select the resident Ask workspace as the editor-area content, hiding
+    /// the note editor. Mirrors `show_attachment`: closes the editor's
+    /// autocomplete and focuses the editor panel. The thread persists by
+    /// residency — this only flips the selector.
+    pub fn show_ask(&mut self) {
+        self.editor.close_autocomplete();
+        self.content = EditorAreaContent::Ask;
+        self.order.focus(PanelKind::Editor);
+    }
+
+    /// Return the editor area to the note editor when it's showing Ask. The
+    /// resident thread panel is untouched — its conversation survives. No-op
+    /// for any other content (mirrors `clear_attachment`'s scoping).
+    pub fn hide_ask(&mut self) {
+        if matches!(self.content, EditorAreaContent::Ask) {
+            self.content = EditorAreaContent::Note;
+        }
+    }
+
+    /// The resident Ask panel (always present; shown only when `content` is
+    /// `Ask`).
+    pub fn ask(&self) -> &ThreadPanel {
+        &self.ask
+    }
+    /// The resident Ask panel, mutably.
+    pub fn ask_mut(&mut self) -> &mut ThreadPanel {
+        &mut self.ask
+    }
+
+    /// Whether the editor area is currently showing the Ask workspace.
+    pub fn is_showing_ask(&self) -> bool {
+        matches!(self.content, EditorAreaContent::Ask)
     }
 
     /// The active editor-area content as a `Component` — the attachment view
-    /// when one is shown, otherwise the note editor. Lets input/hint routing
-    /// dispatch once instead of branching on `self.attachment` at each site.
-    /// (Render stays separate: it wraps the editor in its own dirty-title block.)
+    /// or Ask panel when one is shown, otherwise the note editor. Lets
+    /// input/hint routing dispatch once instead of branching on
+    /// `self.content` at each site. (Render stays separate: it wraps the
+    /// editor in its own dirty-title block.)
     fn editor_area(&self) -> &dyn Component {
-        match &self.attachment {
-            Some(view) => view,
-            None => &self.editor,
-        }
-    }
-    fn editor_area_mut(&mut self) -> &mut dyn Component {
-        match &mut self.attachment {
-            Some(view) => view,
-            None => &mut self.editor,
+        match &self.content {
+            EditorAreaContent::Attachment(view) => view.as_ref(),
+            EditorAreaContent::Ask => &self.ask,
+            EditorAreaContent::Note => &self.editor,
         }
     }
     pub fn query(&self) -> &QueryPanel {
@@ -390,6 +503,9 @@ impl PanelSet {
     }
     pub fn semantic_mut(&mut self) -> &mut crate::components::semantic_search::SemanticPanel {
         self.drawer.semantic_mut()
+    }
+    pub fn ask_sources_mut(&mut self) -> &mut crate::components::ask_sources::SourcesPanel {
+        self.drawer.ask_sources_mut()
     }
     pub fn tags_mut(&mut self) -> &mut crate::components::drawer_views::TagsPanel {
         self.drawer.tags_mut()
@@ -420,7 +536,19 @@ impl PanelSet {
         match self.order.focused() {
             PanelKind::Rail => self.rail.handle_input(event, tx),
             PanelKind::Drawer => self.drawer.handle_input(event, tx),
-            PanelKind::Editor => self.editor_area_mut().handle_input(event, tx),
+            PanelKind::Editor => self.editor_area_handle_input(event, tx),
+        }
+    }
+
+    /// Deliver an input event to the editor-area content. The Ask arm calls
+    /// the resident panel's inherent `ThreadPanel::handle_input` (it derives
+    /// submission from its own client); the others use the trait. Each arm
+    /// borrows a distinct field, disjoint from `content`.
+    fn editor_area_handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
+        match &mut self.content {
+            EditorAreaContent::Ask => self.ask.handle_input(event, tx),
+            EditorAreaContent::Attachment(view) => view.handle_input(event, tx),
+            EditorAreaContent::Note => self.editor.handle_input(event, tx),
         }
     }
 
@@ -504,7 +632,7 @@ impl PanelSet {
                 self.drawer.handle_mouse(event, tx);
             }
             PanelKind::Editor => {
-                self.editor_area_mut().handle_input(event, tx);
+                self.editor_area_handle_input(event, tx);
             }
         }
         EventState::Consumed
@@ -535,15 +663,21 @@ impl PanelSet {
                     // The editor area's frame is drawn here (not by the
                     // component) so the dirty marker and focus border live with
                     // the layout. The frame title reflects which content the
-                    // area is showing — the note editor or an attachment.
-                    match &mut self.attachment {
-                        Some(view) => {
+                    // area is showing — the note editor, an attachment, or Ask.
+                    match &mut self.content {
+                        EditorAreaContent::Attachment(view) => {
                             let block = panel_block("Attachment", theme, is_focused);
                             let inner = block.inner(rect);
                             f.render_widget(block, rect);
                             view.render(f, inner, theme, is_focused);
                         }
-                        None => {
+                        EditorAreaContent::Ask => {
+                            let block = panel_block("Ask", theme, is_focused);
+                            let inner = block.inner(rect);
+                            f.render_widget(block, rect);
+                            self.ask.render(f, inner, theme, is_focused);
+                        }
+                        EditorAreaContent::Note => {
                             let title = if self.editor.is_dirty() {
                                 "Editor [+]"
                             } else {
@@ -593,14 +727,27 @@ mod tests {
             std::sync::Arc::new(std::sync::RwLock::new(settings.clone())),
             settings.icons(),
         );
-        let outline = crate::components::drawer_views::OutlinePanel::new(vault, settings.icons());
-        let drawer = DrawerHost::new(sidebar, query, semantic, tags, links, outline);
+        let outline =
+            crate::components::drawer_views::OutlinePanel::new(vault.clone(), settings.icons());
+        let drawer = DrawerHost::new(
+            vault,
+            &settings.key_bindings,
+            sidebar,
+            query,
+            semantic,
+            tags,
+            links,
+            outline,
+        );
         PanelSet::from_panels(
             drawer,
             editor,
             settings.icons(),
             settings.key_bindings,
-            true,
+            RailCaps {
+                semantic: true,
+                ask: true,
+            },
         )
     }
 
@@ -856,6 +1003,62 @@ mod tests {
         assert!(!order.is_visible(PanelKind::Drawer));
         order.show(PanelKind::Drawer);
         assert!(order.is_visible(PanelKind::Drawer));
+    }
+
+    fn test_attachment_view() -> AttachmentView {
+        let details = kimun_core::AttachmentDetails {
+            path: kimun_core::nfs::VaultPath::new("a.png"),
+            size: 0,
+            modified_secs: 0,
+            extension: Some("png".to_string()),
+            content: kimun_core::AttachmentContent::Binary,
+        };
+        AttachmentView::new(
+            details,
+            crate::settings::icons::Icons::new(false),
+            crate::keys::KeyBindings::empty(),
+        )
+    }
+
+    #[tokio::test]
+    async fn ask_content_hides_the_editor_and_leaving_restores_it() {
+        let mut ps = make_panel_set().await;
+        assert!(ps.editor().is_some());
+        ps.show_ask();
+        assert!(ps.editor().is_none());
+        assert!(ps.is_showing_ask());
+        // Leaving Ask returns the note editor; the resident thread survives.
+        ps.hide_ask();
+        assert!(!ps.is_showing_ask());
+        assert!(ps.editor().is_some());
+    }
+
+    /// `set_ask_client` is the single injection point: it drives the resident
+    /// Ask panel's client, which is its composer-enabled signal. No client ⇒
+    /// disabled (never a forever-`Thinking` turn); a present client ⇒ enabled.
+    #[tokio::test]
+    async fn set_ask_client_drives_the_resident_panels_client() {
+        let mut ps = make_panel_set().await;
+        ps.set_ask_client(None);
+        assert!(!ps.ask().has_client());
+        // Handing a client back enables it. (A bare client over a throwaway
+        // vault id is fine — it's never called here.)
+        let client = std::sync::Arc::new(kimun_server_client::RagClient::new(
+            "http://localhost:0".to_string(),
+            None,
+            "vault".to_string(),
+        ));
+        ps.set_ask_client(Some(client));
+        assert!(ps.ask().has_client());
+    }
+
+    #[tokio::test]
+    async fn showing_an_attachment_replaces_ask() {
+        let mut ps = make_panel_set().await;
+        ps.show_ask();
+        ps.show_attachment(test_attachment_view());
+        assert!(!ps.is_showing_ask());
+        assert!(ps.is_showing_attachment());
     }
 
     #[test]

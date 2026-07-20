@@ -371,7 +371,9 @@ impl Overlay for NoteBrowserModal {
                         self.refresh_preview_from_list();
                         EventState::Consumed
                     }
-                    KeyReaction::Intercepted(_) | KeyReaction::Unhandled => EventState::NotConsumed,
+                    KeyReaction::Intercepted(_)
+                    | KeyReaction::ListVerb(_)
+                    | KeyReaction::Unhandled => EventState::NotConsumed,
                 }
             }
             _ => EventState::NotConsumed,

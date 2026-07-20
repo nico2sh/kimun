@@ -116,6 +116,13 @@ impl SingleLineInput {
         self.cursor = 0;
     }
 
+    /// Take the current value, leaving the input empty — a submit path that
+    /// consumes the text without a separate `clear()` call.
+    pub fn take_text(&mut self) -> String {
+        self.cursor = 0;
+        std::mem::take(&mut self.value)
+    }
+
     /// Codepoint count to the left of the cursor. Test-only: callers must use
     /// [`cursor_display_col`](Self::cursor_display_col) for caret placement,
     /// since codepoint count differs from display width for CJK / emoji.
@@ -443,6 +450,14 @@ mod tests {
     fn clear_resets_both() {
         let mut i = SingleLineInput::with_value("abc");
         i.clear();
+        assert!(i.is_empty());
+        assert_eq!(i.cursor_char_offset(), 0);
+    }
+
+    #[test]
+    fn take_text_returns_value_and_empties_the_input() {
+        let mut i = SingleLineInput::with_value("abc");
+        assert_eq!(i.take_text(), "abc");
         assert!(i.is_empty());
         assert_eq!(i.cursor_char_offset(), 0);
     }

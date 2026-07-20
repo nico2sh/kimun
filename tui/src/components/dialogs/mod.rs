@@ -122,8 +122,12 @@ impl ActiveDialog {
         ActiveDialog::WorkspaceSwitcher(WorkspaceSwitcherModal::new(settings))
     }
 
-    pub fn create_note(path: kimun_core::nfs::VaultPath, vault: Arc<NoteVault>) -> Self {
-        ActiveDialog::CreateNote(CreateNoteDialog::new(path, vault))
+    pub fn create_note(
+        path: kimun_core::nfs::VaultPath,
+        vault: Arc<NoteVault>,
+        content: Option<String>,
+    ) -> Self {
+        ActiveDialog::CreateNote(CreateNoteDialog::new(path, vault, content))
     }
 
     /// Open the save-search dialog. `provenance` is the saved-search name the
@@ -249,7 +253,6 @@ impl Overlay for ActiveDialog {
                 self.set_error(text.clone());
                 OverlayMsg::Consumed
             }
-            _ => OverlayMsg::NotConsumed,
         }
     }
 

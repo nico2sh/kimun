@@ -6,6 +6,8 @@
 //! text + highlight needles; the panel keeps owning the list and the engine's
 //! wheel-routing region (`set_content_rect`).
 
+use std::ops::Range;
+
 use kimun_core::nfs::VaultPath;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -25,6 +27,23 @@ pub enum ExpandState {
     Context,
     /// Preview takes the whole panel; the list is hidden.
     Full,
+}
+
+/// The Preview pane's one "what makes a line hot" seam. FIND highlights query
+/// needles scattered anywhere in a line; Ask Sources highlights one contiguous
+/// byte range (the retrieved section). Every other part of the render — chrome,
+/// wrapping, indent, scroll anchoring — is a single body shared by both; this
+/// enum is the only place that body branches on which kind of highlight is
+/// active.
+pub enum Highlight<'a> {
+    /// FIND: a (wrapped) line is hot if it contains any of these needles,
+    /// case-insensitively; each match renders bold within the line.
+    Needles(&'a [String]),
+    /// Ask Sources: a source line is hot if its byte range intersects this
+    /// one; the whole line renders bold when it does. `None` when no section
+    /// resolved (nothing is hot) — distinct from an empty needle list, which
+    /// is expressed as `Needles(&[])`.
+    Range(Option<&'a Range<usize>>),
 }
 
 /// Scroll state for the expanded content views (Full mode and the half-height
@@ -179,6 +198,20 @@ impl PreviewPane {
         self.scroll.re_anchor();
     }
 
+    /// Re-point the preview at `selected`, keeping the expand state and
+    /// re-anchoring the scroll from the top — for a *directed* reveal (Ask's
+    /// `open_reader`, or a same-note section change) that must land revealed on
+    /// the requested source rather than collapse the way a plain selection move
+    /// ([`sync`](Self::sync)) would. No-op without a selection.
+    pub fn repoint(&mut self, selected: Option<VaultPath>) {
+        if selected.is_none() {
+            return;
+        }
+        self.expand_path = selected;
+        self.scroll.reset();
+        self.full_header_rect = Rect::default();
+    }
+
     pub fn scroll_up(&mut self) {
         self.scroll.scroll_up();
     }
@@ -229,19 +262,40 @@ impl PreviewPane {
         self.full_header_rect = Rect::default();
     }
 
-    /// Render the full-screen preview (fixed title + divider, scrollable
-    /// content) into `inner`. Records the header rect for click-to-collapse.
-    #[allow(clippy::too_many_arguments)]
-    pub fn render_full(
+    /// Step the reveal cycle backward: Full → Context → Collapsed, stopping at
+    /// Collapsed (the vim-natural `h` mirror of [`toggle`]). No-op without a
+    /// selection, or already Collapsed.
+    pub fn collapse_step(&mut self, selected: Option<VaultPath>) {
+        if selected.is_none() {
+            return;
+        }
+        self.expand_path = selected;
+        match self.expand {
+            ExpandState::Full => {
+                // Back to the half-height preview, re-anchored on the row.
+                self.scroll.reset();
+                self.expand = ExpandState::Context;
+            }
+            ExpandState::Context => {
+                self.scroll.reset();
+                self.expand = ExpandState::Collapsed;
+            }
+            ExpandState::Collapsed => {}
+        }
+        self.full_header_rect = Rect::default();
+    }
+
+    /// Draw the full-expand chrome (fixed title header + divider), record the
+    /// header rect for click-to-collapse, and return the scrollable content
+    /// sub-rect. Used by [`render_full`].
+    fn render_full_chrome(
         &mut self,
         f: &mut Frame,
         inner: Rect,
         title: &str,
         filename: &str,
-        text: &str,
-        needles: &[String],
         theme: &Theme,
-    ) {
+    ) -> Rect {
         let gray = theme.gray.to_ratatui();
         let bg = theme.bg_panel.to_ratatui();
         let title_display = if title.is_empty() { filename } else { title };
@@ -278,42 +332,67 @@ impl PreviewPane {
                 .style(Style::default().fg(gray).bg(bg)),
             parts[1],
         );
+        parts[2]
+    }
 
+    /// Render the full-screen preview (fixed title + divider, scrollable
+    /// content) into `inner`. Records the header rect for click-to-collapse.
+    /// Anchors the initial scroll to the first hot line (deliberate
+    /// unification: FIND's needle preview now anchors like the Context
+    /// preview and the Ask Sources range preview already did — previously
+    /// this variant alone ignored the anchor and always opened at the top).
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_full(
+        &mut self,
+        f: &mut Frame,
+        inner: Rect,
+        title: &str,
+        filename: &str,
+        text: &str,
+        highlight: Highlight,
+        theme: &Theme,
+    ) {
+        let bg = theme.bg_panel.to_ratatui();
+        let content = self.render_full_chrome(f, inner, title, filename, theme);
         let indent = 2usize;
-        let wrap_width = parts[2].width.saturating_sub(indent as u16 + 1) as usize;
-        let (lines, _) = build_lines(text, needles, wrap_width, theme, false, indent);
-        let viewport = parts[2].height as usize;
-        self.scroll.set_max(lines.len().saturating_sub(viewport));
+        let wrap_width = content.width.saturating_sub(indent as u16 + 1) as usize;
+        let find_hit = self.scroll.anchored;
+        let (lines, hit) = build_lines(text, highlight, wrap_width, theme, find_hit, indent);
+        let viewport = content.height as usize;
+        let total = lines.len();
+        self.scroll.set_max(total.saturating_sub(viewport));
+        self.scroll
+            .anchor_to_link(hit.unwrap_or(0), total, viewport);
         f.render_widget(
             Paragraph::new(lines)
                 .scroll((self.scroll.offset as u16, 0))
                 .style(Style::default().bg(bg)),
-            parts[2],
+            content,
         );
     }
 
     /// Render the half-height Context preview into `area`, scrolled so the
-    /// first link occurrence shows with context above (while anchored).
+    /// first hot line shows with context above (while anchored).
     pub fn render_context(
         &mut self,
         f: &mut Frame,
         area: Rect,
         text: &str,
-        needles: &[String],
+        highlight: Highlight,
         theme: &Theme,
     ) {
         let bg = theme.bg_panel.to_ratatui();
         let indent = 2usize;
         let wrap_width = area.width.saturating_sub(indent as u16 + 1) as usize;
-        // The link-line scan only matters while anchored (a user-owned scroll
+        // The hit-line scan only matters while anchored (a user-owned scroll
         // never reads it), so skip the per-line work otherwise.
-        let find_link = self.scroll.anchored;
-        let (lines, link_line) = build_lines(text, needles, wrap_width, theme, find_link, indent);
+        let find_hit = self.scroll.anchored;
+        let (lines, hit) = build_lines(text, highlight, wrap_width, theme, find_hit, indent);
         let viewport = area.height as usize;
         let total = lines.len();
         self.scroll.set_max(total.saturating_sub(viewport));
         self.scroll
-            .anchor_to_link(link_line.unwrap_or(0), total, viewport);
+            .anchor_to_link(hit.unwrap_or(0), total, viewport);
         f.render_widget(
             Paragraph::new(lines)
                 .scroll((self.scroll.offset as u16, 0))
@@ -342,15 +421,21 @@ impl PreviewPane {
     }
 }
 
-/// Build the wrapped, needle-highlighted, indented content lines. When
-/// `find_link` is set, also report the first wrapped-line index carrying a
-/// match (for the Context anchor).
+/// Build the wrapped, highlighted, indented content lines. The per-line hit
+/// test is the only place this branches on [`Highlight`]: needles test each
+/// wrapped line's text for scattered matches (styling each match span bold);
+/// a range tests the *source* line's byte span against the highlighted range
+/// (styling the whole wrapped line bold when it overlaps). Byte offsets are
+/// tracked over `split_inclusive('\n')` (line terminators kept) so a `Range`
+/// highlight maps correctly onto the original text regardless of wrapping.
+/// When `find_hit` is set, also reports the first wrapped-line index carrying
+/// a hit (for the Context/Full anchor); skip the scan once user-scrolled.
 fn build_lines(
     text: &str,
-    needles: &[String],
+    highlight: Highlight,
     wrap_width: usize,
     theme: &Theme,
-    find_link: bool,
+    find_hit: bool,
     indent: usize,
 ) -> (Vec<Line<'static>>, Option<usize>) {
     let bg = theme.bg_panel.to_ratatui();
@@ -360,25 +445,55 @@ fn build_lines(
         .bg(bg)
         .add_modifier(Modifier::BOLD);
     let mut lines = Vec::new();
-    let mut link_line = None;
-    for line in text.lines() {
-        for wline in preview_highlight::wrap_line(line, wrap_width) {
-            // One scan per wrapped line: the link-line probe and the span
-            // styling share it.
-            let ranges = preview_highlight::match_ranges(&wline, needles);
-            if find_link && link_line.is_none() && !ranges.is_empty() {
-                link_line = Some(lines.len());
+    let mut first_hit = None;
+    let mut offset = 0usize;
+    for raw in text.split_inclusive('\n') {
+        let stripped = raw.strip_suffix('\n').unwrap_or(raw);
+        // CRLF notes: drop the carriage return too, so it never reaches
+        // wrapping or highlight matching as a phantom trailing char.
+        let stripped = stripped.strip_suffix('\r').unwrap_or(stripped);
+        let line_range = offset..offset + stripped.len();
+        offset += raw.len();
+
+        match highlight {
+            Highlight::Needles(needles) => {
+                for wline in preview_highlight::wrap_line(stripped, wrap_width) {
+                    // One scan per wrapped line: the hit probe and the span
+                    // styling share it.
+                    let ranges = preview_highlight::match_ranges(&wline, needles);
+                    if find_hit && first_hit.is_none() && !ranges.is_empty() {
+                        first_hit = Some(lines.len());
+                    }
+                    let mut indented =
+                        vec![Span::styled(" ".repeat(indent), Style::default().bg(bg))];
+                    indented.extend(preview_highlight::style_ranges(
+                        &wline,
+                        &ranges,
+                        |s, hit| Span::styled(s.to_string(), if hit { bold } else { normal }),
+                    ));
+                    lines.push(Line::from(indented));
+                }
             }
-            let mut indented = vec![Span::styled(" ".repeat(indent), Style::default().bg(bg))];
-            indented.extend(preview_highlight::style_ranges(
-                &wline,
-                &ranges,
-                |s, hit| Span::styled(s.to_string(), if hit { bold } else { normal }),
-            ));
-            lines.push(Line::from(indented));
+            Highlight::Range(range) => {
+                let hit =
+                    range.is_some_and(|h| line_range.start < h.end && h.start < line_range.end);
+                let style = if hit { bold } else { normal };
+                for wline in preview_highlight::wrap_line(stripped, wrap_width) {
+                    if find_hit && hit && first_hit.is_none() {
+                        first_hit = Some(lines.len());
+                    }
+                    lines.push(Line::from(vec![
+                        Span::styled(" ".repeat(indent), Style::default().bg(bg)),
+                        Span::styled(wline, style),
+                    ]));
+                }
+            }
         }
     }
-    (lines, link_line)
+    if lines.is_empty() {
+        lines.push(Line::default());
+    }
+    (lines, first_hit)
 }
 
 #[cfg(test)]
@@ -452,6 +567,29 @@ mod tests {
     }
 
     #[test]
+    fn repoint_keeps_full_and_rearms_the_anchor() {
+        let mut p = PreviewPane::new();
+        p.toggle(Some(path("a"))); // Context
+        p.toggle(Some(path("a"))); // Full
+        p.scroll_down();
+        p.force_user_scrolled();
+        assert!(p.is_full() && !p.is_anchored());
+        // A directed re-point at another source stays Full and re-anchors.
+        p.repoint(Some(path("b")));
+        assert!(p.is_full(), "repoint keeps the expand state (unlike sync)");
+        assert!(p.is_anchored(), "repoint re-arms the scroll anchor");
+        assert_eq!(p.scroll_offset(), 0);
+    }
+
+    #[test]
+    fn repoint_without_selection_is_noop() {
+        let mut p = PreviewPane::new();
+        p.toggle(Some(path("a")));
+        p.repoint(None);
+        assert!(p.is_context(), "no-selection repoint must not change state");
+    }
+
+    #[test]
     fn reset_collapses_and_rearms() {
         let mut p = PreviewPane::new();
         p.toggle(Some(path("a")));
@@ -507,12 +645,80 @@ mod tests {
         assert_eq!(s.offset, 1, "user-owned offset is not re-anchored");
     }
 
+    // The next two tests drive the SAME `build_lines` render path with each
+    // `Highlight` variant, proving the single body serves both: one needle
+    // scan (scattered matches within a line) and one range scan (a
+    // contiguous byte span across lines).
+
     #[test]
-    fn build_lines_reports_first_match_line() {
+    fn build_lines_needles_reports_first_match_line() {
         let theme = Theme::default();
         let text = "alpha\nbeta widget\ngamma";
-        let (lines, link) = build_lines(text, &needles(&["widget"]), 80, &theme, true, 2);
+        let ns = needles(&["widget"]);
+        let (lines, hit) = build_lines(text, Highlight::Needles(&ns), 80, &theme, true, 2);
         assert_eq!(lines.len(), 3);
-        assert_eq!(link, Some(1), "the match is on the second line");
+        assert_eq!(hit, Some(1), "the match is on the second line");
+    }
+
+    #[test]
+    fn collapse_step_steps_back_and_stops_at_collapsed() {
+        let mut p = PreviewPane::new();
+        let sel = || Some(path("a"));
+        p.toggle(sel()); // Collapsed -> Context
+        p.toggle(sel()); // Context -> Full
+        assert!(p.is_full());
+        p.collapse_step(sel()); // Full -> Context
+        assert!(p.is_context());
+        p.collapse_step(sel()); // Context -> Collapsed
+        assert!(p.is_collapsed());
+        p.collapse_step(sel()); // Collapsed stays Collapsed (h no-op at bottom)
+        assert!(p.is_collapsed());
+    }
+
+    #[test]
+    fn collapse_step_without_selection_is_noop() {
+        let mut p = PreviewPane::new();
+        p.toggle(Some(path("a")));
+        p.collapse_step(None);
+        assert!(
+            p.is_context(),
+            "no-selection collapse_step must not change state"
+        );
+    }
+
+    #[test]
+    fn build_lines_range_highlights_and_anchors_the_section() {
+        let theme = Theme::default();
+        // "beta body" is the third source line; its byte range anchors row 2.
+        let text = "line0\nline1\nbeta body\ntail\n";
+        let start = text.find("beta body").unwrap();
+        let range = start..start + "beta body".len();
+        let (lines, first) = build_lines(text, Highlight::Range(Some(&range)), 80, &theme, true, 2);
+        assert_eq!(
+            first,
+            Some(2),
+            "anchor is the first highlighted wrapped row"
+        );
+        // The highlighted content span carries the bold accent modifier; a
+        // non-highlighted line does not.
+        assert!(
+            lines[2].spans[1]
+                .style
+                .add_modifier
+                .contains(Modifier::BOLD)
+        );
+        assert!(
+            !lines[0].spans[1]
+                .style
+                .add_modifier
+                .contains(Modifier::BOLD)
+        );
+    }
+
+    #[test]
+    fn build_lines_range_no_highlight_reports_no_anchor() {
+        let theme = Theme::default();
+        let (_lines, first) = build_lines("a\nb\nc\n", Highlight::Range(None), 80, &theme, true, 2);
+        assert_eq!(first, None);
     }
 }

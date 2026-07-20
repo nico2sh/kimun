@@ -14,8 +14,8 @@ pub mod sync;
 
 use async_trait::async_trait;
 use dto::{
-    AnswerResult, DeleteRequest, EmbeddingsResponse, Health, IndexDocsRequest, JobAccepted,
-    JobStatus, QueryRequest, WireDoc,
+    AnswerResult, DeleteRequest, EmbeddingsResponse, Health, HistoryTurn, IndexDocsRequest,
+    JobAccepted, JobStatus, QueryRequest, WireDoc,
 };
 
 pub use dto::{ChunkResult, WireSection};
@@ -241,6 +241,7 @@ impl RagClient {
             vault_id: self.vault_id.clone(),
             query: query.to_string(),
             context_size: context_size.map(|c| c.as_str().to_string()),
+            history: vec![],
         };
         let resp = self
             .auth(self.http.post(self.url("/api/embeddings")).json(&body))
@@ -258,12 +259,20 @@ impl RagClient {
     pub async fn ask(
         &self,
         query: &str,
+        history: &[(String, String)],
         context_size: Option<ContextSize>,
     ) -> Result<AnswerResult, RagError> {
         let body = QueryRequest {
             vault_id: self.vault_id.clone(),
             query: query.to_string(),
             context_size: context_size.map(|c| c.as_str().to_string()),
+            history: history
+                .iter()
+                .map(|(q, a)| HistoryTurn {
+                    question: q.clone(),
+                    answer: a.clone(),
+                })
+                .collect(),
         };
         let resp = self
             .auth(self.http.post(self.url("/api/answer")).json(&body))

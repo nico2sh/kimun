@@ -288,7 +288,9 @@ impl Overlay for SavedSearchesModal {
                     EventState::Consumed
                 }
                 KeyReaction::Consumed => EventState::Consumed,
-                KeyReaction::Intercepted(_) | KeyReaction::Unhandled => EventState::NotConsumed,
+                KeyReaction::Intercepted(_) | KeyReaction::ListVerb(_) | KeyReaction::Unhandled => {
+                    EventState::NotConsumed
+                }
             },
             _ => EventState::NotConsumed,
         }
