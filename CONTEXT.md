@@ -117,8 +117,12 @@ _Avoid_: title (the Query panel already has a query-reflective title; the breadc
 ### TUI search surfaces
 
 **SearchList**:
-The one module behind every query-input-over-an-async-loaded-list surface in the TUI — the **note browser**, the **Query panel**, the **Saved Searches modal**, and the directory sidebar. It owns the query input, keyboard navigation, the async-load lifecycle, the autocomplete host, and selection; it emits nothing on its own — callers read the selected row and decide the action. Rich presentation (the Query panel's expand/preview, the note browser's preview pane) composes on top rather than living inside it.
+The one module behind every query-input-over-an-async-loaded-list surface in the TUI — the **note browser**, the **Query panel**, the **Saved Searches modal**, the directory sidebar, and (via **QueryListPanel**) the list-shaped drawer views. It owns the query input, keyboard navigation, the async-load lifecycle, the autocomplete host, selection, and the **list focus** below; it emits nothing on its own — callers read the selected row and decide the action. Rich presentation (the Query panel's expand/preview) composes on top rather than living inside it.
 _Avoid_: list widget, search box (each names only a part)
+
+**List focus**:
+Which half of a **SearchList** owns the keyboard: the query input (typing filters) or the list itself (plain letters are verbs — `j`/`k` navigate, surface-registered letters like `l`/`h`/`o`/`y` act on the selected row). `Esc` moves from input to list; `i` or `/` moves back. Each surface picks its opening focus: search-first surfaces (the **Query panel**, the **note browser**) open on the input; the **Sources view** opens on the list. Letters not registered as verbs do nothing in list focus — they never silently type into the query.
+_Avoid_: input mode / normal mode (vim's names for a different state machine), list mode.
 
 **Row source**:
 The seam that supplies a **SearchList** with the rows for a query. Vault-backed in the app (search, backlinks, saved searches, directory listing), in-memory in tests — so a SearchList is exercised without a real vault. Streaming and one-shot delivery are the same source, not different seams.
@@ -139,7 +143,7 @@ The right-hand panel of the editor. Shows the list of notes matching an active q
 _Avoid_: backlinks panel (now only the default state), search panel / search sidebar (collide with Ctrl+K and the left-sidebar search box)
 
 **Preview pane**:
-The note-preview surface the **Query panel** shows for its selected result, owning one expand state — **Collapsed** (list only), **Context** (half-height preview below the list), **Full** (preview takes the whole panel) — and the content scroll. The scroll is either *anchored* (the render places it on the first needle match each frame) or *user-owned* once a wheel/key tick moves it; a query edit re-arms the anchor. Context sticks across selection moves (re-anchoring on the new row); Full and a vanished selection collapse. Composed by the panel (which keeps the result list and the engine's wheel-routing region), so the scroll/anchor state machine is testable without a vault.
+The note-preview surface the **Query panel** and the **Sources view** show for their selected row, owning one expand state — **Collapsed** (list only), **Context** (half-height preview below the list), **Full** (preview takes the whole panel) — and the content scroll. The scroll is either *anchored* (the render places it on the first needle match each frame) or *user-owned* once a wheel/key tick moves it; a query edit re-arms the anchor. Context sticks across selection moves (re-anchoring on the new row); Full and a vanished selection collapse. Composed by the panel (which keeps the result list and the engine's wheel-routing region), so the scroll/anchor state machine is testable without a vault.
 _Avoid_: expand state (names one field), content view, preview widget.
 
 ### Editor input
@@ -184,6 +188,36 @@ _Avoid_: dialog manager (the superseded name), overlay stack (it is single-slot)
 **Overlay data**:
 An async result addressed to the open **Overlay** — a dialog's validation verdict, its loaded directory list, a RAG answer, an operation error. One event family (`OverlayData`) routed *only* to the **OverlayHost**, never to a screen's owned handling; an overlay data event arriving with no (or the wrong) overlay open is stale by definition and dropped. This replaces the old convention of giving the active overlay first crack at every app event.
 _Avoid_: dialog event (the RAG answer overlay is not a dialog), validation result (names one kind).
+
+### Ask
+
+**Ask workspace**:
+The question-answering surface, entered from its own **Activity rail** entry: selecting ASK swaps the **Drawer** to the conversation's sources and the editor area to the conversation itself. Not an **Overlay** (the superseded ask surface was) and not a separate screen — it reuses the editor screen's panel layout, the same way the **attachment view** reuses the editor area. The rail entry is only offered when the **Kimün server** is reachable *and* has an LLM configured (full capability) — a *semantic-only* or **unconfigured** server never shows it. Losing that capability mid-use never evicts the user: an open Ask workspace stays readable (its answers are already local) with asking disabled until capability returns; only the rail entry disappears.
+_Avoid_: RAG screen (RAG names the technique, not the surface), ask overlay (the superseded modal), ask view (underspecified — it is a drawer view *plus* an editor-area content).
+
+**Thread**:
+The conversation the **Ask workspace** shows — the ordered sequence of **turns**, oldest first, with the question composer docked at the end. Follow-up questions continue the thread: prior completed turns travel with the new question as conversation history (a bounded recent window, citation markers stripped), so answers can refer back. One thread at a time, in memory only: it survives switching panels and server blips, and dies with the app or a workspace switch — starting a new conversation is an explicit action, never a side effect.
+_Avoid_: chat (imports chat-app expectations), session (collides with app lifetime), Q&A list (misses that turns are linked by history).
+
+**Turn**:
+One question-answer exchange in the **Thread**: the question, its answer, and the sources retrieved *for that question*. Retrieval is per-turn — every question, follow-up or not, gets its own sources; only the LLM sees prior turns. A turn always knows its own evidence: selecting a turn shows *its* sources, not the latest ones.
+_Avoid_: message (a turn is a pair plus its sources), exchange, query (collides with search queries).
+
+**Citation**:
+A `[n]` marker inside an answer tying a claim to the n-th source of its own **Turn**. Citations are mandatory for context-derived claims and absent from model-knowledge ones, so an uncited sentence is readable at a glance as "not from your notes" — the answer may supplement the notes with common knowledge, but only citations carry vault provenance. Citation indices are per-turn; they never point across turns (history strips them).
+_Avoid_: reference (too generic), footnote (citations are inline, not appended), source link (the source is the target, the citation is the marker).
+
+**Sources view**:
+The drawer view of the **Ask workspace**: the ranked sources of the selected **Turn** — section heading, note path, similarity, snippet. Selecting a different turn in the **Thread** repopulates it; it never shows a mix of turns. Flips between its list and the **Source reader**.
+_Avoid_: context panel (context is what the LLM saw, this is its per-note presentation), results (collides with search results).
+
+**Source reader**:
+The **Sources view**'s reveal of a source's full note — the retrieved section highlighted and scrolled into view — so evidence can be read *without leaving the answer*; the **Thread** stays put. It *is* the **Preview pane** (the same expand cycle and content surface the **Query panel** uses), anchored by the section's range rather than query needles. Entered from a source row or a **Citation**. Read-only: editing the note is the editor's job (open-in-editor leaves the Ask workspace).
+_Avoid_: reader face (the superseded bespoke surface — the reveal is the shared Preview pane now), note viewer.
+
+**Saved answer**:
+A real vault note created from a **Turn**'s answer: question as title, answer as body, each **Citation** converted to a `[[wikilink]]` to its source note — so the answer joins the vault's link graph and its provenance survives as **note links** (backlinks from the sources find it). Created through the normal new-note flow and edited in the normal editor; the **Ask workspace** never edits notes itself.
+_Avoid_: exported answer (it is not an export format, it is a note), answer note (ambiguous with a note that merely contains an answer).
 
 ### Indexing
 

@@ -21,6 +21,7 @@ kimun_server_client = { path = "../client", version = "0.1.1" }
 
 clap = { version = "4", features = ["derive"] }
 color-eyre = "0.6.5"
+thiserror = "2.0"
 crossterm = { version = "0.29.0", features = ["event-stream"] }
 ratatui = { version = "0.30.2", features = ["serde"] }
 ratatui-widgets = "0.3.2"

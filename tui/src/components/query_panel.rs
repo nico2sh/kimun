@@ -16,11 +16,11 @@ use crate::components::autocomplete::AutocompleteMode;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, FileOp};
 use crate::components::file_list::{SortField, SortOrder};
-use crate::components::preview_pane::PreviewPane;
+use crate::components::preview_pane::{Highlight, PreviewPane};
 use crate::components::query_vars::{QueryContext, query_has_variables, resolve_query};
 use crate::components::saved_search_breadcrumb::SavedSearchBreadcrumb;
 use crate::components::search_list::{
-    Emit, KeyReaction, ResolvingRowSource, RowSource, SearchList, SearchMouse, SearchRow,
+    Emit, Focus, KeyReaction, ResolvingRowSource, RowSource, SearchList, SearchMouse, SearchRow,
     Unresolvable, VaultSuggestions,
 };
 use crate::keys::KeyBindings;
@@ -228,6 +228,13 @@ impl QueryPanel {
                 AutocompleteMode::SearchQuery,
             )
             .intercept(intercept)
+            // List-focus verbs (fire once the user Esc-es into the list): the
+            // same set the Sources drawer uses — `l`/`h` cycle the preview
+            // forward/back, `o` opens, `y` yanks the selected note's path.
+            .list_verb('l')
+            .list_verb('h')
+            .list_verb('o')
+            .list_verb('y')
             .build();
 
         Self {
@@ -467,6 +474,18 @@ impl QueryPanel {
             }
             return EventState::Consumed;
         }
+        // Ctrl+Y yanks the selected note's path — the canonical yank chord,
+        // converged with the Sources drawer (same `arboard` clipboard seam).
+        // Pre-checked here: the engine drops Ctrl-modified chars as Unhandled,
+        // so this must claim it before that.
+        if key.code == KeyCode::Char('y')
+            && key
+                .modifiers
+                .contains(ratatui::crossterm::event::KeyModifiers::CONTROL)
+        {
+            self.yank_selected_path(tx);
+            return EventState::Consumed;
+        }
         // NOTE: plain Enter is NOT pre-checked here. It must reach the engine
         // so an open autocomplete popup can accept on Enter; only when the
         // popup is closed does the engine return `Submit`, which toggles
@@ -507,7 +526,22 @@ impl QueryPanel {
                 self.toggle_expand();
                 EventState::Consumed
             }
-            // Esc bubbles to the editor for focus changes.
+            // List-focus verbs (fired only once the user Esc-es into the list):
+            // the engine reports which char fired; the panel maps it to an
+            // action. `l`/`h` cycle the preview, `o` opens, `y` yanks.
+            KeyReaction::ListVerb(c) => {
+                match c {
+                    'l' => self.toggle_expand(),
+                    'h' => self.collapse_expand(),
+                    'o' => self.open_selected(tx),
+                    'y' => self.yank_selected_path(tx),
+                    _ => {}
+                }
+                self.sync_expand_anchor();
+                EventState::Consumed
+            }
+            // Esc bubbles to the editor for focus changes — reached now only
+            // from list focus (the first Esc entered it).
             KeyReaction::Cancel => EventState::NotConsumed,
             KeyReaction::Unhandled => EventState::NotConsumed,
             KeyReaction::Intercepted(_) => EventState::Consumed,
@@ -593,6 +627,16 @@ impl QueryPanel {
         }
     }
 
+    /// Copy the selected result's path to the OS clipboard (`Ctrl+Y`), reusing
+    /// the shared [`crate::components::yank`] seam the Sources drawer's yank
+    /// uses.
+    fn yank_selected_path(&self, tx: &AppTx) {
+        let Some(path) = self.selected_path().cloned() else {
+            return;
+        };
+        crate::components::yank(path.to_string(), "path copied", tx);
+    }
+
     fn scroll_content(&mut self, key: &KeyEvent) {
         match key.code {
             KeyCode::Up => self.preview.scroll_up(),
@@ -610,7 +654,42 @@ impl QueryPanel {
         self.list.set_content_rect(Rect::default());
     }
 
+    /// Step the preview reveal backward (Full → Context → Collapsed): the `h`
+    /// list-focus verb, mirroring `l`'s forward cycle via [`toggle_expand`].
+    fn collapse_expand(&mut self) {
+        let sel = self.list.selected_row().map(|e| e.path.clone());
+        if sel.is_none() {
+            return;
+        }
+        self.preview.collapse_step(sel);
+        self.list.set_content_rect(Rect::default());
+    }
+
+    /// Open the selected result (the `o` list-focus verb), carrying the same
+    /// resolved-needle emphasis as the FollowLink / Ctrl+Enter open paths.
+    fn open_selected(&self, tx: &AppTx) {
+        if let Some(path) = self.selected_path().cloned() {
+            tx.send(AppEvent::OpenPath {
+                path,
+                emphasis: self.emphasis(),
+            })
+            .ok();
+        }
+    }
+
     pub fn hint_shortcuts(&self) -> Vec<(String, String)> {
+        // In list focus, plain letters are verbs — advertise them instead of
+        // the input-focus keybinding hints.
+        if self.list.focus() == Focus::List {
+            return vec![
+                ("j/k".to_string(), "navigate".to_string()),
+                ("h/l".to_string(), "preview".to_string()),
+                ("o".to_string(), "open".to_string()),
+                ("y".to_string(), "yank".to_string()),
+                ("i".to_string(), "filter".to_string()),
+                ("Esc".to_string(), "\u{2190} editor".to_string()),
+            ];
+        }
         crate::components::hints::hints_for(
             &self.key_bindings,
             &[
@@ -740,7 +819,7 @@ impl QueryPanel {
                     &entry.title,
                     &entry.filename,
                     &text,
-                    &needles,
+                    Highlight::Needles(&needles),
                     theme,
                 );
             }
@@ -826,7 +905,8 @@ impl QueryPanel {
                 .clone()
                 .unwrap_or_else(|| entry.context.clone());
             let needles = self.cached_needles().to_vec();
-            self.preview.render_context(f, area, &text, &needles, theme);
+            self.preview
+                .render_context(f, area, &text, Highlight::Needles(&needles), theme);
             // The preview is the engine's content sub-region: wheel events
             // inside it come back as ContentScroll* instead of moving the
             // list.
@@ -1000,6 +1080,61 @@ mod tests {
         }
         // The index returns canonical (vault-absolute) paths (adr/0021).
         assert_eq!(opened, Some(VaultPath::note_path_from("target").absolute()));
+    }
+
+    /// Ctrl+Y yanks the selected result's path (converged with Sources) — it
+    /// must claim the key before the engine drops it, and emit a flash message.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ctrl_y_yanks_selected_path() {
+        use ratatui::crossterm::event::KeyModifiers;
+        let vault = crate::test_support::temp_vault("qp-ctrl-y").await;
+        vault.validate_and_init().await.unwrap();
+        vault
+            .save_note(&VaultPath::note_path_from("target"), "the note body")
+            .await
+            .unwrap();
+        let mut panel = make_panel(vault);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        panel.apply_query("target".to_string(), None, tx.clone());
+        settle(&mut panel).await;
+        assert!(panel.selected_path().is_some(), "result selected");
+
+        let st = panel.handle_key(
+            &KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL),
+            &tx,
+        );
+        assert_eq!(st, EventState::Consumed);
+        let mut flashed = false;
+        while let Ok(ev) = rx.try_recv() {
+            if matches!(ev, AppEvent::FlashMessage(_)) {
+                flashed = true;
+            }
+        }
+        assert!(
+            flashed,
+            "Ctrl+Y emits a flash message (ok or clipboard error)"
+        );
+    }
+
+    /// Plain letters (`l`/`h`/`o`/`y`) stay query text in FIND — the query input
+    /// always has focus, so they must edit the query, never trigger the Sources
+    /// vim shortcuts. Guards the asymmetry in the converged key table.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn plain_letters_stay_query_text_in_find() {
+        use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
+        let vault = crate::test_support::temp_vault("qp-letters").await;
+        vault.validate_and_init().await.unwrap();
+        let mut panel = make_panel(vault);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        panel.set_active_query(String::new());
+        for ch in ['l', 'h', 'o', 'y'] {
+            panel.handle_key(&KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE), &tx);
+        }
+        assert_eq!(panel.active_query(), "lhoy", "letters edit the query");
+        assert!(
+            panel.preview.is_collapsed(),
+            "letters must not cycle the preview in FIND"
+        );
     }
 
     /// The memoised highlight needles must follow both cache keys: recompute
@@ -1529,6 +1664,56 @@ mod tests {
         panel.handle_mouse(&click(header.x + 1, header.y), &tx);
         assert!(!panel.is_full_expanded());
         assert!(panel.preview.is_collapsed());
+    }
+
+    /// Deliberate unification (preview-pane `Highlight` seam): FIND's Full
+    /// preview now auto-anchors on the first needle match, like the Context
+    /// preview and the Ask Sources range variant already did. Previously Full
+    /// was the one render path that ignored the anchor and always opened at
+    /// the top; mirrors `ask_sources.rs`'s
+    /// `full_preview_anchors_scroll_to_the_highlighted_section`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn full_preview_anchors_scroll_to_first_needle_match() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let vault = crate::test_support::temp_vault("qp-full-anchor").await;
+        vault.validate_and_init().await.unwrap();
+        // The needle is deep enough that anchoring scrolls past the top (the
+        // "two lines of context above the match" rule needs room above it).
+        let mut body = String::new();
+        for i in 0..8 {
+            body.push_str(&format!("line{i}\n"));
+        }
+        body.push_str("#todo widget line\n");
+        for i in 0..8 {
+            body.push_str(&format!("tail{i}\n"));
+        }
+        vault
+            .create_note(&VaultPath::note_path_from("/long.md"), &body)
+            .await
+            .unwrap();
+        let mut panel = make_panel(vault);
+        panel.set_active_query("#todo".to_string());
+        settle(&mut panel).await;
+        assert!(panel.list.selected_row().is_some());
+
+        // Collapsed -> Context -> Full.
+        panel.toggle_expand();
+        panel.toggle_expand();
+        assert!(panel.is_full_expanded());
+
+        let theme = crate::settings::themes::Theme::default();
+        let mut terminal = Terminal::new(TestBackend::new(40, 6)).unwrap();
+        terminal
+            .draw(|f| panel.render(f, f.area(), &theme, true))
+            .unwrap();
+
+        assert!(
+            panel.preview.scroll_offset() > 0,
+            "Full preview anchors on the first needle match, offset={}",
+            panel.preview.scroll_offset()
+        );
     }
 
     /// Every expand-state change must drop the recorded content regions: the

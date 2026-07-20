@@ -205,6 +205,23 @@ pub trait RowSource<R: SearchRow>: Send + Sync + 'static {
     }
 }
 
+/// A [`RowSource`] for the synchronous build path: its rows are supplied at
+/// build time via [`SearchListBuilder::build_with_rows`], so its async `load`
+/// is never called. Pairs with any static, in-memory row set
+/// (`reload_on_query() == false` — the query is a local filter over the built
+/// rows), replacing a hand-rolled one-shot `emit.replace(rows.clone())` source.
+///
+/// [`SearchListBuilder::build_with_rows`]: super::SearchListBuilder::build_with_rows
+pub struct StaticRowSource;
+
+#[async_trait]
+impl<R: SearchRow> RowSource<R> for StaticRowSource {
+    async fn load(&self, _query: &str, _emit: Emit<R>) {}
+    fn reload_on_query(&self) -> bool {
+        false
+    }
+}
+
 #[cfg(test)]
 mod suggestion_tests {
     use super::*;

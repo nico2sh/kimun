@@ -48,8 +48,9 @@ pub enum ActionShortcuts {
     ToggleQueryPanel,
     OpenSavedSearches,
     SaveCurrentQuery,
-    /// The RAG answer overlay (ask a question, get an LLM answer with sources).
-    OpenRagAnswer,
+    /// Switch to the Ask workspace (ask a question, get an LLM answer with
+    /// cited sources).
+    OpenAsk,
     // Workspace
     SwitchWorkspace,
     // In-buffer find (Ctrl+F by default; reopens / advances to next match if
@@ -85,7 +86,7 @@ impl ActionShortcuts {
             | ActionShortcuts::FollowLink
             | ActionShortcuts::QuickNote
             | ActionShortcuts::FindInBuffer
-            | ActionShortcuts::OpenRagAnswer => ShortcutCategory::Notes,
+            | ActionShortcuts::OpenAsk => ShortcutCategory::Notes,
 
             ActionShortcuts::Text(_) => ShortcutCategory::TextEditing,
 
@@ -110,7 +111,7 @@ impl ActionShortcuts {
             ActionShortcuts::QuickNote => "Quick note".into(),
             ActionShortcuts::ToggleQueryPanel => "Toggle query drawer".into(),
             ActionShortcuts::OpenSavedSearches => "Saved searches".into(),
-            ActionShortcuts::OpenRagAnswer => "Ask (RAG)".into(),
+            ActionShortcuts::OpenAsk => "Ask".into(),
             ActionShortcuts::SaveCurrentQuery => "Save current query".into(),
             ActionShortcuts::SwitchWorkspace => "Switch workspace".into(),
             ActionShortcuts::FindInBuffer => "Find in note".into(),
@@ -149,7 +150,7 @@ impl Display for ActionShortcuts {
             ActionShortcuts::QuickNote => "QuickNote".to_string(),
             ActionShortcuts::ToggleQueryPanel => "ToggleQueryPanel".to_string(),
             ActionShortcuts::OpenSavedSearches => "OpenSavedSearches".to_string(),
-            ActionShortcuts::OpenRagAnswer => "OpenRagAnswer".to_string(),
+            ActionShortcuts::OpenAsk => "OpenAsk".to_string(),
             ActionShortcuts::SaveCurrentQuery => "SaveCurrentQuery".to_string(),
             ActionShortcuts::SwitchWorkspace => "SwitchWorkspace".to_string(),
             ActionShortcuts::FindInBuffer => "FindInBuffer".to_string(),
@@ -185,7 +186,10 @@ impl TryFrom<String> for ActionShortcuts {
             "ToggleQueryPanel" => ActionShortcuts::ToggleQueryPanel,
             "ToggleBacklinks" => ActionShortcuts::ToggleQueryPanel,
             "OpenSavedSearches" => ActionShortcuts::OpenSavedSearches,
-            "OpenRagAnswer" => ActionShortcuts::OpenRagAnswer,
+            // "OpenAsk" is the stable on-disk name; "OpenRagAnswer" is the
+            // legacy name from the pre-workspace Ask overlay, kept so
+            // existing keybinding configs keep working.
+            "OpenAsk" | "OpenRagAnswer" => ActionShortcuts::OpenAsk,
             "SaveCurrentQuery" => ActionShortcuts::SaveCurrentQuery,
             "SwitchWorkspace" => ActionShortcuts::SwitchWorkspace,
             "FindInBuffer" => ActionShortcuts::FindInBuffer,
@@ -422,6 +426,20 @@ mod tests {
         assert_eq!(
             ActionShortcuts::try_from("SaveCurrentQuery".to_string()),
             Ok(ActionShortcuts::SaveCurrentQuery)
+        );
+    }
+
+    #[test]
+    fn open_ask_roundtrip_and_legacy_alias() {
+        assert_eq!(ActionShortcuts::OpenAsk.to_string(), "OpenAsk");
+        assert_eq!(
+            ActionShortcuts::try_from("OpenAsk".to_string()),
+            Ok(ActionShortcuts::OpenAsk)
+        );
+        // legacy name from the pre-workspace Ask overlay still parses
+        assert_eq!(
+            ActionShortcuts::try_from("OpenRagAnswer".to_string()),
+            Ok(ActionShortcuts::OpenAsk)
         );
     }
 

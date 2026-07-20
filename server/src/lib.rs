@@ -72,10 +72,14 @@ impl Display for CollectionKey {
     }
 }
 
-/// The answer to a question, with the chunks the LLM saw as context.
+/// The answer to a question, with the chunks the LLM saw as context. Each
+/// source carries the 1-based **ordinal** the prompt numbered it with (the `[n]`
+/// citation marker) — assigned once, at the single numbering site in
+/// [`RagPipeline::answer`], so the citation↔source pairing is an explicit
+/// contract rather than a shared vec-order convention.
 pub struct Answer {
     pub text: String,
-    pub sources: Vec<ScoredChunk>,
+    pub sources: Vec<(usize, ScoredChunk)>,
 }
 
 /// Preview of where the **context cut** slices an answer's LLM context on a
@@ -100,55 +104,33 @@ pub struct CutPreview {
 /// one place (`IntoResponse` in the handlers module): `Validation` → 400,
 /// `NotFound` → 404, `SemanticOnly`/`Unconfigured` → 503 (adr/0022, adr/0024),
 /// `Backend` → 500.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum RagError {
     /// The request itself is malformed (bad vault id, unparseable job id).
+    #[error("{0}")]
     Validation(String),
     /// The named thing doesn't exist (e.g. an expired or unknown job).
+    #[error("{0}")]
     NotFound(String),
     /// No LLM configured — this server answers semantic searches only
     /// (adr/0022).
+    #[error("no LLM configured; this server is semantic-only")]
     SemanticOnly,
     /// No embedder configured — the server is *unconfigured*: no vector store,
     /// no indexing, no search, no answering (adr/0024). Distinct from
     /// [`SemanticOnly`](Self::SemanticOnly) (embedder present, LLM absent) so
     /// the two states never blur.
+    #[error(
+        "no embedder configured; this server is unconfigured — open the web UI to configure one"
+    )]
     Unconfigured,
-    Backend(anyhow::Error),
-}
-
-impl Display for RagError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            RagError::Validation(msg) => write!(f, "{msg}"),
-            RagError::NotFound(msg) => write!(f, "{msg}"),
-            RagError::SemanticOnly => {
-                write!(f, "no LLM configured; this server is semantic-only")
-            }
-            RagError::Unconfigured => {
-                write!(
-                    f,
-                    "no embedder configured; this server is unconfigured — open the web UI to configure one"
-                )
-            }
-            RagError::Backend(e) => write!(f, "{e}"),
-        }
-    }
-}
-
-impl std::error::Error for RagError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            RagError::Backend(e) => Some(e.as_ref()),
-            _ => None,
-        }
-    }
-}
-
-impl From<anyhow::Error> for RagError {
-    fn from(e: anyhow::Error) -> Self {
-        RagError::Backend(e)
-    }
+    /// Decided boundary: `anyhow` is the server's *internal* error currency
+    /// (stores, embedders, rerankers, config); `RagError` is the public
+    /// surface, and this variant is the one funnel between them. The `#[from]`
+    /// keeps `?` working at every internal call site — deliberately, so
+    /// internals never need their own public error types.
+    #[error("{0}")]
+    Backend(#[from] anyhow::Error),
 }
 
 // ── Pipeline policy ─────────────────────────────────────────────────────────
@@ -185,6 +167,16 @@ const RANGE_HIGH_PERCENTILE: f64 = 0.95;
 /// exists inside it, nothing is cut.
 const DROP_WINDOW_MIN: usize = 3;
 const DROP_WINDOW_MAX: usize = 30;
+/// Chars of a previous answer folded into a conversation-conditioned retrieval
+/// query ([`build_retrieval_query`]), split HEAD + TAIL. An answer can run
+/// arbitrarily long; past `HEAD + TAIL` (~⅔ of [`CHUNK_TARGET`], the embedding
+/// window) it drowns the rest of the query. Split head+tail rather than a plain
+/// prefix: an answer's topic anchor sits at its OPENING while its
+/// offer/conclusion — the thing a terse "yes" actually accepts — sits at its
+/// END, and a head-only cut dropped that end, so retrieval reinforced
+/// re-answering the earlier question instead of continuing from the offer.
+const HISTORY_ANSWER_HEAD: usize = 150;
+const HISTORY_ANSWER_TAIL: usize = 350;
 
 /// The query pipeline and its indexing half: the one door to everything the
 /// server does with a vault's content. Owns the embedder, the vector store, the
@@ -407,21 +399,44 @@ impl KimunRag {
     /// applies under the `fixed` cut. Fails with [`RagError::SemanticOnly`]
     /// when no LLM is configured; the gate runs before the vector search so no
     /// work is thrown away.
+    ///
+    /// `history` (prior question/answer pairs) does two jobs. It is forwarded
+    /// verbatim to the LLM call, and — since a terse follow-up ("yes",
+    /// "go on") embeds against nothing on its own — it also CONDITIONS the
+    /// retrieval/rerank query via [`build_retrieval_query`]: the most recent
+    /// turn is folded in so the search still sees the topic under discussion.
+    /// Only retrieval and ranking see the conditioned query; the prompt's
+    /// "Question:" stays the raw `question`. With empty history the query is
+    /// the raw question, identical to the pre-conditioning behavior.
     pub async fn answer(
         &self,
         collection: &CollectionKey,
         question: &str,
+        history: &[(String, String)],
         top_k: usize,
     ) -> Result<Answer, RagError> {
         let llm = self.llm_client.clone().ok_or(RagError::SemanticOnly)?;
-        let raw = self.retrieve(collection, question).await?;
-        let mut context = self.rank(question, raw).await;
+        // Retrieval/rerank see the conversation-conditioned query, NOT the bare
+        // question — so a terse follow-up still retrieves on-topic context.
+        let query = build_retrieval_query(question, history);
+        let raw = self.retrieve(collection, &query).await?;
+        let mut context = self.rank(&query, raw).await;
         let cut = self.cut_len(&context, top_k);
         context.truncate(cut);
-        let text = llm.ask(question, &context).await?;
+        // Number the context ONCE, here — this ordinal IS the `[n]` the prompt
+        // uses AND the ordinal carried on every wire source. Both the prompt
+        // builder and the sources conversion read this assigned ordinal, so
+        // neither re-enumerates and a later reorder anywhere downstream cannot
+        // silently misattribute a citation (wave2b: explicit pairing contract).
+        let numbered: Vec<(usize, ScoredChunk)> = context
+            .into_iter()
+            .enumerate()
+            .map(|(i, chunk)| (i + 1, chunk))
+            .collect();
+        let text = llm.ask(question, history, &numbered).await?;
         Ok(Answer {
             text,
-            sources: context,
+            sources: numbered,
         })
     }
 
@@ -820,6 +835,58 @@ fn largest_drop_cut_len(sorted: &[ScoredChunk], (window_min, window_max): (usize
     }
 }
 
+/// Builds the retrieval/rerank query for [`KimunRag::answer`]. With no
+/// conversation history this is the raw `question` verbatim — byte-identical to
+/// the pre-conditioning behavior, so a fresh question retrieves exactly as
+/// before. With history, the MOST RECENT turn (previous question + a truncated
+/// previous answer) is folded in AHEAD of the current question: a terse
+/// follow-up like "yes" or "the second one" carries no retrievable signal
+/// alone, but the turn it answers does. The current question comes LAST so the
+/// embedder's recency weighting keeps it prominent rather than drowned by the
+/// folded turn.
+///
+/// Only the last turn is used (not all of `history`): it is the exchange the
+/// follow-up actually responds to, and piling on older turns would dilute the
+/// embedding. The previous answer is condensed to at most
+/// `HISTORY_ANSWER_HEAD + HISTORY_ANSWER_TAIL` chars — END-biased
+/// ([`condense_head_tail`]),
+/// keeping the answer's opening AND its closing: the offer/conclusion a terse
+/// "yes" responds to lives at the END, so a head-only cut steered retrieval
+/// back onto the earlier question. Deliberately provider-agnostic and LLM-free:
+/// no query-rewrite round-trip, so this works identically on every configured
+/// backend and adds no latency.
+fn build_retrieval_query(question: &str, history: &[(String, String)]) -> String {
+    let Some((prev_q, prev_a)) = history.last() else {
+        return question.to_string();
+    };
+    let prev_a = condense_head_tail(prev_a, HISTORY_ANSWER_HEAD, HISTORY_ANSWER_TAIL);
+    // prev question + condensed prev answer first, current question last.
+    format!("{prev_q}\n{prev_a}\n{question}")
+}
+
+/// Condense `s` to its first `head` + last `tail` chars, joined by an ellipsis,
+/// when it is longer than `head + tail`; shorter strings pass through whole.
+/// Cuts on char boundaries only (never mid-codepoint), so the result is always
+/// valid UTF-8 the embedder can accept. End-biased on purpose: an answer's
+/// offer/conclusion lives at its end, and a plain prefix truncation drops it.
+fn condense_head_tail(s: &str, head: usize, tail: usize) -> String {
+    let total = s.chars().count();
+    if total <= head + tail {
+        return s.to_string();
+    }
+    let head_end = s
+        .char_indices()
+        .nth(head)
+        .map(|(i, _)| i)
+        .unwrap_or(s.len());
+    let tail_start = s
+        .char_indices()
+        .nth(total - tail)
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    format!("{} … {}", &s[..head_end], &s[tail_start..])
+}
+
 /// Deduplicates embedding results by FlattenedChunk (keeping the highest score
 /// per unique chunk) and returns them sorted best-first. Scores are similarities
 /// (higher = better) for both backends, so when no reranker reorders the pool
@@ -1051,7 +1118,12 @@ pub(crate) mod test_support {
 
     #[async_trait]
     impl LLMClient for FakeLlm {
-        async fn ask(&self, _: &str, _: &[ScoredChunk]) -> anyhow::Result<String> {
+        async fn ask(
+            &self,
+            _: &str,
+            _: &[(String, String)],
+            _: &[(usize, ScoredChunk)],
+        ) -> anyhow::Result<String> {
             Ok("answer".into())
         }
     }
@@ -1154,14 +1226,17 @@ mod tests {
         // 0.99/0.98/0.97 stay while 0.80 (normalized 0.34) and 0.70 (0.0)
         // drop, even though the request asked for top_k = 2.
         let rag = rag(section_heavy_store(), true);
-        let answer = rag.answer(&key("vault-1"), "q", 2).await.unwrap();
+        let answer = rag.answer(&key("vault-1"), "q", &[], 2).await.unwrap();
         assert_eq!(answer.text, "answer");
         assert_eq!(answer.sources.len(), 3);
-        assert_eq!(answer.sources[0].1.doc_path, "/a.md");
+        assert_eq!(answer.sources[0].1.1.doc_path, "/a.md");
         assert_eq!(
-            answer.sources[1].1.doc_path, "/a.md",
+            answer.sources[1].1.1.doc_path, "/a.md",
             "chunk-level: no note-dedup"
         );
+        // Ordinals are the 1-based `[n]` the prompt numbered each source with.
+        let ordinals: Vec<usize> = answer.sources.iter().map(|(o, _)| *o).collect();
+        assert_eq!(ordinals, vec![1, 2, 3]);
     }
 
     #[tokio::test]
@@ -1178,11 +1253,11 @@ mod tests {
             ..Default::default()
         };
         let answer = rag(store, true)
-            .answer(&key("vault-1"), "q", 2)
+            .answer(&key("vault-1"), "q", &[], 2)
             .await
             .unwrap();
         assert_eq!(answer.sources.len(), 1);
-        assert_eq!(answer.sources[0].1.doc_path, "/a.md");
+        assert_eq!(answer.sources[0].1.1.doc_path, "/a.md");
     }
 
     #[test]
@@ -1329,7 +1404,7 @@ mod tests {
 
         // answer: same fallback, same cut → 3 chunks of context.
         let answerer = rag(section_heavy_store(), true).with_reranker(Arc::new(FailingReranker));
-        let answer = answerer.answer(&key("v"), "q", 2).await.unwrap();
+        let answer = answerer.answer(&key("v"), "q", &[], 2).await.unwrap();
         assert_eq!(answer.sources.len(), 3);
     }
 
@@ -1398,13 +1473,13 @@ mod tests {
             ..Default::default()
         };
         let ragged = rag(store, true).with_reranker(Arc::new(LogitReranker));
-        let answer = ragged.answer(&key("v"), "q", 2).await.unwrap();
+        let answer = ragged.answer(&key("v"), "q", &[], 2).await.unwrap();
         assert_eq!(answer.sources.len(), 2, "normalized scores keep the cut");
         assert!(
             answer
                 .sources
                 .iter()
-                .all(|(s, _)| (0.0..=1.0).contains(s) && *s < 1.0)
+                .all(|(_, (s, _))| (0.0..=1.0).contains(s) && *s < 1.0)
         );
     }
 
@@ -1444,9 +1519,9 @@ mod tests {
             ..Default::default()
         };
         let ragged = rag(store, true).with_reranker(Arc::new(NanReranker));
-        let answer = ragged.answer(&key("v"), "q", 3).await.unwrap();
+        let answer = ragged.answer(&key("v"), "q", &[], 3).await.unwrap();
         assert!(!answer.sources.is_empty(), "NaN must not empty the results");
-        assert!(answer.sources.iter().all(|(s, _)| s.is_finite()));
+        assert!(answer.sources.iter().all(|(_, (s, _))| s.is_finite()));
     }
 
     /// A broken impl that skipped validation: one duplicate index per pair.
@@ -1503,7 +1578,12 @@ mod tests {
         let fixed = rag(section_heavy_store(), true).with_context_cut(ContextCut::Fixed);
         assert_eq!(fixed.search(&key("v"), "q", 0).await.unwrap().len(), 1);
         assert_eq!(
-            fixed.answer(&key("v"), "q", 0).await.unwrap().sources.len(),
+            fixed
+                .answer(&key("v"), "q", &[], 0)
+                .await
+                .unwrap()
+                .sources
+                .len(),
             1
         );
     }
@@ -1518,15 +1598,15 @@ mod tests {
             ..Default::default()
         };
         let adaptive = rag(store(), true).with_reranker(Arc::new(SpikyReranker));
-        let answer = adaptive.answer(&key("v"), "q", 4).await.unwrap();
+        let answer = adaptive.answer(&key("v"), "q", &[], 4).await.unwrap();
         assert_eq!(answer.sources.len(), 1, "cut on reranked scores");
-        assert_eq!(answer.sources[0].0, 0.9);
+        assert_eq!(answer.sources[0].1.0, 0.9);
 
         // fixed keeps exactly top_k reranked chunks — the classic behavior.
         let fixed = rag(store(), true)
             .with_reranker(Arc::new(SpikyReranker))
             .with_context_cut(ContextCut::Fixed);
-        let answer = fixed.answer(&key("v"), "q", 4).await.unwrap();
+        let answer = fixed.answer(&key("v"), "q", &[], 4).await.unwrap();
         assert_eq!(answer.sources.len(), 4);
 
         // search with a reranker: only the surviving note shows.
@@ -1588,7 +1668,7 @@ mod tests {
         let default_cut = rag(store(), true);
         assert_eq!(
             default_cut
-                .answer(&key("v"), "q", 2)
+                .answer(&key("v"), "q", &[], 2)
                 .await
                 .unwrap()
                 .sources
@@ -1599,7 +1679,12 @@ mod tests {
 
         let elbow = rag(store(), true).with_context_cut(ContextCut::LargestDrop);
         assert_eq!(
-            elbow.answer(&key("v"), "q", 2).await.unwrap().sources.len(),
+            elbow
+                .answer(&key("v"), "q", &[], 2)
+                .await
+                .unwrap()
+                .sources
+                .len(),
             5
         );
     }
@@ -1608,10 +1693,185 @@ mod tests {
     async fn answer_on_semantic_only_server_is_a_typed_rejection() {
         let rag = rag(section_heavy_store(), false);
         assert!(!rag.can_answer());
-        match rag.answer(&key("vault-1"), "q", 5).await {
+        match rag.answer(&key("vault-1"), "q", &[], 5).await {
             Err(RagError::SemanticOnly) => {}
             other => panic!("expected SemanticOnly, got {:?}", other.map(|a| a.text)),
         }
+    }
+
+    // ── Conversation-conditioned retrieval query (terse follow-up fix) ────────
+
+    #[test]
+    fn conditioned_query_is_the_bare_question_without_history() {
+        // Empty history → byte-identical to the raw question (pre-conditioning
+        // behavior preserved exactly).
+        assert_eq!(
+            build_retrieval_query("how do I deploy?", &[]),
+            "how do I deploy?"
+        );
+    }
+
+    #[test]
+    fn conditioned_query_folds_in_the_last_turn_and_keeps_the_question_last() {
+        // A terse follow-up carries no signal alone; the prior turn it answers
+        // does. The conditioned query must contain BOTH the prior turn's
+        // material AND the current question, with the question last (recency).
+        let history = vec![
+            ("old topic".to_string(), "old answer".to_string()),
+            (
+                "Should I explain the retention policy?".to_string(),
+                "It keeps snapshots for 30 days by default.".to_string(),
+            ),
+        ];
+        let q = build_retrieval_query("yes", &history);
+        assert!(
+            q.contains("retention policy"),
+            "prior question folded in: {q}"
+        );
+        assert!(q.contains("30 days"), "prior answer folded in: {q}");
+        assert!(q.contains("yes"), "current question present: {q}");
+        // Only the LAST turn conditions the query — the older one is dropped.
+        assert!(
+            !q.contains("old topic"),
+            "only the most recent turn is used: {q}"
+        );
+        // Current question sits last for recency weighting.
+        assert!(q.trim_end().ends_with("yes"), "question is last: {q}");
+    }
+
+    #[test]
+    fn conditioned_query_condenses_a_long_previous_answer_keeping_the_tail() {
+        // The offer/conclusion a terse "yes" responds to lives at the END of an
+        // answer. A long answer whose closing carries the offer must have that
+        // TAIL survive condensing — a head-only cut (the old behavior) dropped it
+        // and steered retrieval back onto the earlier question.
+        let budget = HISTORY_ANSWER_HEAD + HISTORY_ANSWER_TAIL;
+        let long_answer = format!(
+            "TOPIC_ANCHOR_OPENING{}WOULD_YOU_LIKE_PLANTING_TIPS",
+            "z".repeat(budget * 3)
+        );
+        let history = vec![("prev q".to_string(), long_answer)];
+        let q = build_retrieval_query("yes", &history);
+        // Both ends survive: the opening topic anchor AND the closing offer.
+        assert!(q.contains("TOPIC_ANCHOR_OPENING"), "head (topic) kept: {q}");
+        assert!(
+            q.contains("WOULD_YOU_LIKE_PLANTING_TIPS"),
+            "tail (offer) kept — the head-only cut dropped this: {q}"
+        );
+        // Still capped: the middle filler is dropped, so the query stays small.
+        let zs = q.chars().filter(|c| *c == 'z').count();
+        assert!(
+            zs < budget,
+            "middle filler condensed away, only head+tail 'z's remain: {zs}"
+        );
+        assert!(q.contains("prev q") && q.contains("yes"));
+    }
+
+    #[test]
+    fn conditioned_query_condensing_is_utf8_safe_at_both_cuts() {
+        // Multi-byte chars sitting on the head AND tail boundaries must not panic
+        // or split a codepoint. Total kept chars = head + tail (all 'é' here).
+        let history = vec![(
+            "q".to_string(),
+            "é".repeat(HISTORY_ANSWER_HEAD + HISTORY_ANSWER_TAIL + 10),
+        )];
+        let q = build_retrieval_query("yes", &history);
+        assert_eq!(
+            q.chars().filter(|c| *c == 'é').count(),
+            HISTORY_ANSWER_HEAD + HISTORY_ANSWER_TAIL
+        );
+    }
+
+    #[test]
+    fn condense_head_tail_passes_short_strings_through_whole() {
+        // At or under head+tail, nothing is dropped and no ellipsis is inserted.
+        let s = "short answer";
+        assert_eq!(
+            condense_head_tail(s, HISTORY_ANSWER_HEAD, HISTORY_ANSWER_TAIL),
+            s
+        );
+    }
+
+    /// Embedder that records every `prompt_embedding` query string — the
+    /// observation point for what retrieval actually embedded.
+    struct RecordingEmbedder(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+    #[async_trait::async_trait]
+    impl Embedder for RecordingEmbedder {
+        async fn generate_embeddings(
+            &self,
+            content: &[FlattenedChunk],
+        ) -> anyhow::Result<Vec<Vec<f32>>> {
+            Ok(content.iter().map(|_| vec![1.0; 8]).collect())
+        }
+        async fn prompt_embedding(&self, content: &str) -> anyhow::Result<Vec<f32>> {
+            self.0.lock().unwrap().push(content.to_string());
+            Ok(vec![1.0; 8])
+        }
+        fn dimension(&self) -> usize {
+            8
+        }
+    }
+
+    #[tokio::test]
+    async fn answer_retrieves_on_the_conditioned_query_but_prompts_the_raw_question() {
+        // The observable contract of the fix: with history, retrieval embeds
+        // the conditioned query (prior turn + current question), while the LLM
+        // prompt's Question stays the raw current question.
+        let embedded = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+
+        struct RecordingLlm(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+        #[async_trait::async_trait]
+        impl LLMClient for RecordingLlm {
+            async fn ask(
+                &self,
+                question: &str,
+                _: &[(String, String)],
+                _: &[(usize, ScoredChunk)],
+            ) -> anyhow::Result<String> {
+                self.0.lock().unwrap().push(question.to_string());
+                Ok("answer".into())
+            }
+        }
+
+        let rag = KimunRag::new(
+            Arc::new(section_heavy_store()),
+            Arc::new(RecordingEmbedder(embedded.clone())),
+            Some(Arc::new(RecordingLlm(asked.clone()))),
+        );
+        let history = vec![(
+            "What is the retention policy?".to_string(),
+            "Snapshots are kept 30 days.".to_string(),
+        )];
+        rag.answer(&key("vault-1"), "yes", &history, 2)
+            .await
+            .unwrap();
+
+        let embedded_query = embedded.lock().unwrap()[0].clone();
+        assert!(
+            embedded_query.contains("retention policy") && embedded_query.contains("yes"),
+            "retrieval embedded the conditioned query: {embedded_query}"
+        );
+        // The prompt-side question is the bare follow-up, not the conditioned
+        // blob — the invariant amendment is retrieval-only.
+        assert_eq!(asked.lock().unwrap()[0], "yes");
+    }
+
+    #[tokio::test]
+    async fn answer_without_history_embeds_the_bare_question() {
+        // Regression guard: with no history the embedded query is exactly the
+        // question — the conditioning is inert on a first turn.
+        let embedded = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let rag = KimunRag::new(
+            Arc::new(section_heavy_store()),
+            Arc::new(RecordingEmbedder(embedded.clone())),
+            Some(Arc::new(FakeLlm)),
+        );
+        rag.answer(&key("vault-1"), "how do I deploy?", &[], 2)
+            .await
+            .unwrap();
+        assert_eq!(embedded.lock().unwrap()[0], "how do I deploy?");
     }
 
     fn doc(path: &str, hash: &str, text: &str) -> KimunDoc {

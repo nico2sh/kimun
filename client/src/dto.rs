@@ -31,6 +31,13 @@ pub struct DeleteRequest {
     pub paths: Vec<String>,
 }
 
+/// One prior Q&A pair sent as conversation history on `/api/answer`.
+#[derive(Debug, Clone, Serialize)]
+pub struct HistoryTurn {
+    pub question: String,
+    pub answer: String,
+}
+
 /// Body of `POST /api/embeddings` and `POST /api/answer`.
 #[derive(Debug, Serialize)]
 pub struct QueryRequest {
@@ -38,6 +45,8 @@ pub struct QueryRequest {
     pub query: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_size: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub history: Vec<HistoryTurn>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -53,6 +62,13 @@ pub struct ChunkResult {
     pub content: String,
     pub hash: String,
     pub similarity_score: f64,
+    /// The 1-based ordinal the server assigned this chunk: the `[n]` citation
+    /// number for an answer's source, or the rank position for a search hit.
+    /// The pairing contract — a consumer keys citations off this, never off vec
+    /// position. `0` means the field was absent (an older server that predates
+    /// it); the TUI normalizes 0 to the 1-based position at conversion.
+    #[serde(default)]
+    pub ordinal: usize,
 }
 
 /// `GET /health` capability probe.
@@ -103,6 +119,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn query_request_omits_empty_history() {
+        let req = QueryRequest {
+            vault_id: "v".into(),
+            query: "q".into(),
+            context_size: None,
+            history: vec![],
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(
+            !json.contains("history"),
+            "empty history must not hit the wire: {json}"
+        );
+    }
+
+    #[test]
+    fn query_request_serializes_history_pairs() {
+        let req = QueryRequest {
+            vault_id: "v".into(),
+            query: "q".into(),
+            context_size: None,
+            history: vec![HistoryTurn {
+                question: "q1".into(),
+                answer: "a1".into(),
+            }],
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains(r#""history":[{"question":"q1","answer":"a1"}]"#));
+    }
+
+    #[test]
     fn health_parses_semantic_only_null_llm_provider() {
         // A semantic-only server sends `llm_provider: null`. The probe must still
         // parse (server reachable → online), so search stays available even with
@@ -144,5 +190,21 @@ mod tests {
             r#"{"status":"ok","reranker":true,"llm_provider":"gemini","auth_required":false}"#;
         let health: Health = serde_json::from_str(json).unwrap();
         assert!(health.embedder.is_none());
+    }
+
+    #[test]
+    fn chunk_result_parses_the_ordinal_when_present() {
+        let json = r#"{"path":"a.md","title":"t","date":null,"content":"c","hash":"h","similarity_score":0.9,"ordinal":3}"#;
+        let c: ChunkResult = serde_json::from_str(json).unwrap();
+        assert_eq!(c.ordinal, 3);
+    }
+
+    #[test]
+    fn chunk_result_defaults_ordinal_to_zero_when_absent() {
+        // An older server omits `ordinal`; parsing must still succeed and leave
+        // 0 (the "absent" sentinel the TUI turns into a position fallback).
+        let json = r#"{"path":"a.md","title":"t","date":null,"content":"c","hash":"h","similarity_score":0.9}"#;
+        let c: ChunkResult = serde_json::from_str(json).unwrap();
+        assert_eq!(c.ordinal, 0);
     }
 }

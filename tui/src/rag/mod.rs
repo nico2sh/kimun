@@ -38,21 +38,6 @@ pub enum RagStatus {
     },
 }
 
-/// A completed RAG answer delivered back to the answer overlay via
-/// [`AppEvent::OverlayData(OverlayData::RagAnswerReady)`](crate::components::events::AppEvent).
-#[derive(Debug, Clone)]
-pub struct RagAnswer {
-    pub answer: String,
-    pub sources: Vec<RagSource>,
-}
-
-/// A cited source chunk — enough to render a row and open the note.
-#[derive(Debug, Clone)]
-pub struct RagSource {
-    pub path: kimun_core::nfs::VaultPath,
-    pub title: String,
-}
-
 impl RagStatus {
     /// Short footer label, or `None` when nothing should show.
     pub fn label(self) -> Option<&'static str> {
@@ -68,8 +53,8 @@ impl RagStatus {
 
     /// Whether question-answering (Ask) is available right now: the server is
     /// reachable AND has an LLM configured. `false` when offline, disabled, or
-    /// connected to a semantic-only server — the Ask overlay is hidden in those
-    /// cases (adr/0022).
+    /// connected to a semantic-only server — the ASK rail entry is hidden in
+    /// those cases (adr/0022).
     pub fn llm_available(self) -> bool {
         matches!(
             self,
@@ -79,6 +64,16 @@ impl RagStatus {
                 llm_available: true
             }
         )
+    }
+
+    /// Whether semantic search is usable right now: the server is reachable AND
+    /// has an embedder — i.e. `Online`/`Syncing`, regardless of `llm_available`
+    /// (a semantic-only server still searches). `false` for `Offline`,
+    /// `Unauthorized`, `NotConfigured` and `Disabled`. The SEM rail entry is
+    /// driven by this, mirroring how ASK is driven by `llm_available` — a
+    /// configured-but-unreachable server hides SEM just as it hides ASK.
+    pub fn search_available(self) -> bool {
+        matches!(self, RagStatus::Online { .. } | RagStatus::Syncing { .. })
     }
 }
 
@@ -99,5 +94,49 @@ mod tests {
     fn unauthorized_status_labels_and_gates() {
         assert_eq!(RagStatus::Unauthorized.label(), Some("rag: unauthorized"));
         assert!(!RagStatus::Unauthorized.llm_available());
+    }
+
+    #[test]
+    fn search_available_tracks_reachable_with_embedder() {
+        // Online/Syncing → searchable, whether or not an LLM is configured
+        // (a semantic-only server still searches).
+        assert!(
+            RagStatus::Online {
+                llm_available: false
+            }
+            .search_available()
+        );
+        assert!(
+            RagStatus::Online {
+                llm_available: true
+            }
+            .search_available()
+        );
+        assert!(
+            RagStatus::Syncing {
+                llm_available: false
+            }
+            .search_available()
+        );
+        assert!(
+            RagStatus::Syncing {
+                llm_available: true
+            }
+            .search_available()
+        );
+        // Not reachable / no embedder → not searchable.
+        assert!(!RagStatus::Offline.search_available());
+        assert!(!RagStatus::Unauthorized.search_available());
+        assert!(!RagStatus::NotConfigured.search_available());
+        assert!(!RagStatus::Disabled.search_available());
+    }
+
+    #[test]
+    fn semantic_only_server_searches_but_does_not_answer() {
+        let semantic_only = RagStatus::Online {
+            llm_available: false,
+        };
+        assert!(semantic_only.search_available(), "SEM must show");
+        assert!(!semantic_only.llm_available(), "ASK must stay hidden");
     }
 }

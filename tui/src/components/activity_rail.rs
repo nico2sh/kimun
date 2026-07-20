@@ -20,12 +20,13 @@ use crate::settings::themes::Theme;
 pub const RAIL_WIDTH: u16 = 7;
 
 /// The full rail catalog in presentation order. CFG is last and pinned to the
-/// bottom of the strip by a spacer. SEM only appears when a RAG server is
-/// configured (the rail is rebuilt with the screen on any config change).
-const ITEMS: [(&str, DrawerView); 7] = [
+/// bottom of the strip by a spacer. SEM only appears when the server is
+/// reachable for search (the rail is rebuilt on any RAG-status change).
+const ITEMS: [(&str, DrawerView); 8] = [
     ("FIL", DrawerView::Files),
     ("FND", DrawerView::Find),
     ("SEM", DrawerView::Semantic),
+    ("ASK", DrawerView::Ask),
     ("TAG", DrawerView::Tags),
     ("LNK", DrawerView::Links),
     ("OUT", DrawerView::Outline),
@@ -40,6 +41,8 @@ fn glyph_for(icons: &crate::settings::icons::Icons, view: DrawerView) -> &'stati
         DrawerView::Find => icons.rail_find,
         // No dedicated icon field yet; `~` reads as "similar" and is ASCII-safe.
         DrawerView::Semantic => "~",
+        // No dedicated icon field yet; `?` reads as "ask" and is ASCII-safe.
+        DrawerView::Ask => "?",
         DrawerView::Tags => icons.rail_tags,
         DrawerView::Links => icons.rail_links,
         DrawerView::Outline => icons.rail_outline,
@@ -50,9 +53,23 @@ fn glyph_for(icons: &crate::settings::icons::Icons, view: DrawerView) -> &'stati
 /// Rows each rail cell occupies (glyph line + label line + gap).
 const CELL_ROWS: u16 = 3;
 
+/// Which feature-gated rail items are currently visible — a server-status
+/// snapshot passed into `ActivityRail::new`/`PanelSet::rebuild_rail`. Named
+/// fields instead of two positional bools so a caller can't silently swap
+/// SEM and ASK.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RailCaps {
+    /// SEM appears when the server is reachable for search (an embedder is
+    /// configured) — `RagStatus::search_available`, mirroring how `ask` tracks
+    /// `RagStatus::llm_available`.
+    pub semantic: bool,
+    /// ASK appears when the server can answer questions (an LLM configured).
+    pub ask: bool,
+}
+
 pub struct ActivityRail {
     /// The visible items, in presentation order: [`ITEMS`] minus the views
-    /// whose feature is off (SEM without a configured RAG server).
+    /// whose feature is off (SEM without a search-reachable server).
     items: Vec<(&'static str, DrawerView)>,
     /// The item the keyboard cursor sits on (the item `Enter` opens).
     cursor: usize,
@@ -69,11 +86,14 @@ impl ActivityRail {
     pub fn new(
         key_bindings: KeyBindings,
         icons: crate::settings::icons::Icons,
-        semantic_visible: bool,
+        caps: RailCaps,
     ) -> Self {
         let items = ITEMS
             .into_iter()
-            .filter(|(_, view)| semantic_visible || *view != DrawerView::Semantic)
+            .filter(|(_, view)| caps.semantic || *view != DrawerView::Semantic)
+            // ASK appears only when the server can answer questions (an LLM is
+            // configured); the rail is rebuilt when that changes.
+            .filter(|(_, view)| caps.ask || *view != DrawerView::Ask)
             .collect();
         Self {
             items,
@@ -87,6 +107,12 @@ impl ActivityRail {
     /// The drawer view under the keyboard cursor.
     pub fn cursor_view(&self) -> DrawerView {
         self.items[self.cursor].1
+    }
+
+    /// Whether `view` is currently on the rail (its feature gate is on).
+    #[cfg(test)]
+    pub fn shows(&self, view: DrawerView) -> bool {
+        self.items.iter().any(|(_, v)| *v == view)
     }
 
     /// Move the keyboard cursor onto `view` (e.g. after a click or a leader
@@ -267,17 +293,42 @@ mod tests {
         InputEvent::Key(KeyEvent::new(code, KeyModifiers::NONE))
     }
 
-    fn rail_with_semantic(semantic_visible: bool) -> ActivityRail {
+    fn rail_with(semantic_visible: bool, ask_visible: bool) -> ActivityRail {
         let settings = crate::settings::AppSettings::default();
         ActivityRail::new(
             settings.key_bindings,
             crate::settings::icons::Icons::new(false),
-            semantic_visible,
+            RailCaps {
+                semantic: semantic_visible,
+                ask: ask_visible,
+            },
         )
     }
 
+    fn rail_with_semantic(semantic_visible: bool) -> ActivityRail {
+        rail_with(semantic_visible, false)
+    }
+
     fn test_rail() -> ActivityRail {
-        rail_with_semantic(true)
+        rail_with(true, true)
+    }
+
+    /// The drawer views the rail currently shows, in order.
+    fn rail_views(rail: &ActivityRail) -> Vec<DrawerView> {
+        rail.items.iter().map(|(_, v)| *v).collect()
+    }
+
+    #[test]
+    fn rail_hides_ask_without_llm() {
+        let rail = rail_with(true, false);
+        assert!(rail_views(&rail).contains(&DrawerView::Semantic));
+        assert!(!rail_views(&rail).contains(&DrawerView::Ask));
+    }
+
+    #[test]
+    fn rail_shows_ask_with_llm() {
+        let rail = rail_with(true, true);
+        assert!(rail_views(&rail).contains(&DrawerView::Ask));
     }
 
     #[test]
