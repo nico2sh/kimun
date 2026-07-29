@@ -23,7 +23,8 @@ use crate::components::events::{AppEvent, AppTx, FileOp, InputEvent};
 use crate::components::panel::panel_block;
 use crate::components::query_list_panel::{ListPanelSpec, QueryListPanel};
 use crate::components::rich_row::RichRow;
-use crate::components::search_list::{Emit, RowSource, SearchRow};
+use crate::components::search_list::{Emit, RowSource, SearchRow, YankTarget};
+use crate::keys::key_combo::KeyCombo;
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
 
@@ -53,6 +54,11 @@ impl SearchRow for TagEntry {
 
     fn visual_height(&self) -> u16 {
         1
+    }
+
+    fn yank_target(&self) -> Option<YankTarget> {
+        // With the `#` sigil, so the copied text is usable as-is in a note.
+        Some(YankTarget::new(format!("#{}", self.label), "tag"))
     }
 }
 
@@ -104,10 +110,10 @@ pub struct TagsPanel {
 }
 
 impl TagsPanel {
-    pub fn new(vault: Arc<NoteVault>, icons: Icons) -> Self {
+    pub fn new(vault: Arc<NoteVault>, icons: Icons, yank_combos: Vec<KeyCombo>) -> Self {
         Self {
             vault,
-            body: QueryListPanel::new(icons),
+            body: QueryListPanel::new(icons, yank_combos),
         }
     }
 
@@ -198,6 +204,10 @@ impl SearchRow for LinkEntry {
 
     fn match_text(&self) -> Option<&str> {
         Some(&self.filename)
+    }
+
+    fn yank_target(&self) -> Option<YankTarget> {
+        Some(YankTarget::path(self.path.to_string()))
     }
 
     fn visual_height(&self) -> u16 {
@@ -338,12 +348,12 @@ pub struct LinksPanel {
 }
 
 impl LinksPanel {
-    pub fn new(vault: Arc<NoteVault>, icons: Icons) -> Self {
+    pub fn new(vault: Arc<NoteVault>, icons: Icons, yank_combos: Vec<KeyCombo>) -> Self {
         Self {
             vault,
             note: VaultPath::empty(),
             tab: LinksTab::Backlinks,
-            body: QueryListPanel::new(icons),
+            body: QueryListPanel::new(icons, yank_combos),
             tab_cells: Vec::new(),
         }
     }
@@ -506,6 +516,12 @@ impl SearchRow for OutlineEntry {
     fn visual_height(&self) -> u16 {
         1
     }
+
+    fn yank_target(&self) -> Option<YankTarget> {
+        // The heading text alone — the row carries no note path, and the depth
+        // is presentation, not content.
+        Some(YankTarget::new(self.heading.clone(), "heading"))
+    }
 }
 
 struct OutlineSource {
@@ -572,11 +588,11 @@ pub struct OutlinePanel {
 }
 
 impl OutlinePanel {
-    pub fn new(vault: Arc<NoteVault>, icons: Icons) -> Self {
+    pub fn new(vault: Arc<NoteVault>, icons: Icons, yank_combos: Vec<KeyCombo>) -> Self {
         Self {
             vault,
             note: VaultPath::empty(),
-            body: QueryListPanel::new(icons),
+            body: QueryListPanel::new(icons, yank_combos),
         }
     }
 
@@ -639,7 +655,11 @@ mod tests {
             .await
             .unwrap();
 
-        let mut panel = TagsPanel::new(vault, Icons::new(false));
+        let mut panel = TagsPanel::new(
+            vault,
+            Icons::new(false),
+            vec![crate::keys::default_yank_combo()],
+        );
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         panel.refresh(&tx);
         drain(panel.body.list_mut().unwrap()).await;
@@ -674,7 +694,11 @@ mod tests {
             .await
             .unwrap();
 
-        let mut panel = LinksPanel::new(vault, Icons::new(false));
+        let mut panel = LinksPanel::new(
+            vault,
+            Icons::new(false),
+            vec![crate::keys::default_yank_combo()],
+        );
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
 
         // Backlinks of projectx → linker.
@@ -734,7 +758,11 @@ mod tests {
             .await
             .unwrap();
 
-        let mut panel = OutlinePanel::new(vault, Icons::new(false));
+        let mut panel = OutlinePanel::new(
+            vault,
+            Icons::new(false),
+            vec![crate::keys::default_yank_combo()],
+        );
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         panel.set_note(VaultPath::note_path_from("doc"), &tx);
         drain(panel.body.list_mut().unwrap()).await;

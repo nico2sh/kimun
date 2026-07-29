@@ -30,6 +30,11 @@ impl SearchRow for TestRow {
     fn match_text(&self) -> Option<&str> {
         Some(&self.name)
     }
+    /// Rows named "quiet" declare nothing to copy, so tests can exercise both
+    /// halves of the yank contract with the same row type.
+    fn yank_target(&self) -> Option<super::seams::YankTarget> {
+        (self.name != "quiet").then(|| super::seams::YankTarget::path(self.name.clone()))
+    }
 }
 
 /// One-shot source: returns rows whose name contains the query (server-side

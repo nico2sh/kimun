@@ -240,12 +240,23 @@ mod tests {
             vault.clone(),
             std::sync::Arc::new(std::sync::RwLock::new(settings.clone())),
             settings.icons(),
+            settings.yank_combos(),
         );
-        let tags = crate::components::drawer_views::TagsPanel::new(vault.clone(), settings.icons());
-        let links =
-            crate::components::drawer_views::LinksPanel::new(vault.clone(), settings.icons());
-        let outline =
-            crate::components::drawer_views::OutlinePanel::new(vault.clone(), settings.icons());
+        let tags = crate::components::drawer_views::TagsPanel::new(
+            vault.clone(),
+            settings.icons(),
+            settings.yank_combos(),
+        );
+        let links = crate::components::drawer_views::LinksPanel::new(
+            vault.clone(),
+            settings.icons(),
+            settings.yank_combos(),
+        );
+        let outline = crate::components::drawer_views::OutlinePanel::new(
+            vault.clone(),
+            settings.icons(),
+            settings.yank_combos(),
+        );
         DrawerHost::new(
             vault,
             &settings.key_bindings,

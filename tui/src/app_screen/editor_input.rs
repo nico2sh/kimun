@@ -279,10 +279,23 @@ pub(crate) fn classify_tail(
     {
         let is_fkey = combo.key.is_fkey();
         let action = bindings.get_action(&combo);
-        // Flash the raw chord — except for the leader gateway, whose
-        // affordance is the pending sequence (and the which-key overlay).
+        // Name the action when the chord resolves to one; fall back to the raw
+        // chord when it does not. A bare "Ctrl&K" only answers "what did I
+        // press"; "Search notes" answers "what did it do", and the raw chord was
+        // never the interesting half for a binding the user chose. Unbound
+        // chords keep the echo — there is nothing else to say about them.
+        //
+        // Handlers that report their own outcome (a yank's "path copied", a
+        // paste's "pasted") overwrite this: the tier's flash is applied first,
+        // then the intent runs.
+        //
+        // The leader gateway is exempt either way — its affordance is the
+        // pending sequence and the which-key overlay.
         if action != Some(ActionShortcuts::Leader) && (is_fkey || combo.is_letter_chord()) {
-            flash = Some(combo.to_string());
+            flash = Some(match &action {
+                Some(a) => a.label(),
+                None => combo.to_string(),
+            });
         }
         shortcut_intent = match action {
             Some(ActionShortcuts::OpenCommandPalette) => Some(EditorIntent::ToggleOverlay {
@@ -341,6 +354,13 @@ pub(crate) fn classify_tail(
                 open: OverlayOpen::SavedSearches,
             }),
             Some(ActionShortcuts::OpenAsk) => Some(EditorIntent::Op(EditorOp::OpenAsk)),
+            // Deliberately produces NO intent, so the chord is never consumed
+            // here and always reaches whatever has focus. A list surface claims
+            // it inside `SearchList` and yanks the selected row's target; the
+            // editor claims it as redo. The binding exists for the other two
+            // things a hand-rolled pre-check could never give it — rebinding and
+            // a help-dialog entry (adr/0032).
+            Some(ActionShortcuts::YankRow) => None,
             Some(ActionShortcuts::OpenSortDialog) => {
                 // Sort applies only when a list is focused (the drawer's
                 // Find / Files views). When the editor is focused, do NOT
@@ -791,6 +811,28 @@ mod tests {
         let c = classify_it(&key(KeyCode::F(9), KeyModifiers::NONE), &ctx());
         assert_eq!(c.intent, EditorIntent::Consume);
         assert!(c.flash.is_some());
+    }
+
+    /// A bound chord flashes what it *does*, not which keys were pressed — the
+    /// user chose the binding, so the chord is the half they already know.
+    #[test]
+    fn a_bound_chord_flashes_the_action_label() {
+        let c = classify_it(&ctrl('k'), &ctx());
+        assert_eq!(
+            c.flash.as_deref(),
+            Some(ActionShortcuts::SearchNotes.label().as_str())
+        );
+    }
+
+    /// An unbound chord has no action to name, so the echo stays — it is the
+    /// only answer available to "what did I just press?".
+    #[test]
+    fn an_unbound_chord_still_flashes_the_raw_chord() {
+        // Ctrl+Y is deliberately absent from this test's bindings.
+        let c = classify_it(&ctrl('y'), &ctx());
+        let combo =
+            key_event_to_combo(&KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL)).unwrap();
+        assert_eq!(c.flash.as_deref(), Some(combo.to_string().as_str()));
     }
 
     #[test]

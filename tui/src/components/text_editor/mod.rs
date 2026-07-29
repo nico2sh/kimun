@@ -14,7 +14,6 @@ mod vim;
 pub mod widener_metrics;
 pub mod word_wrap;
 
-use arboard::Clipboard;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::layout::Rect;
@@ -416,8 +415,6 @@ pub struct TextEditorComponent {
     /// Current selection range in logical (row, byte-col) coordinates.
     /// Only tracked for the Textarea backend; always `None` for Nvim.
     selection: Option<((usize, usize), (usize, usize))>,
-    /// System clipboard handle. `None` if the clipboard is unavailable (e.g. headless CI).
-    clipboard: Option<Clipboard>,
     /// Host-side state and policy for the Nvim backend (pending-Z intercept,
     /// frame sync). See [`nvim_host`].
     nvim_host: NvimHost,
@@ -471,7 +468,6 @@ impl TextEditorComponent {
             view: MarkdownEditorView::new(),
             revs: Revisions::new(),
             selection: None,
-            clipboard: Clipboard::new().ok(),
             nvim_host: NvimHost::new(),
             search: None,
             autocomplete: None,
@@ -825,8 +821,12 @@ impl TextEditorComponent {
             })
     }
 
-    /// Copy selected text to the system clipboard.
-    fn copy_selection_to_clipboard(&mut self) {
+    /// Copy selected text to the OS clipboard, flashing the outcome.
+    ///
+    /// Routed through the shared [`crate::components::yank`] seam so a clipboard
+    /// failure is reported rather than swallowed, and so "nothing was selected"
+    /// is distinguishable from "the copy failed" (adr/0031).
+    fn copy_selection_to_clipboard(&mut self, tx: &AppTx) {
         let text = {
             // Match the highlighted range in vim charwise Visual mode: the
             // textarea selection is half-open, but the cursor's char is part of
@@ -836,21 +836,20 @@ impl TextEditorComponent {
             // since copy leaves the selection active (repeated copy would drift
             // wider). `extend_visual_selection_inclusive` is for one-shot
             // consumers (paste/wrap) that collapse the selection afterwards.
-            let range = match self.inclusive_visual_range() {
-                Some(r) => r,
-                None => return,
-            };
-            let Some(ta) = self.backend.as_textarea() else {
-                return;
-            };
-            match selection_text_in(ta, range) {
-                Some(t) => t,
-                None => return,
+            let selected = self
+                .inclusive_visual_range()
+                .zip(self.backend.as_textarea())
+                .and_then(|(range, ta)| selection_text_in(ta, range));
+            match selected {
+                Some(t) if !t.is_empty() => t,
+                _ => {
+                    tx.send(AppEvent::FlashMessage("nothing to copy".into()))
+                        .ok();
+                    return;
+                }
             }
         };
-        if let Some(cb) = &mut self.clipboard {
-            let _ = cb.set_text(text);
-        }
+        crate::components::yank(text, "copied", tx);
     }
 
     /// The live selection range, with the end extended by one char when in vim
@@ -871,16 +870,28 @@ impl TextEditorComponent {
         Some((start, end))
     }
 
-    /// Paste text from the system clipboard at the cursor, replacing any active selection.
+    /// Paste text from the OS clipboard at the cursor, replacing any active
+    /// selection. Every failure is reported — silence here is what made the
+    /// vim-mode paste bug so hard to place (adr/0031).
     fn paste_from_clipboard(&mut self, tx: &AppTx) {
-        let text = match &mut self.clipboard {
-            Some(cb) => match cb.get_text() {
-                Ok(t) if !t.is_empty() => t,
-                _ => return,
-            },
-            None => return,
+        let text = match crate::components::with_clipboard(|c| c.get_text()) {
+            Ok(t) if !t.is_empty() => t,
+            Ok(_) => {
+                tx.send(AppEvent::FlashMessage("clipboard is empty".into()))
+                    .ok();
+                return;
+            }
+            Err(e) => {
+                tx.send(AppEvent::FlashMessage(format!("clipboard: {e}")))
+                    .ok();
+                return;
+            }
         };
         self.paste_text(&text, tx);
+        // Report the paste like every other clipboard action. Without this the
+        // footer keeps the raw chord echo, so Ctrl+V was the one clipboard key
+        // that never said what it did.
+        tx.send(AppEvent::FlashMessage("pasted".into())).ok();
     }
 
     /// Inserts `text` at the cursor, replacing any active selection. When `text`
@@ -947,10 +958,14 @@ impl TextEditorComponent {
             self.paste_text(text, tx);
             return;
         }
+        // Replacing the selection happens HERE, atomically with the insert, and
+        // not earlier when the paste was merely started: the image encode and
+        // the attachment save can both fail (disk full, read-only vault, a sync
+        // conflict), and a cut done up front would leave the user's selected
+        // text destroyed with nothing in its place and only a save error to
+        // explain it.
+        self.take_selection_for_external_paste();
         if let Some(ta) = self.backend.as_textarea_mut() {
-            if ta.selection_range().is_some() {
-                ta.cut();
-            }
             ta.insert_str(text);
             self.selection = ta.selection_range();
             self.bump_content();
@@ -964,14 +979,45 @@ impl TextEditorComponent {
     /// Snapshot of the system clipboard image, if any. Returns owned RGBA bytes
     /// plus the image dimensions. The screen layer is responsible for encoding
     /// (e.g. PNG) and persisting via the vault.
+    ///
+    /// Reads go through the same shared handle as writes (adr/0031) — not for
+    /// ownership (only writes need that) but so there is one connection and one
+    /// reconnect policy. No flash here: this is a *probe* run ahead of every
+    /// Ctrl+V, and "no image on the clipboard" is the ordinary case, not a
+    /// failure to report.
     pub fn take_clipboard_image(&mut self) -> Option<ClipboardImage> {
-        let cb = self.clipboard.as_mut()?;
-        let img = cb.get_image().ok()?;
+        let img = crate::components::with_clipboard(|c| c.get_image()).ok()?;
         Some(ClipboardImage {
             width: img.width,
             height: img.height,
             rgba: img.bytes.into_owned(),
         })
+    }
+
+    /// Prepare the buffer for content arriving from *outside* the editor's own
+    /// key path — today only the clipboard-image paste, which the screen layer
+    /// owns because it alone can reach the vault.
+    ///
+    /// Removes the active selection (the incoming content replaces it, as with
+    /// every other paste) and reconciles the vim engine out of Visual, through
+    /// the same door the mouse path uses. Without this the engine keeps a mode
+    /// that the buffer no longer supports: still Visual, selection gone
+    /// (adr/0031).
+    pub fn take_selection_for_external_paste(&mut self) {
+        self.extend_visual_selection_inclusive();
+        let cut = if let Some(ta) = self.backend.as_textarea_mut() {
+            let cut = ta.selection_range().is_some() && ta.cut();
+            self.selection = ta.selection_range();
+            cut
+        } else {
+            false
+        };
+        if cut {
+            self.bump_content();
+        }
+        // `false` = no live selection, so a modal engine returns to Normal.
+        // A no-op for Insert and for the non-modal backends.
+        self.backend.sync_mouse_selection(false);
     }
 
     /// Wraps the active selection in `open`/`close` and re-selects the inner
@@ -1504,7 +1550,7 @@ impl TextEditorComponent {
         if key.modifiers == KeyModifiers::CONTROL {
             match key.code {
                 KeyCode::Char('c') => {
-                    self.copy_selection_to_clipboard();
+                    self.copy_selection_to_clipboard(tx);
                     return EventState::Consumed;
                 }
                 KeyCode::Char('v') => {
@@ -1512,7 +1558,7 @@ impl TextEditorComponent {
                     return EventState::Consumed;
                 }
                 KeyCode::Char('x') => {
-                    self.copy_selection_to_clipboard();
+                    self.copy_selection_to_clipboard(tx);
                     let cut = if let Some(ta) = self.backend.as_textarea_mut() {
                         // `ta.cut()` returns `false` when the selection was
                         // empty / nothing to remove. Use its return value
@@ -1754,7 +1800,11 @@ impl TextEditorComponent {
     }
 
     /// Handle a mouse event (Textarea backend only).
-    fn handle_mouse(&mut self, mouse: &ratatui::crossterm::event::MouseEvent) -> EventState {
+    fn handle_mouse(
+        &mut self,
+        mouse: &ratatui::crossterm::event::MouseEvent,
+        tx: &AppTx,
+    ) -> EventState {
         let r = &self.rect;
         let in_bounds = mouse.column >= r.x
             && mouse.column < r.x + r.width
@@ -1780,7 +1830,7 @@ impl TextEditorComponent {
         }
         // Handle right-click clipboard copy in its own scope to avoid borrow conflicts.
         if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Right)) {
-            self.copy_selection_to_clipboard();
+            self.copy_selection_to_clipboard(tx);
             self.selection = if let Some(ta) = self.backend.as_textarea() {
                 ta.selection_range()
             } else {
@@ -2017,6 +2067,30 @@ impl Component for TextEditorComponent {
                                 }
                                 VimHostAction::SearchNext => self.vim_search_repeat(false),
                                 VimHostAction::SearchPrev => self.vim_search_repeat(true),
+                                // Copy and Cut: the engine already did the
+                                // editing and the mode transition; all that is
+                                // left is the I/O and reporting it (adr/0031).
+                                VimHostAction::ClipboardCopy(text) => {
+                                    self.selection = None;
+                                    crate::components::yank(text, "copied", tx);
+                                }
+                                VimHostAction::ClipboardCut(text) => {
+                                    self.selection = None;
+                                    crate::components::yank(text, "cut", tx);
+                                    self.bump_content();
+                                }
+                                // Paste is different: the engine deliberately
+                                // left the range SELECTED rather than cutting
+                                // it, so the replacement is atomic. Keep the
+                                // selection live — `paste_text` consumes it, and
+                                // a failed/empty read must leave it untouched.
+                                VimHostAction::ClipboardPaste => {
+                                    self.selection = self
+                                        .backend
+                                        .as_textarea()
+                                        .and_then(|ta| ta.selection_range());
+                                    self.paste_from_clipboard(tx);
+                                }
                             }
                             return EventState::Consumed;
                         }
@@ -2049,7 +2123,7 @@ impl Component for TextEditorComponent {
             InputEvent::Mouse(mouse) => {
                 let text_rev_before = self.revs.current();
                 let cursor_before = self.textarea_cursor();
-                let result = self.handle_mouse(mouse);
+                let result = self.handle_mouse(mouse, tx);
                 let cursor_after = self.textarea_cursor();
                 // Mouse clicks typically only move the cursor — refresh
                 // (which may close the popup) but do not auto-open.
@@ -3535,6 +3609,75 @@ mod tests {
     }
 
     /// Regression: copy is read-only over a vim charwise Visual selection.
+    /// Every clipboard action reports its outcome, paste included. Before this,
+    /// Ctrl+V was the only one that said nothing, so the footer was left showing
+    /// the raw chord echo — indistinguishable from an unbound key.
+    ///
+    /// Headless CI has no clipboard, so accept either the success message or a
+    /// clipboard error; what must never happen is silence.
+    #[test]
+    fn paste_reports_its_outcome() {
+        let mut editor = make_editor();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        editor.set_text("x".to_string());
+        editor.paste_from_clipboard(&tx);
+        let reported = std::iter::from_fn(|| rx.try_recv().ok()).any(|e| {
+            matches!(e, AppEvent::FlashMessage(m)
+                if m == "pasted" || m == "clipboard is empty" || m.starts_with("clipboard: "))
+        });
+        assert!(reported, "a paste attempt must always report something");
+    }
+
+    /// The image-paste path bypasses the editor's key handling entirely (the
+    /// screen layer owns it, because only it can reach the vault), so it has to
+    /// reconcile the engine itself. Before this, an image pasted in Visual mode
+    /// left the engine in Visual with a selection that no longer existed —
+    /// every subsequent motion silently extended a ghost (adr/0031).
+    #[test]
+    fn external_paste_drops_the_selection_and_leaves_visual() {
+        let mut editor = make_vim_editor();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        editor.set_text("hello world".to_string());
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('v'), KeyModifiers::NONE)),
+            &tx,
+        );
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('e'), KeyModifiers::NONE)),
+            &tx,
+        );
+        assert_eq!(vim_mode(&editor), EditorMode::Visual);
+
+        editor.take_selection_for_external_paste();
+
+        assert_eq!(
+            vim_mode(&editor),
+            EditorMode::Normal,
+            "the engine must not keep believing it is in Visual"
+        );
+        assert_eq!(
+            get_ta(&mut editor).selection_range(),
+            None,
+            "the selection the incoming content replaces must be gone"
+        );
+        assert_eq!(
+            editor.get_text(),
+            " world",
+            "the inclusive visual range is what gets replaced"
+        );
+    }
+
+    /// The same call outside Visual must not eat anything — Ctrl+V with an
+    /// image on the clipboard is an ordinary insert-at-cursor in Normal mode.
+    #[test]
+    fn external_paste_without_a_selection_leaves_the_buffer_alone() {
+        let mut editor = make_vim_editor();
+        editor.set_text("hello world".to_string());
+        editor.take_selection_for_external_paste();
+        assert_eq!(editor.get_text(), "hello world");
+        assert_eq!(vim_mode(&editor), EditorMode::Normal);
+    }
+
     /// It must include the char under the cursor (matching the highlight), but
     /// must NOT mutate the live selection — otherwise repeated right-click copy
     /// drifts the selection one char wider each time (`((0,0),(0,4))` →
@@ -3561,8 +3704,8 @@ mod tests {
             "copy must read the inclusive range including the cursor char"
         );
         // Repeated copy must leave the live selection untouched.
-        editor.copy_selection_to_clipboard();
-        editor.copy_selection_to_clipboard();
+        editor.copy_selection_to_clipboard(&tx);
+        editor.copy_selection_to_clipboard(&tx);
         assert_eq!(
             get_ta(&mut editor).selection_range(),
             before,

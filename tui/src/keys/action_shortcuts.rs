@@ -44,6 +44,11 @@ pub enum ActionShortcuts {
     FollowLink,
     // Quick capture
     QuickNote,
+    /// Copy the selected list row's [yank
+    /// target](crate::components::search_list::YankTarget) to the OS clipboard.
+    /// Claimed only when the editor is not focused, so the editor keeps this
+    /// chord for redo (adr/0032).
+    YankRow,
     // Query panel
     ToggleQueryPanel,
     OpenSavedSearches,
@@ -86,6 +91,7 @@ impl ActionShortcuts {
             | ActionShortcuts::FollowLink
             | ActionShortcuts::QuickNote
             | ActionShortcuts::FindInBuffer
+            | ActionShortcuts::YankRow
             | ActionShortcuts::OpenAsk => ShortcutCategory::Notes,
 
             ActionShortcuts::Text(_) => ShortcutCategory::TextEditing,
@@ -109,6 +115,7 @@ impl ActionShortcuts {
             ActionShortcuts::FileOperations => "File operations".into(),
             ActionShortcuts::FollowLink => "Follow link".into(),
             ActionShortcuts::QuickNote => "Quick note".into(),
+            ActionShortcuts::YankRow => "Copy selected row".into(),
             ActionShortcuts::ToggleQueryPanel => "Toggle query drawer".into(),
             ActionShortcuts::OpenSavedSearches => "Saved searches".into(),
             ActionShortcuts::OpenAsk => "Ask".into(),
@@ -148,6 +155,7 @@ impl Display for ActionShortcuts {
             ActionShortcuts::FileOperations => "FileOperations".to_string(),
             ActionShortcuts::FollowLink => "FollowLink".to_string(),
             ActionShortcuts::QuickNote => "QuickNote".to_string(),
+            ActionShortcuts::YankRow => "YankRow".to_string(),
             ActionShortcuts::ToggleQueryPanel => "ToggleQueryPanel".to_string(),
             ActionShortcuts::OpenSavedSearches => "OpenSavedSearches".to_string(),
             ActionShortcuts::OpenAsk => "OpenAsk".to_string(),
@@ -183,6 +191,7 @@ impl TryFrom<String> for ActionShortcuts {
             "FileOperations" => ActionShortcuts::FileOperations,
             "FollowLink" => ActionShortcuts::FollowLink,
             "QuickNote" => ActionShortcuts::QuickNote,
+            "YankRow" => ActionShortcuts::YankRow,
             "ToggleQueryPanel" => ActionShortcuts::ToggleQueryPanel,
             "ToggleBacklinks" => ActionShortcuts::ToggleQueryPanel,
             "OpenSavedSearches" => ActionShortcuts::OpenSavedSearches,

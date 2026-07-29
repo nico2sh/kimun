@@ -32,9 +32,7 @@ use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 
 use ratatui::Frame;
-use ratatui::crossterm::event::{
-    KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
-};
+use ratatui::crossterm::event::{KeyCode, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, Borders, ListItem, Paragraph};
@@ -122,6 +120,12 @@ impl SearchRow for SourceRow {
     fn match_text(&self) -> Option<&str> {
         Some(&self.filter_text)
     }
+
+    fn yank_target(&self) -> Option<crate::components::search_list::YankTarget> {
+        Some(crate::components::search_list::YankTarget::path(
+            self.source.path.to_string(),
+        ))
+    }
 }
 
 /// The Ask workspace's Sources drawer view: a ranked source list (on the shared
@@ -145,12 +149,12 @@ pub struct SourcesPanel {
     /// passed in.
     vault: Arc<NoteVault>,
     icons: Icons,
-    /// Combos the engine intercepts: FollowLink (open) plus `Ctrl+Y` (yank).
-    /// Registered on every rebuilt list.
+    /// Combos the engine intercepts: FollowLink (open). Registered on every
+    /// rebuilt list, so an interception here is unambiguously "open".
     intercept: Vec<KeyCombo>,
-    /// The `Ctrl+Y` combo, kept to route an [`KeyReaction::Intercepted`] to
-    /// yank (any other intercepted combo is a FollowLink → open).
-    ctrl_y_combo: Option<KeyCombo>,
+    /// The user's yank chords, handed to each rebuilt list so the engine can
+    /// claim them itself (adr/0032).
+    yank_combos: Vec<KeyCombo>,
     /// The preview content viewport height from the last render — the page size
     /// for PageUp/PageDown content scrolling in the Full preview.
     preview_page: u16,
@@ -163,19 +167,23 @@ impl SourcesPanel {
             .get(&ActionShortcuts::FollowLink)
             .cloned()
             .unwrap_or_default();
-        let ctrl_y_combo = crate::keys::key_event_to_combo(&KeyEvent::new(
-            KeyCode::Char('y'),
-            KeyModifiers::CONTROL,
-        ));
-        let mut intercept = follow;
-        if let Some(c) = ctrl_y_combo {
-            intercept.push(c);
-        }
+        // The yank chord is NOT intercepted here any more. It used to be a
+        // hardcoded Ctrl+Y in this panel's intercept list — which also meant it
+        // ignored any rebinding. SearchList now claims the chord itself, from
+        // the user's own binding (adr/0032).
+        let intercept = follow;
         let icons = Icons::new(false);
         // The initial (turn-less) list is empty and built synchronously
         // ([`build_list`] uses `build_with_rows`), so the redraw callback is
         // never fired — a no-op is harmless by construction.
-        let list = build_list(Vec::new(), &intercept, &icons, Arc::new(|| {}));
+        let yank_combos = key_bindings.combos_for(&ActionShortcuts::YankRow);
+        let list = build_list(
+            Vec::new(),
+            &intercept,
+            &yank_combos,
+            &icons,
+            Arc::new(|| {}),
+        );
         Self {
             turn_id: None,
             list,
@@ -184,7 +192,7 @@ impl SourcesPanel {
             vault,
             icons,
             intercept,
-            ctrl_y_combo,
+            yank_combos,
             preview_page: 0,
         }
     }
@@ -238,6 +246,7 @@ impl SourcesPanel {
         self.list = build_list(
             rows,
             &self.intercept,
+            &self.yank_combos,
             &self.icons,
             redraw_callback(tx.clone()),
         );
@@ -424,12 +433,8 @@ impl SourcesPanel {
             // FollowLink opens; `Ctrl+Y` yanks — the canonical chords, now via
             // the engine's intercept mechanism instead of a hand-rolled
             // pre-check. From any focus / reveal state.
-            KeyReaction::Intercepted(c) => {
-                if Some(c) == self.ctrl_y_combo {
-                    self.yank_selected_path(tx);
-                } else {
-                    self.open_selected(tx);
-                }
+            KeyReaction::Intercepted(_) => {
+                self.open_selected(tx);
                 EventState::Consumed
             }
             // Enter (with no autocomplete open) cycles the reveal, like `l`.
@@ -462,6 +467,10 @@ impl SourcesPanel {
             KeyReaction::Consumed => {
                 self.sync_preview();
                 self.ensure_loaded(tx);
+                EventState::Consumed
+            }
+            KeyReaction::Yank(target) => {
+                crate::components::yank_row(target, tx);
                 EventState::Consumed
             }
             // Esc from a collapsed list bubbles so the host returns focus to the
@@ -817,10 +826,12 @@ impl SourcesPanel {
 fn build_list(
     rows: Vec<SourceRow>,
     intercept: &[KeyCombo],
+    yank_combos: &[KeyCombo],
     icons: &Icons,
     redraw: Arc<dyn Fn() + Send + Sync>,
 ) -> SearchList<SourceRow> {
     SearchList::builder(StaticRowSource, redraw)
+        .yank_combos(yank_combos.to_vec())
         .icons(icons.clone())
         .filter(Filter::Fuzzy)
         .opening_focus(Focus::List)
@@ -876,6 +887,7 @@ mod tests {
     use kimun_core::VaultConfig;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
     use tempfile::TempDir;
 
     fn source(path: &str, heading: &str, score: f64, text: &str) -> AskSource {

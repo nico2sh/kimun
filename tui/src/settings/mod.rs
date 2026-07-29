@@ -249,7 +249,15 @@ fn default_keybindings() -> KeyBindings {
         // pure drawer toggle is Ctrl-T above. ToggleQueryPanel has no
         // default binding — FIND stays reachable via the rail and leader.
         .add(KeyStrike::KeyE, ActionShortcuts::OpenFileBrowser)
-        .add(KeyStrike::KeyF, ActionShortcuts::FindInBuffer);
+        .add(KeyStrike::KeyF, ActionShortcuts::FindInBuffer)
+        // Copy the selected list row. Shares Ctrl-Y with the editor's redo,
+        // resolved by focus: the shortcut tier only claims it away from the
+        // editor (adr/0032). Sourced from `default_yank_combo` so SearchList,
+        // which claims the same chord internally, cannot drift from it.
+        .add(
+            crate::keys::default_yank_combo().key,
+            ActionShortcuts::YankRow,
+        );
 
     // Settings — F4 (no modifier, reliable in all terminals) plus the classic
     // Ctrl+, kept as an alias. Ctrl+, doesn't transmit a distinct code on many
@@ -817,6 +825,13 @@ impl AppSettings {
     /// Build the icon set for the current `use_nerd_fonts` setting.
     pub fn icons(&self) -> icons::Icons {
         icons::Icons::new(self.use_nerd_fonts)
+    }
+
+    /// The chords bound to [`ActionShortcuts::YankRow`], for handing to a
+    /// [`SearchList`](crate::components::search_list::SearchList) so a rebinding
+    /// reaches the list surfaces (adr/0032). Empty when the user unbound it.
+    pub fn yank_combos(&self) -> Vec<crate::keys::key_combo::KeyCombo> {
+        self.key_bindings.combos_for(&ActionShortcuts::YankRow)
     }
 
     /// Name of the theme the app is effectively using: the configured name,

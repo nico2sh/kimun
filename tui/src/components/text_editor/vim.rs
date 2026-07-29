@@ -6,16 +6,34 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui_textarea::{CursorMove, TextArea};
 
 /// Screen-level actions the host performs on the engine's behalf (adr/0012).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// The clipboard variants exist because the engine must not link `arboard`
+/// (adr/0011 keeps the OS clipboard out of the engine) but *is* the only thing
+/// that knows the vim-inclusive selection and owns the mode transition. So the
+/// engine does the editing and names the clipboard operation; the host performs
+/// the I/O and reports the outcome (adr/0031).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VimHostAction {
-    OpenPalette,                  // `:`
-    OpenSearch { forward: bool }, // `/` (true) `?` (false)
-    SearchNext,                   // `n`
-    SearchPrev,                   // `N`
+    OpenPalette, // `:`
+    OpenSearch {
+        forward: bool,
+    }, // `/` (true) `?` (false)
+    SearchNext,  // `n`
+    SearchPrev,  // `N`
+    /// Ctrl-C in Visual: the selection's text, already lifted by the engine.
+    /// The buffer is unchanged and the engine has returned to Normal.
+    ClipboardCopy(String),
+    /// Ctrl-X in Visual: as Copy, but the engine has already removed the text —
+    /// the host must bump the content revision.
+    ClipboardCut(String),
+    /// Ctrl-V: insert the OS clipboard at the cursor. Any visual selection has
+    /// already been removed by the engine, so the host inserts into a clean
+    /// cursor position.
+    ClipboardPaste,
 }
 
 /// What a key did, so the host can bump the right revision counters.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VimKeyOutcome {
     /// Buffer text changed — host calls `bump_content()`.
     TextMutated,
@@ -389,8 +407,12 @@ impl VimEngine {
         // (`vf,` extends through the ','), and the object key after `i`/`a`
         // (`vi(` re-aims the selection at the object). The g continuation is
         // resolved below where the full key context is available.
+        // A Ctrl-chord is never the awaited character (`vf` then Ctrl-C must
+        // abandon the find, not search for a literal 'c'). Fall through to the
+        // handling below, which routes Ctrl-C/X/V to the clipboard chords.
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match self.awaiting {
-            Some(Awaiting::Find(pf)) => {
+            Some(Awaiting::Find(pf)) if !ctrl => {
                 self.awaiting = None;
                 if let KeyCode::Char(ch) = key.code {
                     self.last_find = Some((ch, pf.till, pf.forward));
@@ -406,7 +428,7 @@ impl VimEngine {
                 self.clear_pending();
                 return VimKeyOutcome::NoOp;
             }
-            Some(Awaiting::ObjectScope { around }) => {
+            Some(Awaiting::ObjectScope { around }) if !ctrl => {
                 self.awaiting = None;
                 if let KeyCode::Char(ch) = key.code
                     && let Some(obj) = Self::object_for_char(ch, around)
@@ -452,6 +474,14 @@ impl VimEngine {
                 _ => return VimKeyOutcome::NoOp,
             }
         };
+        // OS clipboard chords. The engine claims them so the mode and selection
+        // transition happens here rather than behind its back — the host used to
+        // never see these keys at all, because the filter below swallowed every
+        // Ctrl-modified char (adr/0031).
+        if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(c, 'c' | 'x' | 'v') {
+            return self.clipboard_chord_visual(c, ta);
+        }
+
         if !plain {
             return VimKeyOutcome::NoOp;
         }
@@ -741,6 +771,93 @@ impl VimEngine {
         Self::outcome_for(op)
     }
 
+    /// Ctrl-C / Ctrl-X / Ctrl-V in Visual or Visual-line.
+    ///
+    /// The text is lifted through the textarea's yank buffer — a transport only.
+    /// The **unnamed register is deliberately not filled**: the OS clipboard and
+    /// the register are independent channels, so a Ctrl-X must not clobber what
+    /// `y` put in the register any more than `dd` may clobber the OS clipboard
+    /// (adr/0031).
+    ///
+    /// All three land in Normal, because vim's Ctrl-C is Esc.
+    ///
+    /// **Paste does not mutate here.** It leaves the range *selected* and lets
+    /// the host replace it as part of the insert, so a failed or empty clipboard
+    /// read leaves the selection intact. Cutting first would destroy the user's
+    /// text with nothing to put in its place, and the host's read can fail for
+    /// ordinary reasons (empty clipboard, X11 hiccup).
+    fn clipboard_chord_visual(&mut self, c: char, ta: &mut TextArea<'static>) -> VimKeyOutcome {
+        let linewise = self.mode == EditorMode::VisualLine;
+        let Some(((sr, sc), (er, ec))) = ta.selection_range() else {
+            self.mode = EditorMode::Normal;
+            self.clear_pending();
+            return VimKeyOutcome::CursorOnly;
+        };
+
+        // The text the clipboard receives, computed from the line bodies rather
+        // than from whatever range the buffer edit happens to consume — the
+        // linewise delete below may swallow the *preceding* newline instead of
+        // the trailing one, which would be wrong to hand to another application.
+        let clipboard_text = if linewise {
+            let body: String = ta.lines()[sr..=er].join("\n");
+            format!("{body}\n")
+        } else {
+            String::new() // filled from the selection below
+        };
+
+        // The range the chord acts on: whole lines for linewise, the
+        // vim-inclusive span (the char under the cursor counts) for charwise.
+        let select_content = |ta: &mut TextArea<'static>| {
+            ta.cancel_selection();
+            if linewise {
+                let end_len = ta.lines().get(er).map(|l| l.chars().count()).unwrap_or(ec);
+                Self::select_range(ta, (sr, 0), (er, end_len), false);
+            } else {
+                Self::select_range(ta, (sr, sc), (er, ec), true);
+            }
+        };
+
+        let action = match c {
+            'c' => {
+                select_content(ta);
+                ta.copy();
+                let text = if linewise {
+                    clipboard_text
+                } else {
+                    ta.yank_text()
+                };
+                ta.cancel_selection();
+                // vim leaves the cursor at the start of a yanked range.
+                ta.move_cursor(CursorMove::Jump(sr as u16, sc as u16));
+                VimHostAction::ClipboardCopy(text)
+            }
+            'x' => {
+                let text = if linewise {
+                    // Take the newline with the lines, or `dd`'s stray-blank-line
+                    // bug reappears on the clipboard path.
+                    Self::select_lines_for_delete(ta, sr, er);
+                    ta.cut();
+                    clipboard_text
+                } else {
+                    select_content(ta);
+                    ta.cut();
+                    ta.yank_text()
+                };
+                VimHostAction::ClipboardCut(text)
+            }
+            // Paste: leave the range selected and let the host's insert replace
+            // it atomically. Nothing is destroyed until there is something to
+            // put in its place.
+            _ => {
+                select_content(ta);
+                VimHostAction::ClipboardPaste
+            }
+        };
+        self.mode = EditorMode::Normal;
+        self.clear_pending();
+        VimKeyOutcome::Host(action)
+    }
+
     /// Re-aim the charwise visual selection at the text object under the
     /// cursor. The selection end is left ON the object's last char (visual
     /// selections are inclusive; the operator's inclusive `+1` restores the
@@ -918,6 +1035,25 @@ impl VimEngine {
             return Parsed::Cmd(Command::Redo(self.take_total_count()));
         }
 
+        // OS clipboard chords, likewise ahead of the plain filter (adr/0031).
+        // Ctrl-C is vim's Esc: no selection can exist in Normal, so there is
+        // nothing to copy and cancelling the pending sequence is the useful
+        // meaning. Ctrl-V pastes at the cursor. Ctrl-X has no Normal-mode
+        // meaning here (vim's decrement is not emulated) and stays unmapped.
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            match key.code {
+                KeyCode::Char('c') => {
+                    self.clear_pending();
+                    return Parsed::Cancel;
+                }
+                KeyCode::Char('v') => {
+                    self.clear_pending();
+                    return Parsed::Host(VimHostAction::ClipboardPaste);
+                }
+                _ => {}
+            }
+        }
+
         let plain = key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT;
         match key.code {
             KeyCode::Char(c) if plain => self.parse_normal_char(c),
@@ -933,6 +1069,17 @@ impl VimEngine {
     /// cancel the whole pending sequence (vim); Esc additionally clears any
     /// stray selection via the `Cancel` path.
     fn parse_awaiting(&mut self, aw: Awaiting, key: &KeyEvent) -> Parsed {
+        // A Ctrl-chord is never the awaited character — `r` then Ctrl-C must
+        // abandon the replace, not overwrite with a literal 'c'. vim's Ctrl-C
+        // is Esc, so route it the same way.
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.clear_pending();
+            return if key.code == KeyCode::Char('c') {
+                Parsed::Cancel
+            } else {
+                Parsed::Nothing
+            };
+        }
         let KeyCode::Char(c) = key.code else {
             self.clear_pending();
             return if key.code == KeyCode::Esc {
@@ -2102,6 +2249,33 @@ impl VimEngine {
         }
     }
 
+    /// Select rows `r0..=r1` for a **linewise delete**, consuming one newline so
+    /// no empty remnant is left behind: the trailing newline when a line
+    /// follows, otherwise the preceding one (last-line case), and the whole
+    /// buffer when it is all of it (which leaves the textarea's mandatory `[""]`).
+    ///
+    /// Shared by `dd`/`cc` and by the OS-clipboard Ctrl-X, which used to select
+    /// only the line *bodies* and so left a stray blank line behind every time.
+    fn select_lines_for_delete(ta: &mut TextArea<'static>, r0: usize, r1: usize) {
+        let last = ta.lines().len().saturating_sub(1);
+        if r1 < last {
+            ta.move_cursor(CursorMove::Jump(r0 as u16, 0));
+            ta.start_selection();
+            ta.move_cursor(CursorMove::Jump((r1 + 1) as u16, 0));
+        } else if r0 > 0 {
+            let prev_end = ta.lines()[r0 - 1].chars().count();
+            ta.move_cursor(CursorMove::Jump((r0 - 1) as u16, prev_end as u16));
+            ta.start_selection();
+            let end = ta.lines()[r1].chars().count();
+            ta.move_cursor(CursorMove::Jump(r1 as u16, end as u16));
+        } else {
+            ta.move_cursor(CursorMove::Jump(0, 0));
+            ta.start_selection();
+            let end = ta.lines()[r1].chars().count();
+            ta.move_cursor(CursorMove::Jump(r1 as u16, end as u16));
+        }
+    }
+
     fn apply_operator_linewise(
         &mut self,
         op: Operator,
@@ -2124,26 +2298,7 @@ impl VimEngine {
                 ta.move_cursor(CursorMove::Jump(r0 as u16, 0));
             }
             Operator::Delete | Operator::Change => {
-                // Select the lines. Include the trailing newline if there is a
-                // line after r1; otherwise (last line) include the PRECEDING
-                // newline so no empty remnant is left.
-                if r1 < last {
-                    ta.move_cursor(CursorMove::Jump(r0 as u16, 0));
-                    ta.start_selection();
-                    ta.move_cursor(CursorMove::Jump((r1 + 1) as u16, 0));
-                } else if r0 > 0 {
-                    let prev_end = ta.lines()[r0 - 1].chars().count();
-                    ta.move_cursor(CursorMove::Jump((r0 - 1) as u16, prev_end as u16));
-                    ta.start_selection();
-                    let end = ta.lines()[r1].chars().count();
-                    ta.move_cursor(CursorMove::Jump(r1 as u16, end as u16));
-                } else {
-                    // whole buffer: select everything, leaving one empty line
-                    ta.move_cursor(CursorMove::Jump(0, 0));
-                    ta.start_selection();
-                    let end = ta.lines()[r1].chars().count();
-                    ta.move_cursor(CursorMove::Jump(r1 as u16, end as u16));
-                }
+                Self::select_lines_for_delete(ta, r0, r1);
                 ta.cut();
                 // The cut selection may include a leading newline on the
                 // last-line path; fill the register with the proper linewise
@@ -2738,6 +2893,199 @@ mod tests {
             last = e.parse_normal(&key(c));
         }
         last
+    }
+
+    // ── OS clipboard chords (adr/0031) ───────────────────────────────────────
+    //
+    // The bug these pin: the engine ran BEFORE the host's clipboard shortcuts
+    // and swallowed every Ctrl-modified char as `NoOp`, so Ctrl-C/X/V worked in
+    // Insert mode only. Each test asserts the key now escapes as a host action
+    // AND that the engine's own state transitioned with it.
+
+    fn ctrl(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    /// Enter charwise Visual over "hello" (cursor lands ON the last 'o', which
+    /// vim includes in the selection).
+    fn visual_hello(e: &mut VimEngine, t: &mut TextArea<'static>) {
+        e.handle_key(&key('v'), t);
+        for _ in 0..4 {
+            e.handle_key(&key('l'), t);
+        }
+    }
+
+    #[test]
+    fn ctrl_c_in_visual_copies_the_inclusive_selection_and_exits_to_normal() {
+        let mut e = VimEngine::default();
+        let mut t = ta();
+        visual_hello(&mut e, &mut t);
+        match e.handle_key(&ctrl('c'), &mut t) {
+            VimKeyOutcome::Host(VimHostAction::ClipboardCopy(s)) => assert_eq!(s, "hello"),
+            o => panic!("got {o:?}"),
+        }
+        assert_eq!(e.mode, EditorMode::Normal, "vim's Ctrl-C is Esc");
+        assert_eq!(
+            t.lines(),
+            ["hello world", "second line"],
+            "copy must not edit"
+        );
+    }
+
+    #[test]
+    fn ctrl_x_in_visual_cuts_and_reports_the_removed_text() {
+        let mut e = VimEngine::default();
+        let mut t = ta();
+        visual_hello(&mut e, &mut t);
+        match e.handle_key(&ctrl('x'), &mut t) {
+            VimKeyOutcome::Host(VimHostAction::ClipboardCut(s)) => assert_eq!(s, "hello"),
+            o => panic!("got {o:?}"),
+        }
+        assert_eq!(t.lines()[0], " world");
+        assert_eq!(e.mode, EditorMode::Normal);
+    }
+
+    #[test]
+    fn visual_line_clipboard_copy_takes_whole_lines_with_a_trailing_newline() {
+        let mut e = VimEngine::default();
+        let mut t = ta();
+        e.handle_key(&key('V'), &mut t);
+        match e.handle_key(&ctrl('c'), &mut t) {
+            VimKeyOutcome::Host(VimHostAction::ClipboardCopy(s)) => {
+                assert_eq!(s, "hello world\n", "linewise yank includes the newline");
+            }
+            o => panic!("got {o:?}"),
+        }
+    }
+
+    #[test]
+    fn clipboard_chords_never_touch_the_unnamed_register() {
+        // The two channels are independent (adr/0031): a Ctrl-X must not
+        // clobber what `y` put in the register, the mirror of the rule that
+        // `dd` must not clobber the OS clipboard.
+        let mut e = VimEngine::default();
+        let mut t = ta();
+        e.handle_key(&key('y'), &mut t);
+        e.handle_key(&key('y'), &mut t); // yy — register holds line 1
+        let before = e.registers.read().map(|r| r.text.clone());
+        assert!(before.is_some(), "yy must fill the register");
+        visual_hello(&mut e, &mut t);
+        e.handle_key(&ctrl('x'), &mut t);
+        assert_eq!(
+            e.registers.read().map(|r| r.text.clone()),
+            before,
+            "the OS-clipboard cut must leave the unnamed register alone"
+        );
+    }
+
+    /// Paste must NOT cut here. The host's clipboard read can come back empty
+    /// or fail, and there is no way to put the text back — so the range is left
+    /// selected and the host's insert replaces it atomically.
+    #[test]
+    fn ctrl_v_in_visual_leaves_the_selection_for_the_host_to_replace() {
+        let mut e = VimEngine::default();
+        let mut t = ta();
+        visual_hello(&mut e, &mut t);
+        assert_eq!(
+            e.handle_key(&ctrl('v'), &mut t),
+            VimKeyOutcome::Host(VimHostAction::ClipboardPaste)
+        );
+        assert_eq!(
+            t.lines()[0],
+            "hello world",
+            "nothing may be destroyed before there is something to replace it"
+        );
+        assert_eq!(
+            t.selection_range(),
+            Some(((0, 0), (0, 5))),
+            "the inclusive range stays selected so the host's insert consumes it"
+        );
+        assert_eq!(e.mode, EditorMode::Normal);
+    }
+
+    /// The regression the above prevents: an empty clipboard used to leave the
+    /// buffer mutilated, because the engine cut before the host discovered it
+    /// had nothing to paste.
+    #[test]
+    fn ctrl_v_with_an_unusable_clipboard_leaves_the_buffer_untouched() {
+        let mut e = VimEngine::default();
+        let mut t = ta();
+        visual_hello(&mut e, &mut t);
+        e.handle_key(&ctrl('v'), &mut t);
+        // The host reads the clipboard, finds nothing, and returns without
+        // calling `paste_text` — simulated here by simply doing nothing.
+        assert_eq!(t.lines()[0], "hello world");
+    }
+
+    #[test]
+    fn visual_line_ctrl_x_takes_the_whole_line_leaving_no_blank() {
+        let mut e = VimEngine::default();
+        let mut t = ta();
+        e.handle_key(&key('V'), &mut t);
+        match e.handle_key(&ctrl('x'), &mut t) {
+            VimKeyOutcome::Host(VimHostAction::ClipboardCut(s)) => {
+                assert_eq!(s, "hello world\n", "the clipboard gets a linewise cut");
+            }
+            o => panic!("got {o:?}"),
+        }
+        assert_eq!(
+            t.lines(),
+            ["second line"],
+            "the line's newline goes with it — no stray blank line"
+        );
+    }
+
+    #[test]
+    fn visual_line_ctrl_x_on_the_last_line_leaves_no_blank_either() {
+        let mut e = VimEngine::default();
+        let mut t = ta();
+        t.move_cursor(CursorMove::Jump(1, 0));
+        e.handle_key(&key('V'), &mut t);
+        match e.handle_key(&ctrl('x'), &mut t) {
+            VimKeyOutcome::Host(VimHostAction::ClipboardCut(s)) => {
+                assert_eq!(
+                    s, "second line\n",
+                    "the clipboard text is the line plus a newline, even though \
+                     the buffer edit consumed the PRECEDING one"
+                );
+            }
+            o => panic!("got {o:?}"),
+        }
+        assert_eq!(t.lines(), ["hello world"]);
+    }
+
+    #[test]
+    fn ctrl_v_in_normal_reaches_the_host() {
+        let mut e = VimEngine::default();
+        let mut t = ta();
+        assert_eq!(
+            e.handle_key(&ctrl('v'), &mut t),
+            VimKeyOutcome::Host(VimHostAction::ClipboardPaste),
+            "Normal mode used to swallow this as NoOp"
+        );
+    }
+
+    #[test]
+    fn ctrl_c_in_normal_cancels_the_pending_sequence() {
+        let mut e = VimEngine::default();
+        let mut t = ta();
+        assert!(matches!(e.parse_normal(&key('2')), Parsed::Pending));
+        assert!(matches!(e.parse_normal(&ctrl('c')), Parsed::Cancel));
+        // The count is gone: `l` now moves one column, not two.
+        assert_eq!(e.handle_key(&key('l'), &mut t), VimKeyOutcome::CursorOnly);
+        assert_eq!(super::super::cursor_tuple(&t), (0, 1));
+    }
+
+    #[test]
+    fn ctrl_c_abandons_a_one_key_continuation_instead_of_being_its_target() {
+        // `r` waits for a replacement char. Ctrl-C is a `Char('c')` event, so
+        // without the modifier guard it would overwrite with a literal 'c'.
+        let mut e = VimEngine::default();
+        let mut t = ta();
+        e.handle_key(&key('r'), &mut t);
+        e.handle_key(&ctrl('c'), &mut t);
+        assert_eq!(t.lines()[0], "hello world", "r must have been abandoned");
+        assert!(e.awaiting.is_none());
     }
 
     #[test]
