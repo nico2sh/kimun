@@ -140,7 +140,7 @@ While you type, the note shows a **live preview**: every match is drawn as it wo
 A few details worth knowing:
 
 - **Undo is one keystroke.** A replace — one match or all of them — costs a single `Ctrl+Z` (or `u` in vim mode).
-- **`$1` works when you captured something.** If the pattern has a capture group, `$1`, `$2` and `${name}` expand in the replacement, so `(\w+)-(\w+)` → `$2 $1` swaps them. If it doesn't, the replacement is literal — so a `$` in prices or `$x^2$` math stays exactly as typed.
+- **`$1` works when you captured something.** If the pattern has a capture group, `$1`, `$2` and `${name}` expand in the replacement, so `(\w+)-(\w+)` → `$2 $1` swaps them. A `$` that doesn't name a real group is left alone, so prices and `$x^2$` math stay exactly as typed either way. Write `$$` if you want a literal `$` next to a digit that *is* a group number.
 - **An empty replacement deletes.** Leaving the field blank and pressing `Ctrl+A` removes every match; because a blank field also just means "not finished typing", that one case asks for a second `Ctrl+A` to confirm.
 - Patterns can't span line breaks, and replacing never changes the number of lines in a note.
 - Replace is unavailable on the Neovim backend, which has its own `:%s`.
