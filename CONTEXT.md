@@ -183,8 +183,12 @@ _Avoid_: expand state (names one field), content view, preview widget.
 ### Editor input
 
 **Intent**:
-What one raw input event *means* in the editor screen, resolved by the input precedence (leader → shortcuts → overlay → mouse → panels) before anything mutates. Produced by a pure classifier (`classify(event, bindings, ctx) → Intent`) over a snapshot of the screen's input-relevant state; the editor screen then *executes* intents. Precedence order is the classifier's spec, table-tested — never statement order in a handler. Intents that depend on a runtime outcome encode the fallback as data (panel-first-crack with a focus fallback; the clipboard image probe) rather than deciding it at classify time.
+What one raw input event *means* in the editor screen, resolved by the input precedence (leader → shortcuts → overlay → mouse → panels) before anything mutates. Produced by a pure classifier (`classify(event, bindings, ctx) → Intent`) over a snapshot of the screen's input-relevant state; the editor screen then *executes* intents. Precedence order is the classifier's spec, table-tested — never statement order in a handler. Intents that depend on a runtime outcome encode the fallback as data (panel-first-crack with a focus fallback; the clipboard image probe) rather than deciding it at classify time. An **editor claim** filters the result: an intent a claim does not allow is rewritten to the panel default, which delivers the event to the holder.
 _Avoid_: action (collides with `ActionShortcuts`, one input to classification), command (collides with **Vim command**), keypress/event (the raw input, not its meaning).
+
+**Editor claim**:
+Which editor-internal surface currently holds input — the **find bar**, the autocomplete popup, or nothing. Part of the snapshot the **Intent** classifier reads, so ownership is decided once, inside the classifier, instead of being re-asserted per event kind further down. The holder is named rather than merely counted, because what a claim blocks differs by holder: the find bar blocks a paste, a click and a bare Space; the popup wants all three. A claim decides *ownership* only — the holder still decides what the event does.
+_Avoid_: capture (taken by the mouse-capture toggle, adr/0015), focus (collides with panel focus and **list focus**), lock/grab.
 
 ### TUI surfaces
 

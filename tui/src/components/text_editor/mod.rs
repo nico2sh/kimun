@@ -303,6 +303,22 @@ pub enum LinkTarget {
     Label(String),
 }
 
+/// Which editor-internal surface currently holds input — the **editor claim**
+/// (adr/0036).
+///
+/// Read into the `Intent` classifier's snapshot so ownership is decided once,
+/// there, instead of being re-asserted per event kind further down. The holder
+/// is named rather than merely counted because what a claim blocks differs by
+/// holder: the find bar blocks a paste, a click and a bare Space; the popup
+/// wants all three.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EditorClaim {
+    #[default]
+    None,
+    FindBar,
+    Autocomplete,
+}
+
 /// Which of the find bar's inputs owns the keyboard. Only meaningful once a
 /// **replace field** has been revealed — a find-only bar is always `Find`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -966,13 +982,26 @@ impl TextEditorComponent {
     /// Returns `false` for the direct textarea backend, the nvim backend,
     /// vim Insert/Visual modes, and any pending state.
     ///
-    /// Also false while the **find bar** is open. Opening the bar does not
-    /// change the vim mode, so on the vim backend the app-level leader tier —
-    /// which runs before the editor panel sees the key — would otherwise
-    /// swallow every Space typed into the find or replace field, making
-    /// multi-word patterns and replacements untypeable there.
+    /// A pure vim-mode fact. It used to also return false while the find bar
+    /// was open — the bar's claim smuggled through the nearest differently
+    /// named field, because the snapshot had nowhere to put it. That is now
+    /// [`Self::claim`]'s job (adr/0036).
     pub fn space_leads(&self) -> bool {
-        self.search.is_none() && self.backend.space_leads()
+        self.backend.space_leads()
+    }
+
+    /// Which editor-internal surface currently holds input.
+    ///
+    /// The find bar outranks the popup because opening the bar closes it
+    /// (`open_or_advance_search`), so the two cannot genuinely coexist.
+    pub fn claim(&self) -> EditorClaim {
+        if self.search.is_some() {
+            EditorClaim::FindBar
+        } else if self.autocomplete.as_ref().is_some_and(|c| c.is_open()) {
+            EditorClaim::Autocomplete
+        } else {
+            EditorClaim::None
+        }
     }
 
     /// Returns the link or label target under the cursor, or `None` if the
@@ -2187,10 +2216,10 @@ impl TextEditorComponent {
         key: &ratatui::crossterm::event::KeyEvent,
         tx: &AppTx,
     ) -> EventState {
-        // Find bar — intercept ALL keys while active.
-        if self.handle_search_key(key) {
-            return EventState::Consumed;
-        }
+        // No find-bar check here: `handle_input` — this function's one
+        // production caller — already routes to the bar before the vim engine,
+        // so a second check could never fire. It survived only because tests
+        // call this function directly.
 
         // System clipboard shortcuts — intercept before passing to textarea.
         if key.modifiers == KeyModifiers::CONTROL {
@@ -2462,20 +2491,6 @@ impl TextEditorComponent {
             && mouse.row < r.y + r.height;
         if !in_bounds {
             return EventState::NotConsumed;
-        }
-        // The **find bar** owns input while it is open, but that invariant was
-        // only ever implemented for key events — mouse events reach here
-        // directly. A click or drag would move the cursor out from under the
-        // **current match** and overwrite `self.selection`, which the bar uses
-        // to mark it. Scrolling is still allowed: it moves the viewport, not
-        // the cursor, and reading elsewhere in the note mid-search is useful.
-        if self.search.is_some()
-            && !matches!(
-                mouse.kind,
-                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
-            )
-        {
-            return EventState::Consumed;
         }
         // Right-click: with a selection it copies (unchanged behavior);
         // without one it asks the host to open the note's context menu
@@ -3694,8 +3709,14 @@ mod tests {
         editor.set_text("ab ab ab".to_string());
         let tx = dummy_tx();
         editor.open_or_advance_search();
-        editor.handle_textarea_key(&key(KeyCode::Char('a'), KeyModifiers::NONE), &tx);
-        editor.handle_textarea_key(&key(KeyCode::Char('b'), KeyModifiers::NONE), &tx);
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('a'), KeyModifiers::NONE)),
+            &tx,
+        );
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('b'), KeyModifiers::NONE)),
+            &tx,
+        );
         // Cursor now at first match (col 0). Re-invoking advances to second.
         editor.open_or_advance_search();
         let DataCursor(_, col) = get_ta(&mut editor).cursor();
@@ -3709,7 +3730,10 @@ mod tests {
         let tx = dummy_tx();
         editor.open_or_advance_search();
         for ch in ['b', 'a', 'r'] {
-            editor.handle_textarea_key(&key(KeyCode::Char(ch), KeyModifiers::NONE), &tx);
+            editor.handle_input(
+                &InputEvent::Key(key(KeyCode::Char(ch), KeyModifiers::NONE)),
+                &tx,
+            );
         }
         let state = editor.search.as_ref().unwrap();
         assert_eq!(state.input.value(), "bar");
@@ -3724,10 +3748,19 @@ mod tests {
         editor.set_text("ab ab ab".to_string());
         let tx = dummy_tx();
         editor.open_or_advance_search();
-        editor.handle_textarea_key(&key(KeyCode::Char('a'), KeyModifiers::NONE), &tx);
-        editor.handle_textarea_key(&key(KeyCode::Char('b'), KeyModifiers::NONE), &tx);
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('a'), KeyModifiers::NONE)),
+            &tx,
+        );
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('b'), KeyModifiers::NONE)),
+            &tx,
+        );
         // first match is at col 0 (match_cursor=true on type)
-        editor.handle_textarea_key(&key(KeyCode::Enter, KeyModifiers::NONE), &tx);
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Enter, KeyModifiers::NONE)),
+            &tx,
+        );
         let DataCursor(_, col) = get_ta(&mut editor).cursor();
         assert_eq!(col, 3, "Enter advances to second match");
     }
@@ -3739,7 +3772,10 @@ mod tests {
         let tx = dummy_tx();
         editor.open_or_advance_search();
         for ch in ['b', 'a', 'r'] {
-            editor.handle_textarea_key(&key(KeyCode::Char(ch), KeyModifiers::NONE), &tx);
+            editor.handle_input(
+                &InputEvent::Key(key(KeyCode::Char(ch), KeyModifiers::NONE)),
+                &tx,
+            );
         }
         // "bar" lives at cols 4..7 on row 0.
         assert_eq!(editor.selection, Some(((0, 4), (0, 7))));
@@ -3751,7 +3787,10 @@ mod tests {
         editor.set_text("hello".to_string());
         let tx = dummy_tx();
         editor.open_or_advance_search();
-        editor.handle_textarea_key(&key(KeyCode::Char('z'), KeyModifiers::NONE), &tx);
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('z'), KeyModifiers::NONE)),
+            &tx,
+        );
         assert_eq!(editor.selection, None);
     }
 
@@ -3761,11 +3800,20 @@ mod tests {
         editor.set_text("foo bar".to_string());
         let tx = dummy_tx();
         editor.open_or_advance_search();
-        editor.handle_textarea_key(&key(KeyCode::Char('b'), KeyModifiers::NONE), &tx);
-        editor.handle_textarea_key(&key(KeyCode::Char('a'), KeyModifiers::NONE), &tx);
-        editor.handle_textarea_key(&key(KeyCode::Char('r'), KeyModifiers::NONE), &tx);
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('b'), KeyModifiers::NONE)),
+            &tx,
+        );
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('a'), KeyModifiers::NONE)),
+            &tx,
+        );
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('r'), KeyModifiers::NONE)),
+            &tx,
+        );
         assert!(editor.selection.is_some());
-        editor.handle_textarea_key(&key(KeyCode::Esc, KeyModifiers::NONE), &tx);
+        editor.handle_input(&InputEvent::Key(key(KeyCode::Esc, KeyModifiers::NONE)), &tx);
         assert!(editor.selection.is_none());
     }
 
@@ -3776,7 +3824,7 @@ mod tests {
         let tx = dummy_tx();
         editor.open_or_advance_search();
         assert!(editor.search.is_some());
-        editor.handle_textarea_key(&key(KeyCode::Esc, KeyModifiers::NONE), &tx);
+        editor.handle_input(&InputEvent::Key(key(KeyCode::Esc, KeyModifiers::NONE)), &tx);
         assert!(editor.search.is_none());
     }
 
@@ -3786,7 +3834,10 @@ mod tests {
         editor.set_text("hello".to_string());
         let tx = dummy_tx();
         editor.open_or_advance_search();
-        editor.handle_textarea_key(&key(KeyCode::Char('x'), KeyModifiers::NONE), &tx);
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('x'), KeyModifiers::NONE)),
+            &tx,
+        );
         assert_eq!(editor.get_text(), "hello");
     }
 
@@ -3796,7 +3847,10 @@ mod tests {
         editor.set_text("hello".to_string());
         let tx = dummy_tx();
         editor.open_or_advance_search();
-        editor.handle_textarea_key(&key(KeyCode::Char('z'), KeyModifiers::NONE), &tx);
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('z'), KeyModifiers::NONE)),
+            &tx,
+        );
         let state = editor.search.as_ref().unwrap();
         assert!(matches!(state.status, SearchStatus::NoMatch));
     }
@@ -4730,21 +4784,6 @@ mod tests {
         assert!(editor.undo_groups.is_empty(), "so did the undo groups");
     }
 
-    /// Opening the bar does not change the vim mode, so the app-level Space
-    /// leader would otherwise swallow every space typed into it — making
-    /// multi-word patterns untypeable on the vim backend.
-    #[test]
-    fn the_find_bar_suppresses_the_vim_space_leader() {
-        let mut editor = make_vim_editor();
-        editor.set_text("todo done".to_string());
-        assert!(editor.space_leads(), "vim Normal mode leads with Space");
-        editor.open_or_advance_search();
-        assert!(
-            !editor.space_leads(),
-            "the bar owns keys while open, including Space"
-        );
-    }
-
     /// Find-match highlighting is built from logical coordinates, so it
     /// describes the same matches the count and the stepping do. The old
     /// post-pass matched against text reconstructed from drawn cells, where
@@ -4777,32 +4816,10 @@ mod tests {
         );
     }
 
-    /// The bar's "intercepts every key" invariant was only ever implemented
-    /// for key events. A drag would move the cursor off the current match and
-    /// overwrite the selection marking it.
-    #[test]
-    fn a_click_while_the_bar_is_open_does_not_move_the_cursor() {
-        let mut editor = make_editor();
-        let tx = dummy_tx();
-        editor.set_text("alpha beta".to_string());
-        editor.rect = Rect::new(0, 0, 40, 5);
-        open_replace_bar(&mut editor, &tx, "beta", "Z");
-        let before = editor.cursor_pos();
-        editor.handle_input(
-            &InputEvent::Mouse(ratatui::crossterm::event::MouseEvent {
-                kind: MouseEventKind::Down(MouseButton::Left),
-                column: 1,
-                row: 0,
-                modifiers: KeyModifiers::NONE,
-            }),
-            &tx,
-        );
-        assert_eq!(editor.cursor_pos(), before);
-    }
-
     /// A bracketed paste used to land in the buffer behind the open bar,
     /// leaving the match count and the highlighted match describing text that
-    /// no longer existed. It belongs in the focused field.
+    /// no longer existed. It belongs in the focused field — that is the
+    /// holder's own behaviour, which survives the claim refactor (adr/0036).
     #[test]
     fn paste_goes_into_the_focused_bar_field() {
         let mut editor = make_editor();
@@ -4862,9 +4879,7 @@ mod tests {
     /// reset boundary. It guards the user-visible outcome, not the mechanism —
     /// the mechanism is pinned by
     /// `the_cursor_hint_under_reports_a_two_place_edit` in
-    /// `parse_incremental`, which does discriminate. Kept because it is the
-    /// property that actually matters, and it would catch a regression in
-    /// which both the flag and the cap guard stopped covering this.
+    /// `parse_incremental`, which does discriminate.
     #[test]
     fn a_row_far_from_the_cursor_reparses_after_replace_all() {
         use ratatui::Terminal;
