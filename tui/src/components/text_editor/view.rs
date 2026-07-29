@@ -104,6 +104,12 @@ pub struct MarkdownEditorView {
     /// `selection`: a replacement of a different length shifts every match
     /// after it (adr/0035). Empty whenever no preview is showing.
     preview_spans: Vec<super::find_replace::PreviewSpan>,
+    /// Set when the next update follows an edit that touched rows the cursor
+    /// does not identify — a **replace all**, not a keystroke. Consumed by the
+    /// next `update`, which then skips `compute_damage_range`'s cursor fast
+    /// path: that path assumes the cursor row is the only edited row, and a
+    /// bulk edit violates it silently, leaving distant rows with a stale parse.
+    bulk_edit_pending: bool,
     /// **Find pattern** matches as `(row, start_char, end_char)` in logical
     /// buffer coordinates, painted during line rendering.
     ///
@@ -234,6 +240,7 @@ impl MarkdownEditorView {
             selection: None,
             preview_spans: Vec::new(),
             match_spans: Vec::new(),
+            bulk_edit_pending: false,
             last_parse_was_incremental: false,
             last_splice_path: None,
             last_text_change: TextChangeKind::Full, // first update is a full rebuild
@@ -307,6 +314,17 @@ impl MarkdownEditorView {
         self.match_spans = spans;
     }
 
+    /// Declare that the edit just performed was a *bulk* one — it changed rows
+    /// the cursor does not point at.
+    ///
+    /// `compute_damage_range`'s fast path trusts the cursor row to be the only
+    /// edited row and will otherwise under-report the damage, leaving distant
+    /// rows rendered from a stale parse. Every edit that rewrites more than the
+    /// cursor's neighbourhood must call this.
+    pub fn note_bulk_edit(&mut self) {
+        self.bulk_edit_pending = true;
+    }
+
     pub fn update(
         &mut self,
         snap: &super::snapshot::EditorSnapshot<'_>,
@@ -338,6 +356,10 @@ impl MarkdownEditorView {
             } else {
                 self.try_incremental_parse(lines, cursor)
             };
+            // Consumed here, not inside `try_incremental_parse`: the flag must
+            // clear even on the placeholder path above, or a bulk edit
+            // followed by a keystroke would still be suppressing the hint.
+            self.bulk_edit_pending = false;
             self.last_text_change = match incremental {
                 Some((range, slice, path)) => {
                     self.parse_state.splice_real(range.clone(), slice);
@@ -679,7 +701,16 @@ impl MarkdownEditorView {
         if lines.len() != self.parse_state.buf().lines.len() {
             return METRICS.bail(BailReason::LineCountChange);
         }
-        let Some(damaged) = compute_damage_range(&self.lines_snapshot, lines, cursor.0) else {
+        // A bulk edit invalidates the cursor hint: pass `usize::MAX` so the
+        // fast path's `cursor_row < old.len()` test fails and the LCP/LCS slow
+        // path computes the real span. The flag is cleared by `update` whether
+        // or not the incremental attempt gets this far.
+        let hint = if self.bulk_edit_pending {
+            usize::MAX
+        } else {
+            cursor.0
+        };
+        let Some(damaged) = compute_damage_range(&self.lines_snapshot, lines, hint) else {
             return METRICS.bail(BailReason::NoDamage);
         };
 

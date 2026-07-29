@@ -893,6 +893,11 @@ impl TextEditorComponent {
         // force. `self.selection` would likewise still describe the old text.
         self.undo_groups.clear();
         self.close_search();
+        // The whole buffer was replaced. The cursor resets to the top, so if
+        // the line count happens to match and row 0 differs, the damage fast
+        // path would report `0..1` and leave the rest of the note parsed as the
+        // previous one.
+        self.view.note_bulk_edit();
     }
 
     pub fn get_text(&self) -> String {
@@ -1844,6 +1849,11 @@ impl TextEditorComponent {
         self.undo_groups
             .record(&before, &after, entries.saturating_sub(1));
         self.revs.bump();
+        // A replace all rewrites rows the cursor does not point at, which is
+        // exactly what `compute_damage_range`'s cursor fast path assumes cannot
+        // happen — it would report only the cursor's row and leave every other
+        // rewritten row rendered from a stale parse.
+        self.view.note_bulk_edit();
 
         // Restore the reading position. The row stays valid because a replace
         // all never changes the line count (the pattern cannot span a newline
@@ -1887,6 +1897,7 @@ impl TextEditorComponent {
         // evicting from the front), and an unrelated edit sequence can return
         // the buffer to a recorded state. Aiming at the target means a stale
         // group costs nothing instead of eating an unrelated entry.
+        let grouped = plan.is_some();
         if let Some((extra, target)) = plan {
             for _ in 0..extra {
                 if undo_group::UndoGrouper::reached(target, ta.lines()) {
@@ -1898,6 +1909,11 @@ impl TextEditorComponent {
             }
         }
         self.selection = ta.selection_range();
+        // Undoing a group can restore a whole-buffer rewrite (a replace all) in
+        // one step, which the cursor damage hint cannot describe.
+        if grouped {
+            self.view.note_bulk_edit();
+        }
         true
     }
 
@@ -1915,6 +1931,7 @@ impl TextEditorComponent {
         if !ta.redo() {
             return false;
         }
+        let grouped = plan.is_some();
         if let Some((extra, target)) = plan {
             for _ in 0..extra {
                 if undo_group::UndoGrouper::reached(target, ta.lines()) {
@@ -1926,6 +1943,9 @@ impl TextEditorComponent {
             }
         }
         self.selection = ta.selection_range();
+        if grouped {
+            self.view.note_bulk_edit();
+        }
         true
     }
 
@@ -1953,6 +1973,7 @@ impl TextEditorComponent {
             }
         }
         self.selection = ta.selection_range();
+        self.view.note_bulk_edit();
     }
 
     /// Recount matches against the current buffer. Cheap — `find_iter` over
@@ -4828,6 +4849,67 @@ mod tests {
         assert!(
             row.contains("Find:"),
             "an open bar must be drawn even when it costs the whole pane, got {row:?}"
+        );
+    }
+
+    /// End-to-end: after a replace all, a rewritten row far from the cursor
+    /// must render from a fresh parse, not the pre-replace one. The construct
+    /// has to be one the renderer *conceals* (a wikilink), because a stale
+    /// parse is only visible where parsing changes what is drawn.
+    ///
+    /// Honest caveat: this passes with `note_bulk_edit` removed, because the
+    /// widener cap-trips to a full parse on a damage range this far from a
+    /// reset boundary. It guards the user-visible outcome, not the mechanism —
+    /// the mechanism is pinned by
+    /// `the_cursor_hint_under_reports_a_two_place_edit` in
+    /// `parse_incremental`, which does discriminate. Kept because it is the
+    /// property that actually matters, and it would catch a regression in
+    /// which both the flag and the cap guard stopped covering this.
+    #[test]
+    fn a_row_far_from_the_cursor_reparses_after_replace_all() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        let mut lines: Vec<String> = (0..400).map(|i| format!("filler {i}")).collect();
+        lines[0] = "todo".to_string();
+        lines[398] = "todo".to_string();
+        editor.set_text(lines.join("\n"));
+        let theme = Theme::default();
+        let mut term = Terminal::new(TestBackend::new(20, 8)).unwrap();
+        let area = Rect::new(0, 0, 20, 8);
+        term.draw(|f| editor.render(f, area, &theme, true)).unwrap();
+
+        open_replace_bar(&mut editor, &tx, "todo", "[[x]]");
+        // Cursor on the LAST match, so the damage hint points 398 rows away
+        // from the first one.
+        if let Some(ta) = editor.backend.as_textarea_mut() {
+            ta.move_cursor(CursorMove::Jump(398, 0));
+        }
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('a'), KeyModifiers::CONTROL)),
+            &tx,
+        );
+        // Back to the top, cursor OFF row 0 — a cursor inside the link would
+        // reveal it legitimately and prove nothing.
+        if let Some(ta) = editor.backend.as_textarea_mut() {
+            ta.move_cursor(CursorMove::Jump(1, 0));
+        }
+        term.draw(|f| editor.render(f, area, &theme, true)).unwrap();
+        let row0: String = (0..20)
+            .filter_map(|x| {
+                term.backend()
+                    .buffer()
+                    .cell(ratatui::layout::Position::new(x, 0))
+                    .map(|c| c.symbol().to_string())
+            })
+            .collect::<String>()
+            .trim_end()
+            .to_string();
+        assert_eq!(
+            row0, "x",
+            "row 0 must render as a parsed wikilink; `[[x]]` would mean it \
+             kept the parse of the text that was there before the replace"
         );
     }
 
