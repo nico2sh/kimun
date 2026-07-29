@@ -99,6 +99,11 @@ pub struct MarkdownEditorView {
     /// Current selection range in logical (row, byte-col) coordinates.
     /// `None` when no selection is active.
     selection: Option<((usize, usize), (usize, usize))>,
+    /// Where the **replace preview** substituted text, in the *previewed*
+    /// line's coordinates — which is why these cannot be derived from
+    /// `selection`: a replacement of a different length shifts every match
+    /// after it (adr/0035). Empty whenever no preview is showing.
+    preview_spans: Vec<super::find_replace::PreviewSpan>,
     /// Diagnostic: true when the most recent Gate 1 invocation used the
     /// incremental splice path, false when it took the full-parse fallback.
     /// Read by tests; not part of the production observable surface.
@@ -217,6 +222,7 @@ impl MarkdownEditorView {
             cursor_vrow: 0,
             rendered_cache: Vec::new(),
             selection: None,
+            preview_spans: Vec::new(),
             last_parse_was_incremental: false,
             last_splice_path: None,
             last_text_change: TextChangeKind::Full, // first update is a full rebuild
@@ -278,6 +284,12 @@ impl MarkdownEditorView {
         self.last_layout_generation = u64::MAX;
     }
 
+    /// Hand the view the **replace preview**'s substituted spans for this
+    /// frame. Must be called *after* `update`, which clears them.
+    pub fn set_preview_spans(&mut self, spans: Vec<super::find_replace::PreviewSpan>) {
+        self.preview_spans = spans;
+    }
+
     pub fn update(
         &mut self,
         snap: &super::snapshot::EditorSnapshot<'_>,
@@ -292,6 +304,10 @@ impl MarkdownEditorView {
         let cursor = snap.cursor;
         let generation = snap.content_revision.get();
         self.selection = selection;
+        // Preview spans belong to the snapshot they were built from. Clearing
+        // here means a caller that stops previewing cannot leave stale spans
+        // painted over real text — it simply stops setting them.
+        self.preview_spans.clear();
         if rect.height == 0 {
             return;
         }
@@ -984,6 +1000,46 @@ impl MarkdownEditorView {
                     spans
                 };
 
+                // Replace preview last, so it wins over the selection: while a
+                // preview is showing, "this text is not in your note yet" is
+                // the more important fact about these columns (adr/0035). The
+                // current match takes the same colour plus bold — it is the one
+                // `Enter` rewrites, the rest are what `Ctrl+A` reaches.
+                let spans = if self.preview_spans.is_empty() {
+                    spans
+                } else {
+                    let preview_bg = theme.color_replace_preview.to_ratatui();
+                    let gutter_off = if vl.is_first_visual_line {
+                        0
+                    } else {
+                        self.gutter_insets.get(vl.logical_row).copied().unwrap_or(0)
+                    };
+                    let mut spans = spans;
+                    for pv in self
+                        .preview_spans
+                        .iter()
+                        .filter(|p| p.row == vl.logical_row)
+                    {
+                        let to_rendered = |col: usize| {
+                            MarkdownSpanner::rendered_cursor_col_with(
+                                logical_line,
+                                parsed,
+                                vl.start_col,
+                                col,
+                                vl.is_first_visual_line,
+                                force_raw,
+                            ) + gutter_off
+                        };
+                        spans = apply_bg_over_range(
+                            spans,
+                            to_rendered(pv.start)..to_rendered(pv.end),
+                            preview_bg,
+                            pv.is_current,
+                        );
+                    }
+                    spans
+                };
+
                 Line::from(spans)
             })
             .collect();
@@ -1220,11 +1276,33 @@ fn apply_selection_highlight<'a>(
     sel_cols: std::ops::Range<usize>,
     theme: &Theme,
 ) -> Vec<ratatui::text::Span<'a>> {
+    apply_bg_over_range(spans, sel_cols, theme.selection_bg.to_ratatui(), false)
+}
+
+/// Re-style spans to apply `highlight_bg` over the given rendered-column
+/// range, optionally emboldening it.
+///
+/// `cols` is a range of rendered (screen) column offsets within the visual
+/// line. Spans that overlap are split at the boundaries; the overlapping
+/// portion takes the background. Non-overlapping portions keep their style.
+fn apply_bg_over_range<'a>(
+    spans: Vec<ratatui::text::Span<'a>>,
+    sel_cols: std::ops::Range<usize>,
+    highlight_bg: ratatui::style::Color,
+    bold: bool,
+) -> Vec<ratatui::text::Span<'a>> {
     if sel_cols.is_empty() {
         return spans;
     }
 
-    let highlight_bg = theme.selection_bg.to_ratatui();
+    let restyle = |s: ratatui::style::Style| {
+        let s = s.bg(highlight_bg);
+        if bold {
+            s.add_modifier(ratatui::style::Modifier::BOLD)
+        } else {
+            s
+        }
+    };
     let mut result = Vec::new();
     let mut col = 0usize;
 
@@ -1262,7 +1340,7 @@ fn apply_selection_highlight<'a>(
             // Selected portion
             result.push(ratatui::text::Span::styled(
                 content[prefix_byte..selected_byte_end].to_string(),
-                span.style.bg(highlight_bg),
+                restyle(span.style),
             ));
             // Suffix (after selection)
             if selected_byte_end < content.len() {

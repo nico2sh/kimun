@@ -24,6 +24,7 @@ Everything on one screen. Looking for how to *change* a binding? That's in [Conf
 | Toggle drawer | `Ctrl+T` |
 | Open file browser (FILES view) | `Ctrl+E` |
 | Find in buffer | `Ctrl+F` |
+| Replace in buffer | `Tab` from the find bar (no default chord) |
 | Follow link | `Ctrl+Enter` (modern terminals) / `Ctrl+N` |
 | New journal entry | `Ctrl+J` |
 | Quick note | `Ctrl+W` |

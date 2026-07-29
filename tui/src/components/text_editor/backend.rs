@@ -256,6 +256,18 @@ impl BackendState {
         }
     }
 
+    /// Take the vim engine's record of an undo/redo it just performed, so the
+    /// host can finish an **undo group** the engine only partly undid.
+    pub fn vim_take_undo_ran(&mut self) -> Option<(usize, bool)> {
+        match self {
+            BackendState::Textarea(TextareaBackend {
+                input: InputInterpreter::Vim(engine),
+                ..
+            }) => engine.take_undo_ran(),
+            _ => None,
+        }
+    }
+
     /// The in-progress input-command hint for the footer (the vim
     /// interpreter's pending count/operator/find/g sequence). `None` when the
     /// active backend has no pending sequence.

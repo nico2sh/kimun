@@ -132,6 +132,7 @@ impl Theme {
             &mut self.color_tag,
             &mut self.blockquote_bar,
             &mut self.code_bg,
+            &mut self.color_replace_preview,
         ]
         .into_iter()
     }
