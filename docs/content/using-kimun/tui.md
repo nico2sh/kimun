@@ -135,7 +135,7 @@ Press **`Tab`** in the find bar (or run *Replace in note* from the command palet
 | `Tab` | switch between the find and replace fields |
 | `Esc` | close |
 
-While you type, the note shows a **live preview**: every match is drawn as it would read after replacing, in its own colour, with the one `Enter` will take highlighted more strongly. Nothing is written until you press a key — the preview only changes how the note is drawn.
+While you type, the note shows a **live preview**: every match is drawn as it would read after replacing, in its own colour. The match `Enter` will take next is drawn in the cursor colour — while the bar is open the terminal caret lives there, so that highlight is what tells you where you are in the note. Nothing is written until you press a key; the preview only changes how the note is drawn.
 
 A few details worth knowing:
 
