@@ -888,6 +888,10 @@ impl TextEditorComponent {
             }
         };
         self.paste_text(&text, tx);
+        // Report the paste like every other clipboard action. Without this the
+        // footer keeps the raw chord echo, so Ctrl+V was the one clipboard key
+        // that never said what it did.
+        tx.send(AppEvent::FlashMessage("pasted".into())).ok();
     }
 
     /// Inserts `text` at the cursor, replacing any active selection. When `text`
@@ -3605,6 +3609,25 @@ mod tests {
     }
 
     /// Regression: copy is read-only over a vim charwise Visual selection.
+    /// Every clipboard action reports its outcome, paste included. Before this,
+    /// Ctrl+V was the only one that said nothing, so the footer was left showing
+    /// the raw chord echo — indistinguishable from an unbound key.
+    ///
+    /// Headless CI has no clipboard, so accept either the success message or a
+    /// clipboard error; what must never happen is silence.
+    #[test]
+    fn paste_reports_its_outcome() {
+        let mut editor = make_editor();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        editor.set_text("x".to_string());
+        editor.paste_from_clipboard(&tx);
+        let reported = std::iter::from_fn(|| rx.try_recv().ok()).any(|e| {
+            matches!(e, AppEvent::FlashMessage(m)
+                if m == "pasted" || m == "clipboard is empty" || m.starts_with("clipboard: "))
+        });
+        assert!(reported, "a paste attempt must always report something");
+    }
+
     /// The image-paste path bypasses the editor's key handling entirely (the
     /// screen layer owns it, because only it can reach the vault), so it has to
     /// reconcile the engine itself. Before this, an image pasted in Visual mode

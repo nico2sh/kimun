@@ -249,6 +249,10 @@ impl EditorScreen {
             match vault.save_attachment(&asset_path, &png_bytes).await {
                 Ok(()) => {
                     tx2.send(AppEvent::InsertAtCursor(markdown)).ok();
+                    // Only on success — the failure branches below already
+                    // report, and this path is async, so the chord echo would
+                    // otherwise be the last thing the user saw.
+                    tx2.send(AppEvent::FlashMessage("image pasted".into())).ok();
                 }
                 Err(e) => {
                     tx2.send(AppEvent::OverlayData(OverlayData::Error(format!(
