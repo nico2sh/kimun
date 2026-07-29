@@ -109,10 +109,11 @@ pub struct SearchList<R: SearchRow> {
     autocomplete: Option<AutocompleteController>,
     /// Key combos the caller wants to intercept before the engine acts.
     intercept: Vec<KeyCombo>,
-    /// The chord that yanks the selected row's [`YankTarget`]. Defaults to
-    /// [`crate::keys::default_yank_combo`]; surfaces whose bindings the user has
-    /// rebound pass the resolved combo instead.
-    yank_combo: KeyCombo,
+    /// The chords that yank the selected row's [`YankTarget`]. Defaults to
+    /// [`crate::keys::default_yank_combo`]; surfaces that hold the user's
+    /// [`KeyBindings`](crate::keys::KeyBindings) pass the resolved combos, so a
+    /// rebinding reaches the list. Empty = the user unbound it.
+    yank_combos: Vec<KeyCombo>,
     icons: Icons,
     list_rect: Rect,
     /// The host panel's full bounds, for wheel hit-testing: scroll events
@@ -183,7 +184,7 @@ pub struct SearchListBuilder<R: SearchRow> {
     filter: Filter<R>,
     autocomplete: Option<(Arc<dyn SuggestionSource>, AutocompleteMode)>,
     intercept: Vec<KeyCombo>,
-    yank_combo: KeyCombo,
+    yank_combos: Vec<KeyCombo>,
     icons: Icons,
     debounce: Option<std::time::Duration>,
     highlight_query: bool,
@@ -203,7 +204,7 @@ impl<R: SearchRow> SearchList<R> {
             filter: Filter::SourceOrder,
             autocomplete: None,
             intercept: Vec::new(),
-            yank_combo: crate::keys::default_yank_combo(),
+            yank_combos: vec![crate::keys::default_yank_combo()],
             icons: Icons::new(false),
             debounce: None,
             highlight_query: false,
@@ -272,7 +273,7 @@ impl<R: SearchRow> SearchList<R> {
             last_click_pos: None,
             autocomplete,
             intercept: b.intercept,
-            yank_combo: b.yank_combo,
+            yank_combos: b.yank_combos,
             icons: b.icons,
             list_rect: Rect::default(),
             panel_rect: Rect::default(),
@@ -563,6 +564,15 @@ impl<R: SearchRow> SearchList<R> {
         self.offset
     }
 
+    /// Whether `key` is one of this list's yank chords. For surfaces that do
+    /// NOT route every key into the engine (`ListPanelSpec::HAS_FILTER = false`,
+    /// e.g. the LINKS drawer, where plain letters are the host's sub-view keys):
+    /// they forward only what they recognise, and without this the yank chord
+    /// would be the one thing their rows declare but can never deliver.
+    pub fn is_yank_chord(&self, key: &KeyEvent) -> bool {
+        crate::keys::key_event_to_combo(key).is_some_and(|c| self.yank_combos.contains(&c))
+    }
+
     pub fn handle_key(&mut self, key: &KeyEvent) -> KeyReaction {
         use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
@@ -632,7 +642,9 @@ impl<R: SearchRow> SearchList<R> {
         // without wiring a key — the note browser lacked one for exactly that
         // reason (adr/0032). What gets copied is the ROW's business; performing
         // the copy is the CALLER's, since SearchList holds no `AppTx`.
-        if crate::keys::key_event_to_combo(key).as_ref() == Some(&self.yank_combo) {
+        if let Some(combo) = crate::keys::key_event_to_combo(key)
+            && self.yank_combos.contains(&combo)
+        {
             return KeyReaction::Yank(self.selected_row().and_then(|r| r.yank_target()));
         }
         // Drop Ctrl/Alt-modified chars so combos don't leak as text (both foci;
@@ -962,10 +974,20 @@ impl<R: SearchRow> SearchListBuilder<R> {
         self.autocomplete = Some((suggestions, mode));
         self
     }
-    /// Override the yank chord (see [`crate::keys::default_yank_combo`]) when
-    /// the surface has resolved a user rebinding for it.
-    pub fn yank_combo(mut self, combo: KeyCombo) -> Self {
-        self.yank_combo = combo;
+    /// Bind the yank chord to whatever the user has bound
+    /// [`ActionShortcuts::YankRow`](crate::keys::ActionShortcuts::YankRow) to.
+    /// Surfaces that hold `KeyBindings` should always call this — the builder
+    /// default is only for those that do not (and for tests).
+    pub fn yank_combos_from(self, bindings: &crate::keys::KeyBindings) -> Self {
+        self.yank_combos(
+            bindings.combos_for(&crate::keys::action_shortcuts::ActionShortcuts::YankRow),
+        )
+    }
+
+    /// Override the yank chords directly (see [`Self::yank_combos_from`]).
+    /// An empty list disables the chord for this surface.
+    pub fn yank_combos(mut self, combos: Vec<KeyCombo>) -> Self {
+        self.yank_combos = combos;
         self
     }
 
@@ -1116,7 +1138,7 @@ mod tests {
             },
             noop_redraw(),
         )
-        .yank_combo(crate::keys::key_event_to_combo(&ctrl('k')).unwrap())
+        .yank_combos(vec![crate::keys::key_event_to_combo(&ctrl('k')).unwrap()])
         .build_with_rows(vec![TestRow::new("alpha")]);
         list.select_next();
         assert!(matches!(

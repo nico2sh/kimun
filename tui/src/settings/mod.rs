@@ -827,6 +827,13 @@ impl AppSettings {
         icons::Icons::new(self.use_nerd_fonts)
     }
 
+    /// The chords bound to [`ActionShortcuts::YankRow`], for handing to a
+    /// [`SearchList`](crate::components::search_list::SearchList) so a rebinding
+    /// reaches the list surfaces (adr/0032). Empty when the user unbound it.
+    pub fn yank_combos(&self) -> Vec<crate::keys::key_combo::KeyCombo> {
+        self.key_bindings.combos_for(&ActionShortcuts::YankRow)
+    }
+
     /// Name of the theme the app is effectively using: the configured name,
     /// or the default theme's name when none is configured. Single owner of
     /// the empty-name fallback rule — use this instead of re-deriving it.

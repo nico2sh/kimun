@@ -226,6 +226,7 @@ impl QueryPanel {
 
         let list = SearchList::builder(source, redraw)
             .highlight_query()
+            .yank_combos_from(&key_bindings)
             .icons(icons.clone())
             .autocomplete(
                 Arc::new(VaultSuggestions {

@@ -144,6 +144,7 @@ impl NoteBrowserModal {
         };
         let mut builder = SearchList::builder(provider, redraw_callback(tx.clone()))
             .initial_query(initial_query)
+            .yank_combos_from(&key_bindings)
             .icons(icons)
             .autocomplete(
                 Arc::new(VaultSuggestions {

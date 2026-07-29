@@ -111,10 +111,11 @@ impl EditorScreen {
             vault.clone(),
             settings.clone(),
             s.icons(),
+            s.yank_combos(),
         );
-        let tags = TagsPanel::new(vault.clone(), s.icons());
-        let links = LinksPanel::new(vault.clone(), s.icons());
-        let outline = OutlinePanel::new(vault.clone(), s.icons());
+        let tags = TagsPanel::new(vault.clone(), s.icons(), s.yank_combos());
+        let links = LinksPanel::new(vault.clone(), s.icons(), s.yank_combos());
+        let outline = OutlinePanel::new(vault.clone(), s.icons(), s.yank_combos());
         let drawer = DrawerHost::new(
             vault.clone(),
             &kb,
@@ -209,6 +210,15 @@ impl EditorScreen {
             self.footer
                 .flash("Clipboard image size mismatch".to_string(), tx);
             return true;
+        }
+        // Past this point the paste is committed, so reconcile the buffer now:
+        // drop any selection (the image replaces it, as any other paste would)
+        // and take the vim engine out of Visual with it. This path bypasses the
+        // editor's own key handling entirely — the screen layer owns it because
+        // only it can reach the vault — so without this the engine would go on
+        // believing in a selection that no longer exists (adr/0031).
+        if let Some(editor) = self.panels.editor_mut() {
+            editor.take_selection_for_external_paste();
         }
         let asset_path = self.vault.generate_attachment_path("image", "png");
         let link_path = asset_path.relative_link_from_note(&self.path);
