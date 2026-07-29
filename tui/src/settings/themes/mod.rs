@@ -302,6 +302,12 @@ pub struct Theme {
     /// Background of fenced and indented code blocks (the "code box").
     /// Inline `code` uses `selection_bg`, not this.
     pub code_bg: ThemeColor,
+    /// Background of text the **replace preview** is showing in place of a
+    /// match. Deliberately its own role rather than a reuse of `selection_bg`
+    /// or `color_search_match`: the preview rewrites the note on screen while
+    /// leaving the buffer untouched, so "this is not your note yet" must not
+    /// look like any committed-text style (adr/0035).
+    pub color_replace_preview: ThemeColor,
 }
 
 /// Deserialization shadow of [`Theme`].
@@ -340,6 +346,7 @@ struct ThemeToml {
     color_tag: Option<ThemeColor>,
     blockquote_bar: Option<ThemeColor>,
     code_bg: Option<ThemeColor>,
+    color_replace_preview: Option<ThemeColor>,
 }
 
 impl From<ThemeToml> for Theme {
@@ -360,6 +367,11 @@ impl From<ThemeToml> for Theme {
             color_tag: t.color_tag.unwrap_or_else(|| orange.clone()),
             blockquote_bar: t.blockquote_bar.unwrap_or_else(|| t.accent.clone()),
             code_bg: t.code_bg.unwrap_or_else(|| t.bg_panel.clone()),
+            // Themes written before the replace preview existed fall back to
+            // the accent colour, which is chromatic in every builtin — so the
+            // preview still reads as "not committed text" rather than
+            // silently collapsing into the selection or the code box.
+            color_replace_preview: t.color_replace_preview.unwrap_or_else(|| t.accent.clone()),
             orange,
             bg: t.bg,
             bg_panel: t.bg_panel,

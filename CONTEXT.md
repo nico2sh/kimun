@@ -82,6 +82,32 @@ The vertical `│` gutter the editor paints in place of the `>` sigils of a bloc
 **Code box**:
 The background rectangle the editor paints behind a code block (fenced or indented). Sized to the block's widest line and capped at the editor width — a box hugging the code, not a full-width band.
 
+### Find in note
+
+**Find bar**:
+The editor's bottom strip for searching and replacing inside the open buffer — one row while finding, two once a **replace field** is revealed. Buffer-local and pattern-based — unrelated to the vault-wide surfaces under **TUI search surfaces**, which are **SearchList**s over query results. While open it intercepts every key. Textarea backend only; the nvim backend has its own search.
+_Avoid_: search bar (the term is used for vault-search inputs elsewhere), find box, quick find.
+
+**Find pattern**:
+The regular expression the **find bar** matches against the buffer, one line at a time — so it can never span a newline. Always a regex, never a literal; an uncompilable pattern is reported in the bar rather than searched for. Case sensitivity is **smart**: an all-lowercase pattern matches any case, any uppercase makes it exact. Persists after the bar closes, so vim's `n`/`N` keep repeating it.
+_Avoid_: needle (that is the vault-search highlight term), query (collides with the vault query language), search term.
+
+**Current match**:
+The single occurrence of the **find pattern** the cursor sits on, painted as the editor selection. The unit that stepping moves between and that an interactive **replace** rewrites; it exists only while the **find bar** has found something.
+_Avoid_: active match, selected match, hit.
+
+**Replace field**:
+The **find bar**'s second input, holding the replacement text. Revealed only on demand, so a find-only bar is never widened by a field the user did not ask for; its presence is what puts the bar in replace mode. Single-line by construction, which is why a **replace all** cannot change the note's line count. Left empty it means deletion, not inaction.
+_Avoid_: replace box, substitution field.
+
+**Replace preview**:
+The note drawn as it *would* read once every **find pattern** match were replaced, shown live while the **replace field** is being typed. Every match previews at once, in its own colour, with the **current match** further distinguished — so one view answers both "what does the next step do" and "what does a **replace all** do", and captures that expand differently at each match are each visible. The note itself is never touched: only the frame's view of it is substituted, which is what makes the preview incapable of committing.
+_Avoid_: ghost text (that is autocomplete's), dry run, live replace (implies the buffer changed).
+
+**Replace all**:
+Rewriting every **find pattern** match in the buffer in one action, as against stepping through them one **current match** at a time. The match count is shown before it is invoked and it costs a single **undo group**, so it needs no confirmation — except with an empty **replace field**, where the keystroke carries no evidence the user finished typing, and which therefore arms rather than commits.
+_Avoid_: global replace, bulk replace, replace everything.
+
 ### Search
 
 **Note link**:
@@ -287,8 +313,12 @@ Replacing a note's **entire** body with new content. Distinct from append (addit
 _Avoid_: write, save (too generic — they don't signal that the old body is discarded)
 
 **Replace**:
-A targeted edit that swaps an existing substring for new text, leaving the rest of the note intact. The match must be unambiguous unless every occurrence is explicitly targeted. Distinct from overwrite (whole body).
-_Avoid_: find-and-replace (implies regex/global semantics by default), edit
+A targeted edit that swaps matched text for new text, leaving the rest of the note intact. Distinct from overwrite (whole body). One operation with two channels: interactive, through the **find bar**'s replace field, where the user sees every match before committing; and automated, through the CLI or MCP server, where an **automated edit** cannot see what it hit and so requires the match be unambiguous unless every occurrence is explicitly targeted.
+_Avoid_: substitute (vim's word for the ex-command syntax kimün does not have), edit
+
+**Undo group**:
+The span of buffer history that one user action occupies, so undo restores what the user last *did* rather than the last thing the buffer *recorded*. Needed because a single **replace** is two history entries (a delete then an insert) and undoing half of one shows a note with a hole in it. Vim's `3u` counts groups, not entries.
+_Avoid_: transaction (implies atomicity the buffer does not offer), undo batch, change set.
 
 **Backup**:
 A pre-change copy of a note, taken automatically before an automated edit overwrites or removes its content, retained for later recovery and reclaimed once it ages out. Kept in a hidden directory inside the vault, so it is excluded from the index but travels with the notes when the vault is copied.

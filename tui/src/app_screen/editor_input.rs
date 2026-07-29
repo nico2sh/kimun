@@ -170,6 +170,8 @@ pub enum EditorOp {
     OpenFileBrowserReveal,
     SaveCurrentQuery,
     FindInBuffer,
+    /// Open the find bar with the replace field revealed.
+    ReplaceInBuffer,
     ApplyText(TextAction),
     /// Switch to the Ask workspace and focus its composer (F6 and leader
     /// `a a`).
@@ -391,6 +393,9 @@ pub(crate) fn classify_tail(
             }),
             Some(ActionShortcuts::FindInBuffer) if ctx.editor_active() => {
                 Some(EditorIntent::Op(EditorOp::FindInBuffer))
+            }
+            Some(ActionShortcuts::ReplaceInBuffer) if ctx.editor_active() => {
+                Some(EditorIntent::Op(EditorOp::ReplaceInBuffer))
             }
             Some(ActionShortcuts::Text(
                 action @ (TextAction::Bold | TextAction::Italic | TextAction::Strikethrough),

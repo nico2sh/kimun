@@ -280,6 +280,10 @@ pub struct VimEngine {
     /// Replace mode's restore stack: what each overwritten position held
     /// (`None` = the char was appended past EOL). Backspace pops it.
     replace_stack: Vec<Option<char>>,
+    /// Set by the `u` / `Ctrl+R` arms to `(count, is_redo)` so the host can
+    /// finish an **undo group** the engine only undid part of. Read and
+    /// cleared by [`Self::take_undo_ran`] after each key.
+    undo_ran: Option<(usize, bool)>,
 }
 
 impl Default for VimEngine {
@@ -295,6 +299,7 @@ impl Default for VimEngine {
             last_change: None,
             insert_capture: None,
             replace_stack: Vec::new(),
+            undo_ran: None,
         }
     }
 }
@@ -302,6 +307,12 @@ impl Default for VimEngine {
 impl VimEngine {
     pub fn mode(&self) -> &EditorMode {
         &self.mode
+    }
+
+    /// Take the `(count, is_redo)` recorded when this key ran `u` / `Ctrl+R`,
+    /// so the host can finish any **undo group** the engine only partly undid.
+    pub fn take_undo_ran(&mut self) -> Option<(usize, bool)> {
+        self.undo_ran.take()
     }
 
     /// Footer label for the current mode (e.g. "NORMAL").
@@ -1555,12 +1566,19 @@ impl VimEngine {
                 for _ in 0..n {
                     ta.undo();
                 }
+                // Tell the host an undo ran. It owns the **undo group**
+                // bookkeeping (a replace is two history entries) and finishes
+                // the group after this returns — the grouper is not reachable
+                // from here without threading it through the whole parse/apply
+                // chain to reach these two arms.
+                self.undo_ran = Some((n, false));
                 VimKeyOutcome::TextMutated
             }
             Command::Redo(n) => {
                 for _ in 0..n {
                     ta.redo();
                 }
+                self.undo_ran = Some((n, true));
                 VimKeyOutcome::TextMutated
             }
             Command::EnterInsert(entry) => self.apply_enter_insert(entry, cmd, inserted, ta),

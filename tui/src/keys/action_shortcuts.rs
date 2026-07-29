@@ -61,6 +61,10 @@ pub enum ActionShortcuts {
     // In-buffer find (Ctrl+F by default; reopens / advances to next match if
     // already open).
     FindInBuffer,
+    // In-buffer replace: opens the find bar with the replace field already
+    // revealed. Ships with no default chord — the Ctrl-letter namespace is
+    // full, and `Tab` from an open find bar reaches the same state (adr/0033).
+    ReplaceInBuffer,
     /// The leader gateway (Ctrl+G by default): starts a key sequence against
     /// the leader tree in every context, including mid-typing.
     Leader,
@@ -91,6 +95,7 @@ impl ActionShortcuts {
             | ActionShortcuts::FollowLink
             | ActionShortcuts::QuickNote
             | ActionShortcuts::FindInBuffer
+            | ActionShortcuts::ReplaceInBuffer
             | ActionShortcuts::YankRow
             | ActionShortcuts::OpenAsk => ShortcutCategory::Notes,
 
@@ -122,6 +127,7 @@ impl ActionShortcuts {
             ActionShortcuts::SaveCurrentQuery => "Save current query".into(),
             ActionShortcuts::SwitchWorkspace => "Switch workspace".into(),
             ActionShortcuts::FindInBuffer => "Find in note".into(),
+            ActionShortcuts::ReplaceInBuffer => "Replace in note".into(),
             ActionShortcuts::Leader => "Leader menu".into(),
             ActionShortcuts::OpenCommandPalette => "Command palette".into(),
             ActionShortcuts::Text(ta) => match ta {
@@ -162,6 +168,7 @@ impl Display for ActionShortcuts {
             ActionShortcuts::SaveCurrentQuery => "SaveCurrentQuery".to_string(),
             ActionShortcuts::SwitchWorkspace => "SwitchWorkspace".to_string(),
             ActionShortcuts::FindInBuffer => "FindInBuffer".to_string(),
+            ActionShortcuts::ReplaceInBuffer => "ReplaceInBuffer".to_string(),
             ActionShortcuts::Leader => "Leader".to_string(),
             ActionShortcuts::OpenCommandPalette => "OpenCommandPalette".to_string(),
         };
@@ -202,6 +209,7 @@ impl TryFrom<String> for ActionShortcuts {
             "SaveCurrentQuery" => ActionShortcuts::SaveCurrentQuery,
             "SwitchWorkspace" => ActionShortcuts::SwitchWorkspace,
             "FindInBuffer" => ActionShortcuts::FindInBuffer,
+            "ReplaceInBuffer" => ActionShortcuts::ReplaceInBuffer,
             "Leader" => ActionShortcuts::Leader,
             "OpenCommandPalette" => ActionShortcuts::OpenCommandPalette,
             _ => {

@@ -861,6 +861,11 @@ impl EditorScreen {
                     ed.open_or_advance_search();
                 }
             }
+            EditorOp::ReplaceInBuffer => {
+                if let Some(ed) = self.panels.editor_mut() {
+                    ed.open_replace();
+                }
+            }
             EditorOp::ApplyText(text_action) => {
                 if let Some(ed) = self.panels.editor_mut() {
                     ed.apply_text_action(text_action);

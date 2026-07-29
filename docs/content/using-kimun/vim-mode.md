@@ -114,7 +114,8 @@ Text objects are single-line for now.
 ## Registers, search, command line
 
 - Every yank **and** every delete/change fills the unnamed register, like vim — `xp` transposes, `ddp` moves a line down. The register is kept separate from the OS clipboard (`Ctrl+C/X/V` keep working independently).
-- `/` and `?` open the find bar; Enter confirms, then `n` / `N` jump between matches with the bar closed.
+- `/` and `?` open the [find bar](@/using-kimun/tui.md#find-in-buffer). Enter steps to the next match and `Shift+Enter` back; Esc closes the bar, and `n` / `N` keep jumping between matches afterwards. The bar behaves identically on both editor backends — one key map, not a vim one and a non-vim one.
+- There is no `:%s`. Search and replace lives in the find bar: press `Tab` to reveal the replacement field, then `Enter` to replace one match or `Ctrl+A` for all — see [replace in buffer](@/using-kimun/tui.md#replace-in-buffer). `u` undoes a whole replace in one step. The pattern is Rust regex rather than vim regex, so `\v`, `\zs` and friends don't apply.
 - `:` opens the [command palette](@/using-kimun/tui.md#command-palette).
 - A bare `Space` in Normal mode starts a [leader](@/using-kimun/tui.md#the-leader-key) sequence (with the which-key panel), so the whole command tree is reachable without leaving the home row. Space only leads from a *clean* Normal state — mid-command (`d Space`, `f Space`, a pending count) it still acts as the motion/target character.
 
