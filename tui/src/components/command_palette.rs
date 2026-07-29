@@ -124,6 +124,13 @@ impl Overlay for CommandPaletteModal {
                     tx.send(AppEvent::CloseOverlay).ok();
                     EventState::Consumed
                 }
+                // Command rows declare no yank target, but the attempt still
+                // reports "nothing to copy" rather than vanishing into the
+                // catch-all below (adr/0032).
+                KeyReaction::Yank(target) => {
+                    crate::components::yank_row(target, tx);
+                    EventState::Consumed
+                }
                 _ => EventState::Consumed,
             },
             InputEvent::Mouse(mouse) => {

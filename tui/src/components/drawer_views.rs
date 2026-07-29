@@ -23,7 +23,7 @@ use crate::components::events::{AppEvent, AppTx, FileOp, InputEvent};
 use crate::components::panel::panel_block;
 use crate::components::query_list_panel::{ListPanelSpec, QueryListPanel};
 use crate::components::rich_row::RichRow;
-use crate::components::search_list::{Emit, RowSource, SearchRow};
+use crate::components::search_list::{Emit, RowSource, SearchRow, YankTarget};
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
 
@@ -53,6 +53,11 @@ impl SearchRow for TagEntry {
 
     fn visual_height(&self) -> u16 {
         1
+    }
+
+    fn yank_target(&self) -> Option<YankTarget> {
+        // With the `#` sigil, so the copied text is usable as-is in a note.
+        Some(YankTarget::new(format!("#{}", self.label), "tag"))
     }
 }
 
@@ -198,6 +203,10 @@ impl SearchRow for LinkEntry {
 
     fn match_text(&self) -> Option<&str> {
         Some(&self.filename)
+    }
+
+    fn yank_target(&self) -> Option<YankTarget> {
+        Some(YankTarget::path(self.path.to_string()))
     }
 
     fn visual_height(&self) -> u16 {
@@ -505,6 +514,12 @@ impl SearchRow for OutlineEntry {
 
     fn visual_height(&self) -> u16 {
         1
+    }
+
+    fn yank_target(&self) -> Option<YankTarget> {
+        // The heading text alone — the row carries no note path, and the depth
+        // is presentation, not content.
+        Some(YankTarget::new(self.heading.clone(), "heading"))
     }
 }
 

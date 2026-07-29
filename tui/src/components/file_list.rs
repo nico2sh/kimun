@@ -275,6 +275,19 @@ impl crate::components::search_list::SearchRow for FileListEntry {
             _ => None,
         }
     }
+
+    fn yank_target(&self) -> Option<crate::components::search_list::YankTarget> {
+        use crate::components::search_list::YankTarget;
+        match self {
+            // `Up` navigates to the parent and `CreateNote` names a note that
+            // does not exist yet — neither is a path worth putting on the
+            // clipboard.
+            Self::Up { .. } | Self::CreateNote { .. } => None,
+            Self::Note { path, .. }
+            | Self::Directory { path, .. }
+            | Self::Attachment { path, .. } => Some(YankTarget::path(path.to_string())),
+        }
+    }
 }
 
 #[cfg(test)]

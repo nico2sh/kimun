@@ -371,6 +371,10 @@ impl Overlay for NoteBrowserModal {
                         self.refresh_preview_from_list();
                         EventState::Consumed
                     }
+                    KeyReaction::Yank(target) => {
+                        crate::components::yank_row(target, tx);
+                        EventState::Consumed
+                    }
                     KeyReaction::Intercepted(_)
                     | KeyReaction::ListVerb(_)
                     | KeyReaction::Unhandled => EventState::NotConsumed,

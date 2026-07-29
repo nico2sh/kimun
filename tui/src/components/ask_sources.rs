@@ -122,6 +122,12 @@ impl SearchRow for SourceRow {
     fn match_text(&self) -> Option<&str> {
         Some(&self.filter_text)
     }
+
+    fn yank_target(&self) -> Option<crate::components::search_list::YankTarget> {
+        Some(crate::components::search_list::YankTarget::path(
+            self.source.path.to_string(),
+        ))
+    }
 }
 
 /// The Ask workspace's Sources drawer view: a ranked source list (on the shared
@@ -462,6 +468,10 @@ impl SourcesPanel {
             KeyReaction::Consumed => {
                 self.sync_preview();
                 self.ensure_loaded(tx);
+                EventState::Consumed
+            }
+            KeyReaction::Yank(target) => {
+                crate::components::yank_row(target, tx);
                 EventState::Consumed
             }
             // Esc from a collapsed list bubbles so the host returns focus to the

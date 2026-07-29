@@ -341,6 +341,13 @@ pub(crate) fn classify_tail(
                 open: OverlayOpen::SavedSearches,
             }),
             Some(ActionShortcuts::OpenAsk) => Some(EditorIntent::Op(EditorOp::OpenAsk)),
+            // Deliberately produces NO intent, so the chord is never consumed
+            // here and always reaches whatever has focus. A list surface claims
+            // it inside `SearchList` and yanks the selected row's target; the
+            // editor claims it as redo. The binding exists for the other two
+            // things a hand-rolled pre-check could never give it — rebinding and
+            // a help-dialog entry (adr/0032).
+            Some(ActionShortcuts::YankRow) => None,
             Some(ActionShortcuts::OpenSortDialog) => {
                 // Sort applies only when a list is focused (the drawer's
                 // Find / Files views). When the editor is focused, do NOT
