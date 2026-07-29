@@ -968,11 +968,17 @@ impl MarkdownEditorView {
                             self.gutter_insets.get(vl.logical_row).copied().unwrap_or(0)
                         };
                         let start_rendered = if row == sel_sr {
-                            MarkdownSpanner::rendered_cursor_col_with(
+                            // Reveal follows the caret, not the selection edge.
+                            // Mapping an edge as if it were the caret reveals
+                            // whatever element the edge touches and counts that
+                            // element's hidden sigils as drawn — which lands the
+                            // highlight right of the text it belongs to.
+                            MarkdownSpanner::rendered_col_with_reveal(
                                 logical_line,
                                 parsed,
                                 vl.start_col,
                                 sel_sc,
+                                cursor_col,
                                 vl.is_first_visual_line,
                                 force_raw,
                             ) + gutter_off
@@ -980,11 +986,12 @@ impl MarkdownEditorView {
                             0
                         };
                         let end_rendered = if row == sel_er {
-                            MarkdownSpanner::rendered_cursor_col_with(
+                            MarkdownSpanner::rendered_col_with_reveal(
                                 logical_line,
                                 parsed,
                                 vl.start_col,
                                 sel_ec,
+                                cursor_col,
                                 vl.is_first_visual_line,
                                 force_raw,
                             ) + gutter_off
@@ -1026,11 +1033,12 @@ impl MarkdownEditorView {
                         .filter(|p| p.row == vl.logical_row)
                     {
                         let to_rendered = |col: usize| {
-                            MarkdownSpanner::rendered_cursor_col_with(
+                            MarkdownSpanner::rendered_col_with_reveal(
                                 logical_line,
                                 parsed,
                                 vl.start_col,
                                 col,
+                                cursor_col,
                                 vl.is_first_visual_line,
                                 force_raw,
                             ) + gutter_off
