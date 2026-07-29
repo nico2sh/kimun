@@ -780,49 +780,76 @@ impl VimEngine {
     /// (adr/0031).
     ///
     /// All three land in Normal, because vim's Ctrl-C is Esc.
+    ///
+    /// **Paste does not mutate here.** It leaves the range *selected* and lets
+    /// the host replace it as part of the insert, so a failed or empty clipboard
+    /// read leaves the selection intact. Cutting first would destroy the user's
+    /// text with nothing to put in its place, and the host's read can fail for
+    /// ordinary reasons (empty clipboard, X11 hiccup).
     fn clipboard_chord_visual(&mut self, c: char, ta: &mut TextArea<'static>) -> VimKeyOutcome {
         let linewise = self.mode == EditorMode::VisualLine;
-        let start = ta.selection_range().map(|(s, _)| s);
-        if let Some(((sr, sc), (er, ec))) = ta.selection_range() {
+        let Some(((sr, sc), (er, ec))) = ta.selection_range() else {
+            self.mode = EditorMode::Normal;
+            self.clear_pending();
+            return VimKeyOutcome::CursorOnly;
+        };
+
+        // The text the clipboard receives, computed from the line bodies rather
+        // than from whatever range the buffer edit happens to consume — the
+        // linewise delete below may swallow the *preceding* newline instead of
+        // the trailing one, which would be wrong to hand to another application.
+        let clipboard_text = if linewise {
+            let body: String = ta.lines()[sr..=er].join("\n");
+            format!("{body}\n")
+        } else {
+            String::new() // filled from the selection below
+        };
+
+        // The range the chord acts on: whole lines for linewise, the
+        // vim-inclusive span (the char under the cursor counts) for charwise.
+        let select_content = |ta: &mut TextArea<'static>| {
             ta.cancel_selection();
             if linewise {
-                // Whole lines, from column 0 through the last line's end. The
-                // trailing newline is re-added below rather than selected, so
-                // the last line of the buffer behaves like any other.
                 let end_len = ta.lines().get(er).map(|l| l.chars().count()).unwrap_or(ec);
                 Self::select_range(ta, (sr, 0), (er, end_len), false);
             } else {
-                // Charwise: vim's selection includes the char under the cursor.
                 Self::select_range(ta, (sr, sc), (er, ec), true);
             }
-        }
-        let lifted = |ta: &TextArea<'static>| {
-            let mut text = ta.yank_text();
-            if linewise {
-                text.push('\n');
-            }
-            text
         };
+
         let action = match c {
             'c' => {
+                select_content(ta);
                 ta.copy();
-                let text = lifted(ta);
+                let text = if linewise {
+                    clipboard_text
+                } else {
+                    ta.yank_text()
+                };
                 ta.cancel_selection();
                 // vim leaves the cursor at the start of a yanked range.
-                if let Some((r, col)) = start {
-                    ta.move_cursor(CursorMove::Jump(r as u16, col as u16));
-                }
+                ta.move_cursor(CursorMove::Jump(sr as u16, sc as u16));
                 VimHostAction::ClipboardCopy(text)
             }
             'x' => {
-                ta.cut();
-                VimHostAction::ClipboardCut(lifted(ta))
+                let text = if linewise {
+                    // Take the newline with the lines, or `dd`'s stray-blank-line
+                    // bug reappears on the clipboard path.
+                    Self::select_lines_for_delete(ta, sr, er);
+                    ta.cut();
+                    clipboard_text
+                } else {
+                    select_content(ta);
+                    ta.cut();
+                    ta.yank_text()
+                };
+                VimHostAction::ClipboardCut(text)
             }
-            // Paste over a selection: drop the selected text first, so the host
-            // inserts into a clean cursor position. The cut's yank buffer is
-            // discarded — the incoming text comes from the OS clipboard.
+            // Paste: leave the range selected and let the host's insert replace
+            // it atomically. Nothing is destroyed until there is something to
+            // put in its place.
             _ => {
-                ta.cut();
+                select_content(ta);
                 VimHostAction::ClipboardPaste
             }
         };
@@ -2222,6 +2249,33 @@ impl VimEngine {
         }
     }
 
+    /// Select rows `r0..=r1` for a **linewise delete**, consuming one newline so
+    /// no empty remnant is left behind: the trailing newline when a line
+    /// follows, otherwise the preceding one (last-line case), and the whole
+    /// buffer when it is all of it (which leaves the textarea's mandatory `[""]`).
+    ///
+    /// Shared by `dd`/`cc` and by the OS-clipboard Ctrl-X, which used to select
+    /// only the line *bodies* and so left a stray blank line behind every time.
+    fn select_lines_for_delete(ta: &mut TextArea<'static>, r0: usize, r1: usize) {
+        let last = ta.lines().len().saturating_sub(1);
+        if r1 < last {
+            ta.move_cursor(CursorMove::Jump(r0 as u16, 0));
+            ta.start_selection();
+            ta.move_cursor(CursorMove::Jump((r1 + 1) as u16, 0));
+        } else if r0 > 0 {
+            let prev_end = ta.lines()[r0 - 1].chars().count();
+            ta.move_cursor(CursorMove::Jump((r0 - 1) as u16, prev_end as u16));
+            ta.start_selection();
+            let end = ta.lines()[r1].chars().count();
+            ta.move_cursor(CursorMove::Jump(r1 as u16, end as u16));
+        } else {
+            ta.move_cursor(CursorMove::Jump(0, 0));
+            ta.start_selection();
+            let end = ta.lines()[r1].chars().count();
+            ta.move_cursor(CursorMove::Jump(r1 as u16, end as u16));
+        }
+    }
+
     fn apply_operator_linewise(
         &mut self,
         op: Operator,
@@ -2244,26 +2298,7 @@ impl VimEngine {
                 ta.move_cursor(CursorMove::Jump(r0 as u16, 0));
             }
             Operator::Delete | Operator::Change => {
-                // Select the lines. Include the trailing newline if there is a
-                // line after r1; otherwise (last line) include the PRECEDING
-                // newline so no empty remnant is left.
-                if r1 < last {
-                    ta.move_cursor(CursorMove::Jump(r0 as u16, 0));
-                    ta.start_selection();
-                    ta.move_cursor(CursorMove::Jump((r1 + 1) as u16, 0));
-                } else if r0 > 0 {
-                    let prev_end = ta.lines()[r0 - 1].chars().count();
-                    ta.move_cursor(CursorMove::Jump((r0 - 1) as u16, prev_end as u16));
-                    ta.start_selection();
-                    let end = ta.lines()[r1].chars().count();
-                    ta.move_cursor(CursorMove::Jump(r1 as u16, end as u16));
-                } else {
-                    // whole buffer: select everything, leaving one empty line
-                    ta.move_cursor(CursorMove::Jump(0, 0));
-                    ta.start_selection();
-                    let end = ta.lines()[r1].chars().count();
-                    ta.move_cursor(CursorMove::Jump(r1 as u16, end as u16));
-                }
+                Self::select_lines_for_delete(ta, r0, r1);
                 ta.cut();
                 // The cut selection may include a leading newline on the
                 // last-line path; fill the register with the proper linewise
@@ -2943,8 +2978,11 @@ mod tests {
         );
     }
 
+    /// Paste must NOT cut here. The host's clipboard read can come back empty
+    /// or fail, and there is no way to put the text back — so the range is left
+    /// selected and the host's insert replaces it atomically.
     #[test]
-    fn ctrl_v_in_visual_drops_the_selection_and_asks_the_host_to_paste() {
+    fn ctrl_v_in_visual_leaves_the_selection_for_the_host_to_replace() {
         let mut e = VimEngine::default();
         let mut t = ta();
         visual_hello(&mut e, &mut t);
@@ -2954,10 +2992,66 @@ mod tests {
         );
         assert_eq!(
             t.lines()[0],
-            " world",
-            "paste-over removes the selection first"
+            "hello world",
+            "nothing may be destroyed before there is something to replace it"
+        );
+        assert_eq!(
+            t.selection_range(),
+            Some(((0, 0), (0, 5))),
+            "the inclusive range stays selected so the host's insert consumes it"
         );
         assert_eq!(e.mode, EditorMode::Normal);
+    }
+
+    /// The regression the above prevents: an empty clipboard used to leave the
+    /// buffer mutilated, because the engine cut before the host discovered it
+    /// had nothing to paste.
+    #[test]
+    fn ctrl_v_with_an_unusable_clipboard_leaves_the_buffer_untouched() {
+        let mut e = VimEngine::default();
+        let mut t = ta();
+        visual_hello(&mut e, &mut t);
+        e.handle_key(&ctrl('v'), &mut t);
+        // The host reads the clipboard, finds nothing, and returns without
+        // calling `paste_text` — simulated here by simply doing nothing.
+        assert_eq!(t.lines()[0], "hello world");
+    }
+
+    #[test]
+    fn visual_line_ctrl_x_takes_the_whole_line_leaving_no_blank() {
+        let mut e = VimEngine::default();
+        let mut t = ta();
+        e.handle_key(&key('V'), &mut t);
+        match e.handle_key(&ctrl('x'), &mut t) {
+            VimKeyOutcome::Host(VimHostAction::ClipboardCut(s)) => {
+                assert_eq!(s, "hello world\n", "the clipboard gets a linewise cut");
+            }
+            o => panic!("got {o:?}"),
+        }
+        assert_eq!(
+            t.lines(),
+            ["second line"],
+            "the line's newline goes with it — no stray blank line"
+        );
+    }
+
+    #[test]
+    fn visual_line_ctrl_x_on_the_last_line_leaves_no_blank_either() {
+        let mut e = VimEngine::default();
+        let mut t = ta();
+        t.move_cursor(CursorMove::Jump(1, 0));
+        e.handle_key(&key('V'), &mut t);
+        match e.handle_key(&ctrl('x'), &mut t) {
+            VimKeyOutcome::Host(VimHostAction::ClipboardCut(s)) => {
+                assert_eq!(
+                    s, "second line\n",
+                    "the clipboard text is the line plus a newline, even though \
+                     the buffer edit consumed the PRECEDING one"
+                );
+            }
+            o => panic!("got {o:?}"),
+        }
+        assert_eq!(t.lines(), ["hello world"]);
     }
 
     #[test]

@@ -211,15 +211,11 @@ impl EditorScreen {
                 .flash("Clipboard image size mismatch".to_string(), tx);
             return true;
         }
-        // Past this point the paste is committed, so reconcile the buffer now:
-        // drop any selection (the image replaces it, as any other paste would)
-        // and take the vim engine out of Visual with it. This path bypasses the
-        // editor's own key handling entirely — the screen layer owns it because
-        // only it can reach the vault — so without this the engine would go on
-        // believing in a selection that no longer exists (adr/0031).
-        if let Some(editor) = self.panels.editor_mut() {
-            editor.take_selection_for_external_paste();
-        }
+        // The selection is NOT dropped here. Both steps below can fail — the
+        // PNG encode and the attachment save — and a cut done now would destroy
+        // the user's text with nothing to replace it. `insert_at_cursor`, which
+        // runs only on success, does the replacement and reconciles the vim
+        // engine out of Visual in the same breath (adr/0031).
         let asset_path = self.vault.generate_attachment_path("image", "png");
         let link_path = asset_path.relative_link_from_note(&self.path);
         let markdown = format!("![]({link_path})");
