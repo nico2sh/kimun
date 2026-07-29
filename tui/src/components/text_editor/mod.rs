@@ -4372,6 +4372,30 @@ mod tests {
         );
     }
 
+    /// The find bar owns the terminal caret while it is open, so the editor
+    /// draws none — the flagged current span is the only thing on screen
+    /// saying where in the note you are. It must survive an empty
+    /// replacement, where the previewed match has zero width.
+    #[test]
+    fn a_deletion_preview_still_marks_the_current_match() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("todo and todo".to_string());
+        open_replace_bar(&mut editor, &tx, "todo", "");
+        let preview = editor.replace_preview().expect("a preview must be built");
+        assert_eq!(preview.lines, vec![" and ".to_string()]);
+        let current = preview
+            .spans
+            .iter()
+            .find(|s| s.is_current)
+            .expect("the current match must stay flagged when it previews as nothing");
+        assert_eq!(
+            current.start, current.end,
+            "an empty replacement previews as a zero-width span — the renderer \
+             widens it to a caret cell so the marker cannot vanish"
+        );
+    }
+
     #[test]
     fn no_preview_without_a_replace_field() {
         let mut editor = make_editor();

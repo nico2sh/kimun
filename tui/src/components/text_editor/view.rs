@@ -1002,13 +1002,18 @@ impl MarkdownEditorView {
 
                 // Replace preview last, so it wins over the selection: while a
                 // preview is showing, "this text is not in your note yet" is
-                // the more important fact about these columns (adr/0035). The
-                // current match takes the same colour plus bold — it is the one
-                // `Enter` rewrites, the rest are what `Ctrl+A` reaches.
+                // the more important fact about these columns (adr/0035).
+                //
+                // The current match — the one `Enter` rewrites, as against the
+                // ones only `Ctrl+A` reaches — takes the `cursor` colour as its
+                // foreground. The find bar owns the terminal caret while it is
+                // open, so the editor draws none; this is the only thing on
+                // screen saying where in the note you are.
                 let spans = if self.preview_spans.is_empty() {
                     spans
                 } else {
                     let preview_bg = theme.color_replace_preview.to_ratatui();
+                    let cursor_fg = theme.cursor.to_ratatui();
                     let gutter_off = if vl.is_first_visual_line {
                         0
                     } else {
@@ -1030,11 +1035,21 @@ impl MarkdownEditorView {
                                 force_raw,
                             ) + gutter_off
                         };
+                        let start = to_rendered(pv.start);
+                        let mut end = to_rendered(pv.end);
+                        // An empty replacement previews a match as nothing at
+                        // all, so the current-match marker would have zero
+                        // width and vanish — in precisely the destructive case
+                        // where the user most needs to see where they are.
+                        // Give it one cell, like a caret.
+                        if pv.is_current && end == start {
+                            end = start + 1;
+                        }
                         spans = apply_bg_over_range(
                             spans,
-                            to_rendered(pv.start)..to_rendered(pv.end),
+                            start..end,
                             preview_bg,
-                            pv.is_current,
+                            pv.is_current.then_some(cursor_fg),
                         );
                     }
                     spans
@@ -1276,7 +1291,7 @@ fn apply_selection_highlight<'a>(
     sel_cols: std::ops::Range<usize>,
     theme: &Theme,
 ) -> Vec<ratatui::text::Span<'a>> {
-    apply_bg_over_range(spans, sel_cols, theme.selection_bg.to_ratatui(), false)
+    apply_bg_over_range(spans, sel_cols, theme.selection_bg.to_ratatui(), None)
 }
 
 /// Re-style spans to apply `highlight_bg` over the given rendered-column
@@ -1289,7 +1304,7 @@ fn apply_bg_over_range<'a>(
     spans: Vec<ratatui::text::Span<'a>>,
     sel_cols: std::ops::Range<usize>,
     highlight_bg: ratatui::style::Color,
-    bold: bool,
+    emphasis_fg: Option<ratatui::style::Color>,
 ) -> Vec<ratatui::text::Span<'a>> {
     if sel_cols.is_empty() {
         return spans;
@@ -1297,10 +1312,13 @@ fn apply_bg_over_range<'a>(
 
     let restyle = |s: ratatui::style::Style| {
         let s = s.bg(highlight_bg);
-        if bold {
-            s.add_modifier(ratatui::style::Modifier::BOLD)
-        } else {
-            s
+        // A foreground override, not a modifier: BOLD is a no-op on text that
+        // is already bold (a heading, a `**word**`), which left the current
+        // match indistinguishable from the rest on exactly the content where
+        // knowing which one is next matters most.
+        match emphasis_fg {
+            Some(fg) => s.fg(fg).add_modifier(ratatui::style::Modifier::BOLD),
+            None => s,
         }
     };
     let mut result = Vec::new();
