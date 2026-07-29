@@ -215,7 +215,7 @@ pub struct SavedSearchesModal {
 }
 
 impl SavedSearchesModal {
-    pub fn new(vault: Arc<NoteVault>, _key_bindings: KeyBindings, icons: Icons, tx: AppTx) -> Self {
+    pub fn new(vault: Arc<NoteVault>, key_bindings: KeyBindings, icons: Icons, tx: AppTx) -> Self {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let delete_combo = key_event_to_combo(&KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE))
             .expect("Delete maps to a key combo");
@@ -228,6 +228,7 @@ impl SavedSearchesModal {
             redraw_callback(tx),
         )
         .filter(Filter::Rank(Arc::new(rank_to_indices)))
+        .yank_combos_from(&key_bindings)
         .icons(icons)
         .intercept(vec![delete_combo])
         .build();

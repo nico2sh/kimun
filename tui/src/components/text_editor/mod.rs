@@ -986,6 +986,32 @@ impl TextEditorComponent {
         })
     }
 
+    /// Prepare the buffer for content arriving from *outside* the editor's own
+    /// key path — today only the clipboard-image paste, which the screen layer
+    /// owns because it alone can reach the vault.
+    ///
+    /// Removes the active selection (the incoming content replaces it, as with
+    /// every other paste) and reconciles the vim engine out of Visual, through
+    /// the same door the mouse path uses. Without this the engine keeps a mode
+    /// that the buffer no longer supports: still Visual, selection gone
+    /// (adr/0031).
+    pub fn take_selection_for_external_paste(&mut self) {
+        self.extend_visual_selection_inclusive();
+        let cut = if let Some(ta) = self.backend.as_textarea_mut() {
+            let cut = ta.selection_range().is_some() && ta.cut();
+            self.selection = ta.selection_range();
+            cut
+        } else {
+            false
+        };
+        if cut {
+            self.bump_content();
+        }
+        // `false` = no live selection, so a modal engine returns to Normal.
+        // A no-op for Insert and for the non-modal backends.
+        self.backend.sync_mouse_selection(false);
+    }
+
     /// Wraps the active selection in `open`/`close` and re-selects the inner
     /// text so wraps chain (see CONTEXT.md "Auto-surround"). Returns `false`
     /// without touching the buffer when there is no (non-empty) selection or
@@ -3567,6 +3593,56 @@ mod tests {
     }
 
     /// Regression: copy is read-only over a vim charwise Visual selection.
+    /// The image-paste path bypasses the editor's key handling entirely (the
+    /// screen layer owns it, because only it can reach the vault), so it has to
+    /// reconcile the engine itself. Before this, an image pasted in Visual mode
+    /// left the engine in Visual with a selection that no longer existed —
+    /// every subsequent motion silently extended a ghost (adr/0031).
+    #[test]
+    fn external_paste_drops_the_selection_and_leaves_visual() {
+        let mut editor = make_vim_editor();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        editor.set_text("hello world".to_string());
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('v'), KeyModifiers::NONE)),
+            &tx,
+        );
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('e'), KeyModifiers::NONE)),
+            &tx,
+        );
+        assert_eq!(vim_mode(&editor), EditorMode::Visual);
+
+        editor.take_selection_for_external_paste();
+
+        assert_eq!(
+            vim_mode(&editor),
+            EditorMode::Normal,
+            "the engine must not keep believing it is in Visual"
+        );
+        assert_eq!(
+            get_ta(&mut editor).selection_range(),
+            None,
+            "the selection the incoming content replaces must be gone"
+        );
+        assert_eq!(
+            editor.get_text(),
+            " world",
+            "the inclusive visual range is what gets replaced"
+        );
+    }
+
+    /// The same call outside Visual must not eat anything — Ctrl+V with an
+    /// image on the clipboard is an ordinary insert-at-cursor in Normal mode.
+    #[test]
+    fn external_paste_without_a_selection_leaves_the_buffer_alone() {
+        let mut editor = make_vim_editor();
+        editor.set_text("hello world".to_string());
+        editor.take_selection_for_external_paste();
+        assert_eq!(editor.get_text(), "hello world");
+        assert_eq!(vim_mode(&editor), EditorMode::Normal);
+    }
+
     /// It must include the char under the cursor (matching the highlight), but
     /// must NOT mutate the live selection — otherwise repeated right-click copy
     /// drifts the selection one char wider each time (`((0,0),(0,4))` →
