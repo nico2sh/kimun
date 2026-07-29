@@ -41,8 +41,12 @@ The reified unit of work in the **vim** editor backend's engine (the `Command` e
 _Avoid_: action, keystroke handler (those describe the superseded imperative form).
 
 **Unnamed register**:
-The engine-owned register of the **vim** editor backend: text and its kind (charwise/linewise) stored together as one value, filled by every yank *and* every delete/change (vim rule — so `xp` swaps chars). Kept separate from the textarea's yank buffer (a transport only, never read at paste time) and from the OS clipboard (the Ctrl-c/v path). Named registers (v2) add a map alongside.
+The engine-owned register of the **vim** editor backend: text and its kind (charwise/linewise) stored together as one value, filled by every yank *and* every delete/change (vim rule — so `xp` swaps chars). Kept separate from the textarea's yank buffer (a transport only, never read at paste time) and from the **OS clipboard**. Named registers (v2) add a map alongside.
 _Avoid_: yank buffer (the textarea's, not the register), clipboard.
+
+**OS clipboard**:
+The operating system's shared copy buffer — the channel kimün uses to exchange text with *other applications*. Reached by Ctrl-C / Ctrl-X / Ctrl-V in the editor and by the yank chord in the panels; never by `y`/`p`, which address the **unnamed register**. The two channels are deliberately independent: yanking does not publish outside kimün, and deleting cannot destroy what another application put there (adr/0031).
+_Avoid_: clipboard unqualified (ambiguous — register or OS?), system buffer, pasteboard.
 
 **Span kind**:
 Vim's motion classification (`:h exclusive`) as carried by the engine: a motion consumed by an operator forms an **exclusive**, **inclusive**, or **linewise** range (`SpanKind`). j/k and gg/G are linewise (so `dj` deletes whole lines), e/f/t/%/$ are inclusive, the rest exclusive. `select_range` is the single home of the vim-inclusive → ratatui-half-open `+1` conversion.
@@ -133,7 +137,11 @@ The one **row source** adapter that resolves a **query variable** against a **qu
 _Avoid_: query resolver (names the function, not the seam), template source.
 
 **Search row**:
-What a single row must tell its **SearchList** to be listed, filtered, navigated, and drawn — the only thing that varies with the row's type (a note, a saved search, a directory entry). Anything richer is read back by the caller from the selected row.
+What a single row must tell its **SearchList** to be listed, filtered, navigated, and drawn — the only thing that varies with the row's type (a note, a saved search, a directory entry). It also declares its **yank target**. Anything richer is read back by the caller from the selected row.
+
+**Yank target**:
+What a **search row** offers to the **OS clipboard**, declared by the row rather than by the surface displaying it: the text plus the noun naming it ("path", "tag", "heading"), so the confirmation says which kind of thing was copied. Rows with nothing worth copying declare none, and the yank reports that rather than doing nothing silently — every clipboard attempt reports its outcome (adr/0032). Because the row declares it, a surface built on **SearchList** inherits the behaviour instead of having to wire it.
+_Avoid_: yank text (loses the noun), copyable field, clipboard value (collides with the **OS clipboard** itself).
 
 **Suggestion source**:
 The seam that supplies the query input's autocomplete with candidates (note names for `>`, tag labels for `#`), kept separate from the **row source** and from the vault so the autocomplete host is testable in isolation.

@@ -11,7 +11,7 @@ mod seams;
 pub use resolving::{ResolvingRowSource, Unresolvable};
 pub use seams::{
     Emit, Filter, Loaded, RowSource, SearchRow, StaticRowSource, SuggestionItem, SuggestionSource,
-    VaultSuggestions,
+    VaultSuggestions, YankTarget,
 };
 
 use crate::components::autocomplete::{
@@ -72,6 +72,14 @@ pub enum KeyReaction {
     /// engine attaches NO meaning to the char — the caller maps it to an
     /// action (see [`SearchListBuilder::list_verb`]).
     ListVerb(char),
+    /// The yank chord fired: the selected row's [`YankTarget`], or `None` when
+    /// nothing is selected or the row has nothing worth copying.
+    ///
+    /// SearchList decides *that* the chord is a yank and *what* it would copy;
+    /// it does not touch the clipboard, because it holds no `AppTx` and emits
+    /// nothing on its own. Callers hand this straight to
+    /// [`crate::components::yank_row`] (adr/0032).
+    Yank(Option<YankTarget>),
     Unhandled,
 }
 
@@ -101,6 +109,10 @@ pub struct SearchList<R: SearchRow> {
     autocomplete: Option<AutocompleteController>,
     /// Key combos the caller wants to intercept before the engine acts.
     intercept: Vec<KeyCombo>,
+    /// The chord that yanks the selected row's [`YankTarget`]. Defaults to
+    /// [`crate::keys::default_yank_combo`]; surfaces whose bindings the user has
+    /// rebound pass the resolved combo instead.
+    yank_combo: KeyCombo,
     icons: Icons,
     list_rect: Rect,
     /// The host panel's full bounds, for wheel hit-testing: scroll events
@@ -171,6 +183,7 @@ pub struct SearchListBuilder<R: SearchRow> {
     filter: Filter<R>,
     autocomplete: Option<(Arc<dyn SuggestionSource>, AutocompleteMode)>,
     intercept: Vec<KeyCombo>,
+    yank_combo: KeyCombo,
     icons: Icons,
     debounce: Option<std::time::Duration>,
     highlight_query: bool,
@@ -190,6 +203,7 @@ impl<R: SearchRow> SearchList<R> {
             filter: Filter::SourceOrder,
             autocomplete: None,
             intercept: Vec::new(),
+            yank_combo: crate::keys::default_yank_combo(),
             icons: Icons::new(false),
             debounce: None,
             highlight_query: false,
@@ -258,6 +272,7 @@ impl<R: SearchRow> SearchList<R> {
             last_click_pos: None,
             autocomplete,
             intercept: b.intercept,
+            yank_combo: b.yank_combo,
             icons: b.icons,
             list_rect: Rect::default(),
             panel_rect: Rect::default(),
@@ -612,6 +627,14 @@ impl<R: SearchRow> SearchList<R> {
             }
             return KeyReaction::Cancel;
         }
+        // The yank chord, claimed above the Ctrl/Alt drop below (which would
+        // otherwise swallow it). Every surface built on SearchList gets this
+        // without wiring a key — the note browser lacked one for exactly that
+        // reason (adr/0032). What gets copied is the ROW's business; performing
+        // the copy is the CALLER's, since SearchList holds no `AppTx`.
+        if crate::keys::key_event_to_combo(key).as_ref() == Some(&self.yank_combo) {
+            return KeyReaction::Yank(self.selected_row().and_then(|r| r.yank_target()));
+        }
         // Drop Ctrl/Alt-modified chars so combos don't leak as text (both foci;
         // registered intercepts already claimed theirs above).
         if let KeyCode::Char(_) = key.code {
@@ -939,6 +962,13 @@ impl<R: SearchRow> SearchListBuilder<R> {
         self.autocomplete = Some((suggestions, mode));
         self
     }
+    /// Override the yank chord (see [`crate::keys::default_yank_combo`]) when
+    /// the surface has resolved a user rebinding for it.
+    pub fn yank_combo(mut self, combo: KeyCombo) -> Self {
+        self.yank_combo = combo;
+        self
+    }
+
     pub fn intercept(mut self, v: Vec<KeyCombo>) -> Self {
         self.intercept = v;
         self
@@ -1008,6 +1038,95 @@ mod tests {
 
     fn key(c: KeyCode) -> KeyEvent {
         KeyEvent::new(c, KeyModifiers::NONE)
+    }
+
+    // ── The yank chord (adr/0032) ────────────────────────────────────────────
+    //
+    // The bug these pin: yanking the selected row was hand-rolled per surface,
+    // so the note browser — the most-reached list — silently had none. Claiming
+    // the chord here means every SearchList surface gets it.
+
+    fn yank_list(rows: &[&str]) -> SearchList<TestRow> {
+        SearchList::builder(
+            VecSource {
+                rows: vec![],
+                reload: false,
+            },
+            noop_redraw(),
+        )
+        .build_with_rows(rows.iter().map(|n| TestRow::new(n)).collect())
+    }
+
+    fn ctrl(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    #[test]
+    fn yank_chord_reports_the_selected_rows_target() {
+        let mut list = yank_list(&["alpha", "beta"]);
+        match list.handle_key(&ctrl('y')) {
+            KeyReaction::Yank(Some(t)) => {
+                assert_eq!(t.text, "alpha");
+                assert_eq!(t.noun, "path");
+            }
+            r => panic!("got {r:?}"),
+        }
+    }
+
+    #[test]
+    fn yank_chord_reports_none_for_a_row_with_nothing_to_copy() {
+        // Distinguishable from "the clipboard failed" only because the row
+        // says so — the caller flashes "nothing to copy" (adr/0032).
+        let mut list = yank_list(&["quiet"]);
+        list.select_next();
+        assert!(matches!(
+            list.handle_key(&ctrl('y')),
+            KeyReaction::Yank(None)
+        ));
+    }
+
+    #[test]
+    fn yank_chord_reports_none_when_nothing_is_selected() {
+        let mut list = yank_list(&[]);
+        assert!(matches!(
+            list.handle_key(&ctrl('y')),
+            KeyReaction::Yank(None)
+        ));
+    }
+
+    #[test]
+    fn yank_chord_is_claimed_before_ctrl_chars_are_dropped() {
+        // The regression guard: the Ctrl/Alt drop below the chord check
+        // returns `Unhandled`, which is what swallowed a per-panel yank that
+        // was registered too late in the ladder.
+        let mut list = yank_list(&["alpha"]);
+        list.select_next();
+        assert!(
+            !matches!(list.handle_key(&ctrl('y')), KeyReaction::Unhandled),
+            "the yank chord must not fall through to the Ctrl-char drop"
+        );
+    }
+
+    #[test]
+    fn a_rebound_yank_combo_replaces_the_default() {
+        let mut list = SearchList::builder(
+            VecSource {
+                rows: vec![],
+                reload: false,
+            },
+            noop_redraw(),
+        )
+        .yank_combo(crate::keys::key_event_to_combo(&ctrl('k')).unwrap())
+        .build_with_rows(vec![TestRow::new("alpha")]);
+        list.select_next();
+        assert!(matches!(
+            list.handle_key(&ctrl('k')),
+            KeyReaction::Yank(Some(_))
+        ));
+        assert!(
+            !matches!(list.handle_key(&ctrl('y')), KeyReaction::Yank(_)),
+            "the default chord must stop yanking once overridden"
+        );
     }
 
     fn mouse_down_at(col: u16, row: u16) -> ratatui::crossterm::event::MouseEvent {

@@ -494,6 +494,10 @@ impl Component for SidebarComponent {
                     EventState::Consumed
                 }
                 KeyReaction::Consumed | KeyReaction::Cancel => EventState::Consumed,
+                KeyReaction::Yank(target) => {
+                    crate::components::yank_row(target, tx);
+                    EventState::Consumed
+                }
                 KeyReaction::Intercepted(_) | KeyReaction::ListVerb(_) | KeyReaction::Unhandled => {
                     EventState::NotConsumed
                 }

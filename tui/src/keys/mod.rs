@@ -226,6 +226,14 @@ pub fn default_quit_combo() -> KeyCombo {
     KeyCombo::new(KeyModifiers::new().and_ctrl(), KeyStrike::KeyQ)
 }
 
+/// Canonical default combo for [`ActionShortcuts::YankRow`]. Sourced once for
+/// the same reason as [`default_quit_combo`], plus one more: `SearchList` claims
+/// this chord itself so every list surface yanks without per-panel wiring
+/// (adr/0032), and it must be the same chord the shortcut tier advertises.
+pub fn default_yank_combo() -> KeyCombo {
+    KeyCombo::new(KeyModifiers::new().and_ctrl(), KeyStrike::KeyY)
+}
+
 pub struct KeyBindBatch<'k> {
     bindings: &'k mut KeyBindings,
     modifiers: KeyModifiers,
