@@ -1,5 +1,6 @@
 pub mod autocomplete_glue;
 pub mod backend;
+pub mod edit_buffer;
 pub mod find_replace;
 pub mod markdown;
 pub mod nvim_decode;
@@ -10,7 +11,6 @@ mod revisions;
 use revisions::Revisions;
 pub mod snapshot;
 pub mod text_coords;
-pub mod undo_group;
 pub mod view;
 mod vim;
 pub mod widener_metrics;
@@ -63,17 +63,6 @@ fn snapshot_from_backend(
             EditorSnapshot::owned(lines, cursor, rev)
         }
     }
-}
-
-/// History entries one `insert_str` over a selection actually pushes.
-///
-/// Both halves are conditional: `delete_selection` pushes nothing when the
-/// selection is empty (`selection_positions` returns `None` on an equal
-/// range), and `insert_piece` returns early on `""` without pushing. So a
-/// replace is 0, 1 or 2 entries — and assuming 2 makes the next Ctrl+Z pop one
-/// entry too many, destroying an unrelated edit.
-fn history_entries(selection_empty: bool, text_empty: bool) -> usize {
-    usize::from(!selection_empty) + usize::from(!text_empty)
 }
 
 /// Narrow a `(row, start, end)` triple to the `u16`s `CursorMove::Jump` takes,
@@ -147,6 +136,7 @@ macro_rules! cursor_move {
 }
 
 use self::backend::BackendState;
+use self::edit_buffer::EditBuffer;
 use self::markdown::ParsedBuffer;
 use self::nvim_host::NvimHost;
 use self::snapshot::EditorSnapshot;
@@ -231,7 +221,7 @@ fn surround_pair(c: char) -> Option<(&'static str, &'static str)> {
 /// Re-establishes the textarea selection over `start..end` (char-based data
 /// coordinates, as returned by `selection_range`). `Jump` clamps, so the
 /// saturating casts degrade gracefully on pathologically large buffers.
-fn set_selection(ta: &mut TextArea<'_>, start: (usize, usize), end: (usize, usize)) {
+fn set_selection(ta: &mut EditBuffer, start: (usize, usize), end: (usize, usize)) {
     let jump = |(row, col): (usize, usize)| {
         CursorMove::Jump(
             u16::try_from(row).unwrap_or(u16::MAX),
@@ -612,9 +602,6 @@ pub struct TextEditorComponent {
     nvim_host: NvimHost,
     /// Active Ctrl+F find bar; `None` when not searching.
     search: Option<SearchState>,
-    /// Which buffer states are the seams of a multi-entry action, so one
-    /// **replace** costs one undo instead of two (adr/0033).
-    undo_groups: undo_group::UndoGrouper,
     /// Wikilink/hashtag autocomplete. Only populated for the textarea
     /// backend after `set_vault` is called; remains `None` for the Nvim
     /// backend (nvim users have their own completion ecosystem).
@@ -665,7 +652,6 @@ impl TextEditorComponent {
             selection: None,
             nvim_host: NvimHost::new(),
             search: None,
-            undo_groups: undo_group::UndoGrouper::default(),
             autocomplete: None,
             autocomplete_vault: None,
             autocomplete_redraw_bound: false,
@@ -886,7 +872,7 @@ impl TextEditorComponent {
         match &mut self.backend {
             BackendState::Textarea(tb) => {
                 let lines = text.lines();
-                tb.ta = TextArea::from(lines);
+                tb.ta.replace(TextArea::from(lines));
             }
             BackendState::Nvim(nvim) => {
                 nvim.set_text(&text);
@@ -907,7 +893,6 @@ impl TextEditorComponent {
         // surviving a note swap means one Ctrl+A deletes every match in a note
         // the user never armed, skipping the confirmation the flag exists to
         // force. `self.selection` would likewise still describe the old text.
-        self.undo_groups.clear();
         self.close_search();
         // The whole buffer was replaced. The cursor resets to the top, so if
         // the line count happens to match and row 0 differs, the damage fast
@@ -1815,26 +1800,27 @@ impl TextEditorComponent {
         let Some((row_u16, start_u16, end_u16)) = fits_jump(row, start_col, end_col) else {
             return;
         };
-        let entries = history_entries(start_col == end_col, expanded.is_empty());
         let Some(ta) = self.backend.as_textarea_mut() else {
             return;
         };
-        ta.move_cursor(CursorMove::Jump(row_u16, start_u16));
-        ta.start_selection();
-        ta.move_cursor(CursorMove::Jump(row_u16, end_u16));
-        ta.insert_str(&expanded);
-        ta.cancel_selection();
-        // `insert_str`'s bool cannot stand in for "the buffer changed": with an
-        // empty replacement it deletes the selection and STILL returns false
-        // (`insert_piece` bails on `""`). Compare the text we predicted instead.
-        if ta.lines() != after.as_slice() {
-            return;
-        }
-        if before != after {
-            self.undo_groups
-                .record(&before, &after, entries.saturating_sub(1));
-            self.revs.bump();
-        }
+        // One `edit()` scope: select the match and overwrite it as a single
+        // **undo group**, however many history entries that turns out to be.
+        // Nothing here predicts the count, and nothing reads `insert_str`'s
+        // bool — with an empty replacement it deletes and still returns false.
+        ta.edit(|ta| {
+            ta.move_cursor(CursorMove::Jump(row_u16, start_u16));
+            ta.start_selection();
+            ta.move_cursor(CursorMove::Jump(row_u16, end_u16));
+            ta.insert_str(&expanded);
+            ta.cancel_selection();
+        });
+        debug_assert_eq!(
+            ta.lines(),
+            after.as_slice(),
+            "replace_current wrote what it planned"
+        );
+        let _ = before;
+        self.apply_edit_outcome();
         // Land the cursor just past the replacement so the step below cannot
         // re-match inside text we just wrote.
         self.refresh_match_count();
@@ -1865,24 +1851,21 @@ impl TextEditorComponent {
         // than 65535 chars, where the cast would silently select the wrong
         // range and splice the rewrite into the middle of the text.
         let joined = after.join("\n");
-        let buffer_empty = before.iter().all(|l| l.is_empty()) && before.len() <= 1;
-        let entries = history_entries(buffer_empty, joined.is_empty());
-        ta.select_all();
-        ta.insert_str(&joined);
-        ta.cancel_selection();
-        // Not `insert_str`'s bool: with an empty result it deletes the buffer
-        // and still returns false. Verify against the text we predicted.
+        // One **undo group** spanning the whole rewrite. The buffer also
+        // derives `bulk` from it — a replace all rewrites rows the cursor does
+        // not point at, which is exactly what `compute_damage_range`'s cursor
+        // fast path assumes cannot happen (adr/0035).
+        ta.edit(|ta| {
+            ta.select_all();
+            ta.insert_str(&joined);
+            ta.cancel_selection();
+        });
         if ta.lines() != after.as_slice() {
             return None;
         }
-        self.undo_groups
-            .record(&before, &after, entries.saturating_sub(1));
-        self.revs.bump();
-        // A replace all rewrites rows the cursor does not point at, which is
-        // exactly what `compute_damage_range`'s cursor fast path assumes cannot
-        // happen — it would report only the cursor's row and leave every other
-        // rewritten row rendered from a stale parse.
-        self.view.note_bulk_edit();
+        let _ = &before;
+        self.apply_edit_outcome();
+        let ta = self.backend.as_textarea_mut()?;
 
         // Restore the reading position. The row stays valid because a replace
         // all never changes the line count (the pattern cannot span a newline
@@ -1900,109 +1883,52 @@ impl TextEditorComponent {
         Some(count)
     }
 
-    /// Undo one *user action*, which may be more than one history entry.
-    /// Returns whether the buffer changed.
+    /// Drain the **edit buffer**'s measured outcome and apply it.
     ///
-    /// The group is identified by the buffer state it left behind, not by its
-    /// position in history — so it is still recognised after the user typed and
-    /// then undid those keystrokes one by one.
-    fn undo_grouped(&mut self) -> bool {
-        let plan = {
-            let Some(ta) = self.backend.as_textarea() else {
-                return false;
-            };
-            self.undo_groups.take_undo_extra(ta.lines())
-        };
-        let Some(ta) = self.backend.as_textarea_mut() else {
+    /// The one place a text change turns into a revision bump and a
+    /// parse-damage signal. Both facts are derived by the buffer from the
+    /// content either side of the edit, so neither can be predicted wrongly
+    /// (an `insert_str` that returns `false` after deleting) or simply
+    /// forgotten at one of 22 sites (adr/0037).
+    ///
+    /// The revision clock stays on the component because it serves the nvim
+    /// backend too, which has no edit buffer.
+    fn apply_edit_outcome(&mut self) -> bool {
+        let Some(outcome) = self.backend.as_textarea_mut().map(|ta| ta.take_outcome()) else {
             return false;
         };
-        if !ta.undo() {
-            return false;
+        if outcome.changed {
+            self.bump_content();
         }
-        // Pop the rest of the group, but stop the moment the buffer reaches
-        // the state the group started from. Popping `extra` times blindly
-        // assumes those entries are still the next ones in history, and they
-        // need not be: `TextArea` keeps a bounded history (`History::new(50)`,
-        // evicting from the front), and an unrelated edit sequence can return
-        // the buffer to a recorded state. Aiming at the target means a stale
-        // group costs nothing instead of eating an unrelated entry.
-        let grouped = plan.is_some();
-        if let Some((extra, target)) = plan {
-            for _ in 0..extra {
-                if undo_group::UndoGrouper::reached(target, ta.lines()) {
-                    break;
-                }
-                if !ta.undo() {
-                    break;
-                }
-            }
-        }
-        self.selection = ta.selection_range();
-        // Undoing a group can restore a whole-buffer rewrite (a replace all) in
-        // one step, which the cursor damage hint cannot describe.
-        if grouped {
+        if outcome.bulk {
             self.view.note_bulk_edit();
         }
-        true
+        outcome.changed
+    }
+
+    /// Undo one *user action*. The **edit buffer** replays history to the
+    /// state the action started from, so nothing here counts entries.
+    fn undo_grouped(&mut self) -> bool {
+        let moved = self.backend.as_textarea_mut().is_some_and(|ta| ta.undo());
+        if moved {
+            self.selection = self
+                .backend
+                .as_textarea()
+                .and_then(|ta| ta.selection_range());
+        }
+        moved
     }
 
     /// Redo one *user action*. Mirror of [`Self::undo_grouped`].
     fn redo_grouped(&mut self) -> bool {
-        let plan = {
-            let Some(ta) = self.backend.as_textarea() else {
-                return false;
-            };
-            self.undo_groups.take_redo_extra(ta.lines())
-        };
-        let Some(ta) = self.backend.as_textarea_mut() else {
-            return false;
-        };
-        if !ta.redo() {
-            return false;
+        let moved = self.backend.as_textarea_mut().is_some_and(|ta| ta.redo());
+        if moved {
+            self.selection = self
+                .backend
+                .as_textarea()
+                .and_then(|ta| ta.selection_range());
         }
-        let grouped = plan.is_some();
-        if let Some((extra, target)) = plan {
-            for _ in 0..extra {
-                if undo_group::UndoGrouper::reached(target, ta.lines()) {
-                    break;
-                }
-                if !ta.redo() {
-                    break;
-                }
-            }
-        }
-        self.selection = ta.selection_range();
-        if grouped {
-            self.view.note_bulk_edit();
-        }
-        true
-    }
-
-    /// Finish an undo/redo the vim engine already started.
-    ///
-    /// The engine performs `u` / `Ctrl+R` inside its own command apply, where
-    /// the grouper is not reachable, so the host asks *before* dispatch whether
-    /// the pending group is on top (`peek`) and pops the remainder afterwards.
-    /// Threading the grouper through the engine's parse/apply chain would touch
-    /// a dozen signatures to reach two match arms.
-    fn finish_vim_undo(&mut self, plan: Option<(usize, u64)>, redo: bool) {
-        let Some((extra, target)) = plan else {
-            return;
-        };
-        let Some(ta) = self.backend.as_textarea_mut() else {
-            return;
-        };
-        for _ in 0..extra {
-            if undo_group::UndoGrouper::reached(target, ta.lines()) {
-                break;
-            }
-            let moved = if redo { ta.redo() } else { ta.undo() };
-            if !moved {
-                break;
-            }
-        }
-        self.selection = ta.selection_range();
-        self.view.note_bulk_edit();
+        moved
     }
 
     /// Recount matches against the current buffer. Cheap — `find_iter` over
@@ -2537,7 +2463,7 @@ impl TextEditorComponent {
                 ta.move_cursor(CursorMove::Jump(lrow, lcol));
             }
             _ => {
-                ta.input(*mouse);
+                ta.edit(|ta| ta.input(*mouse));
             }
         }
         self.selection = ta.selection_range();
@@ -2668,7 +2594,7 @@ impl Component for TextEditorComponent {
                     match controller.handle_key(*key, &host) {
                         HandleKeyOutcome::Accepted(action) => {
                             if let Some(ta) = self.backend.as_textarea_mut() {
-                                apply_accept_to_textarea(ta, &action);
+                                ta.edit(|ta| apply_accept_to_textarea(ta, &action));
                                 self.selection = ta.selection_range();
                             }
                             self.bump_content();
@@ -2691,47 +2617,12 @@ impl Component for TextEditorComponent {
                 // mode returns PassThrough and falls into the direct path below
                 // so typing, autocomplete, auto-surround and smart-Enter all
                 // keep working (adr/0012).
-                // Snapshot the pre-dispatch buffer while a group is pending:
-                // the engine performs `u` / `Ctrl+R` inside its own apply, and
-                // a group is identified by the state it left behind, so after
-                // the engine has popped, the evidence is gone. Costs a clone
-                // only while a group is actually pending — i.e. for the few
-                // keystrokes following a replace.
-                let pre_undo_lines: Option<Vec<String>> = if self.undo_groups.is_empty() {
-                    None
-                } else {
-                    self.backend.as_textarea().map(|ta| ta.lines().to_vec())
-                };
                 if let Some(outcome) = self.backend.vim_handle_key(key) {
                     use self::vim::VimKeyOutcome;
-                    // Group completion applies to a BARE `u` / `Ctrl+R` only.
-                    // A counted `3u` has already popped three raw entries by
-                    // the time control returns here, so the group it may have
-                    // run through cannot be reconstructed — and adding the
-                    // extra pop on top would undo *past* the group, discarding
-                    // an edit the user never asked to lose. Counted undo stays
-                    // entry-wise, which is what it did before grouping existed.
-                    if let Some((count, redo)) = self.backend.vim_take_undo_ran() {
-                        let plan = match pre_undo_lines {
-                            _ if count != 1 => None,
-                            Some(lines) if redo => self.undo_groups.take_redo_extra(&lines),
-                            Some(lines) => self.undo_groups.take_undo_extra(&lines),
-                            None => None,
-                        };
-                        self.finish_vim_undo(plan, redo);
-                    }
-                    // A vim command that spanned several history entries (the
-                    // case operators) records itself as one **undo group**.
-                    if let Some((before, extra)) = self.backend.vim_take_pending_group() {
-                        let after = self
-                            .backend
-                            .as_textarea()
-                            .map(|ta| ta.lines().to_vec())
-                            .unwrap_or_default();
-                        if before != after {
-                            self.undo_groups.record(&before, &after, extra);
-                        }
-                    }
+                    // Whatever the engine did, the buffer measured it. One
+                    // drain replaces the group handshake, the pre-dispatch
+                    // clone and the hand-placed revision bump (adr/0037).
+                    self.apply_edit_outcome();
                     match outcome {
                         VimKeyOutcome::TextMutated => {
                             self.selection = None;
@@ -3194,7 +3085,7 @@ mod tests {
         tokio::sync::mpsc::unbounded_channel().0
     }
 
-    fn get_ta(editor: &mut TextEditorComponent) -> &mut TextArea<'static> {
+    fn get_ta(editor: &mut TextEditorComponent) -> &mut EditBuffer {
         match &mut editor.backend {
             BackendState::Textarea(tb) => &mut tb.ta,
             _ => panic!("expected Textarea backend"),
@@ -4781,7 +4672,12 @@ mod tests {
 
         editor.set_text("todo elsewhere".to_string());
         assert!(editor.search.is_none(), "the bar belonged to the old note");
-        assert!(editor.undo_groups.is_empty(), "so did the undo groups");
+        // The buffer's groups went with it: `set_text` replaces the textarea,
+        // and `EditBuffer::replace` drops states the new history cannot reach.
+        assert!(
+            !editor.backend.as_textarea_mut().unwrap().undo(),
+            "the new note's history has nothing to undo"
+        );
     }
 
     /// Find-match highlighting is built from logical coordinates, so it
