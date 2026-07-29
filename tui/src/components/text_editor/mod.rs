@@ -1121,6 +1121,25 @@ impl TextEditorComponent {
         if text.is_empty() {
             return;
         }
+        // While the **find bar** is open it owns input — but that was only
+        // implemented for key events, so a bracketed paste used to land in the
+        // buffer behind the bar, leaving the match count and the highlighted
+        // current match describing text that no longer exists. Route it into
+        // the focused field instead, which is what the user meant: pasting a
+        // term to search for or to replace with.
+        if let Some(state) = self.search.as_mut() {
+            // The fields are single-line; a multi-line clipboard collapses to
+            // its first line rather than silently pasting nothing.
+            let line = text.lines().next().unwrap_or_default();
+            let focus = state.focus;
+            let input = state.focused_input_mut();
+            let at = input.cursor_byte();
+            input.replace_range_bytes(at..at, line, at + line.len());
+            if focus == BarFocus::Find {
+                self.refresh_search_pattern(true);
+            }
+            return;
+        }
         self.extend_visual_selection_inclusive();
         match &mut self.backend {
             BackendState::Textarea(tb) => {
@@ -2423,6 +2442,20 @@ impl TextEditorComponent {
         if !in_bounds {
             return EventState::NotConsumed;
         }
+        // The **find bar** owns input while it is open, but that invariant was
+        // only ever implemented for key events — mouse events reach here
+        // directly. A click or drag would move the cursor out from under the
+        // **current match** and overwrite `self.selection`, which the bar uses
+        // to mark it. Scrolling is still allowed: it moves the viewport, not
+        // the cursor, and reading elsewhere in the note mid-search is useful.
+        if self.search.is_some()
+            && !matches!(
+                mouse.kind,
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+            )
+        {
+            return EventState::Consumed;
+        }
         // Right-click: with a selection it copies (unchanged behavior);
         // without one it asks the host to open the note's context menu
         // (spec §10 — file & note ops).
@@ -2486,7 +2519,6 @@ fn paint_viewport_extras(
     buf: &mut ratatui::buffer::Buffer,
     area: Rect,
     needles: &[String],
-    pattern: Option<&regex::Regex>,
     theme: &Theme,
 ) {
     use ratatui::layout::Position;
@@ -2498,7 +2530,7 @@ fn paint_viewport_extras(
         // string reconstruction — peek at the leading cells for a `- [`
         // prefix and skip the row otherwise. Keeps the per-keystroke cost
         // of an idle buffer near zero.
-        if needles.is_empty() && pattern.is_none() {
+        if needles.is_empty() {
             let mut lead = String::new();
             for x in area.x..area.right().min(area.x + 16) {
                 if let Some(cell) = buf.cell(Position::new(x, y)) {
@@ -2570,18 +2602,6 @@ fn paint_viewport_extras(
                 let style = cell.style().fg(match_fg).add_modifier(Modifier::BOLD);
                 cell.set_style(style);
             });
-        }
-        // Find-bar matches, from the compiled pattern. Matched against the
-        // rendered row rather than the logical line — the same approximation
-        // the needle pass above makes, and for the same reason: this is a
-        // post-pass over drawn cells, which is all it can see.
-        if let Some(re) = pattern {
-            for m in re.find_iter(&row_text) {
-                restyle(m.start(), m.end(), &mut |cell| {
-                    let style = cell.style().fg(match_fg).add_modifier(Modifier::BOLD);
-                    cell.set_style(style);
-                });
-            }
         }
     }
 }
@@ -2663,6 +2683,18 @@ impl Component for TextEditorComponent {
                             None => None,
                         };
                         self.finish_vim_undo(plan, redo);
+                    }
+                    // A vim command that spanned several history entries (the
+                    // case operators) records itself as one **undo group**.
+                    if let Some((before, extra)) = self.backend.vim_take_pending_group() {
+                        let after = self
+                            .backend
+                            .as_textarea()
+                            .map(|ta| ta.lines().to_vec())
+                            .unwrap_or_default();
+                        if before != after {
+                            self.undo_groups.record(&before, &after, extra);
+                        }
                     }
                     match outcome {
                         VimKeyOutcome::TextMutated => {
@@ -2838,7 +2870,12 @@ impl Component for TextEditorComponent {
             Some(_) => 1,
             None => 0,
         };
-        let (editor_rect, search_rect) = if bar_rows > 0 && rect.height > bar_rows {
+        // Clamp rather than drop: with `rect.height == bar_rows` the old
+        // `>` left the bar unrendered while it was still open and still
+        // swallowing every key — an invisible modal. Better to show it and
+        // give the editor whatever is left, even if that is nothing.
+        let bar_rows = bar_rows.min(rect.height);
+        let (editor_rect, search_rect) = if bar_rows > 0 {
             (
                 Rect {
                     height: rect.height - bar_rows,
@@ -2912,6 +2949,19 @@ impl Component for TextEditorComponent {
             }
         }
         self.view.set_preview_spans(preview_spans);
+        // Find-bar matches, in logical coordinates. Skipped while previewing:
+        // those columns already carry the preview colour, which is the more
+        // important fact about them.
+        let match_spans = match (&self.search, &view_lines) {
+            (Some(s), None) if !s.is_replacing() => s
+                .pattern
+                .as_ref()
+                .zip(self.backend.as_textarea())
+                .map(|(p, ta)| p.match_spans(ta.lines()))
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        self.view.set_match_spans(match_spans);
 
         // If `view.update` cap-tripped on a large buffer it
         // installed a placeholder + pending-flag instead of running
@@ -2964,31 +3014,14 @@ impl Component for TextEditorComponent {
             self.search_needles.clear();
             self.revs.disarm_needles();
         }
+        // Vault-search needles only. The find bar's own matches are painted
+        // during line rendering from LOGICAL coordinates instead (see
+        // `set_match_spans`): this post-pass works on text reconstructed from
+        // drawn cells, where markdown sigils are already concealed, so it can
+        // never paint a match the count and the stepping agree on when the row
+        // contains any concealed markdown.
         let emphasis_needles = self.search_needles.clone();
-        // The find bar's matches are painted from the COMPILED pattern, not
-        // from a lowercased literal needle. The two used to disagree — the
-        // needle path is case-insensitive substring matching, the stepping path
-        // case-sensitive regex — so `Foo` painted `foo` it would never step to,
-        // and `\d+` stepped to matches it never painted. Cosmetic for find;
-        // unacceptable for replace, where the highlight is the only preview of
-        // what a replace all overwrites (adr/0033).
-        //
-        // Skipped while previewing: those columns already carry the preview
-        // colour, which is the more important fact about them.
-        let bar_pattern = self.search.as_ref().and_then(|s| {
-            if s.is_replacing() {
-                None
-            } else {
-                s.pattern.as_ref().map(|p| p.as_regex())
-            }
-        });
-        paint_viewport_extras(
-            f.buffer_mut(),
-            editor_rect,
-            &emphasis_needles,
-            bar_pattern,
-            theme,
-        );
+        paint_viewport_extras(f.buffer_mut(), editor_rect, &emphasis_needles, theme);
 
         // Empty-note tip (spec §5.2): dim ghost text in a fresh/empty buffer,
         // gone the instant the first character lands (the buffer stops being
@@ -3576,7 +3609,7 @@ mod tests {
         buf.set_string(0, 1, "- [x] done task", Style::default());
         buf.set_string(0, 2, "- [ ] open task", Style::default());
 
-        paint_viewport_extras(&mut buf, area, &["needle".to_string()], None, &theme);
+        paint_viewport_extras(&mut buf, area, &["needle".to_string()], &theme);
 
         // "needle" starts at col 9 on row 0.
         let cell = buf.cell(Position::new(9, 0)).unwrap();
@@ -4691,6 +4724,113 @@ mod tests {
         );
     }
 
+    /// Find-match highlighting is built from logical coordinates, so it
+    /// describes the same matches the count and the stepping do. The old
+    /// post-pass matched against text reconstructed from drawn cells, where
+    /// markdown sigils are already concealed — so a pattern targeting a sigil
+    /// counted and stepped to matches it could never paint.
+    #[test]
+    fn concealed_markdown_still_highlights_what_it_counts() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("# Heading\n[[note]]".to_string());
+        editor.open_or_advance_search();
+        for c in r"\[\[".chars() {
+            editor.handle_input(
+                &InputEvent::Key(key(KeyCode::Char(c), KeyModifiers::NONE)),
+                &tx,
+            );
+        }
+        let state = editor.search.as_ref().unwrap();
+        assert_eq!(state.match_count, 1, "the `[[` sigil is a real match");
+        let spans = state
+            .pattern
+            .as_ref()
+            .unwrap()
+            .match_spans(editor.backend.as_textarea().unwrap().lines());
+        assert_eq!(
+            spans,
+            vec![(1, 0, 2)],
+            "and it must be reported as a paintable span, not silently dropped \
+             because the rendered row conceals it"
+        );
+    }
+
+    /// The bar's "intercepts every key" invariant was only ever implemented
+    /// for key events. A drag would move the cursor off the current match and
+    /// overwrite the selection marking it.
+    #[test]
+    fn a_click_while_the_bar_is_open_does_not_move_the_cursor() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("alpha beta".to_string());
+        editor.rect = Rect::new(0, 0, 40, 5);
+        open_replace_bar(&mut editor, &tx, "beta", "Z");
+        let before = editor.cursor_pos();
+        editor.handle_input(
+            &InputEvent::Mouse(ratatui::crossterm::event::MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 1,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &tx,
+        );
+        assert_eq!(editor.cursor_pos(), before);
+    }
+
+    /// A bracketed paste used to land in the buffer behind the open bar,
+    /// leaving the match count and the highlighted match describing text that
+    /// no longer existed. It belongs in the focused field.
+    #[test]
+    fn paste_goes_into_the_focused_bar_field() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("todo".to_string());
+        open_replace_bar(&mut editor, &tx, "todo", "");
+        editor.paste_text("done", &tx);
+        assert_eq!(editor.get_text(), "todo", "the buffer is untouched");
+        assert_eq!(editor.search.as_ref().unwrap().replacement(), "done");
+    }
+
+    #[test]
+    fn a_multiline_paste_collapses_to_its_first_line() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("x".to_string());
+        editor.open_or_advance_search();
+        editor.paste_text("first\nsecond", &tx);
+        assert_eq!(editor.search.as_ref().unwrap().input.value(), "first");
+    }
+
+    /// With the pane exactly as tall as the bar, the old `>` comparison left
+    /// the bar unrendered while it was still open and still consuming keys —
+    /// an invisible modal.
+    #[test]
+    fn the_bar_is_never_an_invisible_modal() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let mut editor = make_editor();
+        editor.set_text("todo".to_string());
+        let theme = Theme::default();
+        let mut term = Terminal::new(TestBackend::new(40, 1)).unwrap();
+        let area = Rect::new(0, 0, 40, 1);
+        editor.open_or_advance_search();
+        term.draw(|f| editor.render(f, area, &theme, true)).unwrap();
+        let row: String = (0..40)
+            .filter_map(|x| {
+                term.backend()
+                    .buffer()
+                    .cell(ratatui::layout::Position::new(x, 0))
+                    .map(|c| c.symbol().to_string())
+            })
+            .collect();
+        assert!(
+            row.contains("Find:"),
+            "an open bar must be drawn even when it costs the whole pane, got {row:?}"
+        );
+    }
+
     #[test]
     fn no_preview_without_a_replace_field() {
         let mut editor = make_editor();
@@ -4744,6 +4884,29 @@ mod tests {
             editor.rect.height, 8,
             "the replace field takes a second row"
         );
+    }
+
+    /// `guu` is a cut plus an insert, so it always landed in history as two
+    /// entries and took two `u` presses to revert — `guu_undoes_in_one_step`
+    /// in vim.rs documents that with a comment rather than fixing it. Now that
+    /// grouping exists, the case operators use it and the name is true.
+    #[test]
+    fn guu_really_does_undo_in_one_step() {
+        let mut editor = make_vim_editor();
+        let tx = dummy_tx();
+        editor.set_text("Mixed Case Line".to_string());
+        for c in "guu".chars() {
+            editor.handle_input(
+                &InputEvent::Key(key(KeyCode::Char(c), KeyModifiers::NONE)),
+                &tx,
+            );
+        }
+        assert_eq!(editor.get_text(), "mixed case line");
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('u'), KeyModifiers::NONE)),
+            &tx,
+        );
+        assert_eq!(editor.get_text(), "Mixed Case Line");
     }
 
     /// Vim's `u` must also take a whole **undo group**. The engine performs the

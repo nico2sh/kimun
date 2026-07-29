@@ -284,6 +284,12 @@ pub struct VimEngine {
     /// finish an **undo group** the engine only undid part of. Read and
     /// cleared by [`Self::take_undo_ran`] after each key.
     undo_ran: Option<(usize, bool)>,
+    /// Set by a command that lands in history as more than one entry, to
+    /// `(lines_before, extra_entries)`, so the host can record it as one
+    /// **undo group**. The case operators are the case in point: `guu` is a
+    /// cut plus an insert, so before grouping existed it took two undos —
+    /// `guu_undoes_in_one_step` documents exactly that.
+    pending_group: Option<(Vec<String>, usize)>,
 }
 
 impl Default for VimEngine {
@@ -300,6 +306,7 @@ impl Default for VimEngine {
             insert_capture: None,
             replace_stack: Vec::new(),
             undo_ran: None,
+            pending_group: None,
         }
     }
 }
@@ -313,6 +320,21 @@ impl VimEngine {
     /// so the host can finish any **undo group** the engine only partly undid.
     pub fn take_undo_ran(&mut self) -> Option<(usize, bool)> {
         self.undo_ran.take()
+    }
+
+    /// Take `(lines_before, extra_entries)` for a command that spanned more
+    /// than one history entry, so the host can record it as one **undo group**.
+    pub fn take_pending_group(&mut self) -> Option<(Vec<String>, usize)> {
+        self.pending_group.take()
+    }
+
+    /// Record that the command about to run will push `1 + extra` history
+    /// entries, capturing the pre-command buffer for the group.
+    fn begin_group(&mut self, ta: &TextArea<'static>, extra: usize) {
+        if extra == 0 {
+            return;
+        }
+        self.pending_group = Some((ta.lines().to_vec(), extra));
     }
 
     /// Footer label for the current mode (e.g. "NORMAL").
@@ -2357,6 +2379,13 @@ impl VimEngine {
                     .collect::<Vec<_>>()
                     .join("\n");
                 let end_len = ta.lines()[r1].chars().count();
+                // cut + insert = two history entries; group them so one `u`
+                // reverts the command rather than half of it.
+                let sel_empty = r0 == r1 && end_len == 0;
+                self.begin_group(
+                    ta,
+                    super::history_entries(sel_empty, transformed.is_empty()).saturating_sub(1),
+                );
                 ta.move_cursor(CursorMove::Jump(r0 as u16, 0));
                 ta.start_selection();
                 ta.move_cursor(CursorMove::Jump(r1 as u16, end_len as u16));
@@ -2470,8 +2499,19 @@ impl VimEngine {
                 // through the textarea yank buffer — the engine register is
                 // deliberately NOT filled (vim: case operators don't yank).
                 let start = ta.selection_range().map(|(s, _)| s);
+                let sel_empty = ta.selection_range().is_none_or(|(s, e)| s == e);
+                // Captured before the cut — the group needs the buffer as it
+                // stood when the command began.
+                let before = ta.lines().to_vec();
                 ta.cut();
                 let transformed = Self::transform_case(&ta.yank_text(), op);
+                // cut + insert = two history entries; group them so one `u`
+                // reverts the command rather than half of it.
+                let extra =
+                    super::history_entries(sel_empty, transformed.is_empty()).saturating_sub(1);
+                if extra > 0 {
+                    self.pending_group = Some((before, extra));
+                }
                 ta.insert_str(&transformed);
                 if let Some((r, c)) = start {
                     ta.move_cursor(CursorMove::Jump(r as u16, c as u16));

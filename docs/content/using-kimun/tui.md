@@ -143,6 +143,7 @@ A few details worth knowing:
 - **`$1` works when you captured something.** If the pattern has a capture group, `$1`, `$2` and `${name}` expand in the replacement, so `(\w+)-(\w+)` → `$2 $1` swaps them. A `$` that doesn't name a real group is left alone, so prices and `$x^2$` math stay exactly as typed either way. Write `$$` if you want a literal `$` next to a digit that *is* a group number.
 - **An empty replacement deletes.** Leaving the field blank and pressing `Ctrl+A` removes every match; because a blank field also just means "not finished typing", that one case asks for a second `Ctrl+A` to confirm.
 - Patterns can't span line breaks, and replacing never changes the number of lines in a note.
+- Pasting while the bar is open goes into whichever field has focus, not into the note.
 - Replace is unavailable on the Neovim backend, which has its own `:%s`.
 
 ### Text formatting

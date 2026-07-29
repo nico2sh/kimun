@@ -88,7 +88,10 @@ color_search_match = "#a6e3a1"  # highlighted search matches
 color_tag          = "#fab387"  # #hashtag spans in the editor
 blockquote_bar     = "#585b70"  # the ▏ bar replacing > markers
 code_bg            = "#181825"  # fenced/indented code-block background
+color_replace_preview = "#3e3450"  # background behind replace-preview text
 ```
+
+`color_replace_preview` is a **background**, so give it a muted shade rather than an accent colour. It marks text the replace preview is showing in place of a match — text that is not in the note yet — so it should be clearly distinct from `selection_bg` and `code_bg`. Omit it and it falls back to `accent`, which is chromatic and will read as a very loud highlight.
 
 ### Color Formats
 
