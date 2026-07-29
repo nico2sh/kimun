@@ -69,6 +69,25 @@ impl FindPattern {
         lines.iter().map(|l| self.re.find_iter(l).count()).sum()
     }
 
+    /// Every match as a `(row, start_char, end_char)` span in **logical**
+    /// buffer coordinates.
+    ///
+    /// The same coordinates `count_matches` and the textarea's stepping use, so
+    /// highlighting built from these cannot disagree with them about what
+    /// matched — the way matching against rendered cell text does the moment a
+    /// row contains concealed markdown.
+    pub fn match_spans(&self, lines: &[String]) -> Vec<(usize, usize, usize)> {
+        let mut out = Vec::new();
+        for (row, line) in lines.iter().enumerate() {
+            for m in self.re.find_iter(line) {
+                let start = line[..m.start()].chars().count();
+                let end = start + line[m.range()].chars().count();
+                out.push((row, start, end));
+            }
+        }
+        out
+    }
+
     /// Expand `replacement` for one match.
     ///
     /// Capture syntax (`$1`, `${name}`) is honoured **only when the pattern

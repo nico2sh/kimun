@@ -268,6 +268,18 @@ impl BackendState {
         }
     }
 
+    /// Take `(lines_before, extra_entries)` for a multi-entry vim command, so
+    /// the host can record it as one **undo group**.
+    pub fn vim_take_pending_group(&mut self) -> Option<(Vec<String>, usize)> {
+        match self {
+            BackendState::Textarea(TextareaBackend {
+                input: InputInterpreter::Vim(engine),
+                ..
+            }) => engine.take_pending_group(),
+            _ => None,
+        }
+    }
+
     /// The in-progress input-command hint for the footer (the vim
     /// interpreter's pending count/operator/find/g sequence). `None` when the
     /// active backend has no pending sequence.

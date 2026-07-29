@@ -104,6 +104,16 @@ pub struct MarkdownEditorView {
     /// `selection`: a replacement of a different length shifts every match
     /// after it (adr/0035). Empty whenever no preview is showing.
     preview_spans: Vec<super::find_replace::PreviewSpan>,
+    /// **Find pattern** matches as `(row, start_char, end_char)` in logical
+    /// buffer coordinates, painted during line rendering.
+    ///
+    /// Logical, not rendered: the post-pass that paints vault-search needles
+    /// works on text reconstructed from drawn cells, where markdown sigils are
+    /// already concealed — so searching `[[` or `# ` counted and stepped to
+    /// matches it could never paint, and `^`/`$` anchored to the visual row
+    /// instead of the line. Mapping from logical columns is what keeps the
+    /// count, the stepping and the highlight describing the same matches.
+    match_spans: Vec<(usize, usize, usize)>,
     /// Diagnostic: true when the most recent Gate 1 invocation used the
     /// incremental splice path, false when it took the full-parse fallback.
     /// Read by tests; not part of the production observable surface.
@@ -223,6 +233,7 @@ impl MarkdownEditorView {
             rendered_cache: Vec::new(),
             selection: None,
             preview_spans: Vec::new(),
+            match_spans: Vec::new(),
             last_parse_was_incremental: false,
             last_splice_path: None,
             last_text_change: TextChangeKind::Full, // first update is a full rebuild
@@ -290,6 +301,12 @@ impl MarkdownEditorView {
         self.preview_spans = spans;
     }
 
+    /// Hand the view this frame's **find pattern** matches, in logical buffer
+    /// coordinates. Must be called *after* `update`, which clears them.
+    pub fn set_match_spans(&mut self, spans: Vec<(usize, usize, usize)>) {
+        self.match_spans = spans;
+    }
+
     pub fn update(
         &mut self,
         snap: &super::snapshot::EditorSnapshot<'_>,
@@ -304,10 +321,12 @@ impl MarkdownEditorView {
         let cursor = snap.cursor;
         let generation = snap.content_revision.get();
         self.selection = selection;
-        // Preview spans belong to the snapshot they were built from. Clearing
-        // here means a caller that stops previewing cannot leave stale spans
-        // painted over real text — it simply stops setting them.
+        // Preview and match spans belong to the snapshot they were built from.
+        // Clearing here means a caller that stops previewing (or closes the
+        // find bar) cannot leave stale spans painted over real text — it
+        // simply stops setting them.
         self.preview_spans.clear();
+        self.match_spans.clear();
         if rect.height == 0 {
             return;
         }
@@ -1007,6 +1026,41 @@ impl MarkdownEditorView {
                     spans
                 };
 
+                // Find-pattern matches, mapped from logical columns the same
+                // way the selection is. Painted before the preview so a
+                // previewed span still wins those columns.
+                let spans = if self.match_spans.is_empty() {
+                    spans
+                } else {
+                    let match_fg = theme.color_search_match.to_ratatui();
+                    let gutter_off = if vl.is_first_visual_line {
+                        0
+                    } else {
+                        self.gutter_insets.get(vl.logical_row).copied().unwrap_or(0)
+                    };
+                    let mut spans = spans;
+                    for (_, start, end) in self.match_spans.iter().filter(|m| m.0 == vl.logical_row)
+                    {
+                        let to_rendered = |col: usize| {
+                            MarkdownSpanner::rendered_col_with_reveal(
+                                logical_line,
+                                parsed,
+                                vl.start_col,
+                                col,
+                                cursor_col,
+                                vl.is_first_visual_line,
+                                force_raw,
+                            ) + gutter_off
+                        };
+                        spans = apply_fg_over_range(
+                            spans,
+                            to_rendered(*start)..to_rendered(*end),
+                            match_fg,
+                        );
+                    }
+                    spans
+                };
+
                 // Replace preview last, so it wins over the selection: while a
                 // preview is showing, "this text is not in your note yet" is
                 // the more important fact about these columns (adr/0035).
@@ -1020,7 +1074,16 @@ impl MarkdownEditorView {
                     spans
                 } else {
                     let preview_bg = theme.color_replace_preview.to_ratatui();
-                    let cursor_fg = theme.cursor.to_ratatui();
+                    // `cursor` is `Reset` in the ANSI theme (it defers to the
+                    // terminal), and plain body text is `Reset` too — so using
+                    // it directly would make the current match identical to
+                    // every other previewed one on exactly the theme that
+                    // cannot fall back to bold either. Substitute a colour
+                    // that is always chromatic.
+                    let cursor_fg = match theme.cursor {
+                        crate::settings::themes::ThemeColor::Reset => theme.fg_bright.to_ratatui(),
+                        _ => theme.cursor.to_ratatui(),
+                    };
                     let gutter_off = if vl.is_first_visual_line {
                         0
                     } else {
@@ -1302,6 +1365,18 @@ fn apply_selection_highlight<'a>(
     apply_bg_over_range(spans, sel_cols, theme.selection_bg.to_ratatui(), None)
 }
 
+/// Re-style spans to apply a foreground (and bold) over a rendered-column
+/// range, leaving backgrounds — selection, code box — intact underneath.
+fn apply_fg_over_range<'a>(
+    spans: Vec<ratatui::text::Span<'a>>,
+    cols: std::ops::Range<usize>,
+    fg: ratatui::style::Color,
+) -> Vec<ratatui::text::Span<'a>> {
+    restyle_over_range(spans, cols, &|s: ratatui::style::Style| {
+        s.fg(fg).add_modifier(ratatui::style::Modifier::BOLD)
+    })
+}
+
 /// Re-style spans to apply `highlight_bg` over the given rendered-column
 /// range, optionally emboldening it.
 ///
@@ -1314,11 +1389,7 @@ fn apply_bg_over_range<'a>(
     highlight_bg: ratatui::style::Color,
     emphasis_fg: Option<ratatui::style::Color>,
 ) -> Vec<ratatui::text::Span<'a>> {
-    if sel_cols.is_empty() {
-        return spans;
-    }
-
-    let restyle = |s: ratatui::style::Style| {
+    restyle_over_range(spans, sel_cols, &|s: ratatui::style::Style| {
         let s = s.bg(highlight_bg);
         // A foreground override, not a modifier: BOLD is a no-op on text that
         // is already bold (a heading, a `**word**`), which left the current
@@ -1328,7 +1399,20 @@ fn apply_bg_over_range<'a>(
             Some(fg) => s.fg(fg).add_modifier(ratatui::style::Modifier::BOLD),
             None => s,
         }
-    };
+    })
+}
+
+/// Split `spans` at the boundaries of a rendered-column range and apply
+/// `restyle` to the overlapping portion. The one place column-to-byte
+/// accounting for a partial restyle lives.
+fn restyle_over_range<'a>(
+    spans: Vec<ratatui::text::Span<'a>>,
+    sel_cols: std::ops::Range<usize>,
+    restyle: &dyn Fn(ratatui::style::Style) -> ratatui::style::Style,
+) -> Vec<ratatui::text::Span<'a>> {
+    if sel_cols.is_empty() {
+        return spans;
+    }
     let mut result = Vec::new();
     let mut col = 0usize;
 
