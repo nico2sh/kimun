@@ -54,10 +54,14 @@ impl UndoGrouper {
     /// Recording a new action invalidates the redo side, exactly as the
     /// textarea's own history does.
     pub fn record(&mut self, before: &[String], after: &[String], extra: usize) {
+        // Clear redo BEFORE the `extra == 0` bail. A single-entry action still
+        // invalidates the redo side of the textarea's own history, so leaving
+        // stale groups here lets one Ctrl+Y replay entries that belong to an
+        // abandoned future.
+        self.redo.clear();
         if extra == 0 {
             return;
         }
-        self.redo.clear();
         if self.undo.len() == MAX_GROUPS {
             self.undo.remove(0);
         }
@@ -73,47 +77,58 @@ impl UndoGrouper {
     }
 
     /// How many *extra* pops an undo from `current` needs, without consuming
-    /// the group. For callers that must ask before the first pop happens
-    /// elsewhere (the vim engine undoes inside its own command apply).
+    /// the group.
     pub fn peek_undo_extra(&self, current: &[String]) -> usize {
+        self.peek_undo(current).map(|p| p.0).unwrap_or(0)
+    }
+
+    fn peek_undo(&self, current: &[String]) -> Option<(usize, u64)> {
         let h = hash_lines(current);
         match self.undo.last() {
-            Some(g) if g.after == h => g.extra,
-            _ => 0,
+            Some(g) if g.after == h => Some((g.extra, g.before)),
+            _ => None,
         }
     }
 
     /// As [`Self::peek_undo_extra`], and move the group to the redo side.
-    pub fn take_undo_extra(&mut self, current: &[String]) -> usize {
+    ///
+    /// Returns `(extra, target)`: at most `extra` further pops, aiming at the
+    /// buffer state `target`. The target is what makes this safe. Popping
+    /// `extra` times unconditionally assumes the group's entries are still the
+    /// next ones in history, and they need not be — the textarea's history is
+    /// bounded and evicts from the front, and an unrelated edit sequence can
+    /// return the buffer to a recorded state. Stopping on `target` means a
+    /// stale group costs nothing instead of eating someone else's entry.
+    pub fn take_undo_extra(&mut self, current: &[String]) -> Option<(usize, u64)> {
+        let plan = self.peek_undo(current)?;
+        let g = self.undo.pop().expect("peek_undo checked the stack");
+        self.redo.push(g);
+        Some(plan)
+    }
+
+    fn peek_redo(&self, current: &[String]) -> Option<(usize, u64)> {
         let h = hash_lines(current);
-        match self.undo.last() {
-            Some(g) if g.after == h => {
-                let g = self.undo.pop().expect("checked above");
-                self.redo.push(g);
-                g.extra
-            }
-            _ => 0,
+        match self.redo.last() {
+            Some(g) if g.before == h => Some((g.extra, g.after)),
+            _ => None,
         }
     }
 
     pub fn peek_redo_extra(&self, current: &[String]) -> usize {
-        let h = hash_lines(current);
-        match self.redo.last() {
-            Some(g) if g.before == h => g.extra,
-            _ => 0,
-        }
+        self.peek_redo(current).map(|p| p.0).unwrap_or(0)
     }
 
-    pub fn take_redo_extra(&mut self, current: &[String]) -> usize {
-        let h = hash_lines(current);
-        match self.redo.last() {
-            Some(g) if g.before == h => {
-                let g = self.redo.pop().expect("checked above");
-                self.undo.push(g);
-                g.extra
-            }
-            _ => 0,
-        }
+    pub fn take_redo_extra(&mut self, current: &[String]) -> Option<(usize, u64)> {
+        let plan = self.peek_redo(current)?;
+        let g = self.redo.pop().expect("peek_redo checked the stack");
+        self.undo.push(g);
+        Some(plan)
+    }
+
+    /// Whether `lines` is the state a plan from [`Self::take_undo_extra`] or
+    /// [`Self::take_redo_extra`] was aiming at.
+    pub fn reached(target: u64, lines: &[String]) -> bool {
+        hash_lines(lines) == target
     }
 
     /// Drop everything — the buffer was replaced wholesale (note switched,
@@ -136,7 +151,7 @@ mod tests {
     fn undo_from_the_after_state_takes_the_whole_group() {
         let mut g = UndoGrouper::default();
         g.record(&l(&["todo"]), &l(&["done"]), 1);
-        assert_eq!(g.take_undo_extra(&l(&["done"])), 1);
+        assert_eq!(g.take_undo_extra(&l(&["done"])).map(|p| p.0), Some(1));
     }
 
     #[test]
@@ -145,15 +160,15 @@ mod tests {
         g.record(&l(&["todo"]), &l(&["done"]), 1);
         // The user typed after the replace, so this undo is undoing that
         // typing, not the replace.
-        assert_eq!(g.take_undo_extra(&l(&["done x"])), 0);
+        assert_eq!(g.take_undo_extra(&l(&["done x"])), None);
     }
 
     #[test]
     fn the_group_is_recognised_again_once_the_buffer_returns_to_it() {
         let mut g = UndoGrouper::default();
         g.record(&l(&["todo"]), &l(&["done"]), 1);
-        assert_eq!(g.take_undo_extra(&l(&["done x"])), 0); // undoing the typing
-        assert_eq!(g.take_undo_extra(&l(&["done"])), 1); // now the replace
+        assert_eq!(g.take_undo_extra(&l(&["done x"])), None); // undoing the typing
+        assert_eq!(g.take_undo_extra(&l(&["done"])).map(|p| p.0), Some(1)); // now the replace
     }
 
     #[test]
@@ -162,7 +177,7 @@ mod tests {
         g.record(&l(&["a"]), &l(&["b"]), 1);
         assert_eq!(g.peek_undo_extra(&l(&["b"])), 1);
         assert_eq!(g.peek_undo_extra(&l(&["b"])), 1);
-        assert_eq!(g.take_undo_extra(&l(&["b"])), 1);
+        assert_eq!(g.take_undo_extra(&l(&["b"])).map(|p| p.0), Some(1));
         assert_eq!(g.peek_undo_extra(&l(&["b"])), 0);
     }
 
@@ -170,10 +185,10 @@ mod tests {
     fn redo_regroups_from_the_before_state() {
         let mut g = UndoGrouper::default();
         g.record(&l(&["todo"]), &l(&["done"]), 1);
-        assert_eq!(g.take_undo_extra(&l(&["done"])), 1);
-        assert_eq!(g.take_redo_extra(&l(&["todo"])), 1);
+        assert_eq!(g.take_undo_extra(&l(&["done"])).map(|p| p.0), Some(1));
+        assert_eq!(g.take_redo_extra(&l(&["todo"])).map(|p| p.0), Some(1));
         // And it is back on the undo side.
-        assert_eq!(g.take_undo_extra(&l(&["done"])), 1);
+        assert_eq!(g.take_undo_extra(&l(&["done"])).map(|p| p.0), Some(1));
     }
 
     #[test]

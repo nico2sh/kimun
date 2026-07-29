@@ -317,7 +317,7 @@ A targeted edit that swaps matched text for new text, leaving the rest of the no
 _Avoid_: substitute (vim's word for the ex-command syntax kimün does not have), edit
 
 **Undo group**:
-The span of buffer history that one user action occupies, so undo restores what the user last *did* rather than the last thing the buffer *recorded*. Needed because a single **replace** is two history entries (a delete then an insert) and undoing half of one shows a note with a hole in it. Vim's `3u` counts groups, not entries.
+The span of buffer history that one user action occupies, so undo restores what the user last *did* rather than the last thing the buffer *recorded*. Needed because a single **replace** is up to two history entries (a delete then an insert) and undoing half of one shows a note with a hole in it. Identified by the buffer state it left behind rather than by a position in history, so it is still recognised after intervening edits are themselves undone. A bare undo takes a whole group; a *counted* vim undo (`3u`) stays entry-wise, because the engine has already popped its entries before the group can be consulted.
 _Avoid_: transaction (implies atomicity the buffer does not offer), undo batch, change set.
 
 **Backup**:

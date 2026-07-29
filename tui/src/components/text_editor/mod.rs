@@ -65,6 +65,30 @@ fn snapshot_from_backend(
     }
 }
 
+/// History entries one `insert_str` over a selection actually pushes.
+///
+/// Both halves are conditional: `delete_selection` pushes nothing when the
+/// selection is empty (`selection_positions` returns `None` on an equal
+/// range), and `insert_piece` returns early on `""` without pushing. So a
+/// replace is 0, 1 or 2 entries — and assuming 2 makes the next Ctrl+Z pop one
+/// entry too many, destroying an unrelated edit.
+fn history_entries(selection_empty: bool, text_empty: bool) -> usize {
+    usize::from(!selection_empty) + usize::from(!text_empty)
+}
+
+/// Narrow a `(row, start, end)` triple to the `u16`s `CursorMove::Jump` takes,
+/// or `None` when any of them would not survive the cast.
+///
+/// `Jump` clamps rather than erroring, so an out-of-range value silently
+/// selects the wrong span instead of failing loudly.
+fn fits_jump(row: usize, start: usize, end: usize) -> Option<(u16, u16, u16)> {
+    let max = u16::MAX as usize;
+    if row > max || start > max || end > max {
+        return None;
+    }
+    Some((row as u16, start as u16, end as u16))
+}
+
 /// Identity for a **replace preview**'s snapshot: the real content revision
 /// folded together with the previewed text.
 ///
@@ -859,6 +883,16 @@ impl TextEditorComponent {
         // Buffer replaced — close any open autocomplete popup so it does
         // not linger over the new note (e.g. after Ctrl+G follow-link).
         self.close_autocomplete();
+        // Everything below described the OLD buffer. A textarea swap installs
+        // a fresh, empty history, so recorded **undo groups** now point at
+        // states this history cannot reach — and a group whose `after` is an
+        // empty buffer would hash-match any empty note, popping an extra entry
+        // against unrelated history. The find bar is worse: `armed_empty`
+        // surviving a note swap means one Ctrl+A deletes every match in a note
+        // the user never armed, skipping the confirmation the flag exists to
+        // force. `self.selection` would likewise still describe the old text.
+        self.undo_groups.clear();
+        self.close_search();
     }
 
     pub fn get_text(&self) -> String {
@@ -926,8 +960,14 @@ impl TextEditorComponent {
     /// Whether a bare Space should start the leader (vim Normal mode only).
     /// Returns `false` for the direct textarea backend, the nvim backend,
     /// vim Insert/Visual modes, and any pending state.
+    ///
+    /// Also false while the **find bar** is open. Opening the bar does not
+    /// change the vim mode, so on the vim backend the app-level leader tier —
+    /// which runs before the editor panel sees the key — would otherwise
+    /// swallow every Space typed into the find or replace field, making
+    /// multi-word patterns and replacements untypeable there.
     pub fn space_leads(&self) -> bool {
-        self.backend.space_leads()
+        self.search.is_none() && self.backend.space_leads()
     }
 
     /// Returns the link or label target under the cursor, or `None` if the
@@ -1668,50 +1708,78 @@ impl TextEditorComponent {
         self.highlight_current_match(found);
     }
 
+    /// Work out what an interactive replace would do, without touching the
+    /// buffer: the match's row and char-column span, the expanded replacement,
+    /// and the lines before and after.
+    ///
+    /// Returns `None` when the cursor is not sitting exactly on a match.
+    #[allow(clippy::type_complexity)]
+    fn plan_replace_current(
+        &self,
+    ) -> Option<(usize, usize, usize, String, Vec<String>, Vec<String>)> {
+        let state = self.search.as_ref()?;
+        let pattern = state.pattern.as_ref()?;
+        let replacement = state.replacement();
+        let ta = self.backend.as_textarea()?;
+        let DataCursor(row, start_col) = ta.cursor();
+        let line = ta.lines().get(row)?;
+        let start_byte = char_col_to_byte(line, start_col);
+        let caps = pattern.as_regex().captures_at(line, start_byte)?;
+        let m = caps.get(0)?;
+        // `captures_at` finds the next match at OR AFTER the offset; only a
+        // match starting exactly here is the current one.
+        if m.start() != start_byte {
+            return None;
+        }
+        let expanded = pattern.expand(&caps, replacement);
+        let end_col = start_col + line[m.range()].chars().count();
+        let before: Vec<String> = ta.lines().to_vec();
+        let mut after = before.clone();
+        after[row].replace_range(m.range(), &expanded);
+        Some((row, start_col, end_col, expanded, before, after))
+    }
+
     /// Replace the **current match** and step to the next one — the `Enter`
     /// action while a **replace field** is revealed.
     fn replace_current(&mut self) {
-        let Some(state) = self.search.as_ref() else {
-            return;
-        };
-        let Some(pattern) = state.pattern.as_ref() else {
-            return;
-        };
-        let Some(((row, start), (_, end))) = self.selection else {
-            // Nothing is under the cursor — step first, then the next Enter
+        // Derive the span from the pattern at the cursor rather than reading
+        // `self.selection`. That field is shared with the visual-mode and mouse
+        // selection, and `handle_mouse` has no find-bar guard, so a drag can
+        // leave a MULTI-ROW range in it while the bar is open — which this used
+        // to collapse to one row by discarding the end row, then hand
+        // `replace_range` an inverted byte range. A span derived from the match
+        // is single-row by construction.
+        let Some((row, start_col, end_col, expanded, before, after)) = self.plan_replace_current()
+        else {
+            // Nothing usable under the cursor — step first, so the next Enter
             // has something to act on.
             self.search_advance(false);
             return;
         };
-        let replacement = state.replacement().to_string();
+        // `CursorMove::Jump` takes u16 and clamps silently, so a position past
+        // 65535 would select the wrong range and splice text into the middle of
+        // a line. Refuse rather than corrupt.
+        let Some((row_u16, start_u16, end_u16)) = fits_jump(row, start_col, end_col) else {
+            return;
+        };
+        let entries = history_entries(start_col == end_col, expanded.is_empty());
         let Some(ta) = self.backend.as_textarea_mut() else {
             return;
         };
-        let Some(line) = ta.lines().get(row) else {
-            return;
-        };
-        let start_byte = char_col_to_byte(line, start);
-        let end_byte = char_col_to_byte(line, end);
-        let Some(caps) = pattern.as_regex().captures_at(line, start_byte) else {
-            return;
-        };
-        let expanded = pattern.expand(&caps, &replacement);
-
-        let before: Vec<String> = ta.lines().to_vec();
-        let mut after = before.clone();
-        after[row].replace_range(start_byte..end_byte, &expanded);
-
-        // Select exactly the match, then overwrite it. `insert_str` is
-        // delete-selection + insert, so this is two history entries — recorded
-        // as one **undo group** so a single Ctrl+Z restores the pre-replace
-        // note rather than a note with a hole in it (adr/0033).
-        ta.move_cursor(CursorMove::Jump(row as u16, start as u16));
+        ta.move_cursor(CursorMove::Jump(row_u16, start_u16));
         ta.start_selection();
-        ta.move_cursor(CursorMove::Jump(row as u16, end as u16));
-        let wrote = ta.insert_str(&expanded);
+        ta.move_cursor(CursorMove::Jump(row_u16, end_u16));
+        ta.insert_str(&expanded);
         ta.cancel_selection();
-        if wrote {
-            self.undo_groups.record(&before, &after, 1);
+        // `insert_str`'s bool cannot stand in for "the buffer changed": with an
+        // empty replacement it deletes the selection and STILL returns false
+        // (`insert_piece` bails on `""`). Compare the text we predicted instead.
+        if ta.lines() != after.as_slice() {
+            return;
+        }
+        if before != after {
+            self.undo_groups
+                .record(&before, &after, entries.saturating_sub(1));
             self.revs.bump();
         }
         // Land the cursor just past the replacement so the step below cannot
@@ -1738,25 +1806,36 @@ impl TextEditorComponent {
         // is single-line, so a replace all never changes the line count.
         let DataCursor(cur_row, cur_col) = ta.cursor();
 
-        // Select to the end of the CURRENT buffer, not the rewritten one —
-        // sizing the selection from `after` would leave the original tail
-        // behind whenever the replacement is shorter than what it replaces.
-        let last_row = before.len().saturating_sub(1);
-        let last_col = before[last_row].chars().count();
-        ta.move_cursor(CursorMove::Jump(0, 0));
-        ta.start_selection();
-        ta.move_cursor(CursorMove::Jump(last_row as u16, last_col as u16));
-        let wrote = ta.insert_str(after.join("\n"));
+        // `select_all` reaches the end of the buffer via `Jump(u16::MAX,
+        // u16::MAX)`, which clamps — so unlike a computed `last_row as u16` it
+        // stays correct on a note with more than 65535 lines or a line longer
+        // than 65535 chars, where the cast would silently select the wrong
+        // range and splice the rewrite into the middle of the text.
+        let joined = after.join("\n");
+        let buffer_empty = before.iter().all(|l| l.is_empty()) && before.len() <= 1;
+        let entries = history_entries(buffer_empty, joined.is_empty());
+        ta.select_all();
+        ta.insert_str(&joined);
         ta.cancel_selection();
-        if !wrote {
+        // Not `insert_str`'s bool: with an empty result it deletes the buffer
+        // and still returns false. Verify against the text we predicted.
+        if ta.lines() != after.as_slice() {
             return None;
         }
-        self.undo_groups.record(&before, &after, 1);
+        self.undo_groups
+            .record(&before, &after, entries.saturating_sub(1));
         self.revs.bump();
 
+        // Restore the reading position. The row stays valid because a replace
+        // all never changes the line count (the pattern cannot span a newline
+        // and the replace field is single-line), and `Jump` clamps, so the
+        // cast cannot land the cursor outside the buffer.
         let row = cur_row.min(after.len().saturating_sub(1));
         let col = cur_col.min(after[row].chars().count());
-        ta.move_cursor(CursorMove::Jump(row as u16, col as u16));
+        ta.move_cursor(CursorMove::Jump(
+            row.min(u16::MAX as usize) as u16,
+            col.min(u16::MAX as usize) as u16,
+        ));
 
         self.selection = None;
         self.refresh_match_count();
@@ -1770,7 +1849,7 @@ impl TextEditorComponent {
     /// position in history — so it is still recognised after the user typed and
     /// then undid those keystrokes one by one.
     fn undo_grouped(&mut self) -> bool {
-        let extra = {
+        let plan = {
             let Some(ta) = self.backend.as_textarea() else {
                 return false;
             };
@@ -1782,8 +1861,22 @@ impl TextEditorComponent {
         if !ta.undo() {
             return false;
         }
-        for _ in 0..extra {
-            ta.undo();
+        // Pop the rest of the group, but stop the moment the buffer reaches
+        // the state the group started from. Popping `extra` times blindly
+        // assumes those entries are still the next ones in history, and they
+        // need not be: `TextArea` keeps a bounded history (`History::new(50)`,
+        // evicting from the front), and an unrelated edit sequence can return
+        // the buffer to a recorded state. Aiming at the target means a stale
+        // group costs nothing instead of eating an unrelated entry.
+        if let Some((extra, target)) = plan {
+            for _ in 0..extra {
+                if undo_group::UndoGrouper::reached(target, ta.lines()) {
+                    break;
+                }
+                if !ta.undo() {
+                    break;
+                }
+            }
         }
         self.selection = ta.selection_range();
         true
@@ -1791,7 +1884,7 @@ impl TextEditorComponent {
 
     /// Redo one *user action*. Mirror of [`Self::undo_grouped`].
     fn redo_grouped(&mut self) -> bool {
-        let extra = {
+        let plan = {
             let Some(ta) = self.backend.as_textarea() else {
                 return false;
             };
@@ -1803,8 +1896,15 @@ impl TextEditorComponent {
         if !ta.redo() {
             return false;
         }
-        for _ in 0..extra {
-            ta.redo();
+        if let Some((extra, target)) = plan {
+            for _ in 0..extra {
+                if undo_group::UndoGrouper::reached(target, ta.lines()) {
+                    break;
+                }
+                if !ta.redo() {
+                    break;
+                }
+            }
         }
         self.selection = ta.selection_range();
         true
@@ -1817,19 +1917,21 @@ impl TextEditorComponent {
     /// the pending group is on top (`peek`) and pops the remainder afterwards.
     /// Threading the grouper through the engine's parse/apply chain would touch
     /// a dozen signatures to reach two match arms.
-    fn finish_vim_undo(&mut self, extra: usize, redo: bool) {
-        if extra == 0 {
+    fn finish_vim_undo(&mut self, plan: Option<(usize, u64)>, redo: bool) {
+        let Some((extra, target)) = plan else {
             return;
-        }
+        };
         let Some(ta) = self.backend.as_textarea_mut() else {
             return;
         };
         for _ in 0..extra {
-            if redo {
-                ta.redo()
-            } else {
-                ta.undo()
-            };
+            if undo_group::UndoGrouper::reached(target, ta.lines()) {
+                break;
+            }
+            let moved = if redo { ta.redo() } else { ta.undo() };
+            if !moved {
+                break;
+            }
         }
         self.selection = ta.selection_range();
     }
@@ -1934,6 +2036,31 @@ impl TextEditorComponent {
         if ctrl && matches!(key.code, KeyCode::Char('a') | KeyCode::Char('A')) {
             self.replace_all_key();
             return true;
+        }
+
+        // Undo / redo of the bar's OWN edits. `handle_search_key` returns
+        // `true` for every key, so without this the bar swallows Ctrl+Z and
+        // strands the user on a note it just rewrote — undo would only work
+        // after they thought to press Esc first. Harmless before this feature
+        // existed, because the bar could not then mutate the buffer.
+        if ctrl {
+            match key.code {
+                KeyCode::Char('z') if !shift => {
+                    if self.undo_grouped() {
+                        self.bump_content();
+                        self.refresh_match_count();
+                    }
+                    return true;
+                }
+                KeyCode::Char('y') | KeyCode::Char('Z') => {
+                    if self.redo_grouped() {
+                        self.bump_content();
+                        self.refresh_match_count();
+                    }
+                    return true;
+                }
+                _ => {}
+            }
         }
 
         let replacing = state.is_replacing();
@@ -2521,13 +2648,21 @@ impl Component for TextEditorComponent {
                 };
                 if let Some(outcome) = self.backend.vim_handle_key(key) {
                     use self::vim::VimKeyOutcome;
-                    if let Some((_, redo)) = self.backend.vim_take_undo_ran() {
-                        let extra = match pre_undo_lines {
+                    // Group completion applies to a BARE `u` / `Ctrl+R` only.
+                    // A counted `3u` has already popped three raw entries by
+                    // the time control returns here, so the group it may have
+                    // run through cannot be reconstructed — and adding the
+                    // extra pop on top would undo *past* the group, discarding
+                    // an edit the user never asked to lose. Counted undo stays
+                    // entry-wise, which is what it did before grouping existed.
+                    if let Some((count, redo)) = self.backend.vim_take_undo_ran() {
+                        let plan = match pre_undo_lines {
+                            _ if count != 1 => None,
                             Some(lines) if redo => self.undo_groups.take_redo_extra(&lines),
                             Some(lines) => self.undo_groups.take_undo_extra(&lines),
-                            None => 0,
+                            None => None,
                         };
-                        self.finish_vim_undo(extra, redo);
+                        self.finish_vim_undo(plan, redo);
                     }
                     match outcome {
                         VimKeyOutcome::TextMutated => {
@@ -2757,22 +2892,25 @@ impl Component for TextEditorComponent {
         // Adopt from the REAL snapshot, never the preview's synthetic
         // revision, or dirty tracking would follow the preview.
         self.revs.adopt(snap.content_revision);
-        let preview_spans = match preview {
-            None => {
-                self.view.update(&snap, editor_rect, selection);
-                Vec::new()
-            }
-            Some(p) => {
+        // The lines the view actually draws this frame: the preview's when one
+        // is showing, the buffer's otherwise. Kept in scope because the
+        // deferred full-parse below must parse *these*, not the buffer's.
+        let (view_lines, preview_spans) = match preview {
+            None => (None, Vec::new()),
+            Some(p) => (Some(p.lines), p.spans),
+        };
+        match &view_lines {
+            None => self.view.update(&snap, editor_rect, selection),
+            Some(lines) => {
                 // The parse cache keys on `content_revision`, so the preview
                 // carries an identity of its own — derived from the real
                 // revision plus what is being previewed. Same preview, same
                 // key: the cache still works instead of thrashing per frame.
-                let rev = preview_revision(snap.content_revision, &p.lines);
-                let view_snap = EditorSnapshot::owned(p.lines, snap.cursor, rev);
+                let rev = preview_revision(snap.content_revision, lines);
+                let view_snap = EditorSnapshot::borrowed(lines, snap.cursor, rev);
                 self.view.update(&view_snap, editor_rect, selection);
-                p.spans
             }
-        };
+        }
         self.view.set_preview_spans(preview_spans);
 
         // If `view.update` cap-tripped on a large buffer it
@@ -2783,7 +2921,17 @@ impl Component for TextEditorComponent {
         // task, so a burst of large-buffer edits resolves against
         // the latest content.
         if let Some(generation) = self.view.take_pending_full_parse() {
-            let lines: Vec<String> = snap.lines.iter().cloned().collect();
+            // Parse the lines the view is DRAWING, not the buffer's. Under a
+            // **replace preview** those differ, and the placeholder this
+            // generation came from was keyed on the preview's synthetic
+            // revision — so handing over the buffer's lines would install a
+            // parse of text that is not on screen and sail through
+            // `install_full_parse`'s staleness check, styling a large note by
+            // element boundaries computed against a different string.
+            let lines: Vec<String> = match &view_lines {
+                Some(lines) => lines.clone(),
+                None => snap.lines.iter().cloned().collect(),
+            };
             let tx = self.full_parse_tx.clone();
             let redraw = self.redraw_tx.clone();
             self.full_parse_task.spawn(async move {
@@ -4393,6 +4541,153 @@ mod tests {
             current.start, current.end,
             "an empty replacement previews as a zero-width span — the renderer \
              widens it to a caret cell so the marker cannot vanish"
+        );
+    }
+
+    /// A mouse drag while the bar is open leaves a multi-row range in
+    /// `self.selection` — `handle_mouse` has no find-bar guard. Reading the
+    /// span from there dropped the end row and handed `replace_range` an
+    /// inverted byte range, panicking the whole TUI.
+    #[test]
+    fn a_multi_row_selection_cannot_derail_an_interactive_replace() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("alpha beta\nxy".to_string());
+        open_replace_bar(&mut editor, &tx, "beta", "Z");
+        // Exactly what a drag from row 0 col 6 to row 1 col 1 leaves behind.
+        editor.selection = Some(((0, 6), (1, 1)));
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Enter, KeyModifiers::NONE)),
+            &tx,
+        );
+        assert_eq!(editor.get_text(), "alpha Z\nxy");
+    }
+
+    /// `insert_str("")` deletes the selection and still returns `false`
+    /// (`insert_piece` bails on the empty string), so trusting its bool left
+    /// the buffer modified while the note read clean — never saved, and still
+    /// rendering the pre-deletion text.
+    #[test]
+    fn deleting_a_match_marks_the_note_dirty() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("todo and todo".to_string());
+        editor.mark_saved("todo and todo".to_string());
+        assert!(!editor.is_dirty());
+
+        open_replace_bar(&mut editor, &tx, "todo ", "");
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Enter, KeyModifiers::NONE)),
+            &tx,
+        );
+        assert_eq!(editor.get_text(), "and todo");
+        assert!(
+            editor.is_dirty(),
+            "a deletion is an edit — if the revision does not move, autosave \
+             never writes it and the change is silently lost"
+        );
+    }
+
+    /// The same trap on the bulk path, where the result is an empty buffer.
+    #[test]
+    fn emptying_the_note_via_replace_all_marks_it_dirty_and_is_undoable() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("todo".to_string());
+        editor.mark_saved("todo".to_string());
+        open_replace_bar(&mut editor, &tx, "todo", "");
+        let ctrl_a = InputEvent::Key(key(KeyCode::Char('a'), KeyModifiers::CONTROL));
+        editor.handle_input(&ctrl_a, &tx); // arms
+        editor.handle_input(&ctrl_a, &tx); // commits
+        assert_eq!(editor.get_text(), "");
+        assert!(editor.is_dirty());
+
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('z'), KeyModifiers::CONTROL)),
+            &tx,
+        );
+        assert_eq!(editor.get_text(), "todo");
+    }
+
+    /// Ctrl+Z must work from inside the bar. The bar consumes every key, so
+    /// without an explicit route the user is stranded on a note it just
+    /// rewrote until they think to press Esc first.
+    #[test]
+    fn ctrl_z_works_without_closing_the_bar_first() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("todo and todo".to_string());
+        open_replace_bar(&mut editor, &tx, "todo", "done");
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('a'), KeyModifiers::CONTROL)),
+            &tx,
+        );
+        assert_eq!(editor.get_text(), "done and done");
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('z'), KeyModifiers::CONTROL)),
+            &tx,
+        );
+        assert_eq!(editor.get_text(), "todo and todo");
+        assert!(editor.search.is_some(), "undo must not close the bar");
+    }
+
+    /// A zero-width match (`\b`, `x*`) makes the selection empty, so
+    /// `delete_selection` pushes no history entry and the action is ONE entry,
+    /// not two. Recording two made the next Ctrl+Z pop an unrelated edit.
+    #[test]
+    fn a_zero_width_match_does_not_over_claim_history_entries() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("ab".to_string());
+        open_replace_bar(&mut editor, &tx, r"\b", "|");
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Enter, KeyModifiers::NONE)),
+            &tx,
+        );
+        assert_eq!(editor.get_text(), "|ab");
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('z'), KeyModifiers::CONTROL)),
+            &tx,
+        );
+        assert_eq!(
+            editor.get_text(),
+            "ab",
+            "one undo must land exactly on the pre-replace text, not past it"
+        );
+    }
+
+    /// A note swap must not carry the previous note's find-bar state across.
+    /// `armed_empty` surviving means one Ctrl+A deletes every match in a note
+    /// the user never armed.
+    #[test]
+    fn a_note_swap_resets_the_find_bar_and_its_undo_groups() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("todo".to_string());
+        open_replace_bar(&mut editor, &tx, "todo", "");
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('a'), KeyModifiers::CONTROL)),
+            &tx,
+        );
+        assert!(editor.search.as_ref().unwrap().armed_empty);
+
+        editor.set_text("todo elsewhere".to_string());
+        assert!(editor.search.is_none(), "the bar belonged to the old note");
+        assert!(editor.undo_groups.is_empty(), "so did the undo groups");
+    }
+
+    /// Opening the bar does not change the vim mode, so the app-level Space
+    /// leader would otherwise swallow every space typed into it — making
+    /// multi-word patterns untypeable on the vim backend.
+    #[test]
+    fn the_find_bar_suppresses_the_vim_space_leader() {
+        let mut editor = make_vim_editor();
+        editor.set_text("todo done".to_string());
+        assert!(editor.space_leads(), "vim Normal mode leads with Space");
+        editor.open_or_advance_search();
+        assert!(
+            !editor.space_leads(),
+            "the bar owns keys while open, including Space"
         );
     }
 

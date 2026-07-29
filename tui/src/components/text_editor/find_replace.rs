@@ -75,13 +75,79 @@ impl FindPattern {
     /// captures** (adr/0034). Otherwise the replacement is literal, so a `$`
     /// in ordinary note content — a price, inline LaTeX — survives instead of
     /// silently expanding to the empty string.
+    ///
+    /// Even when the pattern captures, a `$` that names a group which does not
+    /// exist stays literal. `Captures::expand` would erase it: in a note
+    /// `$100` parses as group 100 and `$x^2$` as a group named `x`, and both
+    /// expand to nothing. Gating on whether the pattern captures at all is not
+    /// enough — a user who writes a capture group is exactly the user who then
+    /// writes `$1 costs $100`.
     pub fn expand(&self, caps: &regex::Captures<'_>, replacement: &str) -> String {
         if !self.has_captures {
             return replacement.to_string();
         }
         let mut out = String::new();
-        caps.expand(replacement, &mut out);
+        let mut rest = replacement;
+        while let Some(dollar) = rest.find('$') {
+            out.push_str(&rest[..dollar]);
+            let tail = &rest[dollar..];
+            // `$$` is regex-crate syntax for a literal `$`; keep honouring it.
+            if let Some(after) = tail.strip_prefix("$$") {
+                out.push('$');
+                rest = after;
+                continue;
+            }
+            // Ask the crate to expand this one reference in isolation. If it
+            // resolves to nothing AND the group does not exist, the reference
+            // was never a reference — emit it as typed.
+            let end = reference_end(tail);
+            let reference = &tail[..end];
+            let mut expanded = String::new();
+            caps.expand(reference, &mut expanded);
+            if expanded.is_empty() && !group_exists(caps, reference) {
+                out.push_str(reference);
+            } else {
+                out.push_str(&expanded);
+            }
+            rest = &tail[end..];
+        }
+        out.push_str(rest);
         out
+    }
+}
+
+/// Byte length of the capture reference starting at `s[0] == '$'`, mirroring
+/// the `regex` crate's own grammar: `${...}` up to the brace, otherwise the
+/// run of `[0-9A-Za-z_]` after the sigil. A bare `$` with nothing referenceable
+/// after it is length 1.
+fn reference_end(s: &str) -> usize {
+    debug_assert!(s.starts_with('$'));
+    if let Some(rest) = s.strip_prefix("${") {
+        return match rest.find('}') {
+            Some(close) => 2 + close + 1,
+            None => s.len(),
+        };
+    }
+    let name_len = s[1..]
+        .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .unwrap_or(s.len() - 1);
+    1 + name_len
+}
+
+/// Whether `reference` (a single `$…` capture reference) names a group that
+/// actually exists in `caps` — the difference between "this group matched
+/// nothing" and "this was never a group".
+fn group_exists(caps: &regex::Captures<'_>, reference: &str) -> bool {
+    let name = reference
+        .trim_start_matches('$')
+        .trim_start_matches('{')
+        .trim_end_matches('}');
+    if name.is_empty() {
+        return false;
+    }
+    match name.parse::<usize>() {
+        Ok(index) => index < caps.len(),
+        Err(_) => caps.name(name).is_some(),
     }
 }
 
@@ -239,6 +305,45 @@ mod tests {
         assert!(p.has_captures());
         let (out, _) = replace_all(&p, &lines(&["alpha-beta"]), "$2 $1").unwrap();
         assert_eq!(out, lines(&["beta alpha"]));
+    }
+
+    #[test]
+    fn a_dollar_naming_no_group_stays_literal_even_when_the_pattern_captures() {
+        // The capture gate alone protects only patterns with no groups. A user
+        // who writes a group is exactly the user who then writes a price.
+        let p = FindPattern::compile(r"(Total)").unwrap();
+        let (out, _) = replace_all(&p, &lines(&["Total: 5 due"]), "$1 cost $100").unwrap();
+        assert_eq!(out, lines(&["Total cost $100: 5 due"]));
+    }
+
+    #[test]
+    fn inline_latex_survives_a_capturing_pattern() {
+        let p = FindPattern::compile(r"(area)").unwrap();
+        let (out, _) = replace_all(&p, &lines(&["the area"]), "$1 $x^2$").unwrap();
+        assert_eq!(out, lines(&["the area $x^2$"]));
+    }
+
+    #[test]
+    fn braced_and_named_references_still_expand() {
+        let p = FindPattern::compile(r"(?<word>\w+)-(\d+)").unwrap();
+        let (out, _) = replace_all(&p, &lines(&["ab-12"]), "${word}/$2").unwrap();
+        assert_eq!(out, lines(&["ab/12"]));
+    }
+
+    #[test]
+    fn double_dollar_is_still_an_escape() {
+        let p = FindPattern::compile(r"(x)").unwrap();
+        let (out, _) = replace_all(&p, &lines(&["x"]), "$$1").unwrap();
+        assert_eq!(out, lines(&["$1"]));
+    }
+
+    #[test]
+    fn a_group_that_matched_nothing_expands_to_nothing() {
+        // Distinct from a group that does not exist: this one is real and
+        // simply matched the empty string, so erasing it is correct.
+        let p = FindPattern::compile(r"a(z*)").unwrap();
+        let (out, _) = replace_all(&p, &lines(&["a"]), "[$1]").unwrap();
+        assert_eq!(out, lines(&["[]"]));
     }
 
     #[test]
