@@ -111,10 +111,11 @@ impl EditorScreen {
             vault.clone(),
             settings.clone(),
             s.icons(),
+            s.yank_combos(),
         );
-        let tags = TagsPanel::new(vault.clone(), s.icons());
-        let links = LinksPanel::new(vault.clone(), s.icons());
-        let outline = OutlinePanel::new(vault.clone(), s.icons());
+        let tags = TagsPanel::new(vault.clone(), s.icons(), s.yank_combos());
+        let links = LinksPanel::new(vault.clone(), s.icons(), s.yank_combos());
+        let outline = OutlinePanel::new(vault.clone(), s.icons(), s.yank_combos());
         let drawer = DrawerHost::new(
             vault.clone(),
             &kb,
@@ -210,6 +211,11 @@ impl EditorScreen {
                 .flash("Clipboard image size mismatch".to_string(), tx);
             return true;
         }
+        // The selection is NOT dropped here. Both steps below can fail — the
+        // PNG encode and the attachment save — and a cut done now would destroy
+        // the user's text with nothing to replace it. `insert_at_cursor`, which
+        // runs only on success, does the replacement and reconciles the vim
+        // engine out of Visual in the same breath (adr/0031).
         let asset_path = self.vault.generate_attachment_path("image", "png");
         let link_path = asset_path.relative_link_from_note(&self.path);
         let markdown = format!("![]({link_path})");
@@ -243,6 +249,10 @@ impl EditorScreen {
             match vault.save_attachment(&asset_path, &png_bytes).await {
                 Ok(()) => {
                     tx2.send(AppEvent::InsertAtCursor(markdown)).ok();
+                    // Only on success — the failure branches below already
+                    // report, and this path is async, so the chord echo would
+                    // otherwise be the last thing the user saw.
+                    tx2.send(AppEvent::FlashMessage("image pasted".into())).ok();
                 }
                 Err(e) => {
                     tx2.send(AppEvent::OverlayData(OverlayData::Error(format!(

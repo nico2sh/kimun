@@ -96,6 +96,15 @@ impl SearchRow for SearchItem {
             Some(&self.name)
         }
     }
+
+    /// The stored query, not the display name — the query is the reusable
+    /// thing (paste it into another search, or into a note).
+    fn yank_target(&self) -> Option<crate::components::search_list::YankTarget> {
+        Some(crate::components::search_list::YankTarget::new(
+            self.query.clone(),
+            "query",
+        ))
+    }
 }
 
 pub const VIRTUAL_BACKLINKS_NAME: &str = "Backlinks (current note)";
@@ -206,7 +215,7 @@ pub struct SavedSearchesModal {
 }
 
 impl SavedSearchesModal {
-    pub fn new(vault: Arc<NoteVault>, _key_bindings: KeyBindings, icons: Icons, tx: AppTx) -> Self {
+    pub fn new(vault: Arc<NoteVault>, key_bindings: KeyBindings, icons: Icons, tx: AppTx) -> Self {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let delete_combo = key_event_to_combo(&KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE))
             .expect("Delete maps to a key combo");
@@ -219,6 +228,7 @@ impl SavedSearchesModal {
             redraw_callback(tx),
         )
         .filter(Filter::Rank(Arc::new(rank_to_indices)))
+        .yank_combos_from(&key_bindings)
         .icons(icons)
         .intercept(vec![delete_combo])
         .build();
@@ -288,6 +298,10 @@ impl Overlay for SavedSearchesModal {
                     EventState::Consumed
                 }
                 KeyReaction::Consumed => EventState::Consumed,
+                KeyReaction::Yank(target) => {
+                    crate::components::yank_row(target, tx);
+                    EventState::Consumed
+                }
                 KeyReaction::Intercepted(_) | KeyReaction::ListVerb(_) | KeyReaction::Unhandled => {
                     EventState::NotConsumed
                 }

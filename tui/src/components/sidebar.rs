@@ -239,6 +239,7 @@ impl SidebarComponent {
         self.list = Some(
             SearchList::builder(source, redraw_callback(tx.clone()))
                 .filter(Filter::Fuzzy)
+                .yank_combos_from(&self.key_bindings)
                 .icons(self.icons.clone())
                 .build(),
         );
@@ -494,6 +495,10 @@ impl Component for SidebarComponent {
                     EventState::Consumed
                 }
                 KeyReaction::Consumed | KeyReaction::Cancel => EventState::Consumed,
+                KeyReaction::Yank(target) => {
+                    crate::components::yank_row(target, tx);
+                    EventState::Consumed
+                }
                 KeyReaction::Intercepted(_) | KeyReaction::ListVerb(_) | KeyReaction::Unhandled => {
                     EventState::NotConsumed
                 }

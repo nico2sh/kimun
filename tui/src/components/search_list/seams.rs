@@ -27,6 +27,40 @@ pub trait SearchRow: Clone + Send + Sync + 'static {
     fn match_text(&self) -> Option<&str> {
         None
     }
+
+    /// What this row offers to the OS clipboard, or `None` when it has nothing
+    /// worth copying (a command entry, a virtual "Up .." row).
+    ///
+    /// Declared by the row rather than by the surface displaying it, so every
+    /// list built on [`SearchList`](super::SearchList) inherits the yank instead
+    /// of each panel wiring its own key — which is how the note browser ended up
+    /// without one while the Query panel had it (adr/0032).
+    fn yank_target(&self) -> Option<YankTarget> {
+        None
+    }
+}
+
+/// A row's contribution to the OS clipboard: the text, plus the noun naming it
+/// so the confirmation says *what* was copied ("path copied", "tag copied")
+/// rather than a bare "copied" that would be a lie where nothing was.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct YankTarget {
+    pub text: String,
+    pub noun: &'static str,
+}
+
+impl YankTarget {
+    pub fn new(text: impl Into<String>, noun: &'static str) -> Self {
+        Self {
+            text: text.into(),
+            noun,
+        }
+    }
+
+    /// The overwhelmingly common case: a row that stands for a note.
+    pub fn path(text: impl Into<String>) -> Self {
+        Self::new(text, "path")
+    }
 }
 
 /// How rows arrive from a source. One-shot sources send one `Replace`;

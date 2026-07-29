@@ -69,12 +69,19 @@ pub trait ListPanelSpec {
 /// it themselves and hand the remaining body rect to [`Self::render_in`].
 pub struct QueryListPanel<S: ListPanelSpec> {
     icons: Icons,
+    /// Handed to every rebuilt list, so the drawer views honour a rebound yank
+    /// chord like the other list surfaces (adr/0032).
+    yank_combos: Vec<crate::keys::key_combo::KeyCombo>,
     list: Option<SearchList<S::Row>>,
 }
 
 impl<S: ListPanelSpec> QueryListPanel<S> {
-    pub fn new(icons: Icons) -> Self {
-        Self { icons, list: None }
+    pub fn new(icons: Icons, yank_combos: Vec<crate::keys::key_combo::KeyCombo>) -> Self {
+        Self {
+            icons,
+            yank_combos,
+            list: None,
+        }
     }
 
     /// (Re)build the list over a fresh source — the engine-per-context
@@ -91,7 +98,12 @@ impl<S: ListPanelSpec> QueryListPanel<S> {
                 Filter::SourceOrder
             });
         }
-        self.list = Some(builder.icons(self.icons.clone()).build());
+        self.list = Some(
+            builder
+                .yank_combos(self.yank_combos.clone())
+                .icons(self.icons.clone())
+                .build(),
+        );
     }
 
     pub fn is_loaded(&self) -> bool {
@@ -125,13 +137,26 @@ impl<S: ListPanelSpec> QueryListPanel<S> {
                             EventState::Consumed
                         }
                         KeyReaction::Consumed | KeyReaction::Cancel => EventState::Consumed,
+                        KeyReaction::Yank(target) => {
+                            crate::components::yank_row(target, tx);
+                            EventState::Consumed
+                        }
                         KeyReaction::Intercepted(_)
                         | KeyReaction::ListVerb(_)
                         | KeyReaction::Unhandled => EventState::NotConsumed,
                     }
                 } else {
                     // No filter input: only navigation keys reach the list,
-                    // so plain letters stay available to the host.
+                    // so plain letters stay available to the host. The yank
+                    // chord is forwarded explicitly — it is a chord, never a
+                    // host letter, and its rows do declare yank targets.
+                    if list.is_yank_chord(key) {
+                        let reaction = list.handle_key(key);
+                        if let KeyReaction::Yank(target) = reaction {
+                            crate::components::yank_row(target, tx);
+                        }
+                        return EventState::Consumed;
+                    }
                     match key.code {
                         KeyCode::Up
                         | KeyCode::Down
@@ -296,6 +321,11 @@ mod tests {
         fn match_text(&self) -> Option<&str> {
             Some(&self.0)
         }
+        fn yank_target(&self) -> Option<crate::components::search_list::YankTarget> {
+            Some(crate::components::search_list::YankTarget::path(
+                self.0.clone(),
+            ))
+        }
     }
 
     /// A source that completes immediately with no rows — the "query found
@@ -377,10 +407,73 @@ mod tests {
     /// typed query. This was the "semantic search shows one result" bug — the
     /// local fuzzy filter discarded every conceptually-relevant note whose title
     /// lacked the query words.
+    /// A no-filter spec (the LINKS drawer's shape), where plain letters are the
+    /// host's sub-view keys and only recognised keys reach the list.
+    struct NoInputSpec;
+    impl ListPanelSpec for NoInputSpec {
+        type Row = Row;
+        const TITLE: &'static str = "Links";
+        const HAS_FILTER: bool = false;
+        fn submit(_row: &Row, _tx: &AppTx) {}
+        fn hints() -> Vec<(String, String)> {
+            Vec::new()
+        }
+    }
+
+    /// A view with no filter input forwards only what it recognises, so the
+    /// yank chord has to be forwarded on purpose. Without that, LINKS rows would
+    /// declare a yank target the panel could never deliver (adr/0032).
+    #[tokio::test]
+    async fn yank_chord_reaches_a_view_that_has_no_filter_input() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let (tx, mut rx) = unbounded_channel();
+        let mut panel = QueryListPanel::<NoInputSpec>::new(
+            Icons::new(false),
+            vec![crate::keys::default_yank_combo()],
+        );
+        panel.set_source(ThreeSource, &tx);
+        panel.list_mut().unwrap().poll_until_idle().await;
+
+        let ctrl_y = KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL);
+        let state = panel.handle_input(&InputEvent::Key(ctrl_y), &tx);
+        assert_eq!(state, EventState::Consumed);
+
+        // The flash is the observable outcome: either the copy or a clipboard
+        // error, but never silence.
+        let flashed = std::iter::from_fn(|| rx.try_recv().ok()).any(|e| {
+            matches!(e, AppEvent::FlashMessage(m)
+                if m == "path copied" || m.starts_with("clipboard: "))
+        });
+        assert!(flashed, "the yank chord must reach the list and report");
+    }
+
+    /// A plain letter must still stay with the host in a no-filter view — the
+    /// yank forwarding above must not open the floodgates.
+    #[tokio::test]
+    async fn no_filter_view_still_passes_plain_letters_to_the_host() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let (tx, _rx) = unbounded_channel();
+        let mut panel = QueryListPanel::<NoInputSpec>::new(
+            Icons::new(false),
+            vec![crate::keys::default_yank_combo()],
+        );
+        panel.set_source(ThreeSource, &tx);
+        panel.list_mut().unwrap().poll_until_idle().await;
+        let b = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE);
+        assert_eq!(
+            panel.handle_input(&InputEvent::Key(b), &tx),
+            EventState::NotConsumed,
+            "`b` is LINKS' backlinks sub-view key, not the list's"
+        );
+    }
+
     #[tokio::test]
     async fn no_local_filter_keeps_server_rows_that_dont_match_query() {
         let (tx, _rx) = unbounded_channel();
-        let mut panel = QueryListPanel::<NoFilterSpec>::new(Icons::new(false));
+        let mut panel = QueryListPanel::<NoFilterSpec>::new(
+            Icons::new(false),
+            vec![crate::keys::default_yank_combo()],
+        );
         panel.set_source(ThreeSource, &tx);
         {
             let list = panel.list_mut().unwrap();
@@ -407,7 +500,10 @@ mod tests {
     #[tokio::test]
     async fn local_filter_narrows_rows_by_query() {
         let (tx, _rx) = unbounded_channel();
-        let mut panel = QueryListPanel::<BorderedSpec>::new(Icons::new(false));
+        let mut panel = QueryListPanel::<BorderedSpec>::new(
+            Icons::new(false),
+            vec![crate::keys::default_yank_combo()],
+        );
         panel.set_source(ThreeSource, &tx);
         {
             let list = panel.list_mut().unwrap();
@@ -425,7 +521,10 @@ mod tests {
     #[tokio::test]
     async fn bordered_input_shows_searching_indicator_while_in_flight() {
         let (tx, _rx) = unbounded_channel();
-        let mut panel = QueryListPanel::<BorderedSpec>::new(Icons::new(false));
+        let mut panel = QueryListPanel::<BorderedSpec>::new(
+            Icons::new(false),
+            vec![crate::keys::default_yank_combo()],
+        );
         panel.set_source(PendingSource, &tx);
         // The initial load is pending → is_loading stays true.
         let text = buffer_text(&mut panel);
@@ -441,7 +540,10 @@ mod tests {
     #[tokio::test]
     async fn render_drains_loader_in_placeholder_path() {
         let (tx, _rx) = unbounded_channel();
-        let mut panel = QueryListPanel::<BorderedSpec>::new(Icons::new(false));
+        let mut panel = QueryListPanel::<BorderedSpec>::new(
+            Icons::new(false),
+            vec![crate::keys::default_yank_combo()],
+        );
         panel.set_source(EmptySource, &tx);
         panel.list_mut().unwrap().set_query("x"); // starts a load (reload_on_query)
         // Let the spawned load run and land on the channel — but do NOT poll it
@@ -463,7 +565,10 @@ mod tests {
     #[tokio::test]
     async fn bordered_input_shows_no_results_for_empty_completed_query() {
         let (tx, _rx) = unbounded_channel();
-        let mut panel = QueryListPanel::<BorderedSpec>::new(Icons::new(false));
+        let mut panel = QueryListPanel::<BorderedSpec>::new(
+            Icons::new(false),
+            vec![crate::keys::default_yank_combo()],
+        );
         panel.set_source(EmptySource, &tx);
         {
             let list = panel.list_mut().unwrap();

@@ -140,11 +140,16 @@ pub struct SemanticPanel {
 }
 
 impl SemanticPanel {
-    pub fn new(vault: Arc<NoteVault>, settings: SharedSettings, icons: Icons) -> Self {
+    pub fn new(
+        vault: Arc<NoteVault>,
+        settings: SharedSettings,
+        icons: Icons,
+        yank_combos: Vec<crate::keys::key_combo::KeyCombo>,
+    ) -> Self {
         Self {
             vault,
             settings,
-            body: QueryListPanel::new(icons),
+            body: QueryListPanel::new(icons, yank_combos),
             source_installed: false,
         }
     }

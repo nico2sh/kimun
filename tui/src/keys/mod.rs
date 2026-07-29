@@ -169,6 +169,17 @@ impl KeyBindings {
         self.bindings.get(combo).map(|a| a.to_owned())
     }
 
+    /// Every combo bound to `action`. Empty when the user has unbound it —
+    /// callers must treat that as "this chord does nothing", not as a cue to
+    /// fall back to the default.
+    pub fn combos_for(&self, action: &ActionShortcuts) -> Vec<KeyCombo> {
+        self.bindings
+            .iter()
+            .filter(|(_, a)| *a == action)
+            .map(|(combo, _)| *combo)
+            .collect()
+    }
+
     /// Returns the display string of the first combo bound to `action`, or `None`.
     pub fn first_combo_for(&self, action: &ActionShortcuts) -> Option<String> {
         self.bindings
@@ -224,6 +235,14 @@ impl KeyBindings {
 /// drift.
 pub fn default_quit_combo() -> KeyCombo {
     KeyCombo::new(KeyModifiers::new().and_ctrl(), KeyStrike::KeyQ)
+}
+
+/// Canonical default combo for [`ActionShortcuts::YankRow`]. Sourced once for
+/// the same reason as [`default_quit_combo`], plus one more: `SearchList` claims
+/// this chord itself so every list surface yanks without per-panel wiring
+/// (adr/0032), and it must be the same chord the shortcut tier advertises.
+pub fn default_yank_combo() -> KeyCombo {
+    KeyCombo::new(KeyModifiers::new().and_ctrl(), KeyStrike::KeyY)
 }
 
 pub struct KeyBindBatch<'k> {
@@ -399,6 +418,35 @@ mod tests {
         action_shortcuts::{ActionShortcuts, TextAction},
         key_strike::KeyStrike,
     };
+
+    /// `SearchList` resolves its yank chords through this, so a rebinding has to
+    /// come back out of it — otherwise the help dialog advertises one chord
+    /// while the lists answer to another (adr/0032).
+    #[test]
+    fn combos_for_follows_a_rebinding() {
+        let default = crate::settings::AppSettings::default().key_bindings;
+        assert_eq!(
+            default.combos_for(&ActionShortcuts::YankRow),
+            vec![super::default_yank_combo()],
+            "the default binding must be the shared literal"
+        );
+
+        let mut rebound = KeyBindings::empty();
+        rebound
+            .batch_add()
+            .with_ctrl()
+            .add(KeyStrike::KeyD, ActionShortcuts::YankRow);
+        let combos = rebound.combos_for(&ActionShortcuts::YankRow);
+        assert_eq!(combos.len(), 1);
+        assert_eq!(combos[0].key, KeyStrike::KeyD);
+
+        assert!(
+            KeyBindings::empty()
+                .combos_for(&ActionShortcuts::YankRow)
+                .is_empty(),
+            "unbinding must yield no chords, not a silent fallback to the default"
+        );
+    }
 
     #[test]
     fn serialize_key_binding() {

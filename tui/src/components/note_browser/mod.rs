@@ -144,6 +144,7 @@ impl NoteBrowserModal {
         };
         let mut builder = SearchList::builder(provider, redraw_callback(tx.clone()))
             .initial_query(initial_query)
+            .yank_combos_from(&key_bindings)
             .icons(icons)
             .autocomplete(
                 Arc::new(VaultSuggestions {
@@ -369,6 +370,10 @@ impl Overlay for NoteBrowserModal {
                         self.saved_search
                             .on_query_consumed(accepted, self.list.query(), blank);
                         self.refresh_preview_from_list();
+                        EventState::Consumed
+                    }
+                    KeyReaction::Yank(target) => {
+                        crate::components::yank_row(target, tx);
                         EventState::Consumed
                     }
                     KeyReaction::Intercepted(_)
