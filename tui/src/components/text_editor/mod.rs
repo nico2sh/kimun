@@ -1164,12 +1164,17 @@ impl TextEditorComponent {
             BackendState::Textarea(tb) => {
                 let selection = linkable_url(text).and_then(|_| selection_text(&tb.ta));
                 let wrapped = try_build_markdown_link(text, selection.as_deref());
-                if tb.ta.selection_range().is_some() {
-                    tb.ta.cut();
-                }
-                tb.ta.insert_str(wrapped.as_deref().unwrap_or(text));
+                let insert = wrapped.as_deref().unwrap_or(text).to_string();
+                // Replacing a selection is a cut plus an insert — one paste,
+                // one undo (adr/0037).
+                tb.ta.edit(|ta| {
+                    if ta.selection_range().is_some() {
+                        ta.cut();
+                    }
+                    ta.insert_str(insert);
+                });
                 self.selection = tb.ta.selection_range();
-                self.bump_content();
+                self.apply_edit_outcome();
             }
             BackendState::Nvim(nvim) => {
                 nvim.paste(text, tx.clone());
@@ -1202,7 +1207,7 @@ impl TextEditorComponent {
         if let Some(ta) = self.backend.as_textarea_mut() {
             ta.insert_str(text);
             self.selection = ta.selection_range();
-            self.bump_content();
+            self.apply_edit_outcome();
         }
         // See `paste_text` — out-of-band buffer mutation must
         // re-reconcile the popup state.
@@ -1247,7 +1252,7 @@ impl TextEditorComponent {
             false
         };
         if cut {
-            self.bump_content();
+            self.apply_edit_outcome();
         }
         // `false` = no live selection, so a modal engine returns to Normal.
         // A no-op for Insert and for the non-modal backends.
@@ -1281,7 +1286,7 @@ impl TextEditorComponent {
         let inner_end_col = if sr == er { ec + shift } else { ec };
         set_selection(ta, (sr, sc + shift), (er, inner_end_col));
         self.selection = ta.selection_range();
-        self.bump_content();
+        self.apply_edit_outcome();
         true
     }
 
@@ -1305,7 +1310,7 @@ impl TextEditorComponent {
             ta.move_cursor(CursorMove::Back);
         }
         self.selection = ta.selection_range();
-        self.bump_content();
+        self.apply_edit_outcome();
     }
 
     /// Smart Enter: continue list markers, preserve indent, dedent on empty
@@ -1381,15 +1386,19 @@ impl TextEditorComponent {
                 let Some(ta) = self.backend.as_textarea_mut() else {
                     unreachable!()
                 };
-                ta.insert_newline();
-                ta.insert_str(prefix);
+                // Newline plus prefix is two history entries; one `edit()`
+                // scope makes continuing a list one undo (adr/0037).
+                ta.edit(|ta| {
+                    ta.insert_newline();
+                    ta.insert_str(prefix);
+                });
             }
         }
         let Some(ta) = self.backend.as_textarea() else {
             unreachable!()
         };
         self.selection = ta.selection_range();
-        self.bump_content();
+        self.apply_edit_outcome();
         true
     }
 
@@ -1470,40 +1479,44 @@ impl TextEditorComponent {
         // text before the selection. The selection is restored at the end.
         ta.cancel_selection();
 
-        for row in start_row..=end_row {
-            if dedent {
-                let count = {
-                    let line = ta.lines().get(row).map(|s| s.as_str()).unwrap_or("");
-                    let max_remove = if hard_tab { 1 } else { tab_len };
-                    let mut count = 0usize;
-                    for (i, c) in line.chars().enumerate() {
-                        if i >= max_remove {
-                            break;
+        // Indenting N lines is 2N history entries; one `edit()` scope makes
+        // the whole block one undo instead of N (adr/0037).
+        ta.edit(|ta| {
+            for row in start_row..=end_row {
+                if dedent {
+                    let count = {
+                        let line = ta.lines().get(row).map(|s| s.as_str()).unwrap_or("");
+                        let max_remove = if hard_tab { 1 } else { tab_len };
+                        let mut count = 0usize;
+                        for (i, c) in line.chars().enumerate() {
+                            if i >= max_remove {
+                                break;
+                            }
+                            if c == '\t' {
+                                count += 1;
+                                break;
+                            } else if c == ' ' && !hard_tab {
+                                count += 1;
+                            } else {
+                                break;
+                            }
                         }
-                        if c == '\t' {
-                            count += 1;
-                            break;
-                        } else if c == ' ' && !hard_tab {
-                            count += 1;
-                        } else {
-                            break;
-                        }
+                        count
+                    };
+                    if count > 0 {
+                        ta.move_cursor(CursorMove::Jump(row as u16, 0));
+                        ta.delete_str(count);
+                        any_change = true;
                     }
-                    count
-                };
-                if count > 0 {
+                    row_deltas.push(-(count as isize));
+                } else {
                     ta.move_cursor(CursorMove::Jump(row as u16, 0));
-                    ta.delete_str(count);
+                    ta.insert_str(&indent);
+                    row_deltas.push(indent_chars as isize);
                     any_change = true;
                 }
-                row_deltas.push(-(count as isize));
-            } else {
-                ta.move_cursor(CursorMove::Jump(row as u16, 0));
-                ta.insert_str(&indent);
-                row_deltas.push(indent_chars as isize);
-                any_change = true;
             }
-        }
+        });
 
         let adj = |row: usize, col: usize| -> usize {
             if row >= start_row && row <= end_row {
@@ -1531,7 +1544,7 @@ impl TextEditorComponent {
 
         if any_change {
             self.selection = ta.selection_range();
-            self.bump_content();
+            self.apply_edit_outcome();
         }
     }
 }
@@ -2042,14 +2055,14 @@ impl TextEditorComponent {
             match key.code {
                 KeyCode::Char('z') if !shift => {
                     if self.undo_grouped() {
-                        self.bump_content();
+                        self.apply_edit_outcome();
                         self.refresh_match_count();
                     }
                     return true;
                 }
                 KeyCode::Char('y') | KeyCode::Char('Z') => {
                     if self.redo_grouped() {
-                        self.bump_content();
+                        self.apply_edit_outcome();
                         self.refresh_match_count();
                     }
                     return true;
@@ -2173,7 +2186,7 @@ impl TextEditorComponent {
                         false
                     };
                     if cut {
-                        self.bump_content();
+                        self.apply_edit_outcome();
                     }
                     return EventState::Consumed;
                 }
@@ -2189,13 +2202,13 @@ impl TextEditorComponent {
             match key.code {
                 KeyCode::Char('z') if !key.modifiers.contains(KeyModifiers::SHIFT) => {
                     if self.undo_grouped() {
-                        self.bump_content();
+                        self.apply_edit_outcome();
                     }
                     return EventState::Consumed;
                 }
                 KeyCode::Char('y') | KeyCode::Char('Z') => {
                     if self.redo_grouped() {
-                        self.bump_content();
+                        self.apply_edit_outcome();
                     }
                     return EventState::Consumed;
                 }
@@ -2351,7 +2364,9 @@ impl TextEditorComponent {
             self.selection = ta.selection_range();
             match kind {
                 ShortcutOutcome::NoOp | ShortcutOutcome::CursorOnly => {}
-                ShortcutOutcome::TextMutated => self.bump_content(),
+                ShortcutOutcome::TextMutated => {
+                    self.apply_edit_outcome();
+                }
             }
             return EventState::Consumed;
         }
@@ -2396,11 +2411,9 @@ impl TextEditorComponent {
         // composing events). Only bump `text_revision` when the buffer
         // actually changed — otherwise harmless keys would silently flip
         // the editor to dirty and trigger needless autosaves.
-        let mutated = ta.input_without_shortcuts(*key);
+        ta.input_without_shortcuts(*key);
         self.selection = ta.selection_range();
-        if mutated {
-            self.bump_content();
-        }
+        self.apply_edit_outcome();
         EventState::Consumed
     }
 
@@ -2597,7 +2610,7 @@ impl Component for TextEditorComponent {
                                 ta.edit(|ta| apply_accept_to_textarea(ta, &action));
                                 self.selection = ta.selection_range();
                             }
-                            self.bump_content();
+                            self.apply_edit_outcome();
                             return EventState::Consumed;
                         }
                         HandleKeyOutcome::Dismissed | HandleKeyOutcome::Consumed => {
@@ -2625,8 +2638,9 @@ impl Component for TextEditorComponent {
                     self.apply_edit_outcome();
                     match outcome {
                         VimKeyOutcome::TextMutated => {
+                            // No bump here — the drain above already applied
+                            // what the buffer measured.
                             self.selection = None;
-                            self.bump_content();
                             return EventState::Consumed;
                         }
                         VimKeyOutcome::CursorOnly => {
@@ -2686,7 +2700,6 @@ impl Component for TextEditorComponent {
                                 VimHostAction::ClipboardCut(text) => {
                                     self.selection = None;
                                     crate::components::yank(text, "cut", tx);
-                                    self.bump_content();
                                 }
                                 // Paste is different: the engine deliberately
                                 // left the range SELECTED rather than cutting
@@ -4822,6 +4835,50 @@ mod tests {
             "row 0 must render as a parsed wikilink; `[[x]]` would mean it \
              kept the parse of the text that was there before the replace"
         );
+    }
+
+    /// Indenting N lines is 2N history entries, so before the **edit buffer**
+    /// grouped it, one Ctrl+Z un-indented only the last line and the user had
+    /// to press it N times. Same class as `guu`, and fixed by the same move.
+    #[test]
+    fn indenting_a_block_undoes_in_one_step() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("a\nb\nc".to_string());
+        get_ta(&mut editor).move_cursor(CursorMove::Jump(0, 0));
+        get_ta(&mut editor).start_selection();
+        get_ta(&mut editor).move_cursor(CursorMove::Jump(2, 1));
+        editor.indent_lines(false);
+        assert_eq!(editor.get_text(), "    a\n    b\n    c");
+
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('z'), KeyModifiers::CONTROL)),
+            &tx,
+        );
+        assert_eq!(
+            editor.get_text(),
+            "a\nb\nc",
+            "one undo must revert the whole block, not just the last line"
+        );
+    }
+
+    /// A paste over a selection is a cut plus an insert — one action.
+    #[test]
+    fn pasting_over_a_selection_undoes_in_one_step() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("hello world".to_string());
+        get_ta(&mut editor).move_cursor(CursorMove::Jump(0, 0));
+        get_ta(&mut editor).start_selection();
+        get_ta(&mut editor).move_cursor(CursorMove::Jump(0, 5));
+        editor.paste_text("goodbye", &tx);
+        assert_eq!(editor.get_text(), "goodbye world");
+
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('z'), KeyModifiers::CONTROL)),
+            &tx,
+        );
+        assert_eq!(editor.get_text(), "hello world");
     }
 
     #[test]
