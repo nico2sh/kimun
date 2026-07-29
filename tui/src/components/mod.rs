@@ -80,7 +80,14 @@ pub(crate) fn with_clipboard<T>(
         *guard = Some(arboard::Clipboard::new()?);
     }
     let result = f(guard.as_mut().expect("just opened"));
-    if result.is_err() {
+    // Drop the handle only on a failure that suggests the *connection* is bad.
+    // `ContentNotAvailable` is a statement about the clipboard's contents, not
+    // about the handle — and it is the ordinary answer when `take_clipboard_image`
+    // probes a text clipboard ahead of every Ctrl+V. Dropping on it would
+    // release the X11 CLIPBOARD-selection ownership we hold from our own last
+    // copy, losing the copied text: the exact failure this shared handle exists
+    // to prevent (adr/0031).
+    if matches!(&result, Err(e) if !matches!(e, arboard::Error::ContentNotAvailable)) {
         *guard = None;
     }
     result

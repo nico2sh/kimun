@@ -954,10 +954,14 @@ impl TextEditorComponent {
             self.paste_text(text, tx);
             return;
         }
+        // Replacing the selection happens HERE, atomically with the insert, and
+        // not earlier when the paste was merely started: the image encode and
+        // the attachment save can both fail (disk full, read-only vault, a sync
+        // conflict), and a cut done up front would leave the user's selected
+        // text destroyed with nothing in its place and only a save error to
+        // explain it.
+        self.take_selection_for_external_paste();
         if let Some(ta) = self.backend.as_textarea_mut() {
-            if ta.selection_range().is_some() {
-                ta.cut();
-            }
             ta.insert_str(text);
             self.selection = ta.selection_range();
             self.bump_content();
@@ -2059,9 +2063,9 @@ impl Component for TextEditorComponent {
                                 }
                                 VimHostAction::SearchNext => self.vim_search_repeat(false),
                                 VimHostAction::SearchPrev => self.vim_search_repeat(true),
-                                // The engine has already done the editing and
-                                // the mode transition; all that is left is the
-                                // I/O and reporting it (adr/0031).
+                                // Copy and Cut: the engine already did the
+                                // editing and the mode transition; all that is
+                                // left is the I/O and reporting it (adr/0031).
                                 VimHostAction::ClipboardCopy(text) => {
                                     self.selection = None;
                                     crate::components::yank(text, "copied", tx);
@@ -2071,8 +2075,16 @@ impl Component for TextEditorComponent {
                                     crate::components::yank(text, "cut", tx);
                                     self.bump_content();
                                 }
+                                // Paste is different: the engine deliberately
+                                // left the range SELECTED rather than cutting
+                                // it, so the replacement is atomic. Keep the
+                                // selection live — `paste_text` consumes it, and
+                                // a failed/empty read must leave it untouched.
                                 VimHostAction::ClipboardPaste => {
-                                    self.selection = None;
+                                    self.selection = self
+                                        .backend
+                                        .as_textarea()
+                                        .and_then(|ta| ta.selection_range());
                                     self.paste_from_clipboard(tx);
                                 }
                             }
