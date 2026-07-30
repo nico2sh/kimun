@@ -27,11 +27,11 @@ _Avoid_: screen (collides with the app's top-level screen concept), page.
 ### Editor backend
 
 **Editor backend**:
-Which engine drives the TUI text editor, chosen in config (`editor_backend`): **textarea** (the built-in ratatui-textarea), **nvim** (an external neovim process), or **vim** (built-in vim emulation — a textarea buffer plus a modal state machine, no external process). One config axis, three values.
-_Avoid_: editor engine, editor mode (collides with **editing mode**).
+Which engine drives the TUI text editor, chosen in config (`editor_backend`): **plain** (the built-in editing engine, keys applied directly), **vim** (built-in vim emulation — the same engine plus a modal state machine, no external process), or **nvim** (an external neovim process, which brings its own engine). One config axis, three values; the first two share everything below the input interpreter.
+_Avoid_: editor engine, editor mode (collides with **editing mode**), textarea (the superseded name for **plain**, from the library that used to back it).
 
 **Edit buffer**:
-The open note's text and its edit history as one module, behind which every mutation on the **textarea** and **vim** backends passes. Because it observes each edit from both sides, the facts that follow from one — did the content change, was the damage local, which history entries belong together — are *derived* there rather than predicted by each caller. It also restates the underlying widget's contract where that contract surprises: a search never extends a selection, a position the widget cannot address is refused rather than approximated, and a grouped undo is all-or-nothing (adr/0038). The **nvim** backend has none: neovim owns its own buffer and history.
+The open note's text, its cursor, its selection and its edit history as one thing, behind which every mutation on the **plain** and **vim** backends passes. Because it observes each edit from both sides, the facts that follow from one — did the content change, what range was damaged, which edits belong to one **undo group** — are *derived* there rather than predicted by each caller. It knows nothing about markdown, about the terminal, or about how it will be drawn: it is text and the operations on it. The **nvim** backend has none — neovim owns its own buffer and history.
 _Avoid_: buffer (collides with ratatui's render buffer), document, model.
 
 **Editing mode**:
@@ -72,6 +72,10 @@ _Avoid_: stub parse, fake parse, temp buffer
 ### Editor rendering
 
 The editor is WYSIWYG-ish: it shows styled markdown, not raw source, except on the line currently being edited.
+
+**Layout**:
+The visual lines an **edit buffer** wraps into at a given width, together with the viewport over them and the mapping between a logical position, a visual line, and a screen cell. Distinct from the buffer because their lifetimes differ: the buffer survives a resize, a layout does not. Markdown reaches it only as per-row hints — which characters are hidden and how much left inset the row carries — so it wraps the text the reader will actually see without knowing what a **sigil** is.
+_Avoid_: wrap (names one step of it), view (collides with **drawer view**), screen map.
 
 **Sigil**:
 The markdown marker characters that signal a construct rather than being read as prose — `#` for headings, `>` for blockquotes, the list bullet/number, the backtick/tilde code fences. The styled view hides or mutes them so the prose reads cleanly.
@@ -329,8 +333,8 @@ A targeted edit that swaps matched text for new text, leaving the rest of the no
 _Avoid_: substitute (vim's word for the ex-command syntax kimün does not have), edit
 
 **Undo group**:
-The span of buffer history that one user action occupies, so undo restores what the user last *did* rather than the last thing the buffer *recorded*. Needed because a single **replace** is up to two history entries (a delete then an insert) and undoing half of one shows a note with a hole in it. Identified by the buffer states it runs between rather than by a count of entries or a position in history: undo replays until the buffer reaches the state the action started from, so nothing has to predict how many entries an operation pushed. Recorded by the **edit buffer**, which sees both sides of every edit. A bare undo takes a whole group; a *counted* vim undo (`3u`) stays entry-wise.
-_Avoid_: transaction (implies atomicity the buffer does not offer), undo batch, change set.
+What one press of undo restores — the span of editing that counts as one user action, rather than the last thing the buffer happened to record. Needed because a single **replace** is a delete and an insert, and undoing half of one shows a note with a hole in it. One group *is* one history entry: the **edit buffer** opens a group, every mutation inside it accumulates, and closing it records a single entry, so half a group can never be undone, evicted or replayed. Where a group ends is the backend's call, because only the backend knows what the user was doing — the **vim** backend closes one on leaving Insert, the **plain** backend on a word boundary or a pause in typing. Any non-typing action closes the open group too: a motion, a click, a paste, a find, an undo, and a save — so a group never spans a save, and one undo after saving lands on exactly what is on disk. A counted vim undo (`3u`) therefore takes three groups.
+_Avoid_: transaction (the mechanism, not the user-visible unit), undo batch, change set.
 
 **Backup**:
 A pre-change copy of a note, taken automatically before an automated edit overwrites or removes its content, retained for later recovery and reclaimed once it ages out. Kept in a hidden directory inside the vault, so it is excluded from the index but travels with the notes when the vault is copied.
