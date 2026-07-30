@@ -266,7 +266,6 @@ use crate::components::events::AppEvent;
 use crate::components::events::AppTx;
 use crate::components::events::InputEvent;
 use crate::components::events::redraw_callback;
-use crate::components::preview_highlight;
 use crate::components::text_editor::autocomplete_glue::apply_accept_to_textarea;
 use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::TextAction;
@@ -1897,96 +1896,6 @@ impl TextEditorComponent {
 /// (`color_search_match`, bold) and style task checkboxes — `[ ]` accent,
 /// `[x]` rows dimmed + struck (spec §5.1). Operates on the rendered buffer
 /// rows, so cost is bounded by the visible area regardless of note size.
-fn paint_viewport_extras(
-    buf: &mut ratatui::buffer::Buffer,
-    area: Rect,
-    needles: &[String],
-    theme: &Theme,
-) {
-    use ratatui::layout::Position;
-    let match_fg = theme.color_search_match.to_ratatui();
-    let checkbox_fg = theme.accent.to_ratatui();
-
-    for y in area.y..area.bottom() {
-        // Cheap pre-pass: with no needles, only task rows need the full
-        // string reconstruction — peek at the leading cells for a `- [`
-        // prefix and skip the row otherwise. Keeps the per-keystroke cost
-        // of an idle buffer near zero.
-        if needles.is_empty() {
-            let mut lead = String::new();
-            for x in area.x..area.right().min(area.x + 16) {
-                if let Some(cell) = buf.cell(Position::new(x, y)) {
-                    lead.push_str(cell.symbol());
-                }
-            }
-            if !lead.trim_start().starts_with("- [") {
-                continue;
-            }
-        }
-        // Reconstruct the row text with a byte→column map (multi-width
-        // symbols occupy one cell + skipped continuation cells).
-        let mut row_text = String::new();
-        let mut byte_to_col: Vec<(usize, u16)> = Vec::new();
-        for x in area.x..area.right() {
-            let Some(cell) = buf.cell(Position::new(x, y)) else {
-                continue;
-            };
-            let sym = cell.symbol();
-            if sym.is_empty() {
-                continue;
-            }
-            byte_to_col.push((row_text.len(), x));
-            row_text.push_str(sym);
-        }
-        if row_text.trim().is_empty() {
-            continue;
-        }
-
-        let mut restyle =
-            |from_byte: usize, to_byte: usize, f: &mut dyn FnMut(&mut ratatui::buffer::Cell)| {
-                for (b, x) in &byte_to_col {
-                    if *b >= from_byte
-                        && *b < to_byte
-                        && let Some(cell) = buf.cell_mut(Position::new(*x, y))
-                    {
-                        f(cell);
-                    }
-                }
-            };
-
-        // Task checkboxes: optional indent, `- [ ] ` / `- [x] `.
-        let trimmed_start = row_text.len() - row_text.trim_start().len();
-        let after_indent = &row_text[trimmed_start..];
-        let is_done = after_indent.starts_with("- [x] ") || after_indent.starts_with("- [X] ");
-        let is_open = after_indent.starts_with("- [ ] ");
-        if is_done || is_open {
-            let box_start = trimmed_start + 2;
-            let box_end = box_start + 3;
-            restyle(box_start, box_end, &mut |cell| {
-                cell.set_fg(checkbox_fg);
-            });
-            if is_done {
-                restyle(box_end, row_text.len(), &mut |cell| {
-                    let style = cell
-                        .style()
-                        .add_modifier(Modifier::DIM | Modifier::CROSSED_OUT);
-                    cell.set_style(style);
-                });
-            }
-        }
-
-        // Needle emphasis. Byte-safe via preview_highlight::match_ranges, whose
-        // offsets are real char boundaries of `row_text` (so non-ASCII case
-        // folds are highlighted too, not dropped — same matcher as the preview
-        // panes).
-        for (start, end) in preview_highlight::match_ranges(&row_text, needles) {
-            restyle(start, end, &mut |cell| {
-                let style = cell.style().fg(match_fg).add_modifier(Modifier::BOLD);
-                cell.set_style(style);
-            });
-        }
-    }
-}
 
 impl Component for TextEditorComponent {
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
@@ -2291,7 +2200,7 @@ impl Component for TextEditorComponent {
             Some(p) => (Some(p.lines), p.spans),
         };
         match &view_lines {
-            None => self.view.update(&snap, editor_rect, selection),
+            None => self.view.update(&snap, editor_rect),
             Some(lines) => {
                 // The parse cache keys on `content_revision`, so the preview
                 // carries an identity of its own — derived from the real
@@ -2299,18 +2208,55 @@ impl Component for TextEditorComponent {
                 // key: the cache still works instead of thrashing per frame.
                 let rev = preview_revision(snap.content_revision, lines);
                 let view_snap = EditorSnapshot::borrowed(lines, snap.cursor, rev);
-                self.view.update(&view_snap, editor_rect, selection);
+                self.view.update(&view_snap, editor_rect);
             }
         }
-        self.view.set_preview_spans(preview_spans);
-        // Find-bar matches, in logical coordinates. Skipped while previewing:
-        // those columns already carry the preview colour, which is the more
-        // important fact about them.
-        let match_spans = match (&self.search, &view_lines) {
-            (Some(_), None) => overlay.matches,
-            _ => Vec::new(),
-        };
-        self.view.set_match_spans(match_spans);
+        // Needles reach the view as **overlays** now; the cell-space post-pass
+        // that used to paint them is gone, and with it the coordinate split
+        // that let a find pattern match text it could never highlight.
+        if self.revs.needles_stale() {
+            self.search_needles.clear();
+            self.revs.disarm_needles();
+        }
+        self.view.set_needles(self.search_needles.clone());
+
+        // Assemble this frame's **overlays**. The view appends the two kinds it
+        // derives from content (tasks, needles) for the visible rows.
+        let mut overlays: Vec<view::Overlay> = Vec::new();
+        if let Some(((sr, sc), (er, ec))) = selection {
+            // A multi-row selection becomes one overlay per row; the middle
+            // rows run to their full width, which `restyle_over_range` clamps.
+            for row in sr..=er {
+                let start = if row == sr { sc } else { 0 };
+                let end = if row == er { ec } else { usize::MAX };
+                overlays.push(view::Overlay::new(
+                    row,
+                    start,
+                    end,
+                    view::OverlayKind::Selection,
+                ));
+            }
+        }
+        overlays.extend(preview_spans.iter().map(|p| {
+            view::Overlay::new(
+                p.row,
+                p.start,
+                p.end,
+                if p.is_current {
+                    view::OverlayKind::PreviewCurrent
+                } else {
+                    view::OverlayKind::Preview
+                },
+            )
+        }));
+        // Find-bar matches. Skipped while previewing: those columns already
+        // carry the preview colour, which is the more important fact.
+        if view_lines.is_none() {
+            overlays.extend(overlay.matches.iter().map(|&(row, start, end)| {
+                view::Overlay::new(row, start, end, view::OverlayKind::Match)
+            }));
+        }
+        self.view.set_overlays(overlays);
 
         // If `view.update` cap-tripped on a large buffer it
         // installed a placeholder + pending-flag instead of running
@@ -2363,14 +2309,6 @@ impl Component for TextEditorComponent {
             self.search_needles.clear();
             self.revs.disarm_needles();
         }
-        // Vault-search needles only. The find bar's own matches are painted
-        // during line rendering from LOGICAL coordinates instead (see
-        // `set_match_spans`): this post-pass works on text reconstructed from
-        // drawn cells, where markdown sigils are already concealed, so it can
-        // never paint a match the count and the stepping agree on when the row
-        // contains any concealed markdown.
-        let emphasis_needles = self.search_needles.clone();
-        paint_viewport_extras(f.buffer_mut(), editor_rect, &emphasis_needles, theme);
 
         // Empty-note tip (spec §5.2): dim ghost text in a fresh/empty buffer,
         // gone the instant the first character lands (the buffer stops being
@@ -2944,34 +2882,6 @@ mod tests {
 
     fn key(code: KeyCode, mods: KeyModifiers) -> ratatui::crossterm::event::KeyEvent {
         ratatui::crossterm::event::KeyEvent::new(code, mods)
-    }
-
-    /// Buffer post-pass: needles painted, task rows styled.
-    #[test]
-    fn paint_viewport_extras_emphasizes_needles_and_tasks() {
-        use ratatui::buffer::Buffer;
-        use ratatui::layout::Position;
-        let theme = crate::settings::themes::Theme::default();
-        let area = Rect::new(0, 0, 30, 3);
-        let mut buf = Buffer::empty(area);
-        buf.set_string(0, 0, "find the needle here", Style::default());
-        buf.set_string(0, 1, "- [x] done task", Style::default());
-        buf.set_string(0, 2, "- [ ] open task", Style::default());
-
-        paint_viewport_extras(&mut buf, area, &["needle".to_string()], &theme);
-
-        // "needle" starts at col 9 on row 0.
-        let cell = buf.cell(Position::new(9, 0)).unwrap();
-        assert_eq!(cell.fg, theme.color_search_match.to_ratatui());
-        assert!(cell.style().add_modifier.contains(Modifier::BOLD));
-        // Done-task text is dimmed + struck.
-        let cell = buf.cell(Position::new(8, 1)).unwrap();
-        assert!(cell.style().add_modifier.contains(Modifier::CROSSED_OUT));
-        // Open-task text is NOT struck; its checkbox is accent-colored.
-        let cell = buf.cell(Position::new(8, 2)).unwrap();
-        assert!(!cell.style().add_modifier.contains(Modifier::CROSSED_OUT));
-        let cb = buf.cell(Position::new(3, 2)).unwrap();
-        assert_eq!(cb.fg, theme.accent.to_ratatui());
     }
 
     /// Arrive-from-query needles survive until the first edit.
@@ -4479,6 +4389,63 @@ mod tests {
             "typing after `n` must not eat unhighlighted text, got {:?}",
             editor.get_text()
         );
+    }
+
+    /// End-to-end for the overlay move: task and needle decoration used to be
+    /// painted from drawn cells and is now mapped from logical columns. The
+    /// rendered result must be the same, which is the whole point — a list
+    /// bullet is rendered, so the two coordinate spaces do not coincide.
+    #[test]
+    fn overlays_paint_where_the_post_pass_used_to() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        use ratatui::layout::Position;
+        let mut editor = make_editor();
+        editor.set_text("find the needle here\n- [x] done task\n- [ ] open task".to_string());
+        editor.set_search_needles(vec!["needle".to_string()]);
+        let theme = Theme::default();
+        let mut term = Terminal::new(TestBackend::new(40, 6)).unwrap();
+        let area = Rect::new(0, 0, 40, 6);
+        term.draw(|f| editor.render(f, area, &theme, false))
+            .unwrap();
+        let buf = term.backend().buffer();
+
+        let row: String = (0..40)
+            .filter_map(|x| {
+                buf.cell(Position::new(x, 0))
+                    .map(|c| c.symbol().to_string())
+            })
+            .collect();
+        let at = row.find("needle").expect("needle is on screen");
+        let cell = buf.cell(Position::new(at as u16, 0)).unwrap();
+        assert_eq!(
+            cell.fg,
+            theme.color_search_match.to_ratatui(),
+            "the needle must still be emphasised"
+        );
+
+        // The done task's text is struck; the open one's is not.
+        let struck = |y: u16| {
+            (0..40).any(|x| {
+                buf.cell(Position::new(x, y)).is_some_and(|c| {
+                    c.style()
+                        .add_modifier
+                        .contains(ratatui::style::Modifier::CROSSED_OUT)
+                })
+            })
+        };
+        assert!(struck(1), "a done task strikes its text");
+        assert!(!struck(2), "an open task does not");
+
+        // And the checkbox itself carries the accent colour on both rows.
+        for y in [1u16, 2] {
+            assert!(
+                (0..40).any(|x| buf
+                    .cell(Position::new(x, y))
+                    .is_some_and(|c| c.fg == theme.accent.to_ratatui())),
+                "row {y} must have an accent-coloured checkbox"
+            );
+        }
     }
 
     #[test]
