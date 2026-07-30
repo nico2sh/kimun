@@ -35,14 +35,14 @@ impl EditorSection {
         use EditorBackendSetting::*;
         if forward {
             match b {
-                Textarea => Vim,
+                Plain => Vim,
                 Vim => Nvim,
-                Nvim => Textarea,
+                Nvim => Plain,
             }
         } else {
             match b {
-                Textarea => Nvim,
-                Vim => Textarea,
+                Plain => Nvim,
+                Vim => Plain,
                 Nvim => Vim,
             }
         }
@@ -50,7 +50,7 @@ impl EditorSection {
 
     fn backend_label(b: EditorBackendSetting) -> &'static str {
         match b {
-            EditorBackendSetting::Textarea => "Textarea",
+            EditorBackendSetting::Plain => "Plain",
             EditorBackendSetting::Vim => "Vim (built-in)",
             EditorBackendSetting::Nvim => "Nvim (external)",
         }
@@ -181,7 +181,7 @@ mod tests {
     }
 
     fn section() -> EditorSection {
-        EditorSection::new(10, EditorBackendSetting::Textarea)
+        EditorSection::new(10, EditorBackendSetting::Plain)
     }
 
     #[test]
@@ -203,7 +203,7 @@ mod tests {
     #[test]
     fn left_clamps_at_min() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut section = EditorSection::new(5, EditorBackendSetting::Textarea);
+        let mut section = EditorSection::new(5, EditorBackendSetting::Plain);
         section.handle_input(&key(KeyCode::Left), &tx);
         assert_eq!(section.autosave_interval_secs, MIN_AUTOSAVE_SECS);
     }
@@ -211,7 +211,7 @@ mod tests {
     #[test]
     fn right_clamps_at_max() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut section = EditorSection::new(298, EditorBackendSetting::Textarea);
+        let mut section = EditorSection::new(298, EditorBackendSetting::Plain);
         section.handle_input(&key(KeyCode::Right), &tx);
         assert_eq!(section.autosave_interval_secs, MAX_AUTOSAVE_SECS);
     }
@@ -251,7 +251,7 @@ mod tests {
         for expected in [
             EditorBackendSetting::Vim,
             EditorBackendSetting::Nvim,
-            EditorBackendSetting::Textarea,
+            EditorBackendSetting::Plain,
         ] {
             section.handle_input(&key(KeyCode::Right), &tx);
             assert_eq!(section.editor_backend, expected);
@@ -274,7 +274,7 @@ mod tests {
         // On the autosave row Enter is not consumed and changes nothing.
         let state = section.handle_input(&key(KeyCode::Enter), &tx);
         assert_eq!(state, EventState::NotConsumed);
-        assert_eq!(section.editor_backend, EditorBackendSetting::Textarea);
+        assert_eq!(section.editor_backend, EditorBackendSetting::Plain);
         // On the backend row it cycles.
         section.handle_input(&key(KeyCode::Down), &tx);
         section.handle_input(&key(KeyCode::Enter), &tx);

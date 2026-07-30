@@ -43,6 +43,8 @@ pub struct EditOutcome {
 }
 
 impl EditOutcome {
+    /// Nothing happened. Used by the superseded buffer, which is test-gated.
+    #[cfg(test)]
     pub(super) fn unchanged() -> Self {
         Self::default()
     }

@@ -58,8 +58,15 @@ pub enum SortOrderSetting {
 #[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EditorBackendSetting {
+    /// The built-in engine, keys applied directly.
+    ///
+    /// `alias` rather than a migration entry: `ConfigMigration::run` happens
+    /// *after* deserialisation, so a config still saying `textarea` would fail to
+    /// load before any migration could rewrite it. The alias upgrades on the next
+    /// save, when the setting is written back as `plain`.
     #[default]
-    Textarea,
+    #[serde(alias = "textarea")]
+    Plain,
     Nvim,
     Vim,
 }
@@ -396,7 +403,7 @@ impl Default for AppSettings {
             leader_timeout_ms: default_leader_timeout_ms(),
             leader: LeaderConfig::default(),
             use_nerd_fonts: false,
-            editor_backend: EditorBackendSetting::Textarea,
+            editor_backend: EditorBackendSetting::Plain,
             nvim_path: None,
             default_sort_field: default_sort_field(),
             default_sort_order: default_sort_order(),
@@ -1084,11 +1091,33 @@ mod backend_tests {
     use super::*;
 
     #[test]
-    fn default_backend_is_textarea() {
+    fn a_config_still_saying_textarea_loads() {
+        // The value was renamed; a config written by an older version must keep
+        // working. This has to be an alias rather than a migration entry, because
+        // migrations run after deserialisation — an unknown variant fails first.
+        #[derive(serde::Deserialize)]
+        struct Holder {
+            editor_backend: EditorBackendSetting,
+        }
+        let old: Holder = toml::from_str("editor_backend = \"textarea\"").expect("still loads");
+        assert_eq!(old.editor_backend, EditorBackendSetting::Plain);
+    }
+
+    #[test]
+    fn the_backend_is_written_back_as_plain() {
+        let written = toml::to_string(&AppSettings::default()).expect("serialises");
+        assert!(
+            written.contains("editor_backend = \"plain\""),
+            "a saved config should name the value as it is now: {written}"
+        );
+    }
+
+    #[test]
+    fn default_backend_is_plain() {
         let settings = AppSettings::default();
         assert!(matches!(
             settings.editor_backend,
-            EditorBackendSetting::Textarea
+            EditorBackendSetting::Plain
         ));
     }
 

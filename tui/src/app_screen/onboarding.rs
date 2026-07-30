@@ -91,8 +91,8 @@ enum OnbOverlay {
 // lines would break out of the marker column.
 const BACKENDS: [(EditorBackendSetting, &str, &str); 3] = [
     (
-        EditorBackendSetting::Textarea,
-        "textarea",
+        EditorBackendSetting::Plain,
+        "plain",
         "simple editing, no modes (the default)",
     ),
     (
