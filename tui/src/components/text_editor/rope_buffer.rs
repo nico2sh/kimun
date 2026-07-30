@@ -487,35 +487,6 @@ impl RopeBuffer {
         })
     }
 
-    /// Apply a key the explicit shortcut table did not claim.
-    ///
-    /// Only the text-entry keys: everything navigational or modified is mapped
-    /// before this is reached. Replaces the incumbent's `input_without_shortcuts`,
-    /// which also quietly bound Ctrl+U and Ctrl+R to undo and redo — the fourth
-    /// surprise in adr/0038, and the reason a key path into the engine is something
-    /// this states rather than inherits. Step 7 turns this into the **plain**
-    /// backend's full table; it is here so the swap has somewhere to land.
-    pub fn apply_plain_key(&mut self, key: ratatui::crossterm::event::KeyEvent) -> bool {
-        use ratatui::crossterm::event::{KeyCode, KeyModifiers};
-        if !key.modifiers.difference(KeyModifiers::SHIFT).is_empty() {
-            return false;
-        }
-        match key.code {
-            KeyCode::Char(c) => {
-                self.insert_char(c);
-                true
-            }
-            KeyCode::Backspace => self.delete_char(),
-            KeyCode::Delete => self.delete_next_char(),
-            KeyCode::Tab => self.insert_tab(),
-            KeyCode::Enter => {
-                self.insert_newline();
-                true
-            }
-            _ => false,
-        }
-    }
-
     // ── History ──────────────────────────────────────────────────────────────
 
     pub fn undo(&mut self) -> bool {
