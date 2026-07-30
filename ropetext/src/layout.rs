@@ -21,7 +21,7 @@ use std::ops::Range;
 
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::position::{Column, Position};
+use crate::position::{Column, Position, Revision};
 use crate::text::Text;
 use crate::width::Metrics;
 
@@ -71,9 +71,28 @@ pub struct Layout {
     row_starts: Vec<usize>,
     width: usize,
     metrics: Metrics,
+    /// Which text this describes.
+    ///
+    /// A [`VisualLine`] holds byte ranges into the text it was laid out from, and
+    /// reading one against a newer text slices out of bounds. Callers used to
+    /// guess at staleness by comparing row counts, which an edit within a single
+    /// row does not change — so shrinking a row and pressing an arrow before the
+    /// next frame panicked. The text already carries an identity; recording it is
+    /// what makes the question answerable rather than approximable.
+    revision: Revision,
 }
 
 impl Layout {
+    /// Whether this layout still describes `text`.
+    ///
+    /// The only safe precondition for anything that reads a [`VisualLine`]'s byte
+    /// range against a text — `cell_of`, `position_at_cell`, and any caller
+    /// slicing a row itself. A row count is not a substitute: an edit inside one
+    /// row leaves it unchanged while every byte range after the edit moves.
+    pub fn describes(&self, text: &Text) -> bool {
+        self.revision == text.revision()
+    }
+
     /// Lay `text` out at `width` cells.
     pub fn compute(text: &Text, width: usize, metrics: Metrics, hints: &[RowHints<'_>]) -> Self {
         let mut layout = Self {
@@ -81,6 +100,7 @@ impl Layout {
             row_starts: Vec::with_capacity(text.line_count()),
             width,
             metrics,
+            revision: text.revision(),
         };
         let mut scratch = Vec::new();
         for row in 0..text.line_count() {
@@ -110,6 +130,8 @@ impl Layout {
         rows: Range<usize>,
         line_delta: isize,
     ) {
+        // Whatever else this does, afterwards the layout describes `text`.
+        self.revision = text.revision();
         // `rows` is in the *new* text's numbering, because that is what a `Change`
         // reports. The layout is still in the old text's, so the region being
         // replaced has to be named twice: once to find what to throw away, once to
@@ -218,6 +240,13 @@ impl Layout {
     /// Takes the text and the hints because the layout stores where rows break,
     /// not what they contain, and a cell is a measurement of content.
     pub fn cell_of(&self, text: &Text, hints: &[RowHints<'_>], position: Position) -> Cell {
+        // Returns a cell rather than an option, so it cannot refuse a stale text
+        // the way `position_at_cell` does — the caller has to have checked. This
+        // is what says so, and what catches a caller that has not.
+        debug_assert!(
+            self.describes(text),
+            "cell_of read against a text this layout does not describe"
+        );
         let row = self.visual_row_of(position);
         let line = &self.lines[row];
         let hint = hint_for(hints, line.logical_row);
@@ -252,6 +281,12 @@ impl Layout {
         hints: &[RowHints<'_>],
         cell: Cell,
     ) -> Option<Position> {
+        // A visual line's byte range addresses the text this was laid out from.
+        // Read against a newer one it slices out of bounds, so a stale layout is
+        // refused here rather than trusted — see [`Self::describes`].
+        if !self.describes(text) {
+            return None;
+        }
         let line = self.lines.get(cell.row)?;
         let hint = hint_for(hints, line.logical_row);
         let source = text.line(line.logical_row)?;

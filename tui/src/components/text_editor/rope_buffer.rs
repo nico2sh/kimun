@@ -340,16 +340,20 @@ impl RopeBuffer {
         self.insert_str(" ".repeat(fill))
     }
 
-    /// Delete `chars` scalars forward, a line break counting as one.
-    pub fn delete_str(&mut self, chars: usize) -> bool {
+    /// Delete `clusters` grapheme clusters forward, a line break counting as one.
+    ///
+    /// Clusters and not scalars, because a delete may not leave half a character
+    /// behind: `forward_by` steps whole clusters, so a caller counting scalars
+    /// over a flag or a ZWJ emoji spends the difference on the text after it.
+    pub fn delete_str(&mut self, clusters: usize) -> bool {
         if self.take_selection() {
             return true;
         }
-        if chars == 0 {
+        if clusters == 0 {
             return false;
         }
         let from = self.inner.cursor();
-        let to = self.forward_by(from, chars);
+        let to = self.forward_by(from, clusters);
         self.delete_between(from, to, Yank::Keep)
     }
 
@@ -717,7 +721,13 @@ impl RopeBuffer {
         let cursor = self.inner.cursor();
         let rows = text.line_count();
 
+        // `0..=rows` visits the cursor's row twice: once at the start, and once
+        // more at the end. That last visit IS the wrap, so the hits the first
+        // visit stepped over — the ones behind the cursor — are exactly what it
+        // is for. Filtering them again there is what made search unable to come
+        // back around to them.
         for step in 0..=rows {
+            let wrapped = step == rows;
             let row = if backward {
                 (cursor.row() + rows - (step % rows.max(1))) % rows
             } else {
@@ -740,8 +750,15 @@ impl RopeBuffer {
                 } else {
                     column > cursor.column().get()
                 };
-                if !same_row || beyond {
-                    return text.position(row, Column::new(column));
+                if wrapped || !same_row || beyond {
+                    // A match can start inside a grapheme cluster — a regex like
+                    // `.` or a search for a scalar that also appears inside a ZWJ
+                    // sequence. That start is not addressable, so skip the
+                    // candidate; abandoning the whole scan there would report "no
+                    // match" while the bar's own count says otherwise.
+                    if let Some(at) = text.position(row, Column::new(column)) {
+                        return Some(at);
+                    }
                 }
             }
         }
@@ -795,4 +812,89 @@ impl RopeBuffer {
 
 fn rc(position: Position) -> (usize, usize) {
     (position.row(), position.column().get())
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::*;
+    use ropetext::Text;
+
+    fn buffer(text: &str, pattern: &str, cursor: (usize, usize)) -> RopeBuffer {
+        let mut buf = RopeBuffer::new(Text::from(text));
+        buf.set_search_pattern(pattern).expect("valid pattern");
+        buf.move_cursor(CursorMove::Jump(cursor.0, cursor.1));
+        buf
+    }
+
+    #[test]
+    fn a_forward_search_wraps_to_a_match_behind_the_cursor() {
+        // One row, one match, cursor past it. Before the wrap visit stopped
+        // re-filtering, this reported no match while the find bar counted one.
+        let mut buf = buffer("xx foo", "foo", (0, 5));
+        assert!(buf.search_forward(false), "the match is behind the cursor");
+        assert_eq!(buf.cursor(), (0, 3));
+    }
+
+    #[test]
+    fn a_backward_search_wraps_to_a_match_ahead_of_the_cursor() {
+        let mut buf = buffer("xx foo", "foo", (0, 1));
+        assert!(buf.search_back(false));
+        assert_eq!(buf.cursor(), (0, 3));
+    }
+
+    #[test]
+    fn wrapping_crosses_rows_back_to_the_cursors_own_row() {
+        let mut buf = buffer("aaa\nxx foo", "foo", (1, 5));
+        assert!(buf.search_forward(false));
+        assert_eq!(buf.cursor(), (1, 3));
+    }
+
+    #[test]
+    fn the_only_match_is_re_offered_rather_than_reported_missing() {
+        // vim's answer: "search hit BOTTOM, continuing at TOP" lands back on the
+        // same match. Reporting false would paint "no match" over a match that is
+        // highlighted on screen.
+        let mut buf = buffer("xx foo", "foo", (0, 3));
+        assert!(buf.search_forward(false), "the one match is still a match");
+        assert_eq!(buf.cursor(), (0, 3), "and the cursor has nowhere else to go");
+    }
+
+    #[test]
+    fn a_match_starting_inside_a_cluster_is_skipped_not_fatal() {
+        // "\u{1F469}\u{200D}\u{1F4BB}" is one cluster; the laptop scalar sits at
+        // char column 2, inside it. That start is unaddressable — but the real
+        // match on row 1 is, and abandoning the scan at the first unaddressable
+        // candidate is what made the bar say "no match" beside a count of two.
+        let mut buf = buffer("\u{1F469}\u{200D}\u{1F4BB}\nx\u{1F4BB}", "\u{1F4BB}", (0, 0));
+        assert!(buf.search_forward(false), "the row 1 match is reachable");
+        assert_eq!(buf.cursor(), (1, 1));
+    }
+}
+
+#[cfg(test)]
+mod cluster_tests {
+    use super::*;
+    use ropetext::Text;
+
+    #[test]
+    fn delete_str_spends_its_count_on_clusters() {
+        // "[[" plus a regional-indicator flag: 4 scalars, 3 clusters. Three is
+        // what removes exactly `[[` and the flag — a caller counting the four
+        // scalars would take the space after them too.
+        let mut buf = RopeBuffer::new(Text::from("[[\u{1F1EA}\u{1F1F8} rest"));
+        buf.move_cursor(CursorMove::Jump(0, 0));
+        buf.delete_str(3);
+        assert_eq!(buf.rows(), &[" rest"]);
+    }
+
+    #[test]
+    fn inserting_before_a_combining_mark_keeps_the_cursor_addressable() {
+        // A row starting with a lone combining acute — NFD text pasted from
+        // macOS. Typing 'a' in front of it makes "a\u{301}", one cluster, and
+        // the post-edit cursor byte lands inside it.
+        let mut buf = RopeBuffer::new(Text::from("\u{301}f"));
+        buf.move_cursor(CursorMove::Jump(0, 0));
+        buf.insert_char('a');
+        assert_eq!(buf.rows(), &["a\u{301}f"]);
+    }
 }

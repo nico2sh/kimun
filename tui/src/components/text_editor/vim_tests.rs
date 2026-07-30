@@ -2493,3 +2493,33 @@ fn esc_in_normal_clears_stray_selection() {
     assert_eq!(out, VimKeyOutcome::CursorOnly);
     assert_eq!(*e.mode(), EditorMode::Normal);
 }
+
+// ── Grapheme clusters vs Unicode scalars ────────────────────────────────
+
+/// Man-woman-girl: three scalars joined by two ZWJs, one cluster.
+const FAMILY: &str = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+
+#[test]
+fn counted_x_counts_clusters_not_scalars() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from(&*format!("{FAMILY}\nnext")));
+    e.handle_key(&key('3'), &mut t);
+    e.handle_key(&key('x'), &mut t);
+    assert_eq!(
+        t.rows(),
+        &["", "next"],
+        "one cluster is one `x`; the row has nothing else to give"
+    );
+}
+
+#[test]
+fn tilde_keeps_the_rest_of_the_cluster() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("e\u{301}f"));
+    e.handle_key(&key('~'), &mut t);
+    assert_eq!(
+        t.rows(),
+        &["E\u{301}f"],
+        "toggling case must not drop the combining acute"
+    );
+}
