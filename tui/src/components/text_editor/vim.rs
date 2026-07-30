@@ -787,7 +787,7 @@ impl VimEngine {
         // linewise delete below may swallow the *preceding* newline instead of
         // the trailing one, which would be wrong to hand to another application.
         let clipboard_text = if linewise {
-            let body: String = ta.lines()[sr..=er].join("\n");
+            let body: String = ta.rows(sr, er);
             format!("{body}\n")
         } else {
             String::new() // filled from the selection below
@@ -798,7 +798,7 @@ impl VimEngine {
         let select_content = |ta: &mut RopeBuffer| {
             ta.cancel_selection();
             if linewise {
-                let end_len = ta.lines().get(er).map(|l| l.chars().count()).unwrap_or(ec);
+                let end_len = ta.row(er).map(|l| l.chars().count()).unwrap_or(ec);
                 Self::select_range(ta, (sr, 0), (er, end_len), false);
             } else {
                 Self::select_range(ta, (sr, sc), (er, ec), true);
@@ -934,7 +934,7 @@ impl VimEngine {
                 // Record what this position held (None = appended past EOL)
                 // so Backspace can restore it.
                 let (row, col) = super::cursor_tuple(ta);
-                let orig = ta.lines().get(row).and_then(|l| l.chars().nth(col));
+                let orig = ta.row(row).and_then(|l| l.chars().nth(col));
                 self.replace_stack.push(orig);
                 Self::overwrite_char(ta, c);
                 VimKeyOutcome::TextMutated
@@ -951,7 +951,7 @@ impl VimEngine {
             return;
         }
         let (row, col) = super::cursor_tuple(ta);
-        let len = ta.lines().get(row).map(|l| l.chars().count()).unwrap_or(0);
+        let len = ta.row_len(row);
         if col < len {
             ta.delete_next_char();
         }
@@ -970,7 +970,7 @@ impl VimEngine {
         // recorded when Insert/Replace began to the current cursor.
         if let Some(cap) = self.insert_capture.take() {
             let end = super::cursor_tuple(ta);
-            let inserted = Self::text_between(ta.lines(), cap.start, end);
+            let inserted = Self::text_between(ta, cap.start, end);
             if !inserted.is_empty() || Self::records_when_empty(&cap.command) {
                 self.last_change = Some(Change {
                     command: cap.command,
@@ -1510,7 +1510,7 @@ impl VimEngine {
                 // Linewise register fill (vim: S puts the whole line in the
                 // unnamed register, linewise), computed before the cut.
                 let (row, _) = super::cursor_tuple(ta);
-                if let Some(text) = ta.lines().get(row).map(|l| format!("{l}\n")) {
+                if let Some(text) = ta.row(row).map(|l| format!("{l}\n")) {
                     self.registers.fill(text, RegisterKind::Linewise);
                 }
                 ta.move_cursor(CursorMove::Head);
@@ -1798,7 +1798,7 @@ impl VimEngine {
     ) {
         let (er, ec) = end;
         let end_col = if inclusive {
-            let len = ta.lines().get(er).map(|l| l.chars().count()).unwrap_or(ec);
+            let len = ta.row(er).map(|l| l.chars().count()).unwrap_or(ec);
             (ec + 1).min(len)
         } else {
             ec
@@ -1836,7 +1836,7 @@ impl VimEngine {
                 Motion::FileStart => ta.move_cursor(CursorMove::Top),
                 Motion::FileEnd => ta.move_cursor(CursorMove::Bottom),
                 Motion::GotoLine(n) => {
-                    let last = ta.lines().len().saturating_sub(1);
+                    let last = ta.row_count().saturating_sub(1);
                     let row = n.saturating_sub(1).min(last);
                     ta.jump_to(row, 0);
                 }
@@ -1850,7 +1850,7 @@ impl VimEngine {
 
     fn first_non_blank(ta: &mut RopeBuffer) {
         let (row, _) = super::cursor_tuple(ta);
-        if let Some(line) = ta.lines().get(row) {
+        if let Some(line) = ta.row(row) {
             let n = line.chars().take_while(|c| c.is_whitespace()).count();
             ta.jump_to(row, n);
         }
@@ -1859,7 +1859,7 @@ impl VimEngine {
     /// `g_` — last non-blank char of the line (no-op on a blank line, vim).
     fn last_non_blank(ta: &mut RopeBuffer) {
         let (row, _) = super::cursor_tuple(ta);
-        let idx = ta.lines().get(row).and_then(|line| {
+        let idx = ta.row(row).and_then(|line| {
             line.chars()
                 .enumerate()
                 .filter(|(_, c)| !c.is_whitespace())
@@ -1877,7 +1877,7 @@ impl VimEngine {
     /// otherwise left from col-1. `till`: stop one column short (t/T).
     fn find_char_count(ta: &mut RopeBuffer, ch: char, till: bool, forward: bool, count: usize) {
         let (row, col) = super::cursor_tuple(ta);
-        let Some(line) = ta.lines().get(row).cloned() else {
+        let Some(line) = ta.row(row) else {
             return;
         };
         let chars: Vec<char> = line.chars().collect();
@@ -2003,21 +2003,21 @@ impl VimEngine {
     /// Shared by `dd`/`cc` and by the OS-clipboard Ctrl-X, which used to select
     /// only the line *bodies* and so left a stray blank line behind every time.
     fn select_lines_for_delete(ta: &mut RopeBuffer, r0: usize, r1: usize) {
-        let last = ta.lines().len().saturating_sub(1);
+        let last = ta.row_count().saturating_sub(1);
         if r1 < last {
             ta.jump_to(r0, 0);
             ta.start_selection();
             ta.jump_to(r1 + 1, 0);
         } else if r0 > 0 {
-            let prev_end = ta.lines()[r0 - 1].chars().count();
+            let prev_end = ta.row_len(r0 - 1);
             ta.jump_to(r0 - 1, prev_end);
             ta.start_selection();
-            let end = ta.lines()[r1].chars().count();
+            let end = ta.row_len(r1);
             ta.jump_to(r1, end);
         } else {
             ta.jump_to(0, 0);
             ta.start_selection();
-            let end = ta.lines()[r1].chars().count();
+            let end = ta.row_len(r1);
             ta.jump_to(r1, end);
         }
     }
@@ -2030,11 +2030,11 @@ impl VimEngine {
         ta: &mut RopeBuffer,
     ) {
         let (r0, _) = super::cursor_tuple(ta);
-        let last = ta.lines().len().saturating_sub(1);
+        let last = ta.row_count().saturating_sub(1);
         let r1 = (r0 + count.saturating_sub(1)).min(last);
 
         // Register content: the line bodies plus a trailing newline (linewise).
-        let body: String = ta.lines()[r0..=r1].join("\n");
+        let body: String = ta.rows(r0, r1);
         let register_text = format!("{body}\n");
 
         match op {
@@ -2079,12 +2079,12 @@ impl VimEngine {
                 // guu / gUU / g~~ / guj…: transform whole lines in ONE
                 // cut+insert so undo reverts the command in one step, not
                 // per line. Case operators never touch the register (vim).
-                let transformed = ta.lines()[r0..=r1]
-                    .iter()
-                    .map(|l| Self::transform_case(l, op))
+                let transformed = (r0..=r1)
+                    .filter_map(|row| ta.row(row))
+                    .map(|l| Self::transform_case(&l, op))
                     .collect::<Vec<_>>()
                     .join("\n");
-                let end_len = ta.lines()[r1].chars().count();
+                let end_len = ta.row_len(r1);
                 // cut + insert is two history entries; one `edit()` scope makes
                 // them one **undo group**, whatever the count turns out to be.
                 ta.edit(|ta| {
@@ -2131,8 +2131,7 @@ impl VimEngine {
                     // Remove up to 4 leading spaces.
                     let (row, _) = super::cursor_tuple(ta);
                     let n = ta
-                        .lines()
-                        .get(row)
+                        .row(row)
                         .map(|l| l.chars().take(4).take_while(|c| *c == ' ').count())
                         .unwrap_or(0);
                     if i == 0 {
@@ -2237,45 +2236,27 @@ impl VimEngine {
         }
     }
 
-    /// Slice the buffer text between two cursor positions (row, col), inclusive
-    /// of `start` and exclusive of `end`. Works across lines: the result for a
-    /// two-line insert is `"line1_suffix\nline2_prefix"`. Returns `""` when
-    /// `end <= start`.
-    fn text_between(lines: &[String], start: (usize, usize), end: (usize, usize)) -> String {
-        if end <= start {
-            return String::new();
-        }
-        let (sr, sc) = start;
-        let (er, ec) = end;
-        if sr == er {
-            return lines
-                .get(sr)
-                .map(|l| l.chars().skip(sc).take(ec.saturating_sub(sc)).collect())
-                .unwrap_or_default();
-        }
-        let mut out = String::new();
-        if let Some(l) = lines.get(sr) {
-            out.extend(l.chars().skip(sc));
-        }
-        out.push('\n');
-        for r in (sr + 1)..er {
-            if let Some(l) = lines.get(r) {
-                out.push_str(l);
-            }
-            out.push('\n');
-        }
-        if let Some(l) = lines.get(er) {
-            out.extend(l.chars().take(ec));
-        }
-        out
-    }
-
     fn enter_insert_capture(&mut self, command: Command, ta: &RopeBuffer) {
         self.mode = EditorMode::Insert;
         self.insert_capture = Some(InsertCapture {
             command,
             start: super::cursor_tuple(ta),
         });
+    }
+
+    /// The text between two `(row, col)` positions, or nothing when they are the
+    /// wrong way round.
+    ///
+    /// Was a hand-walked row loop; the engine answers it directly, and a span is
+    /// checked against the text it came from rather than assumed to be in range.
+    fn text_between(ta: &RopeBuffer, start: (usize, usize), end: (usize, usize)) -> String {
+        if end <= start {
+            return String::new();
+        }
+        ta.span_between(start, end)
+            .and_then(|span| ta.text().slice(span))
+            .map(|text| text.into_owned())
+            .unwrap_or_default()
     }
 
     // ── Dot-repeat recording ─────────────────────────────────────────────────
@@ -2320,11 +2301,7 @@ impl VimEngine {
             RegisterKind::Charwise => {
                 if after {
                     let (row, col) = super::cursor_tuple(ta);
-                    let len = ta
-                        .lines()
-                        .get(row)
-                        .map(|l| l.chars().count())
-                        .unwrap_or(col);
+                    let len = ta.row(row).map(|l| l.chars().count()).unwrap_or(col);
                     ta.jump_to(row, (col + 1).min(len));
                 }
                 for _ in 0..count.max(1) {
@@ -2370,7 +2347,7 @@ impl VimEngine {
         let (row, col) = super::cursor_tuple(ta);
         // Borrow, don't clone: all reads of `line` finish before the first
         // mutation, so held-down x on a long line doesn't copy it each press.
-        let Some(line) = ta.lines().get(row) else {
+        let Some(line) = ta.row(row) else {
             return false;
         };
         let line_len = line.chars().count();
@@ -2410,19 +2387,22 @@ impl VimEngine {
     /// removed verbatim.
     fn join_line(ta: &mut RopeBuffer, spaced: bool) {
         let (row, _) = super::cursor_tuple(ta);
-        let lines = ta.lines();
-        if row + 1 >= lines.len() {
+        if row + 1 >= ta.row_count() {
             return;
         }
-        let cur_empty = lines[row].is_empty();
-        let cur_ends_ws = lines[row].chars().last().is_some_and(|c| c.is_whitespace());
+        let current = ta.row(row).unwrap_or_default();
+        let cur_empty = current.is_empty();
+        let cur_ends_ws = current.chars().last().is_some_and(|c| c.is_whitespace());
+        drop(current);
         ta.move_cursor(CursorMove::End);
         ta.delete_next_char(); // removes the newline
         if !spaced {
             return;
         }
         let (r, c) = super::cursor_tuple(ta);
-        let strip = ta.lines()[r]
+        let strip = ta
+            .row(r)
+            .unwrap_or_default()
             .chars()
             .skip(c)
             .take_while(|ch| ch.is_whitespace())
@@ -2430,7 +2410,7 @@ impl VimEngine {
         for _ in 0..strip {
             ta.delete_next_char();
         }
-        let rest_nonempty = ta.lines()[r].chars().count() > c;
+        let rest_nonempty = ta.row_len(r) > c;
         if !cur_empty && !cur_ends_ws && rest_nonempty {
             ta.insert_char(' ');
             ta.move_cursor(CursorMove::Back);
@@ -2441,8 +2421,7 @@ impl VimEngine {
     fn toggle_case_at_cursor(ta: &mut RopeBuffer) {
         let (row, col) = super::cursor_tuple(ta);
         let flipped = ta
-            .lines()
-            .get(row)
+            .row(row)
             .and_then(|line| line.chars().nth(col))
             .map(Self::flip_case);
         if let Some(flipped) = flipped {

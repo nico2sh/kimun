@@ -65,8 +65,9 @@ impl FindPattern {
     /// Total matches across every line. Cheap enough to run per keystroke:
     /// this is `find_iter` over strings the editor already holds, not the
     /// cell-by-cell row reconstruction that `paint_viewport_extras` avoids.
-    pub fn count_matches(&self, lines: &[String]) -> usize {
-        lines.iter().map(|l| self.re.find_iter(l).count()).sum()
+    pub fn count_matches<S: AsRef<str>>(&self, rows: impl Iterator<Item = S>) -> usize {
+        rows.map(|row| self.re.find_iter(row.as_ref()).count())
+            .sum()
     }
 
     /// Every match as a `(row, start_char, end_char)` span in **logical**
@@ -76,9 +77,13 @@ impl FindPattern {
     /// highlighting built from these cannot disagree with them about what
     /// matched — the way matching against rendered cell text does the moment a
     /// row contains concealed markdown.
-    pub fn match_spans(&self, lines: &[String]) -> Vec<(usize, usize, usize)> {
+    pub fn match_spans<S: AsRef<str>>(
+        &self,
+        rows: impl Iterator<Item = S>,
+    ) -> Vec<(usize, usize, usize)> {
         let mut out = Vec::new();
-        for (row, line) in lines.iter().enumerate() {
+        for (row, line) in rows.enumerate() {
+            let line = line.as_ref();
             for m in self.re.find_iter(line) {
                 let start = line[..m.start()].chars().count();
                 let end = start + line[m.range()].chars().count();
@@ -289,14 +294,14 @@ mod tests {
     fn lowercase_pattern_matches_any_case() {
         let p = FindPattern::compile("todo").unwrap();
         assert!(!p.case_sensitive());
-        assert_eq!(p.count_matches(&lines(&["todo Todo TODO"])), 3);
+        assert_eq!(p.count_matches(lines(&["todo Todo TODO"]).iter()), 3);
     }
 
     #[test]
     fn pattern_with_uppercase_is_exact() {
         let p = FindPattern::compile("Todo").unwrap();
         assert!(p.case_sensitive());
-        assert_eq!(p.count_matches(&lines(&["todo Todo TODO"])), 1);
+        assert_eq!(p.count_matches(lines(&["todo Todo TODO"]).iter()), 1);
     }
 
     #[test]
@@ -304,7 +309,7 @@ mod tests {
         // Lowercase query, so smartcase prepends `(?i)` — the user's `(?-i)`
         // comes later in the pattern and must win.
         let p = FindPattern::compile("(?-i)todo").unwrap();
-        assert_eq!(p.count_matches(&lines(&["todo Todo TODO"])), 1);
+        assert_eq!(p.count_matches(lines(&["todo Todo TODO"]).iter()), 1);
     }
 
     // ── capture gating (adr/0034) ──────────────────────────────────────────

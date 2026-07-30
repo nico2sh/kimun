@@ -164,7 +164,7 @@ impl BackendState {
     /// The whole buffer as one string, whichever backend holds it.
     pub fn text(&self) -> String {
         match self {
-            BackendState::Textarea(tb) => tb.ta.lines().join("\n"),
+            BackendState::Textarea(tb) => tb.ta.text().to_string(),
             BackendState::Nvim(nvim) => nvim.snapshot().lines.join("\n"),
         }
     }
