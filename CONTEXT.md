@@ -89,7 +89,7 @@ The background rectangle the editor paints behind a code block (fenced or indent
 ### Find in note
 
 **Find bar**:
-The editor's bottom strip for searching and replacing inside the open buffer — one row while finding, two once a **replace field** is revealed. Buffer-local and pattern-based — unrelated to the vault-wide surfaces under **TUI search surfaces**, which are **SearchList**s over query results. While open it intercepts every key. Textarea backend only; the nvim backend has its own search.
+The editor's bottom strip for searching and replacing inside the open buffer — one row while finding, two once a **replace field** is revealed. Buffer-local and pattern-based — unrelated to the vault-wide surfaces under **TUI search surfaces**, which are **SearchList**s over query results. While open it holds the **editor claim**, so it intercepts every event. A module in its own right: it reaches outside itself only for the **edit buffer**, which it takes as a parameter. Textarea backend only; the nvim backend has its own search.
 _Avoid_: search bar (the term is used for vault-search inputs elsewhere), find box, quick find.
 
 **Find pattern**:
@@ -97,7 +97,7 @@ The regular expression the **find bar** matches against the buffer, one line at 
 _Avoid_: needle (that is the vault-search highlight term), query (collides with the vault query language), search term.
 
 **Current match**:
-The single occurrence of the **find pattern** the cursor sits on, painted as the editor selection. The unit that stepping moves between and that an interactive **replace** rewrites; it exists only while the **find bar** has found something.
+The single occurrence of the **find pattern** the cursor sits on, owned by the **find bar** and painted as the editor selection while a bar is open. Not itself a selection — it cannot be extended, copied, or typed over, and treating it as one is why a mouse drag could once hand the bar a multi-row range it had no way to represent. The unit that stepping moves between and that an interactive **replace** rewrites; it exists only while the **find bar** has found something.
 _Avoid_: active match, selected match, hit.
 
 **Replace field**:

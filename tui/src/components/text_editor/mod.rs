@@ -1,6 +1,7 @@
 pub mod autocomplete_glue;
 pub mod backend;
 pub mod edit_buffer;
+pub mod find_bar;
 pub mod find_replace;
 pub mod markdown;
 pub mod nvim_decode;
@@ -20,8 +21,6 @@ use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
 use ratatui_textarea::{CursorMove, DataCursor, TextArea};
 use std::num::NonZeroU64;
 
@@ -63,19 +62,6 @@ fn snapshot_from_backend(
             EditorSnapshot::owned(lines, cursor, rev)
         }
     }
-}
-
-/// Narrow a `(row, start, end)` triple to the `u16`s `CursorMove::Jump` takes,
-/// or `None` when any of them would not survive the cast.
-///
-/// `Jump` clamps rather than erroring, so an out-of-range value silently
-/// selects the wrong span instead of failing loudly.
-fn fits_jump(row: usize, start: usize, end: usize) -> Option<(u16, u16, u16)> {
-    let max = u16::MAX as usize;
-    if row > max || start > max || end > max {
-        return None;
-    }
-    Some((row as u16, start as u16, end as u16))
 }
 
 /// Identity for a **replace preview**'s snapshot: the real content revision
@@ -137,6 +123,8 @@ macro_rules! cursor_move {
 
 use self::backend::BackendState;
 use self::edit_buffer::EditBuffer;
+#[cfg(test)]
+use self::find_bar::{BarFocus, SearchStatus};
 use self::markdown::ParsedBuffer;
 use self::nvim_host::NvimHost;
 use self::snapshot::EditorSnapshot;
@@ -154,7 +142,7 @@ fn increment_ordered_marker(marker: &str) -> Option<String> {
 
 /// Convert a 0-based character column into a byte offset within `line`.
 /// Out-of-range columns return `line.len()`.
-fn char_col_to_byte(line: &str, char_col: usize) -> usize {
+pub(super) fn char_col_to_byte(line: &str, char_col: usize) -> usize {
     line.char_indices()
         .nth(char_col)
         .map(|(b, _)| b)
@@ -277,7 +265,6 @@ use crate::components::events::AppTx;
 use crate::components::events::InputEvent;
 use crate::components::events::redraw_callback;
 use crate::components::preview_highlight;
-use crate::components::single_line_input::{InputOutcome, SingleLineInput};
 use crate::components::text_editor::autocomplete_glue::apply_accept_to_textarea;
 use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::TextAction;
@@ -307,208 +294,6 @@ pub enum EditorClaim {
     None,
     FindBar,
     Autocomplete,
-}
-
-/// Which of the find bar's inputs owns the keyboard. Only meaningful once a
-/// **replace field** has been revealed — a find-only bar is always `Find`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BarFocus {
-    Find,
-    Replace,
-}
-
-struct SearchState {
-    input: SingleLineInput,
-    /// `Some` once the **replace field** is revealed. Its presence is what
-    /// puts the bar in replace mode (adr/0033).
-    replace: Option<SingleLineInput>,
-    focus: BarFocus,
-    status: SearchStatus,
-    /// The compiled **find pattern**. `None` while the query is empty or does
-    /// not compile — the one place the regex lives, so the highlighter, the
-    /// counter and the replacer can never disagree about what matches.
-    pattern: Option<find_replace::FindPattern>,
-    /// Matches across the whole buffer, refreshed with the pattern. Shown
-    /// before a **replace all** so the keystroke is an informed one.
-    match_count: usize,
-    /// Set when a **replace all** with an empty replacement was requested but
-    /// not yet confirmed. An empty field is indistinguishable from "still
-    /// typing", so that one destructive case arms rather than commits.
-    armed_empty: bool,
-}
-
-impl SearchState {
-    fn new() -> Self {
-        Self {
-            input: SingleLineInput::new(),
-            replace: None,
-            focus: BarFocus::Find,
-            status: SearchStatus::Empty,
-            pattern: None,
-            match_count: 0,
-            armed_empty: false,
-        }
-    }
-
-    fn is_replacing(&self) -> bool {
-        self.replace.is_some()
-    }
-
-    /// The replacement text, or `""` when the field is revealed but empty
-    /// (which means deletion, not inaction).
-    fn replacement(&self) -> &str {
-        self.replace.as_ref().map(|r| r.value()).unwrap_or("")
-    }
-
-    /// The input the keyboard is currently driving.
-    fn focused_input_mut(&mut self) -> &mut SingleLineInput {
-        match self.focus {
-            BarFocus::Replace if self.replace.is_some() => {
-                self.replace.as_mut().expect("checked above")
-            }
-            _ => &mut self.input,
-        }
-    }
-}
-
-enum SearchStatus {
-    Empty,
-    Match,
-    NoMatch,
-    Invalid(String),
-}
-
-impl SearchStatus {
-    fn from_found(found: bool) -> Self {
-        if found { Self::Match } else { Self::NoMatch }
-    }
-}
-
-const FIND_PROMPT: &str = "Find: ";
-const REPLACE_PROMPT: &str = "Replace: ";
-const FIND_HINTS: &str = "  [Enter] next  [Shift+Enter] prev  [Tab] replace  [Esc] close";
-const REPLACE_HINTS: &str =
-    "  [Enter] replace  [Shift+Enter] skip  [Ctrl+A] all  [Tab] field  [Esc] close";
-const REPLACE_HINTS_ARMED: &str = "  delete every match? [Ctrl+A] confirm  [Esc] cancel";
-
-/// Render one prompt-plus-input row, returning the columns the prompt and
-/// value consumed so the caller can place a tail after them.
-fn render_bar_row(
-    f: &mut Frame,
-    rect: Rect,
-    prompt: &str,
-    input: &mut SingleLineInput,
-    theme: &Theme,
-    focused: bool,
-) -> u16 {
-    let base = theme.base_style();
-    let prompt_cols = unicode_width::UnicodeWidthStr::width(prompt) as u16;
-    f.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            prompt,
-            base.add_modifier(Modifier::BOLD),
-        )))
-        .style(base),
-        Rect {
-            width: prompt_cols.min(rect.width),
-            ..rect
-        },
-    );
-    input.render(f, rect, base, prompt_cols, focused);
-    // Tail sits after the full value (in display columns, accounting for
-    // wide/CJK chars), not after the caret — otherwise it would overlap the
-    // trailing characters when the user moves the cursor mid-string.
-    prompt_cols.saturating_add(input.display_width() as u16)
-}
-
-fn render_tail(f: &mut Frame, rect: Rect, consumed: u16, text: &str, style: Style) {
-    let tail_rect = Rect {
-        x: rect.x.saturating_add(consumed),
-        width: rect.width.saturating_sub(consumed),
-        ..rect
-    };
-    f.render_widget(Paragraph::new(text.to_string()).style(style), tail_rect);
-}
-
-/// Draw the find bar. `rect` is one row while finding, two once a **replace
-/// field** is revealed: row one is the pattern and what it matches, row two is
-/// the replacement and what will happen to it.
-fn render_search_bar(
-    f: &mut Frame,
-    rect: Rect,
-    state: &mut SearchState,
-    theme: &Theme,
-    focused: bool,
-) {
-    let muted = Style::default()
-        .fg(theme.gray.to_ratatui())
-        .bg(theme.bg.to_ratatui());
-    let err = Style::default()
-        .fg(theme.red.to_ratatui())
-        .bg(theme.bg.to_ratatui());
-
-    let replacing = state.is_replacing();
-    let find_focused = focused && state.focus == BarFocus::Find;
-    let find_row = Rect { height: 1, ..rect };
-
-    // Row 1 tail: what the pattern matches. Smartcase is never silent — the
-    // indicator says which way it resolved.
-    let case_note = match &state.pattern {
-        Some(p) if p.case_sensitive() => "  exact case",
-        Some(_) => "  any case",
-        None => "",
-    };
-    let tail: Option<(String, Style)> = match &state.status {
-        SearchStatus::Empty => None,
-        SearchStatus::Invalid(msg) => Some((format!("  invalid regex: {msg}"), err)),
-        SearchStatus::NoMatch => Some((format!("  no match{case_note}"), err)),
-        SearchStatus::Match => {
-            let n = state.match_count;
-            let plural = if n == 1 { "match" } else { "matches" };
-            let hints = if replacing { "" } else { FIND_HINTS };
-            Some((format!("  {n} {plural}{case_note}{hints}"), muted))
-        }
-    };
-
-    let consumed = render_bar_row(
-        f,
-        find_row,
-        FIND_PROMPT,
-        &mut state.input,
-        theme,
-        find_focused,
-    );
-    if let Some((text, style)) = tail {
-        render_tail(f, find_row, consumed, &text, style);
-    }
-
-    if !replacing || rect.height < 2 {
-        return;
-    }
-    let replace_row = Rect {
-        y: rect.y + 1,
-        height: 1,
-        ..rect
-    };
-    let armed = state.armed_empty;
-    let replace_focused = focused && state.focus == BarFocus::Replace;
-    let consumed = {
-        let input = state.replace.as_mut().expect("replacing");
-        render_bar_row(
-            f,
-            replace_row,
-            REPLACE_PROMPT,
-            input,
-            theme,
-            replace_focused,
-        )
-    };
-    let (hints, style) = if armed {
-        (REPLACE_HINTS_ARMED, err)
-    } else {
-        (REPLACE_HINTS, muted)
-    };
-    render_tail(f, replace_row, consumed, hints, style);
 }
 
 /// Snapshot used to satisfy `AutocompleteHost`. Wraps an
@@ -601,7 +386,7 @@ pub struct TextEditorComponent {
     /// frame sync). See [`nvim_host`].
     nvim_host: NvimHost,
     /// Active Ctrl+F find bar; `None` when not searching.
-    search: Option<SearchState>,
+    search: Option<find_bar::FindBar>,
     /// Wikilink/hashtag autocomplete. Only populated for the textarea
     /// backend after `set_vault` is called; remains `None` for the Nvim
     /// backend (nvim users have their own completion ecosystem).
@@ -893,7 +678,8 @@ impl TextEditorComponent {
         // surviving a note swap means one Ctrl+A deletes every match in a note
         // the user never armed, skipping the confirmation the flag exists to
         // force. `self.selection` would likewise still describe the old text.
-        self.close_search();
+        self.search = None;
+        self.selection = None;
         // The whole buffer was replaced. The cursor resets to the top, so if
         // the line count happens to match and row 0 differs, the damage fast
         // path would report `0..1` and leave the rest of the note parsed as the
@@ -1146,17 +932,13 @@ impl TextEditorComponent {
         // current match describing text that no longer exists. Route it into
         // the focused field instead, which is what the user meant: pasting a
         // term to search for or to replace with.
-        if let Some(state) = self.search.as_mut() {
-            // The fields are single-line; a multi-line clipboard collapses to
-            // its first line rather than silently pasting nothing.
-            let line = text.lines().next().unwrap_or_default();
-            let focus = state.focus;
-            let input = state.focused_input_mut();
-            let at = input.cursor_byte();
-            input.replace_range_bytes(at..at, line, at + line.len());
-            if focus == BarFocus::Find {
-                self.refresh_search_pattern(true);
+        if self.search.is_some() {
+            if let (Some(bar), BackendState::Textarea(tb)) =
+                (self.search.as_mut(), &mut self.backend)
+            {
+                bar.paste(text, &mut tb.ta);
             }
+            self.apply_edit_outcome();
             return;
         }
         self.extend_visual_selection_inclusive();
@@ -1595,49 +1377,95 @@ impl TextEditorComponent {
         Some(EventState::Consumed)
     }
 
-    /// Open the find bar; if already open, advance to the next match. No-op
-    /// on the Nvim backend (which has its own `/` search). Public so
-    /// `EditorScreen` can route the configurable `FindInBuffer` shortcut here.
+    /// Open the find bar; if already open, advance to the next match. No-op on
+    /// the Nvim backend, which has its own `/` search. Policy lives here
+    /// because only the editor knows which backend is active.
     pub fn open_or_advance_search(&mut self) {
         if !self.backend.is_textarea() {
             return;
         }
         if self.search.is_some() {
-            self.search_advance(false);
+            self.dispatch_bar(|bar, buf| {
+                bar.advance(buf, false);
+                find_bar::KeyOutcome::default()
+            });
             return;
         }
-        // Yield key focus to the find bar — close the autocomplete popup
-        // so it stops intercepting Esc / Up / Down / Tab / Enter, which
-        // belong to the find bar while it is active.
+        // Yield key focus to the bar — close the autocomplete popup so it stops
+        // intercepting Esc / Up / Down / Tab / Enter, which belong to the bar.
         self.close_autocomplete();
-        self.search = Some(SearchState::new());
+        self.search = Some(find_bar::FindBar::new());
     }
 
-    /// Open the find bar with the **replace field** already revealed, or
-    /// reveal it on an already-open bar. Routed here from the
-    /// `ReplaceInBuffer` action; `Tab` inside the bar reaches the same state.
-    /// No-op on the Nvim backend, which has its own `:%s`.
+    /// Open the find bar with the **replace field** already revealed, or reveal
+    /// it on an already-open bar.
     pub fn open_replace(&mut self) {
         if !self.backend.is_textarea() {
             return;
         }
         if self.search.is_none() {
             self.close_autocomplete();
-            self.search = Some(SearchState::new());
+            self.search = Some(find_bar::FindBar::new());
         }
-        let Some(state) = self.search.as_mut() else {
+        if let Some(bar) = self.search.as_mut() {
+            bar.reveal_replace();
+        }
+    }
+
+    /// Repeat the last search (vim `n`/`N`) using the buffer's persisted
+    /// pattern, even when the bar is closed.
+    fn search_repeat(&mut self, backward: bool) {
+        let BackendState::Textarea(tb) = &mut self.backend else {
             return;
         };
-        if state.replace.is_none() {
-            state.replace = Some(SingleLineInput::new());
-        }
-        // Land in the find field when there is no pattern yet — you cannot
-        // usefully type a replacement for nothing.
-        state.focus = if state.input.is_empty() {
-            BarFocus::Find
+        // Paint the match `n`/`N` landed on. The bar is closed here, so the
+        // buffer answers — which is why `match_at_cursor` lives on it.
+        self.selection = if tb.ta.search_repeat(backward) {
+            tb.ta.match_at_cursor()
         } else {
-            BarFocus::Replace
+            None
         };
+    }
+
+    /// Run `f` against the open bar and its buffer, then apply what the buffer
+    /// measured. Returns `false` when no bar is open.
+    fn dispatch_bar(
+        &mut self,
+        f: impl FnOnce(&mut find_bar::FindBar, &mut EditBuffer) -> find_bar::KeyOutcome,
+    ) -> bool {
+        let BackendState::Textarea(tb) = &mut self.backend else {
+            return false;
+        };
+        let Some(bar) = self.search.as_mut() else {
+            return false;
+        };
+        let outcome = f(bar, &mut tb.ta);
+        if outcome.close {
+            self.search = None;
+            // Clear the anchor as well as the mirrored range. The bar's cursor
+            // jumps (`search_forward`) move the cursor without touching
+            // `selection_start`, so a selection that existed before the search
+            // is left live but unpainted — and the next keystroke silently
+            // deletes it.
+            tb.ta.cancel_selection();
+            self.selection = None;
+        }
+        self.apply_edit_outcome();
+        true
+    }
+
+    /// Feed a key to the open bar. The bar consumes every key it sees.
+    fn dispatch_to_find_bar(&mut self, key: &ratatui::crossterm::event::KeyEvent) -> bool {
+        self.dispatch_bar(|bar, buf| bar.handle_key(key, buf))
+    }
+
+    /// The **replace preview** for this frame, when a bar is open. Test-facing:
+    /// production reads it through `FindBar::overlay`.
+    #[cfg(test)]
+    fn replace_preview(&self) -> Option<find_replace::Preview> {
+        let bar = self.search.as_ref()?;
+        let buf = self.backend.as_textarea()?;
+        bar.preview(buf)
     }
 
     /// Close the autocomplete popup, if any. Cheap; safe on any backend
@@ -1676,224 +1504,6 @@ impl TextEditorComponent {
             c.set_redraw_callback(redraw_callback(tx.clone()));
             self.autocomplete_redraw_bound = true;
         }
-    }
-
-    /// Close the find bar, **keeping** the compiled pattern in the textarea so
-    /// vim's `n`/`N` keep repeating it. Wiping it here used to be the only
-    /// difference between closing with `Esc` and closing with `Enter`, and it
-    /// silently killed `n`/`N` — the pattern drives no rendering, so keeping
-    /// it costs nothing visually (adr/0033).
-    fn close_search(&mut self) {
-        self.search = None;
-        self.selection = None;
-    }
-
-    /// Recompile the **find pattern** under smartcase, refresh the match count,
-    /// and push it to the textarea so its stepping uses the same regex the
-    /// highlighter and the replacer do. When `jump` is true, also move to the
-    /// first match at or after the cursor (live preview).
-    fn refresh_search_pattern(&mut self, jump: bool) {
-        let Some(state) = self.search.as_mut() else {
-            return;
-        };
-        let Some(ta) = self.backend.as_textarea_mut() else {
-            return;
-        };
-        state.armed_empty = false;
-        if state.input.is_empty() {
-            let _ = ta.set_search_pattern("");
-            state.pattern = None;
-            state.match_count = 0;
-            state.status = SearchStatus::Empty;
-            self.selection = None;
-            return;
-        }
-        let compiled = match find_replace::FindPattern::compile(state.input.value()) {
-            Ok(p) => p,
-            Err(e) => {
-                let _ = ta.set_search_pattern("");
-                state.pattern = None;
-                state.match_count = 0;
-                state.status = SearchStatus::Invalid(e.to_string());
-                self.selection = None;
-                return;
-            }
-        };
-        // Hand the textarea the *effective* pattern (smartcase already baked
-        // in), not the raw query — otherwise its stepping and our highlighting
-        // would disagree about case, which is exactly the split adr/0033 set
-        // out to close.
-        let _ = ta.set_search_pattern(compiled.as_regex().as_str());
-        state.match_count = compiled.count_matches(ta.lines());
-        state.pattern = Some(compiled);
-        if state.match_count == 0 {
-            state.status = SearchStatus::NoMatch;
-            self.selection = None;
-            return;
-        }
-        if !jump {
-            state.status = SearchStatus::Match;
-            return;
-        }
-        let found = ta.search_forward(true);
-        state.status = SearchStatus::from_found(found);
-        self.highlight_current_match(found);
-    }
-
-    fn search_advance(&mut self, backward: bool) {
-        let Some(state) = self.search.as_mut() else {
-            return;
-        };
-        if state.input.is_empty() {
-            return;
-        }
-        let Some(ta) = self.backend.as_textarea_mut() else {
-            return;
-        };
-        let found = if backward {
-            ta.search_back(false)
-        } else {
-            ta.search_forward(false)
-        };
-        state.status = SearchStatus::from_found(found);
-        self.highlight_current_match(found);
-    }
-
-    /// Work out what an interactive replace would do, without touching the
-    /// buffer: the match's row and char-column span, the expanded replacement,
-    /// and the lines before and after.
-    ///
-    /// Returns `None` when the cursor is not sitting exactly on a match.
-    #[allow(clippy::type_complexity)]
-    fn plan_replace_current(
-        &self,
-    ) -> Option<(usize, usize, usize, String, Vec<String>, Vec<String>)> {
-        let state = self.search.as_ref()?;
-        let pattern = state.pattern.as_ref()?;
-        let replacement = state.replacement();
-        let ta = self.backend.as_textarea()?;
-        let DataCursor(row, start_col) = ta.cursor();
-        let line = ta.lines().get(row)?;
-        let start_byte = char_col_to_byte(line, start_col);
-        let caps = pattern.as_regex().captures_at(line, start_byte)?;
-        let m = caps.get(0)?;
-        // `captures_at` finds the next match at OR AFTER the offset; only a
-        // match starting exactly here is the current one.
-        if m.start() != start_byte {
-            return None;
-        }
-        let expanded = pattern.expand(&caps, replacement);
-        let end_col = start_col + line[m.range()].chars().count();
-        let before: Vec<String> = ta.lines().to_vec();
-        let mut after = before.clone();
-        after[row].replace_range(m.range(), &expanded);
-        Some((row, start_col, end_col, expanded, before, after))
-    }
-
-    /// Replace the **current match** and step to the next one — the `Enter`
-    /// action while a **replace field** is revealed.
-    fn replace_current(&mut self) {
-        // Derive the span from the pattern at the cursor rather than reading
-        // `self.selection`. That field is shared with the visual-mode and mouse
-        // selection, and `handle_mouse` has no find-bar guard, so a drag can
-        // leave a MULTI-ROW range in it while the bar is open — which this used
-        // to collapse to one row by discarding the end row, then hand
-        // `replace_range` an inverted byte range. A span derived from the match
-        // is single-row by construction.
-        let Some((row, start_col, end_col, expanded, before, after)) = self.plan_replace_current()
-        else {
-            // Nothing usable under the cursor — step first, so the next Enter
-            // has something to act on.
-            self.search_advance(false);
-            return;
-        };
-        // `CursorMove::Jump` takes u16 and clamps silently, so a position past
-        // 65535 would select the wrong range and splice text into the middle of
-        // a line. Refuse rather than corrupt.
-        let Some((row_u16, start_u16, end_u16)) = fits_jump(row, start_col, end_col) else {
-            return;
-        };
-        let Some(ta) = self.backend.as_textarea_mut() else {
-            return;
-        };
-        // One `edit()` scope: select the match and overwrite it as a single
-        // **undo group**, however many history entries that turns out to be.
-        // Nothing here predicts the count, and nothing reads `insert_str`'s
-        // bool — with an empty replacement it deletes and still returns false.
-        ta.edit(|ta| {
-            ta.move_cursor(CursorMove::Jump(row_u16, start_u16));
-            ta.start_selection();
-            ta.move_cursor(CursorMove::Jump(row_u16, end_u16));
-            ta.insert_str(&expanded);
-            ta.cancel_selection();
-        });
-        debug_assert_eq!(
-            ta.lines(),
-            after.as_slice(),
-            "replace_current wrote what it planned"
-        );
-        let _ = before;
-        self.apply_edit_outcome();
-        // Land the cursor just past the replacement so the step below cannot
-        // re-match inside text we just wrote.
-        self.refresh_match_count();
-        self.search_advance(false);
-    }
-
-    /// Rewrite every match in the buffer — the `Ctrl+A` action. Returns the
-    /// number replaced, or `None` when there was nothing to do.
-    fn replace_all(&mut self) -> Option<usize> {
-        let state = self.search.as_ref()?;
-        let pattern = state.pattern.as_ref()?;
-        let replacement = state.replacement().to_string();
-        let ta = self.backend.as_textarea_mut()?;
-
-        let before: Vec<String> = ta.lines().to_vec();
-        let (after, count) = find_replace::replace_all(pattern, &before, &replacement)?;
-
-        // Restore the reading position afterwards. The naive path leaves the
-        // cursor at the end of the inserted chunk — i.e. the bottom of the
-        // note — which turns a bulk edit into a navigation. The row is always
-        // still valid: the pattern cannot span a newline and the replacement
-        // is single-line, so a replace all never changes the line count.
-        let DataCursor(cur_row, cur_col) = ta.cursor();
-
-        // `select_all` reaches the end of the buffer via `Jump(u16::MAX,
-        // u16::MAX)`, which clamps — so unlike a computed `last_row as u16` it
-        // stays correct on a note with more than 65535 lines or a line longer
-        // than 65535 chars, where the cast would silently select the wrong
-        // range and splice the rewrite into the middle of the text.
-        let joined = after.join("\n");
-        // One **undo group** spanning the whole rewrite. The buffer also
-        // derives `bulk` from it — a replace all rewrites rows the cursor does
-        // not point at, which is exactly what `compute_damage_range`'s cursor
-        // fast path assumes cannot happen (adr/0035).
-        ta.edit(|ta| {
-            ta.select_all();
-            ta.insert_str(&joined);
-            ta.cancel_selection();
-        });
-        if ta.lines() != after.as_slice() {
-            return None;
-        }
-        let _ = &before;
-        self.apply_edit_outcome();
-        let ta = self.backend.as_textarea_mut()?;
-
-        // Restore the reading position. The row stays valid because a replace
-        // all never changes the line count (the pattern cannot span a newline
-        // and the replace field is single-line), and `Jump` clamps, so the
-        // cast cannot land the cursor outside the buffer.
-        let row = cur_row.min(after.len().saturating_sub(1));
-        let col = cur_col.min(after[row].chars().count());
-        ta.move_cursor(CursorMove::Jump(
-            row.min(u16::MAX as usize) as u16,
-            col.min(u16::MAX as usize) as u16,
-        ));
-
-        self.selection = None;
-        self.refresh_match_count();
-        Some(count)
     }
 
     /// Drain the **edit buffer**'s measured outcome and apply it.
@@ -1942,211 +1552,6 @@ impl TextEditorComponent {
                 .and_then(|ta| ta.selection_range());
         }
         moved
-    }
-
-    /// Recount matches against the current buffer. Cheap — `find_iter` over
-    /// lines the editor already holds.
-    fn refresh_match_count(&mut self) {
-        let Some(state) = self.search.as_mut() else {
-            return;
-        };
-        let Some(pattern) = state.pattern.as_ref() else {
-            return;
-        };
-        let Some(ta) = self.backend.as_textarea() else {
-            return;
-        };
-        state.match_count = pattern.count_matches(ta.lines());
-    }
-
-    /// Build the **replace preview** for this frame: the note as it would read
-    /// with every match replaced, plus where each replacement landed.
-    ///
-    /// Returns `None` whenever there is nothing to preview, in which case the
-    /// caller renders the real buffer.
-    fn replace_preview(&self) -> Option<find_replace::Preview> {
-        let state = self.search.as_ref()?;
-        if !state.is_replacing() {
-            return None;
-        }
-        let pattern = state.pattern.as_ref()?;
-        let ta = self.backend.as_textarea()?;
-        let current = self.selection.map(|((row, col), _)| (row, col));
-        let preview =
-            find_replace::build_preview(pattern, ta.lines(), state.replacement(), current);
-        if preview.spans.is_empty() {
-            return None;
-        }
-        Some(preview)
-    }
-
-    /// After a search step, paint the match at the textarea's cursor as the
-    /// editor selection so the user can see where the match is — our custom
-    /// `MarkdownEditorView` does not render the textarea library's built-in
-    /// search highlights.
-    fn highlight_current_match(&mut self, found: bool) {
-        self.selection = if found {
-            self.compute_match_selection()
-        } else {
-            None
-        };
-    }
-
-    /// Locate the regex match starting at the textarea cursor and return its
-    /// span as a `(row, char_col)` pair. Returns `None` when no pattern is set,
-    /// the cursor is out of range, or the cursor is not on a match — guards
-    /// against stale cursor/pattern state if callers ever invoke without a
-    /// fresh search step.
-    fn compute_match_selection(&self) -> Option<((usize, usize), (usize, usize))> {
-        let ta = self.backend.as_textarea()?;
-        let re = ta.search_pattern()?;
-        let DataCursor(row, col_chars) = ta.cursor();
-        let line = ta.lines().get(row)?;
-        let byte_off = char_col_to_byte(line, col_chars);
-        let m = re.find_at(line, byte_off)?;
-        if m.start() != byte_off {
-            return None;
-        }
-        let match_chars = line[m.range()].chars().count();
-        Some(((row, col_chars), (row, col_chars + match_chars)))
-    }
-
-    /// Returns `true` when the key was consumed by the find bar.
-    ///
-    /// The key map is the same on both backends — the vim emulation's old
-    /// "Enter confirms and closes" special case is gone, because two Enters
-    /// over one widget is what made the bar ambiguous (adr/0033).
-    fn handle_search_key(&mut self, key: &ratatui::crossterm::event::KeyEvent) -> bool {
-        let Some(state) = self.search.as_mut() else {
-            return false;
-        };
-        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-
-        // `Tab` reveals the replace field, then cycles focus between the two.
-        // `SingleLineInput` never consumes it, so it is ours to take.
-        if key.code == KeyCode::Tab {
-            if state.replace.is_none() {
-                self.open_replace();
-            } else if let Some(state) = self.search.as_mut() {
-                state.focus = match state.focus {
-                    BarFocus::Find => BarFocus::Replace,
-                    BarFocus::Replace => BarFocus::Find,
-                };
-            }
-            return true;
-        }
-
-        // Replace all. `SingleLineInput` deliberately bubbles Ctrl-modified
-        // chars rather than typing them, so this is the documented seam. The
-        // chord is shared with the editor's select-all and resolved by focus,
-        // as adr/0032 does for Ctrl+Y.
-        if ctrl && matches!(key.code, KeyCode::Char('a') | KeyCode::Char('A')) {
-            self.replace_all_key();
-            return true;
-        }
-
-        // Undo / redo of the bar's OWN edits. `handle_search_key` returns
-        // `true` for every key, so without this the bar swallows Ctrl+Z and
-        // strands the user on a note it just rewrote — undo would only work
-        // after they thought to press Esc first. Harmless before this feature
-        // existed, because the bar could not then mutate the buffer.
-        if ctrl {
-            match key.code {
-                KeyCode::Char('z') if !shift => {
-                    if self.undo_grouped() {
-                        self.apply_edit_outcome();
-                        self.refresh_match_count();
-                    }
-                    return true;
-                }
-                KeyCode::Char('y') | KeyCode::Char('Z') => {
-                    if self.redo_grouped() {
-                        self.apply_edit_outcome();
-                        self.refresh_match_count();
-                    }
-                    return true;
-                }
-                _ => {}
-            }
-        }
-
-        let replacing = state.is_replacing();
-        let outcome = state.focused_input_mut().handle_key(key);
-        match outcome {
-            InputOutcome::Cancel => {
-                // Esc disarms first, so a mis-aimed Ctrl+A never costs the bar.
-                if let Some(state) = self.search.as_mut()
-                    && state.armed_empty
-                {
-                    state.armed_empty = false;
-                } else {
-                    self.close_search();
-                }
-            }
-            InputOutcome::Submit => {
-                if replacing {
-                    if shift {
-                        // Skip: advance without writing.
-                        self.search_advance(false);
-                    } else {
-                        self.replace_current();
-                    }
-                } else {
-                    self.search_advance(shift);
-                }
-            }
-            InputOutcome::Changed => {
-                // Editing either field disarms a pending confirm and
-                // invalidates the preview, which rebuilds from state anyway.
-                if self
-                    .search
-                    .as_ref()
-                    .is_some_and(|s| s.focus == BarFocus::Find)
-                {
-                    self.refresh_search_pattern(true);
-                } else if let Some(state) = self.search.as_mut() {
-                    state.armed_empty = false;
-                }
-            }
-            InputOutcome::Consumed | InputOutcome::NotConsumed => {}
-        }
-        true
-    }
-
-    /// `Ctrl+A` inside the bar. Replace-all commits immediately — the match
-    /// count is on screen beforehand and undo is one keystroke — except with
-    /// an empty replacement, where the keystroke carries no evidence the user
-    /// finished typing, so the first press arms and the second commits.
-    fn replace_all_key(&mut self) {
-        let Some(state) = self.search.as_mut() else {
-            return;
-        };
-        if !state.is_replacing() || state.pattern.is_none() {
-            return;
-        }
-        if state.replacement().is_empty() && !state.armed_empty {
-            state.armed_empty = true;
-            return;
-        }
-        state.armed_empty = false;
-        self.replace_all();
-    }
-
-    /// Repeat the last search (vim `n`/`N`) using the textarea's persisted
-    /// pattern, even when the find bar is closed.
-    fn vim_search_repeat(&mut self, backward: bool) {
-        let found = {
-            let Some(ta) = self.backend.as_textarea_mut() else {
-                return;
-            };
-            if backward {
-                ta.search_back(false)
-            } else {
-                ta.search_forward(false)
-            }
-        };
-        self.highlight_current_match(found);
     }
 
     /// Handle a key event when using the Textarea backend.
@@ -2476,7 +1881,7 @@ impl TextEditorComponent {
                 ta.move_cursor(CursorMove::Jump(lrow, lcol));
             }
             _ => {
-                ta.edit(|ta| ta.input(*mouse));
+                ta.mouse_input(*mouse);
             }
         }
         self.selection = ta.selection_range();
@@ -2623,7 +2028,7 @@ impl Component for TextEditorComponent {
                 // vim engine, which would otherwise consume keys in Normal mode
                 // (the textarea backend also intercepts inside handle_textarea_key,
                 // but the vim Normal-mode path never reaches that).
-                if self.search.is_some() && self.handle_search_key(key) {
+                if self.dispatch_to_find_bar(key) {
                     return EventState::Consumed;
                 }
                 // Vim interpreter: Normal/Visual consume the key here; Insert
@@ -2688,8 +2093,8 @@ impl Component for TextEditorComponent {
                                     // n/N still navigate both directions.)
                                     self.open_or_advance_search();
                                 }
-                                VimHostAction::SearchNext => self.vim_search_repeat(false),
-                                VimHostAction::SearchPrev => self.vim_search_repeat(true),
+                                VimHostAction::SearchNext => self.search_repeat(false),
+                                VimHostAction::SearchPrev => self.search_repeat(true),
                                 // Copy and Cut: the engine already did the
                                 // editing and the mode transition; all that is
                                 // left is the I/O and reporting it (adr/0031).
@@ -2805,11 +2210,7 @@ impl Component for TextEditorComponent {
         // finding, two once a **replace field** is revealed (row one is the
         // pattern and what it matches, row two the replacement and what
         // happens to it).
-        let bar_rows: u16 = match &self.search {
-            Some(s) if s.is_replacing() => 2,
-            Some(_) => 1,
-            None => 0,
-        };
+        let bar_rows: u16 = self.search.as_ref().map_or(0, |bar| bar.rows());
         // Clamp rather than drop: with `rect.height == bar_rows` the old
         // `>` left the bar unrendered while it was still open and still
         // swallowing every key — an invisible modal. Better to show it and
@@ -2838,7 +2239,12 @@ impl Component for TextEditorComponent {
         // snapshot below is the single producer, and `revs` adopts its
         // value, so dirty tracking and the view always agree in a frame.
         let selection = match &self.backend {
-            BackendState::Textarea(_) => self.selection,
+            // While the bar is open the **current match** is what gets painted
+            // as the selection — the bar owns it rather than writing this field.
+            BackendState::Textarea(_) => match self.search.as_ref() {
+                Some(bar) => bar.current_match(),
+                None => self.selection,
+            },
             BackendState::Nvim(nvim) => {
                 self.nvim_host
                     .frame_sync(nvim, editor_rect.width, editor_rect.height)
@@ -2861,7 +2267,13 @@ impl Component for TextEditorComponent {
         // owns its lines outright. The buffer is never touched — only this
         // frame's view of it is substituted, which is what makes the preview
         // structurally incapable of committing (adr/0035).
-        let preview = self.replace_preview();
+        // One call gets everything the bar wants painted: preview lines and
+        // spans, match spans, and the current match (adr/0033 candidate seam).
+        let overlay = match (self.search.as_ref(), self.backend.as_textarea()) {
+            (Some(bar), Some(buf)) => bar.overlay(buf),
+            _ => find_bar::BarOverlay::default(),
+        };
+        let preview = overlay.preview;
         let snap = snapshot_from_backend(&self.backend, self.revs.current());
         // One revision domain: adopt the snapshot's value (the nvim arm
         // derived it from the backend's `content_gen` under one lock; the
@@ -2893,12 +2305,7 @@ impl Component for TextEditorComponent {
         // those columns already carry the preview colour, which is the more
         // important fact about them.
         let match_spans = match (&self.search, &view_lines) {
-            (Some(s), None) if !s.is_replacing() => s
-                .pattern
-                .as_ref()
-                .zip(self.backend.as_textarea())
-                .map(|(p, ta)| p.match_spans(ta.lines()))
-                .unwrap_or_default(),
+            (Some(_), None) => overlay.matches,
             _ => Vec::new(),
         };
         self.view.set_match_spans(match_spans);
@@ -2989,7 +2396,7 @@ impl Component for TextEditorComponent {
             );
         }
         if let (Some(state), Some(bar_rect)) = (self.search.as_mut(), search_rect) {
-            render_search_bar(f, bar_rect, state, theme, bar_focused);
+            state.render(f, bar_rect, theme, bar_focused);
         }
 
         // Autocomplete popup sits on top of the editor. Drain async
@@ -3681,8 +3088,12 @@ mod tests {
                 &tx,
             );
         }
-        // "bar" lives at cols 4..7 on row 0.
-        assert_eq!(editor.selection, Some(((0, 4), (0, 7))));
+        // "bar" lives at cols 4..7 on row 0. The **current match** belongs to
+        // the bar now, not to the editor's selection.
+        assert_eq!(
+            editor.search.as_ref().unwrap().current_match(),
+            Some(((0, 4), (0, 7)))
+        );
     }
 
     #[test]
@@ -3716,8 +3127,15 @@ mod tests {
             &InputEvent::Key(key(KeyCode::Char('r'), KeyModifiers::NONE)),
             &tx,
         );
-        assert!(editor.selection.is_some());
+        assert!(
+            editor
+                .search
+                .as_ref()
+                .is_some_and(|b| b.current_match().is_some())
+        );
         editor.handle_input(&InputEvent::Key(key(KeyCode::Esc, KeyModifiers::NONE)), &tx);
+        // Esc drops the bar, and the current match goes with it.
+        assert!(editor.search.is_none());
         assert!(editor.selection.is_none());
     }
 
@@ -4879,6 +4297,149 @@ mod tests {
             &tx,
         );
         assert_eq!(editor.get_text(), "hello world");
+    }
+
+    /// Closing the bar must clear the editor's selection, as `close_search`
+    /// did before the bar became a module. A stale mouse-drag range otherwise
+    /// suppresses the right-click context menu, which reads `self.selection`.
+    #[test]
+    fn closing_the_bar_clears_a_stale_selection() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("alpha beta".to_string());
+        editor.selection = Some(((0, 0), (0, 5)));
+        editor.open_or_advance_search();
+        for c in "beta".chars() {
+            editor.handle_input(
+                &InputEvent::Key(key(KeyCode::Char(c), KeyModifiers::NONE)),
+                &tx,
+            );
+        }
+        editor.handle_input(&InputEvent::Key(key(KeyCode::Esc, KeyModifiers::NONE)), &tx);
+        assert!(editor.search.is_none());
+        assert_eq!(
+            editor.selection, None,
+            "a selection from before the search must not outlive the bar"
+        );
+    }
+
+    /// An undo inside the bar changes the text the **current match** pointed
+    /// at, so the highlight must be re-derived rather than left over it.
+    #[test]
+    fn undo_inside_the_bar_rederives_the_current_match() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("foo foo".to_string());
+        open_replace_bar(&mut editor, &tx, "foo", "xy");
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Enter, KeyModifiers::NONE)),
+            &tx,
+        );
+        assert_eq!(editor.get_text(), "xy foo");
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('z'), KeyModifiers::CONTROL)),
+            &tx,
+        );
+        assert_eq!(editor.get_text(), "foo foo");
+        let current = editor.search.as_ref().unwrap().current_match();
+        if let Some(((row, start), (_, end))) = current {
+            let line = &editor.get_text()[..];
+            let text: String = line
+                .lines()
+                .nth(row)
+                .unwrap()
+                .chars()
+                .skip(start)
+                .take(end - start)
+                .collect();
+            assert_eq!(
+                text, "foo",
+                "the highlight must sit on a real match, got {text:?}"
+            );
+        }
+    }
+
+    /// vim `n` repeats the search with the bar closed, and must paint what it
+    /// landed on — the highlight moved onto the bar when the module was
+    /// extracted, and the closed-bar path lost it.
+    #[test]
+    fn vim_n_highlights_the_match_it_lands_on() {
+        let mut editor = make_vim_editor();
+        let tx = dummy_tx();
+        editor.set_text("lo xx lo".to_string());
+        editor.open_or_advance_search();
+        for c in "lo".chars() {
+            editor.handle_input(
+                &InputEvent::Key(key(KeyCode::Char(c), KeyModifiers::NONE)),
+                &tx,
+            );
+        }
+        editor.handle_input(&InputEvent::Key(key(KeyCode::Esc, KeyModifiers::NONE)), &tx);
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('n'), KeyModifiers::NONE)),
+            &tx,
+        );
+        assert_eq!(
+            editor.selection,
+            Some(((0, 6), (0, 8))),
+            "`n` must paint the match it jumped to"
+        );
+    }
+
+    /// Closing the bar must clear the buffer's selection ANCHOR, not just the
+    /// mirrored range. `search_forward` moves the cursor without touching
+    /// `selection_start`, so a selection made before the search stays live but
+    /// unpainted — and the next keystroke silently deletes it.
+    #[test]
+    fn closing_the_bar_cannot_leave_an_invisible_selection() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("foo bar baz".to_string());
+        // Select the whole note, as Ctrl+A does.
+        get_ta(&mut editor).select_all();
+        editor.open_or_advance_search();
+        for c in "bar".chars() {
+            editor.handle_input(
+                &InputEvent::Key(key(KeyCode::Char(c), KeyModifiers::NONE)),
+                &tx,
+            );
+        }
+        editor.handle_input(&InputEvent::Key(key(KeyCode::Esc, KeyModifiers::NONE)), &tx);
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('x'), KeyModifiers::NONE)),
+            &tx,
+        );
+        assert!(
+            editor.get_text().contains("foo"),
+            "typing after the bar closed must not eat unhighlighted text, got {:?}",
+            editor.get_text()
+        );
+    }
+
+    /// vim `>` over a selection pushes one history entry per row, so it took N
+    /// undos. One vim command is one undo.
+    #[test]
+    fn vim_visual_indent_undoes_in_one_step() {
+        let mut editor = make_vim_editor();
+        let tx = dummy_tx();
+        editor.set_text("a\nb\nc".to_string());
+        for c in ['V', 'j', 'j', '>'] {
+            editor.handle_input(
+                &InputEvent::Key(key(KeyCode::Char(c), KeyModifiers::NONE)),
+                &tx,
+            );
+        }
+        let indented = editor.get_text();
+        assert_ne!(indented, "a\nb\nc", "`>` must indent the selection");
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('u'), KeyModifiers::NONE)),
+            &tx,
+        );
+        assert_eq!(
+            editor.get_text(),
+            "a\nb\nc",
+            "one `u` must revert the whole indent, not one row"
+        );
     }
 
     #[test]

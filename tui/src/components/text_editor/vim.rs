@@ -545,13 +545,17 @@ impl VimEngine {
                     ta.cancel_selection();
                     Self::select_range(ta, start, end, true);
                 }
+                // cut + insert is two history entries for one keypress; one
+                // `edit()` scope makes visual `p` a single undo (adr/0037).
                 ta.cut(); // cursor lands at the deletion gap
                 self.fill_from_textarea(ta, RegisterKind::Charwise);
                 // Record where the paste starts so we can leave the cursor there
                 // (vim visual-p leaves cursor at the start of the pasted text).
                 let paste_start = super::cursor_tuple(ta);
-                ta.insert_str(&text); // insert the SAVED content, not the yank buffer
-                ta.move_cursor(CursorMove::Jump(paste_start.0 as u16, paste_start.1 as u16));
+                ta.edit(|ta| {
+                    ta.insert_str(&text); // insert the SAVED content, not the yank buffer
+                    ta.move_cursor(CursorMove::Jump(paste_start.0 as u16, paste_start.1 as u16));
+                });
             }
             self.mode = EditorMode::Normal;
             self.clear_pending();
@@ -2362,40 +2366,44 @@ impl VimEngine {
     /// cursor's line, then repeat for `count` lines total (moving down after
     /// each). Used by `>>`, `<<`, and the visual `>`/`<` operators.
     fn indent_lines(&self, outdent: bool, count: usize, ta: &mut EditBuffer) {
-        let (start_row, start_col) = super::cursor_tuple(ta);
-        let mut first_line_delta = 0usize; // indent change on the cursor's own line
-        for i in 0..count.max(1) {
-            ta.move_cursor(CursorMove::Head);
-            if outdent {
-                // Remove up to 4 leading spaces.
-                let (row, _) = super::cursor_tuple(ta);
-                let n = ta
-                    .lines()
-                    .get(row)
-                    .map(|l| l.chars().take(4).take_while(|c| *c == ' ').count())
-                    .unwrap_or(0);
-                if i == 0 {
-                    first_line_delta = n;
+        // One vim command is one undo: this pushes an entry per row, so the
+        // whole block goes in a single `edit()` scope (adr/0037).
+        ta.edit(|ta| {
+            let (start_row, start_col) = super::cursor_tuple(ta);
+            let mut first_line_delta = 0usize; // indent change on the cursor's own line
+            for i in 0..count.max(1) {
+                ta.move_cursor(CursorMove::Head);
+                if outdent {
+                    // Remove up to 4 leading spaces.
+                    let (row, _) = super::cursor_tuple(ta);
+                    let n = ta
+                        .lines()
+                        .get(row)
+                        .map(|l| l.chars().take(4).take_while(|c| *c == ' ').count())
+                        .unwrap_or(0);
+                    if i == 0 {
+                        first_line_delta = n;
+                    }
+                    for _ in 0..n {
+                        ta.delete_next_char();
+                    }
+                } else {
+                    if i == 0 {
+                        first_line_delta = 4;
+                    }
+                    ta.insert_str("    ");
                 }
-                for _ in 0..n {
-                    ta.delete_next_char();
-                }
-            } else {
-                if i == 0 {
-                    first_line_delta = 4;
-                }
-                ta.insert_str("    ");
+                ta.move_cursor(CursorMove::Down);
             }
-            ta.move_cursor(CursorMove::Down);
-        }
-        // Keep the cursor over the same character it sat on, shifted by the
-        // indent change — matches neovim's >> behavior.
-        let col = if outdent {
-            start_col.saturating_sub(first_line_delta)
-        } else {
-            start_col + first_line_delta
-        };
-        ta.move_cursor(CursorMove::Jump(start_row as u16, col as u16));
+            // Keep the cursor over the same character it sat on, shifted by the
+            // indent change — matches neovim's >> behavior.
+            let col = if outdent {
+                start_col.saturating_sub(first_line_delta)
+            } else {
+                start_col + first_line_delta
+            };
+            ta.move_cursor(CursorMove::Jump(start_row as u16, col as u16));
+        });
     }
 
     /// Capture the text the textarea just cut/copied (its yank buffer) into
