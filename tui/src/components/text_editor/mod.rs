@@ -2290,7 +2290,7 @@ impl Component for TextEditorComponent {
             let tx = self.full_parse_tx.clone();
             let redraw = self.redraw_tx.clone();
             self.full_parse_task.spawn(async move {
-                let buf = ParsedBuffer::parse(&lines);
+                let buf = ParsedBuffer::parse_lines(&lines);
                 let _ = tx.send((generation, buf));
                 // Wake the render loop so the rich parse lands
                 // without waiting for the next keystroke.

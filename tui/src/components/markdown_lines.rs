@@ -126,7 +126,7 @@ pub fn classify_block_kinds(lines: &[&str]) -> Vec<LineKind> {
     use crate::components::text_editor::parse_incremental::LineConstructKind;
 
     let owned: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
-    let parsed = ParsedBuffer::parse(&owned);
+    let parsed = ParsedBuffer::parse_lines(&owned);
     parsed
         .lines
         .iter()

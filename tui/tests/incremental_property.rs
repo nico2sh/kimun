@@ -127,7 +127,7 @@ proptest! {
             return Ok(());
         }
 
-        let fresh = ParsedBuffer::parse(&edited);
+        let fresh = ParsedBuffer::parse_lines(&edited);
         prop_assert_eq!(view.parsed_buffer_kinds(), &fresh.kinds[..]);
         prop_assert_eq!(view.parsed_buffer_lines().len(), fresh.lines.len(),
             "spliced lines.len diverges from fresh");
@@ -165,7 +165,7 @@ proptest! {
         // Build the post-edit boundaries by parsing `edited` fresh —
         // this is what splice would produce after applying the
         // incremental update.
-        let fresh = ParsedBuffer::parse(&edited);
+        let fresh = ParsedBuffer::parse_lines(&edited);
         let damaged = target_row..(target_row + 1);
         let widened = match expand_to_reset_boundary(
             &fresh.reset_boundaries,
@@ -180,7 +180,7 @@ proptest! {
         // produce identical `kinds` and per-line content_vis. If they
         // diverge, the boundary set is wrong (a reset boundary that
         // isn't actually a parser-state reset).
-        let slice = ParsedBuffer::parse_range(&edited, widened.clone());
+        let slice = ParsedBuffer::parse_range_lines(&edited, widened.clone());
         for (offset, (slice_kind, fresh_kind)) in slice
             .kinds
             .iter()
@@ -262,7 +262,7 @@ proptest! {
             return Ok(());
         }
 
-        let fresh = ParsedBuffer::parse(&edited);
+        let fresh = ParsedBuffer::parse_lines(&edited);
         prop_assert_eq!(view.parsed_buffer_kinds(), &fresh.kinds[..]);
         prop_assert_eq!(view.parsed_buffer_lines().len(), fresh.lines.len(),
             "spliced lines.len diverges from fresh");
@@ -314,7 +314,7 @@ proptest! {
             return Ok(());
         }
 
-        let fresh = ParsedBuffer::parse(&edited);
+        let fresh = ParsedBuffer::parse_lines(&edited);
         prop_assert_eq!(view.parsed_buffer_kinds(), &fresh.kinds[..]);
         prop_assert_eq!(view.parsed_buffer_lines().len(), fresh.lines.len());
         for (i, (g, e)) in view.parsed_buffer_lines().iter().zip(fresh.lines.iter()).enumerate() {
@@ -351,7 +351,7 @@ proptest! {
             return Ok(());
         }
 
-        let fresh = ParsedBuffer::parse(&edited);
+        let fresh = ParsedBuffer::parse_lines(&edited);
         prop_assert_eq!(view.parsed_buffer_kinds(), &fresh.kinds[..]);
         prop_assert_eq!(view.parsed_buffer_lines().len(), fresh.lines.len());
         for (i, (g, e)) in view.parsed_buffer_lines().iter().zip(fresh.lines.iter()).enumerate() {
@@ -392,7 +392,7 @@ proptest! {
             return Ok(());
         }
 
-        let fresh = ParsedBuffer::parse(&edited);
+        let fresh = ParsedBuffer::parse_lines(&edited);
         prop_assert_eq!(view.parsed_buffer_kinds(), &fresh.kinds[..]);
         prop_assert_eq!(view.parsed_buffer_lines().len(), fresh.lines.len(),
             "spliced lines.len diverges from fresh");

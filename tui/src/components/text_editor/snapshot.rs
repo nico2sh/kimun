@@ -38,6 +38,19 @@ pub struct EditorSnapshot<'a> {
     pub content_revision: NonZeroU64,
 }
 
+/// A buffer with no rows is not a state the text can be in — an empty one still
+/// has a single empty row — so a caller handing over an empty slice is describing
+/// that same buffer in the one vocabulary that can say "nothing" two ways. Saying
+/// it once keeps the snapshot's two views of the content from disagreeing about
+/// how many rows there are.
+fn one_row_minimum(lines: Cow<'_, [String]>) -> Cow<'_, [String]> {
+    if lines.is_empty() {
+        Cow::Owned(vec![String::new()])
+    } else {
+        lines
+    }
+}
+
 impl<'a> EditorSnapshot<'a> {
     /// Borrow-mode constructor for the Textarea backend and tests.
     pub fn borrowed(
@@ -47,7 +60,7 @@ impl<'a> EditorSnapshot<'a> {
     ) -> Self {
         Self {
             text: ropetext::Text::from(lines.join("\n").as_str()),
-            lines: Cow::Borrowed(lines),
+            lines: one_row_minimum(Cow::Borrowed(lines)),
             cursor,
             content_revision,
         }
@@ -78,7 +91,7 @@ impl<'a> EditorSnapshot<'a> {
     ) -> EditorSnapshot<'static> {
         EditorSnapshot {
             text: ropetext::Text::from(lines.join("\n").as_str()),
-            lines: Cow::Owned(lines),
+            lines: one_row_minimum(Cow::Owned(lines)),
             cursor,
             content_revision,
         }
@@ -247,7 +260,8 @@ mod tests {
     #[test]
     fn snapshot_helpers_on_empty_buffer() {
         let snap: EditorSnapshot<'_> = EditorSnapshot::owned(Vec::new(), (0, 0), rev(1));
-        assert!(!snap.cursor_in_bounds());
+        // An empty buffer still has one empty row, so (0, 0) is a real place.
+        assert!(snap.cursor_in_bounds());
         assert_eq!(snap.cursor_row_clamped(), 0);
         assert_eq!(snap.cursor_line(), "");
     }
