@@ -44,11 +44,9 @@ pub enum OverlayMsg {
     Consumed,
 }
 
-// No `Send` bound: overlays are only ever driven on the main `block_on` future,
-// never spawned. Note the direction — this is what makes `EditorScreen`
-// non-`Send`, rather than a consequence of it. The buffer that originally forced
-// the relaxation is gone (see `AppScreen` in `app_screen/mod.rs`).
-pub trait Overlay {
+// `Send` because a screen holds `Box<dyn Overlay>` and screens are `Send` (see
+// `AppScreen` in `app_screen/mod.rs`). Every overlay already satisfied it.
+pub trait Overlay: Send {
     fn kind(&self) -> OverlayKind;
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState;
     /// Receive an **Overlay data** result addressed to this overlay (see
