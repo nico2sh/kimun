@@ -138,7 +138,14 @@ pub struct MarkdownEditorView {
     /// Viewport height from the last `update`, so overlay derivation can bound
     /// itself to the visible rows.
     last_height: usize,
-    pub lines_snapshot: Vec<String>,
+    /// The text the caches below were built from.
+    ///
+    /// Held rather than borrowed because `render` runs without the frame's
+    /// snapshot in scope. Keeping it costs nothing: a `Text` clone shares its
+    /// structure, so this is the same text rather than a copy of it — which is why
+    /// the twenty lines that used to copy changed rows into a `Vec<String>` are
+    /// now one assignment.
+    pub text_snapshot: ropetext::Text,
     pub cursor_snapshot: (usize, usize),
     /// Line ranges of every fenced code block in the buffer. Text-keyed
     /// (rebuilt only when `text_revision` changes); `is_in_code_block`
@@ -311,7 +318,7 @@ impl MarkdownEditorView {
             layout: Layout::compute(&ropetext::Text::new(), 0, Metrics::default(), &[]),
             visual_scroll_offset: 0,
             last_height: 0,
-            lines_snapshot: Vec::new(),
+            text_snapshot: ropetext::Text::new(),
             cursor_snapshot: (0, 0),
             fence_ranges: Vec::new(),
             code_box_width: Vec::new(),
@@ -428,7 +435,7 @@ impl MarkdownEditorView {
                 continue; // wrapped continuation of a row already handled
             }
             seen = row;
-            let Some(line) = self.lines_snapshot.get(row) else {
+            let Some(line) = self.text_snapshot.line(row) else {
                 continue;
             };
             // Task checkboxes: optional indent, then `- [ ] ` / `- [x] `.
@@ -453,6 +460,7 @@ impl MarkdownEditorView {
                 }
             }
             // Needle emphasis, over the logical line rather than drawn cells.
+            let line = line.as_ref();
             for (s, e) in crate::components::preview_highlight::match_ranges(line, &self.needles) {
                 let start = line[..s].chars().count();
                 let end = start + line[s..e].chars().count();
@@ -596,25 +604,8 @@ impl MarkdownEditorView {
             // single-char insert costs one String reallocation
             // (often zero — capacity stays put) instead of N.
             match &self.last_text_change {
-                TextChangeKind::Incremental(range) => {
-                    debug_assert_eq!(
-                        self.lines_snapshot.len(),
-                        lines.len(),
-                        "incremental path requires equal line counts"
-                    );
-                    for i in range.clone() {
-                        self.lines_snapshot[i].clone_from(&lines[i]);
-                    }
-                }
-                TextChangeKind::Full | TextChangeKind::None => {
-                    if self.lines_snapshot.len() == lines.len() {
-                        for (dst, src) in self.lines_snapshot.iter_mut().zip(lines.iter()) {
-                            dst.clone_from(src);
-                        }
-                    } else {
-                        self.lines_snapshot.clear();
-                        self.lines_snapshot.extend(lines.iter().cloned());
-                    }
+                TextChangeKind::Incremental(_) | TextChangeKind::Full | TextChangeKind::None => {
+                    self.text_snapshot = snap.text.clone();
                 }
             }
             self.last_seen_generation = generation;
@@ -859,7 +850,7 @@ impl MarkdownEditorView {
         // describe the same buffer shape. It does not on the first update, and an
         // empty text still has one row — so "no previous state" cannot be inferred
         // from the parse cache being empty.
-        if self.lines_snapshot.len() != lines.len() {
+        if self.text_snapshot.line_count() != lines.len() {
             return METRICS.bail(BailReason::LineCountChange);
         }
         // A bulk edit invalidates the cursor hint: pass `usize::MAX` so the
@@ -878,7 +869,12 @@ impl MarkdownEditorView {
         let damaged = match reported {
             Some(rows) if rows.end <= lines.len() => rows,
             _ => {
-                let Some(damaged) = compute_damage_range(&self.lines_snapshot, lines, hint) else {
+                // Only this path needs the previous content as rows, and only
+                // because it has to compare. Materialising it here keeps that cost
+                // where the comparison is, rather than on every edit.
+                let previous: Vec<String> =
+                    self.text_snapshot.lines().map(|l| l.to_string()).collect();
+                let Some(damaged) = compute_damage_range(&previous, lines, hint) else {
                     return METRICS.bail(BailReason::NoDamage);
                 };
                 damaged
@@ -894,7 +890,8 @@ impl MarkdownEditorView {
         // underlines. Conservative fallback to full parse for correctness.
         for row in damaged.clone() {
             let old_kind = self.parse_state.buf().kinds[row];
-            let old_line = self.lines_snapshot[row].as_str();
+            let previous_row = self.text_snapshot.line(row).unwrap_or_default();
+            let old_line = previous_row.as_ref();
             let new_line = lines[row].as_str();
 
             // Old kind was a structural marker whose role an in-place edit
@@ -1129,7 +1126,7 @@ impl MarkdownEditorView {
         if rect.height == 0 {
             return;
         }
-        let lines = &self.lines_snapshot;
+        let text = &self.text_snapshot;
         let cursor = self.cursor_snapshot;
         let scroll = self.visual_scroll_offset;
         let height = rect.height as usize;
@@ -1138,11 +1135,23 @@ impl MarkdownEditorView {
         let parsed_lines = &self.parse_state.buf().lines;
         let fence_ranges = &self.fence_ranges;
 
+        // The rows the visible lines draw from, materialised for this frame.
+        // Bounded by the pane's height rather than the note's length, and needed
+        // because the spans below borrow their row and outlive the closure that
+        // builds them.
+        let window: Vec<String> = vlines
+            .iter()
+            .skip(scroll)
+            .take(height)
+            .map(|vl| text.line(vl.logical_row).unwrap_or_default().into_owned())
+            .collect();
+
         let visible: Vec<Line> = vlines
             .iter()
             .skip(scroll)
             .take(height)
-            .map(|vl| {
+            .zip(window.iter())
+            .map(|(vl, row_text)| {
                 let cursor_col = if vl.logical_row == cursor.0 {
                     Some(cursor.1)
                 } else {
@@ -1152,7 +1161,7 @@ impl MarkdownEditorView {
                 // Snapshot invariant: every `vl.logical_row` is < lines.len()
                 // because `layout` and `lines_snapshot` were rebuilt from
                 // the same `EditorSnapshot` in the last `update()`.
-                let logical_line = lines[vl.logical_row].as_str();
+                let logical_line = row_text.as_str();
                 let parsed = &parsed_lines[vl.logical_row];
                 let content = &logical_line[vl.bytes.clone()];
                 let spans = MarkdownSpanner::render_with(
@@ -1250,7 +1259,8 @@ impl MarkdownEditorView {
                 let parsed = &self.parse_state.buf().lines[cursor.0];
                 // Snapshot invariant + outer `!is_empty()` guard: cursor.0
                 // is in-bounds for `lines_snapshot` here.
-                let logical_line = lines[cursor.0].as_str();
+                let row_text = text.line(cursor.0).unwrap_or_default();
+                let logical_line = row_text.as_ref();
                 let force_raw = self.is_in_code_block(cursor.0);
                 let rendered_col = MarkdownSpanner::rendered_cursor_col_with(
                     logical_line,
@@ -1387,7 +1397,8 @@ impl MarkdownEditorView {
         let vrow = vrow.min(vlines.len() - 1);
         let vl = &vlines[vrow];
         let row_u16 = vl.logical_row.min(u16::MAX as usize) as u16;
-        let logical_line = self.lines_snapshot[vl.logical_row].as_str();
+        let row_text = self.text_snapshot.line(vl.logical_row).unwrap_or_default();
+        let logical_line = row_text.as_ref();
         let parsed = &self.parse_state.buf().lines[vl.logical_row];
         let force_raw = self.is_in_code_block(vl.logical_row);
         let gutter = self.gutter_insets.get(vl.logical_row).copied().unwrap_or(0);
@@ -2106,7 +2117,7 @@ mod tests {
         // Update with different content but same generation — snapshot must NOT change.
         let lines2 = vec!["changed".to_string()];
         update_view(&mut v, &lines2, (0, 0), rect(10), 1, None);
-        assert_eq!(v.lines_snapshot, vec!["original".to_string()]);
+        assert_eq!(v.text_snapshot.to_string(), "original");
     }
 
     #[test]
@@ -2116,7 +2127,7 @@ mod tests {
         update_view(&mut v, &lines, (0, 0), rect(10), 1, None);
         let lines2 = vec!["changed".to_string()];
         update_view(&mut v, &lines2, (0, 0), rect(10), 2, None);
-        assert_eq!(v.lines_snapshot, vec!["changed".to_string()]);
+        assert_eq!(v.text_snapshot.to_string(), "changed");
     }
 
     /// Task and needle decoration moved out of a cell-space post-pass and into
