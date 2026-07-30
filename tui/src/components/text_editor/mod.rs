@@ -2692,21 +2692,43 @@ mod tests {
     }
 
     #[test]
-    fn wrap_undo_is_two_steps_back_to_original() {
-        // A wrap is delete+insert, and the two are not committed as one
-        // transaction, so it costs two history entries (same as bold/italic via
-        // apply_text_action). This was forced when the incumbent had no edit
-        // grouping at all; it is now a choice, and one worth revisiting, since
-        // the engine can group them. Until it is, two undos restore the original.
+    fn bold_undo_is_one_step_back_to_original() {
+        // The sibling of the wrap: `apply_text_action` reaches the same
+        // `wrap_selection`, so bolding a selection is one entry for the same
+        // reason. Pinned separately because it is the path a toolbar action
+        // takes, and nothing else would catch it regressing on its own.
+        let mut editor = make_editor();
+        editor.set_text("hello world".to_string());
+        select_range(&mut editor, (0, 0), (0, 5));
+        editor.apply_text_action(TextAction::Bold);
+        assert_eq!(editor.get_text(), "**hello** world");
+        assert!(get_ta(&mut editor).undo(), "the bold is one entry");
+        assert_eq!(editor.get_text(), "hello world");
+        assert!(
+            !get_ta(&mut editor).undo(),
+            "and has no second half left to take back"
+        );
+    }
+
+    #[test]
+    fn wrap_undo_is_one_step_back_to_original() {
+        // A wrap replaces the selection inside a single transaction, so the whole
+        // gesture is one history entry. Under the incumbent it was delete+insert
+        // and cost two, and this test asked for two undos — which proved nothing,
+        // since a second undo against a one-entry history is a no-op and lands on
+        // the same string. Asserting what each undo *returns* is what makes this a
+        // claim about grouping rather than about the final text.
         let mut editor = make_editor();
         editor.set_text("hello world".to_string());
         select_range(&mut editor, (0, 0), (0, 5));
         send_char(&mut editor, '(');
         assert_eq!(editor.get_text(), "(hello) world");
-        let ta = get_ta(&mut editor);
-        ta.undo();
-        ta.undo();
+        assert!(get_ta(&mut editor).undo(), "the wrap is one entry");
         assert_eq!(editor.get_text(), "hello world");
+        assert!(
+            !get_ta(&mut editor).undo(),
+            "and has no second half left to take back"
+        );
     }
 
     #[test]
