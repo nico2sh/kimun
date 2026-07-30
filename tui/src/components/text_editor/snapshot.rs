@@ -88,17 +88,13 @@ impl EditorSnapshot {
             .unwrap_or_default()
     }
 
-    /// Global byte offset of the cursor across `lines.join("\n")`.
-    /// Mirrors `autocomplete_glue::row_char_col_to_byte` but consumes
-    /// the snapshot directly so callers (e.g. the autocomplete
-    /// controller) don't need to depend on the editor's glue
-    /// module. Clamps the char column to the row's char count, then
-    /// returns the byte position of the char-column within the
     /// The cursor's byte offset into the whole buffer.
     ///
-    /// Was a row walk summing lengths; the text addresses it directly, and
-    /// refuses a position it cannot represent rather than returning a plausible
-    /// number.
+    /// Was a row walk summing lengths; the text addresses it directly. The row
+    /// is clamped and an unrepresentable column falls back to the end of the
+    /// buffer — the return type leaves no way to refuse, and the callers (the
+    /// autocomplete controller) treat the offset as a trigger point rather than
+    /// an edit site.
     pub fn cursor_byte_offset(&self) -> usize {
         self.text
             .position(

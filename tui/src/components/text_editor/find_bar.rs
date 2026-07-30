@@ -526,7 +526,10 @@ impl FindBar {
         let pattern = self.pattern.as_ref()?;
         let current = self.current.map(|((row, col), _)| (row, col));
         let preview =
-            find_replace::build_preview(pattern, &buf.rows(), self.replacement(), current);
+            // `text().lines()` rather than a materialised vector: this runs on
+            // every frame the preview is showing, and building a copy of the note
+            // to read it doubled the cost of a feature that already rebuilds one.
+            find_replace::build_preview(pattern, buf.text().lines(), self.replacement(), current);
         if preview.spans.is_empty() {
             return None;
         }
