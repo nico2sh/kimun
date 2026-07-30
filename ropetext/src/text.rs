@@ -212,9 +212,23 @@ impl Text {
     /// return past the invariant.
     /// Returns how many bytes were inserted, which is not `text.len()` when the
     /// normalisation collapsed a `\r\n`.
+    ///
+    /// The precondition is asserted rather than trusted, because this is the one
+    /// place the text is mutated and the range reaches it as bare arithmetic —
+    /// `Txn` remaps its spans across earlier edits in the same transaction. An
+    /// inverted or out-of-range range would panic inside the rope anyway; a byte
+    /// *inside a character* would not. `byte_to_char` rounds it down, and the
+    /// edit would silently land somewhere the caller never asked for, in a note
+    /// that autosaves. Corrupting the text is worse than refusing to.
     pub(crate) fn splice(&mut self, bytes: std::ops::Range<usize>, text: &str) -> usize {
-        let start = self.rope.byte_to_char(bytes.start);
-        let end = self.rope.byte_to_char(bytes.end);
+        assert!(bytes.start <= bytes.end, "splice range {bytes:?} is inverted");
+        assert!(
+            bytes.end <= self.rope.len_bytes(),
+            "splice range {bytes:?} runs past the text's {} bytes",
+            self.rope.len_bytes()
+        );
+        let start = self.char_boundary(bytes.start);
+        let end = self.char_boundary(bytes.end);
         if start != end {
             self.rope.remove(start..end);
         }
@@ -224,6 +238,21 @@ impl Text {
         }
         self.revision = Revision::fresh();
         normalised.len()
+    }
+
+    /// Char index at `byte`, which must start a character.
+    ///
+    /// `Rope::byte_to_char` answers for a byte inside one by naming the
+    /// character that contains it, so the round trip back is what distinguishes
+    /// a boundary from an interior byte.
+    fn char_boundary(&self, byte: usize) -> usize {
+        let chars = self.rope.byte_to_char(byte);
+        assert_eq!(
+            self.rope.char_to_byte(chars),
+            byte,
+            "splice byte {byte} is inside a character"
+        );
+        chars
     }
 
     /// The same content as a new revision.
@@ -483,6 +512,49 @@ mod tests {
 
     fn col(n: usize) -> Column {
         Column::new(n)
+    }
+
+    // -- splice preconditions -----------------------------------------------
+
+    #[test]
+    #[should_panic(expected = "is inside a character")]
+    fn splicing_inside_a_character_is_refused() {
+        // Without the check the rope rounds this down to the start of the `é`
+        // and deletes a character the caller never named.
+        let mut t = Text::from("héllo");
+        t.splice(2..3, "");
+    }
+
+    #[test]
+    #[should_panic(expected = "is inside a character")]
+    fn splicing_that_ends_inside_a_character_is_refused() {
+        let mut t = Text::from("héllo");
+        t.splice(1..2, "");
+    }
+
+    #[test]
+    #[should_panic(expected = "is inverted")]
+    fn splicing_an_inverted_range_is_refused() {
+        let mut t = Text::from("hello");
+        // Built from values: a literal `3..1` is a lint, and the point is that
+        // arithmetic can produce one where a literal never would.
+        let (start, end) = (3usize, 1usize);
+        t.splice(start..end, "");
+    }
+
+    #[test]
+    #[should_panic(expected = "runs past the text's")]
+    fn splicing_past_the_end_is_refused() {
+        let mut t = Text::from("hello");
+        t.splice(4..9, "");
+    }
+
+    #[test]
+    fn splicing_at_the_very_end_is_allowed() {
+        // The boundary the check must not exclude: an append is `len..len`.
+        let mut t = Text::from("hello");
+        t.splice(5..5, "!");
+        assert_eq!(t.line(0).expect("one row"), "hello!");
     }
 
     // -- shape --------------------------------------------------------------
