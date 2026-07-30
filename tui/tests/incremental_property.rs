@@ -114,11 +114,11 @@ proptest! {
         let mut view = MarkdownEditorView::new();
 
         // Gen 1: populate with the initial buffer.
-        view.update(&snap_for(&initial, (target_row, 0), 1), test_rect(), None);
+        view.update(&snap_for(&initial, (target_row, 0), 1), test_rect());
 
         // Gen 2: apply the single-char edit.
         let col_after = edited[target_row].chars().count();
-        view.update(&snap_for(&edited, (target_row, col_after), 2), test_rect(), None);
+        view.update(&snap_for(&edited, (target_row, col_after), 2), test_rect());
 
         // Only assert equality when the incremental path was actually taken.
         // When try_incremental_parse fell back (last_parse_was_incremental=false)
@@ -254,9 +254,9 @@ proptest! {
         edited[target_row].push(ch);
 
         let mut view = MarkdownEditorView::new();
-        view.update(&snap_for(&initial, (target_row, 0), 1), test_rect(), None);
+        view.update(&snap_for(&initial, (target_row, 0), 1), test_rect());
         let col_after = edited[target_row].chars().count();
-        view.update(&snap_for(&edited, (target_row, col_after), 2), test_rect(), None);
+        view.update(&snap_for(&edited, (target_row, col_after), 2), test_rect());
 
         if !view.last_parse_was_incremental() {
             return Ok(());
@@ -306,9 +306,9 @@ proptest! {
         edited[target_row].push(ch);
 
         let mut view = MarkdownEditorView::new();
-        view.update(&snap_for(&initial, (target_row, 0), 1), test_rect(), None);
+        view.update(&snap_for(&initial, (target_row, 0), 1), test_rect());
         let col_after = edited[target_row].chars().count();
-        view.update(&snap_for(&edited, (target_row, col_after), 2), test_rect(), None);
+        view.update(&snap_for(&edited, (target_row, col_after), 2), test_rect());
 
         if !view.last_parse_was_incremental() {
             return Ok(());
@@ -343,9 +343,9 @@ proptest! {
         edited[target_row].push(ch);
 
         let mut view = MarkdownEditorView::new();
-        view.update(&snap_for(&initial, (target_row, 0), 1), test_rect(), None);
+        view.update(&snap_for(&initial, (target_row, 0), 1), test_rect());
         let col_after = edited[target_row].chars().count();
-        view.update(&snap_for(&edited, (target_row, col_after), 2), test_rect(), None);
+        view.update(&snap_for(&edited, (target_row, col_after), 2), test_rect());
 
         if !view.last_parse_was_incremental() {
             return Ok(());
@@ -384,9 +384,9 @@ proptest! {
         edited[target_row].push(ch);
 
         let mut view = MarkdownEditorView::new();
-        view.update(&snap_for(&initial, (target_row, 0), 1), test_rect(), None);
+        view.update(&snap_for(&initial, (target_row, 0), 1), test_rect());
         let col_after = edited[target_row].chars().count();
-        view.update(&snap_for(&edited, (target_row, col_after), 2), test_rect(), None);
+        view.update(&snap_for(&edited, (target_row, col_after), 2), test_rect());
 
         if !view.last_parse_was_incremental() {
             return Ok(());

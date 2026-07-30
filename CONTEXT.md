@@ -83,6 +83,10 @@ When the cursor sits on a styled construct, the editor drops the styling for tha
 **Blockquote bar**:
 The vertical `│` gutter the editor paints in place of the `>` sigils of a blockquote. One bar per nesting depth, repeated on wrapped continuation rows so the quote reads as a single left-edged block. Replaced by the raw `> ` on the line being edited (see **Reveal**).
 
+**Overlay**:
+A styled range of logical columns on one row, painted over the rendered line — a **current match**, a selection, a **replace preview** substitution, a search **needle**, a task checkbox. One shape for every such highlight, in logical coordinates, so producers never reason about rendered columns and the mapping happens once. The **overlay kind** declares the paint order, which was previously implicit in statement order across two files. Distinct from the **code box** and the **blockquote bar**, which decorate a whole row rather than a span of one.
+_Avoid_: highlight (names the effect, not the thing), span (collides with the renderer's styled spans), decoration.
+
 **Code box**:
 The background rectangle the editor paints behind a code block (fenced or indented). Sized to the block's widest line and capped at the editor width — a box hugging the code, not a full-width band.
 
