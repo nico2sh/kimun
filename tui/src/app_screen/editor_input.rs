@@ -192,7 +192,20 @@ pub enum EditorOp {
 /// which is why the ladder's own tests are unaffected by it.
 pub fn classify(event: &InputEvent, bindings: &KeyBindings, ctx: &InputCtx) -> Classification {
     let mut classification = classify_unclaimed(event, bindings, ctx);
-    classification.intent = apply_claim(classification.intent, event, ctx.claim);
+    // An **editor claim** only holds while the editor is the active panel: the
+    // bar is inside it, so a drawer click or an open overlay outranks it.
+    // Without this the filter would swallow every click anywhere in the app.
+    let claim = if ctx.editor_active() {
+        ctx.claim
+    } else {
+        EditorClaim::None
+    };
+    let filtered = apply_claim(classification.intent.clone(), event, claim);
+    if filtered != classification.intent {
+        // The chord did not run, so it must not advertise itself in the footer.
+        classification.flash = None;
+    }
+    classification.intent = filtered;
     classification
 }
 
@@ -238,16 +251,27 @@ fn apply_claim(intent: EditorIntent, event: &InputEvent, claim: EditorClaim) -> 
         // is meaningless there, Ctrl+Enter must not follow a link out of it,
         // and a bare Space is a character, not the leader. The popup wants all
         // of these to behave normally.
-        EditorIntent::EditorPaste
-        | EditorIntent::ImageProbe
-        | EditorIntent::FollowLink
-        | EditorIntent::LeaderStart => {
+        EditorIntent::EditorPaste | EditorIntent::ImageProbe | EditorIntent::FollowLink => {
             if find_bar {
                 deliver
             } else {
                 intent
             }
         }
+
+        // Bare Space is a character in a find pattern. The bound leader
+        // gateway is not — it opens "in every context, including mid-typing",
+        // and blocking it here would also make a pending sequence unreachable.
+        EditorIntent::LeaderStart => match event {
+            InputEvent::Key(k)
+                if find_bar
+                    && k.code == ratatui::crossterm::event::KeyCode::Char(' ')
+                    && k.modifiers.is_empty() =>
+            {
+                deliver
+            }
+            _ => intent,
+        },
 
         // Scrolling moves the viewport, not the cursor, so reading elsewhere
         // mid-search stays available. Clicks and drags would move the cursor
@@ -257,7 +281,10 @@ fn apply_claim(intent: EditorIntent, event: &InputEvent, claim: EditorClaim) -> 
                 if find_bar
                     && !matches!(
                         m.kind,
-                        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                        MouseEventKind::ScrollUp
+                            | MouseEventKind::ScrollDown
+                            | MouseEventKind::ScrollLeft
+                            | MouseEventKind::ScrollRight
                     ) =>
             {
                 EditorIntent::Consume

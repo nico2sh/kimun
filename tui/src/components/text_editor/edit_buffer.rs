@@ -17,17 +17,19 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 
-use ratatui_textarea::{CursorMove, TextArea};
+use ratatui_textarea::{CursorMove, DataCursor, TextArea};
 
-/// Cap on how many history entries one grouped undo may replay before giving
-/// up. A group is normally one or two entries; the cap only bounds the case
-/// where the target state is unreachable because `TextArea`'s bounded history
-/// evicted part of the group.
-const MAX_GROUP_REPLAY: usize = 8;
+/// Cap on how many history entries one grouped undo may replay.
+///
+/// Must exceed the largest group any caller can build, or that group becomes
+/// un-undoable: `indent_lines` pushes one entry per selected row, so a 15-line
+/// indent is 15 entries. Sized above `TextArea`'s own 50-entry history, beyond
+/// which the group's start is evicted and genuinely unreachable anyway.
+const MAX_GROUP_REPLAY: usize = 64;
 
 /// Cap on tracked groups. `TextArea` keeps 50 history entries; tracking more
 /// group boundaries than that cannot help.
-const MAX_GROUPS: usize = 16;
+const MAX_GROUPS: usize = 64;
 
 /// The buffer states one grouped edit ran between.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,12 +151,43 @@ impl EditBuffer {
         }
         let before: Vec<String> = self.ta.lines().to_vec();
         let cursor_row_before = self.ta.cursor().0;
-        self.depth += 1;
-        let out = f(&mut self.ta);
-        self.depth -= 1;
+        let out = {
+            // Restore the nesting depth even if `f` unwinds: a leaked depth
+            // would send every later edit down the nested path, which records
+            // no group and merges no outcome — the note would then be edited
+            // without ever being marked dirty.
+            struct DepthGuard<'a>(&'a mut u32);
+            impl Drop for DepthGuard<'_> {
+                fn drop(&mut self) {
+                    *self.0 -= 1;
+                }
+            }
+            let Self { ta, depth, .. } = self;
+            *depth += 1;
+            let _guard = DepthGuard(depth);
+            f(ta)
+        };
         let after = self.ta.lines();
 
         if before.as_slice() == after {
+            // Content is unchanged — but the closure may still have pushed
+            // history (a cut plus an identical re-insert, e.g. pasting a
+            // selection over itself). Orphaned entries have no group, so the
+            // next undo pops half of one and lands on a state the user never
+            // saw. Pop them back off; if the buffer does not return to where it
+            // started, we were popping someone else's entries, so put them back.
+            let mut popped = 0;
+            while popped < MAX_GROUP_REPLAY && self.ta.undo() {
+                popped += 1;
+                if self.ta.lines() == before.as_slice() {
+                    break;
+                }
+            }
+            if self.ta.lines() != before.as_slice() {
+                for _ in 0..popped {
+                    self.ta.redo();
+                }
+            }
             return out;
         }
 
@@ -240,17 +273,19 @@ impl EditBuffer {
     /// the same code.
     pub fn undo(&mut self) -> bool {
         let before: Vec<String> = self.ta.lines().to_vec();
+        // Peek only: moving the group across before the undo is known to
+        // succeed would corrupt both stacks when history has been exhausted.
         let target = match self.undo.last() {
-            Some(g) if g.after == hash_lines(&before) => {
-                let g = self.undo.pop().expect("checked above");
-                self.redo.push(g);
-                Some(g.before)
-            }
+            Some(g) if g.after == hash_lines(&before) => Some(g.before),
             // Not at a group boundary: an ordinary single-entry undo.
             _ => None,
         };
         if !self.ta.undo() {
             return false;
+        }
+        if target.is_some() {
+            let g = self.undo.pop().expect("peeked above");
+            self.redo.push(g);
         }
         if let Some(target) = target {
             for _ in 0..MAX_GROUP_REPLAY {
@@ -271,15 +306,15 @@ impl EditBuffer {
     pub fn redo(&mut self) -> bool {
         let before: Vec<String> = self.ta.lines().to_vec();
         let target = match self.redo.last() {
-            Some(g) if g.before == hash_lines(&before) => {
-                let g = self.redo.pop().expect("checked above");
-                self.undo.push(g);
-                Some(g.after)
-            }
+            Some(g) if g.before == hash_lines(&before) => Some(g.after),
             _ => None,
         };
         if !self.ta.redo() {
             return false;
+        }
+        if target.is_some() {
+            let g = self.redo.pop().expect("peeked above");
+            self.undo.push(g);
         }
         if let Some(target) = target {
             for _ in 0..MAX_GROUP_REPLAY {
@@ -342,6 +377,46 @@ impl EditBuffer {
 
     pub fn search_back(&mut self, match_cursor: bool) -> bool {
         self.ta.search_back(match_cursor)
+    }
+
+    /// The span of the match starting exactly at the cursor, if any.
+    ///
+    /// Lives here rather than on the find bar because it reads only buffer
+    /// state — the persisted pattern and the cursor — and is needed with the
+    /// bar closed (vim `n`/`N`) as well as open.
+    pub fn match_at_cursor(&self) -> Option<((usize, usize), (usize, usize))> {
+        let re = self.ta.search_pattern()?;
+        let DataCursor(row, col_chars) = self.ta.cursor();
+        let line = self.ta.lines().get(row)?;
+        let byte_off = super::char_col_to_byte(line, col_chars);
+        let m = re.find_at(line, byte_off)?;
+        // `find_at` finds the next match at OR AFTER the offset; only one
+        // starting exactly here is the match under the cursor.
+        if m.start() != byte_off {
+            return None;
+        }
+        let match_chars = line[m.range()].chars().count();
+        Some(((row, col_chars), (row, col_chars + match_chars)))
+    }
+
+    /// Repeat the buffer's persisted search pattern (vim `n` / `N`).
+    ///
+    /// A buffer operation, not a find-bar one: the pattern outlives the bar,
+    /// which is the whole point of `n`/`N` working once the bar is closed.
+    /// Pushes no history — it only moves the cursor.
+    pub fn search_repeat(&mut self, backward: bool) -> bool {
+        if backward {
+            self.ta.search_back(false)
+        } else {
+            self.ta.search_forward(false)
+        }
+    }
+
+    /// Feed a mouse event to the textarea: cursor placement and drag
+    /// selection. Pushes no history, so it stays outside [`Self::edit`] — one
+    /// scroll tick would otherwise cost a full buffer clone and two hashes.
+    pub fn mouse_input(&mut self, input: impl Into<ratatui_textarea::Input>) -> bool {
+        self.ta.input(input)
     }
 
     pub fn copy(&mut self) {
@@ -535,6 +610,70 @@ mod tests {
     }
 
     // ── lifecycle ───────────────────────────────────────────────────────────
+
+    /// A closure that nets zero can still have pushed history — cutting a
+    /// selection and re-inserting the same text. Those entries have no group,
+    /// so before this was handled one undo popped half of one and destroyed
+    /// text the user never asked to lose.
+    #[test]
+    fn a_net_zero_edit_leaves_no_orphaned_history() {
+        let mut b = buf(&["hello foo"]);
+        b.edit(|ta| {
+            ta.move_cursor(CursorMove::Jump(0, 6));
+            ta.start_selection();
+            ta.move_cursor(CursorMove::End);
+            ta.cut();
+            ta.insert_str("foo")
+        });
+        assert_eq!(lines(&b), vec!["hello foo".to_string()]);
+        assert_eq!(b.take_outcome(), EditOutcome::unchanged());
+        assert!(!b.undo(), "there is nothing left to undo");
+        assert_eq!(lines(&b), vec!["hello foo".to_string()]);
+    }
+
+    /// A group larger than a handful of entries must still undo in one step —
+    /// indenting N lines pushes one entry per row.
+    #[test]
+    fn a_large_group_undoes_in_one_step() {
+        let mut b = buf(&["l0"]);
+        let rows: Vec<String> = (0..15).map(|i| format!("line {i}")).collect();
+        b.edit(|ta| {
+            ta.select_all();
+            ta.insert_str(rows.join("\n"))
+        });
+        let _ = b.take_outcome();
+        b.edit(|ta| {
+            for row in 0..15u16 {
+                ta.move_cursor(CursorMove::Jump(row, 0));
+                ta.insert_str("    ");
+            }
+        });
+        assert!(b.lines()[14].starts_with("    "));
+        assert!(b.undo());
+        assert_eq!(
+            b.lines(),
+            rows.as_slice(),
+            "one undo must revert all 15 rows, not stall part-way"
+        );
+    }
+
+    /// A failed undo must not move a group across: history exhaustion would
+    /// otherwise leave the stacks describing a state that never happens.
+    #[test]
+    fn an_exhausted_undo_leaves_the_group_stacks_alone() {
+        let mut b = buf(&["a"]);
+        b.edit(|ta| {
+            ta.select_all();
+            ta.insert_str("b")
+        });
+        let _ = b.take_outcome();
+        assert!(b.undo());
+        let _ = b.take_outcome();
+        assert!(!b.undo(), "history is exhausted");
+        // The group went across on the first undo and must not come back.
+        assert!(b.redo());
+        assert_eq!(lines(&b), vec!["b".to_string()]);
+    }
 
     #[test]
     fn replacing_the_buffer_drops_its_groups() {
