@@ -1923,7 +1923,7 @@ impl EditorScreen {
     }
 }
 
-#[async_trait(?Send)]
+#[async_trait]
 impl AppScreen for EditorScreen {
     fn get_kind(&self) -> ScreenKind {
         ScreenKind::Editor

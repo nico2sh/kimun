@@ -34,7 +34,7 @@ impl StartScreen {
     }
 }
 
-#[async_trait(?Send)]
+#[async_trait]
 impl AppScreen for StartScreen {
     async fn on_enter(&mut self, tx: &AppTx) {
         if let Some(vault) = self.vault.clone() {

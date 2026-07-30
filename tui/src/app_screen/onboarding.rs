@@ -287,7 +287,7 @@ fn nvim_on_path(configured: Option<&std::path::Path>) -> bool {
 
 // ── AppScreen impl ────────────────────────────────────────────────────────────
 
-#[async_trait(?Send)]
+#[async_trait]
 impl AppScreen for OnboardingScreen {
     async fn on_enter(&mut self, tx: &AppTx) {
         // 50 ms ticker matches umlaut_frame's micro-slots so short squash
