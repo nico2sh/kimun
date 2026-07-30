@@ -608,6 +608,16 @@ impl RopeBuffer {
         true
     }
 
+    /// Move to a position the caller worked out itself — a visual-line motion,
+    /// which needs a layout the buffer does not have.
+    pub fn move_to(&mut self, to: Position) {
+        if self.inner.text().is_stale(to) {
+            return;
+        }
+        self.goal = None;
+        self.place(to);
+    }
+
     fn place(&mut self, to: Position) {
         if self.inner.selection().is_some() {
             self.inner.extend_to(to);

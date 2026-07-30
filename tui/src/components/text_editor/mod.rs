@@ -1654,7 +1654,29 @@ impl TextEditorComponent {
         // list, an opening bracket over a selection wraps it — because those are
         // the same keys and the component's reading of them wins.
         if let Some(op) = plain_keys::operation(*key) {
-            let changed = plain_keys::apply(op, ta);
+            // ↑/↓ move by *drawn* line, so they need the layout — which lives on
+            // the view, not the buffer. Everything else the buffer can answer
+            // alone. A run of them keeps its goal cell; anything else ends the run.
+            let vertical = match op {
+                plain_keys::Operation::Move {
+                    to: CursorMove::Up,
+                    extend,
+                } => Some((false, extend)),
+                plain_keys::Operation::Move {
+                    to: CursorMove::Down,
+                    extend,
+                } => Some((true, extend)),
+                _ => None,
+            };
+            if vertical.is_none() {
+                self.view.clear_visual_goal();
+            }
+            let changed = match vertical {
+                // A stale layout — an edit landed before the frame that re-lays
+                // it out — falls back to the logical move rather than reading it.
+                Some((down, extend)) if self.view.move_cursor_visually(ta, down, extend) => false,
+                _ => plain_keys::apply(op, ta),
+            };
             self.selection = ta.selection_range();
             if changed {
                 self.apply_edit_outcome();
@@ -4397,6 +4419,140 @@ mod tests {
             &tx,
         );
         assert_eq!(editor.get_text(), "todo and todo");
+    }
+
+    // ── Arrow keys move by drawn line ────────────────────────────────────────
+
+    /// Render once so the view has a layout for the width under test.
+    fn lay_out(editor: &mut TextEditorComponent, width: u16, height: u16) {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let theme = Theme::default();
+        let mut term = Terminal::new(TestBackend::new(width, height)).unwrap();
+        let area = Rect::new(0, 0, width, height);
+        term.draw(|f| editor.render(f, area, &theme, true)).unwrap();
+    }
+
+    fn arrow(editor: &mut TextEditorComponent, tx: &AppTx, code: KeyCode) {
+        use ratatui::crossterm::event::KeyEvent;
+        editor.handle_textarea_key(&KeyEvent::new(code, KeyModifiers::NONE), tx);
+    }
+
+    #[test]
+    fn down_moves_one_drawn_line_not_one_row() {
+        // The whole point of owning both the cursor and the layout. A paragraph
+        // that wraps into four drawn lines takes four presses to leave, not one.
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text(
+            "aaaa bbbb cccc dddd
+second row"
+                .to_string(),
+        );
+        lay_out(&mut editor, 6, 10);
+
+        get_ta(&mut editor).jump_to(0, 0);
+        arrow(&mut editor, &tx, KeyCode::Down);
+        assert_eq!(
+            get_ta(&mut editor).cursor(),
+            (0, 5),
+            "still inside the first row, on its second drawn line"
+        );
+        arrow(&mut editor, &tx, KeyCode::Down);
+        assert_eq!(get_ta(&mut editor).cursor(), (0, 10));
+        arrow(&mut editor, &tx, KeyCode::Down);
+        assert_eq!(get_ta(&mut editor).cursor(), (0, 15));
+        arrow(&mut editor, &tx, KeyCode::Down);
+        assert_eq!(
+            get_ta(&mut editor).cursor().0,
+            1,
+            "and only the fourth press reaches the next row"
+        );
+    }
+
+    #[test]
+    fn up_and_down_are_symmetric_across_a_wrap() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("aaaa bbbb cccc".to_string());
+        lay_out(&mut editor, 6, 10);
+
+        get_ta(&mut editor).jump_to(0, 0);
+        arrow(&mut editor, &tx, KeyCode::Down);
+        let middle = get_ta(&mut editor).cursor();
+        arrow(&mut editor, &tx, KeyCode::Up);
+        assert_eq!(get_ta(&mut editor).cursor(), (0, 0));
+        assert_eq!(middle, (0, 5));
+    }
+
+    #[test]
+    fn a_run_of_arrows_keeps_its_goal_cell() {
+        // Passing through a shorter drawn line clamps, but does not forget: the
+        // column is borrowed for one line rather than lost.
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text(
+            "aaaaaaaa
+bb
+cccccccc"
+                .to_string(),
+        );
+        lay_out(&mut editor, 20, 10);
+
+        get_ta(&mut editor).jump_to(0, 7);
+        arrow(&mut editor, &tx, KeyCode::Down);
+        assert_eq!(
+            get_ta(&mut editor).cursor(),
+            (1, 2),
+            "clamped to the short row"
+        );
+        arrow(&mut editor, &tx, KeyCode::Down);
+        assert_eq!(
+            get_ta(&mut editor).cursor(),
+            (2, 7),
+            "and back out to the cell the run still wants"
+        );
+    }
+
+    #[test]
+    fn another_key_ends_the_run() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text(
+            "aaaaaaaa
+bb
+cccccccc"
+                .to_string(),
+        );
+        lay_out(&mut editor, 20, 10);
+
+        get_ta(&mut editor).jump_to(0, 7);
+        arrow(&mut editor, &tx, KeyCode::Down);
+        arrow(&mut editor, &tx, KeyCode::Home);
+        arrow(&mut editor, &tx, KeyCode::Down);
+        assert_eq!(
+            get_ta(&mut editor).cursor(),
+            (2, 0),
+            "Home set a new goal; the old one is gone"
+        );
+    }
+
+    #[test]
+    fn shift_down_extends_by_a_drawn_line() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("aaaa bbbb cccc".to_string());
+        lay_out(&mut editor, 6, 10);
+
+        get_ta(&mut editor).jump_to(0, 0);
+        editor.handle_textarea_key(
+            &ratatui::crossterm::event::KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT),
+            &tx,
+        );
+        assert_eq!(
+            get_ta(&mut editor).selection_range(),
+            Some(((0, 0), (0, 5)))
+        );
     }
 
     /// Helper: construct a vim-backend editor.

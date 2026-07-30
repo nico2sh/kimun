@@ -6,7 +6,9 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Text};
 use ratatui::widgets::Paragraph;
-use ropetext::{Column, Layout, Metrics, RowHints};
+use ropetext::{Column, Layout, Metrics, RowHints, motion};
+
+use super::rope_buffer::RopeBuffer;
 use std::ops::Range;
 use std::sync::OnceLock;
 
@@ -221,6 +223,13 @@ pub struct MarkdownEditorView {
     /// Tracks how Gate 1 changed (or did not change) the parse caches.
     /// Gate 2 reads this to decide the scope of rendered_cache rebuild.
     last_text_change: TextChangeKind,
+    /// The cell a run of ↑/↓ is aiming at.
+    ///
+    /// Vim calls it `curswant`: without it, passing through a short drawn line
+    /// clamps the column and the next press continues from there, so a column is
+    /// lost permanently rather than borrowed. Cleared by any other cursor move —
+    /// the component says when, because only it sees the other keys.
+    visual_goal: Option<usize>,
     /// Rows the last edits changed, as the **edit buffer** reported them.
     ///
     /// Consumed by the next `update`, which then has no reason to compare the
@@ -340,6 +349,7 @@ impl MarkdownEditorView {
             last_parse_was_incremental: false,
             last_splice_path: None,
             last_text_change: TextChangeKind::Full, // first update is a full rebuild
+            visual_goal: None,
             reported_damage: None,
         }
     }
@@ -483,6 +493,55 @@ impl MarkdownEditorView {
     /// edited row and will otherwise under-report the damage, leaving distant
     /// rows rendered from a stale parse. Every edit that rewrites more than the
     /// cursor's neighbourhood must call this.
+    /// Forget where a run of ↑/↓ was aiming. Any other cursor movement ends it.
+    pub fn clear_visual_goal(&mut self) {
+        self.visual_goal = None;
+    }
+
+    /// Move the cursor one *drawn* line, which is what an arrow key means in a
+    /// wrapped editor: one press moves one line the reader can see, not past the
+    /// whole remainder of a soft-wrapped paragraph.
+    ///
+    /// Lives on the view because only the view has the layout — the buffer holds
+    /// the text and the cursor, and neither alone can answer "which line is this
+    /// drawn on". That split is exactly why the incumbent could not do this.
+    ///
+    /// Returns `false` when the layout does not describe the buffer's current
+    /// text — an edit lands before the frame that re-lays it out — and the caller
+    /// falls back to a logical move rather than reading a stale layout.
+    pub fn move_cursor_visually(&mut self, buf: &mut RopeBuffer, down: bool, extend: bool) -> bool {
+        let text = buf.text().clone();
+        if self.layout.row_count() != text.line_count() {
+            return false;
+        }
+        let Some(cursor) = text.position(buf.cursor().0, Column::new(buf.cursor().1)) else {
+            return false;
+        };
+        let hints = row_hints(&self.rendered_cache, &self.gutter_insets);
+        let goal = self
+            .visual_goal
+            .unwrap_or_else(|| self.layout.cell_of(&text, &hints, cursor).column);
+        let landed = motion::visual_vertical(
+            &text,
+            &self.layout,
+            &hints,
+            cursor,
+            if down { 1 } else { -1 },
+            motion::VisualGoal::Cell(goal),
+        );
+        self.visual_goal = Some(goal);
+
+        if extend {
+            if buf.selection_range().is_none() {
+                buf.start_selection();
+            }
+        } else {
+            buf.cancel_selection();
+        }
+        buf.move_to(landed);
+        true
+    }
+
     /// Record which rows an edit changed, for the next `update` to act on.
     pub fn note_damage(&mut self, rows: std::ops::Range<usize>) {
         self.reported_damage = Some(match self.reported_damage.take() {
