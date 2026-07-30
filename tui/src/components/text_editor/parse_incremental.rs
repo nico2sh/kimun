@@ -59,15 +59,28 @@ pub(super) const CURSOR_HINT_WINDOW: usize = 4;
 /// cursor-row hint to accelerate the common single-character-edit case.
 ///
 /// **Contract:** `cursor_row` must be the row that was actually edited
-/// (the editor's cursor position after the keystroke). The fast path
-/// trusts this — if `cursor_row` does not identify the real edit point,
-/// the function may under-report the damaged range for an edit shape
-/// that single-keystroke editing cannot produce. Distant simultaneous
-/// edits are out of scope; they can only happen via programmatic
-/// buffer replacement, which goes through `set_text` and bumps
-/// `text_revision` such that the LCP/LCS slow path is taken naturally
-/// (the cursor row's content will match between old and new, so the
-/// fast path declines and the slow path runs).
+/// (the editor's cursor position after the keystroke), and it must be the
+/// **only** edited row outside the hint window. The fast path trusts this —
+/// given a `cursor_row` that does not identify the sole edit point, the
+/// function under-reports the damaged range and rows outside it keep a stale
+/// `ParsedLine`.
+///
+/// Callers performing an edit that does not satisfy this must not call it:
+/// [`super::view::MarkdownEditorView::note_bulk_edit`] forces the slow path
+/// for the next update, and every bulk-edit site is expected to use it.
+///
+/// This used to say distant simultaneous edits "can only happen via
+/// programmatic buffer replacement, which goes through `set_text`". That is
+/// false. A **replace all** rewrites rows across the whole buffer, deliberately
+/// preserves the line count, does not go through `set_text`, and restores the
+/// cursor to a row it may itself have edited — satisfying every precondition of
+/// the fast path while violating its meaning. Concretely, rewriting rows 0 and
+/// 6 of a seven-row buffer with `cursor_row = 6` returns `6..7`.
+///
+/// No mis-render was reproducible from that, because the incremental parser's
+/// later guards (kind, opener-shape, lazy-depth, the widening cap) happen to
+/// catch a distant edit — but none of them is aimed at this, so the safety was
+/// incidental. Hence the explicit signal rather than a reliance on them.
 ///
 /// Returns `None` when the buffers are byte-identical (defensive
 /// guard — callers should already have gated on `text_revision`).
@@ -451,6 +464,32 @@ mod tests {
     fn damage_no_change_returns_none() {
         let old = lines(&["a", "b"]);
         assert_eq!(compute_damage_range(&old, &old, 0), None);
+    }
+
+    /// The fast path's blind spot, pinned so the contract's cost is visible: a
+    /// buffer edited in two distant places, with the cursor on one of them, is
+    /// reported as a one-row change. Callers that can produce this shape — a
+    /// **replace all**, a whole-buffer `set_text`, a grouped undo of either — must
+    /// call `MarkdownEditorView::note_bulk_edit` instead of relying on this.
+    #[test]
+    fn the_cursor_hint_under_reports_a_two_place_edit() {
+        let old: Vec<String> = ["todo", "a", "b", "c", "d", "e", "todo"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let new: Vec<String> = ["X", "a", "b", "c", "d", "e", "X"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            compute_damage_range(&old, &new, 6),
+            Some(6..7),
+            "row 0 is silently omitted — this is why the hint must be suppressed \
+         for edits the cursor does not describe"
+        );
+        // Suppressing the hint (an out-of-range row) falls through to LCP/LCS,
+        // which spans both edits.
+        assert_eq!(compute_damage_range(&old, &new, usize::MAX), Some(0..7));
     }
 
     #[test]

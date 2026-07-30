@@ -132,7 +132,7 @@ fn bench_full_view_update_5000_lines_incremental(c: &mut Criterion) {
 
     // Warm the view: do a full parse on the original buffer once.
     let mut warmed = MarkdownEditorView::new();
-    warmed.update(&snap_for(&lines, (2500, 0), 1), rect, None);
+    warmed.update(&snap_for(&lines, (2500, 0), 1), rect);
 
     // Edited buffer: single-char insert at row 2500 (same line count).
     let mut edited = lines.clone();
@@ -145,7 +145,6 @@ fn bench_full_view_update_5000_lines_incremental(c: &mut Criterion) {
                 v.update(
                     &snap_for(black_box(&edited), (2500, edited[2500].len()), 2),
                     rect,
-                    None,
                 );
                 black_box(v);
             },
@@ -167,7 +166,7 @@ fn bench_full_view_update_5000_lines_backspace(c: &mut Criterion) {
     };
 
     let mut warmed = MarkdownEditorView::new();
-    warmed.update(&snap_for(&lines, (2500, 0), 1), rect, None);
+    warmed.update(&snap_for(&lines, (2500, 0), 1), rect);
 
     // Edited buffer: single-char delete at row 2500 (Backspace mid-line).
     let mut edited = lines.clone();
@@ -180,7 +179,6 @@ fn bench_full_view_update_5000_lines_backspace(c: &mut Criterion) {
                 v.update(
                     &snap_for(black_box(&edited), (2500, edited[2500].len()), 2),
                     rect,
-                    None,
                 );
                 black_box(v);
             },
@@ -204,7 +202,7 @@ fn bench_full_view_update_5000_lines_first_parse(c: &mut Criterion) {
     c.bench_function("full_view_update_5000_lines_first_parse", |b| {
         b.iter(|| {
             let mut v = MarkdownEditorView::new();
-            v.update(&snap_for(black_box(&lines), (0, 0), 1), rect, None);
+            v.update(&snap_for(black_box(&lines), (0, 0), 1), rect);
             black_box(v);
         });
     });
@@ -246,7 +244,7 @@ fn bench_full_view_update_heavy_lists_typing(c: &mut Criterion) {
 
     let target_row = 250.min(lines.len() - 1);
     let mut warmed = MarkdownEditorView::new();
-    warmed.update(&snap_for(&lines, (target_row, 0), 1), rect, None);
+    warmed.update(&snap_for(&lines, (target_row, 0), 1), rect);
 
     // Single-char append inside an item's content. Pre-edit row is a
     // ListMarker (lazy_depth == 1) inside the loose list. The v3 §3.0
@@ -268,7 +266,6 @@ fn bench_full_view_update_heavy_lists_typing(c: &mut Criterion) {
                         2,
                     ),
                     rect,
-                    None,
                 );
                 black_box(v);
             },
@@ -292,7 +289,7 @@ fn bench_full_view_update_heavy_lists_first_parse(c: &mut Criterion) {
     c.bench_function("full_view_update_heavy_lists_571_first_parse", |b| {
         b.iter(|| {
             let mut v = MarkdownEditorView::new();
-            v.update(&snap_for(black_box(&lines), (0, 0), 1), rect, None);
+            v.update(&snap_for(black_box(&lines), (0, 0), 1), rect);
             black_box(v);
         });
     });
@@ -336,7 +333,7 @@ fn bench_full_view_update_blockquotes_typing(c: &mut Criterion) {
     // Edit the `>` row of the 50th blockquote (row 50*4 = 200).
     let target_row = 200;
     let mut warmed = MarkdownEditorView::new();
-    warmed.update(&snap_for(&lines, (target_row, 0), 1), rect, None);
+    warmed.update(&snap_for(&lines, (target_row, 0), 1), rect);
 
     let mut edited = lines.clone();
     edited[target_row].push('x');
@@ -352,7 +349,6 @@ fn bench_full_view_update_blockquotes_typing(c: &mut Criterion) {
                         2,
                     ),
                     rect,
-                    None,
                 );
                 black_box(v);
             },

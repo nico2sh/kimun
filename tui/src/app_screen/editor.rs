@@ -691,6 +691,7 @@ impl EditorScreen {
             focused: self.panels.focused(),
             drawer_view: self.panels.active_drawer_view(),
             space_leads: self.panels.editor().is_some_and(|e| e.space_leads()),
+            claim: self.panels.editor().map(|e| e.claim()).unwrap_or_default(),
         }
     }
 
@@ -859,6 +860,11 @@ impl EditorScreen {
             EditorOp::FindInBuffer => {
                 if let Some(ed) = self.panels.editor_mut() {
                     ed.open_or_advance_search();
+                }
+            }
+            EditorOp::ReplaceInBuffer => {
+                if let Some(ed) = self.panels.editor_mut() {
+                    ed.open_replace();
                 }
             }
             EditorOp::ApplyText(text_action) => {

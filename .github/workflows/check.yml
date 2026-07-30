@@ -48,6 +48,21 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # Not redundant with the clippy step above, despite both saying
+      # --all-targets: clippy builds under the *dev* profile, where
+      # debug_assertions is on. `[profile.bench]` inherits `[profile.release]`,
+      # where it is off — so anything behind `#[cfg(debug_assertions)]` vanishes
+      # and its callers stop compiling. That is a real break nothing else here
+      # sees; the benches were uncompilable for some time before this step
+      # existed, through green CI.
+      #
+      # `check` rather than `bench --no-run`: the same breakage, in ~10s instead
+      # of ~150s, because the release profile's lto + codegen-units=1 + opt-level=z
+      # apply to the whole dependency graph and none of that is needed to find a
+      # compile error.
+      - name: Check benches (bench profile — debug_assertions off)
+        run: cargo check --profile bench --workspace --all-targets
+
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
         with:
