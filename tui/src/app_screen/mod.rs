@@ -26,10 +26,13 @@ pub enum ScreenKind {
     Preferences,
 }
 
-// `?Send`: screens own a `ratatui-textarea` `TextArea`, whose `Block` field is
-// non-`Send` as of `ratatui-widgets 0.3.1` (its shadow effect holds an
-// `Arc<dyn CellEffect>`). The screen is only ever driven on the main `block_on`
-// future, never spawned, so dropping the `Send` bound is sound.
+// `?Send`: a screen holds `Box<dyn Overlay>`, and that trait declares no `Send`
+// bound. That is now the only thing holding the relaxation in place. The
+// original cause was `ratatui-textarea`'s `Block` field (non-`Send` as of
+// `ratatui-widgets 0.3.1`, its shadow effect holding an `Arc<dyn CellEffect>`),
+// and with the engine now kimün's, `TextEditorComponent` and `RopeBuffer` are
+// both `Send`. Screens are only ever driven on the main `block_on` future, never
+// spawned, so dropping the bound remains sound and nothing has needed it back.
 #[async_trait(?Send)]
 pub trait AppScreen {
     /// Called once when the screen mounts. Send `AppEvent`s through `tx` to

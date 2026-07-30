@@ -1,9 +1,0 @@
-# Seeds for failure cases proptest has generated in the past. It is
-# automatically read and these particular cases re-run before any
-# novel cases are generated.
-#
-# It is recommended to check this file in to source control so that
-# everyone who runs the test benefits from these saved cases.
-cc 8ca96ec675cf0e9a0482ee86e5f55867fd0c337bdce0a2c4990862cc1719054b # shrinks to initial = "\n\n", ops = [Insert { row: 0, col: 0, text: "\n" }, Insert { row: 2, col: 0, text: "a" }, Undo]
-cc df69f049ad50588c7fdd0a1f574b9d02a11af125c1037da5ae3bfd26bef844ef # shrinks to initial = "", ops = [Insert { row: 0, col: 0, text: "a" }, Delete { row: 0, col: 1, chars: 1 }, Undo]
-cc 215203dfb65be7239bf40d77cd44c8df9c242648b7585806fcde094e421cde2b # shrinks to initial = "\n", ops = [Delete { row: 0, col: 0, chars: 1 }, Undo, Delete { row: 0, col: 0, chars: 0 }]

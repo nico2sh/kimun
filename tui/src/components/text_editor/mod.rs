@@ -1,10 +1,5 @@
 pub mod autocomplete_glue;
 pub mod backend;
-/// The superseded `ratatui-textarea` buffer, kept only as the differential
-/// oracle. Test-gated so the shipped binary does not contain it — and so the
-/// dependency it needs is a dev-dependency.
-#[cfg(test)]
-pub mod edit_buffer;
 pub mod find_bar;
 pub mod find_replace;
 pub mod markdown;
@@ -15,8 +10,6 @@ pub mod parse_incremental;
 pub mod plain_keys;
 mod revisions;
 pub mod rope_buffer;
-#[cfg(test)]
-mod rope_buffer_differential;
 pub mod typing_run;
 use revisions::Revisions;
 pub mod snapshot;
@@ -1811,7 +1804,7 @@ impl TextEditorComponent {
         }
         self.selection = ta.selection_range();
         // Mouse handling moves the cursor / selection but does not insert
-        // text — `ratatui-textarea` mouse handling is click/drag/scroll only.
+        // text — click, drag and scroll are all it produces.
         EventState::Consumed
     }
 }
@@ -2700,9 +2693,11 @@ mod tests {
 
     #[test]
     fn wrap_undo_is_two_steps_back_to_original() {
-        // Documented trade-off: ratatui-textarea has no edit grouping, so a
-        // wrap is delete+insert = two history entries (same as bold/italic
-        // via apply_text_action). Two undos must restore the original text.
+        // A wrap is delete+insert, and the two are not committed as one
+        // transaction, so it costs two history entries (same as bold/italic via
+        // apply_text_action). This was forced when the incumbent had no edit
+        // grouping at all; it is now a choice, and one worth revisiting, since
+        // the engine can group them. Until it is, two undos restore the original.
         let mut editor = make_editor();
         editor.set_text("hello world".to_string());
         select_range(&mut editor, (0, 0), (0, 5));
