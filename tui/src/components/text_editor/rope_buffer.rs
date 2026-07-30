@@ -3,9 +3,11 @@
 //!
 //! This exists so the engine swap does not have to happen everywhere at once.
 //! It keeps every method name and `(row, col)` signature the `TextArea`-backed
-//! buffer had, so `vim.rs`, `find_bar.rs` and the component compile against it
-//! unchanged, and `tests/rope_buffer_differential.rs` holds it to the incumbent's
-//! behaviour operation by operation.
+//! buffer had, so `vim.rs`, `find_bar.rs` and the component compiled against it
+//! unchanged. A differential proptest held it to the incumbent's behaviour
+//! operation by operation until the migration landed; it found seven real
+//! defects, three of them kimün's own, and was removed with the dependency it
+//! needed.
 //!
 //! Nothing here mirrors the text into a second representation. Callers that want
 //! rows ask for them ([`RopeBuffer::rows`]) and pay for them there; the buffer
@@ -40,14 +42,6 @@ pub struct EditOutcome {
     /// **nvim** backend reports lines and not changes, so it leaves this `None`
     /// and its consumer falls back to a diff.
     pub damage: Option<std::ops::Range<usize>>,
-}
-
-impl EditOutcome {
-    /// Nothing happened. Used by the superseded buffer, which is test-gated.
-    #[cfg(test)]
-    pub(super) fn unchanged() -> Self {
-        Self::default()
-    }
 }
 
 /// Whether a delete fills the register it removed text from.

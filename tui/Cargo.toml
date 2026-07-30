@@ -61,10 +61,6 @@ sha2 = "0.10"
 self-replace = "1"
 
 [dev-dependencies]
-# The engine this replaced, kept only as the differential oracle in
-# `rope_buffer_differential.rs`. A dev-dependency now: the shipped binary no
-# longer contains it. Goes when the oracle does.
-ratatui-textarea = { version = "0.9.2", features = ["search"] }
 tempfile = "3"
 proptest = "1"
 criterion = { version = "0.5", features = ["html_reports"] }

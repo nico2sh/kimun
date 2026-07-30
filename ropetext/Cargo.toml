@@ -19,13 +19,12 @@ unicode-width = "0.2"
 
 [dev-dependencies]
 proptest = "1"
-# Oracle for `tests/differential.rs` only, and temporary: it is the implementation
-# this crate replaces, kept just long enough to prove the replacement agrees with
-# it on the operations both define. Remove once the migration lands. Nothing in
-# `src/` may reference it.
-ratatui-textarea = "0.9.2"
 criterion = { version = "0.5", features = ["html_reports"] }
 
 [[bench]]
 name = "layout"
+harness = false
+
+[[bench]]
+name = "edit"
 harness = false

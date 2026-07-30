@@ -20,9 +20,9 @@ use crate::components::autocomplete::AcceptAction;
 /// Both `delete_str` and `cut` write the removed text into the
 /// buffer's register (see `RopeBuffer::delete_str`
 /// — `self.yank = removed.clone().into()`). To avoid clobbering
-/// anything the user had previously yanked (Ctrl+X / Ctrl+C →
-/// ratatui-textarea yank ring), this function snapshots the yank
-/// buffer before the delete and restores it afterwards.
+/// anything the user had previously yanked (Ctrl+X / Ctrl+C), this
+/// function snapshots the yank buffer before the delete and restores
+/// it afterwards.
 pub fn apply_accept_to_textarea(ta: &mut RopeBuffer, action: &AcceptAction) {
     // Cloning the text is a pointer copy, which is what lets the byte offsets
     // be resolved against the buffer while the buffer is being mutated. The
@@ -124,8 +124,8 @@ mod tests {
     #[test]
     fn apply_accept_preserves_textarea_yank_buffer() {
         // User Ctrl+X's some text into the yank ring, then accepts an
-        // autocomplete suggestion. The yank buffer must survive — the
-        // ratatui-textarea `delete_str` overwrites it by default.
+        // autocomplete suggestion. The yank buffer must survive —
+        // `RopeBuffer::delete_str` overwrites it by default.
         let mut ta = RopeBuffer::new(ropetext::Text::from("see [[me"));
         ta.set_yank_text("previously yanked text");
         ta.move_cursor(CursorMove::End);

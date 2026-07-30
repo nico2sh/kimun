@@ -44,9 +44,10 @@ pub enum OverlayMsg {
     Consumed,
 }
 
-// No `Send` bound: `EditorScreen` (which hosts overlays) is itself non-`Send`
-// because of its `ratatui-textarea` buffer (see `AppScreen` in `app_screen/mod.rs`),
-// and it is only ever driven on the main `block_on` future, never spawned.
+// No `Send` bound: overlays are only ever driven on the main `block_on` future,
+// never spawned. Note the direction — this is what makes `EditorScreen`
+// non-`Send`, rather than a consequence of it. The buffer that originally forced
+// the relaxation is gone (see `AppScreen` in `app_screen/mod.rs`).
 pub trait Overlay {
     fn kind(&self) -> OverlayKind;
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState;
