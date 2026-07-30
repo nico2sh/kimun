@@ -12,6 +12,7 @@ pub mod nvim_decode;
 pub mod nvim_host;
 pub mod nvim_rpc;
 pub mod parse_incremental;
+pub mod plain_keys;
 mod revisions;
 pub mod rope_buffer;
 #[cfg(test)]
@@ -104,24 +105,6 @@ fn has_trigger_before_cursor(line: &str, col: usize) -> bool {
         .chars()
         .rev()
         .any(|c| c == '[' || c == '#')
-}
-
-/// Move or extend the selection by `movement`.
-///
-/// If `shift` is held and no selection is currently active, anchors the selection
-/// first; otherwise the existing anchor is kept. Without `shift`, any active
-/// selection is cancelled before the cursor moves.
-macro_rules! cursor_move {
-    ($ta:expr, $mv:expr, $shift:expr) => {{
-        if $shift {
-            if $ta.selection_range().is_none() {
-                $ta.start_selection();
-            }
-        } else {
-            $ta.cancel_selection();
-        }
-        $ta.move_cursor($mv);
-    }};
 }
 
 use self::backend::BackendState;
@@ -1621,56 +1604,6 @@ impl TextEditorComponent {
             }
         }
 
-        let Some(ta) = self.backend.as_textarea_mut() else {
-            unreachable!("handle_textarea_key called with non-Textarea backend")
-        };
-
-        // macOS-style navigation shortcuts not handled by ratatui-textarea.
-        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-        let handled = match (key.modifiers & !KeyModifiers::SHIFT, key.code) {
-            (KeyModifiers::ALT, KeyCode::Left) => {
-                cursor_move!(ta, CursorMove::WordBack, shift);
-                true
-            }
-            (KeyModifiers::ALT, KeyCode::Right) => {
-                cursor_move!(ta, CursorMove::WordForward, shift);
-                true
-            }
-            // Emacs-style word motions. macOS terminals (Terminal.app, Ghostty)
-            // translate Option+Left/Right into `Esc b` / `Esc f` by default,
-            // which crossterm reports as Alt+b / Alt+f. The shifted variants
-            // arrive as the uppercase char (with SHIFT set, so `shift` holds).
-            (KeyModifiers::ALT, KeyCode::Char('b') | KeyCode::Char('B')) => {
-                cursor_move!(ta, CursorMove::WordBack, shift);
-                true
-            }
-            (KeyModifiers::ALT, KeyCode::Char('f') | KeyCode::Char('F')) => {
-                cursor_move!(ta, CursorMove::WordForward, shift);
-                true
-            }
-            (KeyModifiers::SUPER, KeyCode::Left) => {
-                cursor_move!(ta, CursorMove::Head, shift);
-                true
-            }
-            (KeyModifiers::SUPER, KeyCode::Right) => {
-                cursor_move!(ta, CursorMove::End, shift);
-                true
-            }
-            (KeyModifiers::SUPER, KeyCode::Up) => {
-                cursor_move!(ta, CursorMove::Top, shift);
-                true
-            }
-            (KeyModifiers::SUPER, KeyCode::Down) => {
-                cursor_move!(ta, CursorMove::Bottom, shift);
-                true
-            }
-            _ => false,
-        };
-        if handled {
-            self.selection = ta.selection_range();
-            return EventState::Consumed;
-        }
-
         // FocusSidebar / FocusEditor shortcuts are intercepted at the
         // EditorScreen level for directional navigation.
 
@@ -1681,101 +1614,6 @@ impl TextEditorComponent {
         // moved the cursor, or did literally nothing (e.g. Ctrl+Z on an empty
         // undo stack) — so the revision clock is not
         // bumped on true no-ops.
-        enum ShortcutOutcome {
-            NoOp,
-            CursorOnly,
-            TextMutated,
-        }
-        let outcome: Option<ShortcutOutcome> =
-            match (key.modifiers & !KeyModifiers::SHIFT, key.code) {
-                // --- Cursor movement (Shift extends the selection) ---
-                (KeyModifiers::NONE, KeyCode::Left) => {
-                    cursor_move!(ta, CursorMove::Back, shift);
-                    Some(ShortcutOutcome::CursorOnly)
-                }
-                (KeyModifiers::NONE, KeyCode::Right) => {
-                    cursor_move!(ta, CursorMove::Forward, shift);
-                    Some(ShortcutOutcome::CursorOnly)
-                }
-                (KeyModifiers::NONE, KeyCode::Up) => {
-                    cursor_move!(ta, CursorMove::Up, shift);
-                    Some(ShortcutOutcome::CursorOnly)
-                }
-                (KeyModifiers::NONE, KeyCode::Down) => {
-                    cursor_move!(ta, CursorMove::Down, shift);
-                    Some(ShortcutOutcome::CursorOnly)
-                }
-                (KeyModifiers::NONE, KeyCode::Home) => {
-                    cursor_move!(ta, CursorMove::Head, shift);
-                    Some(ShortcutOutcome::CursorOnly)
-                }
-                (KeyModifiers::NONE, KeyCode::End) => {
-                    cursor_move!(ta, CursorMove::End, shift);
-                    Some(ShortcutOutcome::CursorOnly)
-                }
-                (KeyModifiers::NONE, KeyCode::PageUp) => {
-                    cursor_move!(ta, CursorMove::ParagraphBack, shift);
-                    Some(ShortcutOutcome::CursorOnly)
-                }
-                (KeyModifiers::NONE, KeyCode::PageDown) => {
-                    cursor_move!(ta, CursorMove::ParagraphForward, shift);
-                    Some(ShortcutOutcome::CursorOnly)
-                }
-                // Word navigation (Ctrl+arrow, Windows/Linux style)
-                (KeyModifiers::CONTROL, KeyCode::Left) => {
-                    cursor_move!(ta, CursorMove::WordBack, shift);
-                    Some(ShortcutOutcome::CursorOnly)
-                }
-                (KeyModifiers::CONTROL, KeyCode::Right) => {
-                    cursor_move!(ta, CursorMove::WordForward, shift);
-                    Some(ShortcutOutcome::CursorOnly)
-                }
-                // Document start / end
-                (KeyModifiers::CONTROL, KeyCode::Home) => {
-                    cursor_move!(ta, CursorMove::Top, shift);
-                    Some(ShortcutOutcome::CursorOnly)
-                }
-                (KeyModifiers::CONTROL, KeyCode::End) => {
-                    cursor_move!(ta, CursorMove::Bottom, shift);
-                    Some(ShortcutOutcome::CursorOnly)
-                }
-                // Select all
-                (KeyModifiers::CONTROL, KeyCode::Char('a')) => {
-                    ta.move_cursor(CursorMove::Top);
-                    ta.start_selection();
-                    ta.move_cursor(CursorMove::Bottom);
-                    Some(ShortcutOutcome::CursorOnly)
-                }
-                // Delete word before / after cursor. Returns `false` when at a
-                // word boundary with nothing to delete — no buffer/cursor change.
-                (KeyModifiers::CONTROL, KeyCode::Backspace)
-                | (KeyModifiers::ALT, KeyCode::Backspace) => {
-                    if ta.delete_word() {
-                        Some(ShortcutOutcome::TextMutated)
-                    } else {
-                        Some(ShortcutOutcome::NoOp)
-                    }
-                }
-                (KeyModifiers::CONTROL, KeyCode::Delete) | (KeyModifiers::ALT, KeyCode::Delete) => {
-                    if ta.delete_next_word() {
-                        Some(ShortcutOutcome::TextMutated)
-                    } else {
-                        Some(ShortcutOutcome::NoOp)
-                    }
-                }
-                _ => None,
-            };
-        if let Some(kind) = outcome {
-            self.selection = ta.selection_range();
-            match kind {
-                ShortcutOutcome::NoOp | ShortcutOutcome::CursorOnly => {}
-                ShortcutOutcome::TextMutated => {
-                    self.apply_edit_outcome();
-                }
-            }
-            return EventState::Consumed;
-        }
-
         // BackTab is what most terminals emit for Shift+Tab.
         match (key.modifiers, key.code) {
             (m, KeyCode::Tab)
@@ -1811,14 +1649,20 @@ impl TextEditorComponent {
         let Some(ta) = self.backend.as_textarea_mut() else {
             unreachable!("handle_textarea_key called with non-Textarea backend")
         };
-        // `input_without_shortcuts` returns `false` for keys the textarea
-        // ignores (F1-F12, KeyCode::Null, modifier-only releases, IME
-        // composing events). Only bump `text_revision` when the buffer
-        // actually changed — otherwise harmless keys would silently flip
-        // the editor to dirty and trigger needless autosaves.
-        ta.apply_plain_key(*key);
-        self.selection = ta.selection_range();
-        self.apply_edit_outcome();
+        // Last: what the key means to the plain backend. It runs *after* the
+        // component's own claims — `Tab` indents rows, `Enter` may continue a
+        // list, an opening bracket over a selection wraps it — because those are
+        // the same keys and the component's reading of them wins.
+        if let Some(op) = plain_keys::operation(*key) {
+            let changed = plain_keys::apply(op, ta);
+            self.selection = ta.selection_range();
+            if changed {
+                self.apply_edit_outcome();
+            }
+        }
+        // A key the table declines — a function key, a modifier-only release, an
+        // IME composition event — leaves the buffer alone, so a harmless keypress
+        // cannot mark the note dirty and trigger an autosave.
         EventState::Consumed
     }
 
