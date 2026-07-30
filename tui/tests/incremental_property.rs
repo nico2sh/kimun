@@ -12,11 +12,7 @@ use proptest::prelude::*;
 use ratatui::layout::Rect;
 use std::num::NonZeroU64;
 
-fn snap_for<'a>(
-    lines: &'a [String],
-    cursor: (usize, usize),
-    generation: u64,
-) -> EditorSnapshot<'a> {
+fn snap_for(lines: &[String], cursor: (usize, usize), generation: u64) -> EditorSnapshot {
     let rev = NonZeroU64::new(generation.max(1)).unwrap();
     let clamped = if lines.is_empty() {
         (0, 0)

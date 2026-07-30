@@ -76,7 +76,7 @@ fn ctrl_c_in_visual_copies_the_inclusive_selection_and_exits_to_normal() {
     }
     assert_eq!(e.mode, EditorMode::Normal, "vim's Ctrl-C is Esc");
     assert_eq!(
-        t.lines(),
+        t.rows(),
         ["hello world", "second line"],
         "copy must not edit"
     );
@@ -91,7 +91,7 @@ fn ctrl_x_in_visual_cuts_and_reports_the_removed_text() {
         VimKeyOutcome::Host(VimHostAction::ClipboardCut(s)) => assert_eq!(s, "hello"),
         o => panic!("got {o:?}"),
     }
-    assert_eq!(t.lines()[0], " world");
+    assert_eq!(t.rows()[0], " world");
     assert_eq!(e.mode, EditorMode::Normal);
 }
 
@@ -141,7 +141,7 @@ fn ctrl_v_in_visual_leaves_the_selection_for_the_host_to_replace() {
         VimKeyOutcome::Host(VimHostAction::ClipboardPaste)
     );
     assert_eq!(
-        t.lines()[0],
+        t.rows()[0],
         "hello world",
         "nothing may be destroyed before there is something to replace it"
     );
@@ -164,7 +164,7 @@ fn ctrl_v_with_an_unusable_clipboard_leaves_the_buffer_untouched() {
     e.handle_key(&ctrl('v'), &mut t);
     // The host reads the clipboard, finds nothing, and returns without
     // calling `paste_text` — simulated here by simply doing nothing.
-    assert_eq!(t.lines()[0], "hello world");
+    assert_eq!(t.rows()[0], "hello world");
 }
 
 #[test]
@@ -179,7 +179,7 @@ fn visual_line_ctrl_x_takes_the_whole_line_leaving_no_blank() {
         o => panic!("got {o:?}"),
     }
     assert_eq!(
-        t.lines(),
+        t.rows(),
         ["second line"],
         "the line's newline goes with it — no stray blank line"
     );
@@ -201,7 +201,7 @@ fn visual_line_ctrl_x_on_the_last_line_leaves_no_blank_either() {
         }
         o => panic!("got {o:?}"),
     }
-    assert_eq!(t.lines(), ["hello world"]);
+    assert_eq!(t.rows(), ["hello world"]);
 }
 
 #[test]
@@ -234,7 +234,7 @@ fn ctrl_c_abandons_a_one_key_continuation_instead_of_being_its_target() {
     let mut t = ta();
     e.handle_key(&key('r'), &mut t);
     e.handle_key(&ctrl('c'), &mut t);
-    assert_eq!(t.lines()[0], "hello world", "r must have been abandoned");
+    assert_eq!(t.rows()[0], "hello world", "r must have been abandoned");
     assert!(e.awaiting.is_none());
 }
 
@@ -402,7 +402,7 @@ fn o_opens_line_below_in_insert() {
     let out = e.handle_key(&key('o'), &mut t);
     assert_eq!(*e.mode(), EditorMode::Insert);
     assert_eq!(out, VimKeyOutcome::TextMutated);
-    assert_eq!(t.lines().len(), 3);
+    assert_eq!(t.rows().len(), 3);
     assert_eq!(super::super::cursor_tuple(&t).0, 1);
 }
 
@@ -503,7 +503,7 @@ fn dw_deletes_word() {
     let mut t = RopeBuffer::new(Text::from("hello world"));
     e.handle_key(&key('d'), &mut t);
     e.handle_key(&key('w'), &mut t);
-    assert_eq!(t.lines(), &["world"]);
+    assert_eq!(t.rows(), &["world"]);
 }
 
 #[test]
@@ -512,7 +512,7 @@ fn dd_deletes_line_linewise() {
     let mut t = RopeBuffer::new(Text::from("one\ntwo\nthree"));
     e.handle_key(&key('d'), &mut t);
     e.handle_key(&key('d'), &mut t);
-    assert_eq!(t.lines(), &["two", "three"]);
+    assert_eq!(t.rows(), &["two", "three"]);
     let reg = e.registers.read().expect("dd must fill the register");
     assert_eq!(reg.kind, RegisterKind::Linewise);
     assert_eq!(reg.text, "one\n");
@@ -525,7 +525,7 @@ fn yy_then_p_duplicates_line() {
     e.handle_key(&key('y'), &mut t);
     e.handle_key(&key('y'), &mut t);
     e.handle_key(&key('p'), &mut t);
-    assert_eq!(t.lines(), &["one", "one", "two"]);
+    assert_eq!(t.rows(), &["one", "one", "two"]);
 }
 
 #[test]
@@ -538,7 +538,7 @@ fn cw_deletes_word_and_enters_insert() {
     // Vim `cw` = `ce`: deletes up to end of word (exclusive of trailing
     // space), so " world" remains (space preserved). This matches vim's
     // actual cw = ce behaviour.
-    assert_eq!(t.lines(), &[" world"]);
+    assert_eq!(t.rows(), &[" world"]);
 }
 
 // ── Linewise delete/paste tests ──────────────────────────────────────────
@@ -551,7 +551,7 @@ fn charwise_p_pastes_after_cursor() {
     e.handle_key(&key('y'), &mut t);
     e.handle_key(&key('l'), &mut t);
     e.handle_key(&key('p'), &mut t);
-    assert_eq!(t.lines(), &["aabc"]);
+    assert_eq!(t.rows(), &["aabc"]);
 }
 
 #[test]
@@ -561,7 +561,7 @@ fn dd_on_last_line_removes_it() {
     e.handle_key(&key('G'), &mut t); // to last line
     e.handle_key(&key('d'), &mut t);
     e.handle_key(&key('d'), &mut t);
-    assert_eq!(t.lines(), &["one", "two"]);
+    assert_eq!(t.rows(), &["one", "two"]);
 }
 
 #[test]
@@ -570,7 +570,7 @@ fn dd_on_only_line_leaves_empty() {
     let mut t = RopeBuffer::new(Text::from("only"));
     e.handle_key(&key('d'), &mut t);
     e.handle_key(&key('d'), &mut t);
-    assert_eq!(t.lines(), &[""]);
+    assert_eq!(t.rows(), &[""]);
 }
 
 #[test]
@@ -581,7 +581,7 @@ fn linewise_2p_inserts_two_copies() {
     e.handle_key(&key('y'), &mut t); // yank "one" linewise
     e.handle_key(&key('2'), &mut t);
     e.handle_key(&key('p'), &mut t);
-    assert_eq!(t.lines(), &["one", "one", "one", "two"]);
+    assert_eq!(t.rows(), &["one", "one", "one", "two"]);
 }
 
 #[test]
@@ -592,7 +592,7 @@ fn yy_last_line_then_p_duplicates() {
     e.handle_key(&key('y'), &mut t);
     e.handle_key(&key('y'), &mut t);
     e.handle_key(&key('p'), &mut t);
-    assert_eq!(t.lines(), &["one", "two", "two"]);
+    assert_eq!(t.rows(), &["one", "two", "two"]);
 }
 
 // ── Single-key edit tests ────────────────────────────────────────────────
@@ -602,7 +602,7 @@ fn x_deletes_char_under_cursor() {
     let mut e = VimEngine::default();
     let mut t = RopeBuffer::new(Text::from("abc"));
     e.handle_key(&key('x'), &mut t);
-    assert_eq!(t.lines(), &["bc"]);
+    assert_eq!(t.rows(), &["bc"]);
 }
 
 #[test]
@@ -611,7 +611,7 @@ fn r_replaces_char() {
     let mut t = RopeBuffer::new(Text::from("abc"));
     e.handle_key(&key('r'), &mut t);
     e.handle_key(&key('Z'), &mut t);
-    assert_eq!(t.lines(), &["Zbc"]);
+    assert_eq!(t.rows(), &["Zbc"]);
     assert_eq!(*e.mode(), EditorMode::Normal);
 }
 
@@ -621,7 +621,7 @@ fn u_undoes_last_edit() {
     let mut t = RopeBuffer::new(Text::from("abc"));
     e.handle_key(&key('x'), &mut t);
     e.handle_key(&key('u'), &mut t);
-    assert_eq!(t.lines(), &["abc"]);
+    assert_eq!(t.rows(), &["abc"]);
 }
 
 #[test]
@@ -629,7 +629,7 @@ fn tilde_toggles_case() {
     let mut e = VimEngine::default();
     let mut t = RopeBuffer::new(Text::from("abc"));
     e.handle_key(&key('~'), &mut t);
-    assert_eq!(t.lines(), &["Abc"]);
+    assert_eq!(t.rows(), &["Abc"]);
 }
 
 // ── Find (f/t/;/,) tests ─────────────────────────────────────────────────
@@ -650,7 +650,7 @@ fn df_deletes_through_char() {
     e.handle_key(&key('d'), &mut t);
     e.handle_key(&key('f'), &mut t);
     e.handle_key(&key(','), &mut t);
-    assert_eq!(t.lines(), &[" world"]);
+    assert_eq!(t.rows(), &[" world"]);
 }
 
 #[test]
@@ -684,7 +684,7 @@ fn diw_deletes_inner_word() {
     e.handle_key(&key('d'), &mut t);
     e.handle_key(&key('i'), &mut t);
     e.handle_key(&key('w'), &mut t);
-    assert_eq!(t.lines(), &["foo  baz"]);
+    assert_eq!(t.rows(), &["foo  baz"]);
 }
 
 #[test]
@@ -697,7 +697,7 @@ fn ci_quote_changes_inside_quotes() {
     e.handle_key(&key('c'), &mut t);
     e.handle_key(&key('i'), &mut t);
     e.handle_key(&key('"'), &mut t);
-    assert_eq!(t.lines(), &["say \"\" now"]);
+    assert_eq!(t.rows(), &["say \"\" now"]);
     assert_eq!(*e.mode(), EditorMode::Insert);
 }
 
@@ -710,7 +710,7 @@ fn di_paren_deletes_inside_parens() {
     e.handle_key(&key('d'), &mut t);
     e.handle_key(&key('i'), &mut t);
     e.handle_key(&key('('), &mut t);
-    assert_eq!(t.lines(), &["foo()baz"]);
+    assert_eq!(t.rows(), &["foo()baz"]);
 }
 
 #[test]
@@ -721,7 +721,7 @@ fn daw_deletes_word_and_trailing_space() {
     e.handle_key(&key('d'), &mut t);
     e.handle_key(&key('a'), &mut t);
     e.handle_key(&key('w'), &mut t);
-    assert_eq!(t.lines(), &["foo baz"]);
+    assert_eq!(t.rows(), &["foo baz"]);
 }
 
 // ── Matching pair (%) tests ──────────────────────────────────────────────
@@ -767,7 +767,7 @@ fn v_motion_d_deletes_selection() {
     e.handle_key(&key('l'), &mut t); // cursor → col 1
     e.handle_key(&key('l'), &mut t); // cursor → col 2, inclusive covers "hel"
     e.handle_key(&key('d'), &mut t); // delete "hel"
-    assert_eq!(t.lines(), &["lo"]); // inclusive: deletes cols 0,1,2 ("hel")
+    assert_eq!(t.rows(), &["lo"]); // inclusive: deletes cols 0,1,2 ("hel")
     assert_eq!(*e.mode(), EditorMode::Normal);
 }
 
@@ -778,7 +778,7 @@ fn V_then_d_deletes_line() {
     let mut t = RopeBuffer::new(Text::from("one\ntwo"));
     e.handle_key(&key('V'), &mut t);
     e.handle_key(&key('d'), &mut t);
-    assert_eq!(t.lines(), &["two"]);
+    assert_eq!(t.rows(), &["two"]);
     assert_eq!(*e.mode(), EditorMode::Normal);
 }
 
@@ -793,9 +793,9 @@ fn visual_y_yanks_and_returns_to_normal() {
     e.handle_key(&key('y'), &mut t); // yank "he" (2 chars), mode → Normal
     assert_eq!(*e.mode(), EditorMode::Normal);
     // p pastes the yanked "he" after current cursor
-    let before_len: usize = t.lines().iter().map(|l| l.len()).sum();
+    let before_len: usize = t.rows().iter().map(|l| l.len()).sum();
     e.handle_key(&key('p'), &mut t);
-    let after_len: usize = t.lines().iter().map(|l| l.len()).sum();
+    let after_len: usize = t.rows().iter().map(|l| l.len()).sum();
     // buffer grew by exactly 2 chars (the yanked "he")
     assert_eq!(after_len, before_len + 2);
 }
@@ -821,7 +821,7 @@ fn visual_c_enters_insert_after_delete() {
     e.handle_key(&key('l'), &mut t); // cursor col 1, inclusive covers "he"
     e.handle_key(&key('c'), &mut t); // delete "he" (inclusive), enter Insert
     assert_eq!(*e.mode(), EditorMode::Insert);
-    assert_eq!(t.lines(), &["llo"]); // inclusive: deletes cols 0,1 ("he")
+    assert_eq!(t.rows(), &["llo"]); // inclusive: deletes cols 0,1 ("he")
 }
 
 // ── Indent/outdent tests ─────────────────────────────────────────────────
@@ -832,7 +832,7 @@ fn indent_line_adds_spaces() {
     let mut t = RopeBuffer::new(Text::from("x"));
     e.handle_key(&key('>'), &mut t);
     e.handle_key(&key('>'), &mut t);
-    assert_eq!(t.lines(), &["    x"]);
+    assert_eq!(t.rows(), &["    x"]);
 }
 
 #[test]
@@ -861,7 +861,7 @@ fn outdent_keeps_cursor_over_same_char() {
     e.handle_key(&key('x'), &mut t); // ON 'x' (col 4)
     e.handle_key(&key('<'), &mut t);
     e.handle_key(&key('<'), &mut t);
-    assert_eq!(t.lines(), &["x"]);
+    assert_eq!(t.rows(), &["x"]);
     assert_eq!(super::super::cursor_tuple(&t).1, 0); // still on 'x'
 }
 
@@ -871,7 +871,7 @@ fn outdent_removes_spaces() {
     let mut t = RopeBuffer::new(Text::from("        x")); // 8 spaces
     e.handle_key(&key('<'), &mut t);
     e.handle_key(&key('<'), &mut t);
-    assert_eq!(t.lines(), &["    x"]); // removed 4
+    assert_eq!(t.rows(), &["    x"]); // removed 4
 }
 
 #[test]
@@ -891,7 +891,7 @@ fn dot_repeats_x() {
     let mut t = RopeBuffer::new(Text::from("abcdef"));
     e.handle_key(&key('x'), &mut t);
     e.handle_key(&key('.'), &mut t);
-    assert_eq!(t.lines(), &["cdef"]);
+    assert_eq!(t.rows(), &["cdef"]);
 }
 
 #[test]
@@ -901,7 +901,7 @@ fn dot_repeats_dw() {
     e.handle_key(&key('d'), &mut t);
     e.handle_key(&key('w'), &mut t); // delete "one "
     e.handle_key(&key('.'), &mut t); // delete "two "
-    assert_eq!(t.lines(), &["three four"]);
+    assert_eq!(t.rows(), &["three four"]);
 }
 
 #[test]
@@ -916,7 +916,7 @@ fn dot_repeats_change_with_typed_text() {
     e.handle_key(&esc(), &mut t); // capture "X"
     e.handle_key(&key('w'), &mut t); // move to "bar"
     e.handle_key(&key('.'), &mut t); // repeat cw+X
-    assert_eq!(t.lines(), &["X X"]);
+    assert_eq!(t.rows(), &["X X"]);
 }
 
 #[test]
@@ -931,7 +931,7 @@ fn dot_repeats_multiline_change() {
     e.handle_key(&esc(), &mut t); // captures "a\nb"
     // Buffer is now ["a", "b bar"]; cursor stepped back to col 0 of row 1 ("b bar").
     // Confirm the multi-line buffer state from the insert:
-    assert_eq!(t.lines(), &["a", "b bar"]);
+    assert_eq!(t.rows(), &["a", "b bar"]);
 
     // Verify replay: position on "bar", run `.`, should produce "a\nb" again.
     // Move to word "bar" (it is at col 2 of row 1).
@@ -940,9 +940,9 @@ fn dot_repeats_multiline_change() {
     // After replay the buffer should have "a\nb" inserted in place of "bar":
     // row 1 was "b bar", cw from "bar" removes "bar", inserts "a\nb" → ["a", "b a", "b"]
     assert!(
-        t.lines().len() >= 3,
+        t.rows().len() >= 3,
         "replay of multiline insert should produce >=3 lines: {:?}",
-        t.lines()
+        t.rows()
     );
 }
 
@@ -1034,7 +1034,7 @@ fn di_paren_on_empty_line_does_not_panic() {
     e.handle_key(&key('d'), &mut t);
     e.handle_key(&key('i'), &mut t);
     e.handle_key(&key('('), &mut t); // must not panic; no-op
-    assert_eq!(t.lines(), &[""]);
+    assert_eq!(t.rows(), &[""]);
 }
 
 #[test]
@@ -1061,12 +1061,12 @@ fn esc_clears_pending_operator_object_in_normal() {
     e.handle_key(&key('i'), &mut t); // object kind pending (NOT insert — operator pending)
     e.handle_key(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &mut t); // cancel
     // buffer unchanged (no diw happened)
-    assert_eq!(t.lines(), &["foo bar baz"]);
+    assert_eq!(t.rows(), &["foo bar baz"]);
     // and we're back to clean Normal: a plain motion works, mode still Normal
     e.handle_key(&key('w'), &mut t);
     assert_eq!(*e.mode(), EditorMode::Normal);
     assert_eq!(
-        t.lines(),
+        t.rows(),
         &["foo bar baz"],
         "w after Esc must be a motion, not diw"
     );
@@ -1082,7 +1082,7 @@ fn di_paren_nested_selects_inner_of_outer() {
     e.handle_key(&key('d'), &mut t);
     e.handle_key(&key('i'), &mut t);
     e.handle_key(&key('('), &mut t);
-    assert_eq!(t.lines(), &["()"]); // outer kept, inner content "(x)" deleted
+    assert_eq!(t.rows(), &["()"]); // outer kept, inner content "(x)" deleted
 }
 
 #[test]
@@ -1094,7 +1094,7 @@ fn di_paren_from_inside_nested() {
     e.handle_key(&key('d'), &mut t);
     e.handle_key(&key('i'), &mut t);
     e.handle_key(&key('('), &mut t);
-    assert_eq!(t.lines(), &["(())"]); // inner content "x" deleted
+    assert_eq!(t.rows(), &["(())"]); // inner content "x" deleted
 }
 
 // ── Bug B: di" in gap between pairs ─────────────────────────────────────
@@ -1111,7 +1111,7 @@ fn di_quote_in_gap_is_noop() {
     e.handle_key(&key('d'), &mut t);
     e.handle_key(&key('i'), &mut t);
     e.handle_key(&key('"'), &mut t);
-    assert_eq!(t.lines(), &["\"foo\" \"bar\""]); // unchanged (no-op)
+    assert_eq!(t.rows(), &["\"foo\" \"bar\""]); // unchanged (no-op)
 }
 
 #[test]
@@ -1124,7 +1124,7 @@ fn di_quote_inside_still_works() {
     e.handle_key(&key('d'), &mut t);
     e.handle_key(&key('i'), &mut t);
     e.handle_key(&key('"'), &mut t);
-    assert_eq!(t.lines(), &["\"foo\" \"\""]); // bar deleted, foo intact
+    assert_eq!(t.rows(), &["\"foo\" \"\""]); // bar deleted, foo intact
 }
 
 // ── Bug C: df<last-char> must not join next line ─────────────────────────
@@ -1137,7 +1137,7 @@ fn df_last_char_does_not_join_next_line() {
     e.handle_key(&key('d'), &mut t);
     e.handle_key(&key('f'), &mut t);
     e.handle_key(&key('c'), &mut t);
-    assert_eq!(t.lines(), &["", "xyz"]); // line 0 emptied, newline + line 1 intact
+    assert_eq!(t.rows(), &["", "xyz"]); // line 0 emptied, newline + line 1 intact
 }
 
 // ── Bug D: cc on a single-line buffer ────────────────────────────────────
@@ -1148,7 +1148,7 @@ fn cc_single_line_leaves_one_empty_line() {
     let mut t = RopeBuffer::new(Text::from("hello"));
     e.handle_key(&key('c'), &mut t);
     e.handle_key(&key('c'), &mut t);
-    assert_eq!(t.lines(), &[""]);
+    assert_eq!(t.rows(), &[""]);
     assert_eq!(*e.mode(), EditorMode::Insert);
 }
 
@@ -1159,7 +1159,7 @@ fn cc_middle_line_still_works() {
     e.handle_key(&key('j'), &mut t); // line "two"
     e.handle_key(&key('c'), &mut t);
     e.handle_key(&key('c'), &mut t);
-    assert_eq!(t.lines(), &["one", "", "three"]);
+    assert_eq!(t.rows(), &["one", "", "three"]);
     assert_eq!(*e.mode(), EditorMode::Insert);
 }
 
@@ -1172,7 +1172,7 @@ fn r_on_empty_line_is_noop() {
     e.handle_key(&key('r'), &mut t);
     let out = e.handle_key(&key('Z'), &mut t);
     assert_eq!(out, VimKeyOutcome::NoOp);
-    assert_eq!(t.lines(), &[""]);
+    assert_eq!(t.rows(), &[""]);
 }
 
 // ── P2.G: charwise Visual inclusive tests ────────────────────────────────
@@ -1183,7 +1183,7 @@ fn visual_v_then_d_deletes_char_under_cursor() {
     let mut t = RopeBuffer::new(Text::from("abc"));
     e.handle_key(&key('v'), &mut t); // select just 'a' (cursor col0)
     e.handle_key(&key('d'), &mut t);
-    assert_eq!(t.lines(), &["bc"]); // 'a' deleted (inclusive of cursor char)
+    assert_eq!(t.rows(), &["bc"]); // 'a' deleted (inclusive of cursor char)
 }
 
 #[test]
@@ -1193,7 +1193,7 @@ fn visual_e_then_d_inclusive() {
     e.handle_key(&key('v'), &mut t);
     e.handle_key(&key('e'), &mut t); // cursor on 'o' col4
     e.handle_key(&key('d'), &mut t);
-    assert_eq!(t.lines(), &[" world"]); // "hello" deleted inclusive
+    assert_eq!(t.rows(), &[" world"]); // "hello" deleted inclusive
 }
 
 // ── Bug fix: vim `e` must land ON the last word char (inclusive) ─────────
@@ -1221,7 +1221,7 @@ fn de_deletes_to_word_end_inclusive() {
     let mut t = RopeBuffer::new(Text::from("hello world"));
     e.handle_key(&key('d'), &mut t);
     e.handle_key(&key('e'), &mut t);
-    assert_eq!(t.lines(), &[" world"]); // deletes "hello" inclusive of 'o'
+    assert_eq!(t.rows(), &[" world"]); // deletes "hello" inclusive of 'o'
 }
 
 // ── Bug fix: vim yank leaves cursor at selection start; charwise p never wraps ──
@@ -1251,9 +1251,9 @@ fn charwise_p_after_eol_word_does_not_touch_next_line() {
     e.handle_key(&key('e'), &mut t); // select "bar" (end of line 0)
     e.handle_key(&key('y'), &mut t); // yank; cursor → col 4
     e.handle_key(&key('p'), &mut t); // paste after cursor char 'b'
-    assert_eq!(t.lines()[1], "baz"); // line below UNTOUCHED
-    assert_eq!(t.lines().len(), 2); // no new line, no merge
-    assert_eq!(t.lines()[0], "foo bbarar"); // "bar" pasted after 'b' on line 0 (vim p-after)
+    assert_eq!(t.rows()[1], "baz"); // line below UNTOUCHED
+    assert_eq!(t.rows().len(), 2); // no new line, no merge
+    assert_eq!(t.rows()[0], "foo bbarar"); // "bar" pasted after 'b' on line 0 (vim p-after)
 }
 
 #[test]
@@ -1266,8 +1266,8 @@ fn charwise_p_at_line_end_appends_same_line() {
     e.handle_key(&key('y'), &mut t); // cursor → col 0
     e.handle_key(&key('$'), &mut t); // to last char of line 0 ('b')
     e.handle_key(&key('p'), &mut t); // append "ab" after 'b'
-    assert_eq!(t.lines()[0], "abab");
-    assert_eq!(t.lines()[1], "cd"); // line below untouched
+    assert_eq!(t.rows()[0], "abab");
+    assert_eq!(t.rows()[1], "cd"); // line below untouched
 }
 
 // ── Visual p: replace selection with register ────────────────────────────
@@ -1288,7 +1288,7 @@ fn visual_p_replaces_charwise_selection() {
     e.handle_key(&key('v'), &mut t);
     e.handle_key(&key('e'), &mut t); // select "bar"
     e.handle_key(&key('p'), &mut t);
-    assert_eq!(t.lines(), &["foo foo"]); // "bar" replaced by "foo"
+    assert_eq!(t.rows(), &["foo foo"]); // "bar" replaced by "foo"
     assert_eq!(*e.mode(), EditorMode::Normal);
 }
 
@@ -1307,11 +1307,11 @@ fn visual_p_yanks_replaced_selection() {
     e.handle_key(&key('v'), &mut t);
     e.handle_key(&key('e'), &mut t);
     e.handle_key(&key('p'), &mut t); // "bar" replaced by "foo"; "bar" now yanked
-    assert_eq!(t.lines(), &["foo foo"]);
+    assert_eq!(t.rows(), &["foo foo"]);
     // now paste the replaced "bar" at end of line to prove it's in the register
     e.handle_key(&key('$'), &mut t); // last char ('o', col 6)
     e.handle_key(&key('p'), &mut t); // append "bar" after it
-    assert_eq!(t.lines(), &["foo foobar"]);
+    assert_eq!(t.rows(), &["foo foobar"]);
 }
 
 // ── Cheatsheet motions: g_/5G/5gg, ge/gE, WORD (W/E/B) ───────────────────
@@ -1332,7 +1332,7 @@ fn d_g_underscore_deletes_through_last_non_blank() {
     e.handle_key(&key('d'), &mut t);
     e.handle_key(&key('g'), &mut t);
     e.handle_key(&key('_'), &mut t);
-    assert_eq!(t.lines(), &["  "]); // inclusive of the 'r'
+    assert_eq!(t.rows(), &["  "]); // inclusive of the 'r'
 }
 
 #[test]
@@ -1357,7 +1357,7 @@ fn d_count_G_deletes_lines_through_target() {
     e.handle_key(&key('d'), &mut t);
     e.handle_key(&key('2'), &mut t);
     e.handle_key(&key('G'), &mut t); // delete lines 1..=2 (linewise)
-    assert_eq!(t.lines(), &["three"]);
+    assert_eq!(t.rows(), &["three"]);
 }
 
 #[test]
@@ -1409,7 +1409,7 @@ fn dge_deletes_backward_inclusive_of_cursor() {
     e.handle_key(&key('d'), &mut t);
     e.handle_key(&key('g'), &mut t);
     e.handle_key(&key('e'), &mut t);
-    assert_eq!(t.lines(), &["ab"]);
+    assert_eq!(t.rows(), &["ab"]);
 }
 
 #[test]
@@ -1458,7 +1458,7 @@ fn dW_deletes_whole_WORD() {
     let mut t = RopeBuffer::new(Text::from("foo.bar baz"));
     e.handle_key(&key('d'), &mut t);
     e.handle_key(&key('W'), &mut t);
-    assert_eq!(t.lines(), &["baz"]);
+    assert_eq!(t.rows(), &["baz"]);
 }
 
 #[test]
@@ -1469,7 +1469,7 @@ fn cW_acts_like_cE() {
     e.handle_key(&key('c'), &mut t);
     e.handle_key(&key('W'), &mut t);
     assert_eq!(*e.mode(), EditorMode::Insert);
-    assert_eq!(t.lines(), &[" baz"]); // trailing space preserved (cW = cE)
+    assert_eq!(t.rows(), &[" baz"]); // trailing space preserved (cW = cE)
 }
 
 // ── Awaiting + replace-stack fixes ───────────────────────────────────────
@@ -1504,7 +1504,7 @@ fn replace_backspace_restores_overwritten_char() {
         &mut t,
     );
     e.handle_key(&esc(), &mut t);
-    assert_eq!(t.lines(), &["Xbc"]); // 'b' restored (vim replace stack)
+    assert_eq!(t.rows(), &["Xbc"]); // 'b' restored (vim replace stack)
 }
 
 #[test]
@@ -1519,7 +1519,7 @@ fn replace_backspace_removes_appended_char() {
         &mut t,
     );
     e.handle_key(&esc(), &mut t);
-    assert_eq!(t.lines(), &["X"]); // appended char removed, not restored
+    assert_eq!(t.rows(), &["X"]); // appended char removed, not restored
 }
 
 // ── Pure WORD-scanner unit tests (no TextArea needed) ────────────────────
@@ -1584,7 +1584,7 @@ fn visual_counted_motion_extends_by_count() {
     e.handle_key(&key('3'), &mut t);
     e.handle_key(&key('l'), &mut t); // cursor → col 3, inclusive covers "abcd"
     e.handle_key(&key('d'), &mut t);
-    assert_eq!(t.lines(), &["ef"]);
+    assert_eq!(t.rows(), &["ef"]);
 }
 
 #[test]
@@ -1597,7 +1597,7 @@ fn gUu_aborts_without_running_undo() {
     e.handle_key(&key('g'), &mut t);
     e.handle_key(&key('U'), &mut t); // Uppercase pending
     e.handle_key(&key('u'), &mut t); // mismatch — must NOT run Undo
-    assert_eq!(t.lines(), &["b"]); // x not reverted
+    assert_eq!(t.rows(), &["b"]); // x not reverted
 }
 
 #[test]
@@ -1608,10 +1608,10 @@ fn dx_and_dp_abort_with_operator_pending() {
     e.handle_key(&key('l'), &mut t); // register = "a"
     e.handle_key(&key('d'), &mut t);
     e.handle_key(&key('x'), &mut t); // vim aborts — nothing deleted
-    assert_eq!(t.lines(), &["abc"]);
+    assert_eq!(t.rows(), &["abc"]);
     e.handle_key(&key('d'), &mut t);
     e.handle_key(&key('p'), &mut t); // vim aborts — nothing pasted
-    assert_eq!(t.lines(), &["abc"]);
+    assert_eq!(t.rows(), &["abc"]);
 }
 
 #[test]
@@ -1621,7 +1621,7 @@ fn dge_at_buffer_start_is_noop() {
     e.handle_key(&key('d'), &mut t);
     e.handle_key(&key('g'), &mut t);
     e.handle_key(&key('e'), &mut t); // motion fails → whole op no-op
-    assert_eq!(t.lines(), &["foo"]);
+    assert_eq!(t.rows(), &["foo"]);
 }
 
 #[test]
@@ -1631,7 +1631,7 @@ fn gugu_doubled_g_form_runs_linewise() {
     for c in "gugu".chars() {
         e.handle_key(&key(c), &mut t);
     }
-    assert_eq!(t.lines(), &["abc def"]);
+    assert_eq!(t.rows(), &["abc def"]);
 }
 
 #[test]
@@ -1643,7 +1643,7 @@ fn visual_J_joins_selected_lines_with_space() {
     e.handle_key(&key('j'), &mut t);
     e.handle_key(&key('j'), &mut t); // select all three
     e.handle_key(&key('J'), &mut t);
-    assert_eq!(t.lines(), &["a b c"]);
+    assert_eq!(t.rows(), &["a b c"]);
     assert_eq!(*e.mode(), EditorMode::Normal);
 }
 
@@ -1656,7 +1656,7 @@ fn visual_gJ_joins_selected_lines_raw() {
     e.handle_key(&key('j'), &mut t);
     e.handle_key(&key('g'), &mut t);
     e.handle_key(&key('J'), &mut t);
-    assert_eq!(t.lines(), &["a  b"]); // verbatim, indent kept
+    assert_eq!(t.rows(), &["a  b"]); // verbatim, indent kept
 }
 
 #[test]
@@ -1669,11 +1669,11 @@ fn replace_mode_arrows_move_cursor() {
     e.handle_key(&KeyEvent::new(KeyCode::Right, KeyModifiers::NONE), &mut t);
     e.handle_key(&key('X'), &mut t); // overwrite 'c'
     e.handle_key(&esc(), &mut t);
-    assert_eq!(t.lines(), &["abXd"]);
+    assert_eq!(t.rows(), &["abXd"]);
     // capture restarted at the movement target: '.' overwrites one char
     e.handle_key(&key('0'), &mut t);
     e.handle_key(&key('.'), &mut t);
-    assert_eq!(t.lines(), &["XbXd"]);
+    assert_eq!(t.rows(), &["XbXd"]);
 }
 
 #[test]
@@ -1699,10 +1699,10 @@ fn guu_undoes_in_one_step() {
     for c in "guu".chars() {
         e.handle_key(&key(c), &mut t);
     }
-    assert_eq!(t.lines(), &["mixed case line"]);
+    assert_eq!(t.rows(), &["mixed case line"]);
     e.handle_key(&key('u'), &mut t); // single undo restores...
     e.handle_key(&key('u'), &mut t); // (cut+insert = 2 textarea edits)
-    assert_eq!(t.lines(), &["Mixed Case Line"]);
+    assert_eq!(t.rows(), &["Mixed Case Line"]);
 }
 
 // ── Visual g~ (case toggle; bare ~ is auto-surround) ─────────────────────
@@ -1715,7 +1715,7 @@ fn visual_g_tilde_toggles_case_of_selection() {
     e.handle_key(&key('e'), &mut t); // select all of "FooBar"
     e.handle_key(&key('g'), &mut t);
     e.handle_key(&key('~'), &mut t);
-    assert_eq!(t.lines(), &["fOObAR"]);
+    assert_eq!(t.rows(), &["fOObAR"]);
     assert_eq!(*e.mode(), EditorMode::Normal);
 }
 
@@ -1739,7 +1739,7 @@ fn guw_lowercases_word() {
     e.handle_key(&key('g'), &mut t);
     e.handle_key(&key('u'), &mut t);
     e.handle_key(&key('w'), &mut t);
-    assert_eq!(t.lines(), &["hello world"]);
+    assert_eq!(t.rows(), &["hello world"]);
     assert_eq!(super::super::cursor_tuple(&t), (0, 0)); // cursor at start
 }
 
@@ -1753,7 +1753,7 @@ fn gU_iw_uppercases_inner_word() {
     e.handle_key(&key('U'), &mut t);
     e.handle_key(&key('i'), &mut t);
     e.handle_key(&key('w'), &mut t);
-    assert_eq!(t.lines(), &["foo BAR baz"]);
+    assert_eq!(t.rows(), &["foo BAR baz"]);
 }
 
 #[test]
@@ -1763,7 +1763,7 @@ fn g_tilde_toggles_case_to_word_end() {
     e.handle_key(&key('g'), &mut t);
     e.handle_key(&key('~'), &mut t);
     e.handle_key(&key('e'), &mut t); // inclusive to end of "FooBar"
-    assert_eq!(t.lines(), &["fOObAR baz"]);
+    assert_eq!(t.rows(), &["fOObAR baz"]);
 }
 
 #[test]
@@ -1773,7 +1773,7 @@ fn guu_lowercases_whole_line() {
     e.handle_key(&key('g'), &mut t);
     e.handle_key(&key('u'), &mut t);
     e.handle_key(&key('u'), &mut t);
-    assert_eq!(t.lines(), &["hello world", "NEXT"]);
+    assert_eq!(t.rows(), &["hello world", "NEXT"]);
 }
 
 #[test]
@@ -1785,7 +1785,7 @@ fn visual_U_uppercases_selection() {
     e.handle_key(&key('l'), &mut t);
     e.handle_key(&key('l'), &mut t); // select "hel"
     e.handle_key(&key('U'), &mut t);
-    assert_eq!(t.lines(), &["HELlo"]);
+    assert_eq!(t.rows(), &["HELlo"]);
     assert_eq!(*e.mode(), EditorMode::Normal);
 }
 
@@ -1812,7 +1812,7 @@ fn dot_repeats_gU_word() {
     e.handle_key(&key('e'), &mut t); // ONE
     e.handle_key(&key('w'), &mut t); // onto "two"
     e.handle_key(&key('.'), &mut t);
-    assert_eq!(t.lines(), &["ONE TWO"]);
+    assert_eq!(t.rows(), &["ONE TWO"]);
 }
 
 // ── Replace mode (R) ─────────────────────────────────────────────────────
@@ -1827,7 +1827,7 @@ fn R_overwrites_chars() {
     e.handle_key(&key('X'), &mut t);
     e.handle_key(&key('Y'), &mut t);
     e.handle_key(&esc(), &mut t);
-    assert_eq!(t.lines(), &["XYcdef"]); // overwrote, didn't insert
+    assert_eq!(t.rows(), &["XYcdef"]); // overwrote, didn't insert
     assert_eq!(*e.mode(), EditorMode::Normal);
     assert_eq!(super::super::cursor_tuple(&t), (0, 1)); // stepped back onto 'Y'
 }
@@ -1842,7 +1842,7 @@ fn R_appends_past_line_end() {
         e.handle_key(&key(c), &mut t);
     }
     e.handle_key(&esc(), &mut t);
-    assert_eq!(t.lines(), &["XYZ"]); // overwrote "ab", appended 'Z'
+    assert_eq!(t.rows(), &["XYZ"]); // overwrote "ab", appended 'Z'
 }
 
 #[test]
@@ -1856,7 +1856,7 @@ fn R_is_dot_repeatable() {
     e.handle_key(&esc(), &mut t); // "XXaa bbbb"
     e.handle_key(&key('w'), &mut t); // onto "bbbb"
     e.handle_key(&key('.'), &mut t); // overwrite "bb"
-    assert_eq!(t.lines(), &["XXaa XXbb"]);
+    assert_eq!(t.rows(), &["XXaa XXbb"]);
 }
 
 #[test]
@@ -1868,7 +1868,7 @@ fn aborted_R_keeps_dot_register() {
     e.handle_key(&key('R'), &mut t);
     e.handle_key(&esc(), &mut t); // typed nothing
     e.handle_key(&key('.'), &mut t); // must repeat x
-    assert_eq!(t.lines(), &["c"]);
+    assert_eq!(t.rows(), &["c"]);
 }
 
 #[test]
@@ -1881,7 +1881,7 @@ fn R_mode_does_not_pass_through() {
     e.handle_key(&key('R'), &mut t);
     let out = e.handle_key(&key('('), &mut t);
     assert_eq!(out, VimKeyOutcome::TextMutated); // consumed, not PassThrough
-    assert_eq!(t.lines()[0].chars().next(), Some('(')); // raw overwrite
+    assert_eq!(t.rows()[0].chars().next(), Some('(')); // raw overwrite
 }
 
 // ── J / gJ join semantics ────────────────────────────────────────────────
@@ -1892,7 +1892,7 @@ fn J_joins_with_single_space_stripping_indent() {
     let mut e = VimEngine::default();
     let mut t = RopeBuffer::new(Text::from("foo\n   bar"));
     e.handle_key(&key('J'), &mut t);
-    assert_eq!(t.lines(), &["foo bar"]);
+    assert_eq!(t.rows(), &["foo bar"]);
     // cursor on the join-point space (vim)
     assert_eq!(super::super::cursor_tuple(&t), (0, 3));
 }
@@ -1903,7 +1903,7 @@ fn J_adds_no_extra_space_when_line_ends_in_whitespace() {
     let mut e = VimEngine::default();
     let mut t = RopeBuffer::new(Text::from("foo \nbar"));
     e.handle_key(&key('J'), &mut t);
-    assert_eq!(t.lines(), &["foo bar"]);
+    assert_eq!(t.rows(), &["foo bar"]);
 }
 
 #[test]
@@ -1913,7 +1913,7 @@ fn gJ_joins_without_space() {
     let mut t = RopeBuffer::new(Text::from("foo\n   bar"));
     e.handle_key(&key('g'), &mut t);
     e.handle_key(&key('J'), &mut t);
-    assert_eq!(t.lines(), &["foo   bar"]); // verbatim, indent kept
+    assert_eq!(t.rows(), &["foo   bar"]); // verbatim, indent kept
 }
 
 #[test]
@@ -1923,7 +1923,7 @@ fn three_J_joins_three_lines() {
     let mut t = RopeBuffer::new(Text::from("a\nb\nc"));
     e.handle_key(&key('3'), &mut t);
     e.handle_key(&key('J'), &mut t);
-    assert_eq!(t.lines(), &["a b c"]);
+    assert_eq!(t.rows(), &["a b c"]);
 }
 
 // ── Insert entries ───────────────────────────────────────────────────────
@@ -1969,7 +1969,7 @@ fn d_percent_deletes_across_lines_inclusive() {
     e.handle_key(&key('('), &mut t); // on '('
     e.handle_key(&key('d'), &mut t);
     e.handle_key(&key('%'), &mut t); // delete '(' through ')' inclusive
-    assert_eq!(t.lines(), &["ad"]);
+    assert_eq!(t.rows(), &["ad"]);
 }
 
 #[test]
@@ -1995,7 +1995,7 @@ fn visual_c_dot_repeats_same_width() {
     e.handle_key(&esc(), &mut t); // "Xde fghij"
     e.handle_key(&key('w'), &mut t); // onto 'f'
     e.handle_key(&key('.'), &mut t); // change 3 chars "fgh" → "X"
-    assert_eq!(t.lines(), &["Xde Xij"]);
+    assert_eq!(t.rows(), &["Xde Xij"]);
 }
 
 #[test]
@@ -2023,7 +2023,7 @@ fn d2fx_with_one_x_is_noop() {
     e.handle_key(&key('2'), &mut t);
     e.handle_key(&key('f'), &mut t);
     e.handle_key(&key('x'), &mut t); // only one 'x' — vim no-ops everything
-    assert_eq!(t.lines(), &["a x b"]);
+    assert_eq!(t.rows(), &["a x b"]);
 }
 
 #[test]
@@ -2037,7 +2037,7 @@ fn reset_to_normal_clears_insert_capture() {
     e.reset_to_normal(); // note switch mid-insert
     e.handle_key(&key('x'), &mut t); // must record (deletes ' ')
     e.handle_key(&key('.'), &mut t); // must repeat x (deletes 'b')
-    assert_eq!(t.lines(), &["ar"]); // cw left " bar"; x then . removed 2 chars
+    assert_eq!(t.rows(), &["ar"]); // cw left " bar"; x then . removed 2 chars
 }
 
 #[test]
@@ -2048,7 +2048,7 @@ fn dj_on_last_line_is_noop() {
     e.handle_key(&key('y'), &mut t); // register = line
     e.handle_key(&key('d'), &mut t);
     e.handle_key(&key('j'), &mut t); // motion fails → whole op no-op
-    assert_eq!(t.lines(), &["only line"]);
+    assert_eq!(t.rows(), &["only line"]);
     assert_eq!(e.registers.read().unwrap().text, "only line\n"); // register kept
 }
 
@@ -2058,7 +2058,7 @@ fn dk_on_first_line_is_noop() {
     let mut t = RopeBuffer::new(Text::from("one\ntwo"));
     e.handle_key(&key('d'), &mut t);
     e.handle_key(&key('k'), &mut t);
-    assert_eq!(t.lines(), &["one", "two"]);
+    assert_eq!(t.rows(), &["one", "two"]);
 }
 
 #[test]
@@ -2070,7 +2070,7 @@ fn failed_find_op_does_not_clobber_dot() {
     e.handle_key(&key('f'), &mut t);
     e.handle_key(&key('z'), &mut t); // failed find — must not record
     e.handle_key(&key('.'), &mut t); // repeats x, not the failed dfz
-    assert_eq!(t.lines(), &["cdef"]);
+    assert_eq!(t.rows(), &["cdef"]);
 }
 
 #[test]
@@ -2084,7 +2084,7 @@ fn noop_x_does_not_clobber_dot() {
     assert_eq!(out, VimKeyOutcome::NoOp); // host must not bump content
     e.handle_key(&key('k'), &mut t);
     e.handle_key(&key('.'), &mut t); // repeats dw, not the no-op x
-    assert_eq!(t.lines(), &["three", ""]);
+    assert_eq!(t.rows(), &["three", ""]);
 }
 
 #[test]
@@ -2093,7 +2093,7 @@ fn d_percent_without_pair_is_noop() {
     let mut t = RopeBuffer::new(Text::from("abc"));
     e.handle_key(&key('d'), &mut t);
     e.handle_key(&key('%'), &mut t); // no bracket under cursor
-    assert_eq!(t.lines(), &["abc"]);
+    assert_eq!(t.rows(), &["abc"]);
     e.handle_key(&key('c'), &mut t);
     e.handle_key(&key('%'), &mut t);
     assert_eq!(*e.mode(), EditorMode::Normal); // failed c% must not enter Insert
@@ -2110,7 +2110,7 @@ fn visual_inner_empty_pair_is_noop() {
     e.handle_key(&key('i'), &mut t);
     e.handle_key(&key('('), &mut t); // empty object: selection unchanged
     e.handle_key(&esc(), &mut t);
-    assert_eq!(t.lines(), &["foo()bar"]);
+    assert_eq!(t.rows(), &["foo()bar"]);
 }
 
 #[test]
@@ -2121,7 +2121,7 @@ fn aborted_insert_keeps_dot_register() {
     e.handle_key(&key('i'), &mut t); // changed mind
     e.handle_key(&esc(), &mut t); // nothing typed — not a change
     e.handle_key(&key('.'), &mut t); // must repeat x
-    assert_eq!(t.lines(), &["c"]);
+    assert_eq!(t.rows(), &["c"]);
 }
 
 #[test]
@@ -2132,7 +2132,7 @@ fn o_then_esc_is_still_dot_repeatable() {
     e.handle_key(&key('o'), &mut t);
     e.handle_key(&esc(), &mut t);
     e.handle_key(&key('.'), &mut t);
-    assert_eq!(t.lines().len(), 3);
+    assert_eq!(t.rows().len(), 3);
 }
 
 // ── Visual mode: shared motion/object machinery ──────────────────────────
@@ -2148,7 +2148,7 @@ fn visual_inner_object_then_delete() {
     e.handle_key(&key('i'), &mut t);
     e.handle_key(&key('('), &mut t); // select "bar"
     e.handle_key(&key('d'), &mut t);
-    assert_eq!(t.lines(), &["foo()baz"]);
+    assert_eq!(t.rows(), &["foo()baz"]);
 }
 
 #[test]
@@ -2174,7 +2174,7 @@ fn visual_find_extends_selection() {
     e.handle_key(&key('f'), &mut t);
     e.handle_key(&key(','), &mut t); // cursor on ',' — selection covers "hello,"
     e.handle_key(&key('d'), &mut t);
-    assert_eq!(t.lines(), &[" world"]);
+    assert_eq!(t.rows(), &[" world"]);
 }
 
 #[test]
@@ -2187,7 +2187,7 @@ fn visual_gg_extends_to_file_start() {
     e.handle_key(&key('g'), &mut t);
     e.handle_key(&key('g'), &mut t); // extend to (0,0)
     e.handle_key(&key('d'), &mut t); // delete from 't' of "three" back to start
-    assert_eq!(t.lines(), &["hree"]);
+    assert_eq!(t.rows(), &["hree"]);
 }
 
 #[test]
@@ -2202,7 +2202,7 @@ fn visual_o_swaps_selection_ends() {
     assert_eq!(super::super::cursor_tuple(&t), (0, 2));
     e.handle_key(&key('h'), &mut t); // extend left from the anchor end
     e.handle_key(&key('d'), &mut t); // delete b..d inclusive
-    assert_eq!(t.lines(), &["ae"]);
+    assert_eq!(t.rows(), &["ae"]);
 }
 
 // ── Command spine: dot-repeat through the one apply() door ───────────────
@@ -2218,7 +2218,7 @@ fn dot_repeats_cc_with_typed_text() {
     e.handle_key(&esc(), &mut t); // line 0 = "X"
     e.handle_key(&key('j'), &mut t); // onto "two"
     e.handle_key(&key('.'), &mut t); // repeat cc+X
-    assert_eq!(t.lines(), &["X", "X"]);
+    assert_eq!(t.rows(), &["X", "X"]);
 }
 
 #[test]
@@ -2230,7 +2230,7 @@ fn dot_repeats_substitute_char() {
     e.handle_key(&esc(), &mut t); // "Zb cd"
     e.handle_key(&key('w'), &mut t); // onto 'c'
     e.handle_key(&key('.'), &mut t); // repeat s+Z on 'c'
-    assert_eq!(t.lines(), &["Zb Zd"]);
+    assert_eq!(t.rows(), &["Zb Zd"]);
 }
 
 #[test]
@@ -2242,7 +2242,7 @@ fn dot_repeats_plain_insert() {
     t.insert_str("ab");
     e.handle_key(&esc(), &mut t); // "abworld", cursor on 'b'
     e.handle_key(&key('.'), &mut t); // insert "ab" again before 'b'
-    assert_eq!(t.lines(), &["aabbworld"]);
+    assert_eq!(t.rows(), &["aabbworld"]);
 }
 
 #[test]
@@ -2252,7 +2252,7 @@ fn dot_repeats_indent() {
     e.handle_key(&key('>'), &mut t);
     e.handle_key(&key('>'), &mut t); // indent
     e.handle_key(&key('.'), &mut t); // repeat
-    assert_eq!(t.lines(), &["        x"]);
+    assert_eq!(t.rows(), &["        x"]);
 }
 
 #[test]
@@ -2264,7 +2264,7 @@ fn dot_does_not_repeat_yank() {
     e.handle_key(&key('y'), &mut t);
     e.handle_key(&key('l'), &mut t); // yank 'b' — not a change
     e.handle_key(&key('.'), &mut t); // must repeat x, not the yank
-    assert_eq!(t.lines(), &["c"]);
+    assert_eq!(t.rows(), &["c"]);
 }
 
 // ── Range model: motion SpanKind classification + count composition ─────
@@ -2278,7 +2278,7 @@ fn counts_before_and_after_operator_multiply() {
     e.handle_key(&key('d'), &mut t);
     e.handle_key(&key('3'), &mut t);
     e.handle_key(&key('w'), &mut t);
-    assert_eq!(t.lines(), &["g"]); // six words deleted
+    assert_eq!(t.rows(), &["g"]); // six words deleted
 }
 
 #[test]
@@ -2288,7 +2288,7 @@ fn dj_deletes_two_whole_lines_linewise() {
     e.handle_key(&key('l'), &mut t); // col 1 — must not matter (linewise)
     e.handle_key(&key('d'), &mut t);
     e.handle_key(&key('j'), &mut t);
-    assert_eq!(t.lines(), &["three"]);
+    assert_eq!(t.rows(), &["three"]);
     let reg = e.registers.read().unwrap();
     assert_eq!(reg.kind, RegisterKind::Linewise);
     assert_eq!(reg.text, "one\ntwo\n");
@@ -2301,7 +2301,7 @@ fn dk_deletes_two_whole_lines_upward() {
     e.handle_key(&key('j'), &mut t); // row 1
     e.handle_key(&key('d'), &mut t);
     e.handle_key(&key('k'), &mut t);
-    assert_eq!(t.lines(), &["three"]);
+    assert_eq!(t.rows(), &["three"]);
 }
 
 #[test]
@@ -2312,7 +2312,7 @@ fn dG_deletes_to_file_end_linewise() {
     e.handle_key(&key('j'), &mut t); // row 1
     e.handle_key(&key('d'), &mut t);
     e.handle_key(&key('G'), &mut t);
-    assert_eq!(t.lines(), &["one"]);
+    assert_eq!(t.rows(), &["one"]);
 }
 
 #[test]
@@ -2323,7 +2323,7 @@ fn d_gg_deletes_to_file_start_linewise() {
     e.handle_key(&key('d'), &mut t);
     e.handle_key(&key('g'), &mut t);
     e.handle_key(&key('g'), &mut t);
-    assert_eq!(t.lines(), &["three"]);
+    assert_eq!(t.rows(), &["three"]);
 }
 
 #[test]
@@ -2334,7 +2334,7 @@ fn dt_deletes_up_to_but_not_including_target() {
     e.handle_key(&key('d'), &mut t);
     e.handle_key(&key('t'), &mut t);
     e.handle_key(&key('x'), &mut t);
-    assert_eq!(t.lines(), &["x"]);
+    assert_eq!(t.rows(), &["x"]);
 }
 
 #[test]
@@ -2344,7 +2344,7 @@ fn failed_find_with_operator_is_noop() {
     e.handle_key(&key('d'), &mut t);
     e.handle_key(&key('f'), &mut t);
     e.handle_key(&key('z'), &mut t); // no 'z' on the line
-    assert_eq!(t.lines(), &["hello"]); // nothing deleted
+    assert_eq!(t.rows(), &["hello"]); // nothing deleted
     e.handle_key(&key('c'), &mut t);
     e.handle_key(&key('f'), &mut t);
     e.handle_key(&key('z'), &mut t);
@@ -2359,7 +2359,7 @@ fn d_semicolon_repeats_find_as_operator_range() {
     e.handle_key(&key('.'), &mut t); // cursor on first '.' (col 1)
     e.handle_key(&key('d'), &mut t);
     e.handle_key(&key(';'), &mut t); // delete through next '.' (inclusive)
-    assert_eq!(t.lines(), &["ac"]);
+    assert_eq!(t.rows(), &["ac"]);
 }
 
 #[test]
@@ -2369,7 +2369,7 @@ fn cj_changes_two_lines_and_enters_insert() {
     e.handle_key(&key('c'), &mut t);
     e.handle_key(&key('j'), &mut t);
     assert_eq!(*e.mode(), EditorMode::Insert);
-    assert_eq!(t.lines(), &["", "three"]); // both lines gone, fresh empty line
+    assert_eq!(t.rows(), &["", "three"]); // both lines gone, fresh empty line
 }
 
 // ── Register file: engine-owned unnamed register ────────────────────────
@@ -2381,7 +2381,7 @@ fn x_then_p_swaps_chars() {
     let mut t = RopeBuffer::new(Text::from("ab"));
     e.handle_key(&key('x'), &mut t); // delete 'a' → register "a"; line "b"
     e.handle_key(&key('p'), &mut t); // paste "a" after 'b'
-    assert_eq!(t.lines(), &["ba"]);
+    assert_eq!(t.rows(), &["ba"]);
 }
 
 #[test]
@@ -2391,7 +2391,7 @@ fn x_at_line_end_does_not_join_next_line() {
     e.handle_key(&key('l'), &mut t); // onto 'b' (last char)
     e.handle_key(&key('3'), &mut t);
     e.handle_key(&key('x'), &mut t); // vim: deletes only 'b', never the newline
-    assert_eq!(t.lines(), &["a", "cd"]);
+    assert_eq!(t.rows(), &["a", "cd"]);
 }
 
 #[test]
@@ -2432,7 +2432,7 @@ fn dw_fills_register_charwise() {
     assert_eq!(reg.kind, RegisterKind::Charwise);
     // and p pastes it back charwise
     e.handle_key(&key('p'), &mut t);
-    assert_eq!(t.lines(), &["tone wo"]); // "one " pasted after 't'
+    assert_eq!(t.rows(), &["tone wo"]); // "one " pasted after 't'
 }
 
 #[test]
