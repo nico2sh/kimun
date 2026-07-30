@@ -856,7 +856,11 @@ mod search_tests {
         // highlighted on screen.
         let mut buf = buffer("xx foo", "foo", (0, 3));
         assert!(buf.search_forward(false), "the one match is still a match");
-        assert_eq!(buf.cursor(), (0, 3), "and the cursor has nowhere else to go");
+        assert_eq!(
+            buf.cursor(),
+            (0, 3),
+            "and the cursor has nowhere else to go"
+        );
     }
 
     #[test]
@@ -865,7 +869,11 @@ mod search_tests {
         // char column 2, inside it. That start is unaddressable — but the real
         // match on row 1 is, and abandoning the scan at the first unaddressable
         // candidate is what made the bar say "no match" beside a count of two.
-        let mut buf = buffer("\u{1F469}\u{200D}\u{1F4BB}\nx\u{1F4BB}", "\u{1F4BB}", (0, 0));
+        let mut buf = buffer(
+            "\u{1F469}\u{200D}\u{1F4BB}\nx\u{1F4BB}",
+            "\u{1F4BB}",
+            (0, 0),
+        );
         assert!(buf.search_forward(false), "the row 1 match is reachable");
         assert_eq!(buf.cursor(), (1, 1));
     }

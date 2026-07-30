@@ -2370,7 +2370,10 @@ impl VimEngine {
             let n = count.min(available);
             (
                 n,
-                before.graphemes(true).skip(available - n).collect::<String>(),
+                before
+                    .graphemes(true)
+                    .skip(available - n)
+                    .collect::<String>(),
             )
         };
         self.registers.fill(deleted, RegisterKind::Charwise);

@@ -4883,7 +4883,11 @@ cccccccc"
 
         get_ta(&mut editor).jump_to(0, 7);
         arrow(&mut editor, &tx, KeyCode::Down);
-        assert_eq!(get_ta(&mut editor).cursor(), (1, 2), "clamped to the short row");
+        assert_eq!(
+            get_ta(&mut editor).cursor(),
+            (1, 2),
+            "clamped to the short row"
+        );
 
         let saved = editor.get_text();
         editor.mark_saved(saved);
