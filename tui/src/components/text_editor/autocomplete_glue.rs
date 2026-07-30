@@ -7,8 +7,8 @@
 //! joined copy of the note has to exist for them to be resolved.
 
 use super::rope_buffer::{CursorMove, RopeBuffer};
-use unicode_segmentation::UnicodeSegmentation;
 use ratatui::layout::Rect;
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::components::autocomplete::AcceptAction;
 

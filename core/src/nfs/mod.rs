@@ -628,7 +628,11 @@ impl LineEnding {
     /// break split across two reads.
     pub(crate) fn of(bytes: &[u8], after_cr: bool) -> Option<Self> {
         let at = bytes.iter().position(|b| *b == b'\n')?;
-        let preceded_by_cr = if at == 0 { after_cr } else { bytes[at - 1] == b'\r' };
+        let preceded_by_cr = if at == 0 {
+            after_cr
+        } else {
+            bytes[at - 1] == b'\r'
+        };
         Some(if preceded_by_cr { Self::Crlf } else { Self::Lf })
     }
 
@@ -1535,7 +1539,10 @@ mod tests {
     #[test]
     fn the_first_break_settles_which_ending_a_file_uses() {
         assert_eq!(LineEnding::of(b"one\ntwo\r\n", false), Some(LineEnding::Lf));
-        assert_eq!(LineEnding::of(b"one\r\ntwo\n", false), Some(LineEnding::Crlf));
+        assert_eq!(
+            LineEnding::of(b"one\r\ntwo\n", false),
+            Some(LineEnding::Crlf)
+        );
         // No break yet is not an answer: the caller has more of the file to read.
         assert_eq!(LineEnding::of(b"no breaks at all", false), None);
         assert_eq!(LineEnding::of(b"", false), None);

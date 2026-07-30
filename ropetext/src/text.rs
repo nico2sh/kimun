@@ -221,7 +221,10 @@ impl Text {
     /// edit would silently land somewhere the caller never asked for, in a note
     /// that autosaves. Corrupting the text is worse than refusing to.
     pub(crate) fn splice(&mut self, bytes: std::ops::Range<usize>, text: &str) -> usize {
-        assert!(bytes.start <= bytes.end, "splice range {bytes:?} is inverted");
+        assert!(
+            bytes.start <= bytes.end,
+            "splice range {bytes:?} is inverted"
+        );
         assert!(
             bytes.end <= self.rope.len_bytes(),
             "splice range {bytes:?} runs past the text's {} bytes",
@@ -296,8 +299,7 @@ impl Text {
             Some(position) => position,
             None => {
                 let forward = self.next_cluster_byte(byte.min(self.len_bytes()));
-                self.position_at_byte(forward)
-                    .unwrap_or_else(|| self.end())
+                self.position_at_byte(forward).unwrap_or_else(|| self.end())
             }
         }
     }

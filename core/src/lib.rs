@@ -3584,7 +3584,9 @@ mod crlf_index_tests {
         let dir = TempDir::new().unwrap();
         let on_disk = dir.path().join("note.md");
         // Authored on Windows, before the vault ever sees it.
-        tokio::fs::write(&on_disk, "alpha\r\nbeta\r\n").await.unwrap();
+        tokio::fs::write(&on_disk, "alpha\r\nbeta\r\n")
+            .await
+            .unwrap();
 
         let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
         let path = VaultPath::note_path_from("note.md");
