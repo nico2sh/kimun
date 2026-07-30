@@ -240,6 +240,29 @@ impl RopeBuffer {
         );
     }
 
+    /// One row's text, or `None` past the end.
+    pub fn row(&self, row: usize) -> Option<std::borrow::Cow<'_, str>> {
+        self.inner.text().line(row)
+    }
+
+    /// How many rows the buffer has. Never zero.
+    pub fn row_count(&self) -> usize {
+        self.inner.text().line_count()
+    }
+
+    /// Rows `first..=last`, joined with newlines.
+    pub fn rows(&self, first: usize, last: usize) -> String {
+        (first..=last)
+            .filter_map(|row| self.row(row))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Characters in one row.
+    pub fn row_len(&self, row: usize) -> usize {
+        self.inner.text().line_len_chars(row).unwrap_or(0)
+    }
+
     pub fn cursor(&self) -> (usize, usize) {
         let cursor = self.inner.cursor();
         (cursor.row(), cursor.column().get())

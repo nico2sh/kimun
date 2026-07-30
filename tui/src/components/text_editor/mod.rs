@@ -174,24 +174,11 @@ fn selection_text_in(
     if sr == er && sc == ec {
         return None;
     }
-    let lines = ta.lines();
-    Some(if sr == er {
-        let line = &lines[sr];
-        let sb = char_col_to_byte(line, sc);
-        let eb = char_col_to_byte(line, ec);
-        line[sb..eb].to_string()
-    } else {
-        let first = &lines[sr];
-        let sb = char_col_to_byte(first, sc);
-        let mut parts = vec![first[sb..].to_string()];
-        for line in &lines[(sr + 1)..er] {
-            parts.push(line.clone());
-        }
-        let last = &lines[er];
-        let eb = char_col_to_byte(last, ec);
-        parts.push(last[..eb].to_string());
-        parts.join("\n")
-    })
+    // The engine answers this directly, and checks the span against the text it
+    // came from — where the row-walk it replaces assumed every index was in range.
+    ta.span_between((sr, sc), (er, ec))
+        .and_then(|span| ta.text().slice(span))
+        .map(|text| text.into_owned())
 }
 
 /// Auto-surround pair for `c`: typing an opening pair character or a
@@ -572,8 +559,8 @@ impl TextEditorComponent {
                 return;
             };
             let (row, col) = cursor_tuple(ta);
-            let line = ta.lines().get(row).map(|s| s.as_str()).unwrap_or("");
-            if !has_trigger_before_cursor(line, col) {
+            let line = ta.row(row).unwrap_or_default();
+            if !has_trigger_before_cursor(&line, col) {
                 return;
             }
         }
@@ -789,7 +776,7 @@ impl TextEditorComponent {
         let (_row, col, line) = match &self.backend {
             BackendState::Textarea(tb) => {
                 let (row, col) = cursor_tuple(&tb.ta);
-                let line = tb.ta.lines().get(row)?.to_string();
+                let line = tb.ta.row(row)?.into_owned();
                 (row, col, line)
             }
             BackendState::Nvim(nvim) => {
@@ -871,7 +858,7 @@ impl TextEditorComponent {
         let ta = self.backend.as_textarea()?;
         let (start, (er, ec)) = ta.selection_range()?;
         let end = if charwise {
-            let len = ta.lines().get(er).map(|l| l.chars().count()).unwrap_or(ec);
+            let len = ta.row(er).map(|l| l.chars().count()).unwrap_or(ec);
             (er, (ec + 1).min(len))
         } else {
             (er, ec)
@@ -1126,7 +1113,7 @@ impl TextEditorComponent {
                 return false;
             }
             let (row, col) = cursor_tuple(ta);
-            let Some(line) = ta.lines().get(row) else {
+            let Some(line) = ta.row(row) else {
                 return false;
             };
             let total_chars = line.chars().count();
@@ -1134,7 +1121,7 @@ impl TextEditorComponent {
                 return false;
             }
             // ASCII whitespace, so byte index == char index here.
-            let ws_end = markdown::leading_ws_byte_len(line);
+            let ws_end = markdown::leading_ws_byte_len(&line);
             let (ws, after_ws) = line.split_at(ws_end);
             if let Some(marker_len) = markdown::list_marker_len(after_ws) {
                 if after_ws.len() == marker_len {
@@ -1211,8 +1198,11 @@ impl TextEditorComponent {
                 .replace(['*', '_', '`'], "")
         }
         let wanted = normalise(heading);
-        let row = ta.lines().iter().position(|l| {
-            let t = l.trim_start();
+        let row = (0..ta.row_count()).find(|&row| {
+            let Some(line) = ta.row(row) else {
+                return false;
+            };
+            let t = line.trim_start();
             let stripped = t.trim_start_matches('#');
             stripped.len() != t.len() && normalise(stripped) == wanted
         });
@@ -1275,7 +1265,7 @@ impl TextEditorComponent {
             for row in start_row..=end_row {
                 if dedent {
                     let count = {
-                        let line = ta.lines().get(row).map(|s| s.as_str()).unwrap_or("");
+                        let line = ta.row(row).unwrap_or_default();
                         let max_remove = if hard_tab { 1 } else { tab_len };
                         let mut count = 0usize;
                         for (i, c) in line.chars().enumerate() {
@@ -1989,7 +1979,7 @@ impl Component for TextEditorComponent {
                                 let len = self
                                     .backend
                                     .as_textarea()
-                                    .and_then(|ta| ta.lines().get(er))
+                                    .and_then(|ta| ta.row(er))
                                     .map(|l| l.chars().count())
                                     .unwrap_or(ec);
                                 self.selection = Some(((sr, sc), (er, (ec + 1).min(len))));
@@ -4057,7 +4047,7 @@ mod tests {
             .pattern
             .as_ref()
             .unwrap()
-            .match_spans(editor.backend.as_textarea().unwrap().lines());
+            .match_spans(editor.backend.as_textarea().unwrap().text().lines());
         assert_eq!(
             spans,
             vec![(1, 0, 2)],

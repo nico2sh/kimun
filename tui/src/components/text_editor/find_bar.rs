@@ -138,7 +138,7 @@ impl FindBar {
         let matches = if preview.is_none() {
             self.pattern
                 .as_ref()
-                .map(|p| p.match_spans(buf.lines()))
+                .map(|p| p.match_spans(buf.text().lines()))
                 .unwrap_or_default()
         } else {
             // Those columns already carry the preview colour, which is the
@@ -351,7 +351,7 @@ impl FindBar {
         // would disagree about case, which is exactly the split adr/0033 set
         // out to close.
         let _ = buf.set_search_pattern(compiled.as_regex().as_str());
-        self.match_count = compiled.count_matches(buf.lines());
+        self.match_count = compiled.count_matches(buf.text().lines());
         self.pattern = Some(compiled);
         if self.match_count == 0 {
             self.status = SearchStatus::NoMatch;
@@ -387,9 +387,9 @@ impl FindBar {
         let pattern = self.pattern.as_ref()?;
         let replacement = self.replacement();
         let (row, start_col) = buf.cursor();
-        let line = buf.lines().get(row)?;
-        let start_byte = char_col_to_byte(line, start_col);
-        let caps = pattern.as_regex().captures_at(line, start_byte)?;
+        let line = buf.row(row)?;
+        let start_byte = char_col_to_byte(&line, start_col);
+        let caps = pattern.as_regex().captures_at(&line, start_byte)?;
         let m = caps.get(0)?;
         // `captures_at` finds the next match at OR AFTER the offset; only a
         // match starting exactly here is the current one.
@@ -512,7 +512,7 @@ impl FindBar {
         let Some(pattern) = self.pattern.as_ref() else {
             return;
         };
-        self.match_count = pattern.count_matches(buf.lines());
+        self.match_count = pattern.count_matches(buf.text().lines());
     }
     /// Build the **replace preview** for this frame: the note as it would read
     /// with every match replaced, plus where each replacement landed.
