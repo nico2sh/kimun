@@ -119,7 +119,32 @@ With the cursor on a link, **`Ctrl+Enter`** follows it (**`Ctrl+N`** does the sa
 
 ### Find in buffer
 
-`Ctrl+F` opens a one-line find bar; matches highlight in the buffer; press `Ctrl+F` / Enter to advance. Esc closes.
+`Ctrl+F` opens a one-line find bar; matches highlight in the buffer; press `Ctrl+F` / Enter to advance, `Shift+Enter` to go back. Esc closes.
+
+The pattern is a **regular expression**, and case is **smart**: type it all lowercase and it matches any case, add a capital and it matches exactly. The bar says which way it went, along with how many matches there are.
+
+### Replace in buffer
+
+Press **`Tab`** in the find bar (or run *Replace in note* from the command palette) to reveal a replacement field. The bar grows to two rows — the pattern and what it matches on top, the replacement and what will happen to it below.
+
+| Key | Action |
+| --- | ------ |
+| `Enter` | replace the current match and move to the next |
+| `Shift+Enter` | skip this match without replacing |
+| `Ctrl+A` | replace every match in the note |
+| `Tab` | switch between the find and replace fields |
+| `Esc` | close |
+
+While you type, the note shows a **live preview**: every match is drawn as it would read after replacing, in its own colour. The match `Enter` will take next is drawn in the cursor colour — while the bar is open the terminal caret lives there, so that highlight is what tells you where you are in the note. Nothing is written until you press a key; the preview only changes how the note is drawn.
+
+A few details worth knowing:
+
+- **Undo is one keystroke.** A replace — one match or all of them — costs a single `Ctrl+Z` (or `u` in vim mode).
+- **`$1` works when you captured something.** If the pattern has a capture group, `$1`, `$2` and `${name}` expand in the replacement, so `(\w+)-(\w+)` → `$2 $1` swaps them. A `$` that doesn't name a real group is left alone, so prices and `$x^2$` math stay exactly as typed either way. Write `$$` if you want a literal `$` next to a digit that *is* a group number.
+- **An empty replacement deletes.** Leaving the field blank and pressing `Ctrl+A` removes every match; because a blank field also just means "not finished typing", that one case asks for a second `Ctrl+A` to confirm.
+- Patterns can't span line breaks, and replacing never changes the number of lines in a note.
+- Pasting while the bar is open goes into whichever field has focus, not into the note.
+- Replace is unavailable on the Neovim backend, which has its own `:%s`.
 
 ### Text formatting
 

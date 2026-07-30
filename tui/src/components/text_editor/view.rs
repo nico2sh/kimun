@@ -10,6 +10,96 @@ use ratatui::widgets::Paragraph;
 use std::ops::Range;
 use std::sync::OnceLock;
 
+/// A styled range of logical columns on one row (see CONTEXT.md **Overlay**).
+///
+/// Every highlight the editor paints over a rendered line has this shape. They
+/// arrive in logical coordinates so producers never reason about rendered
+/// columns — markdown conceals sigils, so the two differ — and the mapping
+/// happens once, here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Overlay {
+    pub row: usize,
+    /// Logical char column where the overlay starts.
+    pub start: usize,
+    /// Logical char column just past its end.
+    pub end: usize,
+    pub kind: OverlayKind,
+}
+
+impl Overlay {
+    pub fn new(row: usize, start: usize, end: usize, kind: OverlayKind) -> Self {
+        Self {
+            row,
+            start,
+            end,
+            kind,
+        }
+    }
+}
+
+/// What an [`Overlay`] means, and — by declaration order — how it stacks.
+///
+/// Later kinds paint over earlier ones. That order used to be implicit in
+/// statement order across `view.rs`'s render loop and `mod.rs`'s cell post-pass,
+/// which meant reasoning it out by hand for each new highlight.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum OverlayKind {
+    /// A task checkbox: `- [ ]` / `- [x]`.
+    TaskBox,
+    /// The text of a completed task, struck through.
+    TaskDone,
+    /// A vault-search **needle** carried in from the query that opened the note.
+    Needle,
+    /// A **find pattern** match.
+    Match,
+    /// The editor's selection.
+    Selection,
+    /// The **current match** — where the next find-bar action lands.
+    CurrentMatch,
+    /// Text the **replace preview** is showing in place of a match.
+    Preview,
+    /// The previewed **current match**.
+    PreviewCurrent,
+}
+
+impl OverlayKind {
+    /// How this kind restyles the spans it covers.
+    ///
+    /// The one place presentation for overlays lives: producers carry a kind,
+    /// never a `Style`, so a find bar cannot hold an opinion about colour that
+    /// has to be kept in sync with anything.
+    fn restyle(self, theme: &Theme, style: ratatui::style::Style) -> ratatui::style::Style {
+        use ratatui::style::Modifier;
+        match self {
+            OverlayKind::TaskBox => style.fg(theme.accent.to_ratatui()),
+            OverlayKind::TaskDone => style.add_modifier(Modifier::DIM | Modifier::CROSSED_OUT),
+            OverlayKind::Needle | OverlayKind::Match => style
+                .fg(theme.color_search_match.to_ratatui())
+                .add_modifier(Modifier::BOLD),
+            OverlayKind::Selection | OverlayKind::CurrentMatch => {
+                style.bg(theme.selection_bg.to_ratatui())
+            }
+            OverlayKind::Preview => style.bg(theme.color_replace_preview.to_ratatui()),
+            // A foreground override, not a modifier: BOLD is a no-op on text
+            // that is already bold, which once left the current match
+            // indistinguishable from the rest (adr/0035).
+            OverlayKind::PreviewCurrent => style
+                .bg(theme.color_replace_preview.to_ratatui())
+                .fg(cursor_fg(theme))
+                .add_modifier(Modifier::BOLD),
+        }
+    }
+}
+
+/// The `cursor` role, substituting a chromatic colour when the theme defers to
+/// the terminal — `Reset` foreground on `Reset` body text marks nothing.
+fn cursor_fg(theme: &Theme) -> ratatui::style::Color {
+    match theme.cursor {
+        crate::settings::themes::ThemeColor::Reset => theme.fg_bright.to_ratatui(),
+        _ => theme.cursor.to_ratatui(),
+    }
+}
+
 /// Terminal cursor shape the editor requests while focused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CursorShape {
@@ -45,6 +135,9 @@ enum RenderedCacheRebuild {
 pub struct MarkdownEditorView {
     pub layout: WordWrapLayout,
     visual_scroll_offset: usize,
+    /// Viewport height from the last `update`, so overlay derivation can bound
+    /// itself to the visible rows.
+    last_height: usize,
     pub lines_snapshot: Vec<String>,
     pub cursor_snapshot: (usize, usize),
     /// Line ranges of every fenced code block in the buffer. Text-keyed
@@ -96,9 +189,18 @@ pub struct MarkdownEditorView {
     /// Only the two cursor rows (old and new) are rebuilt when just the cursor row changes;
     /// all rows are rebuilt when content or width changes.
     rendered_cache: Vec<Vec<bool>>,
-    /// Current selection range in logical (row, byte-col) coordinates.
-    /// `None` when no selection is active.
-    selection: Option<((usize, usize), (usize, usize))>,
+    /// Every **overlay** to paint this frame, from outside. The view derives
+    /// task and needle overlays itself (they come from the lines it already
+    /// holds, and only visible rows are worth scanning).
+    overlays: Vec<Overlay>,
+    /// Vault-search **needles** to emphasise, lower-cased.
+    needles: Vec<String>,
+    /// Set when the next update follows an edit that touched rows the cursor
+    /// does not identify — a **replace all**, not a keystroke. Consumed by the
+    /// next `update`, which then skips `compute_damage_range`'s cursor fast
+    /// path: that path assumes the cursor row is the only edited row, and a
+    /// bulk edit violates it silently, leaving distant rows with a stale parse.
+    bulk_edit_pending: bool,
     /// Diagnostic: true when the most recent Gate 1 invocation used the
     /// incremental splice path, false when it took the full-parse fallback.
     /// Read by tests; not part of the production observable surface.
@@ -200,6 +302,7 @@ impl MarkdownEditorView {
         Self {
             layout: WordWrapLayout::default(),
             visual_scroll_offset: 0,
+            last_height: 0,
             lines_snapshot: Vec::new(),
             cursor_snapshot: (0, 0),
             fence_ranges: Vec::new(),
@@ -216,7 +319,9 @@ impl MarkdownEditorView {
             last_layout_cursor: (usize::MAX, usize::MAX),
             cursor_vrow: 0,
             rendered_cache: Vec::new(),
-            selection: None,
+            overlays: Vec::new(),
+            needles: Vec::new(),
+            bulk_edit_pending: false,
             last_parse_was_incremental: false,
             last_splice_path: None,
             last_text_change: TextChangeKind::Full, // first update is a full rebuild
@@ -278,12 +383,95 @@ impl MarkdownEditorView {
         self.last_layout_generation = u64::MAX;
     }
 
-    pub fn update(
-        &mut self,
-        snap: &super::snapshot::EditorSnapshot<'_>,
-        rect: Rect,
-        selection: Option<((usize, usize), (usize, usize))>,
-    ) {
+    /// Hand the view this frame's **overlays**, in logical coordinates. Must be
+    /// called *after* `update`, which clears them.
+    ///
+    /// The view appends the two kinds it derives itself — task decorations and
+    /// **needle** emphasis. Those come from the lines it already holds, and it
+    /// is the only thing that knows which rows are visible, so scanning them
+    /// anywhere else would mean shipping the viewport outward.
+    pub fn set_overlays(&mut self, overlays: Vec<Overlay>) {
+        self.overlays = overlays;
+        self.derive_content_overlays();
+    }
+
+    /// Derive task and needle overlays for the visible rows only.
+    ///
+    /// This replaces a post-pass over drawn terminal cells, which reconstructed
+    /// row text with a byte→column map purely because it ran after render. That
+    /// put it in a different coordinate space from everything else, and cost a
+    /// defect: a find pattern targeting concealed markdown counted and stepped
+    /// to matches it could never paint.
+    fn derive_content_overlays(&mut self) {
+        let scroll = self.visual_scroll_offset;
+        let height = self.last_height;
+        let rows: Vec<usize> = self
+            .layout
+            .visual_lines()
+            .iter()
+            .skip(scroll)
+            .take(height)
+            .map(|vl| vl.logical_row)
+            .collect();
+        let mut seen = usize::MAX;
+        for row in rows {
+            if row == seen {
+                continue; // wrapped continuation of a row already handled
+            }
+            seen = row;
+            let Some(line) = self.lines_snapshot.get(row) else {
+                continue;
+            };
+            // Task checkboxes: optional indent, then `- [ ] ` / `- [x] `.
+            let indent = line.len() - line.trim_start().len();
+            let after = &line[indent..];
+            let done = after.starts_with("- [x] ") || after.starts_with("- [X] ");
+            if done || after.starts_with("- [ ] ") {
+                let box_start = line[..indent].chars().count() + 2;
+                self.overlays.push(Overlay::new(
+                    row,
+                    box_start,
+                    box_start + 3,
+                    OverlayKind::TaskBox,
+                ));
+                if done {
+                    self.overlays.push(Overlay::new(
+                        row,
+                        box_start + 3,
+                        line.chars().count(),
+                        OverlayKind::TaskDone,
+                    ));
+                }
+            }
+            // Needle emphasis, over the logical line rather than drawn cells.
+            for (s, e) in crate::components::preview_highlight::match_ranges(line, &self.needles) {
+                let start = line[..s].chars().count();
+                let end = start + line[s..e].chars().count();
+                self.overlays
+                    .push(Overlay::new(row, start, end, OverlayKind::Needle));
+            }
+        }
+    }
+
+    /// Vault-search **needles** to emphasise. Sticky across frames, unlike
+    /// overlays: they come from the query that opened the note.
+    pub fn set_needles(&mut self, needles: Vec<String>) {
+        self.needles = needles;
+    }
+
+    /// Declare that the edit just performed was a *bulk* one — it changed rows
+    /// the cursor does not point at.
+    ///
+    /// `compute_damage_range`'s fast path trusts the cursor row to be the only
+    /// edited row and will otherwise under-report the damage, leaving distant
+    /// rows rendered from a stale parse. Every edit that rewrites more than the
+    /// cursor's neighbourhood must call this.
+    pub fn note_bulk_edit(&mut self) {
+        self.bulk_edit_pending = true;
+    }
+
+    pub fn update(&mut self, snap: &super::snapshot::EditorSnapshot<'_>, rect: Rect) {
+        self.last_height = rect.height as usize;
         // Snapshot owns the (cursor, lines, content_revision) atomicity
         // — readers below can index `parsed_buffer.lines[cursor.0]`
         // without `.get()` guards once Gate 1 has rebuilt the parse
@@ -291,7 +479,11 @@ impl MarkdownEditorView {
         let lines: &[String] = &snap.lines;
         let cursor = snap.cursor;
         let generation = snap.content_revision.get();
-        self.selection = selection;
+        // Overlays belong to the snapshot they were built from. Clearing here
+        // means a caller that stops previewing (or closes the find bar) cannot
+        // leave stale ones painted over real text — it simply stops setting
+        // them.
+        self.overlays.clear();
         if rect.height == 0 {
             return;
         }
@@ -303,6 +495,10 @@ impl MarkdownEditorView {
             } else {
                 self.try_incremental_parse(lines, cursor)
             };
+            // Consumed here, not inside `try_incremental_parse`: the flag must
+            // clear even on the placeholder path above, or a bulk edit
+            // followed by a keystroke would still be suppressing the hint.
+            self.bulk_edit_pending = false;
             self.last_text_change = match incremental {
                 Some((range, slice, path)) => {
                     self.parse_state.splice_real(range.clone(), slice);
@@ -644,7 +840,16 @@ impl MarkdownEditorView {
         if lines.len() != self.parse_state.buf().lines.len() {
             return METRICS.bail(BailReason::LineCountChange);
         }
-        let Some(damaged) = compute_damage_range(&self.lines_snapshot, lines, cursor.0) else {
+        // A bulk edit invalidates the cursor hint: pass `usize::MAX` so the
+        // fast path's `cursor_row < old.len()` test fails and the LCP/LCS slow
+        // path computes the real span. The flag is cleared by `update` whether
+        // or not the incremental attempt gets this far.
+        let hint = if self.bulk_edit_pending {
+            usize::MAX
+        } else {
+            cursor.0
+        };
+        let Some(damaged) = compute_damage_range(&self.lines_snapshot, lines, hint) else {
             return METRICS.bail(BailReason::NoDamage);
         };
 
@@ -895,7 +1100,6 @@ impl MarkdownEditorView {
         let height = rect.height as usize;
         let vlines = self.layout.visual_lines();
 
-        let selection = self.selection;
         let parsed_lines = &self.parse_state.buf().lines;
         let fence_ranges = &self.fence_ranges;
 
@@ -936,51 +1140,48 @@ impl MarkdownEditorView {
                         spans
                     };
 
-                // Apply selection highlight if this visual line is within the selection.
-                let spans = if let Some(((sel_sr, sel_sc), (sel_er, sel_ec))) = selection {
-                    let row = vl.logical_row;
-                    if row >= sel_sr && row <= sel_er {
-                        // The blockquote bar gutter occupies `gutter_off` screen
-                        // columns to the left of the content. On the first visual
-                        // line `rendered_cursor_col_with` already accounts for it
-                        // (it counts the revealed `> ` sigil, whose width equals
-                        // the gutter), so only continuation rows need the offset
-                        // added — they carry the gutter but no sigil to count.
-                        let gutter_off = if vl.is_first_visual_line {
-                            0
-                        } else {
-                            self.gutter_insets.get(vl.logical_row).copied().unwrap_or(0)
-                        };
-                        let start_rendered = if row == sel_sr {
-                            MarkdownSpanner::rendered_cursor_col_with(
-                                logical_line,
-                                parsed,
-                                vl.start_col,
-                                sel_sc,
-                                vl.is_first_visual_line,
-                                force_raw,
-                            ) + gutter_off
-                        } else {
-                            0
-                        };
-                        let end_rendered = if row == sel_er {
-                            MarkdownSpanner::rendered_cursor_col_with(
-                                logical_line,
-                                parsed,
-                                vl.start_col,
-                                sel_ec,
-                                vl.is_first_visual_line,
-                                force_raw,
-                            ) + gutter_off
-                        } else {
-                            // Entire line is selected; use a sentinel larger than any line width.
-                            u16::MAX as usize
-                        };
-                        apply_selection_highlight(spans, start_rendered..end_rendered, theme)
+                // Every highlight this row carries, painted in one pass.
+                // `OverlayKind`'s declaration order is the stacking order, so
+                // "preview wins over selection" is a property of the enum
+                // rather than of where the code happens to sit.
+                let spans = {
+                    let gutter_off = if vl.is_first_visual_line {
+                        0
                     } else {
-                        spans
+                        self.gutter_insets.get(vl.logical_row).copied().unwrap_or(0)
+                    };
+                    let to_rendered = |col: usize| {
+                        MarkdownSpanner::rendered_col_with_reveal(
+                            logical_line,
+                            parsed,
+                            vl.start_col,
+                            col,
+                            cursor_col,
+                            vl.is_first_visual_line,
+                            force_raw,
+                        ) + gutter_off
+                    };
+                    let mut row_overlays: Vec<&Overlay> = self
+                        .overlays
+                        .iter()
+                        .filter(|o| o.row == vl.logical_row)
+                        .collect();
+                    row_overlays.sort_by_key(|o| o.kind);
+
+                    let mut spans = spans;
+                    for o in row_overlays {
+                        let start = to_rendered(o.start);
+                        let mut end = to_rendered(o.end);
+                        // A zero-width overlay would paint nothing — which is
+                        // exactly the case where the user most needs to see
+                        // where they are (an empty replacement previews a match
+                        // as nothing at all). Give it one cell, like a caret.
+                        if end == start && o.kind == OverlayKind::PreviewCurrent {
+                            end = start + 1;
+                        }
+                        spans =
+                            restyle_over_range(spans, start..end, &|st| o.kind.restyle(theme, st));
                     }
-                } else {
                     spans
                 };
 
@@ -1210,21 +1411,17 @@ fn byte_offset_for_display_width(s: &str, target_width: usize) -> usize {
     s.len()
 }
 
-/// Re-style spans to apply `selection_bg` over the given rendered-column range.
-///
-/// `sel_cols` is a range of rendered (screen) column offsets within the visual line.
-/// Spans that overlap the range are split at the boundaries; the overlapping portion
-/// receives `.bg(theme.selection_bg)`. Non-overlapping portions keep their original style.
-fn apply_selection_highlight<'a>(
+/// Split `spans` at the boundaries of a rendered-column range and apply
+/// `restyle` to the overlapping portion. The one place column-to-byte
+/// accounting for a partial restyle lives.
+fn restyle_over_range<'a>(
     spans: Vec<ratatui::text::Span<'a>>,
     sel_cols: std::ops::Range<usize>,
-    theme: &Theme,
+    restyle: &dyn Fn(ratatui::style::Style) -> ratatui::style::Style,
 ) -> Vec<ratatui::text::Span<'a>> {
     if sel_cols.is_empty() {
         return spans;
     }
-
-    let highlight_bg = theme.selection_bg.to_ratatui();
     let mut result = Vec::new();
     let mut col = 0usize;
 
@@ -1262,7 +1459,7 @@ fn apply_selection_highlight<'a>(
             // Selected portion
             result.push(ratatui::text::Span::styled(
                 content[prefix_byte..selected_byte_end].to_string(),
-                span.style.bg(highlight_bg),
+                restyle(span.style),
             ));
             // Suffix (after selection)
             if selected_byte_end < content.len() {
@@ -1348,6 +1545,7 @@ mod tests {
         generation: u64,
         selection: Option<((usize, usize), (usize, usize))>,
     ) {
+        // Selection reaches the view as an **overlay** now.
         let rev = NonZeroU64::new(generation.max(1)).unwrap();
         let clamped = if lines.is_empty() {
             (0, 0)
@@ -1355,7 +1553,21 @@ mod tests {
             (cursor.0.min(lines.len() - 1), cursor.1)
         };
         let snap = super::super::snapshot::EditorSnapshot::borrowed(lines, clamped, rev);
-        v.update(&snap, rect, selection);
+        v.update(&snap, rect);
+        let overlays = match selection {
+            Some(((sr, sc), (er, ec))) => (sr..=er)
+                .map(|row| {
+                    Overlay::new(
+                        row,
+                        if row == sr { sc } else { 0 },
+                        if row == er { ec } else { usize::MAX },
+                        OverlayKind::Selection,
+                    )
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+        v.set_overlays(overlays);
     }
 
     /// Build a freshly-updated view from `lines` with the cursor at
@@ -1387,7 +1599,7 @@ mod tests {
         let heart = "\u{2764}\u{FE0F}";
         let content = format!("a{heart}b");
         let spans = vec![ratatui::text::Span::raw(content)];
-        let out = apply_selection_highlight(spans, 1..3, &theme);
+        let out = restyle_over_range(spans, 1..3, &|st| st.bg(sel_bg));
 
         let highlighted: String = out
             .iter()
@@ -1807,21 +2019,65 @@ mod tests {
         assert_eq!(v.lines_snapshot, vec!["changed".to_string()]);
     }
 
+    /// Task and needle decoration moved out of a cell-space post-pass and into
+    /// overlay derivation. Same behaviour, logical coordinates, visible rows
+    /// only — and now expressible without a terminal buffer.
     #[test]
-    fn update_stores_selection() {
+    fn content_overlays_cover_needles_and_tasks() {
         let mut v = MarkdownEditorView::new();
-        let lines = vec!["hello world".to_string()];
-        update_view(&mut v, &lines, (0, 0), rect(40), 1, Some(((0, 0), (0, 5))));
-        assert_eq!(v.selection, Some(((0, 0), (0, 5))));
+        let lines = vec![
+            "find the needle here".to_string(),
+            "- [x] done task".to_string(),
+            "- [ ] open task".to_string(),
+        ];
+        v.set_needles(vec!["needle".to_string()]);
+        update_view(&mut v, &lines, (0, 0), rect(40), 1, None);
+
+        let kinds: Vec<_> = v.overlays.iter().map(|o| (o.row, o.kind)).collect();
+        assert!(
+            kinds.contains(&(0, OverlayKind::Needle)),
+            "the needle must be emphasised, got {kinds:?}"
+        );
+        assert!(kinds.contains(&(1, OverlayKind::TaskBox)));
+        assert!(
+            kinds.contains(&(1, OverlayKind::TaskDone)),
+            "a done task strikes its text"
+        );
+        assert!(kinds.contains(&(2, OverlayKind::TaskBox)));
+        assert!(
+            !kinds.contains(&(2, OverlayKind::TaskDone)),
+            "an open task does not"
+        );
+
+        // "needle" starts at logical char 9 — a logical column, not a cell.
+        let needle = v
+            .overlays
+            .iter()
+            .find(|o| o.kind == OverlayKind::Needle)
+            .unwrap();
+        assert_eq!((needle.start, needle.end), (9, 15));
     }
 
     #[test]
-    fn update_clears_selection_when_none() {
+    fn update_takes_a_selection_overlay() {
+        let mut v = MarkdownEditorView::new();
+        let lines = vec!["hello world".to_string()];
+        update_view(&mut v, &lines, (0, 0), rect(40), 1, Some(((0, 0), (0, 5))));
+        assert_eq!(
+            v.overlays,
+            vec![Overlay::new(0, 0, 5, OverlayKind::Selection)]
+        );
+    }
+
+    /// Overlays belong to the frame they were built for: `update` clears them,
+    /// so a caller that stops producing one cannot leave it painted.
+    #[test]
+    fn update_clears_the_previous_frame_s_overlays() {
         let mut v = MarkdownEditorView::new();
         let lines = vec!["hello world".to_string()];
         update_view(&mut v, &lines, (0, 0), rect(40), 1, Some(((0, 0), (0, 5))));
         update_view(&mut v, &lines, (0, 0), rect(40), 1, None);
-        assert_eq!(v.selection, None);
+        assert!(v.overlays.is_empty());
     }
 
     #[test]
@@ -2007,23 +2263,36 @@ mod tests {
         );
     }
 
+    /// Assert the view's cached parse matches a fresh one.
+    ///
+    /// The per-line comparison uses `debug_assert_eq_to`, which is
+    /// `#[cfg(debug_assertions)]` like its one production caller — so the
+    /// *body* is gated, not the function. Gating the whole helper would remove
+    /// a symbol six tests call; leaving it ungated stops the lib-test target
+    /// compiling under any profile with assertions off, which is why
+    /// `cargo bench --no-run` did not build.
     fn full_rebuild_equals_view_state(v: &MarkdownEditorView, lines: &[String]) {
-        let fresh = ParsedBuffer::parse(lines);
-        assert_eq!(v.parse_state.buf().kinds, fresh.kinds, "kinds diverge");
-        assert_eq!(
-            v.parse_state.buf().lines.len(),
-            fresh.lines.len(),
-            "row count diverge"
-        );
-        for (i, (got, exp)) in v
-            .parse_state
-            .buf()
-            .lines
-            .iter()
-            .zip(fresh.lines.iter())
-            .enumerate()
+        #[cfg(not(debug_assertions))]
+        let _ = (v, lines);
+        #[cfg(debug_assertions)]
         {
-            got.debug_assert_eq_to(exp, i);
+            let fresh = ParsedBuffer::parse(lines);
+            assert_eq!(v.parse_state.buf().kinds, fresh.kinds, "kinds diverge");
+            assert_eq!(
+                v.parse_state.buf().lines.len(),
+                fresh.lines.len(),
+                "row count diverge"
+            );
+            for (i, (got, exp)) in v
+                .parse_state
+                .buf()
+                .lines
+                .iter()
+                .zip(fresh.lines.iter())
+                .enumerate()
+            {
+                got.debug_assert_eq_to(exp, i);
+            }
         }
     }
 

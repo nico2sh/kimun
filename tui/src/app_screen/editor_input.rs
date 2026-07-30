@@ -25,6 +25,7 @@ use crate::components::drawer::DrawerView;
 use crate::components::events::InputEvent;
 use crate::components::overlay::OverlayKind;
 use crate::components::panel::PanelKind;
+use crate::components::text_editor::EditorClaim;
 use crate::keys::action_shortcuts::{ActionShortcuts, TextAction};
 use crate::keys::key_strike::KeyStrike;
 use crate::keys::{KeyBindings, key_event_to_combo};
@@ -44,6 +45,10 @@ pub struct InputCtx {
     pub drawer_view: DrawerView,
     /// Bare Space starts the leader (vim Normal mode, empty pending state).
     pub space_leads: bool,
+    /// Which editor-internal surface holds input, if any (adr/0036). Without
+    /// this the classifier cannot know the **find bar** is open, and ownership
+    /// gets re-decided further down, once per event kind.
+    pub claim: EditorClaim,
 }
 
 impl InputCtx {
@@ -170,6 +175,8 @@ pub enum EditorOp {
     OpenFileBrowserReveal,
     SaveCurrentQuery,
     FindInBuffer,
+    /// Open the find bar with the replace field revealed.
+    ReplaceInBuffer,
     ApplyText(TextAction),
     /// Switch to the Ask workspace and focus its composer (F6 and leader
     /// `a a`).
@@ -178,7 +185,120 @@ pub enum EditorOp {
 
 /// Resolve one raw input event into its [`Classification`] under the editor
 /// screen's input precedence. Pure: same event + bindings + ctx, same verdict.
+///
+/// Runs the precedence ladder, then applies the **editor claim** filter — an
+/// intent the current holder does not allow is rewritten so the event reaches
+/// the holder instead (adr/0036). With no claim held the filter is the identity,
+/// which is why the ladder's own tests are unaffected by it.
 pub fn classify(event: &InputEvent, bindings: &KeyBindings, ctx: &InputCtx) -> Classification {
+    let mut classification = classify_unclaimed(event, bindings, ctx);
+    // An **editor claim** only holds while the editor is the active panel: the
+    // bar is inside it, so a drawer click or an open overlay outranks it.
+    // Without this the filter would swallow every click anywhere in the app.
+    let claim = if ctx.editor_active() {
+        ctx.claim
+    } else {
+        EditorClaim::None
+    };
+    let filtered = apply_claim(classification.intent.clone(), event, claim);
+    if filtered != classification.intent {
+        // The chord did not run, so it must not advertise itself in the footer.
+        classification.flash = None;
+    }
+    classification.intent = filtered;
+    classification
+}
+
+/// Which intents survive an **editor claim**, and what a blocked one becomes.
+///
+/// An allow-list, exhaustive over [`EditorIntent`]: a new variant defaults to
+/// blocked, so getting it wrong shows up as a key that appears to do nothing
+/// rather than one that silently edits the note. A block-list would default the
+/// other way — which is how `Ctrl+B` came to embolden the note while the user
+/// was typing a find pattern.
+///
+/// A blocked intent becomes [`EditorIntent::Panel`] — the existing default,
+/// which routes to the focused panel, which is the editor, which routes to its
+/// holder. The claim decides *ownership*; the holder decides behaviour.
+fn apply_claim(intent: EditorIntent, event: &InputEvent, claim: EditorClaim) -> EditorIntent {
+    use ratatui::crossterm::event::MouseEventKind;
+
+    if claim == EditorClaim::None {
+        return intent;
+    }
+    let deliver = EditorIntent::Panel {
+        fallback: PanelFallback::None,
+    };
+    let find_bar = claim == EditorClaim::FindBar;
+    match intent {
+        // Always allowed. A pending leader sequence outranks a claim (spec
+        // §8a); the panel default IS the delivery path; an overlay cannot
+        // coexist with a claim (a claim implies the editor is focused and
+        // unobscured); the palette stays reachable as a global escape.
+        EditorIntent::LeaderKey(_)
+        | EditorIntent::Panel { .. }
+        | EditorIntent::Overlay
+        | EditorIntent::ToggleOverlay { .. }
+        | EditorIntent::OpenOverlay(_)
+        | EditorIntent::Consume => intent,
+
+        // Buffer-targeting ops lose to any holder — typing a find pattern must
+        // not embolden the note. Navigation ops are unaffected.
+        EditorIntent::Op(EditorOp::ApplyText(_)) => deliver,
+        EditorIntent::Op(_) => intent,
+
+        // The find bar is a text field: a paste belongs in it, an image probe
+        // is meaningless there, Ctrl+Enter must not follow a link out of it,
+        // and a bare Space is a character, not the leader. The popup wants all
+        // of these to behave normally.
+        EditorIntent::EditorPaste | EditorIntent::ImageProbe | EditorIntent::FollowLink => {
+            if find_bar {
+                deliver
+            } else {
+                intent
+            }
+        }
+
+        // Bare Space is a character in a find pattern. The bound leader
+        // gateway is not — it opens "in every context, including mid-typing",
+        // and blocking it here would also make a pending sequence unreachable.
+        EditorIntent::LeaderStart => match event {
+            InputEvent::Key(k)
+                if find_bar
+                    && k.code == ratatui::crossterm::event::KeyCode::Char(' ')
+                    && k.modifiers.is_empty() =>
+            {
+                deliver
+            }
+            _ => intent,
+        },
+
+        // Scrolling moves the viewport, not the cursor, so reading elsewhere
+        // mid-search stays available. Clicks and drags would move the cursor
+        // off the current match and overwrite the selection marking it.
+        EditorIntent::Mouse => match event {
+            InputEvent::Mouse(m)
+                if find_bar
+                    && !matches!(
+                        m.kind,
+                        MouseEventKind::ScrollUp
+                            | MouseEventKind::ScrollDown
+                            | MouseEventKind::ScrollLeft
+                            | MouseEventKind::ScrollRight
+                    ) =>
+            {
+                EditorIntent::Consume
+            }
+            _ => intent,
+        },
+    }
+}
+
+fn classify_unclaimed(
+    event: &InputEvent,
+    bindings: &KeyBindings,
+    ctx: &InputCtx,
+) -> Classification {
     use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
     // A pending leader sequence owns the input ahead of everything else
@@ -392,6 +512,9 @@ pub(crate) fn classify_tail(
             Some(ActionShortcuts::FindInBuffer) if ctx.editor_active() => {
                 Some(EditorIntent::Op(EditorOp::FindInBuffer))
             }
+            Some(ActionShortcuts::ReplaceInBuffer) if ctx.editor_active() => {
+                Some(EditorIntent::Op(EditorOp::ReplaceInBuffer))
+            }
             Some(ActionShortcuts::Text(
                 action @ (TextAction::Bold | TextAction::Italic | TextAction::Strikethrough),
             )) if ctx.editor_active() => Some(EditorIntent::Op(EditorOp::ApplyText(action))),
@@ -514,6 +637,15 @@ mod tests {
             focused: PanelKind::Editor,
             drawer_view: DrawerView::Files,
             space_leads: false,
+            claim: EditorClaim::None,
+        }
+    }
+
+    /// The common ctx with the find bar holding the **editor claim**.
+    fn ctx_find_bar() -> InputCtx {
+        InputCtx {
+            claim: EditorClaim::FindBar,
+            ..ctx()
         }
     }
 
@@ -531,6 +663,154 @@ mod tests {
 
     fn classify_it(event: &InputEvent, ctx: &InputCtx) -> Classification {
         classify(event, &bindings(), ctx)
+    }
+
+    // ---- editor claim (adr/0036) -----------------------------------------
+
+    /// The bug that motivated the claim: with the editor focused — which is
+    /// exactly the state when the find bar is open — a formatting chord
+    /// classified as a buffer edit and the bar never saw the key. Typing a
+    /// find pattern and pressing Ctrl+B emboldened the note.
+    #[test]
+    fn a_claim_blocks_a_buffer_edit() {
+        let ev = key(KeyCode::Char('b'), KeyModifiers::CONTROL);
+        assert_eq!(
+            classify_it(&ev, &ctx()).intent,
+            EditorIntent::Op(EditorOp::ApplyText(TextAction::Bold)),
+            "without a claim the chord still bolds"
+        );
+        assert_eq!(
+            classify_it(&ev, &ctx_find_bar()).intent,
+            EditorIntent::Panel {
+                fallback: PanelFallback::None
+            },
+            "under a claim it is delivered to the holder instead"
+        );
+    }
+
+    /// Navigation is not a buffer edit — the drawer, panel focus and the
+    /// palette stay reachable while searching.
+    #[test]
+    fn a_claim_leaves_navigation_alone() {
+        for ev in [
+            key(KeyCode::Char('t'), KeyModifiers::CONTROL),
+            key(KeyCode::Char('p'), KeyModifiers::CONTROL),
+        ] {
+            assert_eq!(
+                classify_it(&ev, &ctx_find_bar()).intent,
+                classify_it(&ev, &ctx()).intent,
+                "a claim must not swallow navigation"
+            );
+        }
+    }
+
+    /// A paste aimed at the replace field used to land in the buffer behind
+    /// the bar; the fix lived inside `paste_text`. It is a classification now.
+    #[test]
+    fn a_find_bar_claim_blocks_the_paste_tiers() {
+        for ev in [
+            InputEvent::Paste("hi".into()),
+            key(KeyCode::Char('v'), KeyModifiers::CONTROL),
+            key(KeyCode::Enter, KeyModifiers::CONTROL),
+        ] {
+            assert_eq!(
+                classify_it(&ev, &ctx_find_bar()).intent,
+                EditorIntent::Panel {
+                    fallback: PanelFallback::None
+                },
+                "paste, image probe and follow-link all belong to the bar"
+            );
+        }
+    }
+
+    /// Space is a character in a find pattern, not the leader gateway. This
+    /// used to be enforced by making `space_leads()` lie while the bar was
+    /// open — the smuggled fact the claim replaces.
+    #[test]
+    fn a_find_bar_claim_blocks_the_space_leader() {
+        let ev = key(KeyCode::Char(' '), KeyModifiers::NONE);
+        let vim_ctx = InputCtx {
+            space_leads: true,
+            ..ctx()
+        };
+        assert_eq!(classify_it(&ev, &vim_ctx).intent, EditorIntent::LeaderStart);
+        let vim_bar = InputCtx {
+            space_leads: true,
+            ..ctx_find_bar()
+        };
+        assert_eq!(
+            classify_it(&ev, &vim_bar).intent,
+            EditorIntent::Panel {
+                fallback: PanelFallback::None
+            }
+        );
+    }
+
+    /// A click would move the cursor off the current match and overwrite the
+    /// selection marking it — reachable as a panic before this. Scrolling is
+    /// allowed: it moves the viewport, not the cursor.
+    #[test]
+    fn a_find_bar_claim_blocks_clicks_but_not_scrolling() {
+        use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        let at = |kind| {
+            InputEvent::Mouse(MouseEvent {
+                kind,
+                column: 1,
+                row: 1,
+                modifiers: KeyModifiers::NONE,
+            })
+        };
+        assert_eq!(
+            classify_it(
+                &at(MouseEventKind::Down(MouseButton::Left)),
+                &ctx_find_bar()
+            )
+            .intent,
+            EditorIntent::Consume,
+            "a click reaches nothing while the bar holds the claim"
+        );
+        assert_eq!(
+            classify_it(&at(MouseEventKind::ScrollUp), &ctx_find_bar()).intent,
+            EditorIntent::Mouse,
+            "scrolling still works"
+        );
+    }
+
+    /// The asymmetry that makes the claim an enum rather than a bool: the
+    /// popup wants the events the bar blocks. A click should dismiss it and
+    /// place the cursor.
+    #[test]
+    fn an_autocomplete_claim_blocks_only_buffer_edits() {
+        let popup = InputCtx {
+            claim: EditorClaim::Autocomplete,
+            ..ctx()
+        };
+        assert_eq!(
+            classify_it(&InputEvent::Paste("hi".into()), &popup).intent,
+            EditorIntent::EditorPaste,
+            "the popup does not own pastes"
+        );
+        assert_eq!(
+            classify_it(&key(KeyCode::Char('b'), KeyModifiers::CONTROL), &popup).intent,
+            EditorIntent::Panel {
+                fallback: PanelFallback::None
+            },
+            "but a buffer edit still loses to any holder"
+        );
+    }
+
+    /// A pending leader sequence outranks a claim (spec §8a).
+    #[test]
+    fn the_leader_outranks_a_claim() {
+        let ev = key(KeyCode::Char('x'), KeyModifiers::NONE);
+        let pending = InputCtx {
+            leader_pending: true,
+            ..ctx_find_bar()
+        };
+        assert!(matches!(
+            classify_it(&ev, &pending).intent,
+            EditorIntent::LeaderKey(_)
+        ));
     }
 
     // ---- paste tiers -----------------------------------------------------

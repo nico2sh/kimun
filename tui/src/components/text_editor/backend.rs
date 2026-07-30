@@ -9,6 +9,7 @@ use tokio_util::compat::Compat;
 use nvim_rs::{Handler, Neovim, UiAttachOptions, create::tokio::new_child_cmd, error::LoopError};
 use ratatui_textarea::TextArea;
 
+use super::edit_buffer::EditBuffer;
 use super::nvim_decode::{DecodedState, decode};
 use super::nvim_rpc::key_event_to_nvim_string;
 use super::snapshot::{EditorMode, NvimSnapshot};
@@ -88,20 +89,22 @@ pub enum InputInterpreter {
 /// The in-process textarea storage plus its input interpreter.
 #[derive(Debug)]
 pub struct TextareaBackend {
-    pub ta: TextArea<'static>,
+    /// The open note's text and its edit history (adr/0037). Mutations go
+    /// through `EditBuffer::edit`; reads reach the inner `TextArea` by `Deref`.
+    pub ta: EditBuffer,
     pub input: InputInterpreter,
 }
 
 impl TextareaBackend {
     pub fn direct(ta: TextArea<'static>) -> Self {
         Self {
-            ta,
+            ta: EditBuffer::new(ta),
             input: InputInterpreter::Direct,
         }
     }
     pub fn vim(ta: TextArea<'static>) -> Self {
         Self {
-            ta,
+            ta: EditBuffer::new(ta),
             input: InputInterpreter::Vim(Box::default()),
         }
     }
@@ -137,14 +140,14 @@ impl BackendState {
 
     /// The textarea, when it is the active backend. Textarea-only features
     /// (autocomplete, smart edits, mouse selection) guard on this.
-    pub fn as_textarea(&self) -> Option<&TextArea<'static>> {
+    pub fn as_textarea(&self) -> Option<&EditBuffer> {
         match self {
             BackendState::Textarea(tb) => Some(&tb.ta),
             BackendState::Nvim(_) => None,
         }
     }
 
-    pub fn as_textarea_mut(&mut self) -> Option<&mut TextArea<'static>> {
+    pub fn as_textarea_mut(&mut self) -> Option<&mut EditBuffer> {
         match self {
             BackendState::Textarea(tb) => Some(&mut tb.ta),
             BackendState::Nvim(_) => None,

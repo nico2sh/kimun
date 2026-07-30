@@ -1,5 +1,8 @@
 pub mod autocomplete_glue;
 pub mod backend;
+pub mod edit_buffer;
+pub mod find_bar;
+pub mod find_replace;
 pub mod markdown;
 pub mod nvim_decode;
 pub mod nvim_host;
@@ -18,8 +21,6 @@ use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
 use ratatui_textarea::{CursorMove, DataCursor, TextArea};
 use std::num::NonZeroU64;
 
@@ -63,6 +64,23 @@ fn snapshot_from_backend(
     }
 }
 
+/// Identity for a **replace preview**'s snapshot: the real content revision
+/// folded together with the previewed text.
+///
+/// The view gates parse-cache rebuilds on `content_revision`, so a preview must
+/// not reuse the buffer's — it would show a parse of text that is not on
+/// screen. Deriving it from the previewed lines means an unchanged preview
+/// keeps its cache entry across frames, and any change to the pattern, the
+/// replacement, or the buffer produces a new one.
+fn preview_revision(base: NonZeroU64, lines: &[String]) -> NonZeroU64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    base.get().hash(&mut h);
+    lines.hash(&mut h);
+    NonZeroU64::new(h.finish()).unwrap_or(NonZeroU64::MIN)
+}
+
 /// Returns true if any autocomplete trigger char (`[` for `[[wikilink`,
 /// `#` for `#hashtag`) appears between the start of `line` and the
 /// cursor's char column. Walks backwards from the cursor so the common
@@ -104,6 +122,9 @@ macro_rules! cursor_move {
 }
 
 use self::backend::BackendState;
+use self::edit_buffer::EditBuffer;
+#[cfg(test)]
+use self::find_bar::{BarFocus, SearchStatus};
 use self::markdown::ParsedBuffer;
 use self::nvim_host::NvimHost;
 use self::snapshot::EditorSnapshot;
@@ -121,7 +142,7 @@ fn increment_ordered_marker(marker: &str) -> Option<String> {
 
 /// Convert a 0-based character column into a byte offset within `line`.
 /// Out-of-range columns return `line.len()`.
-fn char_col_to_byte(line: &str, char_col: usize) -> usize {
+pub(super) fn char_col_to_byte(line: &str, char_col: usize) -> usize {
     line.char_indices()
         .nth(char_col)
         .map(|(b, _)| b)
@@ -186,19 +207,21 @@ fn surround_pair(c: char) -> Option<(&'static str, &'static str)> {
 }
 
 /// Re-establishes the textarea selection over `start..end` (char-based data
-/// coordinates, as returned by `selection_range`). `Jump` clamps, so the
-/// saturating casts degrade gracefully on pathologically large buffers.
-fn set_selection(ta: &mut TextArea<'_>, start: (usize, usize), end: (usize, usize)) {
-    let jump = |(row, col): (usize, usize)| {
-        CursorMove::Jump(
-            u16::try_from(row).unwrap_or(u16::MAX),
-            u16::try_from(col).unwrap_or(u16::MAX),
-        )
-    };
+/// coordinates, as returned by `selection_range`).
+///
+/// Refuses rather than approximating: this used to saturate both endpoints at
+/// `u16::MAX`, which on a pathologically large buffer silently selected a
+/// *different* range — and callers then cut or overwrote it (adr/0038).
+fn set_selection(ta: &mut EditBuffer, start: (usize, usize), end: (usize, usize)) -> bool {
+    let max = u16::MAX as usize;
+    if start.0 > max || start.1 > max || end.0 > max || end.1 > max {
+        return false;
+    }
     ta.cancel_selection();
-    ta.move_cursor(jump(start));
+    ta.jump_to(start.0, start.1);
     ta.start_selection();
-    ta.move_cursor(jump(end));
+    ta.jump_to(end.0, end.1);
+    true
 }
 
 /// Owned RGBA image data lifted from the system clipboard. Returned by
@@ -243,8 +266,6 @@ use crate::components::events::AppEvent;
 use crate::components::events::AppTx;
 use crate::components::events::InputEvent;
 use crate::components::events::redraw_callback;
-use crate::components::preview_highlight;
-use crate::components::single_line_input::{InputOutcome, SingleLineInput};
 use crate::components::text_editor::autocomplete_glue::apply_accept_to_textarea;
 use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::TextAction;
@@ -260,73 +281,20 @@ pub enum LinkTarget {
     Label(String),
 }
 
-struct SearchState {
-    input: SingleLineInput,
-    status: SearchStatus,
-}
-
-enum SearchStatus {
-    Empty,
-    Match,
-    NoMatch,
-    Invalid(String),
-}
-
-impl SearchStatus {
-    fn from_found(found: bool) -> Self {
-        if found { Self::Match } else { Self::NoMatch }
-    }
-}
-
-const FIND_PROMPT: &str = "Find: ";
-const FIND_HINTS: &str = "  [Enter] next  [Shift+Enter] prev  [Esc] close";
-
-fn render_search_bar(
-    f: &mut Frame,
-    rect: Rect,
-    state: &mut SearchState,
-    theme: &Theme,
-    focused: bool,
-) {
-    let base = theme.base_style();
-    let muted = Style::default()
-        .fg(theme.gray.to_ratatui())
-        .bg(theme.bg.to_ratatui());
-    let err = Style::default()
-        .fg(theme.red.to_ratatui())
-        .bg(theme.bg.to_ratatui());
-    let prompt_cols = unicode_width::UnicodeWidthStr::width(FIND_PROMPT) as u16;
-    // Tail sits after the full value (in display columns, accounting for
-    // wide/CJK chars), not after the caret — otherwise it would overlap the
-    // trailing characters when the user moves the cursor mid-string.
-    let value_total_cols = state.input.display_width() as u16;
-    let tail: Option<(String, Style)> = match &state.status {
-        SearchStatus::Empty => None,
-        SearchStatus::Match => Some((FIND_HINTS.to_string(), muted)),
-        SearchStatus::NoMatch => Some(("  no match".to_string(), err)),
-        SearchStatus::Invalid(msg) => Some((format!("  invalid regex: {msg}"), err)),
-    };
-    f.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            FIND_PROMPT,
-            base.add_modifier(Modifier::BOLD),
-        )))
-        .style(base),
-        Rect {
-            width: prompt_cols.min(rect.width),
-            ..rect
-        },
-    );
-    state.input.render(f, rect, base, prompt_cols, focused);
-    if let Some((text, style)) = tail {
-        let consumed = prompt_cols.saturating_add(value_total_cols);
-        let tail_rect = Rect {
-            x: rect.x.saturating_add(consumed),
-            width: rect.width.saturating_sub(consumed),
-            ..rect
-        };
-        f.render_widget(Paragraph::new(text).style(style), tail_rect);
-    }
+/// Which editor-internal surface currently holds input — the **editor claim**
+/// (adr/0036).
+///
+/// Read into the `Intent` classifier's snapshot so ownership is decided once,
+/// there, instead of being re-asserted per event kind further down. The holder
+/// is named rather than merely counted because what a claim blocks differs by
+/// holder: the find bar blocks a paste, a click and a bare Space; the popup
+/// wants all three.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EditorClaim {
+    #[default]
+    None,
+    FindBar,
+    Autocomplete,
 }
 
 /// Snapshot used to satisfy `AutocompleteHost`. Wraps an
@@ -419,7 +387,7 @@ pub struct TextEditorComponent {
     /// frame sync). See [`nvim_host`].
     nvim_host: NvimHost,
     /// Active Ctrl+F find bar; `None` when not searching.
-    search: Option<SearchState>,
+    search: Option<find_bar::FindBar>,
     /// Wikilink/hashtag autocomplete. Only populated for the textarea
     /// backend after `set_vault` is called; remains `None` for the Nvim
     /// backend (nvim users have their own completion ecosystem).
@@ -690,7 +658,7 @@ impl TextEditorComponent {
         match &mut self.backend {
             BackendState::Textarea(tb) => {
                 let lines = text.lines();
-                tb.ta = TextArea::from(lines);
+                tb.ta.replace(TextArea::from(lines));
             }
             BackendState::Nvim(nvim) => {
                 nvim.set_text(&text);
@@ -703,6 +671,21 @@ impl TextEditorComponent {
         // Buffer replaced — close any open autocomplete popup so it does
         // not linger over the new note (e.g. after Ctrl+G follow-link).
         self.close_autocomplete();
+        // Everything below described the OLD buffer. A textarea swap installs
+        // a fresh, empty history, so recorded **undo groups** now point at
+        // states this history cannot reach — and a group whose `after` is an
+        // empty buffer would hash-match any empty note, popping an extra entry
+        // against unrelated history. The find bar is worse: `armed_empty`
+        // surviving a note swap means one Ctrl+A deletes every match in a note
+        // the user never armed, skipping the confirmation the flag exists to
+        // force. `self.selection` would likewise still describe the old text.
+        self.search = None;
+        self.selection = None;
+        // The whole buffer was replaced. The cursor resets to the top, so if
+        // the line count happens to match and row 0 differs, the damage fast
+        // path would report `0..1` and leave the rest of the note parsed as the
+        // previous one.
+        self.view.note_bulk_edit();
     }
 
     pub fn get_text(&self) -> String {
@@ -770,8 +753,27 @@ impl TextEditorComponent {
     /// Whether a bare Space should start the leader (vim Normal mode only).
     /// Returns `false` for the direct textarea backend, the nvim backend,
     /// vim Insert/Visual modes, and any pending state.
+    ///
+    /// A pure vim-mode fact. It used to also return false while the find bar
+    /// was open — the bar's claim smuggled through the nearest differently
+    /// named field, because the snapshot had nowhere to put it. That is now
+    /// [`Self::claim`]'s job (adr/0036).
     pub fn space_leads(&self) -> bool {
         self.backend.space_leads()
+    }
+
+    /// Which editor-internal surface currently holds input.
+    ///
+    /// The find bar outranks the popup because opening the bar closes it
+    /// (`open_or_advance_search`), so the two cannot genuinely coexist.
+    pub fn claim(&self) -> EditorClaim {
+        if self.search.is_some() {
+            EditorClaim::FindBar
+        } else if self.autocomplete.as_ref().is_some_and(|c| c.is_open()) {
+            EditorClaim::Autocomplete
+        } else {
+            EditorClaim::None
+        }
     }
 
     /// Returns the link or label target under the cursor, or `None` if the
@@ -925,17 +927,37 @@ impl TextEditorComponent {
         if text.is_empty() {
             return;
         }
+        // While the **find bar** is open it owns input — but that was only
+        // implemented for key events, so a bracketed paste used to land in the
+        // buffer behind the bar, leaving the match count and the highlighted
+        // current match describing text that no longer exists. Route it into
+        // the focused field instead, which is what the user meant: pasting a
+        // term to search for or to replace with.
+        if self.search.is_some() {
+            if let (Some(bar), BackendState::Textarea(tb)) =
+                (self.search.as_mut(), &mut self.backend)
+            {
+                bar.paste(text, &mut tb.ta);
+            }
+            self.apply_edit_outcome();
+            return;
+        }
         self.extend_visual_selection_inclusive();
         match &mut self.backend {
             BackendState::Textarea(tb) => {
                 let selection = linkable_url(text).and_then(|_| selection_text(&tb.ta));
                 let wrapped = try_build_markdown_link(text, selection.as_deref());
-                if tb.ta.selection_range().is_some() {
-                    tb.ta.cut();
-                }
-                tb.ta.insert_str(wrapped.as_deref().unwrap_or(text));
+                let insert = wrapped.as_deref().unwrap_or(text).to_string();
+                // Replacing a selection is a cut plus an insert — one paste,
+                // one undo (adr/0037).
+                tb.ta.edit(|ta| {
+                    if ta.selection_range().is_some() {
+                        ta.cut();
+                    }
+                    ta.insert_str(insert);
+                });
                 self.selection = tb.ta.selection_range();
-                self.bump_content();
+                self.apply_edit_outcome();
             }
             BackendState::Nvim(nvim) => {
                 nvim.paste(text, tx.clone());
@@ -968,7 +990,7 @@ impl TextEditorComponent {
         if let Some(ta) = self.backend.as_textarea_mut() {
             ta.insert_str(text);
             self.selection = ta.selection_range();
-            self.bump_content();
+            self.apply_edit_outcome();
         }
         // See `paste_text` — out-of-band buffer mutation must
         // re-reconcile the popup state.
@@ -1013,7 +1035,7 @@ impl TextEditorComponent {
             false
         };
         if cut {
-            self.bump_content();
+            self.apply_edit_outcome();
         }
         // `false` = no live selection, so a modal engine returns to Normal.
         // A no-op for Insert and for the non-modal backends.
@@ -1047,7 +1069,7 @@ impl TextEditorComponent {
         let inner_end_col = if sr == er { ec + shift } else { ec };
         set_selection(ta, (sr, sc + shift), (er, inner_end_col));
         self.selection = ta.selection_range();
-        self.bump_content();
+        self.apply_edit_outcome();
         true
     }
 
@@ -1071,7 +1093,7 @@ impl TextEditorComponent {
             ta.move_cursor(CursorMove::Back);
         }
         self.selection = ta.selection_range();
-        self.bump_content();
+        self.apply_edit_outcome();
     }
 
     /// Smart Enter: continue list markers, preserve indent, dedent on empty
@@ -1147,15 +1169,19 @@ impl TextEditorComponent {
                 let Some(ta) = self.backend.as_textarea_mut() else {
                     unreachable!()
                 };
-                ta.insert_newline();
-                ta.insert_str(prefix);
+                // Newline plus prefix is two history entries; one `edit()`
+                // scope makes continuing a list one undo (adr/0037).
+                ta.edit(|ta| {
+                    ta.insert_newline();
+                    ta.insert_str(prefix);
+                });
             }
         }
         let Some(ta) = self.backend.as_textarea() else {
             unreachable!()
         };
         self.selection = ta.selection_range();
-        self.bump_content();
+        self.apply_edit_outcome();
         true
     }
 
@@ -1184,7 +1210,7 @@ impl TextEditorComponent {
             stripped.len() != t.len() && normalise(stripped) == wanted
         });
         if let Some(row) = row {
-            ta.move_cursor(CursorMove::Jump(row as u16, 0));
+            ta.jump_to(row, 0);
         }
     }
 
@@ -1236,40 +1262,44 @@ impl TextEditorComponent {
         // text before the selection. The selection is restored at the end.
         ta.cancel_selection();
 
-        for row in start_row..=end_row {
-            if dedent {
-                let count = {
-                    let line = ta.lines().get(row).map(|s| s.as_str()).unwrap_or("");
-                    let max_remove = if hard_tab { 1 } else { tab_len };
-                    let mut count = 0usize;
-                    for (i, c) in line.chars().enumerate() {
-                        if i >= max_remove {
-                            break;
+        // Indenting N lines is 2N history entries; one `edit()` scope makes
+        // the whole block one undo instead of N (adr/0037).
+        ta.edit(|ta| {
+            for row in start_row..=end_row {
+                if dedent {
+                    let count = {
+                        let line = ta.lines().get(row).map(|s| s.as_str()).unwrap_or("");
+                        let max_remove = if hard_tab { 1 } else { tab_len };
+                        let mut count = 0usize;
+                        for (i, c) in line.chars().enumerate() {
+                            if i >= max_remove {
+                                break;
+                            }
+                            if c == '\t' {
+                                count += 1;
+                                break;
+                            } else if c == ' ' && !hard_tab {
+                                count += 1;
+                            } else {
+                                break;
+                            }
                         }
-                        if c == '\t' {
-                            count += 1;
-                            break;
-                        } else if c == ' ' && !hard_tab {
-                            count += 1;
-                        } else {
-                            break;
-                        }
+                        count
+                    };
+                    if count > 0 {
+                        edit_buffer::checked_jump(ta, row, 0);
+                        ta.delete_str(count);
+                        any_change = true;
                     }
-                    count
-                };
-                if count > 0 {
-                    ta.move_cursor(CursorMove::Jump(row as u16, 0));
-                    ta.delete_str(count);
+                    row_deltas.push(-(count as isize));
+                } else {
+                    edit_buffer::checked_jump(ta, row, 0);
+                    ta.insert_str(&indent);
+                    row_deltas.push(indent_chars as isize);
                     any_change = true;
                 }
-                row_deltas.push(-(count as isize));
-            } else {
-                ta.move_cursor(CursorMove::Jump(row as u16, 0));
-                ta.insert_str(&indent);
-                row_deltas.push(indent_chars as isize);
-                any_change = true;
             }
-        }
+        });
 
         let adj = |row: usize, col: usize| -> usize {
             if row >= start_row && row <= end_row {
@@ -1291,13 +1321,13 @@ impl TextEditorComponent {
             None => {
                 let (cr, cc) = saved_cursor.expect("captured when sel is None");
                 let new_col = adj(cr, cc);
-                ta.move_cursor(CursorMove::Jump(cr as u16, new_col as u16));
+                ta.jump_to(cr, new_col);
             }
         }
 
         if any_change {
             self.selection = ta.selection_range();
-            self.bump_content();
+            self.apply_edit_outcome();
         }
     }
 }
@@ -1348,25 +1378,95 @@ impl TextEditorComponent {
         Some(EventState::Consumed)
     }
 
-    /// Open the find bar; if already open, advance to the next match. No-op
-    /// on the Nvim backend (which has its own `/` search). Public so
-    /// `EditorScreen` can route the configurable `FindInBuffer` shortcut here.
+    /// Open the find bar; if already open, advance to the next match. No-op on
+    /// the Nvim backend, which has its own `/` search. Policy lives here
+    /// because only the editor knows which backend is active.
     pub fn open_or_advance_search(&mut self) {
         if !self.backend.is_textarea() {
             return;
         }
         if self.search.is_some() {
-            self.search_advance(false);
+            self.dispatch_bar(|bar, buf| {
+                bar.advance(buf, false);
+                find_bar::KeyOutcome::default()
+            });
             return;
         }
-        // Yield key focus to the find bar — close the autocomplete popup
-        // so it stops intercepting Esc / Up / Down / Tab / Enter, which
-        // belong to the find bar while it is active.
+        // Yield key focus to the bar — close the autocomplete popup so it stops
+        // intercepting Esc / Up / Down / Tab / Enter, which belong to the bar.
         self.close_autocomplete();
-        self.search = Some(SearchState {
-            input: SingleLineInput::new(),
-            status: SearchStatus::Empty,
-        });
+        self.search = Some(find_bar::FindBar::new());
+    }
+
+    /// Open the find bar with the **replace field** already revealed, or reveal
+    /// it on an already-open bar.
+    pub fn open_replace(&mut self) {
+        if !self.backend.is_textarea() {
+            return;
+        }
+        if self.search.is_none() {
+            self.close_autocomplete();
+            self.search = Some(find_bar::FindBar::new());
+        }
+        if let Some(bar) = self.search.as_mut() {
+            bar.reveal_replace();
+        }
+    }
+
+    /// Repeat the last search (vim `n`/`N`) using the buffer's persisted
+    /// pattern, even when the bar is closed.
+    fn search_repeat(&mut self, backward: bool) {
+        let BackendState::Textarea(tb) = &mut self.backend else {
+            return;
+        };
+        // Paint the match `n`/`N` landed on. The bar is closed here, so the
+        // buffer answers — which is why `match_at_cursor` lives on it.
+        self.selection = if tb.ta.search_repeat(backward) {
+            tb.ta.match_at_cursor()
+        } else {
+            None
+        };
+    }
+
+    /// Run `f` against the open bar and its buffer, then apply what the buffer
+    /// measured. Returns `false` when no bar is open.
+    fn dispatch_bar(
+        &mut self,
+        f: impl FnOnce(&mut find_bar::FindBar, &mut EditBuffer) -> find_bar::KeyOutcome,
+    ) -> bool {
+        let BackendState::Textarea(tb) = &mut self.backend else {
+            return false;
+        };
+        let Some(bar) = self.search.as_mut() else {
+            return false;
+        };
+        let outcome = f(bar, &mut tb.ta);
+        if outcome.close {
+            self.search = None;
+            // Clear the anchor as well as the mirrored range. The bar's cursor
+            // jumps (`search_forward`) move the cursor without touching
+            // `selection_start`, so a selection that existed before the search
+            // is left live but unpainted — and the next keystroke silently
+            // deletes it.
+            tb.ta.cancel_selection();
+            self.selection = None;
+        }
+        self.apply_edit_outcome();
+        true
+    }
+
+    /// Feed a key to the open bar. The bar consumes every key it sees.
+    fn dispatch_to_find_bar(&mut self, key: &ratatui::crossterm::event::KeyEvent) -> bool {
+        self.dispatch_bar(|bar, buf| bar.handle_key(key, buf))
+    }
+
+    /// The **replace preview** for this frame, when a bar is open. Test-facing:
+    /// production reads it through `FindBar::overlay`.
+    #[cfg(test)]
+    fn replace_preview(&self) -> Option<find_replace::Preview> {
+        let bar = self.search.as_ref()?;
+        let buf = self.backend.as_textarea()?;
+        bar.preview(buf)
     }
 
     /// Close the autocomplete popup, if any. Cheap; safe on any backend
@@ -1407,132 +1507,52 @@ impl TextEditorComponent {
         }
     }
 
-    fn close_search(&mut self) {
-        if let Some(ta) = self.backend.as_textarea_mut() {
-            let _ = ta.set_search_pattern("");
-        }
-        self.search = None;
-        self.selection = None;
-    }
-
-    /// Push pattern to the textarea. When `jump` is true and the query compiles,
-    /// also jumps to the first match at or after the cursor (live preview).
-    fn refresh_search_pattern(&mut self, jump: bool) {
-        let Some(state) = self.search.as_mut() else {
-            return;
-        };
-        let Some(ta) = self.backend.as_textarea_mut() else {
-            return;
-        };
-        if state.input.is_empty() {
-            let _ = ta.set_search_pattern("");
-            state.status = SearchStatus::Empty;
-            self.selection = None;
-            return;
-        }
-        if let Err(e) = ta.set_search_pattern(state.input.value()) {
-            state.status = SearchStatus::Invalid(e.to_string());
-            self.selection = None;
-            return;
-        }
-        if !jump {
-            state.status = SearchStatus::Match;
-            return;
-        }
-        let found = ta.search_forward(true);
-        state.status = SearchStatus::from_found(found);
-        self.highlight_current_match(found);
-    }
-
-    fn search_advance(&mut self, backward: bool) {
-        let Some(state) = self.search.as_mut() else {
-            return;
-        };
-        if state.input.is_empty() {
-            return;
-        }
-        let Some(ta) = self.backend.as_textarea_mut() else {
-            return;
-        };
-        let found = if backward {
-            ta.search_back(false)
-        } else {
-            ta.search_forward(false)
-        };
-        state.status = SearchStatus::from_found(found);
-        self.highlight_current_match(found);
-    }
-
-    /// After a search step, paint the match at the textarea's cursor as the
-    /// editor selection so the user can see where the match is — our custom
-    /// `MarkdownEditorView` does not render the textarea library's built-in
-    /// search highlights.
-    fn highlight_current_match(&mut self, found: bool) {
-        self.selection = if found {
-            self.compute_match_selection()
-        } else {
-            None
-        };
-    }
-
-    /// Locate the regex match starting at the textarea cursor and return its
-    /// span as a `(row, char_col)` pair. Returns `None` when no pattern is set,
-    /// the cursor is out of range, or the cursor is not on a match — guards
-    /// against stale cursor/pattern state if callers ever invoke without a
-    /// fresh search step.
-    fn compute_match_selection(&self) -> Option<((usize, usize), (usize, usize))> {
-        let ta = self.backend.as_textarea()?;
-        let re = ta.search_pattern()?;
-        let DataCursor(row, col_chars) = ta.cursor();
-        let line = ta.lines().get(row)?;
-        let byte_off = char_col_to_byte(line, col_chars);
-        let m = re.find_at(line, byte_off)?;
-        if m.start() != byte_off {
-            return None;
-        }
-        let match_chars = line[m.range()].chars().count();
-        Some(((row, col_chars), (row, col_chars + match_chars)))
-    }
-
-    /// Returns `true` when the key was consumed by the find bar.
-    fn handle_search_key(&mut self, key: &ratatui::crossterm::event::KeyEvent) -> bool {
-        let Some(state) = self.search.as_mut() else {
+    /// Drain the **edit buffer**'s measured outcome and apply it.
+    ///
+    /// The one place a text change turns into a revision bump and a
+    /// parse-damage signal. Both facts are derived by the buffer from the
+    /// content either side of the edit, so neither can be predicted wrongly
+    /// (an `insert_str` that returns `false` after deleting) or simply
+    /// forgotten at one of 22 sites (adr/0037).
+    ///
+    /// The revision clock stays on the component because it serves the nvim
+    /// backend too, which has no edit buffer.
+    fn apply_edit_outcome(&mut self) -> bool {
+        let Some(outcome) = self.backend.as_textarea_mut().map(|ta| ta.take_outcome()) else {
             return false;
         };
-        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-        let outcome = state.input.handle_key(key);
-        match outcome {
-            InputOutcome::Cancel => self.close_search(),
-            InputOutcome::Submit => {
-                if self.backend.is_vim() {
-                    // Vim confirm: keep the textarea search pattern so n/N can
-                    // use it, but close the find bar. Incremental search already
-                    // placed the cursor on the first match — do NOT advance again.
-                    self.search = None;
-                } else {
-                    self.search_advance(shift);
-                }
-            }
-            InputOutcome::Changed => self.refresh_search_pattern(true),
-            InputOutcome::Consumed | InputOutcome::NotConsumed => {}
+        if outcome.changed {
+            self.bump_content();
         }
-        true
+        if outcome.bulk {
+            self.view.note_bulk_edit();
+        }
+        outcome.changed
     }
 
-    /// Repeat the last search (vim `n`/`N`) using the textarea's persisted
-    /// pattern, even when the find bar is closed.
-    fn vim_search_repeat(&mut self, backward: bool) {
-        let found = {
-            let Some(ta) = self.backend.as_textarea_mut() else {
-                return;
-            };
-            if backward {
-                ta.search_back(false)
-            } else {
-                ta.search_forward(false)
-            }
-        };
-        self.highlight_current_match(found);
+    /// Undo one *user action*. The **edit buffer** replays history to the
+    /// state the action started from, so nothing here counts entries.
+    fn undo_grouped(&mut self) -> bool {
+        let moved = self.backend.as_textarea_mut().is_some_and(|ta| ta.undo());
+        if moved {
+            self.selection = self
+                .backend
+                .as_textarea()
+                .and_then(|ta| ta.selection_range());
+        }
+        moved
+    }
+
+    /// Redo one *user action*. Mirror of [`Self::undo_grouped`].
+    fn redo_grouped(&mut self) -> bool {
+        let moved = self.backend.as_textarea_mut().is_some_and(|ta| ta.redo());
+        if moved {
+            self.selection = self
+                .backend
+                .as_textarea()
+                .and_then(|ta| ta.selection_range());
+        }
+        moved
     }
 
     /// Handle a key event when using the Textarea backend.
@@ -1541,10 +1561,10 @@ impl TextEditorComponent {
         key: &ratatui::crossterm::event::KeyEvent,
         tx: &AppTx,
     ) -> EventState {
-        // Find bar — intercept ALL keys while active.
-        if self.handle_search_key(key) {
-            return EventState::Consumed;
-        }
+        // No find-bar check here: `handle_input` — this function's one
+        // production caller — already routes to the bar before the vim engine,
+        // so a second check could never fire. It survived only because tests
+        // call this function directly.
 
         // System clipboard shortcuts — intercept before passing to textarea.
         if key.modifiers == KeyModifiers::CONTROL {
@@ -1572,7 +1592,29 @@ impl TextEditorComponent {
                         false
                     };
                     if cut {
-                        self.bump_content();
+                        self.apply_edit_outcome();
+                    }
+                    return EventState::Consumed;
+                }
+                _ => {}
+            }
+        }
+
+        // Undo / Redo (Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z). Handled before the
+        // textarea borrow below because the **undo group** bookkeeping lives on
+        // the component, and `as_textarea_mut` borrows all of `self`. A replace
+        // is two history entries and must cost one Ctrl+Z, not two (adr/0033).
+        if key.modifiers & !KeyModifiers::SHIFT == KeyModifiers::CONTROL {
+            match key.code {
+                KeyCode::Char('z') if !key.modifiers.contains(KeyModifiers::SHIFT) => {
+                    if self.undo_grouped() {
+                        self.apply_edit_outcome();
+                    }
+                    return EventState::Consumed;
+                }
+                KeyCode::Char('y') | KeyCode::Char('Z') => {
+                    if self.redo_grouped() {
+                        self.apply_edit_outcome();
                     }
                     return EventState::Consumed;
                 }
@@ -1698,24 +1740,6 @@ impl TextEditorComponent {
                     cursor_move!(ta, CursorMove::Bottom, shift);
                     Some(ShortcutOutcome::CursorOnly)
                 }
-                // Undo / Redo (Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z). The textarea
-                // returns `false` when the stack is empty — no buffer change AND
-                // no cursor change, so emit NoOp and skip the view-cache bump.
-                (KeyModifiers::CONTROL, KeyCode::Char('z')) => {
-                    if ta.undo() {
-                        Some(ShortcutOutcome::TextMutated)
-                    } else {
-                        Some(ShortcutOutcome::NoOp)
-                    }
-                }
-                (KeyModifiers::CONTROL, KeyCode::Char('y'))
-                | (KeyModifiers::CONTROL, KeyCode::Char('Z')) => {
-                    if ta.redo() {
-                        Some(ShortcutOutcome::TextMutated)
-                    } else {
-                        Some(ShortcutOutcome::NoOp)
-                    }
-                }
                 // Select all
                 (KeyModifiers::CONTROL, KeyCode::Char('a')) => {
                     ta.move_cursor(CursorMove::Top);
@@ -1746,7 +1770,9 @@ impl TextEditorComponent {
             self.selection = ta.selection_range();
             match kind {
                 ShortcutOutcome::NoOp | ShortcutOutcome::CursorOnly => {}
-                ShortcutOutcome::TextMutated => self.bump_content(),
+                ShortcutOutcome::TextMutated => {
+                    self.apply_edit_outcome();
+                }
             }
             return EventState::Consumed;
         }
@@ -1791,11 +1817,9 @@ impl TextEditorComponent {
         // composing events). Only bump `text_revision` when the buffer
         // actually changed — otherwise harmless keys would silently flip
         // the editor to dirty and trigger needless autosaves.
-        let mutated = ta.input_without_shortcuts(*key);
+        ta.input_without_shortcuts(*key);
         self.selection = ta.selection_range();
-        if mutated {
-            self.bump_content();
-        }
+        self.apply_edit_outcome();
         EventState::Consumed
     }
 
@@ -1848,17 +1872,17 @@ impl TextEditorComponent {
                 let (lrow, lcol) = self
                     .view
                     .click_at_screen((mouse.row - r.y) as usize, (mouse.column - r.x) as usize);
-                ta.move_cursor(CursorMove::Jump(lrow, lcol));
+                ta.jump_to(lrow as usize, lcol as usize);
                 ta.start_selection();
             }
             MouseEventKind::Drag(_) => {
                 let (lrow, lcol) = self
                     .view
                     .click_at_screen((mouse.row - r.y) as usize, (mouse.column - r.x) as usize);
-                ta.move_cursor(CursorMove::Jump(lrow, lcol));
+                ta.jump_to(lrow as usize, lcol as usize);
             }
             _ => {
-                ta.input(*mouse);
+                ta.mouse_input(*mouse);
             }
         }
         self.selection = ta.selection_range();
@@ -1872,97 +1896,6 @@ impl TextEditorComponent {
 /// (`color_search_match`, bold) and style task checkboxes — `[ ]` accent,
 /// `[x]` rows dimmed + struck (spec §5.1). Operates on the rendered buffer
 /// rows, so cost is bounded by the visible area regardless of note size.
-fn paint_viewport_extras(
-    buf: &mut ratatui::buffer::Buffer,
-    area: Rect,
-    needles: &[String],
-    theme: &Theme,
-) {
-    use ratatui::layout::Position;
-    let match_fg = theme.color_search_match.to_ratatui();
-    let checkbox_fg = theme.accent.to_ratatui();
-
-    for y in area.y..area.bottom() {
-        // Cheap pre-pass: with no needles, only task rows need the full
-        // string reconstruction — peek at the leading cells for a `- [`
-        // prefix and skip the row otherwise. Keeps the per-keystroke cost
-        // of an idle buffer near zero.
-        if needles.is_empty() {
-            let mut lead = String::new();
-            for x in area.x..area.right().min(area.x + 16) {
-                if let Some(cell) = buf.cell(Position::new(x, y)) {
-                    lead.push_str(cell.symbol());
-                }
-            }
-            if !lead.trim_start().starts_with("- [") {
-                continue;
-            }
-        }
-        // Reconstruct the row text with a byte→column map (multi-width
-        // symbols occupy one cell + skipped continuation cells).
-        let mut row_text = String::new();
-        let mut byte_to_col: Vec<(usize, u16)> = Vec::new();
-        for x in area.x..area.right() {
-            let Some(cell) = buf.cell(Position::new(x, y)) else {
-                continue;
-            };
-            let sym = cell.symbol();
-            if sym.is_empty() {
-                continue;
-            }
-            byte_to_col.push((row_text.len(), x));
-            row_text.push_str(sym);
-        }
-        if row_text.trim().is_empty() {
-            continue;
-        }
-
-        let mut restyle =
-            |from_byte: usize, to_byte: usize, f: &mut dyn FnMut(&mut ratatui::buffer::Cell)| {
-                for (b, x) in &byte_to_col {
-                    if *b >= from_byte
-                        && *b < to_byte
-                        && let Some(cell) = buf.cell_mut(Position::new(*x, y))
-                    {
-                        f(cell);
-                    }
-                }
-            };
-
-        // Task checkboxes: optional indent, `- [ ] ` / `- [x] `.
-        let trimmed_start = row_text.len() - row_text.trim_start().len();
-        let after_indent = &row_text[trimmed_start..];
-        let is_done = after_indent.starts_with("- [x] ") || after_indent.starts_with("- [X] ");
-        let is_open = after_indent.starts_with("- [ ] ");
-        if is_done || is_open {
-            let box_start = trimmed_start + 2;
-            let box_end = box_start + 3;
-            restyle(box_start, box_end, &mut |cell| {
-                cell.set_fg(checkbox_fg);
-            });
-            if is_done {
-                restyle(box_end, row_text.len(), &mut |cell| {
-                    let style = cell
-                        .style()
-                        .add_modifier(Modifier::DIM | Modifier::CROSSED_OUT);
-                    cell.set_style(style);
-                });
-            }
-        }
-
-        // Needle emphasis. Byte-safe via preview_highlight::match_ranges, whose
-        // offsets are real char boundaries of `row_text` (so non-ASCII case
-        // folds are highlighted too, not dropped — same matcher as the preview
-        // panes).
-        for (start, end) in preview_highlight::match_ranges(&row_text, needles) {
-            restyle(start, end, &mut |cell| {
-                let style = cell.style().fg(match_fg).add_modifier(Modifier::BOLD);
-                cell.set_style(style);
-            });
-        }
-    }
-}
-
 impl Component for TextEditorComponent {
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
         self.maybe_recover_from_dead_nvim();
@@ -1989,10 +1922,10 @@ impl Component for TextEditorComponent {
                     match controller.handle_key(*key, &host) {
                         HandleKeyOutcome::Accepted(action) => {
                             if let Some(ta) = self.backend.as_textarea_mut() {
-                                apply_accept_to_textarea(ta, &action);
+                                ta.edit(|ta| apply_accept_to_textarea(ta, &action));
                                 self.selection = ta.selection_range();
                             }
-                            self.bump_content();
+                            self.apply_edit_outcome();
                             return EventState::Consumed;
                         }
                         HandleKeyOutcome::Dismissed | HandleKeyOutcome::Consumed => {
@@ -2005,7 +1938,7 @@ impl Component for TextEditorComponent {
                 // vim engine, which would otherwise consume keys in Normal mode
                 // (the textarea backend also intercepts inside handle_textarea_key,
                 // but the vim Normal-mode path never reaches that).
-                if self.search.is_some() && self.handle_search_key(key) {
+                if self.dispatch_to_find_bar(key) {
                     return EventState::Consumed;
                 }
                 // Vim interpreter: Normal/Visual consume the key here; Insert
@@ -2014,10 +1947,15 @@ impl Component for TextEditorComponent {
                 // keep working (adr/0012).
                 if let Some(outcome) = self.backend.vim_handle_key(key) {
                     use self::vim::VimKeyOutcome;
+                    // Whatever the engine did, the buffer measured it. One
+                    // drain replaces the group handshake, the pre-dispatch
+                    // clone and the hand-placed revision bump (adr/0037).
+                    self.apply_edit_outcome();
                     match outcome {
                         VimKeyOutcome::TextMutated => {
+                            // No bump here — the drain above already applied
+                            // what the buffer measured.
                             self.selection = None;
-                            self.bump_content();
                             return EventState::Consumed;
                         }
                         VimKeyOutcome::CursorOnly => {
@@ -2065,8 +2003,8 @@ impl Component for TextEditorComponent {
                                     // n/N still navigate both directions.)
                                     self.open_or_advance_search();
                                 }
-                                VimHostAction::SearchNext => self.vim_search_repeat(false),
-                                VimHostAction::SearchPrev => self.vim_search_repeat(true),
+                                VimHostAction::SearchNext => self.search_repeat(false),
+                                VimHostAction::SearchPrev => self.search_repeat(true),
                                 // Copy and Cut: the engine already did the
                                 // editing and the mode transition; all that is
                                 // left is the I/O and reporting it (adr/0031).
@@ -2077,7 +2015,6 @@ impl Component for TextEditorComponent {
                                 VimHostAction::ClipboardCut(text) => {
                                     self.selection = None;
                                     crate::components::yank(text, "cut", tx);
-                                    self.bump_content();
                                 }
                                 // Paste is different: the engine deliberately
                                 // left the range SELECTED rather than cutting
@@ -2179,16 +2116,25 @@ impl Component for TextEditorComponent {
     }
 
     fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
-        // Reserve the bottom row for the find bar when active.
-        let (editor_rect, search_rect) = if self.search.is_some() && rect.height > 1 {
+        // Reserve the bottom row(s) for the find bar when active — one while
+        // finding, two once a **replace field** is revealed (row one is the
+        // pattern and what it matches, row two the replacement and what
+        // happens to it).
+        let bar_rows: u16 = self.search.as_ref().map_or(0, |bar| bar.rows());
+        // Clamp rather than drop: with `rect.height == bar_rows` the old
+        // `>` left the bar unrendered while it was still open and still
+        // swallowing every key — an invisible modal. Better to show it and
+        // give the editor whatever is left, even if that is nothing.
+        let bar_rows = bar_rows.min(rect.height);
+        let (editor_rect, search_rect) = if bar_rows > 0 {
             (
                 Rect {
-                    height: rect.height - 1,
+                    height: rect.height - bar_rows,
                     ..rect
                 },
                 Some(Rect {
-                    y: rect.y + rect.height - 1,
-                    height: 1,
+                    y: rect.y + rect.height - bar_rows,
+                    height: bar_rows,
                     ..rect
                 }),
             )
@@ -2203,7 +2149,12 @@ impl Component for TextEditorComponent {
         // snapshot below is the single producer, and `revs` adopts its
         // value, so dirty tracking and the view always agree in a frame.
         let selection = match &self.backend {
-            BackendState::Textarea(_) => self.selection,
+            // While the bar is open the **current match** is what gets painted
+            // as the selection — the bar owns it rather than writing this field.
+            BackendState::Textarea(_) => match self.search.as_ref() {
+                Some(bar) => bar.current_match(),
+                None => self.selection,
+            },
             BackendState::Nvim(nvim) => {
                 self.nvim_host
                     .frame_sync(nvim, editor_rect.width, editor_rect.height)
@@ -2222,12 +2173,89 @@ impl Component for TextEditorComponent {
         // on Textarea (zero clone), owned on Nvim (lines cloned out
         // from behind the Mutex). Use the free function so the borrow
         // checker can split `&self.backend` from `&mut self.view`.
+        // The **replace preview** is computed before the snapshot borrow so it
+        // owns its lines outright. The buffer is never touched — only this
+        // frame's view of it is substituted, which is what makes the preview
+        // structurally incapable of committing (adr/0035).
+        // One call gets everything the bar wants painted: preview lines and
+        // spans, match spans, and the current match (adr/0033 candidate seam).
+        let overlay = match (self.search.as_ref(), self.backend.as_textarea()) {
+            (Some(bar), Some(buf)) => bar.overlay(buf),
+            _ => find_bar::BarOverlay::default(),
+        };
+        let preview = overlay.preview;
         let snap = snapshot_from_backend(&self.backend, self.revs.current());
         // One revision domain: adopt the snapshot's value (the nvim arm
         // derived it from the backend's `content_gen` under one lock; the
         // textarea arm passed `revs.current()` through — a no-op adopt).
+        // Adopt from the REAL snapshot, never the preview's synthetic
+        // revision, or dirty tracking would follow the preview.
         self.revs.adopt(snap.content_revision);
-        self.view.update(&snap, editor_rect, selection);
+        // The lines the view actually draws this frame: the preview's when one
+        // is showing, the buffer's otherwise. Kept in scope because the
+        // deferred full-parse below must parse *these*, not the buffer's.
+        let (view_lines, preview_spans) = match preview {
+            None => (None, Vec::new()),
+            Some(p) => (Some(p.lines), p.spans),
+        };
+        match &view_lines {
+            None => self.view.update(&snap, editor_rect),
+            Some(lines) => {
+                // The parse cache keys on `content_revision`, so the preview
+                // carries an identity of its own — derived from the real
+                // revision plus what is being previewed. Same preview, same
+                // key: the cache still works instead of thrashing per frame.
+                let rev = preview_revision(snap.content_revision, lines);
+                let view_snap = EditorSnapshot::borrowed(lines, snap.cursor, rev);
+                self.view.update(&view_snap, editor_rect);
+            }
+        }
+        // Needles reach the view as **overlays** now; the cell-space post-pass
+        // that used to paint them is gone, and with it the coordinate split
+        // that let a find pattern match text it could never highlight.
+        if self.revs.needles_stale() {
+            self.search_needles.clear();
+            self.revs.disarm_needles();
+        }
+        self.view.set_needles(self.search_needles.clone());
+
+        // Assemble this frame's **overlays**. The view appends the two kinds it
+        // derives from content (tasks, needles) for the visible rows.
+        let mut overlays: Vec<view::Overlay> = Vec::new();
+        if let Some(((sr, sc), (er, ec))) = selection {
+            // A multi-row selection becomes one overlay per row; the middle
+            // rows run to their full width, which `restyle_over_range` clamps.
+            for row in sr..=er {
+                let start = if row == sr { sc } else { 0 };
+                let end = if row == er { ec } else { usize::MAX };
+                overlays.push(view::Overlay::new(
+                    row,
+                    start,
+                    end,
+                    view::OverlayKind::Selection,
+                ));
+            }
+        }
+        overlays.extend(preview_spans.iter().map(|p| {
+            view::Overlay::new(
+                p.row,
+                p.start,
+                p.end,
+                if p.is_current {
+                    view::OverlayKind::PreviewCurrent
+                } else {
+                    view::OverlayKind::Preview
+                },
+            )
+        }));
+        // Find-bar matches. Skipped while previewing: those columns already
+        // carry the preview colour, which is the more important fact.
+        if view_lines.is_none() {
+            overlays.extend(overlay.matches.iter().map(|&(row, start, end)| {
+                view::Overlay::new(row, start, end, view::OverlayKind::Match)
+            }));
+        }
+        self.view.set_overlays(overlays);
 
         // If `view.update` cap-tripped on a large buffer it
         // installed a placeholder + pending-flag instead of running
@@ -2237,7 +2265,17 @@ impl Component for TextEditorComponent {
         // task, so a burst of large-buffer edits resolves against
         // the latest content.
         if let Some(generation) = self.view.take_pending_full_parse() {
-            let lines: Vec<String> = snap.lines.iter().cloned().collect();
+            // Parse the lines the view is DRAWING, not the buffer's. Under a
+            // **replace preview** those differ, and the placeholder this
+            // generation came from was keyed on the preview's synthetic
+            // revision — so handing over the buffer's lines would install a
+            // parse of text that is not on screen and sail through
+            // `install_full_parse`'s staleness check, styling a large note by
+            // element boundaries computed against a different string.
+            let lines: Vec<String> = match &view_lines {
+                Some(lines) => lines.clone(),
+                None => snap.lines.iter().cloned().collect(),
+            };
             let tx = self.full_parse_tx.clone();
             let redraw = self.redraw_tx.clone();
             self.full_parse_task.spawn(async move {
@@ -2270,14 +2308,6 @@ impl Component for TextEditorComponent {
             self.search_needles.clear();
             self.revs.disarm_needles();
         }
-        let mut emphasis_needles = self.search_needles.clone();
-        if let Some(state) = &self.search {
-            let q = state.input.value().trim().to_lowercase();
-            if !q.is_empty() {
-                emphasis_needles.push(q);
-            }
-        }
-        paint_viewport_extras(f.buffer_mut(), editor_rect, &emphasis_needles, theme);
 
         // Empty-note tip (spec §5.2): dim ghost text in a fresh/empty buffer,
         // gone the instant the first character lands (the buffer stops being
@@ -2305,7 +2335,7 @@ impl Component for TextEditorComponent {
             );
         }
         if let (Some(state), Some(bar_rect)) = (self.search.as_mut(), search_rect) {
-            render_search_bar(f, bar_rect, state, theme, bar_focused);
+            state.render(f, bar_rect, theme, bar_focused);
         }
 
         // Autocomplete popup sits on top of the editor. Drain async
@@ -2414,7 +2444,7 @@ mod tests {
         tokio::sync::mpsc::unbounded_channel().0
     }
 
-    fn get_ta(editor: &mut TextEditorComponent) -> &mut TextArea<'static> {
+    fn get_ta(editor: &mut TextEditorComponent) -> &mut EditBuffer {
         match &mut editor.backend {
             BackendState::Textarea(tb) => &mut tb.ta,
             _ => panic!("expected Textarea backend"),
@@ -2853,34 +2883,6 @@ mod tests {
         ratatui::crossterm::event::KeyEvent::new(code, mods)
     }
 
-    /// Buffer post-pass: needles painted, task rows styled.
-    #[test]
-    fn paint_viewport_extras_emphasizes_needles_and_tasks() {
-        use ratatui::buffer::Buffer;
-        use ratatui::layout::Position;
-        let theme = crate::settings::themes::Theme::default();
-        let area = Rect::new(0, 0, 30, 3);
-        let mut buf = Buffer::empty(area);
-        buf.set_string(0, 0, "find the needle here", Style::default());
-        buf.set_string(0, 1, "- [x] done task", Style::default());
-        buf.set_string(0, 2, "- [ ] open task", Style::default());
-
-        paint_viewport_extras(&mut buf, area, &["needle".to_string()], &theme);
-
-        // "needle" starts at col 9 on row 0.
-        let cell = buf.cell(Position::new(9, 0)).unwrap();
-        assert_eq!(cell.fg, theme.color_search_match.to_ratatui());
-        assert!(cell.style().add_modifier.contains(Modifier::BOLD));
-        // Done-task text is dimmed + struck.
-        let cell = buf.cell(Position::new(8, 1)).unwrap();
-        assert!(cell.style().add_modifier.contains(Modifier::CROSSED_OUT));
-        // Open-task text is NOT struck; its checkbox is accent-colored.
-        let cell = buf.cell(Position::new(8, 2)).unwrap();
-        assert!(!cell.style().add_modifier.contains(Modifier::CROSSED_OUT));
-        let cb = buf.cell(Position::new(3, 2)).unwrap();
-        assert_eq!(cb.fg, theme.accent.to_ratatui());
-    }
-
     /// Arrive-from-query needles survive until the first edit.
     #[test]
     fn search_needles_clear_on_edit() {
@@ -2929,8 +2931,14 @@ mod tests {
         editor.set_text("ab ab ab".to_string());
         let tx = dummy_tx();
         editor.open_or_advance_search();
-        editor.handle_textarea_key(&key(KeyCode::Char('a'), KeyModifiers::NONE), &tx);
-        editor.handle_textarea_key(&key(KeyCode::Char('b'), KeyModifiers::NONE), &tx);
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('a'), KeyModifiers::NONE)),
+            &tx,
+        );
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('b'), KeyModifiers::NONE)),
+            &tx,
+        );
         // Cursor now at first match (col 0). Re-invoking advances to second.
         editor.open_or_advance_search();
         let DataCursor(_, col) = get_ta(&mut editor).cursor();
@@ -2944,7 +2952,10 @@ mod tests {
         let tx = dummy_tx();
         editor.open_or_advance_search();
         for ch in ['b', 'a', 'r'] {
-            editor.handle_textarea_key(&key(KeyCode::Char(ch), KeyModifiers::NONE), &tx);
+            editor.handle_input(
+                &InputEvent::Key(key(KeyCode::Char(ch), KeyModifiers::NONE)),
+                &tx,
+            );
         }
         let state = editor.search.as_ref().unwrap();
         assert_eq!(state.input.value(), "bar");
@@ -2959,10 +2970,19 @@ mod tests {
         editor.set_text("ab ab ab".to_string());
         let tx = dummy_tx();
         editor.open_or_advance_search();
-        editor.handle_textarea_key(&key(KeyCode::Char('a'), KeyModifiers::NONE), &tx);
-        editor.handle_textarea_key(&key(KeyCode::Char('b'), KeyModifiers::NONE), &tx);
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('a'), KeyModifiers::NONE)),
+            &tx,
+        );
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('b'), KeyModifiers::NONE)),
+            &tx,
+        );
         // first match is at col 0 (match_cursor=true on type)
-        editor.handle_textarea_key(&key(KeyCode::Enter, KeyModifiers::NONE), &tx);
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Enter, KeyModifiers::NONE)),
+            &tx,
+        );
         let DataCursor(_, col) = get_ta(&mut editor).cursor();
         assert_eq!(col, 3, "Enter advances to second match");
     }
@@ -2974,10 +2994,17 @@ mod tests {
         let tx = dummy_tx();
         editor.open_or_advance_search();
         for ch in ['b', 'a', 'r'] {
-            editor.handle_textarea_key(&key(KeyCode::Char(ch), KeyModifiers::NONE), &tx);
+            editor.handle_input(
+                &InputEvent::Key(key(KeyCode::Char(ch), KeyModifiers::NONE)),
+                &tx,
+            );
         }
-        // "bar" lives at cols 4..7 on row 0.
-        assert_eq!(editor.selection, Some(((0, 4), (0, 7))));
+        // "bar" lives at cols 4..7 on row 0. The **current match** belongs to
+        // the bar now, not to the editor's selection.
+        assert_eq!(
+            editor.search.as_ref().unwrap().current_match(),
+            Some(((0, 4), (0, 7)))
+        );
     }
 
     #[test]
@@ -2986,7 +3013,10 @@ mod tests {
         editor.set_text("hello".to_string());
         let tx = dummy_tx();
         editor.open_or_advance_search();
-        editor.handle_textarea_key(&key(KeyCode::Char('z'), KeyModifiers::NONE), &tx);
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('z'), KeyModifiers::NONE)),
+            &tx,
+        );
         assert_eq!(editor.selection, None);
     }
 
@@ -2996,11 +3026,27 @@ mod tests {
         editor.set_text("foo bar".to_string());
         let tx = dummy_tx();
         editor.open_or_advance_search();
-        editor.handle_textarea_key(&key(KeyCode::Char('b'), KeyModifiers::NONE), &tx);
-        editor.handle_textarea_key(&key(KeyCode::Char('a'), KeyModifiers::NONE), &tx);
-        editor.handle_textarea_key(&key(KeyCode::Char('r'), KeyModifiers::NONE), &tx);
-        assert!(editor.selection.is_some());
-        editor.handle_textarea_key(&key(KeyCode::Esc, KeyModifiers::NONE), &tx);
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('b'), KeyModifiers::NONE)),
+            &tx,
+        );
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('a'), KeyModifiers::NONE)),
+            &tx,
+        );
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('r'), KeyModifiers::NONE)),
+            &tx,
+        );
+        assert!(
+            editor
+                .search
+                .as_ref()
+                .is_some_and(|b| b.current_match().is_some())
+        );
+        editor.handle_input(&InputEvent::Key(key(KeyCode::Esc, KeyModifiers::NONE)), &tx);
+        // Esc drops the bar, and the current match goes with it.
+        assert!(editor.search.is_none());
         assert!(editor.selection.is_none());
     }
 
@@ -3011,7 +3057,7 @@ mod tests {
         let tx = dummy_tx();
         editor.open_or_advance_search();
         assert!(editor.search.is_some());
-        editor.handle_textarea_key(&key(KeyCode::Esc, KeyModifiers::NONE), &tx);
+        editor.handle_input(&InputEvent::Key(key(KeyCode::Esc, KeyModifiers::NONE)), &tx);
         assert!(editor.search.is_none());
     }
 
@@ -3021,7 +3067,10 @@ mod tests {
         editor.set_text("hello".to_string());
         let tx = dummy_tx();
         editor.open_or_advance_search();
-        editor.handle_textarea_key(&key(KeyCode::Char('x'), KeyModifiers::NONE), &tx);
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('x'), KeyModifiers::NONE)),
+            &tx,
+        );
         assert_eq!(editor.get_text(), "hello");
     }
 
@@ -3031,7 +3080,10 @@ mod tests {
         editor.set_text("hello".to_string());
         let tx = dummy_tx();
         editor.open_or_advance_search();
-        editor.handle_textarea_key(&key(KeyCode::Char('z'), KeyModifiers::NONE), &tx);
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('z'), KeyModifiers::NONE)),
+            &tx,
+        );
         let state = editor.search.as_ref().unwrap();
         assert!(matches!(state.status, SearchStatus::NoMatch));
     }
@@ -3533,6 +3585,971 @@ mod tests {
         assert_eq!(editor.get_text(), "x");
     }
 
+    // ── Find and replace (adr/0033, adr/0034, adr/0035) ─────────────────────
+
+    /// Drive the find bar: open it, type `pattern`, reveal the replace field
+    /// with Tab, type `replacement`. Leaves the bar open and focused.
+    fn open_replace_bar(
+        editor: &mut TextEditorComponent,
+        tx: &AppTx,
+        pattern: &str,
+        replacement: &str,
+    ) {
+        editor.open_or_advance_search();
+        for c in pattern.chars() {
+            editor.handle_input(
+                &InputEvent::Key(key(KeyCode::Char(c), KeyModifiers::NONE)),
+                tx,
+            );
+        }
+        editor.handle_input(&InputEvent::Key(key(KeyCode::Tab, KeyModifiers::NONE)), tx);
+        for c in replacement.chars() {
+            editor.handle_input(
+                &InputEvent::Key(key(KeyCode::Char(c), KeyModifiers::NONE)),
+                tx,
+            );
+        }
+    }
+
+    #[test]
+    fn tab_reveals_the_replace_field_and_then_cycles_focus() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("todo".to_string());
+        editor.open_or_advance_search();
+        assert!(
+            !editor.search.as_ref().unwrap().is_replacing(),
+            "a find-only bar must not start with a replace field"
+        );
+
+        editor.handle_input(&InputEvent::Key(key(KeyCode::Tab, KeyModifiers::NONE)), &tx);
+        let s = editor.search.as_ref().unwrap();
+        assert!(s.is_replacing(), "Tab must reveal the replace field");
+        // Pattern is empty, so focus stays in the find field — you cannot type
+        // a replacement for nothing.
+        assert_eq!(s.focus, BarFocus::Find);
+
+        editor.handle_input(&InputEvent::Key(key(KeyCode::Tab, KeyModifiers::NONE)), &tx);
+        assert_eq!(editor.search.as_ref().unwrap().focus, BarFocus::Replace);
+        editor.handle_input(&InputEvent::Key(key(KeyCode::Tab, KeyModifiers::NONE)), &tx);
+        assert_eq!(editor.search.as_ref().unwrap().focus, BarFocus::Find);
+    }
+
+    #[test]
+    fn typing_in_the_replace_field_does_not_touch_the_buffer() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("todo and todo".to_string());
+        open_replace_bar(&mut editor, &tx, "todo", "done");
+        assert_eq!(
+            editor.get_text(),
+            "todo and todo",
+            "the preview is a view of the note, never a write to it"
+        );
+    }
+
+    #[test]
+    fn enter_replaces_the_current_match_and_advances() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("todo and todo".to_string());
+        open_replace_bar(&mut editor, &tx, "todo", "done");
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Enter, KeyModifiers::NONE)),
+            &tx,
+        );
+        assert_eq!(editor.get_text(), "done and todo");
+    }
+
+    #[test]
+    fn ctrl_a_replaces_every_match() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("todo and todo\nmore todo".to_string());
+        open_replace_bar(&mut editor, &tx, "todo", "done");
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('a'), KeyModifiers::CONTROL)),
+            &tx,
+        );
+        assert_eq!(editor.get_text(), "done and done\nmore done");
+    }
+
+    #[test]
+    fn replace_all_keeps_the_reading_position() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("todo\nxx\ntodo\nyy".to_string());
+        open_replace_bar(&mut editor, &tx, "todo", "done");
+        // Park the cursor on row 3 AFTER the bar is set up — incremental
+        // search legitimately moves it to the first match while typing, so
+        // parking beforehand would prove nothing.
+        if let Some(ta) = editor.backend.as_textarea_mut() {
+            ta.move_cursor(CursorMove::Jump(3, 1));
+        }
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('a'), KeyModifiers::CONTROL)),
+            &tx,
+        );
+        assert_eq!(editor.get_text(), "done\nxx\ndone\nyy");
+        let (row, _) = editor.cursor_pos();
+        assert_eq!(
+            row, 3,
+            "replace all must not throw the cursor to the end of the note"
+        );
+    }
+
+    #[test]
+    fn an_empty_replacement_arms_before_it_deletes() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("todo and todo".to_string());
+        open_replace_bar(&mut editor, &tx, "todo ", "");
+
+        let ctrl_a = InputEvent::Key(key(KeyCode::Char('a'), KeyModifiers::CONTROL));
+        editor.handle_input(&ctrl_a, &tx);
+        assert_eq!(
+            editor.get_text(),
+            "todo and todo",
+            "the first Ctrl+A on an empty replacement must arm, not delete"
+        );
+        assert!(editor.search.as_ref().unwrap().armed_empty);
+
+        editor.handle_input(&ctrl_a, &tx);
+        assert_eq!(editor.get_text(), "and todo");
+    }
+
+    #[test]
+    fn esc_disarms_an_empty_replace_all_without_closing_the_bar() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("todo".to_string());
+        open_replace_bar(&mut editor, &tx, "todo", "");
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('a'), KeyModifiers::CONTROL)),
+            &tx,
+        );
+        editor.handle_input(&InputEvent::Key(key(KeyCode::Esc, KeyModifiers::NONE)), &tx);
+        let s = editor
+            .search
+            .as_ref()
+            .expect("Esc disarms before it closes");
+        assert!(!s.armed_empty);
+        assert_eq!(editor.get_text(), "todo");
+    }
+
+    #[test]
+    fn one_ctrl_z_undoes_a_whole_replace_all() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("todo and todo".to_string());
+        open_replace_bar(&mut editor, &tx, "todo", "done");
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('a'), KeyModifiers::CONTROL)),
+            &tx,
+        );
+        assert_eq!(editor.get_text(), "done and done");
+
+        // Close the bar so Ctrl+Z reaches the editor rather than the bar.
+        editor.handle_input(&InputEvent::Key(key(KeyCode::Esc, KeyModifiers::NONE)), &tx);
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('z'), KeyModifiers::CONTROL)),
+            &tx,
+        );
+        assert_eq!(
+            editor.get_text(),
+            "todo and todo",
+            "a replace is two history entries and must cost ONE undo — \
+             popping half leaves the note with a hole in it"
+        );
+    }
+
+    #[test]
+    fn one_ctrl_z_undoes_a_single_replace_step() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("todo and todo".to_string());
+        open_replace_bar(&mut editor, &tx, "todo", "done");
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Enter, KeyModifiers::NONE)),
+            &tx,
+        );
+        assert_eq!(editor.get_text(), "done and todo");
+        editor.handle_input(&InputEvent::Key(key(KeyCode::Esc, KeyModifiers::NONE)), &tx);
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('z'), KeyModifiers::CONTROL)),
+            &tx,
+        );
+        assert_eq!(editor.get_text(), "todo and todo");
+    }
+
+    #[test]
+    fn redo_regroups_the_replace() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("todo".to_string());
+        open_replace_bar(&mut editor, &tx, "todo", "done");
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('a'), KeyModifiers::CONTROL)),
+            &tx,
+        );
+        editor.handle_input(&InputEvent::Key(key(KeyCode::Esc, KeyModifiers::NONE)), &tx);
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('z'), KeyModifiers::CONTROL)),
+            &tx,
+        );
+        assert_eq!(editor.get_text(), "todo");
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('y'), KeyModifiers::CONTROL)),
+            &tx,
+        );
+        assert_eq!(
+            editor.get_text(),
+            "done",
+            "one redo must restore the whole replace"
+        );
+    }
+
+    #[test]
+    fn smartcase_drives_both_the_count_and_the_replace() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("todo Todo TODO".to_string());
+        open_replace_bar(&mut editor, &tx, "todo", "x");
+        assert_eq!(
+            editor.search.as_ref().unwrap().match_count,
+            3,
+            "an all-lowercase pattern matches any case"
+        );
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('a'), KeyModifiers::CONTROL)),
+            &tx,
+        );
+        assert_eq!(editor.get_text(), "x x x");
+    }
+
+    #[test]
+    fn an_uppercase_pattern_is_case_sensitive() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("todo Todo TODO".to_string());
+        open_replace_bar(&mut editor, &tx, "Todo", "x");
+        assert_eq!(editor.search.as_ref().unwrap().match_count, 1);
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('a'), KeyModifiers::CONTROL)),
+            &tx,
+        );
+        assert_eq!(editor.get_text(), "todo x TODO");
+    }
+
+    #[test]
+    fn the_preview_substitutes_lines_without_writing_them() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("todo and todo".to_string());
+        open_replace_bar(&mut editor, &tx, "todo", "done");
+        let preview = editor.replace_preview().expect("a preview must be built");
+        assert_eq!(preview.lines, vec!["done and done".to_string()]);
+        assert_eq!(preview.spans.len(), 2);
+        assert!(
+            preview.spans.iter().any(|s| s.is_current),
+            "the match under the cursor must be flagged so Enter's target is visible"
+        );
+        assert_eq!(
+            editor.get_text(),
+            "todo and todo",
+            "building a preview must never mutate the buffer"
+        );
+    }
+
+    /// The find bar owns the terminal caret while it is open, so the editor
+    /// draws none — the flagged current span is the only thing on screen
+    /// saying where in the note you are. It must survive an empty
+    /// replacement, where the previewed match has zero width.
+    #[test]
+    fn a_deletion_preview_still_marks_the_current_match() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("todo and todo".to_string());
+        open_replace_bar(&mut editor, &tx, "todo", "");
+        let preview = editor.replace_preview().expect("a preview must be built");
+        assert_eq!(preview.lines, vec![" and ".to_string()]);
+        let current = preview
+            .spans
+            .iter()
+            .find(|s| s.is_current)
+            .expect("the current match must stay flagged when it previews as nothing");
+        assert_eq!(
+            current.start, current.end,
+            "an empty replacement previews as a zero-width span — the renderer \
+             widens it to a caret cell so the marker cannot vanish"
+        );
+    }
+
+    /// A mouse drag while the bar is open leaves a multi-row range in
+    /// `self.selection` — `handle_mouse` has no find-bar guard. Reading the
+    /// span from there dropped the end row and handed `replace_range` an
+    /// inverted byte range, panicking the whole TUI.
+    #[test]
+    fn a_multi_row_selection_cannot_derail_an_interactive_replace() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("alpha beta\nxy".to_string());
+        open_replace_bar(&mut editor, &tx, "beta", "Z");
+        // Exactly what a drag from row 0 col 6 to row 1 col 1 leaves behind.
+        editor.selection = Some(((0, 6), (1, 1)));
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Enter, KeyModifiers::NONE)),
+            &tx,
+        );
+        assert_eq!(editor.get_text(), "alpha Z\nxy");
+    }
+
+    /// `insert_str("")` deletes the selection and still returns `false`
+    /// (`insert_piece` bails on the empty string), so trusting its bool left
+    /// the buffer modified while the note read clean — never saved, and still
+    /// rendering the pre-deletion text.
+    #[test]
+    fn deleting_a_match_marks_the_note_dirty() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("todo and todo".to_string());
+        editor.mark_saved("todo and todo".to_string());
+        assert!(!editor.is_dirty());
+
+        open_replace_bar(&mut editor, &tx, "todo ", "");
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Enter, KeyModifiers::NONE)),
+            &tx,
+        );
+        assert_eq!(editor.get_text(), "and todo");
+        assert!(
+            editor.is_dirty(),
+            "a deletion is an edit — if the revision does not move, autosave \
+             never writes it and the change is silently lost"
+        );
+    }
+
+    /// The same trap on the bulk path, where the result is an empty buffer.
+    #[test]
+    fn emptying_the_note_via_replace_all_marks_it_dirty_and_is_undoable() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("todo".to_string());
+        editor.mark_saved("todo".to_string());
+        open_replace_bar(&mut editor, &tx, "todo", "");
+        let ctrl_a = InputEvent::Key(key(KeyCode::Char('a'), KeyModifiers::CONTROL));
+        editor.handle_input(&ctrl_a, &tx); // arms
+        editor.handle_input(&ctrl_a, &tx); // commits
+        assert_eq!(editor.get_text(), "");
+        assert!(editor.is_dirty());
+
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('z'), KeyModifiers::CONTROL)),
+            &tx,
+        );
+        assert_eq!(editor.get_text(), "todo");
+    }
+
+    /// Ctrl+Z must work from inside the bar. The bar consumes every key, so
+    /// without an explicit route the user is stranded on a note it just
+    /// rewrote until they think to press Esc first.
+    #[test]
+    fn ctrl_z_works_without_closing_the_bar_first() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("todo and todo".to_string());
+        open_replace_bar(&mut editor, &tx, "todo", "done");
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('a'), KeyModifiers::CONTROL)),
+            &tx,
+        );
+        assert_eq!(editor.get_text(), "done and done");
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('z'), KeyModifiers::CONTROL)),
+            &tx,
+        );
+        assert_eq!(editor.get_text(), "todo and todo");
+        assert!(editor.search.is_some(), "undo must not close the bar");
+    }
+
+    /// A zero-width match (`\b`, `x*`) makes the selection empty, so
+    /// `delete_selection` pushes no history entry and the action is ONE entry,
+    /// not two. Recording two made the next Ctrl+Z pop an unrelated edit.
+    #[test]
+    fn a_zero_width_match_does_not_over_claim_history_entries() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("ab".to_string());
+        open_replace_bar(&mut editor, &tx, r"\b", "|");
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Enter, KeyModifiers::NONE)),
+            &tx,
+        );
+        assert_eq!(editor.get_text(), "|ab");
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('z'), KeyModifiers::CONTROL)),
+            &tx,
+        );
+        assert_eq!(
+            editor.get_text(),
+            "ab",
+            "one undo must land exactly on the pre-replace text, not past it"
+        );
+    }
+
+    /// A note swap must not carry the previous note's find-bar state across.
+    /// `armed_empty` surviving means one Ctrl+A deletes every match in a note
+    /// the user never armed.
+    #[test]
+    fn a_note_swap_resets_the_find_bar_and_its_undo_groups() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("todo".to_string());
+        open_replace_bar(&mut editor, &tx, "todo", "");
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('a'), KeyModifiers::CONTROL)),
+            &tx,
+        );
+        assert!(editor.search.as_ref().unwrap().armed_empty);
+
+        editor.set_text("todo elsewhere".to_string());
+        assert!(editor.search.is_none(), "the bar belonged to the old note");
+        // The buffer's groups went with it: `set_text` replaces the textarea,
+        // and `EditBuffer::replace` drops states the new history cannot reach.
+        assert!(
+            !editor.backend.as_textarea_mut().unwrap().undo(),
+            "the new note's history has nothing to undo"
+        );
+    }
+
+    /// Find-match highlighting is built from logical coordinates, so it
+    /// describes the same matches the count and the stepping do. The old
+    /// post-pass matched against text reconstructed from drawn cells, where
+    /// markdown sigils are already concealed — so a pattern targeting a sigil
+    /// counted and stepped to matches it could never paint.
+    #[test]
+    fn concealed_markdown_still_highlights_what_it_counts() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("# Heading\n[[note]]".to_string());
+        editor.open_or_advance_search();
+        for c in r"\[\[".chars() {
+            editor.handle_input(
+                &InputEvent::Key(key(KeyCode::Char(c), KeyModifiers::NONE)),
+                &tx,
+            );
+        }
+        let state = editor.search.as_ref().unwrap();
+        assert_eq!(state.match_count, 1, "the `[[` sigil is a real match");
+        let spans = state
+            .pattern
+            .as_ref()
+            .unwrap()
+            .match_spans(editor.backend.as_textarea().unwrap().lines());
+        assert_eq!(
+            spans,
+            vec![(1, 0, 2)],
+            "and it must be reported as a paintable span, not silently dropped \
+             because the rendered row conceals it"
+        );
+    }
+
+    /// A bracketed paste used to land in the buffer behind the open bar,
+    /// leaving the match count and the highlighted match describing text that
+    /// no longer existed. It belongs in the focused field — that is the
+    /// holder's own behaviour, which survives the claim refactor (adr/0036).
+    #[test]
+    fn paste_goes_into_the_focused_bar_field() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("todo".to_string());
+        open_replace_bar(&mut editor, &tx, "todo", "");
+        editor.paste_text("done", &tx);
+        assert_eq!(editor.get_text(), "todo", "the buffer is untouched");
+        assert_eq!(editor.search.as_ref().unwrap().replacement(), "done");
+    }
+
+    #[test]
+    fn a_multiline_paste_collapses_to_its_first_line() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("x".to_string());
+        editor.open_or_advance_search();
+        editor.paste_text("first\nsecond", &tx);
+        assert_eq!(editor.search.as_ref().unwrap().input.value(), "first");
+    }
+
+    /// With the pane exactly as tall as the bar, the old `>` comparison left
+    /// the bar unrendered while it was still open and still consuming keys —
+    /// an invisible modal.
+    #[test]
+    fn the_bar_is_never_an_invisible_modal() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let mut editor = make_editor();
+        editor.set_text("todo".to_string());
+        let theme = Theme::default();
+        let mut term = Terminal::new(TestBackend::new(40, 1)).unwrap();
+        let area = Rect::new(0, 0, 40, 1);
+        editor.open_or_advance_search();
+        term.draw(|f| editor.render(f, area, &theme, true)).unwrap();
+        let row: String = (0..40)
+            .filter_map(|x| {
+                term.backend()
+                    .buffer()
+                    .cell(ratatui::layout::Position::new(x, 0))
+                    .map(|c| c.symbol().to_string())
+            })
+            .collect();
+        assert!(
+            row.contains("Find:"),
+            "an open bar must be drawn even when it costs the whole pane, got {row:?}"
+        );
+    }
+
+    /// End-to-end: after a replace all, a rewritten row far from the cursor
+    /// must render from a fresh parse, not the pre-replace one. The construct
+    /// has to be one the renderer *conceals* (a wikilink), because a stale
+    /// parse is only visible where parsing changes what is drawn.
+    ///
+    /// Honest caveat: this passes with `note_bulk_edit` removed, because the
+    /// widener cap-trips to a full parse on a damage range this far from a
+    /// reset boundary. It guards the user-visible outcome, not the mechanism —
+    /// the mechanism is pinned by
+    /// `the_cursor_hint_under_reports_a_two_place_edit` in
+    /// `parse_incremental`, which does discriminate.
+    #[test]
+    fn a_row_far_from_the_cursor_reparses_after_replace_all() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        let mut lines: Vec<String> = (0..400).map(|i| format!("filler {i}")).collect();
+        lines[0] = "todo".to_string();
+        lines[398] = "todo".to_string();
+        editor.set_text(lines.join("\n"));
+        let theme = Theme::default();
+        let mut term = Terminal::new(TestBackend::new(20, 8)).unwrap();
+        let area = Rect::new(0, 0, 20, 8);
+        term.draw(|f| editor.render(f, area, &theme, true)).unwrap();
+
+        open_replace_bar(&mut editor, &tx, "todo", "[[x]]");
+        // Cursor on the LAST match, so the damage hint points 398 rows away
+        // from the first one.
+        if let Some(ta) = editor.backend.as_textarea_mut() {
+            ta.move_cursor(CursorMove::Jump(398, 0));
+        }
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('a'), KeyModifiers::CONTROL)),
+            &tx,
+        );
+        // Back to the top, cursor OFF row 0 — a cursor inside the link would
+        // reveal it legitimately and prove nothing.
+        if let Some(ta) = editor.backend.as_textarea_mut() {
+            ta.move_cursor(CursorMove::Jump(1, 0));
+        }
+        term.draw(|f| editor.render(f, area, &theme, true)).unwrap();
+        let row0: String = (0..20)
+            .filter_map(|x| {
+                term.backend()
+                    .buffer()
+                    .cell(ratatui::layout::Position::new(x, 0))
+                    .map(|c| c.symbol().to_string())
+            })
+            .collect::<String>()
+            .trim_end()
+            .to_string();
+        assert_eq!(
+            row0, "x",
+            "row 0 must render as a parsed wikilink; `[[x]]` would mean it \
+             kept the parse of the text that was there before the replace"
+        );
+    }
+
+    /// Indenting N lines is 2N history entries, so before the **edit buffer**
+    /// grouped it, one Ctrl+Z un-indented only the last line and the user had
+    /// to press it N times. Same class as `guu`, and fixed by the same move.
+    #[test]
+    fn indenting_a_block_undoes_in_one_step() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("a\nb\nc".to_string());
+        get_ta(&mut editor).move_cursor(CursorMove::Jump(0, 0));
+        get_ta(&mut editor).start_selection();
+        get_ta(&mut editor).move_cursor(CursorMove::Jump(2, 1));
+        editor.indent_lines(false);
+        assert_eq!(editor.get_text(), "    a\n    b\n    c");
+
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('z'), KeyModifiers::CONTROL)),
+            &tx,
+        );
+        assert_eq!(
+            editor.get_text(),
+            "a\nb\nc",
+            "one undo must revert the whole block, not just the last line"
+        );
+    }
+
+    /// A paste over a selection is a cut plus an insert — one action.
+    #[test]
+    fn pasting_over_a_selection_undoes_in_one_step() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("hello world".to_string());
+        get_ta(&mut editor).move_cursor(CursorMove::Jump(0, 0));
+        get_ta(&mut editor).start_selection();
+        get_ta(&mut editor).move_cursor(CursorMove::Jump(0, 5));
+        editor.paste_text("goodbye", &tx);
+        assert_eq!(editor.get_text(), "goodbye world");
+
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('z'), KeyModifiers::CONTROL)),
+            &tx,
+        );
+        assert_eq!(editor.get_text(), "hello world");
+    }
+
+    /// Closing the bar must clear the editor's selection, as `close_search`
+    /// did before the bar became a module. A stale mouse-drag range otherwise
+    /// suppresses the right-click context menu, which reads `self.selection`.
+    #[test]
+    fn closing_the_bar_clears_a_stale_selection() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("alpha beta".to_string());
+        editor.selection = Some(((0, 0), (0, 5)));
+        editor.open_or_advance_search();
+        for c in "beta".chars() {
+            editor.handle_input(
+                &InputEvent::Key(key(KeyCode::Char(c), KeyModifiers::NONE)),
+                &tx,
+            );
+        }
+        editor.handle_input(&InputEvent::Key(key(KeyCode::Esc, KeyModifiers::NONE)), &tx);
+        assert!(editor.search.is_none());
+        assert_eq!(
+            editor.selection, None,
+            "a selection from before the search must not outlive the bar"
+        );
+    }
+
+    /// An undo inside the bar changes the text the **current match** pointed
+    /// at, so the highlight must be re-derived rather than left over it.
+    #[test]
+    fn undo_inside_the_bar_rederives_the_current_match() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("foo foo".to_string());
+        open_replace_bar(&mut editor, &tx, "foo", "xy");
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Enter, KeyModifiers::NONE)),
+            &tx,
+        );
+        assert_eq!(editor.get_text(), "xy foo");
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('z'), KeyModifiers::CONTROL)),
+            &tx,
+        );
+        assert_eq!(editor.get_text(), "foo foo");
+        let current = editor.search.as_ref().unwrap().current_match();
+        if let Some(((row, start), (_, end))) = current {
+            let line = &editor.get_text()[..];
+            let text: String = line
+                .lines()
+                .nth(row)
+                .unwrap()
+                .chars()
+                .skip(start)
+                .take(end - start)
+                .collect();
+            assert_eq!(
+                text, "foo",
+                "the highlight must sit on a real match, got {text:?}"
+            );
+        }
+    }
+
+    /// vim `n` repeats the search with the bar closed, and must paint what it
+    /// landed on — the highlight moved onto the bar when the module was
+    /// extracted, and the closed-bar path lost it.
+    #[test]
+    fn vim_n_highlights_the_match_it_lands_on() {
+        let mut editor = make_vim_editor();
+        let tx = dummy_tx();
+        editor.set_text("lo xx lo".to_string());
+        editor.open_or_advance_search();
+        for c in "lo".chars() {
+            editor.handle_input(
+                &InputEvent::Key(key(KeyCode::Char(c), KeyModifiers::NONE)),
+                &tx,
+            );
+        }
+        editor.handle_input(&InputEvent::Key(key(KeyCode::Esc, KeyModifiers::NONE)), &tx);
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('n'), KeyModifiers::NONE)),
+            &tx,
+        );
+        assert_eq!(
+            editor.selection,
+            Some(((0, 6), (0, 8))),
+            "`n` must paint the match it jumped to"
+        );
+    }
+
+    /// Closing the bar must clear the buffer's selection ANCHOR, not just the
+    /// mirrored range. `search_forward` moves the cursor without touching
+    /// `selection_start`, so a selection made before the search stays live but
+    /// unpainted — and the next keystroke silently deletes it.
+    #[test]
+    fn closing_the_bar_cannot_leave_an_invisible_selection() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("foo bar baz".to_string());
+        // Select the whole note, as Ctrl+A does.
+        get_ta(&mut editor).select_all();
+        editor.open_or_advance_search();
+        for c in "bar".chars() {
+            editor.handle_input(
+                &InputEvent::Key(key(KeyCode::Char(c), KeyModifiers::NONE)),
+                &tx,
+            );
+        }
+        editor.handle_input(&InputEvent::Key(key(KeyCode::Esc, KeyModifiers::NONE)), &tx);
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('x'), KeyModifiers::NONE)),
+            &tx,
+        );
+        assert!(
+            editor.get_text().contains("foo"),
+            "typing after the bar closed must not eat unhighlighted text, got {:?}",
+            editor.get_text()
+        );
+    }
+
+    /// vim `>` over a selection pushes one history entry per row, so it took N
+    /// undos. One vim command is one undo.
+    #[test]
+    fn vim_visual_indent_undoes_in_one_step() {
+        let mut editor = make_vim_editor();
+        let tx = dummy_tx();
+        editor.set_text("a\nb\nc".to_string());
+        for c in ['V', 'j', 'j', '>'] {
+            editor.handle_input(
+                &InputEvent::Key(key(KeyCode::Char(c), KeyModifiers::NONE)),
+                &tx,
+            );
+        }
+        let indented = editor.get_text();
+        assert_ne!(indented, "a\nb\nc", "`>` must indent the selection");
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('u'), KeyModifiers::NONE)),
+            &tx,
+        );
+        assert_eq!(
+            editor.get_text(),
+            "a\nb\nc",
+            "one `u` must revert the whole indent, not one row"
+        );
+    }
+
+    /// End-to-end for the anchor invariant: `n` moved the cursor while a
+    /// selection anchor was live, turning it into an unpainted selection that
+    /// the next keystroke deleted. `"foo bar foo"` became `"Xfoo"`.
+    #[test]
+    fn vim_n_cannot_leave_an_invisible_selection() {
+        let mut editor = make_vim_editor();
+        let tx = dummy_tx();
+        editor.set_text("foo bar foo".to_string());
+        editor.open_or_advance_search();
+        for c in "foo".chars() {
+            editor.handle_input(
+                &InputEvent::Key(key(KeyCode::Char(c), KeyModifiers::NONE)),
+                &tx,
+            );
+        }
+        editor.handle_input(&InputEvent::Key(key(KeyCode::Esc, KeyModifiers::NONE)), &tx);
+        // A selection made after the bar closed, then `n`.
+        get_ta(&mut editor).move_cursor(CursorMove::Jump(0, 0));
+        get_ta(&mut editor).start_selection();
+        get_ta(&mut editor).move_cursor(CursorMove::Jump(0, 3));
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('n'), KeyModifiers::NONE)),
+            &tx,
+        );
+        for c in ['i', 'X'] {
+            editor.handle_input(
+                &InputEvent::Key(key(KeyCode::Char(c), KeyModifiers::NONE)),
+                &tx,
+            );
+        }
+        assert!(
+            editor.get_text().contains("bar"),
+            "typing after `n` must not eat unhighlighted text, got {:?}",
+            editor.get_text()
+        );
+    }
+
+    /// End-to-end for the overlay move: task and needle decoration used to be
+    /// painted from drawn cells and is now mapped from logical columns. The
+    /// rendered result must be the same, which is the whole point — a list
+    /// bullet is rendered, so the two coordinate spaces do not coincide.
+    #[test]
+    fn overlays_paint_where_the_post_pass_used_to() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        use ratatui::layout::Position;
+        let mut editor = make_editor();
+        editor.set_text("find the needle here\n- [x] done task\n- [ ] open task".to_string());
+        editor.set_search_needles(vec!["needle".to_string()]);
+        let theme = Theme::default();
+        let mut term = Terminal::new(TestBackend::new(40, 6)).unwrap();
+        let area = Rect::new(0, 0, 40, 6);
+        term.draw(|f| editor.render(f, area, &theme, false))
+            .unwrap();
+        let buf = term.backend().buffer();
+
+        let row: String = (0..40)
+            .filter_map(|x| {
+                buf.cell(Position::new(x, 0))
+                    .map(|c| c.symbol().to_string())
+            })
+            .collect();
+        let at = row.find("needle").expect("needle is on screen");
+        let cell = buf.cell(Position::new(at as u16, 0)).unwrap();
+        assert_eq!(
+            cell.fg,
+            theme.color_search_match.to_ratatui(),
+            "the needle must still be emphasised"
+        );
+
+        // The done task's text is struck; the open one's is not.
+        let struck = |y: u16| {
+            (0..40).any(|x| {
+                buf.cell(Position::new(x, y)).is_some_and(|c| {
+                    c.style()
+                        .add_modifier
+                        .contains(ratatui::style::Modifier::CROSSED_OUT)
+                })
+            })
+        };
+        assert!(struck(1), "a done task strikes its text");
+        assert!(!struck(2), "an open task does not");
+
+        // And the checkbox itself carries the accent colour on both rows.
+        for y in [1u16, 2] {
+            assert!(
+                (0..40).any(|x| buf
+                    .cell(Position::new(x, y))
+                    .is_some_and(|c| c.fg == theme.accent.to_ratatui())),
+                "row {y} must have an accent-coloured checkbox"
+            );
+        }
+    }
+
+    #[test]
+    fn no_preview_without_a_replace_field() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("todo".to_string());
+        editor.open_or_advance_search();
+        for c in "todo".chars() {
+            editor.handle_input(
+                &InputEvent::Key(key(KeyCode::Char(c), KeyModifiers::NONE)),
+                &tx,
+            );
+        }
+        assert!(
+            editor.replace_preview().is_none(),
+            "a find-only bar previews nothing"
+        );
+    }
+
+    #[test]
+    fn capture_expansion_is_gated_on_the_pattern_capturing() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        // No capture group: `$1` is literal text, not an empty expansion.
+        editor.set_text("cost".to_string());
+        open_replace_bar(&mut editor, &tx, "cost", "$1");
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('a'), KeyModifiers::CONTROL)),
+            &tx,
+        );
+        assert_eq!(editor.get_text(), "$1");
+    }
+
+    #[test]
+    fn the_bar_reserves_two_rows_only_while_replacing() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("todo".to_string());
+        let theme = Theme::default();
+        let mut term = Terminal::new(TestBackend::new(40, 10)).unwrap();
+        let area = Rect::new(0, 0, 40, 10);
+
+        editor.open_or_advance_search();
+        term.draw(|f| editor.render(f, area, &theme, true)).unwrap();
+        assert_eq!(editor.rect.height, 9, "a find-only bar takes one row");
+
+        editor.handle_input(&InputEvent::Key(key(KeyCode::Tab, KeyModifiers::NONE)), &tx);
+        term.draw(|f| editor.render(f, area, &theme, true)).unwrap();
+        assert_eq!(
+            editor.rect.height, 8,
+            "the replace field takes a second row"
+        );
+    }
+
+    /// `guu` is a cut plus an insert, so it always landed in history as two
+    /// entries and took two `u` presses to revert — `guu_undoes_in_one_step`
+    /// in vim.rs documents that with a comment rather than fixing it. Now that
+    /// grouping exists, the case operators use it and the name is true.
+    #[test]
+    fn guu_really_does_undo_in_one_step() {
+        let mut editor = make_vim_editor();
+        let tx = dummy_tx();
+        editor.set_text("Mixed Case Line".to_string());
+        for c in "guu".chars() {
+            editor.handle_input(
+                &InputEvent::Key(key(KeyCode::Char(c), KeyModifiers::NONE)),
+                &tx,
+            );
+        }
+        assert_eq!(editor.get_text(), "mixed case line");
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('u'), KeyModifiers::NONE)),
+            &tx,
+        );
+        assert_eq!(editor.get_text(), "Mixed Case Line");
+    }
+
+    /// Vim's `u` must also take a whole **undo group**. The engine performs the
+    /// undo inside its own command apply, so the host has to peek before
+    /// dispatch and finish the group afterwards — a path the Ctrl+Z tests
+    /// above do not touch.
+    #[test]
+    fn vim_u_undoes_a_whole_replace() {
+        let mut editor = make_vim_editor();
+        let tx = dummy_tx();
+        editor.set_text("todo and todo".to_string());
+        open_replace_bar(&mut editor, &tx, "todo", "done");
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('a'), KeyModifiers::CONTROL)),
+            &tx,
+        );
+        assert_eq!(editor.get_text(), "done and done");
+
+        // Esc closes the bar, returning keys to the vim engine in Normal mode.
+        editor.handle_input(&InputEvent::Key(key(KeyCode::Esc, KeyModifiers::NONE)), &tx);
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('u'), KeyModifiers::NONE)),
+            &tx,
+        );
+        assert_eq!(editor.get_text(), "todo and todo");
+    }
+
     /// Helper: construct a vim-backend editor.
     fn make_vim_editor() -> TextEditorComponent {
         let mut settings = crate::settings::AppSettings::default();
@@ -3811,10 +4828,12 @@ mod tests {
         );
     }
 
-    /// Vim `/pattern` then Enter confirms the search: the find bar closes, the
-    /// cursor stays on the first match, and `n` / `N` navigate subsequent matches.
+    /// Vim `/pattern`: Enter steps to the next match (same as the textarea
+    /// backend — one key map on both, adr/0033), `Esc` closes the bar, and
+    /// `n` / `N` keep working afterwards because closing no longer wipes the
+    /// pattern.
     #[test]
-    fn vim_search_enter_confirms_and_n_navigates() {
+    fn vim_search_enter_steps_and_esc_keeps_the_pattern_for_n() {
         let mut editor = make_vim_editor();
         // Three "lo" at cols 0, 6, 12 on a single line.
         editor.set_text("lo xx lo yy lo".to_string());
@@ -3834,26 +4853,27 @@ mod tests {
             &tx,
         );
 
-        // Enter confirms in vim mode: closes the bar, cursor stays on match.
+        // Enter steps to the next match and the bar STAYS OPEN — incremental
+        // search parked the cursor on the first "lo" (col 0), so this lands on
+        // the second (col 6).
         editor.handle_input(
             &InputEvent::Key(key(KeyCode::Enter, KeyModifiers::NONE)),
             &tx,
         );
         assert!(
-            editor.search.is_none(),
-            "find bar must close after Enter in vim mode"
-        );
-
-        // After confirming, 'n' must navigate to the NEXT match, not type into
-        // the (now-closed) find bar. Incremental search left the cursor at the
-        // first "lo" (col 0); 'n' should jump to the second one (col 6).
-        editor.handle_input(
-            &InputEvent::Key(key(KeyCode::Char('n'), KeyModifiers::NONE)),
-            &tx,
+            editor.search.is_some(),
+            "find bar stays open on Enter — it steps, it does not confirm"
         );
         let (_, c1) = editor.cursor_pos();
-        assert_eq!(c1, 6, "'n' must jump to the 2nd 'lo' at col 6");
+        assert_eq!(c1, 6, "Enter must step to the 2nd 'lo' at col 6");
 
+        // Esc closes the bar. It must NOT wipe the pattern: that was the only
+        // difference between closing with Esc and closing with Enter, and it
+        // silently killed n/N.
+        editor.handle_input(&InputEvent::Key(key(KeyCode::Esc, KeyModifiers::NONE)), &tx);
+        assert!(editor.search.is_none(), "Esc must close the find bar");
+
+        // 'n' must navigate, not type into the (now-closed) bar.
         editor.handle_input(
             &InputEvent::Key(key(KeyCode::Char('n'), KeyModifiers::NONE)),
             &tx,

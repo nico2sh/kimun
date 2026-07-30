@@ -409,11 +409,48 @@ impl MarkdownSpanner {
         spans
     }
 
+    /// Rendered screen column for `cursor_col`, treating that same column as
+    /// the caret — so the markdown element it lands in counts as revealed.
+    ///
+    /// Correct for mapping the real caret. To map an arbitrary column (a
+    /// selection edge, a **replace preview** span boundary) use
+    /// [`Self::rendered_col_with_reveal`] and pass the caret separately:
+    /// otherwise the mapper reveals whatever element the *boundary* touches,
+    /// counts that element's hidden sigils as drawn, and the highlight lands
+    /// right of the text it belongs to.
     pub fn rendered_cursor_col_with(
         logical_line: &str,
         parsed: &ParsedLine,
         visual_start_col: usize,
         cursor_col: usize,
+        is_first_visual_line: bool,
+        force_raw: bool,
+    ) -> usize {
+        Self::rendered_col_with_reveal(
+            logical_line,
+            parsed,
+            visual_start_col,
+            cursor_col,
+            Some(cursor_col),
+            is_first_visual_line,
+            force_raw,
+        )
+    }
+
+    /// Rendered screen column for `target_col`, with element reveal driven by
+    /// `reveal_col` — the row's real caret column, or `None` when the caret is
+    /// on another row.
+    ///
+    /// The split matters because `render_with` reveals only the element under
+    /// the *caret*. Any mapping that assumed the measured column was the caret
+    /// would disagree with what was actually drawn.
+    #[allow(clippy::too_many_arguments)]
+    pub fn rendered_col_with_reveal(
+        logical_line: &str,
+        parsed: &ParsedLine,
+        visual_start_col: usize,
+        cursor_col: usize,
+        reveal_col: Option<usize>,
         is_first_visual_line: bool,
         force_raw: bool,
     ) -> usize {
@@ -444,7 +481,8 @@ impl MarkdownSpanner {
         let content_vis = &parsed.content_vis;
         let logical_char_count = logical_line.chars().count();
 
-        let expanded: Option<usize> = parsed.elem_at(cursor_col);
+        // Reveal follows the caret, never the column being measured.
+        let expanded: Option<usize> = reveal_col.and_then(|c| parsed.elem_at(c));
         let heading_sigil_end: Option<usize> = if is_first_visual_line {
             parsed.heading_sigil_end()
         } else {
@@ -659,6 +697,43 @@ impl MarkdownSpanner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Mapping an arbitrary column must not reveal the element that column
+    /// happens to land in — only the caret reveals.
+    ///
+    /// A wikilink renders with its `[[` `]]` hidden, so `[[note]] x` draws as
+    /// `note x`. Asking for the rendered column of a boundary *inside* the
+    /// link used to answer as though the link were expanded, counting the four
+    /// hidden sigil chars as drawn, and every highlight anchored there landed
+    /// four cells right of its text (the replace preview, and selections whose
+    /// edge fell inside a link).
+    #[test]
+    fn mapping_a_column_inside_a_link_does_not_reveal_it() {
+        let line = "[[note]] x";
+        let parsed = ParsedLine::parse(line);
+
+        // Caret elsewhere (or absent): the link stays collapsed, so logical
+        // col 2 — the "n" of "note" — is rendered col 0.
+        let collapsed =
+            MarkdownSpanner::rendered_col_with_reveal(line, &parsed, 0, 2, None, true, false);
+        assert_eq!(
+            collapsed, 0,
+            "with the caret away, the hidden `[[` occupies no screen columns"
+        );
+
+        // Caret inside the link: it is revealed raw, so the same logical
+        // column now really is two cells in.
+        let revealed =
+            MarkdownSpanner::rendered_col_with_reveal(line, &parsed, 0, 2, Some(2), true, false);
+        assert_eq!(revealed, 2, "the caret's own element renders raw");
+
+        // The legacy entry point maps the caret, so it must keep agreeing with
+        // the revealed case — this is the behaviour every existing caller has.
+        assert_eq!(
+            MarkdownSpanner::rendered_cursor_col_with(line, &parsed, 0, 2, true, false),
+            revealed
+        );
+    }
 
     #[test]
     fn force_raw_expands_tabs_and_cursor_maps_round_trip() {
