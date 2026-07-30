@@ -31,7 +31,7 @@ Which engine drives the TUI text editor, chosen in config (`editor_backend`): **
 _Avoid_: editor engine, editor mode (collides with **editing mode**).
 
 **Edit buffer**:
-The open note's text and its edit history as one module, behind which every mutation on the **textarea** and **vim** backends passes. Because it observes each edit from both sides, the facts that follow from one — did the content change, was the damage local, which history entries belong together — are *derived* there rather than predicted by each caller. The **nvim** backend has none: neovim owns its own buffer and history.
+The open note's text and its edit history as one module, behind which every mutation on the **textarea** and **vim** backends passes. Because it observes each edit from both sides, the facts that follow from one — did the content change, was the damage local, which history entries belong together — are *derived* there rather than predicted by each caller. It also restates the underlying widget's contract where that contract surprises: a search never extends a selection, a position the widget cannot address is refused rather than approximated, and a grouped undo is all-or-nothing (adr/0038). The **nvim** backend has none: neovim owns its own buffer and history.
 _Avoid_: buffer (collides with ratatui's render buffer), document, model.
 
 **Editing mode**:

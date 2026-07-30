@@ -529,7 +529,7 @@ impl VimEngine {
                     (r, r)
                 };
                 ta.cancel_selection();
-                ta.move_cursor(CursorMove::Jump(start_row as u16, 0));
+                ta.jump_to(start_row, 0);
                 let count = end_row - start_row + 1;
                 self.apply_operator_linewise(Operator::Delete, count, None, ta);
                 let body = text.strip_suffix('\n').unwrap_or(&text);
@@ -554,7 +554,7 @@ impl VimEngine {
                 let paste_start = super::cursor_tuple(ta);
                 ta.edit(|ta| {
                     ta.insert_str(&text); // insert the SAVED content, not the yank buffer
-                    ta.move_cursor(CursorMove::Jump(paste_start.0 as u16, paste_start.1 as u16));
+                    super::edit_buffer::checked_jump(ta, paste_start.0, paste_start.1);
                 });
             }
             self.mode = EditorMode::Normal;
@@ -569,9 +569,9 @@ impl VimEngine {
                 let cur = super::cursor_tuple(ta);
                 let other = if cur == end { start } else { end };
                 ta.cancel_selection();
-                ta.move_cursor(CursorMove::Jump(cur.0 as u16, cur.1 as u16));
+                ta.jump_to(cur.0, cur.1);
                 ta.start_selection();
-                ta.move_cursor(CursorMove::Jump(other.0 as u16, other.1 as u16));
+                ta.jump_to(other.0, other.1);
             }
             return VimKeyOutcome::CursorOnly;
         }
@@ -591,7 +591,7 @@ impl VimEngine {
                 super::cursor_tuple(ta).0
             };
             ta.cancel_selection();
-            ta.move_cursor(CursorMove::Jump(start_row as u16, 0));
+            ta.jump_to(start_row, 0);
             self.indent_lines(outdent, line_count, ta);
             self.mode = EditorMode::Normal;
             self.clear_pending();
@@ -709,7 +709,7 @@ impl VimEngine {
             (r, r)
         };
         ta.cancel_selection();
-        ta.move_cursor(CursorMove::Jump(start_row as u16, 0));
+        ta.jump_to(start_row, 0);
         let joins = end_row.saturating_sub(start_row).max(1);
         for _ in 0..joins {
             Self::join_line(ta, spaced);
@@ -734,7 +734,7 @@ impl VimEngine {
             // Cancel the current selection so apply_operator_linewise can
             // re-anchor from the correct start row.
             ta.cancel_selection();
-            ta.move_cursor(CursorMove::Jump(start_row as u16, 0));
+            ta.jump_to(start_row, 0);
             let count = end_row - start_row + 1;
             self.apply_operator_linewise(op, count, None, ta);
         } else {
@@ -833,7 +833,7 @@ impl VimEngine {
                 };
                 ta.cancel_selection();
                 // vim leaves the cursor at the start of a yanked range.
-                ta.move_cursor(CursorMove::Jump(sr as u16, sc as u16));
+                ta.jump_to(sr, sc);
                 VimHostAction::ClipboardCopy(text)
             }
             'x' => {
@@ -1778,7 +1778,7 @@ impl VimEngine {
         let saved = super::cursor_tuple(ta);
         self.apply_motion(motion, count, ta);
         let target = super::cursor_tuple(ta);
-        ta.move_cursor(CursorMove::Jump(saved.0 as u16, saved.1 as u16));
+        ta.jump_to(saved.0, saved.1);
         target
     }
 
@@ -1820,9 +1820,9 @@ impl VimEngine {
         } else {
             ec
         };
-        ta.move_cursor(CursorMove::Jump(start.0 as u16, start.1 as u16));
+        ta.jump_to(start.0, start.1);
         ta.start_selection();
-        ta.move_cursor(CursorMove::Jump(er as u16, end_col as u16));
+        ta.jump_to(er, end_col);
     }
 
     fn apply_motion(&self, motion: Motion, count: usize, ta: &mut EditBuffer) {
@@ -1844,22 +1844,22 @@ impl VimEngine {
                 Motion::WordEnd => ta.move_cursor(CursorMove::WordEnd),
                 Motion::WordForwardBig => {
                     let (r, c) = Self::word_forward_big(ta.lines(), super::cursor_tuple(ta));
-                    ta.move_cursor(CursorMove::Jump(r as u16, c as u16));
+                    ta.jump_to(r, c);
                 }
                 Motion::WordBackBig => {
                     let (r, c) = Self::word_back_big(ta.lines(), super::cursor_tuple(ta));
-                    ta.move_cursor(CursorMove::Jump(r as u16, c as u16));
+                    ta.jump_to(r, c);
                 }
                 Motion::WordEndBig => {
                     if let Some((r, c)) = Self::word_end_big(ta.lines(), super::cursor_tuple(ta)) {
-                        ta.move_cursor(CursorMove::Jump(r as u16, c as u16));
+                        ta.jump_to(r, c);
                     }
                 }
                 Motion::WordEndBack { big } => {
                     if let Some((r, c)) =
                         Self::word_end_back(ta.lines(), super::cursor_tuple(ta), big)
                     {
-                        ta.move_cursor(CursorMove::Jump(r as u16, c as u16));
+                        ta.jump_to(r, c);
                     }
                 }
                 Motion::LineStart => ta.move_cursor(CursorMove::Head),
@@ -1871,7 +1871,7 @@ impl VimEngine {
                 Motion::GotoLine(n) => {
                     let last = ta.lines().len().saturating_sub(1);
                     let row = n.saturating_sub(1).min(last);
-                    ta.move_cursor(CursorMove::Jump(row as u16, 0));
+                    ta.jump_to(row, 0);
                 }
                 Motion::ParagraphForward => ta.move_cursor(CursorMove::ParagraphForward),
                 Motion::ParagraphBack => ta.move_cursor(CursorMove::ParagraphBack),
@@ -1885,7 +1885,7 @@ impl VimEngine {
         let (row, _) = super::cursor_tuple(ta);
         if let Some(line) = ta.lines().get(row) {
             let n = line.chars().take_while(|c| c.is_whitespace()).count();
-            ta.move_cursor(CursorMove::Jump(row as u16, n as u16));
+            ta.jump_to(row, n);
         }
     }
 
@@ -1900,7 +1900,7 @@ impl VimEngine {
                 .last()
         });
         if let Some(idx) = idx {
-            ta.move_cursor(CursorMove::Jump(row as u16, idx as u16));
+            ta.jump_to(row, idx);
         }
     }
 
@@ -2113,7 +2113,7 @@ impl VimEngine {
             None
         };
         if let Some((r, c)) = target {
-            ta.move_cursor(CursorMove::Jump(r as u16, c as u16));
+            ta.jump_to(r, c);
         }
     }
 
@@ -2145,7 +2145,7 @@ impl VimEngine {
         } else {
             pos
         };
-        ta.move_cursor(CursorMove::Jump(row as u16, target as u16));
+        ta.jump_to(row, target);
     }
 
     // ── Operator framework ───────────────────────────────────────────────────
@@ -2199,7 +2199,7 @@ impl VimEngine {
                 }
                 let top = origin.0.min(target.0);
                 let lines = origin.0.abs_diff(target.0) + 1;
-                ta.move_cursor(CursorMove::Jump(top as u16, 0));
+                ta.jump_to(top, 0);
                 self.apply_operator_linewise(op, lines, inserted, ta);
                 true
             }
@@ -2251,20 +2251,20 @@ impl VimEngine {
     fn select_lines_for_delete(ta: &mut EditBuffer, r0: usize, r1: usize) {
         let last = ta.lines().len().saturating_sub(1);
         if r1 < last {
-            ta.move_cursor(CursorMove::Jump(r0 as u16, 0));
+            ta.jump_to(r0, 0);
             ta.start_selection();
-            ta.move_cursor(CursorMove::Jump((r1 + 1) as u16, 0));
+            ta.jump_to(r1 + 1, 0);
         } else if r0 > 0 {
             let prev_end = ta.lines()[r0 - 1].chars().count();
-            ta.move_cursor(CursorMove::Jump((r0 - 1) as u16, prev_end as u16));
+            ta.jump_to(r0 - 1, prev_end);
             ta.start_selection();
             let end = ta.lines()[r1].chars().count();
-            ta.move_cursor(CursorMove::Jump(r1 as u16, end as u16));
+            ta.jump_to(r1, end);
         } else {
-            ta.move_cursor(CursorMove::Jump(0, 0));
+            ta.jump_to(0, 0);
             ta.start_selection();
             let end = ta.lines()[r1].chars().count();
-            ta.move_cursor(CursorMove::Jump(r1 as u16, end as u16));
+            ta.jump_to(r1, end);
         }
     }
 
@@ -2287,7 +2287,7 @@ impl VimEngine {
             Operator::Yank => {
                 self.registers.fill(register_text, RegisterKind::Linewise);
                 // cursor stays at start of first yanked line
-                ta.move_cursor(CursorMove::Jump(r0 as u16, 0));
+                ta.jump_to(r0, 0);
             }
             Operator::Delete | Operator::Change => {
                 Self::select_lines_for_delete(ta, r0, r1);
@@ -2301,7 +2301,7 @@ impl VimEngine {
                     if r0 == 0 && r1 == last {
                         // whole-buffer case: cut() left [""], the cursor is already
                         // at (0,0) on an empty line — no extra newline needed.
-                        ta.move_cursor(CursorMove::Jump(0, 0));
+                        ta.jump_to(0, 0);
                     } else if r0 > 0 && r1 == last {
                         // we consumed the preceding newline; add a line back
                         ta.move_cursor(CursorMove::End);
@@ -2334,12 +2334,12 @@ impl VimEngine {
                 // cut + insert is two history entries; one `edit()` scope makes
                 // them one **undo group**, whatever the count turns out to be.
                 ta.edit(|ta| {
-                    ta.move_cursor(CursorMove::Jump(r0 as u16, 0));
+                    super::edit_buffer::checked_jump(ta, r0, 0);
                     ta.start_selection();
-                    ta.move_cursor(CursorMove::Jump(r1 as u16, end_len as u16));
+                    super::edit_buffer::checked_jump(ta, r1, end_len);
                     ta.cut();
                     ta.insert_str(&transformed);
-                    ta.move_cursor(CursorMove::Jump(r0 as u16, 0));
+                    super::edit_buffer::checked_jump(ta, r0, 0);
                 });
             }
         }
@@ -2402,7 +2402,7 @@ impl VimEngine {
             } else {
                 start_col + first_line_delta
             };
-            ta.move_cursor(CursorMove::Jump(start_row as u16, col as u16));
+            super::edit_buffer::checked_jump(ta, start_row, col);
         });
     }
 
@@ -2424,7 +2424,7 @@ impl VimEngine {
                 self.fill_from_textarea(ta, RegisterKind::Charwise);
                 ta.cancel_selection();
                 if let Some((r, c)) = start {
-                    ta.move_cursor(CursorMove::Jump(r as u16, c as u16));
+                    ta.jump_to(r, c);
                 }
             }
             Operator::Delete | Operator::Change => {
@@ -2443,7 +2443,7 @@ impl VimEngine {
                     (1, r)
                 };
                 ta.cancel_selection();
-                ta.move_cursor(CursorMove::Jump(start_row as u16, 0));
+                ta.jump_to(start_row, 0);
                 self.indent_lines(outdent, rows, ta);
             }
             Operator::Lowercase | Operator::Uppercase | Operator::ToggleCase => {
@@ -2459,7 +2459,7 @@ impl VimEngine {
                     ta.insert_str(&transformed);
                 });
                 if let Some((r, c)) = start {
-                    ta.move_cursor(CursorMove::Jump(r as u16, c as u16));
+                    ta.jump_to(r, c);
                 }
             }
         }
@@ -2571,7 +2571,7 @@ impl VimEngine {
                         .get(row)
                         .map(|l| l.chars().count())
                         .unwrap_or(col);
-                    ta.move_cursor(CursorMove::Jump(row as u16, (col + 1).min(len) as u16));
+                    ta.jump_to(row, (col + 1).min(len));
                 }
                 for _ in 0..count.max(1) {
                     ta.insert_str(text);

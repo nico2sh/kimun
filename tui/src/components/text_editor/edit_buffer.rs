@@ -268,6 +268,11 @@ impl EditBuffer {
     /// Undo one *user action*, replaying history until the buffer reaches the
     /// state that action started from.
     ///
+    /// **All or nothing.** If the group's start cannot be reached — its entries
+    /// were evicted from `TextArea`'s bounded history, or it is larger than the
+    /// replay budget — the buffer is restored and this reports `false`. A
+    /// stranded half-undone note is worse than a keypress that did nothing.
+    ///
     /// Nothing here counts entries. The extent is the group's own endpoints, so
     /// an operation that pushed one entry and one that pushed two are undone by
     /// the same code.
@@ -283,19 +288,30 @@ impl EditBuffer {
         if !self.ta.undo() {
             return false;
         }
-        if target.is_some() {
-            let g = self.undo.pop().expect("peeked above");
-            self.redo.push(g);
-        }
+        let mut steps = 1usize;
         if let Some(target) = target {
-            for _ in 0..MAX_GROUP_REPLAY {
+            while steps <= MAX_GROUP_REPLAY {
                 if hash_lines(self.ta.lines()) == target {
                     break;
                 }
                 if !self.ta.undo() {
                     break;
                 }
+                steps += 1;
             }
+            if hash_lines(self.ta.lines()) != target {
+                // The group's start is unreachable — `TextArea`'s history has
+                // evicted part of it, or it is larger than the replay budget.
+                // Put the buffer back rather than leaving it stranded half-way
+                // through an action the user asked to undo whole. A dead
+                // keypress is recoverable; a partial undo is not.
+                for _ in 0..steps {
+                    self.ta.redo();
+                }
+                return false;
+            }
+            let g = self.undo.pop().expect("peeked above");
+            self.redo.push(g);
         }
         let out = self.outcome_against(&before);
         self.merge(out);
@@ -312,19 +328,25 @@ impl EditBuffer {
         if !self.ta.redo() {
             return false;
         }
-        if target.is_some() {
-            let g = self.redo.pop().expect("peeked above");
-            self.undo.push(g);
-        }
+        let mut steps = 1usize;
         if let Some(target) = target {
-            for _ in 0..MAX_GROUP_REPLAY {
+            while steps <= MAX_GROUP_REPLAY {
                 if hash_lines(self.ta.lines()) == target {
                     break;
                 }
                 if !self.ta.redo() {
                     break;
                 }
+                steps += 1;
             }
+            if hash_lines(self.ta.lines()) != target {
+                for _ in 0..steps {
+                    self.ta.undo();
+                }
+                return false;
+            }
+            let g = self.redo.pop().expect("peeked above");
+            self.undo.push(g);
         }
         let out = self.outcome_against(&before);
         self.merge(out);
@@ -371,12 +393,38 @@ impl EditBuffer {
         self.ta.set_search_pattern(pattern)
     }
 
+    /// Move the cursor to the next match. Never extends a selection.
     pub fn search_forward(&mut self, match_cursor: bool) -> bool {
+        self.drop_anchor();
         self.ta.search_forward(match_cursor)
     }
 
+    /// Move the cursor to the previous match. Never extends a selection.
     pub fn search_back(&mut self, match_cursor: bool) -> bool {
+        self.drop_anchor();
         self.ta.search_back(match_cursor)
+    }
+
+    /// Move the cursor to `(row, col)`; see [`checked_jump`].
+    pub fn jump_to(&mut self, row: usize, col: usize) -> bool {
+        checked_jump(&mut self.ta, row, col)
+    }
+
+    /// Clear any live selection anchor before a non-directional cursor move.
+    ///
+    /// `TextArea::search_forward` assigns the cursor directly and leaves
+    /// `selection_start` untouched, so a search performed while an anchor is
+    /// live silently turns into a selection that nothing paints — and the next
+    /// keystroke deletes it. That surprise has produced two separate
+    /// data-loss bugs, each previously patched at its call site.
+    ///
+    /// A search is not a selection gesture. Directional moves (`move_cursor`)
+    /// deliberately keep the anchor: that is how vim Visual mode extends, and
+    /// it is correct there.
+    fn drop_anchor(&mut self) {
+        if self.ta.selection_range().is_some() {
+            self.ta.cancel_selection();
+        }
     }
 
     /// The span of the match starting exactly at the cursor, if any.
@@ -405,6 +453,7 @@ impl EditBuffer {
     /// which is the whole point of `n`/`N` working once the bar is closed.
     /// Pushes no history — it only moves the cursor.
     pub fn search_repeat(&mut self, backward: bool) -> bool {
+        self.drop_anchor();
         if backward {
             self.ta.search_back(false)
         } else {
@@ -415,13 +464,53 @@ impl EditBuffer {
     /// Feed a mouse event to the textarea: cursor placement and drag
     /// selection. Pushes no history, so it stays outside [`Self::edit`] — one
     /// scroll tick would otherwise cost a full buffer clone and two hashes.
-    pub fn mouse_input(&mut self, input: impl Into<ratatui_textarea::Input>) -> bool {
-        self.ta.input(input)
+    ///
+    /// Takes a `MouseEvent`, not `impl Into<Input>`, deliberately.
+    /// `TextArea::input` maps Ctrl+U to `undo()` and Ctrl+R to `redo()`, so a
+    /// key reaching it would step history behind the grouping's back. Narrowing
+    /// the type makes that unrepresentable rather than merely unlikely.
+    pub fn mouse_input(&mut self, event: ratatui::crossterm::event::MouseEvent) -> bool {
+        self.ta.input(event)
     }
 
     pub fn copy(&mut self) {
         self.ta.copy();
     }
+}
+
+/// Move the cursor to `(row, col)`, refusing positions the library cannot
+/// address instead of silently landing somewhere else.
+///
+/// `CursorMove::Jump` takes `u16` and **clamps**: on a note with more than
+/// 65535 lines, or a single line longer than 65535 chars (a pasted minified
+/// blob, a long log line), `row as u16` wraps the cursor to an unrelated
+/// position. Every caller that then selects from there splices text into the
+/// middle of the buffer.
+///
+/// Returns whether the cursor moved. A refusal is a keypress that did nothing —
+/// recoverable and inspectable; a clamp is neither. The `debug_assert` is what
+/// makes the handful of sites whose bounds are *not* provable show up in
+/// development rather than in someone's very large note.
+///
+/// Free function as well as [`EditBuffer::jump_to`] so it is reachable from
+/// inside an [`EditBuffer::edit`] closure, which holds a raw `&mut TextArea`.
+pub(super) fn checked_jump(ta: &mut TextArea<'static>, row: usize, col: usize) -> bool {
+    debug_assert!(
+        addressable(row, col),
+        "cursor position ({row}, {col}) is outside what CursorMove::Jump can address"
+    );
+    if !addressable(row, col) {
+        return false;
+    }
+    ta.move_cursor(CursorMove::Jump(row as u16, col as u16));
+    true
+}
+
+/// Whether `CursorMove::Jump` can express this position at all. Split out from
+/// [`checked_jump`] so the rule is testable without tripping its assert.
+pub(super) fn addressable(row: usize, col: usize) -> bool {
+    let max = u16::MAX as usize;
+    row <= max && col <= max
 }
 
 /// Whether the change between `before` and `after` reaches beyond the cursor's
@@ -673,6 +762,126 @@ mod tests {
         // The group went across on the first undo and must not come back.
         assert!(b.redo());
         assert_eq!(lines(&b), vec!["b".to_string()]);
+    }
+
+    /// A search is not a selection gesture. `TextArea::search_forward` assigns
+    /// the cursor and leaves `selection_start` alone, so without this the
+    /// search silently extends a live anchor into a selection nothing paints —
+    /// and the next keystroke deletes it.
+    #[test]
+    fn a_search_never_extends_a_selection() {
+        let mut b = buf(&["foo bar foo"]);
+        b.set_search_pattern("foo").unwrap();
+        b.move_cursor(CursorMove::Jump(0, 0));
+        b.start_selection();
+        b.move_cursor(CursorMove::Jump(0, 3));
+        assert!(b.selection_range().is_some(), "anchor is live");
+
+        assert!(b.search_forward(false));
+        assert_eq!(
+            b.selection_range(),
+            None,
+            "the search must not leave a selection behind it"
+        );
+    }
+
+    /// The mirror for `n`/`N`, which reaches the same library call by a
+    /// different route and produced the same data loss.
+    #[test]
+    fn repeating_a_search_never_extends_a_selection() {
+        let mut b = buf(&["foo bar foo"]);
+        b.set_search_pattern("foo").unwrap();
+        b.move_cursor(CursorMove::Jump(0, 0));
+        b.start_selection();
+        b.move_cursor(CursorMove::Jump(0, 3));
+        b.search_repeat(false);
+        assert_eq!(b.selection_range(), None);
+    }
+
+    /// But a directional move must still extend — that is how vim Visual mode
+    /// works, and the fix above must not reach it.
+    #[test]
+    fn a_directional_move_still_extends_a_selection() {
+        let mut b = buf(&["foo bar"]);
+        b.move_cursor(CursorMove::Jump(0, 0));
+        b.start_selection();
+        b.move_cursor(CursorMove::Jump(0, 3));
+        assert_eq!(
+            b.selection_range(),
+            Some(((0, 0), (0, 3))),
+            "visual-mode extension must survive"
+        );
+    }
+
+    /// A group bigger than what history can hold must refuse, not strand the
+    /// buffer part-way through the action.
+    #[test]
+    fn an_unreachable_group_refuses_instead_of_stranding() {
+        // `TextArea` keeps 50 history entries; push a group of 60.
+        let rows: Vec<String> = (0..60).map(|i| format!("line {i}")).collect();
+        let mut b = EditBuffer::new(TextArea::from(rows.clone()));
+        b.edit(|ta| {
+            for row in 0..60u16 {
+                ta.move_cursor(CursorMove::Jump(row, 0));
+                ta.insert_str("    ");
+            }
+        });
+        let indented = lines(&b);
+        assert!(indented[59].starts_with("    "));
+        let _ = b.take_outcome();
+
+        assert!(
+            !b.undo(),
+            "the group's start is unreachable, so the undo must refuse"
+        );
+        assert_eq!(
+            lines(&b),
+            indented,
+            "and refusing means the buffer is exactly where it was, not half-undone"
+        );
+    }
+
+    /// Surprise 1, pinned: `insert_str` returns `false` when the inserted text
+    /// is empty — *after* deleting the selection. The adapter must measure the
+    /// content, never trust that bool, or a modified note reads clean and is
+    /// never saved.
+    #[test]
+    fn a_mutation_the_library_reports_as_false_is_still_a_change() {
+        let mut b = buf(&["todo and todo"]);
+        let reported = b.edit(|ta| {
+            ta.move_cursor(CursorMove::Jump(0, 0));
+            ta.start_selection();
+            ta.move_cursor(CursorMove::Jump(0, 5));
+            ta.insert_str("")
+        });
+        assert!(
+            !reported,
+            "the library still reports false — that is the trap"
+        );
+        assert_eq!(lines(&b), vec!["and todo".to_string()]);
+        assert!(
+            b.take_outcome().changed,
+            "the adapter measures content, so it disagrees with the library and is right"
+        );
+    }
+
+    /// Surprise 4, pinned: `CursorMove::Jump` clamps at `u16`, so a position
+    /// past it lands the cursor somewhere unrelated. The adapter refuses.
+    #[test]
+    fn positions_past_u16_are_not_addressable() {
+        let max = u16::MAX as usize;
+        assert!(addressable(max, max));
+        assert!(!addressable(max + 1, 0), "a note over 65535 lines");
+        assert!(!addressable(0, max + 1), "a line over 65535 chars");
+    }
+
+    /// And a dev build shouts, so the sites whose bounds are not provable
+    /// surface during development rather than in someone's very large note.
+    #[test]
+    #[should_panic(expected = "outside what CursorMove::Jump can address")]
+    fn an_unaddressable_jump_trips_the_debug_assert() {
+        let mut b = buf(&["a"]);
+        b.jump_to(u16::MAX as usize + 1, 0);
     }
 
     #[test]
