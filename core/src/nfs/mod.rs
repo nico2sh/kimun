@@ -608,6 +608,75 @@ pub(crate) async fn delete_attachment<P: AsRef<Path>>(
     remove_file_at(workspace_path, path).await
 }
 
+/// Which line ending a note is written with.
+///
+/// A note keeps the endings it had. Enforced here rather than asked of every
+/// writer, because there are several — the editor, the CLI, the MCP server — and
+/// a rule that each has to remember is one each can forget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LineEnding {
+    Lf,
+    Crlf,
+}
+
+impl LineEnding {
+    /// What `bytes` uses, judged by its first line break. A file with no break at
+    /// all, or a new file, is LF.
+    pub(crate) fn of(bytes: &[u8]) -> Self {
+        match bytes.iter().position(|b| *b == b'\n') {
+            Some(0) => Self::Lf,
+            Some(at) if bytes[at - 1] == b'\r' => Self::Crlf,
+            _ => Self::Lf,
+        }
+    }
+
+    /// Rewrite `text` — which arrives with LF endings, whatever its source — to
+    /// use this one.
+    pub(crate) fn apply(self, text: &str) -> String {
+        match self {
+            Self::Lf => text.to_string(),
+            Self::Crlf => text.replace('\n', "\r\n"),
+        }
+    }
+}
+
+/// Normalise any mixture of endings to LF, so `LineEnding::apply` has one thing
+/// to convert from.
+fn to_lf(text: &str) -> String {
+    if !text.contains('\r') {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\r' {
+            if chars.peek() == Some(&'\n') {
+                chars.next();
+            }
+            out.push('\n');
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The endings `path` currently uses, or LF when there is no file yet.
+///
+/// Reads a prefix only: the first break settles it, and a note's first line is
+/// not worth reading megabytes to find.
+async fn existing_line_ending(full_path: &Path) -> LineEnding {
+    use tokio::io::AsyncReadExt;
+    let Ok(mut file) = tokio::fs::File::open(full_path).await else {
+        return LineEnding::Lf;
+    };
+    let mut head = vec![0u8; 8192];
+    match file.read(&mut head).await {
+        Ok(read) => LineEnding::of(&head[..read]),
+        Err(_) => LineEnding::Lf,
+    }
+}
+
 pub(crate) async fn save_note<P: AsRef<Path>, S: AsRef<str>>(
     workspace_path: P,
     path: &VaultPath,
@@ -620,7 +689,12 @@ pub(crate) async fn save_note<P: AsRef<Path>, S: AsRef<str>>(
     if let Some(base_path) = full_path.parent() {
         tokio::fs::create_dir_all(base_path).await?;
     }
-    tokio::fs::write(&full_path, text.as_ref().as_bytes()).await?;
+    // The note keeps the endings it had. The editor hands over LF because that is
+    // the only break its text can contain; a note written on Windows must not be
+    // rewritten line-for-line on its first save here.
+    let ending = existing_line_ending(&full_path).await;
+    let body = ending.apply(&to_lf(text.as_ref()));
+    tokio::fs::write(&full_path, body.as_bytes()).await?;
 
     let entry = NoteEntryData::from_os_path(path, &full_path).await?;
     Ok(entry)
@@ -1358,6 +1432,106 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(text, "# Hello");
+    }
+
+    use super::{to_lf, LineEnding};
+
+    #[test]
+    fn the_first_break_settles_which_ending_a_file_uses() {
+        assert_eq!(LineEnding::of(b"one\ntwo\r\n"), LineEnding::Lf);
+        assert_eq!(LineEnding::of(b"one\r\ntwo\n"), LineEnding::Crlf);
+        assert_eq!(LineEnding::of(b"no breaks at all"), LineEnding::Lf);
+        assert_eq!(LineEnding::of(b""), LineEnding::Lf);
+        assert_eq!(LineEnding::of(b"\nleading"), LineEnding::Lf);
+    }
+
+    #[test]
+    fn applying_an_ending_starts_from_lf() {
+        assert_eq!(LineEnding::Crlf.apply("a\nb"), "a\r\nb");
+        assert_eq!(LineEnding::Lf.apply("a\nb"), "a\nb");
+        // Idempotent through `to_lf`: content that already has CRLF is not doubled.
+        assert_eq!(LineEnding::Crlf.apply(&to_lf("a\r\nb")), "a\r\nb");
+        assert_eq!(LineEnding::Lf.apply(&to_lf("a\r\nb")), "a\nb");
+    }
+
+    #[tokio::test]
+    async fn a_note_keeps_the_line_endings_it_had() {
+        // The editor's text can only contain LF, so without this a note written on
+        // Windows is rewritten line-for-line the first time it is saved here.
+        let tmp = tempfile::TempDir::new().unwrap();
+        tokio::fs::write(tmp.path().join("note.md"), "first\r\nsecond\r\n")
+            .await
+            .unwrap();
+
+        save_note(
+            tmp.path(),
+            &VaultPath::new("/note.md"),
+            "first\nsecond\nthird\n",
+        )
+        .await
+        .unwrap();
+
+        let raw = tokio::fs::read(tmp.path().join("note.md")).await.unwrap();
+        assert_eq!(raw, b"first\r\nsecond\r\nthird\r\n");
+    }
+
+    #[tokio::test]
+    async fn a_note_written_with_lf_stays_lf() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        tokio::fs::write(tmp.path().join("note.md"), "first\nsecond\n")
+            .await
+            .unwrap();
+
+        save_note(tmp.path(), &VaultPath::new("/note.md"), "first\nchanged\n")
+            .await
+            .unwrap();
+
+        let raw = tokio::fs::read(tmp.path().join("note.md")).await.unwrap();
+        assert_eq!(raw, b"first\nchanged\n");
+    }
+
+    #[tokio::test]
+    async fn a_new_note_is_written_with_lf() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        save_note(tmp.path(), &VaultPath::new("/fresh.md"), "a\nb\n")
+            .await
+            .unwrap();
+        let raw = tokio::fs::read(tmp.path().join("fresh.md")).await.unwrap();
+        assert_eq!(raw, b"a\nb\n");
+    }
+
+    #[tokio::test]
+    async fn a_crlf_note_survives_a_round_trip_through_the_editor() {
+        // What the regression actually looked like: open, change nothing that the
+        // user can see, save — and every line of the file has changed.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let original = "alpha\r\nbeta\r\ngamma\r\n";
+        tokio::fs::write(tmp.path().join("note.md"), original)
+            .await
+            .unwrap();
+
+        // The editor reads it and normalises: its text can hold no carriage return.
+        let loaded = tokio::fs::read_to_string(tmp.path().join("note.md"))
+            .await
+            .unwrap();
+        let as_the_editor_holds_it = to_lf(&loaded);
+        assert!(!as_the_editor_holds_it.contains('\r'));
+
+        save_note(
+            tmp.path(),
+            &VaultPath::new("/note.md"),
+            &as_the_editor_holds_it,
+        )
+        .await
+        .unwrap();
+
+        let raw = tokio::fs::read_to_string(tmp.path().join("note.md"))
+            .await
+            .unwrap();
+        assert_eq!(
+            raw, original,
+            "the file is byte-identical to how it arrived"
+        );
     }
 
     #[tokio::test]
