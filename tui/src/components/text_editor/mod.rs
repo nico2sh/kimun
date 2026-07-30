@@ -15,6 +15,7 @@ pub mod snapshot;
 pub mod text_coords;
 pub mod view;
 mod vim;
+mod vim_objects;
 pub mod widener_metrics;
 
 use self::rope_buffer::CursorMove;

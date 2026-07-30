@@ -80,6 +80,19 @@ pub enum CursorMove {
     WordForward,
     WordBack,
     WordEnd,
+    /// `W` — a WORD is any run of non-blanks.
+    WordForwardBig,
+    /// `B`.
+    WordBackBig,
+    /// `E`.
+    WordEndBig,
+    /// `ge` / `gE`.
+    WordEndBack {
+        big: bool,
+    },
+    /// `%`. Stays put when there is no bracket ahead on the row, or it is
+    /// unbalanced.
+    MatchingPair,
     ParagraphForward,
     ParagraphBack,
     Jump(usize, usize),
@@ -591,6 +604,22 @@ impl RopeBuffer {
             }
             CursorMove::WordForward => motion::word_start_forward(text, from, Words::Small),
             CursorMove::WordBack => motion::word_start_back(text, from, Words::Small),
+            CursorMove::WordForwardBig => motion::word_start_forward(text, from, Words::Big),
+            CursorMove::WordBackBig => motion::word_start_back(text, from, Words::Big),
+            // Inclusive, like `WordEnd`: a cursor landing on a word's end wants the
+            // last cluster, not the place after it.
+            CursorMove::WordEndBig => match motion::word_end_forward(text, from, Words::Big) {
+                Some(end) => motion::prev_cluster(text, end),
+                None => from,
+            },
+            CursorMove::WordEndBack { big } => {
+                let words = if big { Words::Big } else { Words::Small };
+                match motion::word_end_back(text, from, words) {
+                    Some(end) => motion::prev_cluster(text, end),
+                    None => from,
+                }
+            }
+            CursorMove::MatchingPair => motion::matching_bracket(text, from).unwrap_or(from),
             // The crate's word end is exclusive — just past the last cluster —
             // because that is what an operator range wants. A *cursor* landing on
             // a word end wants the last cluster itself, as vim's `e` does. This is
