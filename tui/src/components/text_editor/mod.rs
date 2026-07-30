@@ -690,6 +690,10 @@ impl TextEditorComponent {
         if !self.revs.mark_saved_at(rev) {
             return;
         }
+        // Below the guard on purpose: a stale completion marks nothing, and an
+        // action that did nothing must not close the group. One undo after a
+        // real save lands on exactly what is on disk (CONTEXT.md).
+        self.interrupt_typing();
         if let Some(nvim) = self.backend.as_nvim() {
             nvim.mark_clean();
         }
@@ -703,6 +707,7 @@ impl TextEditorComponent {
     /// clean state to preserve, and the user typing between
     /// `get_text()` and this call must show as dirty.
     pub fn mark_saved(&mut self, text: String) {
+        self.interrupt_typing();
         let matches = text == self.get_text();
         if matches {
             if let Some(nvim) = self.backend.as_nvim() {
@@ -715,6 +720,49 @@ impl TextEditorComponent {
             // snapshot in `revs` is what is_dirty consults on the
             // Textarea backend, and we explicitly forget it here.
             self.revs.mark_diverged();
+        }
+    }
+
+    /// Something happened that is not a continuation of typing.
+    ///
+    /// One entry point for every path that is not a keystroke — a click, a
+    /// find, an autocomplete accept, a save, a vim motion — because the state it
+    /// closes is kept on the component while those paths reach the buffer by
+    /// four different routes, and a rule applied on one of them is a rule the
+    /// other three forget.
+    ///
+    /// The two halves are deliberately not gated alike:
+    ///
+    /// - The **goal cell** belongs to a run of `↑`/`↓` and to nothing else, so
+    ///   any other action forgets it, in every mode.
+    /// - The **undo group** is closed only outside a vim Insert session. There
+    ///   the session *is* the group (CONTEXT.md), so an autosave landing
+    ///   mid-word, or an auto-surround typed inside Insert, must not split what
+    ///   one `u` is supposed to take back.
+    fn interrupt_typing(&mut self) {
+        self.view.clear_visual_goal();
+        if self.backend.modal_is_insert().unwrap_or(false) {
+            return;
+        }
+        if let Some((_, run)) = self.backend.as_textarea_parts_mut() {
+            run.end();
+        }
+    }
+
+    /// Notice that vim entered or left Insert, and close the group if it did.
+    ///
+    /// This marks a session's *start*: the first key of a session arrives here
+    /// with the flag still reading the old mode. The session's *end* is closed by
+    /// [`Self::interrupt_typing`] on the engine path, because `Esc` is consumed
+    /// there and never reaches this function at all.
+    fn sync_insert_session(&mut self) {
+        let in_insert = self.backend.modal_is_insert().unwrap_or(false);
+        if self.last_insert_session == in_insert {
+            return;
+        }
+        self.last_insert_session = in_insert;
+        if let Some((_, run)) = self.backend.as_textarea_parts_mut() {
+            run.end();
         }
     }
 
@@ -1044,6 +1092,10 @@ impl TextEditorComponent {
         let inner_end_col = if sr == er { ec + shift } else { ec };
         set_selection(ta, (sr, sc + shift), (er, inner_end_col));
         self.selection = ta.selection_range();
+        // Only here, past every `return false` above: this function is consulted
+        // for each bare `( [ { < " ' ` * _ ~` keystroke, and the declining ones
+        // fall through to ordinary typing, which must keep its run.
+        self.interrupt_typing();
         self.apply_edit_outcome();
         true
     }
@@ -1060,6 +1112,7 @@ impl TextEditorComponent {
         if self.wrap_selection(marker, marker) {
             return;
         }
+        self.interrupt_typing();
         let Some(ta) = self.backend.as_textarea_mut() else {
             return;
         };
@@ -1664,18 +1717,17 @@ impl TextEditorComponent {
         }
 
         // A change of modal state ends whatever run was open: leaving Insert
-        // closes vim's session, and entering it starts a fresh one. Watching the
-        // mode here costs nothing and saves threading the run through the engine.
-        let in_insert_session = self.backend.modal_is_insert().unwrap_or(false);
-        let session_changed = self.last_insert_session != in_insert_session;
-        self.last_insert_session = in_insert_session;
+        // closes vim's session, and entering it starts a fresh one. Also read in
+        // `handle_input` for the keys the engine consumes, which never arrive
+        // here — this call is what keeps the direct path (which the tests drive)
+        // bracketed too.
+        self.sync_insert_session();
 
+        // Read before the buffer is borrowed below.
+        let in_insert_session = self.last_insert_session;
         let Some((ta, run)) = self.backend.as_textarea_parts_mut() else {
             unreachable!("handle_textarea_key called with non-Textarea backend")
         };
-        if session_changed {
-            run.end();
-        }
         // Last: what the key means to the plain backend. It runs *after* the
         // component's own claims — `Tab` indents rows, `Enter` may continue a
         // list, an opening bracket over a selection wraps it — because those are
@@ -1708,8 +1760,8 @@ impl TextEditorComponent {
                     let now = std::time::Instant::now();
                     // In vim's Insert mode the session is the group: `u` takes
                     // back everything typed since `i`, so neither a word boundary
-                    // nor a pause may break it. `session_changed` above ended the
-                    // run at the boundary, which is what marks a session's start.
+                    // nor a pause may break it. `sync_insert_session` above ended
+                    // the run at the boundary, which marks a session's start.
                     let carries_on = if in_insert_session {
                         run.continues_session(stroke, now)
                     } else {
@@ -1744,7 +1796,7 @@ impl TextEditorComponent {
         mouse: &ratatui::crossterm::event::MouseEvent,
         tx: &AppTx,
     ) -> EventState {
-        let r = &self.rect;
+        let r = self.rect;
         let in_bounds = mouse.column >= r.x
             && mouse.column < r.x + r.width
             && mouse.row >= r.y
@@ -1752,6 +1804,10 @@ impl TextEditorComponent {
         if !in_bounds {
             return EventState::NotConsumed;
         }
+        // Past the bounds check the event is ours, so it is an action: a click
+        // moves the cursor, and even a scroll means attention moved. Placed above
+        // the context-menu return below so a right-click counts too.
+        self.interrupt_typing();
         // Right-click: with a selection it copies (unchanged behavior);
         // without one it asks the host to open the note's context menu
         // (spec §10 — file & note ops).
@@ -1838,6 +1894,7 @@ impl Component for TextEditorComponent {
                 {
                     match controller.handle_key(*key, &host) {
                         HandleKeyOutcome::Accepted(action) => {
+                            self.interrupt_typing();
                             if let Some(ta) = self.backend.as_textarea_mut() {
                                 ta.edit(|ta| apply_accept_to_textarea(ta, &action));
                                 self.selection = ta.selection_range();
@@ -1856,6 +1913,10 @@ impl Component for TextEditorComponent {
                 // (the textarea backend also intercepts inside handle_textarea_key,
                 // but the vim Normal-mode path never reaches that).
                 if self.dispatch_to_find_bar(key) {
+                    // Here rather than inside `dispatch_bar`: that runs for every
+                    // key whether or not a bar is open, so interrupting there
+                    // would make each keystroke its own undo group.
+                    self.interrupt_typing();
                     return EventState::Consumed;
                 }
                 // Vim interpreter: Normal/Visual consume the key here; Insert
@@ -1864,6 +1925,13 @@ impl Component for TextEditorComponent {
                 // keep working (adr/0012).
                 if let Some(outcome) = self.backend.vim_handle_key(key) {
                     use self::vim::VimKeyOutcome;
+                    // Anything the engine consumed is an action rather than a
+                    // continuation of typing. PassThrough is the exception: that
+                    // key falls through to the direct path below, where the plain
+                    // handler decides — and where a run of ↑/↓ keeps its goal.
+                    if !matches!(outcome, VimKeyOutcome::PassThrough) {
+                        self.interrupt_typing();
+                    }
                     // Whatever the engine did, the buffer measured it. One
                     // drain replaces the group handshake, the pre-dispatch
                     // clone and the hand-placed revision bump (adr/0037).
@@ -3607,6 +3675,28 @@ mod tests {
     }
 
     #[test]
+    fn replacing_a_match_that_ends_inside_a_cluster_is_refused_not_corrupted() {
+        // "e\u{301}f" is a decomposed é followed by f. Searching `e` matches a
+        // scalar whose END sits inside the cluster, which is not an addressable
+        // column — so the second jump does nothing, the selection stays empty,
+        // and the replacement used to be INSERTED beside the match rather than
+        // over it, leaving "xe\u{301}f". Refusing is the contract (adr/0040).
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("e\u{301}f".to_string());
+        open_replace_bar(&mut editor, &tx, "e", "x");
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Enter, KeyModifiers::NONE)),
+            &tx,
+        );
+        assert_eq!(
+            editor.get_text(),
+            "e\u{301}f",
+            "the note is left alone rather than half-rewritten"
+        );
+    }
+
+    #[test]
     fn ctrl_a_replaces_every_match() {
         let mut editor = make_editor();
         let tx = dummy_tx();
@@ -4582,6 +4672,85 @@ mod tests {
     }
 
     #[test]
+    fn a_save_closes_the_open_group() {
+        // CONTEXT.md: "a group never spans a save, and one undo after saving
+        // lands on exactly what is on disk". The save arrives by a path that is
+        // not a keystroke, so nothing on the key path could have closed it.
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        type_out(&mut editor, &tx, "abc");
+        let saved = editor.get_text();
+        editor.mark_saved(saved);
+        // Immediately, well inside the idle window, and mid-"word" so the
+        // boundary rule cannot close the run either.
+        type_out(&mut editor, &tx, "def");
+
+        assert!(get_ta(&mut editor).undo());
+        assert_eq!(
+            editor.get_text(),
+            "abc",
+            "one undo lands on what was saved, not before it"
+        );
+    }
+
+    #[test]
+    fn a_stale_save_completion_does_not_close_the_group() {
+        // The other half of the same rule: `mark_saved_at_revision` is a
+        // documented no-op when the revision moved on, and an action that did
+        // nothing must not split the user's word.
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        type_out(&mut editor, &tx, "abc");
+        let stale = NonZeroU64::new(1).expect("nonzero");
+        editor.mark_saved_at_revision(stale);
+        type_out(&mut editor, &tx, "def");
+
+        assert!(get_ta(&mut editor).undo());
+        assert_eq!(
+            editor.get_text(),
+            "",
+            "the run carried on across a completion that marked nothing"
+        );
+    }
+
+    #[test]
+    fn a_second_vim_insert_session_is_its_own_group() {
+        // The session flag was refreshed only on the pass-through path, which
+        // `Esc` never takes, so it latched true on the first `i` and every later
+        // session folded into whatever entry preceded it.
+        use ratatui::crossterm::event::KeyEvent;
+        let mut editor = make_vim_editor();
+        let tx = dummy_tx();
+        editor.set_text(String::new());
+        let press = |editor: &mut TextEditorComponent, code| {
+            let _ = editor.handle_input(
+                &InputEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)),
+                &tx,
+            );
+        };
+        press(&mut editor, KeyCode::Char('i'));
+        for c in "one".chars() {
+            press(&mut editor, KeyCode::Char(c));
+        }
+        press(&mut editor, KeyCode::Esc);
+        press(&mut editor, KeyCode::Char('i'));
+        for c in "two".chars() {
+            press(&mut editor, KeyCode::Char(c));
+        }
+        press(&mut editor, KeyCode::Esc);
+        // `Esc` steps the cursor left, so the second `i` inserts before the
+        // final `e` — the position is incidental, the grouping is the point.
+        assert_eq!(editor.get_text(), "ontwoe");
+
+        assert!(get_ta(&mut editor).undo());
+        assert_eq!(
+            editor.get_text(),
+            "one",
+            "`u` takes back the second session only"
+        );
+    }
+
+    #[test]
     fn a_vim_insert_session_undoes_whole() {
         use ratatui::crossterm::event::KeyEvent;
         let mut editor = make_vim_editor();
@@ -4671,6 +4840,60 @@ second row"
         arrow(&mut editor, &tx, KeyCode::Up);
         assert_eq!(get_ta(&mut editor).cursor(), (0, 0));
         assert_eq!(middle, (0, 5));
+    }
+
+    #[test]
+    fn an_arrow_against_a_stale_layout_falls_back_instead_of_panicking() {
+        // `main.rs` drains queued input without redrawing between events, so an
+        // edit and an arrow can be processed in one batch. Shrinking a row does
+        // not change the row COUNT, which is all the old guard compared — and the
+        // layout's byte ranges then sliced past the end of the shortened row.
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("abcd\nefgh".to_string());
+        lay_out(&mut editor, 20, 10);
+
+        get_ta(&mut editor).jump_to(0, 4);
+        for _ in 0..3 {
+            get_ta(&mut editor).delete_char();
+        }
+        assert_eq!(get_ta(&mut editor).rows(), &["a", "efgh"]);
+
+        // The move falls back to a logical one rather than reading the layout.
+        arrow(&mut editor, &tx, KeyCode::Down);
+        assert_eq!(get_ta(&mut editor).cursor().0, 1, "still moved down a row");
+    }
+
+    #[test]
+    fn an_action_between_arrows_forgets_the_goal_cell() {
+        // The other side of `a_run_of_arrows_keeps_its_goal_cell`: the column is
+        // borrowed for a run of arrows and for nothing else, so anything that is
+        // not one forgets it. Driven here through a save, because that is a path
+        // with no keystroke on it at all — the same choke point serves the click,
+        // the find and the vim motion.
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text(
+            "aaaaaaaa
+bb
+cccccccc"
+                .to_string(),
+        );
+        lay_out(&mut editor, 20, 10);
+
+        get_ta(&mut editor).jump_to(0, 7);
+        arrow(&mut editor, &tx, KeyCode::Down);
+        assert_eq!(get_ta(&mut editor).cursor(), (1, 2), "clamped to the short row");
+
+        let saved = editor.get_text();
+        editor.mark_saved(saved);
+
+        arrow(&mut editor, &tx, KeyCode::Down);
+        assert_eq!(
+            get_ta(&mut editor).cursor(),
+            (2, 2),
+            "the goal was forgotten, so the third row keeps the clamped column"
+        );
     }
 
     #[test]

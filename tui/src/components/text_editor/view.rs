@@ -511,7 +511,10 @@ impl MarkdownEditorView {
     /// falls back to a logical move rather than reading a stale layout.
     pub fn move_cursor_visually(&mut self, buf: &mut RopeBuffer, down: bool, extend: bool) -> bool {
         let text = buf.text().clone();
-        if self.layout.row_count() != text.line_count() {
+        // Exactly, not approximately: comparing row counts missed every edit that
+        // stayed inside one row, and the stale byte ranges then sliced out of
+        // bounds — `end byte index 4 is out of bounds for string of length 1`.
+        if !self.layout.describes(&text) {
             return false;
         }
         let Some(cursor) = text.position(buf.cursor().0, Column::new(buf.cursor().1)) else {

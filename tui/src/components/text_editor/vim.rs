@@ -2350,14 +2350,29 @@ impl VimEngine {
         let Some(line) = ta.row(row) else {
             return false;
         };
-        let line_len = line.chars().count();
-        let (n, start) = if forward {
-            (count.min(line_len.saturating_sub(col)), col)
+        // `delete_next_char`/`delete_char` each remove a whole grapheme cluster,
+        // so the count that bounds them has to be counted in clusters too.
+        // Bounding by scalars let `3x` on a ZWJ emoji — three scalars, one
+        // cluster — spend its two remaining steps past the end of the row,
+        // joining the next row up and eating into it.
+        use unicode_segmentation::UnicodeSegmentation;
+        let split = line
+            .char_indices()
+            .nth(col)
+            .map(|(byte, _)| byte)
+            .unwrap_or(line.len());
+        let (before, after) = line.split_at(split);
+        let (n, deleted) = if forward {
+            let n = count.min(after.graphemes(true).count());
+            (n, after.graphemes(true).take(n).collect::<String>())
         } else {
-            let n = count.min(col);
-            (n, col - n)
+            let available = before.graphemes(true).count();
+            let n = count.min(available);
+            (
+                n,
+                before.graphemes(true).skip(available - n).collect::<String>(),
+            )
         };
-        let deleted: String = line.chars().skip(start).take(n).collect();
         self.registers.fill(deleted, RegisterKind::Charwise);
         for _ in 0..n {
             if forward {
@@ -2419,15 +2434,35 @@ impl VimEngine {
 
     /// Toggle the case of the char under the cursor and advance one char.
     fn toggle_case_at_cursor(ta: &mut RopeBuffer) {
+        use unicode_segmentation::UnicodeSegmentation;
+
         let (row, col) = super::cursor_tuple(ta);
-        let flipped = ta
-            .row(row)
-            .and_then(|line| line.chars().nth(col))
-            .map(Self::flip_case);
-        if let Some(flipped) = flipped {
-            ta.delete_next_char();
-            ta.insert_str(&flipped);
+        // `delete_next_char` removes a whole grapheme cluster, so what goes back
+        // has to be the whole cluster too. Reading one scalar and re-inserting
+        // one scalar destroyed everything after the first: `~` on a decomposed
+        // `é` dropped the combining acute, and on a ZWJ emoji collapsed the
+        // sequence to its first character.
+        let cluster = ta.row(row).and_then(|line| {
+            line.chars()
+                .skip(col)
+                .collect::<String>()
+                .graphemes(true)
+                .next()
+                .map(str::to_owned)
+        });
+        let Some(cluster) = cluster else {
+            return;
+        };
+        // Case belongs to the base character; the marks that follow ride along
+        // unchanged.
+        let mut flipped = String::with_capacity(cluster.len());
+        let mut scalars = cluster.chars();
+        if let Some(base) = scalars.next() {
+            flipped.push_str(&Self::flip_case(base));
         }
+        flipped.extend(scalars);
+        ta.delete_next_char();
+        ta.insert_str(&flipped);
     }
 }
 

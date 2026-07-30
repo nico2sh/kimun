@@ -877,8 +877,12 @@ impl NoteVault {
         text: S,
     ) -> Result<(NoteEntryData, NoteContentData), VaultError> {
         self.backup_if_enabled(path).await?;
-        let entry_data = nfs::save_note(self.workspace_path(), path, &text).await?;
-        let note_details = NoteDetails::new(path, text);
+        // Index what was written, not what was handed in: `save_note` restores the
+        // file's own line endings, so `text` (always LF from the editor) and the
+        // bytes on disk differ for a CRLF note. The scan hashes the file, so
+        // hashing `text` here would disagree with it on every save.
+        let (entry_data, written) = nfs::save_note(self.workspace_path(), path, &text).await?;
+        let note_details = NoteDetails::new(path, written);
         let content_data = self.index.save_note(&entry_data, &note_details).await?;
         Ok((entry_data, content_data))
     }
@@ -3561,6 +3565,44 @@ mod modify_backup_tests {
         for l in lines {
             assert!(text.contains(l), "missing {l} in {text:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod crlf_index_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// Saving a CRLF note must index the hash a later scan will compute.
+    ///
+    /// The scan hashes the file; `save_note` restores the endings the file had,
+    /// so the LF text the editor hands over is not what lands on disk. Hashing
+    /// the handed-in text stored a hash the scan disagreed with, and the note was
+    /// upserted (and re-embedded) a second time for content that never changed.
+    #[tokio::test]
+    async fn saving_a_crlf_note_indexes_the_hash_the_scan_will_compute() {
+        let dir = TempDir::new().unwrap();
+        let on_disk = dir.path().join("note.md");
+        // Authored on Windows, before the vault ever sees it.
+        tokio::fs::write(&on_disk, "alpha\r\nbeta\r\n").await.unwrap();
+
+        let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
+        let path = VaultPath::note_path_from("note.md");
+
+        // Saved the way the editor saves: its text can hold no carriage return.
+        let (_, content) = vault.save_note(&path, "alpha\nbeta\n").await.unwrap();
+
+        let raw = tokio::fs::read_to_string(&on_disk).await.unwrap();
+        assert!(
+            raw.contains("\r\n"),
+            "precondition: the note keeps the endings it had"
+        );
+
+        let scanned = NoteDetails::content_data_of(&raw).hash;
+        assert_eq!(
+            content.hash, scanned,
+            "the indexed hash must be the one the scan computes from the file"
+        );
     }
 }
 

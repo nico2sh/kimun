@@ -421,12 +421,23 @@ impl FindBar {
             self.advance(buf, false);
             return;
         };
-        // `CursorMove::Jump` takes u16 and clamps silently, so a position past
-        // 65535 would select the wrong range and splice text into the middle of
-        // a line. Refuse rather than corrupt.
-        let Some((row_u16, start_u16, end_u16)) = Some((row, start_col, end_col)) else {
+        // Both ends have to be addressable before anything is edited. A match can
+        // END inside a grapheme cluster — searching `e` over a decomposed `é`
+        // does exactly that — and `Jump` refuses such a column by design
+        // (adr/0040: a position the buffer cannot address is a no-op, never a
+        // clamp). Discovering that half-way through the edit below leaves the
+        // selection empty, so the replacement is *inserted* beside the match
+        // instead of replacing it. Refuse rather than corrupt; `advance` below
+        // still steps past it.
+        //
+        // This replaced a guard that read `let Some(x) = Some(x)` — a tautology
+        // left behind when `Jump` stopped taking a `u16`, checking nothing.
+        let text = buf.text().clone();
+        let addressable = |col: usize| text.position(row, ropetext::Column::new(col)).is_some();
+        if !addressable(start_col) || !addressable(end_col) {
             return;
-        };
+        }
+        let (row_u16, start_u16, end_u16) = (row, start_col, end_col);
         // One `edit()` scope: select the match and overwrite it as a single
         // **undo group**, however many history entries that turns out to be.
         // Nothing here predicts the count, and nothing reads `insert_str`'s

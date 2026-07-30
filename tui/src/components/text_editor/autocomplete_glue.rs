@@ -7,6 +7,7 @@
 //! joined copy of the note has to exist for them to be resolved.
 
 use super::rope_buffer::{CursorMove, RopeBuffer};
+use unicode_segmentation::UnicodeSegmentation;
 use ratatui::layout::Rect;
 
 use crate::components::autocomplete::AcceptAction;
@@ -39,14 +40,17 @@ pub fn apply_accept_to_textarea(ta: &mut RopeBuffer, action: &AcceptAction) {
     ta.move_cursor(CursorMove::Jump(start.row(), start.column().get()));
     if action.range.end > action.range.start {
         let preserved_yank = ta.yank_text();
-        let Some(char_count) = before
+        // Clusters, matching what `delete_str` spends: the controller reports
+        // byte offsets, and counting the scalars between them over a flag or a
+        // ZWJ sequence would delete past the range it named.
+        let Some(clusters) = before
             .span(start, end)
             .and_then(|span| before.slice(span))
-            .map(|removed| removed.chars().count())
+            .map(|removed| removed.graphemes(true).count())
         else {
             return;
         };
-        ta.delete_str(char_count);
+        ta.delete_str(clusters);
         ta.set_yank_text(preserved_yank);
     }
     ta.insert_str(&action.new_text);
@@ -119,6 +123,28 @@ mod tests {
         // After insert, cursor should be at end of `]]`.
         let (row, col) = ta.cursor();
         assert_eq!((row, col), (0, 15));
+    }
+
+    #[test]
+    fn apply_accept_over_a_multi_scalar_cluster_stops_at_the_range() {
+        // The trigger range covers `[[` plus a flag: 4 scalars but 3 clusters.
+        // `delete_str` steps clusters, so handing it the scalar count spent one
+        // step past the range and swallowed the character after it.
+        let mut ta = RopeBuffer::new(ropetext::Text::from("see [[\u{1F1EA}\u{1F1F8} rest"));
+        ta.move_cursor(CursorMove::End);
+        let action = AcceptAction {
+            // bytes 4..14 — `[[` (2) plus the two 4-byte regional indicators.
+            range: 4..14,
+            new_text: "[[Spain]]".to_string(),
+            new_cursor_byte: 13,
+            saved_search_name: None,
+        };
+        apply_accept_to_textarea(&mut ta, &action);
+        assert_eq!(
+            ta.text().to_string(),
+            "see [[Spain]] rest",
+            "the space after the flag is outside the range and must survive"
+        );
     }
 
     #[test]

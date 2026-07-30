@@ -412,7 +412,11 @@ impl<'a> Txn<'a> {
             revision_before,
         };
         let cursor = shift(self.buffer.cursor.byte(), &edit, Gravity::Forward);
-        self.buffer.cursor = self.buffer.text.position_at_derived_byte(cursor);
+        // Not `position_at_derived_byte`: this offset is legitimately allowed to
+        // land inside a cluster — inserting before a combining mark joins it —
+        // and a cursor snaps forward out of one rather than back into the text
+        // it just typed.
+        self.buffer.cursor = self.buffer.text.position_at_cursor_byte(cursor);
         // An edit is not a selection gesture. Typing over a selection must not
         // leave the typed text selected, and a caller that does want a selection
         // afterwards — wrapping a selection in brackets, so the next wrap nests —

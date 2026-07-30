@@ -279,6 +279,29 @@ impl Text {
             .line_to_byte(row.min(self.line_count().saturating_sub(1)))
     }
 
+    /// The position a cursor takes at `byte`, snapping **forward** if the byte
+    /// falls inside a cluster.
+    ///
+    /// Distinct from [`Self::position_at_derived_byte`] because the direction
+    /// matters and the two want opposite ones. An edit's own end offset is a
+    /// char boundary, but char boundaries are not cluster boundaries: typing `a`
+    /// in front of a lone combining acute produces one cluster, and the offset
+    /// between them addresses nothing. Snapping back — which is what
+    /// `position_at_byte_snapped` does, since it names the *enclosing* cluster —
+    /// would leave the cursor in front of the character just typed, so the next
+    /// keystroke would land in reverse order. Forward is the only direction that
+    /// keeps typing moving the way the typist is.
+    pub(crate) fn position_at_cursor_byte(&self, byte: usize) -> Position {
+        match self.position_at_byte(byte) {
+            Some(position) => position,
+            None => {
+                let forward = self.next_cluster_byte(byte.min(self.len_bytes()));
+                self.position_at_byte(forward)
+                    .unwrap_or_else(|| self.end())
+            }
+        }
+    }
+
     /// The position at `byte`, snapping if the byte is somehow not addressable.
     ///
     /// For offsets this crate derived itself — a remapped cursor, a restored
