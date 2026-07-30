@@ -244,6 +244,12 @@ impl Text {
         self.rope.byte_to_line(byte)
     }
 
+    /// Byte offset where `row` starts.
+    pub(crate) fn row_start_byte(&self, row: usize) -> usize {
+        self.rope
+            .line_to_byte(row.min(self.line_count().saturating_sub(1)))
+    }
+
     /// The position at `byte`, snapping if the byte is somehow not addressable.
     ///
     /// For offsets this crate derived itself — a remapped cursor, a restored
@@ -328,6 +334,86 @@ impl Text {
         false
     }
 
+    /// Byte offset of the next cluster boundary after `byte`, or the end of the
+    /// text.
+    pub(crate) fn next_cluster_byte(&self, byte: usize) -> usize {
+        self.step_cluster(byte, true)
+    }
+
+    /// Byte offset of the previous cluster boundary before `byte`, or zero.
+    pub(crate) fn prev_cluster_byte(&self, byte: usize) -> usize {
+        self.step_cluster(byte, false)
+    }
+
+    /// The first scalar of the cluster starting at `byte`, or `None` at the end
+    /// of the text.
+    ///
+    /// A cluster's class — blank, word, punctuation — is its first scalar's, which
+    /// is what every editor's word motions use.
+    pub(crate) fn scalar_at(&self, byte: usize) -> Option<char> {
+        if byte >= self.rope.len_bytes() {
+            return None;
+        }
+        Some(self.rope.char(self.rope.byte_to_char(byte)))
+    }
+
+    /// One cluster boundary in either direction.
+    ///
+    /// Runs the segmenter over a window around `byte` rather than the whole row.
+    /// A cluster is a handful of bytes in practice, so the window almost always
+    /// suffices; when the segmenter says it needs more, it says which side, and
+    /// the window grows. Stepping a row's worth of text to move the cursor one
+    /// place would make an arrow key cost the length of its line.
+    fn step_cluster(&self, byte: usize, forward: bool) -> usize {
+        let len = self.rope.len_bytes();
+        let limit = if forward { len } else { 0 };
+        if byte == limit {
+            return limit;
+        }
+        let mut back = WINDOW_BYTES;
+        let mut ahead = WINDOW_BYTES;
+        loop {
+            let low = self.char_boundary_at_or_before(byte.saturating_sub(back));
+            let high = self.char_boundary_at_or_after((byte + ahead).min(len));
+            let window = cow_of(self.rope.byte_slice(low..high));
+            let mut cursor = GraphemeCursor::new(byte, len, true);
+            let step = if forward {
+                cursor.next_boundary(&window, low)
+            } else {
+                cursor.prev_boundary(&window, low)
+            };
+            match step {
+                Ok(Some(at)) => return at,
+                Ok(None) => return limit,
+                Err(GraphemeIncomplete::NextChunk) => ahead *= 4,
+                Err(GraphemeIncomplete::PreContext(_) | GraphemeIncomplete::PrevChunk) => back *= 4,
+                Err(_) => return limit,
+            }
+            if low == 0 && high == len {
+                // The window is the whole text and the segmenter still wants
+                // more, which it cannot get. Refuse to move rather than guess.
+                debug_assert!(false, "grapheme cursor wants context beyond the text");
+                return byte;
+            }
+        }
+    }
+
+    fn char_boundary_at_or_before(&self, byte: usize) -> usize {
+        let mut at = byte.min(self.rope.len_bytes());
+        while !self.is_char_boundary(at) {
+            at -= 1;
+        }
+        at
+    }
+
+    fn char_boundary_at_or_after(&self, byte: usize) -> usize {
+        let mut at = byte.min(self.rope.len_bytes());
+        while !self.is_char_boundary(at) {
+            at += 1;
+        }
+        at
+    }
+
     /// Start of the grapheme cluster containing `byte`, which must be a char
     /// boundary.
     ///
@@ -352,6 +438,11 @@ impl Text {
 
 /// Backstop on [`Text::is_cluster_boundary`]'s context loop.
 const MAX_CONTEXT_REQUESTS: usize = 64;
+
+/// Bytes either side of an offset handed to the segmenter to start with. Wide
+/// enough for any cluster that occurs in prose; grown on demand for ones that do
+/// not.
+const WINDOW_BYTES: usize = 64;
 
 fn cow_of(slice: RopeSlice<'_>) -> Cow<'_, str> {
     match slice.as_str() {

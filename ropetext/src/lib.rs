@@ -27,6 +27,7 @@
 mod buffer;
 mod change;
 mod history;
+pub mod motion;
 mod position;
 mod text;
 
