@@ -27,11 +27,15 @@
 mod buffer;
 mod change;
 mod history;
+mod layout;
 pub mod motion;
 mod position;
 mod text;
+mod width;
 
 pub use buffer::{EditBuffer, Snapshot, Txn};
 pub use change::{Change, Edit};
+pub use layout::{Cell, Layout, RowHints, Viewport, VisualLine};
 pub use position::{Column, Position, Revision, Span};
 pub use text::Text;
+pub use width::Metrics;

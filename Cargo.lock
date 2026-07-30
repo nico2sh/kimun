@@ -4677,10 +4677,12 @@ dependencies = [
 name = "ropetext"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "proptest",
  "ratatui-textarea",
  "ropey",
  "unicode-segmentation",
+ "unicode-width",
 ]
 
 [[package]]

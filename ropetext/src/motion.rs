@@ -19,6 +19,7 @@
 //! act on a range that means something else. `f` with no matching character on the
 //! row is the plain case: deleting to it must delete nothing at all.
 
+use crate::layout::{Cell, Layout, RowHints};
 use crate::position::{Column, Position};
 use crate::text::Text;
 
@@ -334,6 +335,85 @@ pub fn word_end_back(text: &Text, from: Position, words: Words) -> Option<Positi
 fn is_word_end(text: &Text, byte: usize, words: Words) -> bool {
     let behind = class_at(text, text.prev_cluster_byte(byte), words);
     behind != Class::Blank && class_at(text, byte, words) != behind
+}
+
+// -- visual lines ------------------------------------------------------------
+
+/// Where a vertical motion over *drawn* lines aims to land.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VisualGoal {
+    /// Land in this cell, counting the row's gutter, or at the line's end if it
+    /// is shorter.
+    Cell(usize),
+    /// Land at the end of the drawn line.
+    LineEnd,
+}
+
+/// `lines` drawn lines down (or up, when negative), aiming at `goal`.
+///
+/// The motion a cursor key should perform in a wrapped editor: one press moves
+/// one drawn line, not past the whole remainder of a soft-wrapped paragraph.
+/// Expressible only because the same crate owns the cursor and the layout —
+/// splitting those two across a library boundary is what made this unfixable
+/// before.
+pub fn visual_vertical(
+    text: &Text,
+    layout: &Layout,
+    hints: &[RowHints<'_>],
+    from: Position,
+    lines: isize,
+    goal: VisualGoal,
+) -> Position {
+    let last = layout.visual_line_count().saturating_sub(1);
+    let current = layout.visual_row_of(from);
+    let row = if lines >= 0 {
+        current.saturating_add(lines.unsigned_abs()).min(last)
+    } else {
+        current.saturating_sub(lines.unsigned_abs())
+    };
+    let column = match goal {
+        VisualGoal::Cell(column) => column,
+        VisualGoal::LineEnd => usize::MAX,
+    };
+    layout
+        .position_at_cell(text, hints, Cell { row, column })
+        .unwrap_or(from)
+}
+
+/// The start of the drawn line the cursor is on.
+///
+/// What Home should do where rows wrap: the start of what the reader sees as this
+/// line, not of the logical row it belongs to.
+pub fn visual_line_start(
+    text: &Text,
+    layout: &Layout,
+    hints: &[RowHints<'_>],
+    from: Position,
+) -> Position {
+    let row = layout.visual_row_of(from);
+    layout
+        .position_at_cell(text, hints, Cell { row, column: 0 })
+        .unwrap_or(from)
+}
+
+/// The end of the drawn line the cursor is on.
+pub fn visual_line_end(
+    text: &Text,
+    layout: &Layout,
+    hints: &[RowHints<'_>],
+    from: Position,
+) -> Position {
+    let row = layout.visual_row_of(from);
+    layout
+        .position_at_cell(
+            text,
+            hints,
+            Cell {
+                row,
+                column: usize::MAX,
+            },
+        )
+        .unwrap_or(from)
 }
 
 // -- searching within a row --------------------------------------------------
@@ -864,6 +944,139 @@ mod tests {
             word_end_back(&t, at(&t, 0, 5), Words::Big).is_none(),
             "to a WORD, foo.bar is one run, so no word ends behind the cursor"
         );
+    }
+
+    // -- visual lines -------------------------------------------------------
+
+    mod visual {
+        use super::*;
+        use crate::layout::{Layout, RowHints, Viewport};
+        use crate::width::Metrics;
+
+        fn layout(text: &Text, width: usize) -> Layout {
+            Layout::compute(text, width, Metrics::default(), &[])
+        }
+
+        #[test]
+        fn down_moves_one_drawn_line_not_one_row() {
+            // The whole point. "aaaa bbbb cccc" wraps into three drawn lines at
+            // width 5, so pressing down once must stay inside the logical row
+            // instead of skipping the rest of the paragraph.
+            let t = text("aaaa bbbb cccc\nnext");
+            let l = layout(&t, 5);
+            let start = at(&t, 0, 0);
+            let one = visual_vertical(&t, &l, &[], start, 1, VisualGoal::Cell(0));
+            assert_eq!(rc(one), (0, 5), "the second drawn line of the same row");
+            let two = visual_vertical(&t, &l, &[], one, 1, VisualGoal::Cell(0));
+            assert_eq!(rc(two), (0, 10));
+            let three = visual_vertical(&t, &l, &[], two, 1, VisualGoal::Cell(0));
+            assert_eq!(rc(three), (1, 0), "and only now the next row");
+        }
+
+        #[test]
+        fn up_and_down_are_symmetric() {
+            let t = text("aaaa bbbb cccc");
+            let l = layout(&t, 5);
+            let middle = at(&t, 0, 5);
+            assert_eq!(
+                rc(visual_vertical(
+                    &t,
+                    &l,
+                    &[],
+                    middle,
+                    -1,
+                    VisualGoal::Cell(0)
+                )),
+                (0, 0)
+            );
+            assert_eq!(
+                rc(visual_vertical(&t, &l, &[], middle, 1, VisualGoal::Cell(0))),
+                (0, 10)
+            );
+        }
+
+        #[test]
+        fn the_goal_cell_is_kept_across_a_short_drawn_line() {
+            let t = text("aaaaa\nb\nccccc");
+            let l = layout(&t, 10);
+            let start = at(&t, 0, 4);
+            let goal = VisualGoal::Cell(4);
+            let middle = visual_vertical(&t, &l, &[], start, 1, goal);
+            assert_eq!(rc(middle), (1, 1), "clamped to the short row");
+            let bottom = visual_vertical(&t, &l, &[], middle, 1, goal);
+            assert_eq!(rc(bottom), (2, 4), "and back out to the cell still wanted");
+        }
+
+        #[test]
+        fn aiming_at_the_line_end_follows_the_wrap() {
+            let t = text("aaaa bbbb\nxy");
+            let l = layout(&t, 5);
+            let landed = visual_vertical(&t, &l, &[], at(&t, 0, 0), 1, VisualGoal::LineEnd);
+            assert_eq!(rc(landed), (0, 9), "the end of the second drawn line");
+        }
+
+        #[test]
+        fn vertical_movement_saturates_at_the_first_and_last_drawn_line() {
+            let t = text("aaaa bbbb");
+            let l = layout(&t, 5);
+            let goal = VisualGoal::Cell(0);
+            assert_eq!(
+                rc(visual_vertical(&t, &l, &[], at(&t, 0, 0), -9, goal)),
+                (0, 0)
+            );
+            assert_eq!(
+                rc(visual_vertical(&t, &l, &[], at(&t, 0, 0), 9, goal)),
+                (0, 5)
+            );
+        }
+
+        #[test]
+        fn line_bounds_are_the_drawn_line_not_the_row() {
+            let t = text("aaaa bbbb cccc");
+            let l = layout(&t, 5);
+            let inside = at(&t, 0, 7);
+            assert_eq!(rc(visual_line_start(&t, &l, &[], inside)), (0, 5));
+            assert_eq!(rc(visual_line_end(&t, &l, &[], inside)), (0, 9));
+            // The logical row's bounds are elsewhere, and both are wanted: Home in a
+            // wrapped editor means the drawn line, `0` in vim means the row.
+            assert_eq!(rc(row_start(&t, inside)), (0, 0));
+            assert_eq!(rc(row_end(&t, inside)), (0, 14));
+        }
+
+        #[test]
+        fn a_gutter_shifts_the_cells_a_visual_motion_aims_at() {
+            let t = text("abcd\nefgh");
+            let hints = [
+                RowHints {
+                    hidden: &[],
+                    inset: 2,
+                },
+                RowHints {
+                    hidden: &[],
+                    inset: 2,
+                },
+            ];
+            let l = Layout::compute(&t, 10, Metrics::default(), &hints);
+            let landed = visual_vertical(&t, &l, &hints, at(&t, 0, 0), 1, VisualGoal::Cell(3));
+            assert_eq!(
+                rc(landed),
+                (1, 1),
+                "cell 3 is the second character past a two-cell gutter"
+            );
+        }
+
+        #[test]
+        fn a_viewport_can_follow_a_visual_motion() {
+            let t = text("aaaa bbbb cccc dddd");
+            let l = layout(&t, 5);
+            let mut view = Viewport::new(2);
+            let mut position = at(&t, 0, 0);
+            for _ in 0..3 {
+                position = visual_vertical(&t, &l, &[], position, 1, VisualGoal::Cell(0));
+                view.follow(&l, position);
+            }
+            assert_eq!(view.top(), 2, "scrolled by drawn lines, not by rows");
+        }
     }
 
     // -- properties ---------------------------------------------------------
