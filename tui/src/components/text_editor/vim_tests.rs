@@ -625,6 +625,32 @@ fn u_undoes_last_edit() {
 }
 
 #[test]
+fn counted_undo_takes_back_that_many_groups() {
+    // Each `x` is its own undo group, so `3u` walks back three of them. The
+    // count applies to the number of groups, not to anything about their size.
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("abcdef"));
+    for _ in 0..3 {
+        e.handle_key(&key('x'), &mut t);
+    }
+    assert_eq!(t.rows(), &["def"]);
+    e.handle_key(&key('3'), &mut t);
+    e.handle_key(&key('u'), &mut t);
+    assert_eq!(t.rows(), &["abcdef"]);
+}
+
+#[test]
+fn counted_undo_stops_at_the_oldest_group() {
+    // Asking for more than exist is not an error and does not wrap.
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("abcdef"));
+    e.handle_key(&key('x'), &mut t);
+    e.handle_key(&key('9'), &mut t);
+    e.handle_key(&key('u'), &mut t);
+    assert_eq!(t.rows(), &["abcdef"]);
+}
+
+#[test]
 fn tilde_toggles_case() {
     let mut e = VimEngine::default();
     let mut t = RopeBuffer::new(Text::from("abc"));
