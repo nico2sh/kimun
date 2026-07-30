@@ -84,7 +84,7 @@ pub(super) fn cluster_width_at(cluster: &str, col: usize) -> usize {
 ///
 /// Genuinely zero-width clusters (ZWSP, soft hyphen, BOM, a lone combining
 /// mark) measure 0 — matching what the terminal draws. The wrap loop's
-/// forward-progress guard (`word_wrap::wrap_one_row`) handles a zero-width
+/// forward-progress guard in the layout's row wrapping handles a zero-width
 /// start cluster, so no `.max(1)` floor is needed here.
 pub(super) fn cluster_display_width(cluster: &str) -> usize {
     use unicode_width::UnicodeWidthStr;

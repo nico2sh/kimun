@@ -13,7 +13,7 @@ use kimun_notes::components::text_editor::parse_incremental::{
     WidenResult, compute_damage_range, widen_to_safe,
 };
 use kimun_notes::components::text_editor::snapshot::EditorSnapshot;
-use kimun_notes::components::text_editor::word_wrap::WordWrapLayout;
+use ropetext::{Layout, Metrics, RowHints, Text};
 use std::num::NonZeroU64;
 
 fn snap_for<'a>(
@@ -112,7 +112,15 @@ fn bench_wrap_5000_lines(c: &mut Criterion) {
     let rendered: Vec<Vec<bool>> = pb.lines.iter().map(|p| p.content_vis.clone()).collect();
     c.bench_function("wrap_5000_lines", |b| {
         b.iter(|| {
-            let layout = WordWrapLayout::compute(black_box(&lines), 80, &rendered, &[]);
+            let text = Text::from(lines.join("\n").as_str());
+            let hints: Vec<RowHints<'_>> = rendered
+                .iter()
+                .map(|row| RowHints {
+                    visible: row.as_slice(),
+                    inset: 0,
+                })
+                .collect();
+            let layout = Layout::compute(black_box(&text), 80, Metrics::default(), &hints);
             black_box(layout);
         });
     });

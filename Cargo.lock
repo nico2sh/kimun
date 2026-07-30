@@ -2630,6 +2630,7 @@ dependencies = [
  "regex",
  "rmcp",
  "rmpv",
+ "ropetext",
  "self-replace",
  "serde",
  "serde_json",

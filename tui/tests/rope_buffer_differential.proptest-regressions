@@ -1,0 +1,22 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 1b635bb510abe5c1609bce8d9226fb50ae5518a90ca98c066363e29ca9706b9b # shrinks to initial = "a", ops = [DeleteNextWord, Paste]
+cc 4398ec88e48bd79de370757ac96b7fa02140df9f84e39ba732230906a10a8d08 # shrinks to initial = "\n", ops = [DeleteNextWord]
+cc 2cbb2d8d362483afa953e92e06ee80d631b269f9bfcf922638fe53900f343eb9 # shrinks to initial = " ", ops = [DeleteNextChar, Paste]
+cc 7885d9627c7c7b498d0b29ab0dc1d0807505add9ecddd785b8fafa51cbade298 # shrinks to initial = "a ", ops = [DeleteNextChar, Jump(0, 1), DeleteNextWord]
+cc b07d615c6a24d20ad79a53bbed237db807011869b99d0dc43d6ae91beb7717cd # shrinks to initial = "\na", ops = [SelectAll, StartSelection]
+cc a10235d0218c9aa8e9baa4e9068c9fea2e6632e068d59a084509820b66eee3ec # shrinks to initial = "a a\na ", ops = [DeleteStr(3), DeleteNextWord, DeleteNextWord]
+cc 102385cc15e03e60e6ae16a8d3bcb36ef9d2d2ec1ea4e3fa2e7aeb0c3e2ee3b5 # shrinks to initial = "\n ", ops = [Move(WordForward)]
+cc f0a0d8659e07c5f2b4266a1d1250365880adf2884d66d15708a0c61215e67789 # shrinks to initial = "", ops = [StartSelection, Insert("a"), Undo]
+cc c9aacb6da5a6281d69d5707778c310529dbbd181f7dbeecd7b4ef5a7423d447a # shrinks to initial = "", ops = [SelectAll, DeleteChar, Jump(0, 0)]
+cc 792728dfd04f1be2b268769cf73c0e2831ef6432eac9497eeaa8a22957dd8ee7 # shrinks to initial = "\n\n", ops = [DeleteNextChar, Jump(1, 0), DeleteNextChar, DeleteWord]
+cc fe38057e319af3982e01e9c23ad5f02753e59f5a590494e5112111a962afbce3 # shrinks to initial = "", ops = [InsertChar('a'), DeleteWord, DeleteWord, Undo]
+cc 8081ec08c0ae276eb71ca606366e1615b2a51ed1511c94e1d35370c426eb8c42 # shrinks to initial = "\n", ops = [DeleteStr(1), DeleteStr(1), Paste]
+cc 2cdfb816f2d985321fe04564449b8c48f79ff2427ffd49f39b6a89223f7e53ac # shrinks to initial = "", ops = [StartSelection, Cut, Jump(0, 0)]
+cc 5f7cf582cb08325382c21775b6bf650081e954c91ae7557762675cbea09d536c # shrinks to initial = "\naa\n\n\n ", ops = [DeleteNextWord, DeleteNextChar, DeleteWord, DeleteNextChar, Jump(3, 1), Move(Top), Move(Bottom)]
+cc 62ada651e717e97e8001d62f2fd791edbdb191defef69dc168b7f76040b357ab # shrinks to initial = "a", ops = [DeleteStr(2), Paste]
+cc 5cc865e8f39ecec5b710be09ecc28148bb562afc488798a64c7241b899528978 # shrinks to initial = "a  a aa a ", ops = [Jump(0, 5), Move(WordForward), DeleteStr(3), Paste]

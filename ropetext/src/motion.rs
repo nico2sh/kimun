@@ -313,6 +313,31 @@ pub fn word_end_forward(text: &Text, from: Position, words: Words) -> Option<Pos
     Some(position(text, at))
 }
 
+/// Just past the end of the word at or after `from`.
+///
+/// Distinct from [`word_end_forward`] on purpose. That one is vim's `e`, which
+/// refuses the position it starts on — so from the single-character word in
+/// `"a "` it looks *past* it and finds nothing. This one accepts it, which is
+/// what "delete to the end of the word" means: the caller is naming a range that
+/// starts where the cursor is, not asking where `e` would land.
+///
+/// `None` when there is no word at or after `from`.
+pub fn word_end_at_or_after(text: &Text, from: Position, words: Words) -> Option<Position> {
+    let len = text.len_bytes();
+    let mut at = from.byte();
+    while at < len && class_at(text, at, words) == Class::Blank {
+        at = text.next_cluster_byte(at);
+    }
+    if at >= len {
+        return None;
+    }
+    let run = class_at(text, at, words);
+    while at < len && class_at(text, at, words) == run {
+        at = text.next_cluster_byte(at);
+    }
+    Some(position(text, at))
+}
+
 /// Just past the end of the previous word. Vim's `ge` and `gE`.
 ///
 /// `None` when there is no word behind.
@@ -790,6 +815,45 @@ mod tests {
     }
 
     #[test]
+    fn a_word_end_at_or_after_accepts_the_word_the_cursor_is_in() {
+        let t = text("a bb");
+        // `e` looks past the single-character word and finds the next one.
+        assert_eq!(
+            rc(word_end_forward(&t, at(&t, 0, 0), Words::Small).expect("a word ahead")),
+            (0, 4)
+        );
+        // A delete-to-word-end names the word the cursor is in.
+        assert_eq!(
+            rc(word_end_at_or_after(&t, at(&t, 0, 0), Words::Small).expect("a word here")),
+            (0, 1)
+        );
+    }
+
+    #[test]
+    fn a_word_end_at_or_after_skips_leading_blanks() {
+        let t = text("  ab");
+        assert_eq!(
+            rc(word_end_at_or_after(&t, at(&t, 0, 0), Words::Small).expect("a word ahead")),
+            (0, 4)
+        );
+    }
+
+    #[test]
+    fn a_word_end_at_or_after_crosses_rows_to_find_one() {
+        let t = text("\nab");
+        assert_eq!(
+            rc(word_end_at_or_after(&t, at(&t, 0, 0), Words::Small).expect("a word ahead")),
+            (1, 2)
+        );
+    }
+
+    #[test]
+    fn a_word_end_at_or_after_finds_nothing_in_blanks() {
+        let t = text("a   ");
+        assert!(word_end_at_or_after(&t, at(&t, 0, 2), Words::Small).is_none());
+    }
+
+    #[test]
     fn a_backward_word_end_finds_the_previous_word() {
         let t = text("one two");
         assert_eq!(
@@ -1048,11 +1112,11 @@ mod tests {
             let t = text("abcd\nefgh");
             let hints = [
                 RowHints {
-                    hidden: &[],
+                    visible: &[],
                     inset: 2,
                 },
                 RowHints {
-                    hidden: &[],
+                    visible: &[],
                     inset: 2,
                 },
             ];
@@ -1112,6 +1176,7 @@ mod tests {
                 landed.push(word_start_forward(t, from, words));
                 landed.push(word_start_back(t, from, words));
                 landed.extend(word_end_forward(t, from, words));
+                landed.extend(word_end_at_or_after(t, from, words));
                 landed.extend(word_end_back(t, from, words));
             }
             landed.extend(matching_bracket(t, from));
@@ -1161,6 +1226,9 @@ mod tests {
                         prop_assert!(word_start_forward(&t, from, words).byte() >= from.byte());
                         prop_assert!(word_start_back(&t, from, words).byte() <= from.byte());
                         if let Some(end) = word_end_forward(&t, from, words) {
+                            prop_assert!(end.byte() > from.byte());
+                        }
+                        if let Some(end) = word_end_at_or_after(&t, from, words) {
                             prop_assert!(end.byte() > from.byte());
                         }
                         if let Some(end) = word_end_back(&t, from, words) {

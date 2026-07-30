@@ -1,10 +1,9 @@
-//! Built-in vim emulation: a modal input interpreter over a `TextArea`.
-//! Pure over `&mut TextArea` — no component state, no async (adr/0012).
+//! Built-in vim emulation: a modal input interpreter over the **edit buffer**.
+//! Pure over `&mut RopeBuffer` — no component state, no async (adr/0012).
 
-use super::edit_buffer::EditBuffer;
+use super::rope_buffer::{CursorMove, RopeBuffer};
 use super::snapshot::EditorMode;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui_textarea::{CursorMove, TextArea};
 
 /// Screen-level actions the host performs on the engine's behalf (adr/0012).
 ///
@@ -392,7 +391,7 @@ impl VimEngine {
     /// In Visual/VisualLine mode, motions extend the selection; operators
     /// act on the live selection. In Normal mode, motions move the cursor
     /// and the insert-entry keys switch to Insert mode.
-    pub fn handle_key(&mut self, key: &KeyEvent, ta: &mut EditBuffer) -> VimKeyOutcome {
+    pub fn handle_key(&mut self, key: &KeyEvent, ta: &mut RopeBuffer) -> VimKeyOutcome {
         match self.mode {
             EditorMode::Insert => self.handle_insert(key, ta),
             EditorMode::Replace => self.handle_replace(key, ta),
@@ -403,7 +402,7 @@ impl VimEngine {
 
     // ── Visual + Visual-line mode handler ────────────────────────────────────
 
-    fn handle_visual(&mut self, key: &KeyEvent, ta: &mut EditBuffer) -> VimKeyOutcome {
+    fn handle_visual(&mut self, key: &KeyEvent, ta: &mut RopeBuffer) -> VimKeyOutcome {
         // One-key continuations consume the next key first: the find target
         // (`vf,` extends through the ','), and the object key after `i`/`a`
         // (`vi(` re-aims the selection at the object). The g continuation is
@@ -554,7 +553,7 @@ impl VimEngine {
                 let paste_start = super::cursor_tuple(ta);
                 ta.edit(|ta| {
                     ta.insert_str(&text); // insert the SAVED content, not the yank buffer
-                    super::edit_buffer::checked_jump(ta, paste_start.0, paste_start.1);
+                    ta.jump_to(paste_start.0, paste_start.1);
                 });
             }
             self.mode = EditorMode::Normal;
@@ -701,7 +700,7 @@ impl VimEngine {
 
     /// Visual `J` / `gJ`: join all selected lines into one (vim), then
     /// return to Normal mode.
-    fn visual_join(&mut self, spaced: bool, ta: &mut EditBuffer) -> VimKeyOutcome {
+    fn visual_join(&mut self, spaced: bool, ta: &mut RopeBuffer) -> VimKeyOutcome {
         let (start_row, end_row) = if let Some(((sr, _), (er, _))) = ta.selection_range() {
             (sr, er)
         } else {
@@ -722,7 +721,7 @@ impl VimEngine {
     /// Apply `op` to the live visual selection (charwise or linewise) and
     /// leave Visual mode. Shared by the visual operator keys (d/x/c/s/y/u/U)
     /// and `g~`.
-    fn visual_operate(&mut self, op: Operator, ta: &mut EditBuffer) -> VimKeyOutcome {
+    fn visual_operate(&mut self, op: Operator, ta: &mut RopeBuffer) -> VimKeyOutcome {
         if self.mode == EditorMode::VisualLine {
             // VisualLine: operate on whole selected lines, preserving newlines.
             let (start_row, end_row) = if let Some(((sr, _), (er, _))) = ta.selection_range() {
@@ -791,7 +790,7 @@ impl VimEngine {
     /// read leaves the selection intact. Cutting first would destroy the user's
     /// text with nothing to put in its place, and the host's read can fail for
     /// ordinary reasons (empty clipboard, X11 hiccup).
-    fn clipboard_chord_visual(&mut self, c: char, ta: &mut EditBuffer) -> VimKeyOutcome {
+    fn clipboard_chord_visual(&mut self, c: char, ta: &mut RopeBuffer) -> VimKeyOutcome {
         let linewise = self.mode == EditorMode::VisualLine;
         let Some(((sr, sc), (er, ec))) = ta.selection_range() else {
             self.mode = EditorMode::Normal;
@@ -812,7 +811,7 @@ impl VimEngine {
 
         // The range the chord acts on: whole lines for linewise, the
         // vim-inclusive span (the char under the cursor counts) for charwise.
-        let select_content = |ta: &mut EditBuffer| {
+        let select_content = |ta: &mut RopeBuffer| {
             ta.cancel_selection();
             if linewise {
                 let end_len = ta.lines().get(er).map(|l| l.chars().count()).unwrap_or(ec);
@@ -867,7 +866,7 @@ impl VimEngine {
     /// cursor. The selection end is left ON the object's last char (visual
     /// selections are inclusive; the operator's inclusive `+1` restores the
     /// half-open range `object_range` computed).
-    fn select_object_visual(obj: TextObject, ta: &mut EditBuffer) {
+    fn select_object_visual(obj: TextObject, ta: &mut RopeBuffer) {
         let Some((row, start, end)) = Self::object_range_at_cursor(ta, obj) else {
             return;
         };
@@ -884,7 +883,7 @@ impl VimEngine {
 
     // ── Insert + Replace mode handlers ───────────────────────────────────────
 
-    fn handle_insert(&mut self, key: &KeyEvent, ta: &mut EditBuffer) -> VimKeyOutcome {
+    fn handle_insert(&mut self, key: &KeyEvent, ta: &mut RopeBuffer) -> VimKeyOutcome {
         if key.code == KeyCode::Esc {
             return self.exit_to_normal(ta);
         }
@@ -894,7 +893,7 @@ impl VimEngine {
     /// Replace (overwrite) mode — vim `R`. Keys are handled by the engine,
     /// never passed to the host textarea path: R is raw overwrite, with no
     /// auto-surround / smart-Enter underneath.
-    fn handle_replace(&mut self, key: &KeyEvent, ta: &mut EditBuffer) -> VimKeyOutcome {
+    fn handle_replace(&mut self, key: &KeyEvent, ta: &mut RopeBuffer) -> VimKeyOutcome {
         // A live selection (mouse drag) would make the textarea's delete/
         // insert calls wipe it wholesale on the next keypress — drop it.
         if ta.selection_range().is_some() {
@@ -962,7 +961,7 @@ impl VimEngine {
 
     /// Overwrite the char under the cursor (plain insert at EOL — vim R
     /// appends once the line runs out), cursor left after the written char.
-    fn overwrite_char(ta: &mut EditBuffer, ch: char) {
+    fn overwrite_char(ta: &mut RopeBuffer, ch: char) {
         if ch == '\n' {
             ta.insert_newline();
             return;
@@ -977,7 +976,7 @@ impl VimEngine {
 
     /// Esc out of Insert/Replace mode: finalize the dot capture and step the
     /// cursor back (vim).
-    fn exit_to_normal(&mut self, ta: &mut EditBuffer) -> VimKeyOutcome {
+    fn exit_to_normal(&mut self, ta: &mut RopeBuffer) -> VimKeyOutcome {
         self.mode = EditorMode::Normal;
         self.replace_stack.clear();
         // A stray selection (mouse drag mid-Insert/Replace) must not survive
@@ -1003,7 +1002,7 @@ impl VimEngine {
 
     // ── Normal mode: keys → parse → Command → execute/apply (adr/0011) ───────
 
-    fn handle_normal(&mut self, key: &KeyEvent, ta: &mut EditBuffer) -> VimKeyOutcome {
+    fn handle_normal(&mut self, key: &KeyEvent, ta: &mut RopeBuffer) -> VimKeyOutcome {
         match self.parse_normal(key) {
             Parsed::Pending | Parsed::Nothing => VimKeyOutcome::NoOp,
             Parsed::Cancel => {
@@ -1390,7 +1389,7 @@ impl VimEngine {
     /// Run a freshly-parsed command through the one mutation door, recording
     /// it for `.` when it is a repeatable change. Change-family commands
     /// defer recording to Esc (the insert capture owns it).
-    fn execute(&mut self, cmd: Command, ta: &mut EditBuffer) -> VimKeyOutcome {
+    fn execute(&mut self, cmd: Command, ta: &mut RopeBuffer) -> VimKeyOutcome {
         let outcome = self.apply(&cmd, None, ta);
         if outcome != VimKeyOutcome::NoOp && Self::repeatable(&cmd) && self.insert_capture.is_none()
         {
@@ -1471,7 +1470,7 @@ impl VimEngine {
         &mut self,
         cmd: &Command,
         inserted: Option<&str>,
-        ta: &mut EditBuffer,
+        ta: &mut RopeBuffer,
     ) -> VimKeyOutcome {
         match *cmd {
             Command::Move(m, n) => {
@@ -1612,7 +1611,7 @@ impl VimEngine {
     /// Shared tail of every command that ends in Insert mode: on a first
     /// press, enter Insert and start capturing the typed delta; on replay,
     /// insert the captured text directly and stay in Normal.
-    fn finish_insert_entry(&mut self, cmd: &Command, inserted: Option<&str>, ta: &mut EditBuffer) {
+    fn finish_insert_entry(&mut self, cmd: &Command, inserted: Option<&str>, ta: &mut RopeBuffer) {
         match inserted {
             Some(text) => {
                 ta.insert_str(text);
@@ -1627,7 +1626,7 @@ impl VimEngine {
         entry: InsertEntry,
         cmd: &Command,
         inserted: Option<&str>,
-        ta: &mut EditBuffer,
+        ta: &mut RopeBuffer,
     ) -> VimKeyOutcome {
         let opened_line = match entry {
             InsertEntry::Here => false,
@@ -1774,7 +1773,7 @@ impl VimEngine {
 
     /// Where `motion` (× count) would land, as a position value — no net
     /// cursor mutation (the cursor is restored before returning).
-    fn resolve_motion(&self, motion: Motion, count: usize, ta: &mut EditBuffer) -> (usize, usize) {
+    fn resolve_motion(&self, motion: Motion, count: usize, ta: &mut RopeBuffer) -> (usize, usize) {
         let saved = super::cursor_tuple(ta);
         self.apply_motion(motion, count, ta);
         let target = super::cursor_tuple(ta);
@@ -1808,7 +1807,7 @@ impl VimEngine {
     /// The single home of the vim-inclusive → ratatui-half-open `+1`
     /// conversion, clamped to the end line's length.
     fn select_range(
-        ta: &mut EditBuffer,
+        ta: &mut RopeBuffer,
         start: (usize, usize),
         end: (usize, usize),
         inclusive: bool,
@@ -1825,7 +1824,7 @@ impl VimEngine {
         ta.jump_to(er, end_col);
     }
 
-    fn apply_motion(&self, motion: Motion, count: usize, ta: &mut EditBuffer) {
+    fn apply_motion(&self, motion: Motion, count: usize, ta: &mut RopeBuffer) {
         // Count-finds are atomic in vim: `2fx` with one 'x' fails the WHOLE
         // motion (cursor stays put) — never "as far as possible". Handled
         // outside the per-count loop, which can't express that.
@@ -1881,7 +1880,7 @@ impl VimEngine {
         }
     }
 
-    fn first_non_blank(ta: &mut EditBuffer) {
+    fn first_non_blank(ta: &mut RopeBuffer) {
         let (row, _) = super::cursor_tuple(ta);
         if let Some(line) = ta.lines().get(row) {
             let n = line.chars().take_while(|c| c.is_whitespace()).count();
@@ -1890,7 +1889,7 @@ impl VimEngine {
     }
 
     /// `g_` — last non-blank char of the line (no-op on a blank line, vim).
-    fn last_non_blank(ta: &mut EditBuffer) {
+    fn last_non_blank(ta: &mut RopeBuffer) {
         let (row, _) = super::cursor_tuple(ta);
         let idx = ta.lines().get(row).and_then(|line| {
             line.chars()
@@ -2055,7 +2054,7 @@ impl VimEngine {
     /// across lines. Opening bracket → forward with depth counting to the
     /// matching close; closing bracket → backward to the matching open.
     /// No-op when the cursor is not on a bracket or no match exists.
-    fn match_pair(ta: &mut EditBuffer) {
+    fn match_pair(ta: &mut RopeBuffer) {
         let (row, col) = super::cursor_tuple(ta);
         let lines = ta.lines();
         let here = match lines.get(row).and_then(|l| l.chars().nth(col)) {
@@ -2121,7 +2120,7 @@ impl VimEngine {
     /// atomically: fewer than `count` occurrences fails the whole motion and
     /// the cursor does not move (vim). `forward`: search right from col+1;
     /// otherwise left from col-1. `till`: stop one column short (t/T).
-    fn find_char_count(ta: &mut EditBuffer, ch: char, till: bool, forward: bool, count: usize) {
+    fn find_char_count(ta: &mut RopeBuffer, ch: char, till: bool, forward: bool, count: usize) {
         let (row, col) = super::cursor_tuple(ta);
         let Some(line) = ta.lines().get(row).cloned() else {
             return;
@@ -2169,7 +2168,7 @@ impl VimEngine {
         m: Motion,
         count: usize,
         inserted: Option<&str>,
-        ta: &mut EditBuffer,
+        ta: &mut RopeBuffer,
     ) -> bool {
         // Vim `cw`/`cW` semantics: change + word-forward uses word-end (not
         // word-start of the next word), so the trailing space is preserved.
@@ -2248,7 +2247,7 @@ impl VimEngine {
     ///
     /// Shared by `dd`/`cc` and by the OS-clipboard Ctrl-X, which used to select
     /// only the line *bodies* and so left a stray blank line behind every time.
-    fn select_lines_for_delete(ta: &mut EditBuffer, r0: usize, r1: usize) {
+    fn select_lines_for_delete(ta: &mut RopeBuffer, r0: usize, r1: usize) {
         let last = ta.lines().len().saturating_sub(1);
         if r1 < last {
             ta.jump_to(r0, 0);
@@ -2273,7 +2272,7 @@ impl VimEngine {
         op: Operator,
         count: usize,
         inserted: Option<&str>,
-        ta: &mut EditBuffer,
+        ta: &mut RopeBuffer,
     ) {
         let (r0, _) = super::cursor_tuple(ta);
         let last = ta.lines().len().saturating_sub(1);
@@ -2334,12 +2333,12 @@ impl VimEngine {
                 // cut + insert is two history entries; one `edit()` scope makes
                 // them one **undo group**, whatever the count turns out to be.
                 ta.edit(|ta| {
-                    super::edit_buffer::checked_jump(ta, r0, 0);
+                    ta.jump_to(r0, 0);
                     ta.start_selection();
-                    super::edit_buffer::checked_jump(ta, r1, end_len);
+                    ta.jump_to(r1, end_len);
                     ta.cut();
                     ta.insert_str(&transformed);
-                    super::edit_buffer::checked_jump(ta, r0, 0);
+                    ta.jump_to(r0, 0);
                 });
             }
         }
@@ -2349,7 +2348,7 @@ impl VimEngine {
         &mut self,
         op: Operator,
         inserted: Option<&str>,
-        ta: &mut EditBuffer,
+        ta: &mut RopeBuffer,
     ) {
         ta.start_selection();
         ta.move_cursor(CursorMove::End);
@@ -2365,7 +2364,7 @@ impl VimEngine {
     /// Indent (add 4 spaces) or outdent (remove up to 4 leading spaces) the
     /// cursor's line, then repeat for `count` lines total (moving down after
     /// each). Used by `>>`, `<<`, and the visual `>`/`<` operators.
-    fn indent_lines(&self, outdent: bool, count: usize, ta: &mut EditBuffer) {
+    fn indent_lines(&self, outdent: bool, count: usize, ta: &mut RopeBuffer) {
         // One vim command is one undo: this pushes an entry per row, so the
         // whole block goes in a single `edit()` scope (adr/0037).
         ta.edit(|ta| {
@@ -2402,21 +2401,21 @@ impl VimEngine {
             } else {
                 start_col + first_line_delta
             };
-            super::edit_buffer::checked_jump(ta, start_row, col);
+            ta.jump_to(start_row, col);
         });
     }
 
     /// Capture the text the textarea just cut/copied (its yank buffer) into
     /// the engine's unnamed register. The textarea yank buffer is only a
     /// transport here — the engine never reads it back at paste time.
-    fn fill_from_textarea(&mut self, ta: &TextArea<'static>, kind: RegisterKind) {
+    fn fill_from_textarea(&mut self, ta: &RopeBuffer, kind: RegisterKind) {
         self.registers.fill(ta.yank_text(), kind);
     }
 
     /// Charwise operator over the live selection. Change never reaches here —
     /// every Change path captures its own command before cutting (so `.`
     /// replays the right thing); linewise flows use apply_operator_linewise.
-    fn apply_operator_on_selection(&mut self, op: Operator, ta: &mut EditBuffer) {
+    fn apply_operator_on_selection(&mut self, op: Operator, ta: &mut RopeBuffer) {
         match op {
             Operator::Yank => {
                 let start = ta.selection_range().map(|(s, _)| s);
@@ -2516,7 +2515,7 @@ impl VimEngine {
         out
     }
 
-    fn enter_insert_capture(&mut self, command: Command, ta: &TextArea<'static>) {
+    fn enter_insert_capture(&mut self, command: Command, ta: &RopeBuffer) {
         self.mode = EditorMode::Insert;
         self.insert_capture = Some(InsertCapture {
             command,
@@ -2538,7 +2537,7 @@ impl VimEngine {
     // ── Paste p/P ────────────────────────────────────────────────────────────
 
     /// Returns `false` when the register is empty (nothing pasted).
-    fn paste(&mut self, after: bool, count: usize, ta: &mut EditBuffer) -> bool {
+    fn paste(&mut self, after: bool, count: usize, ta: &mut RopeBuffer) -> bool {
         // Borrow, don't clone — the body only mutates `ta`, never `self`,
         // so a large register isn't copied on every p/P.
         let Some(reg) = self.registers.read() else {
@@ -2618,10 +2617,7 @@ impl VimEngine {
     /// Resolve `obj` at the cursor to `(row, start, end)` — half-open cols on
     /// the cursor's row (text objects are single-line for now). Shared by the
     /// operator path (`diw`) and the visual path (`vi(`).
-    fn object_range_at_cursor(
-        ta: &TextArea<'static>,
-        obj: TextObject,
-    ) -> Option<(usize, usize, usize)> {
+    fn object_range_at_cursor(ta: &RopeBuffer, obj: TextObject) -> Option<(usize, usize, usize)> {
         let (row, col) = super::cursor_tuple(ta);
         let line = ta.lines().get(row)?;
         let chars: Vec<char> = line.chars().collect();
@@ -2635,7 +2631,7 @@ impl VimEngine {
         op: Operator,
         obj: TextObject,
         inserted: Option<&str>,
-        ta: &mut EditBuffer,
+        ta: &mut RopeBuffer,
     ) -> bool {
         let Some((row, start, end)) = Self::object_range_at_cursor(ta, obj) else {
             return false;
@@ -2770,7 +2766,7 @@ impl VimEngine {
     /// x/X never join lines — filling the unnamed register with the deleted
     /// text (vim rule: every delete fills the register; `xp` swaps chars).
     /// Returns `false` when nothing was deleted (empty line, X at col 0).
-    fn delete_chars(&mut self, forward: bool, count: usize, ta: &mut EditBuffer) -> bool {
+    fn delete_chars(&mut self, forward: bool, count: usize, ta: &mut RopeBuffer) -> bool {
         let (row, col) = super::cursor_tuple(ta);
         // Borrow, don't clone: all reads of `line` finish before the first
         // mutation, so held-down x on a long line doesn't copy it each press.
@@ -2797,7 +2793,7 @@ impl VimEngine {
     }
 
     /// Replace the char under the cursor with `c`, stay in Normal mode.
-    fn replace_char(&mut self, c: char, ta: &mut EditBuffer) -> VimKeyOutcome {
+    fn replace_char(&mut self, c: char, ta: &mut RopeBuffer) -> VimKeyOutcome {
         if ta.delete_next_char() {
             ta.insert_char(c);
             ta.move_cursor(CursorMove::Back);
@@ -2812,7 +2808,7 @@ impl VimEngine {
     /// parts (none when the current line is empty or already ends in
     /// whitespace), cursor left on the join point. Raw (`gJ`): the newline is
     /// removed verbatim.
-    fn join_line(ta: &mut EditBuffer, spaced: bool) {
+    fn join_line(ta: &mut RopeBuffer, spaced: bool) {
         let (row, _) = super::cursor_tuple(ta);
         let lines = ta.lines();
         if row + 1 >= lines.len() {
@@ -2842,7 +2838,7 @@ impl VimEngine {
     }
 
     /// Toggle the case of the char under the cursor and advance one char.
-    fn toggle_case_at_cursor(ta: &mut EditBuffer) {
+    fn toggle_case_at_cursor(ta: &mut RopeBuffer) {
         let (row, col) = super::cursor_tuple(ta);
         let flipped = ta
             .lines()
@@ -2860,7 +2856,7 @@ impl VimEngine {
 mod tests {
     use super::*;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use ratatui_textarea::TextArea;
+    use ropetext::Text;
 
     fn key(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
@@ -2868,13 +2864,13 @@ mod tests {
     fn esc() -> KeyEvent {
         KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
     }
-    fn ta() -> EditBuffer {
-        EditBuffer::new(TextArea::from(["hello world", "second line"]))
+    fn ta() -> RopeBuffer {
+        RopeBuffer::new(Text::from("hello world\nsecond line"))
     }
 
     // ── Parse-contract tests ─────────────────────────────────────────────────
     //
-    // These exercise the parser directly (`parse_normal`), with no `TextArea`:
+    // These exercise the parser directly (`parse_normal`), with no buffer:
     // they pin the grammar — counts, the operator×motion count multiply, the
     // g-grammar, pending cancel, text objects, find targets — as `Parsed`/
     // `Command` values. The 173 handle_key tests below cover parse+apply
@@ -2911,7 +2907,7 @@ mod tests {
 
     /// Enter charwise Visual over "hello" (cursor lands ON the last 'o', which
     /// vim includes in the selection).
-    fn visual_hello(e: &mut VimEngine, t: &mut EditBuffer) {
+    fn visual_hello(e: &mut VimEngine, t: &mut RopeBuffer) {
         e.handle_key(&key('v'), t);
         for _ in 0..4 {
             e.handle_key(&key('l'), t);
@@ -3211,8 +3207,8 @@ mod tests {
         let mut e = VimEngine::default();
         let mut t = ta();
         e.handle_key(&key('i'), &mut t);
-        t.move_cursor(ratatui_textarea::CursorMove::Forward);
-        t.move_cursor(ratatui_textarea::CursorMove::Forward);
+        t.move_cursor(crate::components::text_editor::rope_buffer::CursorMove::Forward);
+        t.move_cursor(crate::components::text_editor::rope_buffer::CursorMove::Forward);
         let col_before = super::super::cursor_tuple(&t).1;
         let out = e.handle_key(&esc(), &mut t);
         assert_eq!(*e.mode(), EditorMode::Normal);
@@ -3283,7 +3279,7 @@ mod tests {
     #[test]
     fn count_accumulates_then_moves() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["abcdef"]));
+        let mut t = RopeBuffer::new(Text::from("abcdef"));
         e.handle_key(&key('3'), &mut t);
         e.handle_key(&key('l'), &mut t);
         assert_eq!(super::super::cursor_tuple(&t), (0, 3));
@@ -3295,7 +3291,7 @@ mod tests {
     #[test]
     fn zero_without_count_is_line_start() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["abcdef"]));
+        let mut t = RopeBuffer::new(Text::from("abcdef"));
         e.handle_key(&key('l'), &mut t);
         e.handle_key(&key('l'), &mut t);
         e.handle_key(&key('0'), &mut t);
@@ -3308,7 +3304,7 @@ mod tests {
     #[allow(non_snake_case)]
     fn gg_and_G_jump_file_ends() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["one", "two", "three"]));
+        let mut t = RopeBuffer::new(Text::from("one\ntwo\nthree"));
         e.handle_key(&key('G'), &mut t);
         assert_eq!(super::super::cursor_tuple(&t).0, 2);
         e.handle_key(&key('g'), &mut t);
@@ -3319,7 +3315,7 @@ mod tests {
     #[test]
     fn pending_g_cancels_on_unmapped_key() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["one", "two", "three"]));
+        let mut t = RopeBuffer::new(Text::from("one\ntwo\nthree"));
         e.handle_key(&key('G'), &mut t); // go to last line
         assert_eq!(super::super::cursor_tuple(&t).0, 2);
         e.handle_key(&key('g'), &mut t); // start gg
@@ -3335,7 +3331,7 @@ mod tests {
     #[test]
     fn pending_g_cleared_through_insert() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["one", "two", "three"]));
+        let mut t = RopeBuffer::new(Text::from("one\ntwo\nthree"));
         e.handle_key(&key('G'), &mut t);
         e.handle_key(&key('g'), &mut t); // start gg
         e.handle_key(&key('a'), &mut t); // enter insert (should clear pending_g)
@@ -3353,7 +3349,7 @@ mod tests {
     #[test]
     fn dw_deletes_word() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["hello world"]));
+        let mut t = RopeBuffer::new(Text::from("hello world"));
         e.handle_key(&key('d'), &mut t);
         e.handle_key(&key('w'), &mut t);
         assert_eq!(t.lines(), &["world"]);
@@ -3362,7 +3358,7 @@ mod tests {
     #[test]
     fn dd_deletes_line_linewise() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["one", "two", "three"]));
+        let mut t = RopeBuffer::new(Text::from("one\ntwo\nthree"));
         e.handle_key(&key('d'), &mut t);
         e.handle_key(&key('d'), &mut t);
         assert_eq!(t.lines(), &["two", "three"]);
@@ -3374,7 +3370,7 @@ mod tests {
     #[test]
     fn yy_then_p_duplicates_line() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["one", "two"]));
+        let mut t = RopeBuffer::new(Text::from("one\ntwo"));
         e.handle_key(&key('y'), &mut t);
         e.handle_key(&key('y'), &mut t);
         e.handle_key(&key('p'), &mut t);
@@ -3384,7 +3380,7 @@ mod tests {
     #[test]
     fn cw_deletes_word_and_enters_insert() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["hello world"]));
+        let mut t = RopeBuffer::new(Text::from("hello world"));
         e.handle_key(&key('c'), &mut t);
         e.handle_key(&key('w'), &mut t);
         assert_eq!(*e.mode(), EditorMode::Insert);
@@ -3399,7 +3395,7 @@ mod tests {
     #[test]
     fn charwise_p_pastes_after_cursor() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["abc"]));
+        let mut t = RopeBuffer::new(Text::from("abc"));
         // yank the first char with `yl`
         e.handle_key(&key('y'), &mut t);
         e.handle_key(&key('l'), &mut t);
@@ -3410,7 +3406,7 @@ mod tests {
     #[test]
     fn dd_on_last_line_removes_it() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["one", "two", "three"]));
+        let mut t = RopeBuffer::new(Text::from("one\ntwo\nthree"));
         e.handle_key(&key('G'), &mut t); // to last line
         e.handle_key(&key('d'), &mut t);
         e.handle_key(&key('d'), &mut t);
@@ -3420,7 +3416,7 @@ mod tests {
     #[test]
     fn dd_on_only_line_leaves_empty() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["only"]));
+        let mut t = RopeBuffer::new(Text::from("only"));
         e.handle_key(&key('d'), &mut t);
         e.handle_key(&key('d'), &mut t);
         assert_eq!(t.lines(), &[""]);
@@ -3429,7 +3425,7 @@ mod tests {
     #[test]
     fn linewise_2p_inserts_two_copies() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["one", "two"]));
+        let mut t = RopeBuffer::new(Text::from("one\ntwo"));
         e.handle_key(&key('y'), &mut t);
         e.handle_key(&key('y'), &mut t); // yank "one" linewise
         e.handle_key(&key('2'), &mut t);
@@ -3440,7 +3436,7 @@ mod tests {
     #[test]
     fn yy_last_line_then_p_duplicates() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["one", "two"]));
+        let mut t = RopeBuffer::new(Text::from("one\ntwo"));
         e.handle_key(&key('G'), &mut t); // last line "two"
         e.handle_key(&key('y'), &mut t);
         e.handle_key(&key('y'), &mut t);
@@ -3453,7 +3449,7 @@ mod tests {
     #[test]
     fn x_deletes_char_under_cursor() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["abc"]));
+        let mut t = RopeBuffer::new(Text::from("abc"));
         e.handle_key(&key('x'), &mut t);
         assert_eq!(t.lines(), &["bc"]);
     }
@@ -3461,7 +3457,7 @@ mod tests {
     #[test]
     fn r_replaces_char() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["abc"]));
+        let mut t = RopeBuffer::new(Text::from("abc"));
         e.handle_key(&key('r'), &mut t);
         e.handle_key(&key('Z'), &mut t);
         assert_eq!(t.lines(), &["Zbc"]);
@@ -3471,7 +3467,7 @@ mod tests {
     #[test]
     fn u_undoes_last_edit() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["abc"]));
+        let mut t = RopeBuffer::new(Text::from("abc"));
         e.handle_key(&key('x'), &mut t);
         e.handle_key(&key('u'), &mut t);
         assert_eq!(t.lines(), &["abc"]);
@@ -3480,7 +3476,7 @@ mod tests {
     #[test]
     fn tilde_toggles_case() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["abc"]));
+        let mut t = RopeBuffer::new(Text::from("abc"));
         e.handle_key(&key('~'), &mut t);
         assert_eq!(t.lines(), &["Abc"]);
     }
@@ -3490,7 +3486,7 @@ mod tests {
     #[test]
     fn f_moves_to_char() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["hello, world"]));
+        let mut t = RopeBuffer::new(Text::from("hello, world"));
         e.handle_key(&key('f'), &mut t);
         e.handle_key(&key(','), &mut t);
         assert_eq!(super::super::cursor_tuple(&t), (0, 5));
@@ -3499,7 +3495,7 @@ mod tests {
     #[test]
     fn df_deletes_through_char() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["hello, world"]));
+        let mut t = RopeBuffer::new(Text::from("hello, world"));
         e.handle_key(&key('d'), &mut t);
         e.handle_key(&key('f'), &mut t);
         e.handle_key(&key(','), &mut t);
@@ -3509,7 +3505,7 @@ mod tests {
     #[test]
     fn t_stops_before_char() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["hello, world"]));
+        let mut t = RopeBuffer::new(Text::from("hello, world"));
         e.handle_key(&key('t'), &mut t);
         e.handle_key(&key(','), &mut t);
         assert_eq!(super::super::cursor_tuple(&t), (0, 4)); // on 'o', before ','
@@ -3518,7 +3514,7 @@ mod tests {
     #[test]
     fn semicolon_repeats_find() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["a.b.c.d"]));
+        let mut t = RopeBuffer::new(Text::from("a.b.c.d"));
         e.handle_key(&key('f'), &mut t);
         e.handle_key(&key('.'), &mut t);
         assert_eq!(super::super::cursor_tuple(&t).1, 1);
@@ -3531,7 +3527,7 @@ mod tests {
     #[test]
     fn diw_deletes_inner_word() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["foo bar baz"]));
+        let mut t = RopeBuffer::new(Text::from("foo bar baz"));
         // cursor on 'b' of "bar"
         e.handle_key(&key('w'), &mut t);
         e.handle_key(&key('d'), &mut t);
@@ -3543,7 +3539,7 @@ mod tests {
     #[test]
     fn ci_quote_changes_inside_quotes() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["say \"hi\" now"]));
+        let mut t = RopeBuffer::new(Text::from("say \"hi\" now"));
         // move onto the text inside quotes: f then h lands on 'h' (col 5)
         e.handle_key(&key('f'), &mut t);
         e.handle_key(&key('h'), &mut t);
@@ -3557,7 +3553,7 @@ mod tests {
     #[test]
     fn di_paren_deletes_inside_parens() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["foo(bar)baz"]));
+        let mut t = RopeBuffer::new(Text::from("foo(bar)baz"));
         e.handle_key(&key('f'), &mut t);
         e.handle_key(&key('('), &mut t); // cursor on '('
         e.handle_key(&key('d'), &mut t);
@@ -3569,7 +3565,7 @@ mod tests {
     #[test]
     fn daw_deletes_word_and_trailing_space() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["foo bar baz"]));
+        let mut t = RopeBuffer::new(Text::from("foo bar baz"));
         e.handle_key(&key('w'), &mut t); // onto "bar"
         e.handle_key(&key('d'), &mut t);
         e.handle_key(&key('a'), &mut t);
@@ -3582,7 +3578,7 @@ mod tests {
     #[test]
     fn percent_jumps_to_matching_paren() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["foo(bar)baz"]));
+        let mut t = RopeBuffer::new(Text::from("foo(bar)baz"));
         e.handle_key(&key('f'), &mut t);
         e.handle_key(&key('('), &mut t); // cursor on '('
         e.handle_key(&key('%'), &mut t);
@@ -3592,7 +3588,7 @@ mod tests {
     #[test]
     fn percent_jumps_back_from_close() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["foo(bar)baz"]));
+        let mut t = RopeBuffer::new(Text::from("foo(bar)baz"));
         e.handle_key(&key('f'), &mut t);
         e.handle_key(&key(')'), &mut t); // cursor on ')'
         e.handle_key(&key('%'), &mut t);
@@ -3602,7 +3598,7 @@ mod tests {
     #[test]
     fn percent_handles_nested() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["(a(b)c)"]));
+        let mut t = RopeBuffer::new(Text::from("(a(b)c)"));
         // cursor on outer '(' at col 0
         e.handle_key(&key('%'), &mut t);
         assert_eq!(super::super::cursor_tuple(&t), (0, 6)); // matching outer ')'
@@ -3615,7 +3611,7 @@ mod tests {
     #[test]
     fn v_motion_d_deletes_selection() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["hello"]));
+        let mut t = RopeBuffer::new(Text::from("hello"));
         e.handle_key(&key('v'), &mut t); // anchor col 0
         e.handle_key(&key('l'), &mut t); // cursor → col 1
         e.handle_key(&key('l'), &mut t); // cursor → col 2, inclusive covers "hel"
@@ -3628,7 +3624,7 @@ mod tests {
     #[allow(non_snake_case)]
     fn V_then_d_deletes_line() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["one", "two"]));
+        let mut t = RopeBuffer::new(Text::from("one\ntwo"));
         e.handle_key(&key('V'), &mut t);
         e.handle_key(&key('d'), &mut t);
         assert_eq!(t.lines(), &["two"]);
@@ -3640,7 +3636,7 @@ mod tests {
     #[test]
     fn visual_y_yanks_and_returns_to_normal() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["hello"]));
+        let mut t = RopeBuffer::new(Text::from("hello"));
         e.handle_key(&key('v'), &mut t); // anchor col 0
         e.handle_key(&key('l'), &mut t); // cursor col 1, inclusive selection "he"
         e.handle_key(&key('y'), &mut t); // yank "he" (2 chars), mode → Normal
@@ -3656,7 +3652,7 @@ mod tests {
     #[test]
     fn visual_esc_cancels_and_returns_normal() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["hello"]));
+        let mut t = RopeBuffer::new(Text::from("hello"));
         e.handle_key(&key('v'), &mut t);
         e.handle_key(&key('l'), &mut t);
         assert_eq!(*e.mode(), EditorMode::Visual);
@@ -3669,7 +3665,7 @@ mod tests {
     #[test]
     fn visual_c_enters_insert_after_delete() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["hello"]));
+        let mut t = RopeBuffer::new(Text::from("hello"));
         e.handle_key(&key('v'), &mut t); // anchor col 0
         e.handle_key(&key('l'), &mut t); // cursor col 1, inclusive covers "he"
         e.handle_key(&key('c'), &mut t); // delete "he" (inclusive), enter Insert
@@ -3682,7 +3678,7 @@ mod tests {
     #[test]
     fn indent_line_adds_spaces() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["x"]));
+        let mut t = RopeBuffer::new(Text::from("x"));
         e.handle_key(&key('>'), &mut t);
         e.handle_key(&key('>'), &mut t);
         assert_eq!(t.lines(), &["    x"]);
@@ -3694,7 +3690,7 @@ mod tests {
         // the cursor must stay over the char it sat on, shifted with the
         // indent (neovim behavior).
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["one", "two", "three"]));
+        let mut t = RopeBuffer::new(Text::from("one\ntwo\nthree"));
         e.handle_key(&key('l'), &mut t); // onto 'n' (col 1)
         e.handle_key(&key('>'), &mut t);
         e.handle_key(&key('>'), &mut t);
@@ -3709,7 +3705,7 @@ mod tests {
     #[test]
     fn outdent_keeps_cursor_over_same_char() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["    x"]));
+        let mut t = RopeBuffer::new(Text::from("    x"));
         e.handle_key(&key('f'), &mut t);
         e.handle_key(&key('x'), &mut t); // ON 'x' (col 4)
         e.handle_key(&key('<'), &mut t);
@@ -3721,7 +3717,7 @@ mod tests {
     #[test]
     fn outdent_removes_spaces() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["        x"])); // 8 spaces
+        let mut t = RopeBuffer::new(Text::from("        x")); // 8 spaces
         e.handle_key(&key('<'), &mut t);
         e.handle_key(&key('<'), &mut t);
         assert_eq!(t.lines(), &["    x"]); // removed 4
@@ -3730,7 +3726,7 @@ mod tests {
     #[test]
     fn pending_hint_shows_operator_and_count() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["abc"]));
+        let mut t = RopeBuffer::new(Text::from("abc"));
         e.handle_key(&key('2'), &mut t);
         e.handle_key(&key('d'), &mut t);
         assert_eq!(e.pending_hint().as_deref(), Some("2d"));
@@ -3741,7 +3737,7 @@ mod tests {
     #[test]
     fn dot_repeats_x() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["abcdef"]));
+        let mut t = RopeBuffer::new(Text::from("abcdef"));
         e.handle_key(&key('x'), &mut t);
         e.handle_key(&key('.'), &mut t);
         assert_eq!(t.lines(), &["cdef"]);
@@ -3750,7 +3746,7 @@ mod tests {
     #[test]
     fn dot_repeats_dw() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["one two three four"]));
+        let mut t = RopeBuffer::new(Text::from("one two three four"));
         e.handle_key(&key('d'), &mut t);
         e.handle_key(&key('w'), &mut t); // delete "one "
         e.handle_key(&key('.'), &mut t); // delete "two "
@@ -3760,7 +3756,7 @@ mod tests {
     #[test]
     fn dot_repeats_change_with_typed_text() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["foo bar"]));
+        let mut t = RopeBuffer::new(Text::from("foo bar"));
         // cw -> type "X" -> Esc, then move to next word and dot
         e.handle_key(&key('c'), &mut t);
         e.handle_key(&key('w'), &mut t); // cw: deletes "foo" (cw=ce keeps trailing space), enters Insert at col 0
@@ -3775,7 +3771,7 @@ mod tests {
     #[test]
     fn dot_repeats_multiline_change() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["foo bar"]));
+        let mut t = RopeBuffer::new(Text::from("foo bar"));
         e.handle_key(&key('c'), &mut t);
         e.handle_key(&key('w'), &mut t); // cw on "foo" → Insert at col 0
         t.insert_str("a");
@@ -3804,7 +3800,7 @@ mod tests {
     #[test]
     fn space_leads_only_in_clean_normal() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["x"]));
+        let mut t = RopeBuffer::new(Text::from("x"));
         assert!(e.space_leads());
         e.handle_key(&key('d'), &mut t); // operator pending
         assert!(!e.space_leads());
@@ -3819,7 +3815,7 @@ mod tests {
     #[test]
     fn colon_emits_open_palette() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["x"]));
+        let mut t = RopeBuffer::new(Text::from("x"));
         assert_eq!(
             e.handle_key(&key(':'), &mut t),
             VimKeyOutcome::Host(VimHostAction::OpenPalette)
@@ -3829,7 +3825,7 @@ mod tests {
     #[test]
     fn slash_emits_open_search_forward() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["x"]));
+        let mut t = RopeBuffer::new(Text::from("x"));
         assert_eq!(
             e.handle_key(&key('/'), &mut t),
             VimKeyOutcome::Host(VimHostAction::OpenSearch { forward: true })
@@ -3840,7 +3836,7 @@ mod tests {
     #[allow(non_snake_case)]
     fn n_and_N_emit_search_nav() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["x"]));
+        let mut t = RopeBuffer::new(Text::from("x"));
         assert_eq!(
             e.handle_key(&key('n'), &mut t),
             VimKeyOutcome::Host(VimHostAction::SearchNext)
@@ -3872,7 +3868,7 @@ mod tests {
     #[test]
     fn mouse_does_not_disturb_insert() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["x"]));
+        let mut t = RopeBuffer::new(Text::from("x"));
         e.handle_key(&key('i'), &mut t); // Insert
         e.sync_mouse_selection(true);
         assert_eq!(*e.mode(), EditorMode::Insert); // mouse doesn't yank Insert into Visual
@@ -3883,7 +3879,7 @@ mod tests {
     #[test]
     fn di_paren_on_empty_line_does_not_panic() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from([""])); // empty line
+        let mut t = RopeBuffer::new(Text::from("")); // empty line
         e.handle_key(&key('d'), &mut t);
         e.handle_key(&key('i'), &mut t);
         e.handle_key(&key('('), &mut t); // must not panic; no-op
@@ -3893,7 +3889,7 @@ mod tests {
     #[test]
     fn esc_clears_pending_g_in_normal() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["one", "two", "three"]));
+        let mut t = RopeBuffer::new(Text::from("one\ntwo\nthree"));
         e.handle_key(&key('G'), &mut t); // last line
         assert_eq!(super::super::cursor_tuple(&t).0, 2);
         e.handle_key(&key('g'), &mut t); // start gg
@@ -3909,7 +3905,7 @@ mod tests {
     #[test]
     fn esc_clears_pending_operator_object_in_normal() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["foo bar baz"]));
+        let mut t = RopeBuffer::new(Text::from("foo bar baz"));
         e.handle_key(&key('d'), &mut t); // operator pending
         e.handle_key(&key('i'), &mut t); // object kind pending (NOT insert — operator pending)
         e.handle_key(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &mut t); // cancel
@@ -3930,7 +3926,7 @@ mod tests {
     #[test]
     fn di_paren_nested_selects_inner_of_outer() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["((x))"]));
+        let mut t = RopeBuffer::new(Text::from("((x))"));
         // cursor at col 0 (outer '(')
         e.handle_key(&key('d'), &mut t);
         e.handle_key(&key('i'), &mut t);
@@ -3941,7 +3937,7 @@ mod tests {
     #[test]
     fn di_paren_from_inside_nested() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["((x))"]));
+        let mut t = RopeBuffer::new(Text::from("((x))"));
         e.handle_key(&key('l'), &mut t); // col1 (inner '(')
         e.handle_key(&key('l'), &mut t); // col2 ('x')
         e.handle_key(&key('d'), &mut t);
@@ -3955,7 +3951,7 @@ mod tests {
     #[test]
     fn di_quote_in_gap_is_noop() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["\"foo\" \"bar\""]));
+        let mut t = RopeBuffer::new(Text::from("\"foo\" \"bar\""));
         // move cursor to the space (col 5) between the two strings
         for _ in 0..5 {
             e.handle_key(&key('l'), &mut t);
@@ -3970,7 +3966,7 @@ mod tests {
     #[test]
     fn di_quote_inside_still_works() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["\"foo\" \"bar\""]));
+        let mut t = RopeBuffer::new(Text::from("\"foo\" \"bar\""));
         for _ in 0..7 {
             e.handle_key(&key('l'), &mut t);
         } // inside "bar"
@@ -3985,7 +3981,7 @@ mod tests {
     #[test]
     fn df_last_char_does_not_join_next_line() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["abc", "xyz"]));
+        let mut t = RopeBuffer::new(Text::from("abc\nxyz"));
         // cursor at (0,0); df c  → delete through the 'c' (last char of line 0)
         e.handle_key(&key('d'), &mut t);
         e.handle_key(&key('f'), &mut t);
@@ -3998,7 +3994,7 @@ mod tests {
     #[test]
     fn cc_single_line_leaves_one_empty_line() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["hello"]));
+        let mut t = RopeBuffer::new(Text::from("hello"));
         e.handle_key(&key('c'), &mut t);
         e.handle_key(&key('c'), &mut t);
         assert_eq!(t.lines(), &[""]);
@@ -4008,7 +4004,7 @@ mod tests {
     #[test]
     fn cc_middle_line_still_works() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["one", "two", "three"]));
+        let mut t = RopeBuffer::new(Text::from("one\ntwo\nthree"));
         e.handle_key(&key('j'), &mut t); // line "two"
         e.handle_key(&key('c'), &mut t);
         e.handle_key(&key('c'), &mut t);
@@ -4021,7 +4017,7 @@ mod tests {
     #[test]
     fn r_on_empty_line_is_noop() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from([""]));
+        let mut t = RopeBuffer::new(Text::from(""));
         e.handle_key(&key('r'), &mut t);
         let out = e.handle_key(&key('Z'), &mut t);
         assert_eq!(out, VimKeyOutcome::NoOp);
@@ -4033,7 +4029,7 @@ mod tests {
     #[test]
     fn visual_v_then_d_deletes_char_under_cursor() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["abc"]));
+        let mut t = RopeBuffer::new(Text::from("abc"));
         e.handle_key(&key('v'), &mut t); // select just 'a' (cursor col0)
         e.handle_key(&key('d'), &mut t);
         assert_eq!(t.lines(), &["bc"]); // 'a' deleted (inclusive of cursor char)
@@ -4042,7 +4038,7 @@ mod tests {
     #[test]
     fn visual_e_then_d_inclusive() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["hello world"]));
+        let mut t = RopeBuffer::new(Text::from("hello world"));
         e.handle_key(&key('v'), &mut t);
         e.handle_key(&key('e'), &mut t); // cursor on 'o' col4
         e.handle_key(&key('d'), &mut t);
@@ -4054,7 +4050,7 @@ mod tests {
     #[test]
     fn e_lands_on_last_word_char() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["hello world"]));
+        let mut t = RopeBuffer::new(Text::from("hello world"));
         e.handle_key(&key('e'), &mut t);
         assert_eq!(super::super::cursor_tuple(&t), (0, 4)); // 'o', last char of "hello"
     }
@@ -4062,7 +4058,7 @@ mod tests {
     #[test]
     fn e_twice_reaches_second_word_end() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["hello world"]));
+        let mut t = RopeBuffer::new(Text::from("hello world"));
         e.handle_key(&key('e'), &mut t);
         e.handle_key(&key('e'), &mut t);
         assert_eq!(super::super::cursor_tuple(&t), (0, 10)); // 'd', last char of "world"
@@ -4071,7 +4067,7 @@ mod tests {
     #[test]
     fn de_deletes_to_word_end_inclusive() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["hello world"]));
+        let mut t = RopeBuffer::new(Text::from("hello world"));
         e.handle_key(&key('d'), &mut t);
         e.handle_key(&key('e'), &mut t);
         assert_eq!(t.lines(), &[" world"]); // deletes "hello" inclusive of 'o'
@@ -4082,7 +4078,7 @@ mod tests {
     #[test]
     fn visual_y_leaves_cursor_at_selection_start() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["foo bar", "baz"]));
+        let mut t = RopeBuffer::new(Text::from("foo bar\nbaz"));
         for _ in 0..4 {
             e.handle_key(&key('l'), &mut t);
         } // onto 'b' of "bar" (col 4)
@@ -4096,7 +4092,7 @@ mod tests {
     fn charwise_p_after_eol_word_does_not_touch_next_line() {
         // reproduce the user's bug: yank an end-of-line word, paste, must NOT hit the line below
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["foo bar", "baz"]));
+        let mut t = RopeBuffer::new(Text::from("foo bar\nbaz"));
         for _ in 0..4 {
             e.handle_key(&key('l'), &mut t);
         } // 'b' of "bar"
@@ -4112,7 +4108,7 @@ mod tests {
     #[test]
     fn charwise_p_at_line_end_appends_same_line() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["ab", "cd"]));
+        let mut t = RopeBuffer::new(Text::from("ab\ncd"));
         // yank "ab" charwise via v e y
         e.handle_key(&key('v'), &mut t);
         e.handle_key(&key('e'), &mut t); // select "ab"
@@ -4128,7 +4124,7 @@ mod tests {
     #[test]
     fn visual_p_replaces_charwise_selection() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["foo bar"]));
+        let mut t = RopeBuffer::new(Text::from("foo bar"));
         // yank "foo" (v e y at col 0) → register = "foo", cursor back to col 0
         e.handle_key(&key('v'), &mut t);
         e.handle_key(&key('e'), &mut t);
@@ -4148,7 +4144,7 @@ mod tests {
     #[test]
     fn visual_p_yanks_replaced_selection() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["foo bar"]));
+        let mut t = RopeBuffer::new(Text::from("foo bar"));
         // yank "foo"
         e.handle_key(&key('v'), &mut t);
         e.handle_key(&key('e'), &mut t);
@@ -4172,7 +4168,7 @@ mod tests {
     #[test]
     fn g_underscore_jumps_to_last_non_blank() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["hi there   "]));
+        let mut t = RopeBuffer::new(Text::from("hi there   "));
         e.handle_key(&key('g'), &mut t);
         e.handle_key(&key('_'), &mut t);
         assert_eq!(super::super::cursor_tuple(&t), (0, 7)); // the final 'e'
@@ -4181,7 +4177,7 @@ mod tests {
     #[test]
     fn d_g_underscore_deletes_through_last_non_blank() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["foo bar  "]));
+        let mut t = RopeBuffer::new(Text::from("foo bar  "));
         e.handle_key(&key('d'), &mut t);
         e.handle_key(&key('g'), &mut t);
         e.handle_key(&key('_'), &mut t);
@@ -4192,7 +4188,7 @@ mod tests {
     #[allow(non_snake_case)]
     fn count_G_and_count_gg_go_to_line() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["1", "2", "3", "4", "5", "6"]));
+        let mut t = RopeBuffer::new(Text::from("1\n2\n3\n4\n5\n6"));
         e.handle_key(&key('5'), &mut t);
         e.handle_key(&key('G'), &mut t);
         assert_eq!(super::super::cursor_tuple(&t).0, 4); // line 5
@@ -4206,7 +4202,7 @@ mod tests {
     #[allow(non_snake_case)]
     fn d_count_G_deletes_lines_through_target() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["one", "two", "three"]));
+        let mut t = RopeBuffer::new(Text::from("one\ntwo\nthree"));
         e.handle_key(&key('d'), &mut t);
         e.handle_key(&key('2'), &mut t);
         e.handle_key(&key('G'), &mut t); // delete lines 1..=2 (linewise)
@@ -4216,7 +4212,7 @@ mod tests {
     #[test]
     fn ge_jumps_to_previous_word_end() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["foo bar"]));
+        let mut t = RopeBuffer::new(Text::from("foo bar"));
         e.handle_key(&key('$'), &mut t); // on 'r' (col 6)
         e.handle_key(&key('g'), &mut t);
         e.handle_key(&key('e'), &mut t);
@@ -4226,7 +4222,7 @@ mod tests {
     #[test]
     fn ge_stops_at_class_change() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["foo.bar"]));
+        let mut t = RopeBuffer::new(Text::from("foo.bar"));
         e.handle_key(&key('$'), &mut t); // 'r' (col 6)
         e.handle_key(&key('g'), &mut t);
         e.handle_key(&key('e'), &mut t);
@@ -4237,7 +4233,7 @@ mod tests {
     #[allow(non_snake_case)]
     fn gE_ignores_punctuation_boundaries() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["aa bb.cc dd"]));
+        let mut t = RopeBuffer::new(Text::from("aa bb.cc dd"));
         e.handle_key(&key('$'), &mut t); // last 'd' (col 10)
         e.handle_key(&key('g'), &mut t);
         e.handle_key(&key('E'), &mut t);
@@ -4247,7 +4243,7 @@ mod tests {
     #[test]
     fn ge_at_buffer_start_is_noop() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["foo"]));
+        let mut t = RopeBuffer::new(Text::from("foo"));
         e.handle_key(&key('g'), &mut t);
         e.handle_key(&key('e'), &mut t);
         assert_eq!(super::super::cursor_tuple(&t), (0, 0));
@@ -4257,7 +4253,7 @@ mod tests {
     fn dge_deletes_backward_inclusive_of_cursor() {
         // vim: dge eats from the previous word end through the cursor char
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["abc def"]));
+        let mut t = RopeBuffer::new(Text::from("abc def"));
         e.handle_key(&key('$'), &mut t); // on 'f'
         e.handle_key(&key('d'), &mut t);
         e.handle_key(&key('g'), &mut t);
@@ -4269,7 +4265,7 @@ mod tests {
     #[allow(non_snake_case)]
     fn W_treats_punctuated_run_as_one_word() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["foo.bar baz"]));
+        let mut t = RopeBuffer::new(Text::from("foo.bar baz"));
         e.handle_key(&key('W'), &mut t);
         assert_eq!(super::super::cursor_tuple(&t), (0, 8)); // 'b' of baz
     }
@@ -4278,7 +4274,7 @@ mod tests {
     #[allow(non_snake_case)]
     fn E_jumps_to_end_of_WORD() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["foo.bar baz"]));
+        let mut t = RopeBuffer::new(Text::from("foo.bar baz"));
         e.handle_key(&key('E'), &mut t);
         assert_eq!(super::super::cursor_tuple(&t), (0, 6)); // 'r' of foo.bar
     }
@@ -4287,7 +4283,7 @@ mod tests {
     #[allow(non_snake_case)]
     fn B_jumps_to_WORD_start() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["foo.bar baz"]));
+        let mut t = RopeBuffer::new(Text::from("foo.bar baz"));
         e.handle_key(&key('W'), &mut t); // col 8
         e.handle_key(&key('B'), &mut t);
         assert_eq!(super::super::cursor_tuple(&t), (0, 0));
@@ -4297,7 +4293,7 @@ mod tests {
     #[allow(non_snake_case)]
     fn W_crosses_lines_and_stops_at_empty_line() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["foo", "", "bar"]));
+        let mut t = RopeBuffer::new(Text::from("foo\n\nbar"));
         e.handle_key(&key('W'), &mut t);
         assert_eq!(super::super::cursor_tuple(&t), (1, 0)); // empty line is a stop
         e.handle_key(&key('W'), &mut t);
@@ -4308,7 +4304,7 @@ mod tests {
     #[allow(non_snake_case)]
     fn dW_deletes_whole_WORD() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["foo.bar baz"]));
+        let mut t = RopeBuffer::new(Text::from("foo.bar baz"));
         e.handle_key(&key('d'), &mut t);
         e.handle_key(&key('W'), &mut t);
         assert_eq!(t.lines(), &["baz"]);
@@ -4318,7 +4314,7 @@ mod tests {
     #[allow(non_snake_case)]
     fn cW_acts_like_cE() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["foo.bar baz"]));
+        let mut t = RopeBuffer::new(Text::from("foo.bar baz"));
         e.handle_key(&key('c'), &mut t);
         e.handle_key(&key('W'), &mut t);
         assert_eq!(*e.mode(), EditorMode::Insert);
@@ -4331,7 +4327,7 @@ mod tests {
     fn hint_shows_object_scope_mid_sequence() {
         // regression: `diw` in flight showed "d" instead of "di"
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["foo bar"]));
+        let mut t = RopeBuffer::new(Text::from("foo bar"));
         e.handle_key(&key('d'), &mut t);
         e.handle_key(&key('i'), &mut t);
         assert_eq!(e.pending_hint().as_deref(), Some("di"));
@@ -4340,7 +4336,7 @@ mod tests {
     #[test]
     fn hint_shows_actual_find_key() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["foo"]));
+        let mut t = RopeBuffer::new(Text::from("foo"));
         e.handle_key(&key('T'), &mut t);
         assert_eq!(e.pending_hint().as_deref(), Some("T")); // was always 'f'
     }
@@ -4348,7 +4344,7 @@ mod tests {
     #[test]
     fn replace_backspace_restores_overwritten_char() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["abc"]));
+        let mut t = RopeBuffer::new(Text::from("abc"));
         e.handle_key(&key('R'), &mut t);
         e.handle_key(&key('X'), &mut t); // 'a' → X
         e.handle_key(&key('Y'), &mut t); // 'b' → Y
@@ -4363,7 +4359,7 @@ mod tests {
     #[test]
     fn replace_backspace_removes_appended_char() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["a"]));
+        let mut t = RopeBuffer::new(Text::from("a"));
         e.handle_key(&key('R'), &mut t);
         e.handle_key(&key('X'), &mut t); // 'a' → X
         e.handle_key(&key('Y'), &mut t); // appended past EOL
@@ -4418,7 +4414,7 @@ mod tests {
     fn visual_counted_motion_extends_by_count() {
         // regression: the 5G translation consumed the count for EVERY motion
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["abcdef"]));
+        let mut t = RopeBuffer::new(Text::from("abcdef"));
         e.handle_key(&key('v'), &mut t);
         e.handle_key(&key('3'), &mut t);
         e.handle_key(&key('l'), &mut t); // cursor → col 3, inclusive covers "abcd"
@@ -4431,7 +4427,7 @@ mod tests {
     fn gUu_aborts_without_running_undo() {
         // vim: a mismatched key after a pending operator cancels everything
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["ab"]));
+        let mut t = RopeBuffer::new(Text::from("ab"));
         e.handle_key(&key('x'), &mut t); // real change → "b"
         e.handle_key(&key('g'), &mut t);
         e.handle_key(&key('U'), &mut t); // Uppercase pending
@@ -4442,7 +4438,7 @@ mod tests {
     #[test]
     fn dx_and_dp_abort_with_operator_pending() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["abc"]));
+        let mut t = RopeBuffer::new(Text::from("abc"));
         e.handle_key(&key('y'), &mut t);
         e.handle_key(&key('l'), &mut t); // register = "a"
         e.handle_key(&key('d'), &mut t);
@@ -4456,7 +4452,7 @@ mod tests {
     #[test]
     fn dge_at_buffer_start_is_noop() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["foo"]));
+        let mut t = RopeBuffer::new(Text::from("foo"));
         e.handle_key(&key('d'), &mut t);
         e.handle_key(&key('g'), &mut t);
         e.handle_key(&key('e'), &mut t); // motion fails → whole op no-op
@@ -4466,7 +4462,7 @@ mod tests {
     #[test]
     fn gugu_doubled_g_form_runs_linewise() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["ABC def"]));
+        let mut t = RopeBuffer::new(Text::from("ABC def"));
         for c in "gugu".chars() {
             e.handle_key(&key(c), &mut t);
         }
@@ -4477,7 +4473,7 @@ mod tests {
     #[allow(non_snake_case)]
     fn visual_J_joins_selected_lines_with_space() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["a", "b", "c"]));
+        let mut t = RopeBuffer::new(Text::from("a\nb\nc"));
         e.handle_key(&key('V'), &mut t);
         e.handle_key(&key('j'), &mut t);
         e.handle_key(&key('j'), &mut t); // select all three
@@ -4490,7 +4486,7 @@ mod tests {
     #[allow(non_snake_case)]
     fn visual_gJ_joins_selected_lines_raw() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["a", "  b"]));
+        let mut t = RopeBuffer::new(Text::from("a\n  b"));
         e.handle_key(&key('V'), &mut t);
         e.handle_key(&key('j'), &mut t);
         e.handle_key(&key('g'), &mut t);
@@ -4502,7 +4498,7 @@ mod tests {
     #[allow(non_snake_case)]
     fn replace_mode_arrows_move_cursor() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["abcd"]));
+        let mut t = RopeBuffer::new(Text::from("abcd"));
         e.handle_key(&key('R'), &mut t);
         e.handle_key(&KeyEvent::new(KeyCode::Right, KeyModifiers::NONE), &mut t);
         e.handle_key(&KeyEvent::new(KeyCode::Right, KeyModifiers::NONE), &mut t);
@@ -4518,11 +4514,11 @@ mod tests {
     #[test]
     fn esc_from_insert_clears_stray_selection() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["hello"]));
+        let mut t = RopeBuffer::new(Text::from("hello"));
         e.handle_key(&key('i'), &mut t);
         // simulate a mouse drag mid-insert leaving a live selection
         t.start_selection();
-        t.move_cursor(ratatui_textarea::CursorMove::Forward);
+        t.move_cursor(crate::components::text_editor::rope_buffer::CursorMove::Forward);
         e.handle_key(&esc(), &mut t);
         assert!(
             t.selection_range().is_none(),
@@ -4534,7 +4530,7 @@ mod tests {
     #[test]
     fn guu_undoes_in_one_step() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["Mixed Case Line"]));
+        let mut t = RopeBuffer::new(Text::from("Mixed Case Line"));
         for c in "guu".chars() {
             e.handle_key(&key(c), &mut t);
         }
@@ -4549,7 +4545,7 @@ mod tests {
     #[test]
     fn visual_g_tilde_toggles_case_of_selection() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["FooBar"]));
+        let mut t = RopeBuffer::new(Text::from("FooBar"));
         e.handle_key(&key('v'), &mut t);
         e.handle_key(&key('e'), &mut t); // select all of "FooBar"
         e.handle_key(&key('g'), &mut t);
@@ -4561,7 +4557,7 @@ mod tests {
     #[test]
     fn visual_bare_tilde_still_passes_through_for_surround() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["FooBar"]));
+        let mut t = RopeBuffer::new(Text::from("FooBar"));
         e.handle_key(&key('v'), &mut t);
         e.handle_key(&key('e'), &mut t);
         let out = e.handle_key(&key('~'), &mut t);
@@ -4574,7 +4570,7 @@ mod tests {
     #[test]
     fn guw_lowercases_word() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["HELLO world"]));
+        let mut t = RopeBuffer::new(Text::from("HELLO world"));
         e.handle_key(&key('g'), &mut t);
         e.handle_key(&key('u'), &mut t);
         e.handle_key(&key('w'), &mut t);
@@ -4586,7 +4582,7 @@ mod tests {
     #[allow(non_snake_case)]
     fn gU_iw_uppercases_inner_word() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["foo bar baz"]));
+        let mut t = RopeBuffer::new(Text::from("foo bar baz"));
         e.handle_key(&key('w'), &mut t); // onto "bar"
         e.handle_key(&key('g'), &mut t);
         e.handle_key(&key('U'), &mut t);
@@ -4598,7 +4594,7 @@ mod tests {
     #[test]
     fn g_tilde_toggles_case_to_word_end() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["FooBar baz"]));
+        let mut t = RopeBuffer::new(Text::from("FooBar baz"));
         e.handle_key(&key('g'), &mut t);
         e.handle_key(&key('~'), &mut t);
         e.handle_key(&key('e'), &mut t); // inclusive to end of "FooBar"
@@ -4608,7 +4604,7 @@ mod tests {
     #[test]
     fn guu_lowercases_whole_line() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["HELLO World", "NEXT"]));
+        let mut t = RopeBuffer::new(Text::from("HELLO World\nNEXT"));
         e.handle_key(&key('g'), &mut t);
         e.handle_key(&key('u'), &mut t);
         e.handle_key(&key('u'), &mut t);
@@ -4619,7 +4615,7 @@ mod tests {
     #[allow(non_snake_case)]
     fn visual_U_uppercases_selection() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["hello"]));
+        let mut t = RopeBuffer::new(Text::from("hello"));
         e.handle_key(&key('v'), &mut t);
         e.handle_key(&key('l'), &mut t);
         e.handle_key(&key('l'), &mut t); // select "hel"
@@ -4631,7 +4627,7 @@ mod tests {
     #[test]
     fn case_op_does_not_touch_register() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["keep CHANGE"]));
+        let mut t = RopeBuffer::new(Text::from("keep CHANGE"));
         e.handle_key(&key('y'), &mut t);
         e.handle_key(&key('e'), &mut t); // register = "keep"
         e.handle_key(&key('w'), &mut t); // onto "CHANGE"
@@ -4645,7 +4641,7 @@ mod tests {
     #[allow(non_snake_case)]
     fn dot_repeats_gU_word() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["one two"]));
+        let mut t = RopeBuffer::new(Text::from("one two"));
         e.handle_key(&key('g'), &mut t);
         e.handle_key(&key('U'), &mut t);
         e.handle_key(&key('e'), &mut t); // ONE
@@ -4660,7 +4656,7 @@ mod tests {
     #[allow(non_snake_case)]
     fn R_overwrites_chars() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["abcdef"]));
+        let mut t = RopeBuffer::new(Text::from("abcdef"));
         e.handle_key(&key('R'), &mut t);
         assert_eq!(*e.mode(), EditorMode::Replace);
         e.handle_key(&key('X'), &mut t);
@@ -4675,7 +4671,7 @@ mod tests {
     #[allow(non_snake_case)]
     fn R_appends_past_line_end() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["ab"]));
+        let mut t = RopeBuffer::new(Text::from("ab"));
         e.handle_key(&key('R'), &mut t);
         for c in "XYZ".chars() {
             e.handle_key(&key(c), &mut t);
@@ -4688,7 +4684,7 @@ mod tests {
     #[allow(non_snake_case)]
     fn R_is_dot_repeatable() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["aaaa bbbb"]));
+        let mut t = RopeBuffer::new(Text::from("aaaa bbbb"));
         e.handle_key(&key('R'), &mut t);
         e.handle_key(&key('X'), &mut t);
         e.handle_key(&key('X'), &mut t);
@@ -4702,7 +4698,7 @@ mod tests {
     #[allow(non_snake_case)]
     fn aborted_R_keeps_dot_register() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["abc"]));
+        let mut t = RopeBuffer::new(Text::from("abc"));
         e.handle_key(&key('x'), &mut t); // real change
         e.handle_key(&key('R'), &mut t);
         e.handle_key(&esc(), &mut t); // typed nothing
@@ -4716,7 +4712,7 @@ mod tests {
         // Replace mode is engine-owned: chars must never reach the host's
         // textarea path (no auto-surround under R).
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["ab"]));
+        let mut t = RopeBuffer::new(Text::from("ab"));
         e.handle_key(&key('R'), &mut t);
         let out = e.handle_key(&key('('), &mut t);
         assert_eq!(out, VimKeyOutcome::TextMutated); // consumed, not PassThrough
@@ -4729,7 +4725,7 @@ mod tests {
     #[allow(non_snake_case)]
     fn J_joins_with_single_space_stripping_indent() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["foo", "   bar"]));
+        let mut t = RopeBuffer::new(Text::from("foo\n   bar"));
         e.handle_key(&key('J'), &mut t);
         assert_eq!(t.lines(), &["foo bar"]);
         // cursor on the join-point space (vim)
@@ -4740,7 +4736,7 @@ mod tests {
     #[allow(non_snake_case)]
     fn J_adds_no_extra_space_when_line_ends_in_whitespace() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["foo ", "bar"]));
+        let mut t = RopeBuffer::new(Text::from("foo \nbar"));
         e.handle_key(&key('J'), &mut t);
         assert_eq!(t.lines(), &["foo bar"]);
     }
@@ -4749,7 +4745,7 @@ mod tests {
     #[allow(non_snake_case)]
     fn gJ_joins_without_space() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["foo", "   bar"]));
+        let mut t = RopeBuffer::new(Text::from("foo\n   bar"));
         e.handle_key(&key('g'), &mut t);
         e.handle_key(&key('J'), &mut t);
         assert_eq!(t.lines(), &["foo   bar"]); // verbatim, indent kept
@@ -4759,7 +4755,7 @@ mod tests {
     #[allow(non_snake_case)]
     fn three_J_joins_three_lines() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["a", "b", "c"]));
+        let mut t = RopeBuffer::new(Text::from("a\nb\nc"));
         e.handle_key(&key('3'), &mut t);
         e.handle_key(&key('J'), &mut t);
         assert_eq!(t.lines(), &["a b c"]);
@@ -4771,7 +4767,7 @@ mod tests {
     #[allow(non_snake_case)]
     fn I_inserts_at_first_non_blank() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["    indented"]));
+        let mut t = RopeBuffer::new(Text::from("    indented"));
         e.handle_key(&key('$'), &mut t); // away from the start
         e.handle_key(&key('I'), &mut t);
         assert_eq!(*e.mode(), EditorMode::Insert);
@@ -4783,7 +4779,7 @@ mod tests {
     #[test]
     fn percent_matches_across_lines() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["foo (bar", "baz) qux"]));
+        let mut t = RopeBuffer::new(Text::from("foo (bar\nbaz) qux"));
         e.handle_key(&key('f'), &mut t);
         e.handle_key(&key('('), &mut t); // on '(' (0,4)
         e.handle_key(&key('%'), &mut t);
@@ -4795,7 +4791,7 @@ mod tests {
     #[test]
     fn percent_nested_across_lines() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["{a {b", "c}", "d}"]));
+        let mut t = RopeBuffer::new(Text::from("{a {b\nc}\nd}"));
         e.handle_key(&key('%'), &mut t); // outer '{' at (0,0)
         assert_eq!(super::super::cursor_tuple(&t), (2, 1)); // outer '}' line 3
     }
@@ -4803,7 +4799,7 @@ mod tests {
     #[test]
     fn d_percent_deletes_across_lines_inclusive() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["a(b", "c)d"]));
+        let mut t = RopeBuffer::new(Text::from("a(b\nc)d"));
         e.handle_key(&key('f'), &mut t);
         e.handle_key(&key('('), &mut t); // on '('
         e.handle_key(&key('d'), &mut t);
@@ -4814,7 +4810,7 @@ mod tests {
     #[test]
     fn percent_unmatched_across_buffer_is_noop() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["(a", "b"]));
+        let mut t = RopeBuffer::new(Text::from("(a\nb"));
         e.handle_key(&key('%'), &mut t); // no closing paren anywhere
         assert_eq!(super::super::cursor_tuple(&t), (0, 0));
     }
@@ -4825,7 +4821,7 @@ mod tests {
     fn visual_c_dot_repeats_same_width() {
         // `.` after a visual change replays a same-sized change (vim), not cl
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["abcde fghij"]));
+        let mut t = RopeBuffer::new(Text::from("abcde fghij"));
         e.handle_key(&key('v'), &mut t);
         e.handle_key(&key('l'), &mut t);
         e.handle_key(&key('l'), &mut t); // select "abc"
@@ -4841,13 +4837,13 @@ mod tests {
     fn count_find_is_atomic() {
         // vim 2fx with one 'x': whole motion fails, cursor stays
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["a x b"]));
+        let mut t = RopeBuffer::new(Text::from("a x b"));
         e.handle_key(&key('2'), &mut t);
         e.handle_key(&key('f'), &mut t);
         e.handle_key(&key('x'), &mut t);
         assert_eq!(super::super::cursor_tuple(&t), (0, 0)); // did not move
         // and with two: lands on the second
-        let mut t2 = EditBuffer::new(TextArea::from(["axbx"]));
+        let mut t2 = RopeBuffer::new(Text::from("axbx"));
         e.handle_key(&key('2'), &mut t2);
         e.handle_key(&key('f'), &mut t2);
         e.handle_key(&key('x'), &mut t2);
@@ -4857,7 +4853,7 @@ mod tests {
     #[test]
     fn d2fx_with_one_x_is_noop() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["a x b"]));
+        let mut t = RopeBuffer::new(Text::from("a x b"));
         e.handle_key(&key('d'), &mut t);
         e.handle_key(&key('2'), &mut t);
         e.handle_key(&key('f'), &mut t);
@@ -4870,7 +4866,7 @@ mod tests {
         // regression: stale capture from interrupted cw silently disabled
         // dot-recording for every later change
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["foo bar"]));
+        let mut t = RopeBuffer::new(Text::from("foo bar"));
         e.handle_key(&key('c'), &mut t);
         e.handle_key(&key('w'), &mut t); // Insert, capture live
         e.reset_to_normal(); // note switch mid-insert
@@ -4882,7 +4878,7 @@ mod tests {
     #[test]
     fn dj_on_last_line_is_noop() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["only line"]));
+        let mut t = RopeBuffer::new(Text::from("only line"));
         e.handle_key(&key('y'), &mut t);
         e.handle_key(&key('y'), &mut t); // register = line
         e.handle_key(&key('d'), &mut t);
@@ -4894,7 +4890,7 @@ mod tests {
     #[test]
     fn dk_on_first_line_is_noop() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["one", "two"]));
+        let mut t = RopeBuffer::new(Text::from("one\ntwo"));
         e.handle_key(&key('d'), &mut t);
         e.handle_key(&key('k'), &mut t);
         assert_eq!(t.lines(), &["one", "two"]);
@@ -4903,7 +4899,7 @@ mod tests {
     #[test]
     fn failed_find_op_does_not_clobber_dot() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["abcdef"]));
+        let mut t = RopeBuffer::new(Text::from("abcdef"));
         e.handle_key(&key('x'), &mut t); // real change: delete 'a'
         e.handle_key(&key('d'), &mut t);
         e.handle_key(&key('f'), &mut t);
@@ -4915,7 +4911,7 @@ mod tests {
     #[test]
     fn noop_x_does_not_clobber_dot() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["one two three", ""]));
+        let mut t = RopeBuffer::new(Text::from("one two three\n"));
         e.handle_key(&key('d'), &mut t);
         e.handle_key(&key('w'), &mut t); // delete "one "
         e.handle_key(&key('j'), &mut t); // empty line
@@ -4929,7 +4925,7 @@ mod tests {
     #[test]
     fn d_percent_without_pair_is_noop() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["abc"]));
+        let mut t = RopeBuffer::new(Text::from("abc"));
         e.handle_key(&key('d'), &mut t);
         e.handle_key(&key('%'), &mut t); // no bracket under cursor
         assert_eq!(t.lines(), &["abc"]);
@@ -4942,7 +4938,7 @@ mod tests {
     fn visual_inner_empty_pair_is_noop() {
         // regression: vi( on "()" widened onto the ')' and deleted it
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["foo()bar"]));
+        let mut t = RopeBuffer::new(Text::from("foo()bar"));
         e.handle_key(&key('f'), &mut t);
         e.handle_key(&key('('), &mut t); // cursor on '('
         e.handle_key(&key('v'), &mut t);
@@ -4955,7 +4951,7 @@ mod tests {
     #[test]
     fn aborted_insert_keeps_dot_register() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["abc"]));
+        let mut t = RopeBuffer::new(Text::from("abc"));
         e.handle_key(&key('x'), &mut t); // real change
         e.handle_key(&key('i'), &mut t); // changed mind
         e.handle_key(&esc(), &mut t); // nothing typed — not a change
@@ -4967,7 +4963,7 @@ mod tests {
     fn o_then_esc_is_still_dot_repeatable() {
         // vim: o<Esc> IS a change (the opened line); `.` opens another
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["x"]));
+        let mut t = RopeBuffer::new(Text::from("x"));
         e.handle_key(&key('o'), &mut t);
         e.handle_key(&esc(), &mut t);
         e.handle_key(&key('.'), &mut t);
@@ -4980,7 +4976,7 @@ mod tests {
     fn visual_inner_object_then_delete() {
         // vi( selects inside the parens; d deletes it
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["foo(bar)baz"]));
+        let mut t = RopeBuffer::new(Text::from("foo(bar)baz"));
         e.handle_key(&key('f'), &mut t);
         e.handle_key(&key('a'), &mut t); // cursor on 'a' of "bar" (col 5)
         e.handle_key(&key('v'), &mut t);
@@ -4993,7 +4989,7 @@ mod tests {
     #[test]
     fn visual_around_quote_then_yank() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["say \"hi\" now"]));
+        let mut t = RopeBuffer::new(Text::from("say \"hi\" now"));
         e.handle_key(&key('f'), &mut t);
         e.handle_key(&key('h'), &mut t); // inside quotes
         e.handle_key(&key('v'), &mut t);
@@ -5008,7 +5004,7 @@ mod tests {
     fn visual_find_extends_selection() {
         // vf, then d deletes through the ','
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["hello, world"]));
+        let mut t = RopeBuffer::new(Text::from("hello, world"));
         e.handle_key(&key('v'), &mut t);
         e.handle_key(&key('f'), &mut t);
         e.handle_key(&key(','), &mut t); // cursor on ',' — selection covers "hello,"
@@ -5019,7 +5015,7 @@ mod tests {
     #[test]
     fn visual_gg_extends_to_file_start() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["one", "two", "three"]));
+        let mut t = RopeBuffer::new(Text::from("one\ntwo\nthree"));
         e.handle_key(&key('j'), &mut t);
         e.handle_key(&key('j'), &mut t); // row 2
         e.handle_key(&key('v'), &mut t);
@@ -5032,7 +5028,7 @@ mod tests {
     #[test]
     fn visual_o_swaps_selection_ends() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["abcde"]));
+        let mut t = RopeBuffer::new(Text::from("abcde"));
         e.handle_key(&key('l'), &mut t);
         e.handle_key(&key('l'), &mut t); // col 2 ('c')
         e.handle_key(&key('v'), &mut t);
@@ -5050,7 +5046,7 @@ mod tests {
     fn dot_repeats_cc_with_typed_text() {
         // previously a silent no-op (replay's `_other` arm)
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["one", "two"]));
+        let mut t = RopeBuffer::new(Text::from("one\ntwo"));
         e.handle_key(&key('c'), &mut t);
         e.handle_key(&key('c'), &mut t); // cc on "one"
         t.insert_str("X");
@@ -5063,7 +5059,7 @@ mod tests {
     #[test]
     fn dot_repeats_substitute_char() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["ab cd"]));
+        let mut t = RopeBuffer::new(Text::from("ab cd"));
         e.handle_key(&key('s'), &mut t); // delete 'a', Insert
         t.insert_str("Z");
         e.handle_key(&esc(), &mut t); // "Zb cd"
@@ -5076,7 +5072,7 @@ mod tests {
     fn dot_repeats_plain_insert() {
         // vim: `ihello<Esc>` then `.` inserts "hello" again
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["world"]));
+        let mut t = RopeBuffer::new(Text::from("world"));
         e.handle_key(&key('i'), &mut t);
         t.insert_str("ab");
         e.handle_key(&esc(), &mut t); // "abworld", cursor on 'b'
@@ -5087,7 +5083,7 @@ mod tests {
     #[test]
     fn dot_repeats_indent() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["x"]));
+        let mut t = RopeBuffer::new(Text::from("x"));
         e.handle_key(&key('>'), &mut t);
         e.handle_key(&key('>'), &mut t); // indent
         e.handle_key(&key('.'), &mut t); // repeat
@@ -5098,7 +5094,7 @@ mod tests {
     fn dot_does_not_repeat_yank() {
         // vim: `.` repeats the last CHANGE; a yank after it must not displace it
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["abc"]));
+        let mut t = RopeBuffer::new(Text::from("abc"));
         e.handle_key(&key('x'), &mut t); // delete 'a' (the change)
         e.handle_key(&key('y'), &mut t);
         e.handle_key(&key('l'), &mut t); // yank 'b' — not a change
@@ -5112,7 +5108,7 @@ mod tests {
     fn counts_before_and_after_operator_multiply() {
         // vim: 2d3w = 6 words, not count "23"
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["a b c d e f g"]));
+        let mut t = RopeBuffer::new(Text::from("a b c d e f g"));
         e.handle_key(&key('2'), &mut t);
         e.handle_key(&key('d'), &mut t);
         e.handle_key(&key('3'), &mut t);
@@ -5123,7 +5119,7 @@ mod tests {
     #[test]
     fn dj_deletes_two_whole_lines_linewise() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["one", "two", "three"]));
+        let mut t = RopeBuffer::new(Text::from("one\ntwo\nthree"));
         e.handle_key(&key('l'), &mut t); // col 1 — must not matter (linewise)
         e.handle_key(&key('d'), &mut t);
         e.handle_key(&key('j'), &mut t);
@@ -5136,7 +5132,7 @@ mod tests {
     #[test]
     fn dk_deletes_two_whole_lines_upward() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["one", "two", "three"]));
+        let mut t = RopeBuffer::new(Text::from("one\ntwo\nthree"));
         e.handle_key(&key('j'), &mut t); // row 1
         e.handle_key(&key('d'), &mut t);
         e.handle_key(&key('k'), &mut t);
@@ -5147,7 +5143,7 @@ mod tests {
     #[allow(non_snake_case)]
     fn dG_deletes_to_file_end_linewise() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["one", "two", "three"]));
+        let mut t = RopeBuffer::new(Text::from("one\ntwo\nthree"));
         e.handle_key(&key('j'), &mut t); // row 1
         e.handle_key(&key('d'), &mut t);
         e.handle_key(&key('G'), &mut t);
@@ -5157,7 +5153,7 @@ mod tests {
     #[test]
     fn d_gg_deletes_to_file_start_linewise() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["one", "two", "three"]));
+        let mut t = RopeBuffer::new(Text::from("one\ntwo\nthree"));
         e.handle_key(&key('j'), &mut t); // row 1
         e.handle_key(&key('d'), &mut t);
         e.handle_key(&key('g'), &mut t);
@@ -5169,7 +5165,7 @@ mod tests {
     fn dt_deletes_up_to_but_not_including_target() {
         // vim t is inclusive of the char BEFORE the target: dtx on "abx" → "x"
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["abx"]));
+        let mut t = RopeBuffer::new(Text::from("abx"));
         e.handle_key(&key('d'), &mut t);
         e.handle_key(&key('t'), &mut t);
         e.handle_key(&key('x'), &mut t);
@@ -5179,7 +5175,7 @@ mod tests {
     #[test]
     fn failed_find_with_operator_is_noop() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["hello"]));
+        let mut t = RopeBuffer::new(Text::from("hello"));
         e.handle_key(&key('d'), &mut t);
         e.handle_key(&key('f'), &mut t);
         e.handle_key(&key('z'), &mut t); // no 'z' on the line
@@ -5193,7 +5189,7 @@ mod tests {
     #[test]
     fn d_semicolon_repeats_find_as_operator_range() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["a.b.c"]));
+        let mut t = RopeBuffer::new(Text::from("a.b.c"));
         e.handle_key(&key('f'), &mut t);
         e.handle_key(&key('.'), &mut t); // cursor on first '.' (col 1)
         e.handle_key(&key('d'), &mut t);
@@ -5204,7 +5200,7 @@ mod tests {
     #[test]
     fn cj_changes_two_lines_and_enters_insert() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["one", "two", "three"]));
+        let mut t = RopeBuffer::new(Text::from("one\ntwo\nthree"));
         e.handle_key(&key('c'), &mut t);
         e.handle_key(&key('j'), &mut t);
         assert_eq!(*e.mode(), EditorMode::Insert);
@@ -5217,7 +5213,7 @@ mod tests {
     fn x_then_p_swaps_chars() {
         // the classic vim `xp` idiom: x fills the register with the deleted char
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["ab"]));
+        let mut t = RopeBuffer::new(Text::from("ab"));
         e.handle_key(&key('x'), &mut t); // delete 'a' → register "a"; line "b"
         e.handle_key(&key('p'), &mut t); // paste "a" after 'b'
         assert_eq!(t.lines(), &["ba"]);
@@ -5226,7 +5222,7 @@ mod tests {
     #[test]
     fn x_at_line_end_does_not_join_next_line() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["ab", "cd"]));
+        let mut t = RopeBuffer::new(Text::from("ab\ncd"));
         e.handle_key(&key('l'), &mut t); // onto 'b' (last char)
         e.handle_key(&key('3'), &mut t);
         e.handle_key(&key('x'), &mut t); // vim: deletes only 'b', never the newline
@@ -5236,7 +5232,7 @@ mod tests {
     #[test]
     fn s_fills_register_with_deleted_char() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["abc"]));
+        let mut t = RopeBuffer::new(Text::from("abc"));
         e.handle_key(&key('s'), &mut t); // delete 'a', enter Insert
         assert_eq!(*e.mode(), EditorMode::Insert);
         let reg = e.registers.read().expect("s must fill the register");
@@ -5250,7 +5246,7 @@ mod tests {
         // regression: S used to cut() (charwise content) while the engine kept
         // a stale Linewise kind from a prior yy — kind and content desynced.
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["one", "two"]));
+        let mut t = RopeBuffer::new(Text::from("one\ntwo"));
         e.handle_key(&key('y'), &mut t);
         e.handle_key(&key('y'), &mut t); // register = "one\n" linewise
         e.handle_key(&key('j'), &mut t);
@@ -5263,7 +5259,7 @@ mod tests {
     #[test]
     fn dw_fills_register_charwise() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["one two"]));
+        let mut t = RopeBuffer::new(Text::from("one two"));
         e.handle_key(&key('d'), &mut t);
         e.handle_key(&key('w'), &mut t); // delete "one "
         let reg = e.registers.read().expect("dw must fill the register");
@@ -5277,7 +5273,7 @@ mod tests {
     #[test]
     fn empty_delete_keeps_previous_register() {
         let mut e = VimEngine::default();
-        let mut t = EditBuffer::new(TextArea::from(["ab", ""]));
+        let mut t = RopeBuffer::new(Text::from("ab\n"));
         e.handle_key(&key('y'), &mut t);
         e.handle_key(&key('l'), &mut t); // yank "a" charwise
         e.handle_key(&key('j'), &mut t); // empty line
@@ -5292,11 +5288,11 @@ mod tests {
     #[test]
     fn esc_in_normal_clears_stray_selection() {
         let mut e = VimEngine::default(); // Normal mode
-        let mut t = EditBuffer::new(TextArea::from(["hello world"]));
+        let mut t = RopeBuffer::new(Text::from("hello world"));
         // simulate a live selection while in Normal mode (as auto-surround/mouse-sync can leave)
         t.start_selection();
-        t.move_cursor(ratatui_textarea::CursorMove::Forward);
-        t.move_cursor(ratatui_textarea::CursorMove::Forward);
+        t.move_cursor(crate::components::text_editor::rope_buffer::CursorMove::Forward);
+        t.move_cursor(crate::components::text_editor::rope_buffer::CursorMove::Forward);
         assert!(t.selection_range().is_some());
         let out = e.handle_key(&esc(), &mut t);
         assert!(

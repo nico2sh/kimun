@@ -1,3 +1,11 @@
+//! The superseded **edit buffer**, over `ratatui-textarea`.
+//!
+//! Kept only as the oracle for `tests/rope_buffer_differential.rs`: nothing in the
+//! application calls it since the engine swap (adr/0039). It goes when the
+//! dependency does.
+//!
+//! The original documentation follows.
+//!
 //! The **edit buffer**: the open note's text and its edit history as one
 //! module (adr/0037).
 //!
@@ -18,6 +26,8 @@ use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 
 use ratatui_textarea::{CursorMove, DataCursor, TextArea};
+
+use super::rope_buffer::EditOutcome;
 
 /// Cap on how many history entries one grouped undo may replay.
 ///
@@ -42,29 +52,6 @@ fn hash_lines(lines: &[String]) -> u64 {
     let mut h = DefaultHasher::new();
     lines.hash(&mut h);
     h.finish()
-}
-
-/// What one call to [`EditBuffer::edit`] did, measured rather than predicted.
-///
-/// `#[must_use]` on purpose: the caller still applies these (the revision clock
-/// serves both backends and so stays on the component), and forgetting to is
-/// exactly the failure this type exists to prevent. A warning is a check; a
-/// convention is not.
-#[must_use = "an edit's outcome drives the revision bump and the parse-damage signal"]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct EditOutcome {
-    /// The buffer's text differs from before the edit. A content comparison —
-    /// never a library return value, which can report `false` after mutating.
-    pub changed: bool,
-    /// The change is not confined to the cursor's row, so the incremental
-    /// parser's cursor damage hint would under-report it (adr/0035).
-    pub bulk: bool,
-}
-
-impl EditOutcome {
-    fn unchanged() -> Self {
-        Self::default()
-    }
 }
 
 /// The open note's text plus its edit history.

@@ -9,27 +9,26 @@ pub mod nvim_host;
 pub mod nvim_rpc;
 pub mod parse_incremental;
 mod revisions;
+pub mod rope_buffer;
 use revisions::Revisions;
 pub mod snapshot;
 pub mod text_coords;
 pub mod view;
 mod vim;
 pub mod widener_metrics;
-pub mod word_wrap;
 
+use self::rope_buffer::CursorMove;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
-use ratatui_textarea::{CursorMove, DataCursor, TextArea};
 use std::num::NonZeroU64;
 
 /// Convert `TextArea::cursor()` from the library's `DataCursor` newtype to a
 /// plain `(row, col)` tuple — the neutral interchange type shared with the
 /// Nvim backend (whose `NvimSnapshot::cursor` is already a tuple).
-pub(crate) fn cursor_tuple(ta: &TextArea<'_>) -> (usize, usize) {
-    let DataCursor(r, c) = ta.cursor();
-    (r, c)
+pub(crate) fn cursor_tuple(ta: &rope_buffer::RopeBuffer) -> (usize, usize) {
+    ta.cursor()
 }
 
 /// Build an `EditorSnapshot` from the editor's backend + content
@@ -45,7 +44,12 @@ fn snapshot_from_backend(
     match backend {
         BackendState::Textarea(tb) => {
             let cursor = cursor_tuple(&tb.ta);
-            EditorSnapshot::borrowed(tb.ta.lines(), cursor, content_revision)
+            EditorSnapshot::of_buffer(
+                tb.ta.text().clone(),
+                tb.ta.lines(),
+                cursor,
+                content_revision,
+            )
         }
         BackendState::Nvim(nvim) => {
             let snap = nvim.snapshot();
@@ -122,11 +126,11 @@ macro_rules! cursor_move {
 }
 
 use self::backend::BackendState;
-use self::edit_buffer::EditBuffer;
 #[cfg(test)]
 use self::find_bar::{BarFocus, SearchStatus};
 use self::markdown::ParsedBuffer;
 use self::nvim_host::NvimHost;
+use self::rope_buffer::RopeBuffer;
 use self::snapshot::EditorSnapshot;
 use self::view::MarkdownEditorView;
 use crate::util::single_slot_task::SingleSlotTask;
@@ -154,14 +158,17 @@ pub(super) fn char_col_to_byte(line: &str, char_col: usize) -> usize {
 ///
 /// `selection_range()` returns char-column coordinates, so they must be
 /// converted to byte offsets before slicing to support multi-byte UTF-8 text.
-fn selection_text(ta: &TextArea<'_>) -> Option<String> {
+fn selection_text(ta: &rope_buffer::RopeBuffer) -> Option<String> {
     selection_text_in(ta, ta.selection_range()?)
 }
 
 /// Like [`selection_text`] but over an explicit char-column `range` rather than
 /// the textarea's live selection — lets read-only callers apply the vim
 /// charwise-Visual inclusive `+1` without mutating the live selection/cursor.
-fn selection_text_in(ta: &TextArea<'_>, range: ((usize, usize), (usize, usize))) -> Option<String> {
+fn selection_text_in(
+    ta: &rope_buffer::RopeBuffer,
+    range: ((usize, usize), (usize, usize)),
+) -> Option<String> {
     let ((sr, sc), (er, ec)) = range;
     if sr == er && sc == ec {
         return None;
@@ -212,7 +219,7 @@ fn surround_pair(c: char) -> Option<(&'static str, &'static str)> {
 /// Refuses rather than approximating: this used to saturate both endpoints at
 /// `u16::MAX`, which on a pathologically large buffer silently selected a
 /// *different* range — and callers then cut or overwrote it (adr/0038).
-fn set_selection(ta: &mut EditBuffer, start: (usize, usize), end: (usize, usize)) -> bool {
+fn set_selection(ta: &mut RopeBuffer, start: (usize, usize), end: (usize, usize)) -> bool {
     let max = u16::MAX as usize;
     if start.0 > max || start.1 > max || end.0 > max || end.1 > max {
         return false;
@@ -657,8 +664,7 @@ impl TextEditorComponent {
         }
         match &mut self.backend {
             BackendState::Textarea(tb) => {
-                let lines = text.lines();
-                tb.ta.replace(TextArea::from(lines));
+                tb.ta.replace(ropetext::Text::from(text.as_str()));
             }
             BackendState::Nvim(nvim) => {
                 nvim.set_text(&text);
@@ -1287,13 +1293,13 @@ impl TextEditorComponent {
                         count
                     };
                     if count > 0 {
-                        edit_buffer::checked_jump(ta, row, 0);
+                        ta.jump_to(row, 0);
                         ta.delete_str(count);
                         any_change = true;
                     }
                     row_deltas.push(-(count as isize));
                 } else {
-                    edit_buffer::checked_jump(ta, row, 0);
+                    ta.jump_to(row, 0);
                     ta.insert_str(&indent);
                     row_deltas.push(indent_chars as isize);
                     any_change = true;
@@ -1432,7 +1438,7 @@ impl TextEditorComponent {
     /// measured. Returns `false` when no bar is open.
     fn dispatch_bar(
         &mut self,
-        f: impl FnOnce(&mut find_bar::FindBar, &mut EditBuffer) -> find_bar::KeyOutcome,
+        f: impl FnOnce(&mut find_bar::FindBar, &mut RopeBuffer) -> find_bar::KeyOutcome,
     ) -> bool {
         let BackendState::Textarea(tb) = &mut self.backend else {
             return false;
@@ -1817,7 +1823,7 @@ impl TextEditorComponent {
         // composing events). Only bump `text_revision` when the buffer
         // actually changed — otherwise harmless keys would silently flip
         // the editor to dirty and trigger needless autosaves.
-        ta.input_without_shortcuts(*key);
+        ta.apply_plain_key(*key);
         self.selection = ta.selection_range();
         self.apply_edit_outcome();
         EventState::Consumed
@@ -1881,9 +1887,11 @@ impl TextEditorComponent {
                     .click_at_screen((mouse.row - r.y) as usize, (mouse.column - r.x) as usize);
                 ta.jump_to(lrow as usize, lcol as usize);
             }
-            _ => {
-                ta.mouse_input(*mouse);
-            }
+            // Everything else is somebody else's: a click and a drag are handled
+            // above, and a scroll is classified as an **Intent** before it reaches
+            // the buffer. The incumbent forwarded these to the widget, which
+            // scrolled a viewport kimün never renders from.
+            _ => {}
         }
         self.selection = ta.selection_range();
         // Mouse handling moves the cursor / selection but does not insert
@@ -2444,7 +2452,7 @@ mod tests {
         tokio::sync::mpsc::unbounded_channel().0
     }
 
-    fn get_ta(editor: &mut TextEditorComponent) -> &mut EditBuffer {
+    fn get_ta(editor: &mut TextEditorComponent) -> &mut RopeBuffer {
         match &mut editor.backend {
             BackendState::Textarea(tb) => &mut tb.ta,
             _ => panic!("expected Textarea backend"),
@@ -2598,7 +2606,7 @@ mod tests {
         editor.set_text("hello world".to_string());
         let ta = get_ta(&mut editor);
         ta.start_selection();
-        ta.move_cursor(ratatui_textarea::CursorMove::WordForward);
+        ta.move_cursor(CursorMove::WordForward);
         assert!(ta.selection_range().is_some());
         ta.cancel_selection();
         editor.selection = if let BackendState::Textarea(tb) = &editor.backend {
@@ -2614,9 +2622,9 @@ mod tests {
         let mut editor = make_editor();
         editor.set_text("hello world".to_string());
         let ta = get_ta(&mut editor);
-        ta.move_cursor(ratatui_textarea::CursorMove::Head);
+        ta.move_cursor(CursorMove::Head);
         ta.start_selection();
-        ta.move_cursor(ratatui_textarea::CursorMove::WordForward);
+        ta.move_cursor(CursorMove::WordForward);
         let range = ta.selection_range().unwrap();
         let ((sr, sc), (er, ec)) = range;
         let lines = ta.lines();
@@ -2629,7 +2637,7 @@ mod tests {
     }
 
     /// Selects the char-coordinate range `start..end` in the editor's textarea.
-    fn select_range(editor: &mut TextEditorComponent, start: (u16, u16), end: (u16, u16)) {
+    fn select_range(editor: &mut TextEditorComponent, start: (usize, usize), end: (usize, usize)) {
         let ta = get_ta(editor);
         ta.cancel_selection();
         ta.move_cursor(CursorMove::Jump(start.0, start.1));
@@ -2941,7 +2949,7 @@ mod tests {
         );
         // Cursor now at first match (col 0). Re-invoking advances to second.
         editor.open_or_advance_search();
-        let DataCursor(_, col) = get_ta(&mut editor).cursor();
+        let (_, col) = get_ta(&mut editor).cursor();
         assert_eq!(col, 3, "second invocation advances to next match");
     }
 
@@ -2960,7 +2968,7 @@ mod tests {
         let state = editor.search.as_ref().unwrap();
         assert_eq!(state.input.value(), "bar");
         assert!(matches!(state.status, SearchStatus::Match));
-        let DataCursor(_, col) = get_ta(&mut editor).cursor();
+        let (_, col) = get_ta(&mut editor).cursor();
         assert_eq!(col, 4, "cursor jumped to start of 'bar'");
     }
 
@@ -2983,7 +2991,7 @@ mod tests {
             &InputEvent::Key(key(KeyCode::Enter, KeyModifiers::NONE)),
             &tx,
         );
-        let DataCursor(_, col) = get_ta(&mut editor).cursor();
+        let (_, col) = get_ta(&mut editor).cursor();
         assert_eq!(col, 3, "Enter advances to second match");
     }
 
@@ -3102,7 +3110,7 @@ mod tests {
         editor.set_text("hello".to_string());
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::End);
+            ta.move_cursor(CursorMove::End);
         }
         editor.insert_at_cursor(" world", &dummy_tx());
         assert_eq!(editor.get_text(), "hello world");
@@ -3114,9 +3122,9 @@ mod tests {
         editor.set_text("hello world".to_string());
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::Head);
+            ta.move_cursor(CursorMove::Head);
             ta.start_selection();
-            ta.move_cursor(ratatui_textarea::CursorMove::WordForward);
+            ta.move_cursor(CursorMove::WordForward);
         }
         editor.insert_at_cursor("HEY ", &dummy_tx());
         assert_eq!(editor.get_text(), "HEY world");
@@ -3127,7 +3135,7 @@ mod tests {
         let mut editor = make_editor();
         editor.set_text("hello".to_string());
         let ta = get_ta(&mut editor);
-        ta.move_cursor(ratatui_textarea::CursorMove::End);
+        ta.move_cursor(CursorMove::End);
         ta.insert_str(" world");
         assert_eq!(editor.get_text(), "hello world");
     }
@@ -3138,7 +3146,7 @@ mod tests {
         editor.set_text("hello".to_string());
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::End);
+            ta.move_cursor(CursorMove::End);
         }
         editor.apply_text_action(TextAction::Bold);
         assert_eq!(editor.get_text(), "hello****");
@@ -3162,9 +3170,9 @@ mod tests {
         editor.set_text("hello world".to_string());
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::Head);
+            ta.move_cursor(CursorMove::Head);
             ta.start_selection();
-            ta.move_cursor(ratatui_textarea::CursorMove::WordForward);
+            ta.move_cursor(CursorMove::WordForward);
         }
         editor.apply_text_action(TextAction::Strikethrough);
         assert_eq!(editor.get_text(), "~~hello ~~world");
@@ -3176,10 +3184,10 @@ mod tests {
         editor.set_text("hello 你好 world".to_string());
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::Head);
-            ta.move_cursor(ratatui_textarea::CursorMove::WordForward);
+            ta.move_cursor(CursorMove::Head);
+            ta.move_cursor(CursorMove::WordForward);
             ta.start_selection();
-            ta.move_cursor(ratatui_textarea::CursorMove::WordForward);
+            ta.move_cursor(CursorMove::WordForward);
         }
         editor.apply_text_action(TextAction::Bold);
         assert_eq!(editor.get_text(), "hello **你好 **world");
@@ -3191,9 +3199,9 @@ mod tests {
         editor.set_text("foo bar".to_string());
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::Head);
+            ta.move_cursor(CursorMove::Head);
             ta.start_selection();
-            ta.move_cursor(ratatui_textarea::CursorMove::WordForward);
+            ta.move_cursor(CursorMove::WordForward);
         }
         editor.apply_text_action(TextAction::Bold);
         assert_eq!(editor.get_text(), "**foo **bar");
@@ -3205,7 +3213,7 @@ mod tests {
         editor.set_text("foo\nbar".to_string());
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::Bottom);
+            ta.move_cursor(CursorMove::Bottom);
         }
         editor.indent_lines(false);
         let lines = get_ta(&mut editor).lines();
@@ -3220,9 +3228,9 @@ mod tests {
         editor.set_text("hello world".to_string());
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::Jump(0, 6));
+            ta.move_cursor(CursorMove::Jump(0, 6));
             ta.start_selection();
-            ta.move_cursor(ratatui_textarea::CursorMove::End);
+            ta.move_cursor(CursorMove::End);
         }
         editor.indent_lines(false);
         let ta = get_ta(&mut editor);
@@ -3242,10 +3250,10 @@ mod tests {
         editor.set_text("foo\nbar\nbaz".to_string());
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::Top);
+            ta.move_cursor(CursorMove::Top);
             ta.start_selection();
-            ta.move_cursor(ratatui_textarea::CursorMove::Down);
-            ta.move_cursor(ratatui_textarea::CursorMove::End);
+            ta.move_cursor(CursorMove::Down);
+            ta.move_cursor(CursorMove::End);
         }
         editor.indent_lines(false);
         let lines: Vec<String> = get_ta(&mut editor).lines().to_vec();
@@ -3263,10 +3271,10 @@ mod tests {
         let tab_len = get_ta(&mut editor).tab_length() as usize;
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::Top);
+            ta.move_cursor(CursorMove::Top);
             ta.start_selection();
-            ta.move_cursor(ratatui_textarea::CursorMove::Bottom);
-            ta.move_cursor(ratatui_textarea::CursorMove::End);
+            ta.move_cursor(CursorMove::Bottom);
+            ta.move_cursor(CursorMove::End);
         }
         editor.indent_lines(true);
         let lines: Vec<String> = get_ta(&mut editor).lines().to_vec();
@@ -3294,7 +3302,7 @@ mod tests {
         editor.set_text("- foo".to_string());
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::End);
+            ta.move_cursor(CursorMove::End);
         }
         assert!(editor.smart_enter());
         assert_eq!(editor.get_text(), "- foo\n- ");
@@ -3306,7 +3314,7 @@ mod tests {
         editor.set_text("1. foo".to_string());
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::End);
+            ta.move_cursor(CursorMove::End);
         }
         assert!(editor.smart_enter());
         assert_eq!(editor.get_text(), "1. foo\n2. ");
@@ -3318,7 +3326,7 @@ mod tests {
         editor.set_text("- ".to_string());
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::End);
+            ta.move_cursor(CursorMove::End);
         }
         assert!(editor.smart_enter());
         assert_eq!(editor.get_text(), "");
@@ -3330,7 +3338,7 @@ mod tests {
         editor.set_text("    body".to_string());
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::End);
+            ta.move_cursor(CursorMove::End);
         }
         assert!(editor.smart_enter());
         assert_eq!(editor.get_text(), "    body\n    ");
@@ -3342,7 +3350,7 @@ mod tests {
         editor.set_text("    ".to_string());
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::End);
+            ta.move_cursor(CursorMove::End);
         }
         let tab_len = get_ta(&mut editor).tab_length() as usize;
         assert!(editor.smart_enter());
@@ -3358,7 +3366,7 @@ mod tests {
         editor.set_text("plain".to_string());
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::End);
+            ta.move_cursor(CursorMove::End);
         }
         assert!(!editor.smart_enter());
         assert_eq!(editor.get_text(), "plain");
@@ -3370,9 +3378,9 @@ mod tests {
         editor.set_text("- foo".to_string());
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::Head);
-            ta.move_cursor(ratatui_textarea::CursorMove::Forward);
-            ta.move_cursor(ratatui_textarea::CursorMove::Forward);
+            ta.move_cursor(CursorMove::Head);
+            ta.move_cursor(CursorMove::Forward);
+            ta.move_cursor(CursorMove::Forward);
         }
         assert!(!editor.smart_enter());
     }
@@ -3385,7 +3393,7 @@ mod tests {
         editor.set_text(format!("{indent}- "));
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::End);
+            ta.move_cursor(CursorMove::End);
         }
         assert!(editor.smart_enter());
         assert_eq!(editor.get_text(), "- ");
@@ -3399,7 +3407,7 @@ mod tests {
         editor.set_text(format!("{indent}- "));
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::End);
+            ta.move_cursor(CursorMove::End);
         }
         // First Enter: dedent to "- ".
         assert!(editor.smart_enter());
@@ -3408,7 +3416,7 @@ mod tests {
         // Need to position cursor at end after the dedent.
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::End);
+            ta.move_cursor(CursorMove::End);
         }
         assert!(editor.smart_enter());
         assert_eq!(editor.get_text(), "");
@@ -3420,7 +3428,7 @@ mod tests {
         editor.set_text("- 你好".to_string());
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::End);
+            ta.move_cursor(CursorMove::End);
         }
         assert!(editor.smart_enter());
         assert_eq!(editor.get_text(), "- 你好\n- ");
@@ -3432,7 +3440,7 @@ mod tests {
         editor.set_text("\tbody".to_string());
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::End);
+            ta.move_cursor(CursorMove::End);
         }
         assert!(editor.smart_enter());
         assert_eq!(editor.get_text(), "\tbody\n\t");
@@ -3444,7 +3452,7 @@ mod tests {
         editor.set_text("\t\t".to_string());
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::End);
+            ta.move_cursor(CursorMove::End);
         }
         assert!(editor.smart_enter());
         // tab counts as one indent unit, regardless of tab_length spaces.
@@ -3457,7 +3465,7 @@ mod tests {
         editor.set_text("  - foo".to_string());
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::End);
+            ta.move_cursor(CursorMove::End);
         }
         assert!(editor.smart_enter());
         assert_eq!(editor.get_text(), "  - foo\n  - ");
@@ -3488,9 +3496,9 @@ mod tests {
     /// Helper: place cursor at a specific column on the first row.
     fn place_cursor_at_col(editor: &mut TextEditorComponent, col: usize) {
         let ta = get_ta(editor);
-        ta.move_cursor(ratatui_textarea::CursorMove::Head);
+        ta.move_cursor(CursorMove::Head);
         for _ in 0..col {
-            ta.move_cursor(ratatui_textarea::CursorMove::Forward);
+            ta.move_cursor(CursorMove::Forward);
         }
     }
 
@@ -4015,7 +4023,7 @@ mod tests {
         editor.set_text("todo elsewhere".to_string());
         assert!(editor.search.is_none(), "the bar belonged to the old note");
         // The buffer's groups went with it: `set_text` replaces the textarea,
-        // and `EditBuffer::replace` drops states the new history cannot reach.
+        // and `RopeBuffer::replace` drops states the new history cannot reach.
         assert!(
             !editor.backend.as_textarea_mut().unwrap().undo(),
             "the new note's history has nothing to undo"

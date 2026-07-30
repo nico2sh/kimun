@@ -15,6 +15,17 @@ use std::num::NonZeroU64;
 /// `Mutex` (the lines must outlive the `MutexGuard`, which is
 /// dropped before the snapshot is returned).
 pub struct EditorSnapshot<'a> {
+    /// The text itself. Cloning one is O(1) — the rope shares its structure — so
+    /// a snapshot *is* the buffer's text rather than a copy of it, and the cursor
+    /// below cannot drift away from what it was read with.
+    pub text: ropetext::Text,
+    /// The same content, one string per row.
+    ///
+    /// Scaffolding, and deleted with `RopeBuffer::lines` — the consumers that
+    /// still speak `&[String]` (the markdown parse, autocomplete's exclusion
+    /// zones) have not been converted yet. The **plain** and **vim** backends hand
+    /// over the buffer's own cache, so this costs nothing they were not already
+    /// paying.
     pub lines: Cow<'a, [String]>,
     /// `(row, col)` with `row < lines.len()` (clamped at
     /// construction when the producer's source was stale) UNLESS
@@ -35,6 +46,22 @@ impl<'a> EditorSnapshot<'a> {
         content_revision: NonZeroU64,
     ) -> Self {
         Self {
+            text: ropetext::Text::from(lines.join("\n").as_str()),
+            lines: Cow::Borrowed(lines),
+            cursor,
+            content_revision,
+        }
+    }
+
+    /// The hot path: the buffer already holds both, so neither is rebuilt.
+    pub fn of_buffer(
+        text: ropetext::Text,
+        lines: &'a [String],
+        cursor: (usize, usize),
+        content_revision: NonZeroU64,
+    ) -> Self {
+        Self {
+            text,
             lines: Cow::Borrowed(lines),
             cursor,
             content_revision,
@@ -50,6 +77,7 @@ impl<'a> EditorSnapshot<'a> {
         content_revision: NonZeroU64,
     ) -> EditorSnapshot<'static> {
         EditorSnapshot {
+            text: ropetext::Text::from(lines.join("\n").as_str()),
             lines: Cow::Owned(lines),
             cursor,
             content_revision,
