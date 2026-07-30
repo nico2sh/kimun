@@ -14,7 +14,7 @@
 //! A syntax layer that conceals characters — markdown hiding the `#` of a
 //! heading — changes how wide a row draws without changing what it contains. A
 //! layout that measured the row's text would break lines in the wrong places. So
-//! the caller says, per row, which clusters are hidden and how far the row is
+//! the caller says, per row, which clusters are drawn and how far the row is
 //! inset, and this module never learns what a heading is.
 
 use std::ops::Range;
@@ -29,9 +29,13 @@ use crate::width::Metrics;
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RowHints<'a> {
     /// Per Unicode scalar of the row: `false` where the renderer draws nothing.
-    /// A shorter slice than the row means the rest is visible; an empty one means
-    /// all of it is.
-    pub hidden: &'a [bool],
+    /// A shorter slice than the row means the rest is visible, and an empty one
+    /// means all of it is — so a caller with no syntax layer passes nothing.
+    ///
+    /// Stated as *visible* rather than hidden because that is what a syntax layer
+    /// computes: it walks a row deciding what to draw. Inverting it here would cost
+    /// an allocation per row per frame to say the same thing.
+    pub visible: &'a [bool],
     /// Cells of gutter the renderer draws before the row's text, on the first
     /// visual line and every continuation of it.
     pub inset: usize,
@@ -353,7 +357,7 @@ fn hint_for<'a>(hints: &'a [RowHints<'a>], row: usize) -> RowHints<'a> {
 }
 
 fn visible(hint: &RowHints<'_>, chars: usize) -> bool {
-    !hint.hidden.get(chars).copied().unwrap_or(false)
+    hint.visible.get(chars).copied().unwrap_or(true)
 }
 
 /// Wrap one logical row, appending at least one visual line.
@@ -551,10 +555,41 @@ mod tests {
     }
 
     #[test]
+    fn a_cluster_is_never_split_across_visual_lines() {
+        // A break landing inside a cluster would hand the renderer half a glyph,
+        // and the halves would reclusterl differently from the whole — so every
+        // column derived from either row would be wrong from that point on.
+        let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+        let t = text(&format!("ab{family}cd"));
+        for width in 1..10 {
+            let layout = plain(&t, width);
+            let row = t.line(0).expect("one row");
+            for line in layout.visual_lines() {
+                assert!(
+                    row.is_char_boundary(line.bytes.start) && row.is_char_boundary(line.bytes.end),
+                    "width {width}: {:?} splits a character",
+                    line.bytes
+                );
+                let intact: Vec<usize> = row.grapheme_indices(true).map(|(at, _)| at).collect();
+                assert!(
+                    intact.contains(&line.bytes.start) || line.bytes.start == row.len(),
+                    "width {width}: {:?} starts inside a cluster",
+                    line.bytes
+                );
+                assert!(
+                    intact.contains(&line.bytes.end) || line.bytes.end == row.len(),
+                    "width {width}: {:?} ends inside a cluster",
+                    line.bytes
+                );
+            }
+        }
+    }
+
+    #[test]
     fn a_gutter_eats_into_the_width() {
         let t = text("aaaa bbbb");
         let hints = [RowHints {
-            hidden: &[],
+            visible: &[],
             inset: 2,
         }];
         let layout = Layout::compute(&t, 9, Metrics::default(), &hints);
@@ -574,7 +609,7 @@ mod tests {
     fn a_gutter_as_wide_as_the_pane_still_makes_progress() {
         let t = text("aaaa");
         let hints = [RowHints {
-            hidden: &[],
+            visible: &[],
             inset: 4,
         }];
         let layout = Layout::compute(&t, 4, Metrics::default(), &hints);
@@ -586,15 +621,15 @@ mod tests {
     }
 
     #[test]
-    fn hidden_clusters_take_no_width() {
+    fn undrawn_clusters_take_no_width() {
         // "## " concealed, as a heading's sigils are: the row draws as "heading"
         // and so fits a pane that its raw text would not.
         let t = text("## heading");
-        let hidden = vec![
-            true, true, true, false, false, false, false, false, false, false,
+        let visible = vec![
+            false, false, false, true, true, true, true, true, true, true,
         ];
         let hints = [RowHints {
-            hidden: &hidden,
+            visible: &visible,
             inset: 0,
         }];
         let layout = Layout::compute(&t, 7, Metrics::default(), &hints);
@@ -657,7 +692,7 @@ mod tests {
     fn a_cell_accounts_for_the_gutter() {
         let t = text("abc");
         let hints = [RowHints {
-            hidden: &[],
+            visible: &[],
             inset: 2,
         }];
         let layout = Layout::compute(&t, 10, Metrics::default(), &hints);
@@ -670,9 +705,9 @@ mod tests {
     #[test]
     fn a_cell_skips_hidden_clusters() {
         let t = text("## heading");
-        let hidden = vec![true, true, true];
+        let visible = vec![false, false, false];
         let hints = [RowHints {
-            hidden: &hidden,
+            visible: &visible,
             inset: 0,
         }];
         let layout = Layout::compute(&t, 40, Metrics::default(), &hints);
@@ -720,7 +755,7 @@ mod tests {
     fn a_click_in_the_gutter_lands_at_the_start_of_the_text() {
         let t = text("abc");
         let hints = [RowHints {
-            hidden: &[],
+            visible: &[],
             inset: 3,
         }];
         let layout = Layout::compute(&t, 10, Metrics::default(), &hints);
@@ -985,7 +1020,7 @@ mod tests {
             /// lines of one row cover the row in order without gaps.
             #[test]
             fn visual_lines_tile_their_rows(
-                initial in "[a-z \n]{0,40}",
+                initial in ".{0,40}",
                 width in 1usize..8,
             ) {
                 let t = Text::from(initial.as_str());
@@ -1006,6 +1041,15 @@ mod tests {
                     prop_assert!(line.chars.start >= cursor, "a line went backwards");
                     prop_assert!(row.is_char_boundary(line.bytes.start));
                     prop_assert!(row.is_char_boundary(line.bytes.end));
+                    // Both ends land between grapheme clusters, so a visual line's
+                    // slice reclusters exactly as the whole row does.
+                    let breaks: Vec<usize> = row
+                        .grapheme_indices(true)
+                        .map(|(at, _)| at)
+                        .chain(std::iter::once(row.len()))
+                        .collect();
+                    prop_assert!(breaks.contains(&line.bytes.start), "start splits a cluster");
+                    prop_assert!(breaks.contains(&line.bytes.end), "end splits a cluster");
                     cursor = line.chars.end;
                 }
                 prop_assert_eq!(seen_rows, t.line_count(), "every row is drawn");

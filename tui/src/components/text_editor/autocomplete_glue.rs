@@ -1,9 +1,9 @@
 //! Glue between the autocomplete controller (which works in byte offsets
-//! against a single joined buffer string) and `ratatui_textarea::TextArea`
+//! against a single joined buffer string) and the **edit buffer**
 //! (which works in `(row, char_col)` per-line coordinates).
 
+use super::rope_buffer::{CursorMove, RopeBuffer};
 use ratatui::layout::Rect;
-use ratatui_textarea::{CursorMove, TextArea};
 
 use crate::components::autocomplete::AcceptAction;
 
@@ -58,13 +58,13 @@ pub fn row_char_col_to_byte(lines: &[String], row: usize, char_col: usize) -> us
 /// post-replacement byte offset.
 ///
 /// Both `delete_str` and `cut` write the removed text into the
-/// textarea's yank buffer (see `ratatui_textarea::TextArea::delete_str`
+/// buffer's register (see `RopeBuffer::delete_str`
 /// — `self.yank = removed.clone().into()`). To avoid clobbering
 /// anything the user had previously yanked (Ctrl+X / Ctrl+C →
 /// ratatui-textarea yank ring), this function snapshots the yank
 /// buffer before the delete and restores it afterwards.
-pub fn apply_accept_to_textarea(ta: &mut TextArea<'_>, action: &AcceptAction) {
-    let before: Vec<String> = ta.lines().iter().map(|l| l.to_string()).collect();
+pub fn apply_accept_to_textarea(ta: &mut RopeBuffer, action: &AcceptAction) {
+    let before: Vec<String> = ta.lines().to_vec();
     let Some((start_row, start_col)) = byte_to_row_char_col(&before, action.range.start) else {
         return;
     };
@@ -73,7 +73,7 @@ pub fn apply_accept_to_textarea(ta: &mut TextArea<'_>, action: &AcceptAction) {
     }
 
     ta.cancel_selection();
-    ta.move_cursor(CursorMove::Jump(start_row as u16, start_col as u16));
+    ta.move_cursor(CursorMove::Jump(start_row, start_col));
     if action.range.end > action.range.start {
         let preserved_yank = ta.yank_text();
         let joined: String = before.join("\n");
@@ -85,9 +85,9 @@ pub fn apply_accept_to_textarea(ta: &mut TextArea<'_>, action: &AcceptAction) {
 
     // Place the cursor at the requested post-replacement byte offset. The
     // textarea's lines may now be different so we re-read them.
-    let after: Vec<String> = ta.lines().iter().map(|l| l.to_string()).collect();
+    let after: Vec<String> = ta.lines().to_vec();
     if let Some((row, col)) = byte_to_row_char_col(&after, action.new_cursor_byte) {
-        ta.move_cursor(CursorMove::Jump(row as u16, col as u16));
+        ta.move_cursor(CursorMove::Jump(row, col));
     }
 }
 
@@ -186,7 +186,7 @@ mod tests {
 
     #[test]
     fn apply_accept_replaces_and_positions_cursor() {
-        let mut ta = TextArea::from(vec!["see [[me".to_string()]);
+        let mut ta = RopeBuffer::new(ropetext::Text::from("see [[me"));
         // Move cursor to end so the textarea matches the spec scenario.
         ta.move_cursor(CursorMove::End);
         let action = AcceptAction {
@@ -199,7 +199,7 @@ mod tests {
         let result: String = ta.lines().join("\n");
         assert_eq!(result, "see [[meeting]]");
         // After insert, cursor should be at end of `]]`.
-        let ratatui_textarea::DataCursor(row, col) = ta.cursor();
+        let (row, col) = ta.cursor();
         assert_eq!((row, col), (0, 15));
     }
 
@@ -208,7 +208,7 @@ mod tests {
         // User Ctrl+X's some text into the yank ring, then accepts an
         // autocomplete suggestion. The yank buffer must survive — the
         // ratatui-textarea `delete_str` overwrites it by default.
-        let mut ta = TextArea::from(vec!["see [[me".to_string()]);
+        let mut ta = RopeBuffer::new(ropetext::Text::from("see [[me"));
         ta.set_yank_text("previously yanked text");
         ta.move_cursor(CursorMove::End);
         let action = AcceptAction {
@@ -225,7 +225,7 @@ mod tests {
     fn apply_accept_replaces_across_multiple_lines_unaffected() {
         // Sanity: a single-line replacement on a multi-line buffer leaves
         // the other lines untouched.
-        let mut ta = TextArea::from(vec!["alpha".to_string(), "see [[me".to_string()]);
+        let mut ta = RopeBuffer::new(ropetext::Text::from("alpha\nsee [[me"));
         let action = AcceptAction {
             range: 12..14, // bytes 12..14 in the joined "alpha\nsee [[me"
             new_text: "meeting]]".to_string(),

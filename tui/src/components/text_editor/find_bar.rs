@@ -17,11 +17,10 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use ratatui_textarea::{CursorMove, DataCursor};
 
 use super::char_col_to_byte;
-use super::edit_buffer::EditBuffer;
 use super::find_replace;
+use super::rope_buffer::{CursorMove, RopeBuffer};
 use crate::components::single_line_input::{InputOutcome, SingleLineInput};
 use crate::settings::themes::Theme;
 
@@ -59,7 +58,7 @@ pub struct FindBar {
     // `pub(super)` on the state fields is a concession, not a design: the
     // editor's own tests still assert against them. Migrating those tests into
     // this module — where the bar can be driven directly against an
-    // `EditBuffer` — is the follow-up that lets these go private again.
+    // `RopeBuffer` — is the follow-up that lets these go private again.
     pub(super) input: SingleLineInput,
     /// `Some` once the **replace field** is revealed. Its presence is what
     /// puts the bar in replace mode (adr/0033).
@@ -114,7 +113,7 @@ impl FindBar {
     ///
     /// The fields are single-line; a multi-line clipboard collapses to its
     /// first line rather than silently pasting nothing.
-    pub fn paste(&mut self, text: &str, buf: &mut EditBuffer) {
+    pub fn paste(&mut self, text: &str, buf: &mut RopeBuffer) {
         let line = text.lines().next().unwrap_or_default().to_string();
         let focus = self.focus;
         let input = self.focused_input_mut();
@@ -128,13 +127,13 @@ impl FindBar {
     /// Re-derive what an undo or redo invalidated. The **current match**
     /// pointed at text the history step just changed, so recompute it against
     /// the cursor rather than leaving a highlight over whatever now sits there.
-    fn after_history_step(&mut self, buf: &EditBuffer) {
+    fn after_history_step(&mut self, buf: &RopeBuffer) {
         self.refresh_match_count(buf);
         self.current = buf.match_at_cursor();
     }
 
     /// Everything the bar wants painted this frame.
-    pub fn overlay(&self, buf: &EditBuffer) -> BarOverlay {
+    pub fn overlay(&self, buf: &RopeBuffer) -> BarOverlay {
         let preview = self.preview(buf);
         let matches = if preview.is_none() {
             self.pattern
@@ -326,7 +325,7 @@ impl FindBar {
     /// and push it to the textarea so its stepping uses the same regex the
     /// highlighter and the replacer do. When `jump` is true, also move to the
     /// first match at or after the cursor (live preview).
-    fn refresh_pattern(&mut self, buf: &mut EditBuffer) {
+    fn refresh_pattern(&mut self, buf: &mut RopeBuffer) {
         self.armed_empty = false;
         if self.input.is_empty() {
             let _ = buf.set_search_pattern("");
@@ -363,7 +362,7 @@ impl FindBar {
         self.status = SearchStatus::from_found(found);
         self.highlight_current_match(buf, found);
     }
-    pub fn advance(&mut self, buf: &mut EditBuffer, backward: bool) {
+    pub fn advance(&mut self, buf: &mut RopeBuffer, backward: bool) {
         if self.input.is_empty() {
             return;
         }
@@ -383,11 +382,11 @@ impl FindBar {
     #[allow(clippy::type_complexity)]
     fn plan_replace_current(
         &self,
-        buf: &EditBuffer,
+        buf: &RopeBuffer,
     ) -> Option<(usize, usize, usize, String, Vec<String>, Vec<String>)> {
         let pattern = self.pattern.as_ref()?;
         let replacement = self.replacement();
-        let DataCursor(row, start_col) = buf.cursor();
+        let (row, start_col) = buf.cursor();
         let line = buf.lines().get(row)?;
         let start_byte = char_col_to_byte(line, start_col);
         let caps = pattern.as_regex().captures_at(line, start_byte)?;
@@ -406,7 +405,7 @@ impl FindBar {
     }
     /// Replace the **current match** and step to the next one — the `Enter`
     /// action while a **replace field** is revealed.
-    fn replace_current(&mut self, buf: &mut EditBuffer) {
+    fn replace_current(&mut self, buf: &mut RopeBuffer) {
         // Derive the span from the pattern at the cursor rather than reading
         // `self.current`. That field is shared with the visual-mode and mouse
         // selection, and `handle_mouse` has no find-bar guard, so a drag can
@@ -425,7 +424,7 @@ impl FindBar {
         // `CursorMove::Jump` takes u16 and clamps silently, so a position past
         // 65535 would select the wrong range and splice text into the middle of
         // a line. Refuse rather than corrupt.
-        let Some((row_u16, start_u16, end_u16)) = fits_jump(row, start_col, end_col) else {
+        let Some((row_u16, start_u16, end_u16)) = Some((row, start_col, end_col)) else {
             return;
         };
         // One `edit()` scope: select the match and overwrite it as a single
@@ -452,7 +451,7 @@ impl FindBar {
     }
     /// Rewrite every match in the buffer — the `Ctrl+A` action. Returns the
     /// number replaced, or `None` when there was nothing to do.
-    pub fn replace_all(&mut self, buf: &mut EditBuffer) -> Option<usize> {
+    pub fn replace_all(&mut self, buf: &mut RopeBuffer) -> Option<usize> {
         let pattern = self.pattern.as_ref()?;
         let replacement = self.replacement().to_string();
 
@@ -464,13 +463,8 @@ impl FindBar {
         // note — which turns a bulk edit into a navigation. The row is always
         // still valid: the pattern cannot span a newline and the replacement
         // is single-line, so a replace all never changes the line count.
-        let DataCursor(cur_row, cur_col) = buf.cursor();
+        let (cur_row, cur_col) = buf.cursor();
 
-        // `select_all` reaches the end of the buffer via `Jump(u16::MAX,
-        // u16::MAX)`, which clamps — so unlike a computed `last_row as u16` it
-        // stays correct on a note with more than 65535 lines or a line longer
-        // than 65535 chars, where the cast would silently select the wrong
-        // range and splice the rewrite into the middle of the text.
         let joined = after.join("\n");
         // One **undo group** spanning the whole rewrite. The buffer also
         // derives `bulk` from it — a replace all rewrites rows the cursor does
@@ -486,16 +480,12 @@ impl FindBar {
         }
         let _ = &before;
 
-        // Restore the reading position. The row stays valid because a replace
-        // all never changes the line count (the pattern cannot span a newline
-        // and the replace field is single-line), and `Jump` clamps, so the
-        // cast cannot land the cursor outside the buffer.
+        // Restore the reading position. The row stays valid because a replace all
+        // never changes the line count: the pattern cannot span a newline and the
+        // replace field is single-line.
         let row = cur_row.min(after.len().saturating_sub(1));
         let col = cur_col.min(after[row].chars().count());
-        buf.move_cursor(CursorMove::Jump(
-            row.min(u16::MAX as usize) as u16,
-            col.min(u16::MAX as usize) as u16,
-        ));
+        buf.move_cursor(CursorMove::Jump(row, col));
 
         self.current = None;
         self.refresh_match_count(buf);
@@ -505,7 +495,7 @@ impl FindBar {
     /// count is on screen beforehand and undo is one keystroke — except with
     /// an empty replacement, where the keystroke carries no evidence the user
     /// finished typing, so the first press arms and the second commits.
-    fn replace_all_key(&mut self, buf: &mut EditBuffer) {
+    fn replace_all_key(&mut self, buf: &mut RopeBuffer) {
         if !self.is_replacing() || self.pattern.is_none() {
             return;
         }
@@ -518,7 +508,7 @@ impl FindBar {
     }
     /// Recount matches against the current buffer. Cheap — `find_iter` over
     /// lines the editor already holds.
-    fn refresh_match_count(&mut self, buf: &EditBuffer) {
+    fn refresh_match_count(&mut self, buf: &RopeBuffer) {
         let Some(pattern) = self.pattern.as_ref() else {
             return;
         };
@@ -529,7 +519,7 @@ impl FindBar {
     ///
     /// Returns `None` whenever there is nothing to preview, in which case the
     /// caller renders the real buffer.
-    pub(super) fn preview(&self, buf: &EditBuffer) -> Option<find_replace::Preview> {
+    pub(super) fn preview(&self, buf: &RopeBuffer) -> Option<find_replace::Preview> {
         if !self.is_replacing() {
             return None;
         }
@@ -546,7 +536,7 @@ impl FindBar {
     /// editor selection so the user can see where the match is — our custom
     /// `MarkdownEditorView` does not render the textarea library's built-in
     /// search highlights.
-    fn highlight_current_match(&mut self, buf: &EditBuffer, found: bool) {
+    fn highlight_current_match(&mut self, buf: &RopeBuffer, found: bool) {
         self.current = if found { buf.match_at_cursor() } else { None };
     }
     /// Handle one key. The bar owns every key while it holds the **editor
@@ -556,7 +546,7 @@ impl FindBar {
     /// The key map is the same on both backends — the vim emulation's old
     /// "Enter confirms and closes" special case is gone, because two Enters
     /// over one widget is what made the bar ambiguous (adr/0033).
-    pub fn handle_key(&mut self, key: &KeyEvent, buf: &mut EditBuffer) -> KeyOutcome {
+    pub fn handle_key(&mut self, key: &KeyEvent, buf: &mut RopeBuffer) -> KeyOutcome {
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let stay = KeyOutcome::default();
@@ -642,16 +632,4 @@ impl FindBar {
         }
         stay
     }
-}
-/// Narrow a `(row, start, end)` triple to the `u16`s `CursorMove::Jump` takes,
-/// or `None` when any of them would not survive the cast.
-///
-/// `Jump` clamps rather than erroring, so an out-of-range value silently
-/// selects the wrong span instead of failing loudly.
-fn fits_jump(row: usize, start: usize, end: usize) -> Option<(u16, u16, u16)> {
-    let max = u16::MAX as usize;
-    if row > max || start > max || end > max {
-        return None;
-    }
-    Some((row as u16, start as u16, end as u16))
 }

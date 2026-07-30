@@ -1,5 +1,4 @@
 use super::markdown::{MarkdownSpanner, ParsedBuffer, opener_shape};
-use super::word_wrap::WordWrapLayout;
 use crate::settings::themes::Theme;
 use ratatui::Frame;
 use ratatui::layout::Position;
@@ -7,6 +6,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Text};
 use ratatui::widgets::Paragraph;
+use ropetext::{Column, Layout, Metrics, RowHints};
 use std::ops::Range;
 use std::sync::OnceLock;
 
@@ -133,7 +133,7 @@ enum RenderedCacheRebuild {
 
 #[derive(Clone)]
 pub struct MarkdownEditorView {
-    pub layout: WordWrapLayout,
+    pub layout: Layout,
     visual_scroll_offset: usize,
     /// Viewport height from the last `update`, so overlay derivation can bound
     /// itself to the visible rows.
@@ -300,7 +300,7 @@ impl ParseState {
 impl MarkdownEditorView {
     pub fn new() -> Self {
         Self {
-            layout: WordWrapLayout::default(),
+            layout: Layout::compute(&ropetext::Text::new(), 0, Metrics::default(), &[]),
             visual_scroll_offset: 0,
             last_height: 0,
             lines_snapshot: Vec::new(),
@@ -739,22 +739,20 @@ impl MarkdownEditorView {
             //   an inline element boundary — same row or different
             //   row.
             self.rebuild_gutter_insets(lines, cursor.0);
-            let line_count_changed = self.layout.row_starts_len() != lines.len();
+            let line_count_changed = self.layout.row_count() != lines.len();
             if width_changed || line_count_changed {
-                self.layout = WordWrapLayout::compute(
-                    lines,
-                    rect.width,
-                    &self.rendered_cache,
-                    &self.gutter_insets,
-                );
+                let hints = row_hints(&self.rendered_cache, &self.gutter_insets);
+                self.layout =
+                    Layout::compute(&snap.text, rect.width as usize, Metrics::default(), &hints);
             } else {
                 match &self.last_text_change {
                     TextChangeKind::Full => {
-                        self.layout = WordWrapLayout::compute(
-                            lines,
-                            rect.width,
-                            &self.rendered_cache,
-                            &self.gutter_insets,
+                        let hints = row_hints(&self.rendered_cache, &self.gutter_insets);
+                        self.layout = Layout::compute(
+                            &snap.text,
+                            rect.width as usize,
+                            Metrics::default(),
+                            &hints,
                         );
                     }
                     TextChangeKind::Incremental(range) => {
@@ -768,25 +766,19 @@ impl MarkdownEditorView {
                                 .map(|r| r + 1)
                                 .unwrap_or(range.end),
                         );
-                        self.layout.splice_range(
-                            lines,
-                            rect.width,
-                            &self.rendered_cache,
-                            &self.gutter_insets,
-                            start..end,
-                        );
+                        let hints = row_hints(&self.rendered_cache, &self.gutter_insets);
+                        // Line count is unchanged on this path — the caller above
+                        // takes the full-recompute branch when it is not — so the
+                        // relayout shifts nothing.
+                        self.layout.relayout_rows(&snap.text, &hints, start..end, 0);
                     }
                     TextChangeKind::None => {
                         if let (Some(&first), Some(&last)) =
                             (cursor_affected_rows.first(), cursor_affected_rows.last())
                         {
-                            self.layout.splice_range(
-                                lines,
-                                rect.width,
-                                &self.rendered_cache,
-                                &self.gutter_insets,
-                                first..last + 1,
-                            );
+                            let hints = row_hints(&self.rendered_cache, &self.gutter_insets);
+                            self.layout
+                                .relayout_rows(&snap.text, &hints, first..last + 1, 0);
                         }
                     }
                 }
@@ -802,8 +794,12 @@ impl MarkdownEditorView {
             self.last_layout_cursor = cursor;
         }
 
-        // Cache cursor_vrow for render() — avoids a second logical_to_visual call.
-        self.cursor_vrow = self.layout.logical_to_visual(cursor.0, cursor.1).0;
+        // Cache cursor_vrow for render() — avoids a second lookup there.
+        self.cursor_vrow = snap
+            .text
+            .position(cursor.0, Column::new(cursor.1))
+            .map(|at| self.layout.visual_row_of(at))
+            .unwrap_or(0);
         let height = rect.height as usize;
         if self.cursor_vrow < self.visual_scroll_offset {
             self.visual_scroll_offset = self.cursor_vrow;
@@ -1119,14 +1115,14 @@ impl MarkdownEditorView {
                 // the same `EditorSnapshot` in the last `update()`.
                 let logical_line = lines[vl.logical_row].as_str();
                 let parsed = &parsed_lines[vl.logical_row];
-                let content = vl.content(logical_line);
+                let content = &logical_line[vl.bytes.clone()];
                 let spans = MarkdownSpanner::render_with(
                     content,
                     logical_line,
                     parsed,
-                    vl.start_col,
+                    vl.chars.start,
                     cursor_col,
-                    vl.is_first_visual_line,
+                    vl.first,
                     force_raw,
                     rect.width,
                     theme,
@@ -1145,7 +1141,7 @@ impl MarkdownEditorView {
                 // "preview wins over selection" is a property of the enum
                 // rather than of where the code happens to sit.
                 let spans = {
-                    let gutter_off = if vl.is_first_visual_line {
+                    let gutter_off = if vl.first {
                         0
                     } else {
                         self.gutter_insets.get(vl.logical_row).copied().unwrap_or(0)
@@ -1154,10 +1150,10 @@ impl MarkdownEditorView {
                         MarkdownSpanner::rendered_col_with_reveal(
                             logical_line,
                             parsed,
-                            vl.start_col,
+                            vl.chars.start,
                             col,
                             cursor_col,
-                            vl.is_first_visual_line,
+                            vl.first,
                             force_raw,
                         ) + gutter_off
                     };
@@ -1220,9 +1216,9 @@ impl MarkdownEditorView {
                 let rendered_col = MarkdownSpanner::rendered_cursor_col_with(
                     logical_line,
                     parsed,
-                    vl.start_col,
+                    vl.chars.start,
                     cursor.1,
-                    vl.is_first_visual_line,
+                    vl.first,
                     force_raw,
                 );
                 let cx = rect.x + rendered_col as u16;
@@ -1361,17 +1357,17 @@ impl MarkdownEditorView {
         // sigil chars are hidden and replaced by the "│ " bar. On the first
         // visual line, skip those hidden sigil chars so that rendered_col 0
         // maps to the first content char, not to the hidden ">".
-        let effective_start_col = if gutter > 0 && vl.is_first_visual_line {
-            parsed.blockquote_sigil_end().unwrap_or(vl.start_col)
+        let effective_start_col = if gutter > 0 && vl.first {
+            parsed.blockquote_sigil_end().unwrap_or(vl.chars.start)
         } else {
-            vl.start_col
+            vl.chars.start
         };
         let logical_col = MarkdownSpanner::rendered_col_to_logical_with(
             logical_line,
             parsed,
             effective_start_col,
             vcol,
-            vl.is_first_visual_line,
+            vl.first,
             force_raw,
         );
         let col = logical_col.min(u16::MAX as usize) as u16;
@@ -1511,6 +1507,21 @@ fn apply_code_box<'a>(
         ));
     }
     out
+}
+
+/// Per-row hints for the layout: what the syntax layer draws, and how far each
+/// row is inset by its gutter.
+///
+/// Built per rebuild rather than stored, because both halves already live on the
+/// view and a third copy would be a third thing to keep in step.
+fn row_hints<'a>(rendered: &'a [Vec<bool>], insets: &'a [usize]) -> Vec<RowHints<'a>> {
+    let rows = rendered.len().max(insets.len());
+    (0..rows)
+        .map(|row| RowHints {
+            visible: rendered.get(row).map(Vec::as_slice).unwrap_or(&[]),
+            inset: insets.get(row).copied().unwrap_or(0),
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -2590,8 +2601,9 @@ mod tests {
         update_view(&mut v, &edited, (100, edited[100].len()), rect(40), 2, None);
 
         // After incremental wrap, layout must equal a fresh compute of the edited buffer.
-        let fresh_layout =
-            WordWrapLayout::compute(&edited, 40, v.rendered_cache_for_testing(), &[]);
+        let fresh_text = ropetext::Text::from(edited.join("\n").as_str());
+        let fresh_hints = row_hints(v.rendered_cache_for_testing(), &[]);
+        let fresh_layout = Layout::compute(&fresh_text, 40, Metrics::default(), &fresh_hints);
 
         let actual = v.layout.visual_lines();
         let fresh = fresh_layout.visual_lines();
