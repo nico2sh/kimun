@@ -17,6 +17,7 @@ mod revisions;
 pub mod rope_buffer;
 #[cfg(test)]
 mod rope_buffer_differential;
+pub mod typing_run;
 use revisions::Revisions;
 pub mod snapshot;
 pub mod text_coords;
@@ -384,6 +385,10 @@ pub struct TextEditorComponent {
     /// previous spawn on a fresh edit, so a burst of edits resolves
     /// against the latest content.
     full_parse_task: SingleSlotTask<()>,
+    /// Whether the last key was handled while vim was in Insert. A change either
+    /// way ends the open **undo group**: leaving Insert closes vim's session,
+    /// entering it starts a fresh one.
+    last_insert_session: bool,
     /// Set by a right-click with no selection: the host (which owns the note
     /// path) opens the note's context menu and clears the flag.
     pub wants_context_menu: bool,
@@ -418,6 +423,7 @@ impl TextEditorComponent {
             autocomplete_vault: None,
             autocomplete_redraw_bound: false,
             full_parse_task: SingleSlotTask::empty(),
+            last_insert_session: false,
             wants_context_menu: false,
             search_needles: Vec::new(),
             full_parse_tx,
@@ -1548,6 +1554,24 @@ impl TextEditorComponent {
         // so a second check could never fire. It survived only because tests
         // call this function directly.
 
+        // Whether this key types. Decided here rather than in the plain-key
+        // section below, because a key claimed earlier — Ctrl+Z, a clipboard
+        // chord, Tab — returns before ever reaching it, and a run left open
+        // across an undo would try to extend a group that was just taken back.
+        let stroke = plain_keys::operation(*key).and_then(|op| match op {
+            plain_keys::Operation::Insert(c) => Some(typing_run::Stroke::Insert(c)),
+            plain_keys::Operation::InsertNewline => Some(typing_run::Stroke::Insert('\n')),
+            plain_keys::Operation::DeleteBack | plain_keys::Operation::DeleteForward => {
+                Some(typing_run::Stroke::Delete)
+            }
+            _ => None,
+        });
+        if stroke.is_none()
+            && let Some((_, run)) = self.backend.as_textarea_parts_mut()
+        {
+            run.end();
+        }
+
         // System clipboard shortcuts — intercept before passing to textarea.
         if key.modifiers == KeyModifiers::CONTROL {
             match key.code {
@@ -1646,9 +1670,19 @@ impl TextEditorComponent {
             return EventState::Consumed;
         }
 
-        let Some(ta) = self.backend.as_textarea_mut() else {
+        // A change of modal state ends whatever run was open: leaving Insert
+        // closes vim's session, and entering it starts a fresh one. Watching the
+        // mode here costs nothing and saves threading the run through the engine.
+        let in_insert_session = self.backend.modal_is_insert().unwrap_or(false);
+        let session_changed = self.last_insert_session != in_insert_session;
+        self.last_insert_session = in_insert_session;
+
+        let Some((ta, run)) = self.backend.as_textarea_parts_mut() else {
             unreachable!("handle_textarea_key called with non-Textarea backend")
         };
+        if session_changed {
+            run.end();
+        }
         // Last: what the key means to the plain backend. It runs *after* the
         // component's own claims — `Tab` indents rows, `Enter` may continue a
         // list, an opening bracket over a selection wraps it — because those are
@@ -1671,6 +1705,29 @@ impl TextEditorComponent {
             if vertical.is_none() {
                 self.view.clear_visual_goal();
             }
+            // Does this keystroke continue the last one's **undo group**? The
+            // policy is the backend's (adr/0041); the engine only offers a group
+            // that can span keystrokes. Everything that is not typing ends the
+            // run, which is what makes the idle rule correct without a timer:
+            // undo is itself one of those things.
+            if let Some(stroke) = stroke {
+                {
+                    let now = std::time::Instant::now();
+                    // In vim's Insert mode the session is the group: `u` takes
+                    // back everything typed since `i`, so neither a word boundary
+                    // nor a pause may break it. `session_changed` above ended the
+                    // run at the boundary, which is what marks a session's start.
+                    let carries_on = if in_insert_session {
+                        run.continues_session(stroke, now)
+                    } else {
+                        run.continues(stroke, now)
+                    };
+                    if carries_on {
+                        ta.continue_group();
+                    }
+                }
+            }
+
             let changed = match vertical {
                 // A stale layout — an edit landed before the frame that re-lays
                 // it out — falls back to the logical move rather than reading it.
@@ -4419,6 +4476,120 @@ mod tests {
             &tx,
         );
         assert_eq!(editor.get_text(), "todo and todo");
+    }
+
+    // ── Undo grouping ────────────────────────────────────────────────────────
+
+    fn type_out(editor: &mut TextEditorComponent, tx: &AppTx, text: &str) {
+        use ratatui::crossterm::event::KeyEvent;
+        for c in text.chars() {
+            let code = if c == '\n' {
+                KeyCode::Enter
+            } else {
+                KeyCode::Char(c)
+            };
+            editor.handle_textarea_key(&KeyEvent::new(code, KeyModifiers::NONE), tx);
+        }
+    }
+
+    #[test]
+    fn undo_takes_back_a_word_not_a_letter() {
+        // The incumbent recorded one history entry per character, so leaving a
+        // sentence took as many presses as it had letters.
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text(String::new());
+        type_out(&mut editor, &tx, "hello world");
+        assert_eq!(editor.get_text(), "hello world");
+
+        assert!(get_ta(&mut editor).undo());
+        assert_eq!(editor.get_text(), "hello ", "the last word goes whole");
+        assert!(get_ta(&mut editor).undo());
+        assert_eq!(editor.get_text(), "", "and so does the first");
+    }
+
+    #[test]
+    fn a_cursor_move_separates_two_runs() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text(String::new());
+        type_out(&mut editor, &tx, "ab");
+        arrow(&mut editor, &tx, KeyCode::Home);
+        type_out(&mut editor, &tx, "cd");
+        assert_eq!(editor.get_text(), "cdab");
+
+        assert!(get_ta(&mut editor).undo());
+        assert_eq!(
+            editor.get_text(),
+            "ab",
+            "only what was typed after the move comes back off"
+        );
+    }
+
+    #[test]
+    fn backspacing_to_fix_a_typo_is_its_own_action() {
+        use ratatui::crossterm::event::KeyEvent;
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text(String::new());
+        type_out(&mut editor, &tx, "helllo");
+        editor.handle_textarea_key(&KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE), &tx);
+        assert_eq!(editor.get_text(), "helll");
+
+        assert!(get_ta(&mut editor).undo());
+        assert_eq!(
+            editor.get_text(),
+            "helllo",
+            "the delete undoes on its own, without taking the typing with it"
+        );
+    }
+
+    #[test]
+    fn an_undo_between_two_runs_separates_them() {
+        // Ctrl+Z is claimed before the plain key table, so the run has to be ended
+        // where every key passes rather than where typing is applied.
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text(String::new());
+        type_out(&mut editor, &tx, "ab");
+        assert!(get_ta(&mut editor).undo());
+        assert_eq!(editor.get_text(), "");
+        type_out(&mut editor, &tx, "cd");
+        assert_eq!(editor.get_text(), "cd");
+        assert!(get_ta(&mut editor).undo());
+        assert_eq!(
+            editor.get_text(),
+            "",
+            "the second run is its own group, not an extension of an undone one"
+        );
+    }
+
+    #[test]
+    fn a_vim_insert_session_undoes_whole() {
+        use ratatui::crossterm::event::KeyEvent;
+        let mut editor = make_vim_editor();
+        let tx = dummy_tx();
+        editor.set_text(String::new());
+        // `i` enters Insert; the text then flows through the same plain key path.
+        let press = |editor: &mut TextEditorComponent, code| {
+            let _ = editor.handle_input(
+                &InputEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)),
+                &tx,
+            );
+        };
+        press(&mut editor, KeyCode::Char('i'));
+        for c in "hello world".chars() {
+            press(&mut editor, KeyCode::Char(c));
+        }
+        press(&mut editor, KeyCode::Esc);
+        assert_eq!(editor.get_text(), "hello world");
+
+        assert!(get_ta(&mut editor).undo());
+        assert_eq!(
+            editor.get_text(),
+            "",
+            "vim's `u` takes back the whole session, word boundaries included"
+        );
     }
 
     // ── Arrow keys move by drawn line ────────────────────────────────────────

@@ -88,6 +88,9 @@ pub enum InputInterpreter {
 /// The in-process textarea storage plus its input interpreter.
 #[derive(Debug)]
 pub struct TextareaBackend {
+    /// Which keystrokes are sharing an undo group. The **plain** backend's
+    /// policy; the **vim** engine has its own and leaves this alone.
+    pub typing: super::typing_run::TypingRun,
     /// The open note's text and its edit history (adr/0037). Mutations go
     /// through `RopeBuffer::edit`.
     pub ta: RopeBuffer,
@@ -98,12 +101,14 @@ impl TextareaBackend {
     pub fn direct(text: ropetext::Text) -> Self {
         Self {
             ta: RopeBuffer::new(text),
+            typing: super::typing_run::TypingRun::default(),
             input: InputInterpreter::Direct,
         }
     }
     pub fn vim(text: ropetext::Text) -> Self {
         Self {
             ta: RopeBuffer::new(text),
+            typing: super::typing_run::TypingRun::default(),
             input: InputInterpreter::Vim(Box::default()),
         }
     }
@@ -142,6 +147,16 @@ impl BackendState {
     pub fn as_textarea(&self) -> Option<&RopeBuffer> {
         match self {
             BackendState::Textarea(tb) => Some(&tb.ta),
+            BackendState::Nvim(_) => None,
+        }
+    }
+
+    /// The buffer and its typing run together, for the key path that needs both.
+    pub fn as_textarea_parts_mut(
+        &mut self,
+    ) -> Option<(&mut RopeBuffer, &mut super::typing_run::TypingRun)> {
+        match self {
+            BackendState::Textarea(tb) => Some((&mut tb.ta, &mut tb.typing)),
             BackendState::Nvim(_) => None,
         }
     }
@@ -253,6 +268,7 @@ impl BackendState {
             BackendState::Textarea(TextareaBackend {
                 ta,
                 input: InputInterpreter::Vim(engine),
+                ..
             }) => Some(engine.handle_key(key, ta)),
             _ => None,
         }
