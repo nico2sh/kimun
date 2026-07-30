@@ -1,0 +1,13 @@
+---
+source: tui/tests/editor_render_snapshots.rs
+expression: "painted(\"- outer\\n  - inner-a\\n  - inner-b\", 80)"
+---
+ 0 |- outer                                                                         |
+   0..2 fg=Rgb(124, 111, 100) bg=Rgb(40, 40, 40) mods=NONE
+   2..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+ 1 |  - inner-a                                                                     |
+   0..4 fg=Rgb(124, 111, 100) bg=Rgb(40, 40, 40) mods=NONE
+   4..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+ 2 |  - inner-b                                                                     |
+   0..4 fg=Rgb(124, 111, 100) bg=Rgb(40, 40, 40) mods=NONE
+   4..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE

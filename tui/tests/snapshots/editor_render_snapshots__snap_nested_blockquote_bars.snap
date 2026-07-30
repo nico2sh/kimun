@@ -1,0 +1,15 @@
+---
+source: tui/tests/editor_render_snapshots.rs
+expression: "painted(text, 40)"
+---
+ 0 |│ outer                                 |
+   0..2 fg=Rgb(250, 189, 47) bg=Rgb(40, 40, 40) mods=NONE
+   2..7 fg=Rgb(168, 153, 132) bg=Rgb(40, 40, 40) mods=NONE
+   7..40 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+ 1 |││ inner runs on long enough that it has|
+   0..3 fg=Rgb(250, 189, 47) bg=Rgb(40, 40, 40) mods=NONE
+   3..40 fg=Rgb(168, 153, 132) bg=Rgb(40, 40, 40) mods=NONE
+ 2 |││ to wrap at this width                |
+   0..3 fg=Rgb(250, 189, 47) bg=Rgb(40, 40, 40) mods=NONE
+   3..24 fg=Rgb(168, 153, 132) bg=Rgb(40, 40, 40) mods=NONE
+   24..40 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE

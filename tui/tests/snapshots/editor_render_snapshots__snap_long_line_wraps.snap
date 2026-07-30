@@ -1,0 +1,14 @@
+---
+source: tui/tests/editor_render_snapshots.rs
+expression: "painted(&line, 40)"
+---
+ 0 |word word word word word word word word |
+   0..40 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+ 1 |word word word word word word word word |
+   0..40 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+ 2 |word word word word word word word word |
+   0..40 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+ 3 |word word word word word word word word |
+   0..40 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+ 4 |word word word word word word word word |
+   0..40 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE

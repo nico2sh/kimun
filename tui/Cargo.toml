@@ -63,6 +63,8 @@ self-replace = "1"
 tempfile = "3"
 proptest = "1"
 criterion = { version = "0.5", features = ["html_reports"] }
+# Pins what the editor paints, cell by cell — see tests/editor_render_snapshots.rs.
+insta = "1"
 
 [[bench]]
 name = "editor_parse"

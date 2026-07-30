@@ -1,0 +1,9 @@
+---
+source: tui/tests/editor_render_snapshots.rs
+expression: "painted_with_cursor(\"# Heading One\\nplain text\", 80, (0, 3))"
+---
+ 0 |# Heading One                                                                   |
+   0..13 fg=Rgb(124, 111, 100) bg=Rgb(40, 40, 40) mods=NONE
+   13..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+ 1 |plain text                                                                      |
+   0..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE

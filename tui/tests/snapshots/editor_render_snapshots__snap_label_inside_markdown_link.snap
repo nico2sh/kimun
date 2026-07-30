@@ -1,0 +1,9 @@
+---
+source: tui/tests/editor_render_snapshots.rs
+expression: "painted(\"[see docs](#section) and #real\", 80)"
+---
+ 0 |see docs and #real                                                              |
+   0..8 fg=Rgb(250, 189, 47) bg=Rgb(40, 40, 40) mods=UNDERLINED
+   8..13 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+   13..18 fg=Rgb(254, 128, 25) bg=Rgb(40, 40, 40) mods=BOLD
+   18..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE

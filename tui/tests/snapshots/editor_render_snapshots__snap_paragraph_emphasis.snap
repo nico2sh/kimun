@@ -1,0 +1,8 @@
+---
+source: tui/tests/editor_render_snapshots.rs
+expression: "painted(\"This is *emphasised* text.\", 80)"
+---
+ 0 |This is emphasised text.                                                        |
+   0..8 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+   8..18 fg=Rgb(168, 153, 132) bg=Rgb(40, 40, 40) mods=ITALIC
+   18..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
