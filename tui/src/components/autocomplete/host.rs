@@ -16,7 +16,7 @@ pub trait AutocompleteHost {
     /// snapshot's lifetime ties to `&self`, so the editor's textarea
     /// or the search-box buffer is borrowed without an intermediate
     /// `Vec<String>` clone in the common case — perf #8.
-    fn buffer_snapshot(&self) -> EditorSnapshot<'_>;
+    fn buffer_snapshot(&self) -> EditorSnapshot;
 
     /// Host opt-in to the controller's per-text-revision cache for
     /// `(joined_text, ExclusionZones)`. Returning `None` makes every

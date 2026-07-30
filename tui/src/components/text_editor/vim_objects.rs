@@ -65,7 +65,7 @@ pub(super) fn object_range_at_cursor(
     obj: TextObject,
 ) -> Option<(usize, usize, usize)> {
     let (row, col) = super::cursor_tuple(ta);
-    let line = ta.lines().get(row)?;
+    let line = ta.row(row)?;
     let chars: Vec<char> = line.chars().collect();
     let (start, end) = object_range(&chars, col, obj)?;
     Some((row, start, end))

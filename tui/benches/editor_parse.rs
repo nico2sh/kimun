@@ -16,11 +16,7 @@ use kimun_notes::components::text_editor::snapshot::EditorSnapshot;
 use ropetext::{Layout, Metrics, RowHints, Text};
 use std::num::NonZeroU64;
 
-fn snap_for<'a>(
-    lines: &'a [String],
-    cursor: (usize, usize),
-    generation: u64,
-) -> EditorSnapshot<'a> {
+fn snap_for(lines: &[String], cursor: (usize, usize), generation: u64) -> EditorSnapshot {
     let rev = NonZeroU64::new(generation.max(1)).unwrap();
     let clamped = if lines.is_empty() {
         (0, 0)

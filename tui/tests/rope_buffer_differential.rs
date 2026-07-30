@@ -194,7 +194,7 @@ impl Pair {
     /// one — the unit `delete_str` takes.
     fn remaining(&self) -> usize {
         let (row, col) = self.rope.cursor();
-        let lines = self.rope.lines();
+        let lines = self.rope.rows();
         let mut left = lines[row].chars().count().saturating_sub(col);
         for line in &lines[row + 1..] {
             left += 1 + line.chars().count();
@@ -206,16 +206,16 @@ impl Pair {
     /// so a refused jump is not mistaken for a disagreement. The incumbent
     /// clamps rather than refusing, which is change #6 and asserted separately.
     fn resolve(&self, row: usize, col: usize) -> (usize, usize) {
-        let rows = self.rope.lines().len();
+        let rows = self.rope.rows().len();
         let row = row % rows.max(1);
-        let len = self.rope.lines()[row].chars().count();
+        let len = self.rope.rows()[row].chars().count();
         (row, col.min(len))
     }
 
     /// Returns whether the cursor is worth comparing afterwards — see the module
     /// docs on no-op cursor drift.
     fn apply(&mut self, op: &Op) -> bool {
-        let before: Vec<String> = self.rope.lines().to_vec();
+        let before: Vec<String> = self.rope.rows().to_vec();
         self.dispatch(op);
         if matches!(op, Op::Undo | Op::Redo) {
             // The incumbent's recorded cursors are unreliable — see the module
@@ -231,7 +231,7 @@ impl Pair {
             op,
             Op::Jump(..) | Op::Move(..) | Op::StartSelection | Op::CancelSelection | Op::SelectAll
         );
-        if mutating && self.rope.lines() == before.as_slice() {
+        if mutating && self.rope.rows() == before.as_slice() {
             // Nothing changed, so the incumbent has just drifted its cursor (see
             // the module docs). Put it back on ours: left alone, it makes the
             // *next* operation act somewhere else and the divergence resurfaces as
@@ -359,7 +359,7 @@ proptest! {
         for (step, op) in ops.iter().enumerate() {
             let compare_cursor = pair.apply(op);
             prop_assert_eq!(
-                pair.rope.lines(),
+                pair.rope.rows(),
                 pair.incumbent.lines(),
                 "text diverged at step {} ({:?}) from {:?}", step, op, initial
             );
@@ -389,7 +389,7 @@ proptest! {
         for (step, op) in ops.iter().enumerate() {
             let compare_cursor = pair.apply(op);
             prop_assert_eq!(
-                pair.rope.lines(),
+                pair.rope.rows(),
                 pair.incumbent.lines(),
                 "text diverged at step {} ({:?}) from {:?}", step, op, initial
             );
@@ -417,7 +417,7 @@ fn pasting_an_empty_register_does_nothing() {
     rope.select_all();
     assert!(!rope.paste(), "there is nothing to paste");
     assert_eq!(
-        rope.lines(),
+        rope.rows(),
         ["keep me"],
         "an empty register must not eat the selection"
     );
@@ -432,9 +432,9 @@ fn undo_returns_the_cursor_to_where_the_action_was_taken() {
     let mut rope = RopeBuffer::new(Text::from("ab\ncd"));
     rope.jump_to(0, 2);
     assert!(rope.delete_next_word(), "joins the rows");
-    assert_eq!(rope.lines(), ["abcd"]);
+    assert_eq!(rope.rows(), ["abcd"]);
     assert!(rope.undo());
-    assert_eq!(rope.lines(), ["ab", "cd"]);
+    assert_eq!(rope.rows(), ["ab", "cd"]);
     assert_eq!(rope.cursor(), (0, 2), "where the key was pressed");
 }
 
@@ -470,7 +470,7 @@ fn a_delete_that_removes_nothing_records_no_history() {
     rope.jump_to(0, 6);
     assert!(!rope.delete_str(1), "nothing to delete");
     assert!(rope.undo(), "the insert is still the newest entry");
-    assert_eq!(rope.lines(), ["hello"]);
+    assert_eq!(rope.rows(), ["hello"]);
     assert!(!rope.undo(), "and it was the only one");
 }
 
@@ -545,9 +545,9 @@ fn a_compound_edit_is_one_undo() {
         buf.jump_to(0, 0);
         buf.insert_str("[");
     });
-    assert_eq!(rope.lines(), ["[word]"]);
+    assert_eq!(rope.rows(), ["[word]"]);
     assert!(rope.undo());
-    assert_eq!(rope.lines(), ["word"], "one action, one undo");
+    assert_eq!(rope.rows(), ["word"], "one action, one undo");
     assert!(!rope.undo());
 }
 
@@ -561,9 +561,9 @@ fn nested_groups_belong_to_the_outermost() {
             inner.insert_str("c");
         });
     });
-    assert_eq!(rope.lines(), ["abc"]);
+    assert_eq!(rope.rows(), ["abc"]);
     assert!(rope.undo());
-    assert_eq!(rope.lines(), [""]);
+    assert_eq!(rope.rows(), [""]);
 }
 
 #[test]
@@ -644,11 +644,11 @@ fn cutting_takes_the_selection_and_pasting_puts_it_back() {
     let mut rope = RopeBuffer::new(Text::from("hello world"));
     assert!(rope.set_selection((0, 0), (0, 6)));
     assert!(rope.cut());
-    assert_eq!(rope.lines(), ["world"]);
+    assert_eq!(rope.rows(), ["world"]);
     assert_eq!(rope.yank_text(), "hello ");
     rope.move_cursor(RopeMove::End);
     assert!(rope.paste());
-    assert_eq!(rope.lines(), ["worldhello "]);
+    assert_eq!(rope.rows(), ["worldhello "]);
 }
 
 #[test]
@@ -657,7 +657,7 @@ fn copying_leaves_the_text_alone() {
     assert!(rope.set_selection((0, 0), (0, 5)));
     rope.copy();
     assert_eq!(rope.yank_text(), "hello");
-    assert_eq!(rope.lines(), ["hello"]);
+    assert_eq!(rope.rows(), ["hello"]);
 }
 
 #[test]
@@ -665,7 +665,7 @@ fn typing_over_a_selection_replaces_it_and_leaves_nothing_selected() {
     let mut rope = RopeBuffer::new(Text::from("hello world"));
     assert!(rope.set_selection((0, 0), (0, 5)));
     rope.insert_str("bye");
-    assert_eq!(rope.lines(), ["bye world"]);
+    assert_eq!(rope.rows(), ["bye world"]);
     assert!(rope.selection_range().is_none());
 }
 
@@ -688,7 +688,7 @@ fn a_soft_tab_fills_to_the_next_stop() {
     rope.set_tab_length(4);
     rope.move_cursor(RopeMove::End);
     assert!(rope.insert_tab());
-    assert_eq!(rope.lines(), ["ab  "], "two spaces reach column four");
+    assert_eq!(rope.rows(), ["ab  "], "two spaces reach column four");
 }
 
 #[test]
@@ -697,5 +697,5 @@ fn a_hard_tab_inserts_a_tab() {
     rope.set_hard_tab_indent(true);
     rope.move_cursor(RopeMove::End);
     assert!(rope.insert_tab());
-    assert_eq!(rope.lines(), ["ab\t"]);
+    assert_eq!(rope.rows(), ["ab\t"]);
 }

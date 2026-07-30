@@ -398,7 +398,7 @@ impl FindBar {
         }
         let expanded = pattern.expand(&caps, replacement);
         let end_col = start_col + line[m.range()].chars().count();
-        let before: Vec<String> = buf.lines().to_vec();
+        let before: Vec<String> = buf.rows();
         let mut after = before.clone();
         after[row].replace_range(m.range(), &expanded);
         Some((row, start_col, end_col, expanded, before, after))
@@ -439,8 +439,8 @@ impl FindBar {
             buf.cancel_selection();
         });
         debug_assert_eq!(
-            buf.lines(),
-            after.as_slice(),
+            buf.text().to_string(),
+            after.join("\n"),
             "replace_current wrote what it planned"
         );
         let _ = before;
@@ -455,7 +455,7 @@ impl FindBar {
         let pattern = self.pattern.as_ref()?;
         let replacement = self.replacement().to_string();
 
-        let before: Vec<String> = buf.lines().to_vec();
+        let before: Vec<String> = buf.rows();
         let (after, count) = find_replace::replace_all(pattern, &before, &replacement)?;
 
         // Restore the reading position afterwards. The naive path leaves the
@@ -475,7 +475,7 @@ impl FindBar {
             buf.insert_str(&joined);
             buf.cancel_selection();
         });
-        if buf.lines() != after.as_slice() {
+        if buf.text().to_string() != after.join("\n") {
             return None;
         }
         let _ = &before;
@@ -526,7 +526,7 @@ impl FindBar {
         let pattern = self.pattern.as_ref()?;
         let current = self.current.map(|((row, col), _)| (row, col));
         let preview =
-            find_replace::build_preview(pattern, buf.lines(), self.replacement(), current);
+            find_replace::build_preview(pattern, &buf.rows(), self.replacement(), current);
         if preview.spans.is_empty() {
             return None;
         }

@@ -38,19 +38,11 @@ pub(crate) fn cursor_tuple(ta: &rope_buffer::RopeBuffer) -> (usize, usize) {
 /// `TextEditorComponent` afterwards can pass `&self.backend` and
 /// `self.revs.current()` directly — the borrow checker can split
 /// borrows across distinct fields but not across method calls.
-fn snapshot_from_backend(
-    backend: &BackendState,
-    content_revision: NonZeroU64,
-) -> EditorSnapshot<'_> {
+fn snapshot_from_backend(backend: &BackendState, content_revision: NonZeroU64) -> EditorSnapshot {
     match backend {
         BackendState::Textarea(tb) => {
             let cursor = cursor_tuple(&tb.ta);
-            EditorSnapshot::of_buffer(
-                tb.ta.text().clone(),
-                tb.ta.lines(),
-                cursor,
-                content_revision,
-            )
+            EditorSnapshot::of_buffer(tb.ta.text().clone(), cursor, content_revision)
         }
         BackendState::Nvim(nvim) => {
             let snap = nvim.snapshot();
@@ -298,20 +290,20 @@ pub enum EditorClaim {
 /// position. The host's `cache_key` mirrors the editor's
 /// `content_revision`; `None` is reserved for hosts whose buffer
 /// has no stable identity (the search-box modal).
-struct EditorHostSnapshot<'a> {
-    snap: EditorSnapshot<'a>,
+struct EditorHostSnapshot {
+    snap: EditorSnapshot,
     cursor_screen: Option<(u16, u16)>,
     cache_key: Option<NonZeroU64>,
 }
 
-impl<'a> AutocompleteHost for EditorHostSnapshot<'a> {
-    fn buffer_snapshot(&self) -> EditorSnapshot<'_> {
-        // Re-package the inner snap as a fresh borrowed view tied
+impl AutocompleteHost for EditorHostSnapshot {
+    fn buffer_snapshot(&self) -> EditorSnapshot {
+        // Re-package the inner snap as a fresh view tied
         // to `&self`. `Cow::as_ref` works for both Borrowed and
         // Owned variants — the latter only occurs on the Nvim path
         // where the inner snapshot already paid the clone cost.
-        EditorSnapshot::borrowed(
-            self.snap.lines.as_ref(),
+        EditorSnapshot::of_buffer(
+            self.snap.text.clone(),
             self.snap.cursor,
             self.snap.content_revision,
         )
@@ -342,11 +334,11 @@ impl<'a> AutocompleteHost for EditorHostSnapshot<'a> {
 /// `self.view.last_cursor_screen` directly so the borrow checker
 /// can split borrows from `&mut self.autocomplete`. Returns `None`
 /// on the Nvim backend (autocomplete is Textarea-only).
-fn build_editor_host_snapshot<'a>(
-    backend: &'a BackendState,
+fn build_editor_host_snapshot(
+    backend: &BackendState,
     content_revision: NonZeroU64,
     cursor_screen: Option<(u16, u16)>,
-) -> Option<EditorHostSnapshot<'a>> {
+) -> Option<EditorHostSnapshot> {
     if !backend.is_textarea() {
         return None;
     }
@@ -489,7 +481,7 @@ impl TextEditorComponent {
     /// inline the free function instead so `&self.backend` and
     /// `&mut self.autocomplete` can coexist.
     #[allow(dead_code)]
-    fn autocomplete_host_snapshot(&self) -> Option<EditorHostSnapshot<'_>> {
+    fn autocomplete_host_snapshot(&self) -> Option<EditorHostSnapshot> {
         build_editor_host_snapshot(
             &self.backend,
             self.revs.current(),
@@ -588,10 +580,11 @@ impl TextEditorComponent {
     /// For the Textarea backend, returns the live lines.
     /// For the Nvim backend, returns an empty slice — use `get_text()` instead,
     /// which reads from the snapshot.
-    pub fn lines(&self) -> &[String] {
+    /// The open note's text. Empty for the nvim backend, which owns its own.
+    pub fn text(&self) -> ropetext::Text {
         match &self.backend {
-            BackendState::Textarea(tb) => tb.ta.lines(),
-            BackendState::Nvim(_) => &[],
+            BackendState::Textarea(tb) => tb.ta.text().clone(),
+            BackendState::Nvim(_) => ropetext::Text::new(),
         }
     }
 
@@ -613,7 +606,7 @@ impl TextEditorComponent {
     /// `snapshot_from_backend(&self.backend, self.revs.current())`
     /// so the borrow checker can split the borrows across distinct
     /// fields.
-    pub fn view_snapshot(&self) -> EditorSnapshot<'_> {
+    pub fn view_snapshot(&self) -> EditorSnapshot {
         snapshot_from_backend(&self.backend, self.revs.current())
     }
 
@@ -2274,14 +2267,18 @@ impl Component for TextEditorComponent {
             // parse of text that is not on screen and sail through
             // `install_full_parse`'s staleness check, styling a large note by
             // element boundaries computed against a different string.
-            let lines: Vec<String> = match &view_lines {
-                Some(lines) => lines.clone(),
-                None => snap.lines.iter().cloned().collect(),
+            // The task gets the text itself. A clone shares its structure, so
+            // handing a 5000-row note to a background parse costs a pointer
+            // rather than a copy of the note — where this used to clone every
+            // row.
+            let text = match &view_lines {
+                Some(lines) => ropetext::Text::from(lines.join("\n").as_str()),
+                None => snap.text.clone(),
             };
             let tx = self.full_parse_tx.clone();
             let redraw = self.redraw_tx.clone();
             self.full_parse_task.spawn(async move {
-                let buf = ParsedBuffer::parse_lines(&lines);
+                let buf = ParsedBuffer::parse(&text);
                 let _ = tx.send((generation, buf));
                 // Wake the render loop so the rich parse lands
                 // without waiting for the next keystroke.
@@ -2314,7 +2311,7 @@ impl Component for TextEditorComponent {
         // Empty-note tip (spec §5.2): dim ghost text in a fresh/empty buffer,
         // gone the instant the first character lands (the buffer stops being
         // empty). Drawn after the view so it sits over the blank canvas.
-        if snap.lines.iter().all(|l| l.is_empty()) && editor_rect.height > 0 {
+        if snap.text.len_bytes() == 0 && editor_rect.height > 0 {
             let leader = self
                 .key_bindings
                 .first_combo_for(&crate::keys::action_shortcuts::ActionShortcuts::Leader)
@@ -2621,7 +2618,7 @@ mod tests {
         ta.move_cursor(CursorMove::WordForward);
         let range = ta.selection_range().unwrap();
         let ((sr, sc), (er, ec)) = range;
-        let lines = ta.lines();
+        let lines = ta.rows();
         let selected = if sr == er {
             lines[sr][sc..ec].to_string()
         } else {
@@ -3210,7 +3207,7 @@ mod tests {
             ta.move_cursor(CursorMove::Bottom);
         }
         editor.indent_lines(false);
-        let lines = get_ta(&mut editor).lines();
+        let lines = get_ta(&mut editor).rows();
         assert_eq!(lines[0], "foo");
         assert!(lines[1].starts_with(' ') || lines[1].starts_with('\t'));
         assert!(lines[1].trim_start() == "bar");
@@ -3229,9 +3226,9 @@ mod tests {
         editor.indent_lines(false);
         let ta = get_ta(&mut editor);
         // Text before the selection must survive; only a leading indent added.
-        assert_eq!(ta.lines()[0].trim_start(), "hello world");
+        assert_eq!(ta.rows()[0].trim_start(), "hello world");
         // Selection preserved, shifted right by the inserted indent.
-        let indent = ta.lines()[0].len() - "hello world".len();
+        let indent = ta.rows()[0].len() - "hello world".len();
         assert_eq!(
             ta.selection_range(),
             Some(((0, 6 + indent), (0, 11 + indent)))
@@ -3250,7 +3247,7 @@ mod tests {
             ta.move_cursor(CursorMove::End);
         }
         editor.indent_lines(false);
-        let lines: Vec<String> = get_ta(&mut editor).lines().to_vec();
+        let lines: Vec<String> = get_ta(&mut editor).rows().to_vec();
         assert_eq!(lines[0].trim_start(), "foo");
         assert_eq!(lines[1].trim_start(), "bar");
         assert_eq!(lines[2], "baz");
@@ -3271,7 +3268,7 @@ mod tests {
             ta.move_cursor(CursorMove::End);
         }
         editor.indent_lines(true);
-        let lines: Vec<String> = get_ta(&mut editor).lines().to_vec();
+        let lines: Vec<String> = get_ta(&mut editor).rows().to_vec();
         // line 0 had 4 leading spaces; up to tab_len removed.
         assert_eq!(lines[0], format!("{}foo", " ".repeat(4 - tab_len.min(4))));
         // line 1 had 2 leading spaces; up to min(2, tab_len) removed.

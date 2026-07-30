@@ -787,7 +787,7 @@ impl VimEngine {
         // linewise delete below may swallow the *preceding* newline instead of
         // the trailing one, which would be wrong to hand to another application.
         let clipboard_text = if linewise {
-            let body: String = ta.rows(sr, er);
+            let body: String = ta.joined_rows(sr, er);
             format!("{body}\n")
         } else {
             String::new() // filled from the selection below
@@ -2034,7 +2034,7 @@ impl VimEngine {
         let r1 = (r0 + count.saturating_sub(1)).min(last);
 
         // Register content: the line bodies plus a trailing newline (linewise).
-        let body: String = ta.rows(r0, r1);
+        let body: String = ta.joined_rows(r0, r1);
         let register_text = format!("{body}\n");
 
         match op {

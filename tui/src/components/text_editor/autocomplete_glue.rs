@@ -64,7 +64,7 @@ pub fn row_char_col_to_byte(lines: &[String], row: usize, char_col: usize) -> us
 /// ratatui-textarea yank ring), this function snapshots the yank
 /// buffer before the delete and restores it afterwards.
 pub fn apply_accept_to_textarea(ta: &mut RopeBuffer, action: &AcceptAction) {
-    let before: Vec<String> = ta.lines().to_vec();
+    let before: Vec<String> = ta.text().lines().map(|l| l.to_string()).collect();
     let Some((start_row, start_col)) = byte_to_row_char_col(&before, action.range.start) else {
         return;
     };
@@ -85,7 +85,7 @@ pub fn apply_accept_to_textarea(ta: &mut RopeBuffer, action: &AcceptAction) {
 
     // Place the cursor at the requested post-replacement byte offset. The
     // textarea's lines may now be different so we re-read them.
-    let after: Vec<String> = ta.lines().to_vec();
+    let after: Vec<String> = ta.text().lines().map(|l| l.to_string()).collect();
     if let Some((row, col)) = byte_to_row_char_col(&after, action.new_cursor_byte) {
         ta.move_cursor(CursorMove::Jump(row, col));
     }
@@ -196,7 +196,7 @@ mod tests {
             saved_search_name: None,
         };
         apply_accept_to_textarea(&mut ta, &action);
-        let result: String = ta.lines().join("\n");
+        let result: String = ta.text().to_string();
         assert_eq!(result, "see [[meeting]]");
         // After insert, cursor should be at end of `]]`.
         let (row, col) = ta.cursor();
@@ -233,7 +233,7 @@ mod tests {
             saved_search_name: None,
         };
         apply_accept_to_textarea(&mut ta, &action);
-        let result: String = ta.lines().join("\n");
+        let result: String = ta.text().to_string();
         assert_eq!(result, "alpha\nsee [[meeting]]");
     }
 }

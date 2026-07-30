@@ -7,16 +7,10 @@
 //! unchanged, and `tests/rope_buffer_differential.rs` holds it to the incumbent's
 //! behaviour operation by operation.
 //!
-//! # The scaffolding
+//! Nothing here mirrors the text into a second representation. Callers that want
+//! rows ask for them ([`RopeBuffer::rows`]) and pay for them there; the buffer
+//! keeps one copy of the note and no derived copy in step with it.
 //!
-//! [`RopeBuffer::lines`] materialises a `Vec<String>` and caches it per revision.
-//! That is a temporary shim, not a design: ADR-0040 rejected exactly this as a
-//! permanent arrangement, because it costs a copy of the note and an O(buffer)
-//! rebuild per edit. It is here so the 162 `lines()` calls in `vim.rs` and the 65
-//! `ParsedBuffer::parse` callers can be converted a few at a time instead of in
-//! one commit. **It is deleted before this branch merges**, along with this
-//! comment.
-
 use ropetext::motion::{self, Goal, Words};
 use ropetext::{Change, Column, EditBuffer as Rope, Position, Span, Text};
 
@@ -128,11 +122,6 @@ pub struct RopeBuffer {
     goal: Option<Column>,
     yank: String,
     search: Option<regex::Regex>,
-    /// Kept in step with the text, so reads can take `&self` — a `&mut` read would
-    /// not survive the call sites this shim exists to keep compiling. Spliced from
-    /// the change rather than rebuilt, so a keystroke costs its own rows and not
-    /// the note's.
-    lines: Vec<String>,
     tab_length: u8,
     hard_tab_indent: bool,
 }
@@ -145,7 +134,7 @@ impl Default for RopeBuffer {
 
 impl RopeBuffer {
     pub fn new(text: Text) -> Self {
-        let mut buffer = Self {
+        Self {
             inner: Rope::new(text),
             pending: EditOutcome::default(),
             depth: 0,
@@ -153,16 +142,9 @@ impl RopeBuffer {
             goal: None,
             yank: String::new(),
             search: None,
-            lines: Vec::new(),
             tab_length: DEFAULT_TAB_LENGTH,
             hard_tab_indent: false,
-        };
-        buffer.rebuild_lines();
-        buffer
-    }
-
-    pub fn from_lines(lines: &[String]) -> Self {
-        Self::new(Text::from(lines.join("\n").as_str()))
+        }
     }
 
     /// Replace the whole buffer, dropping the history with it.
@@ -170,7 +152,6 @@ impl RopeBuffer {
         self.inner.set_text(text);
         self.pending = EditOutcome::default();
         self.goal = None;
-        self.rebuild_lines();
     }
 
     pub fn text(&self) -> &Text {
@@ -199,47 +180,6 @@ impl RopeBuffer {
 
     // ── Reads ────────────────────────────────────────────────────────────────
 
-    /// The buffer as one string per row.
-    ///
-    /// Scaffolding — see the module docs. Rebuilt when the text changes rather
-    /// than on demand, so this reads `&self` and every existing call site keeps
-    /// compiling. One rebuild per edit, not per read.
-    pub fn lines(&self) -> &[String] {
-        &self.lines
-    }
-
-    fn rebuild_lines(&mut self) {
-        self.lines.clear();
-        self.lines
-            .extend(self.inner.text().lines().map(|line| line.to_string()));
-    }
-
-    /// Replace only the rows the change touched.
-    ///
-    /// The same coordinate care as the layout's relayout: `rows` is in the *new*
-    /// text's numbering, so the span being replaced has to be named twice — once
-    /// to find what to drop, once to say what replaces it.
-    fn sync_lines(&mut self, change: &Change) {
-        let text = self.inner.text();
-        let rows =
-            change.rows().start.min(text.line_count())..change.rows().end.min(text.line_count());
-        let old_end = (rows.end as isize - change.line_delta()).max(rows.start as isize) as usize;
-        let old = rows.start.min(self.lines.len())..old_end.min(self.lines.len());
-        if rows.is_empty() && old.is_empty() {
-            return;
-        }
-        let replacement: Vec<String> = rows
-            .clone()
-            .filter_map(|row| text.line(row).map(|line| line.to_string()))
-            .collect();
-        self.lines.splice(old, replacement);
-        debug_assert_eq!(
-            self.lines.len(),
-            text.line_count(),
-            "the line shim drifted from the text it mirrors"
-        );
-    }
-
     /// One row's text, or `None` past the end.
     pub fn row(&self, row: usize) -> Option<std::borrow::Cow<'_, str>> {
         self.inner.text().line(row)
@@ -250,8 +190,17 @@ impl RopeBuffer {
         self.inner.text().line_count()
     }
 
+    /// Every row, materialised.
+    ///
+    /// Not a cache: nothing is maintained between calls, so the cost lands on the
+    /// caller that wants a vector rather than on every edit. That is the whole
+    /// difference from the shim this replaced.
+    pub fn rows(&self) -> Vec<String> {
+        self.inner.text().lines().map(|l| l.to_string()).collect()
+    }
+
     /// Rows `first..=last`, joined with newlines.
-    pub fn rows(&self, first: usize, last: usize) -> String {
+    pub fn joined_rows(&self, first: usize, last: usize) -> String {
         (first..=last)
             .filter_map(|row| self.row(row))
             .collect::<Vec<_>>()
@@ -338,7 +287,6 @@ impl RopeBuffer {
             Some(seen) => seen.start.min(change.rows().start)..seen.end.max(change.rows().end),
             None => change.rows(),
         });
-        self.sync_lines(&change);
         true
     }
 
