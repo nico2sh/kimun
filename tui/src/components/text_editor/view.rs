@@ -320,7 +320,7 @@ impl MarkdownEditorView {
             applied_cursor_style: None,
             // Empty buffer, spliceable — preserves the previous
             // `placeholder_active: false` initial state.
-            parse_state: ParseState::Real(ParsedBuffer::placeholder(&[])),
+            parse_state: ParseState::Real(ParsedBuffer::placeholder(&ropetext::Text::new())),
             last_seen_generation: u64::MAX, // force rebuild on first update
             last_layout_generation: u64::MAX,
             last_layout_width: 0,
@@ -537,12 +537,12 @@ impl MarkdownEditorView {
                         // path stays in-bounds; only the markdown
                         // styling is missing for one frame.
                         self.parse_state = ParseState::Placeholder {
-                            buf: ParsedBuffer::placeholder(lines),
+                            buf: ParsedBuffer::placeholder(&snap.text),
                             generation,
                             spawned: false,
                         };
                     } else {
-                        self.parse_state = ParseState::Real(ParsedBuffer::parse(lines));
+                        self.parse_state = ParseState::Real(ParsedBuffer::parse(&snap.text));
                     }
                     self.last_parse_was_incremental = false;
                     self.last_splice_path = None;
@@ -551,7 +551,7 @@ impl MarkdownEditorView {
             };
             #[cfg(debug_assertions)]
             if self.last_parse_was_incremental && verify_incremental_enabled() {
-                let fresh = ParsedBuffer::parse(lines);
+                let fresh = ParsedBuffer::parse(&snap.text);
                 assert_eq!(
                     self.parse_state.buf().kinds,
                     fresh.kinds,
@@ -855,6 +855,13 @@ impl MarkdownEditorView {
         if lines.len() != self.parse_state.buf().lines.len() {
             return METRICS.bail(BailReason::LineCountChange);
         }
+        // The row-by-row guards below read the previous content, so it has to
+        // describe the same buffer shape. It does not on the first update, and an
+        // empty text still has one row — so "no previous state" cannot be inferred
+        // from the parse cache being empty.
+        if self.lines_snapshot.len() != lines.len() {
+            return METRICS.bail(BailReason::LineCountChange);
+        }
         // A bulk edit invalidates the cursor hint: pass `usize::MAX` so the
         // fast path's `cursor_row < old.len()` test fails and the LCP/LCS slow
         // path computes the real span. The flag is cleared by `update` whether
@@ -1066,7 +1073,7 @@ impl MarkdownEditorView {
                 }
             }
         };
-        let slice = ParsedBuffer::parse_range(lines, widened.clone());
+        let slice = ParsedBuffer::parse_range_lines(lines, widened.clone());
 
         // Post-slice undamaged-row verification.
         //
@@ -1769,7 +1776,7 @@ mod tests {
             "```".to_string(),
             "more".to_string(),
         ];
-        let pb = ParsedBuffer::parse(&lines);
+        let pb = ParsedBuffer::parse_lines(&lines);
         let ranges = super::super::parse_incremental::fence_ranges_from_kinds(&pb.kinds);
         let block = ranges.iter().find(|r| r.contains(&2)).cloned();
         assert!(block.is_some());
@@ -1786,7 +1793,7 @@ mod tests {
             "code".to_string(),
             "```".to_string(),
         ];
-        let pb = ParsedBuffer::parse(&lines);
+        let pb = ParsedBuffer::parse_lines(&lines);
         let ranges = super::super::parse_incremental::fence_ranges_from_kinds(&pb.kinds);
         assert!(ranges.iter().find(|r| r.contains(&0)).is_none());
     }
@@ -2183,7 +2190,7 @@ mod tests {
         // edit so the next update splices against a real (non-placeholder)
         // buffer; Gate 1 deliberately refuses to incrementally splice the
         // all-`Plain` placeholder.
-        v.install_full_parse(1, ParsedBuffer::parse(&lines));
+        v.install_full_parse(1, ParsedBuffer::parse_lines(&lines));
 
         // Single-char insert at row 500.
         lines[500].push('x');
@@ -2191,7 +2198,7 @@ mod tests {
         update_view(&mut v, &lines, (500, edited_len), rect(40), 2, None);
 
         // The spliced result must equal a fresh full parse.
-        let fresh = ParsedBuffer::parse(&lines);
+        let fresh = ParsedBuffer::parse_lines(&lines);
         assert_eq!(v.parse_state.buf().lines.len(), fresh.lines.len());
         assert_eq!(v.parse_state.buf().kinds, fresh.kinds);
         // Regression: the heuristic widener splices a slice whose
@@ -2246,12 +2253,15 @@ mod tests {
         );
 
         // Background parse for the latest generation completes.
-        v.install_full_parse(2, ParsedBuffer::parse(&lines));
+        v.install_full_parse(2, ParsedBuffer::parse_lines(&lines));
         assert!(
             !v.parse_state.is_placeholder(),
             "placeholder cleared on install"
         );
-        assert_eq!(v.parse_state.buf().kinds, ParsedBuffer::parse(&lines).kinds);
+        assert_eq!(
+            v.parse_state.buf().kinds,
+            ParsedBuffer::parse_lines(&lines).kinds
+        );
     }
 
     #[test]
@@ -2262,11 +2272,11 @@ mod tests {
         // directly so a future caller can't route a splice into a
         // placeholder without tripping the assert.
         let mut state = ParseState::Placeholder {
-            buf: ParsedBuffer::placeholder(&["x".to_string()]),
+            buf: ParsedBuffer::placeholder_lines(&["x".to_string()]),
             generation: 1,
             spawned: false,
         };
-        state.splice_real(0..1, ParsedBuffer::parse(&["y".to_string()]));
+        state.splice_real(0..1, ParsedBuffer::parse_lines(&["y".to_string()]));
     }
 
     #[test]
@@ -2284,7 +2294,7 @@ mod tests {
         lines.insert(350, "```".to_string());
         update_view(&mut v, &lines, (350, 3), rect(40), 2, None);
 
-        let fresh = ParsedBuffer::parse(&lines);
+        let fresh = ParsedBuffer::parse_lines(&lines);
         assert_eq!(
             v.parse_state.buf().kinds,
             fresh.kinds,
@@ -2345,10 +2355,10 @@ mod tests {
 
         // Caller (TextEditorComponent in production) spawns the real
         // parse and installs the result. Simulate that here.
-        let real = ParsedBuffer::parse(&lines);
+        let real = ParsedBuffer::parse_lines(&lines);
         let generation = pending.unwrap();
         v.install_full_parse(generation, real);
-        let fresh = ParsedBuffer::parse(&lines);
+        let fresh = ParsedBuffer::parse_lines(&lines);
         assert_eq!(
             v.parse_state.buf().kinds,
             fresh.kinds,
@@ -2369,7 +2379,7 @@ mod tests {
         let _ = (v, lines);
         #[cfg(debug_assertions)]
         {
-            let fresh = ParsedBuffer::parse(lines);
+            let fresh = ParsedBuffer::parse_lines(lines);
             assert_eq!(v.parse_state.buf().kinds, fresh.kinds, "kinds diverge");
             assert_eq!(
                 v.parse_state.buf().lines.len(),

@@ -176,12 +176,12 @@ impl ParsedLine {
         if needs_synthetic_list_parent(line) {
             // "- " opens a list at column 0; the indented `line` that follows
             // becomes a nested list item with full context.
-            ParsedBuffer::parse(&["- ".to_string(), owned])
+            ParsedBuffer::parse_lines(&["- ".to_string(), owned])
                 .lines
                 .pop()
                 .expect("ParsedBuffer::parse returns one row per input line")
         } else {
-            ParsedBuffer::parse(std::slice::from_ref(&owned))
+            ParsedBuffer::parse_lines(std::slice::from_ref(&owned))
                 .lines
                 .pop()
                 .expect("ParsedBuffer::parse always returns at least one ParsedLine")
@@ -498,7 +498,7 @@ mod tests {
         // (CommonMark §5.1) is part of the quote: pulldown spans the
         // Blockquote element across it, so it must report the quote's depth
         // and get the bar gutter — not just the quoted text color.
-        let buf = ParsedBuffer::parse(&["> first".to_string(), "second".to_string()]);
+        let buf = ParsedBuffer::parse_lines(&["> first".to_string(), "second".to_string()]);
         assert_eq!(buf.lines[0].blockquote_depth(), Some(1));
         assert_eq!(
             buf.lines[1].blockquote_depth(),
@@ -507,13 +507,13 @@ mod tests {
         );
 
         // Nested lazy continuation keeps the full depth.
-        let nested = ParsedBuffer::parse(&[">> a".to_string(), "b".to_string()]);
+        let nested = ParsedBuffer::parse_lines(&[">> a".to_string(), "b".to_string()]);
         assert_eq!(nested.lines[0].blockquote_depth(), Some(2));
         assert_eq!(nested.lines[1].blockquote_depth(), Some(2));
 
         // A blank line ends the quote: the following line is NOT a continuation.
         let ended =
-            ParsedBuffer::parse(&["> first".to_string(), String::new(), "plain".to_string()]);
+            ParsedBuffer::parse_lines(&["> first".to_string(), String::new(), "plain".to_string()]);
         assert_eq!(ended.lines[0].blockquote_depth(), Some(1));
         assert_eq!(ended.lines[2].blockquote_depth(), None);
     }
@@ -523,7 +523,7 @@ mod tests {
         use super::super::parse_incremental::LineConstructKind::{Blank, IndentedCode, Plain};
         let kinds = |lines: &[&str]| {
             let owned: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
-            ParsedBuffer::parse(&owned).kinds
+            ParsedBuffer::parse_lines(&owned).kinds
         };
         // Trailing blank after indented code is NOT part of the block.
         assert_eq!(
@@ -1103,7 +1103,7 @@ mod tests {
             "- parent".to_string(),
             "    - [child link](url)".to_string(),
         ];
-        let parsed = ParsedBuffer::parse(&lines).lines;
+        let parsed = ParsedBuffer::parse_lines(&lines).lines;
         assert_eq!(parsed.len(), 2);
 
         // Parent line: list sigil at col 2.
@@ -1130,7 +1130,7 @@ mod tests {
     fn buffer_parse_standalone_2space_list_still_works() {
         // Regression: 2-space indent works on its own too.
         let lines = vec!["  - [link](url)".to_string()];
-        let parsed = ParsedBuffer::parse(&lines).lines;
+        let parsed = ParsedBuffer::parse_lines(&lines).lines;
         assert!(
             parsed[0]
                 .elements
@@ -1144,7 +1144,7 @@ mod tests {
     fn buffer_parse_top_level_unchanged() {
         // Ensure nothing about top-level rendering changed.
         let lines = vec!["- [link](url)".to_string()];
-        let parsed = ParsedBuffer::parse(&lines).lines;
+        let parsed = ParsedBuffer::parse_lines(&lines).lines;
         assert!(
             parsed[0]
                 .elements
@@ -1161,7 +1161,7 @@ mod tests {
             String::new(),
             "paragraph".to_string(),
         ];
-        let parsed = ParsedBuffer::parse(&lines).lines;
+        let parsed = ParsedBuffer::parse_lines(&lines).lines;
         assert_eq!(parsed.len(), 3);
         assert_eq!(parsed[1].elements.len(), 0);
         assert_eq!(parsed[1].content_vis.len(), 0);
@@ -1170,7 +1170,7 @@ mod tests {
     #[test]
     fn buffer_parse_ordered_nested_list() {
         let lines = vec!["1. first".to_string(), "    1. nested".to_string()];
-        let parsed = ParsedBuffer::parse(&lines).lines;
+        let parsed = ParsedBuffer::parse_lines(&lines).lines;
         assert_eq!(parsed[0].list_sigil_end(), Some(3));
         assert_eq!(parsed[1].list_sigil_end(), Some(7));
     }
@@ -1183,7 +1183,7 @@ mod tests {
         // row 1 has no Text events, so the underline renders in the sigil color.
         // Pin this behavior — a regression would silently un-style setext headings.
         let lines = vec!["My Heading".to_string(), "==========".to_string()];
-        let parsed = ParsedBuffer::parse(&lines).lines;
+        let parsed = ParsedBuffer::parse_lines(&lines).lines;
         assert!(
             parsed[0]
                 .elements
@@ -1210,7 +1210,7 @@ mod tests {
         // Two blockquote lines in a row — pulldown folds them into one blockquote.
         // Both rows must carry a Blockquote element so rendering is consistent.
         let lines = vec!["> first line".to_string(), "> second line".to_string()];
-        let parsed = ParsedBuffer::parse(&lines).lines;
+        let parsed = ParsedBuffer::parse_lines(&lines).lines;
         assert!(
             parsed[0]
                 .elements
@@ -1349,7 +1349,7 @@ mod tests {
             "```".to_string(),
             "after #outside".to_string(),
         ];
-        let lines = ParsedBuffer::parse(&buffer).lines;
+        let lines = ParsedBuffer::parse_lines(&buffer).lines;
         let inside_labels: Vec<_> = lines[2]
             .elements
             .iter()
@@ -1371,8 +1371,8 @@ mod tests {
     #[test]
     fn parse_range_full_equals_parse() {
         let lines: Vec<String> = vec!["hello".into(), "world".into(), "".into(), "**bold**".into()];
-        let full = ParsedBuffer::parse(&lines);
-        let range_full = ParsedBuffer::parse_range(&lines, 0..lines.len());
+        let full = ParsedBuffer::parse_lines(&lines);
+        let range_full = ParsedBuffer::parse_range_lines(&lines, 0..lines.len());
         assert_eq!(full.lines.len(), range_full.lines.len());
         assert_eq!(full.kinds, range_full.kinds);
         for (a, b) in full.lines.iter().zip(range_full.lines.iter()) {
@@ -1390,15 +1390,15 @@ mod tests {
             "".into(),
             "outro".into(),
         ];
-        let slice = ParsedBuffer::parse_range(&lines, 2..3);
+        let slice = ParsedBuffer::parse_range_lines(&lines, 2..3);
         assert_eq!(slice.lines.len(), 1);
         assert_eq!(slice.kinds, vec![LineConstructKind::Plain]);
     }
 
     #[test]
     fn splice_replaces_range() {
-        let mut pb = ParsedBuffer::parse(&["alpha".into(), "beta".into(), "gamma".into()]);
-        let replacement = ParsedBuffer::parse(&["BETA-NEW".into()]);
+        let mut pb = ParsedBuffer::parse_lines(&["alpha".into(), "beta".into(), "gamma".into()]);
+        let replacement = ParsedBuffer::parse_lines(&["BETA-NEW".into()]);
         let replacement_kind = replacement.kinds[0];
         pb.splice(1..2, replacement);
         assert_eq!(pb.lines.len(), 3);
@@ -1413,8 +1413,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "splice")]
     fn splice_panics_on_length_mismatch_in_debug() {
-        let mut pb = ParsedBuffer::parse(&["a".into(), "b".into()]);
-        let too_short = ParsedBuffer::parse(&["X".into()]);
+        let mut pb = ParsedBuffer::parse_lines(&["a".into(), "b".into()]);
+        let too_short = ParsedBuffer::parse_lines(&["X".into()]);
         pb.splice(0..2, too_short);
     }
 
@@ -1431,7 +1431,7 @@ mod tests {
     #[test]
     fn lazy_depth_blockquote_closes_at_first_blank() {
         let lines: Vec<String> = vec!["> a".into(), "".into(), "".into(), "x".into()];
-        let pb = ParsedBuffer::parse(&lines);
+        let pb = ParsedBuffer::parse_lines(&lines);
         assert_eq!(
             pb.lazy_depth,
             vec![1, 0, 0, 0],
@@ -1448,7 +1448,7 @@ mod tests {
     #[test]
     fn lazy_depth_indented_code_across_blanks() {
         let lines: Vec<String> = vec!["    code".into(), "".into(), "    more".into()];
-        let pb = ParsedBuffer::parse(&lines);
+        let pb = ParsedBuffer::parse_lines(&lines);
         assert_eq!(
             pb.lazy_depth,
             vec![1, 1, 1],
@@ -1464,7 +1464,7 @@ mod tests {
     #[test]
     fn lazy_depth_fenced_code_does_not_count() {
         let lines: Vec<String> = vec!["```".into(), "x".into(), "```".into(), "".into()];
-        let pb = ParsedBuffer::parse(&lines);
+        let pb = ParsedBuffer::parse_lines(&lines);
         assert_eq!(
             pb.lazy_depth,
             vec![0, 0, 0, 0],
@@ -1486,7 +1486,7 @@ mod tests {
     #[test]
     fn lazy_depth_blockquote_with_trailing_blank_drops_at_blank() {
         let lines: Vec<String> = vec!["> a".into(), "".into()];
-        let pb = ParsedBuffer::parse(&lines);
+        let pb = ParsedBuffer::parse_lines(&lines);
         assert_eq!(
             pb.lazy_depth,
             vec![1, 0],
@@ -1513,7 +1513,7 @@ mod tests {
     #[test]
     fn boundaries_skip_rows_inside_lazy_block() {
         let lines: Vec<String> = vec!["    code".into(), "".into(), "    more".into()];
-        let pb = ParsedBuffer::parse(&lines);
+        let pb = ParsedBuffer::parse_lines(&lines);
         assert_eq!(
             pb.reset_boundaries,
             vec![0, lines.len()],
