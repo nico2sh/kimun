@@ -207,19 +207,21 @@ fn surround_pair(c: char) -> Option<(&'static str, &'static str)> {
 }
 
 /// Re-establishes the textarea selection over `start..end` (char-based data
-/// coordinates, as returned by `selection_range`). `Jump` clamps, so the
-/// saturating casts degrade gracefully on pathologically large buffers.
-fn set_selection(ta: &mut EditBuffer, start: (usize, usize), end: (usize, usize)) {
-    let jump = |(row, col): (usize, usize)| {
-        CursorMove::Jump(
-            u16::try_from(row).unwrap_or(u16::MAX),
-            u16::try_from(col).unwrap_or(u16::MAX),
-        )
-    };
+/// coordinates, as returned by `selection_range`).
+///
+/// Refuses rather than approximating: this used to saturate both endpoints at
+/// `u16::MAX`, which on a pathologically large buffer silently selected a
+/// *different* range — and callers then cut or overwrote it (adr/0038).
+fn set_selection(ta: &mut EditBuffer, start: (usize, usize), end: (usize, usize)) -> bool {
+    let max = u16::MAX as usize;
+    if start.0 > max || start.1 > max || end.0 > max || end.1 > max {
+        return false;
+    }
     ta.cancel_selection();
-    ta.move_cursor(jump(start));
+    ta.jump_to(start.0, start.1);
     ta.start_selection();
-    ta.move_cursor(jump(end));
+    ta.jump_to(end.0, end.1);
+    true
 }
 
 /// Owned RGBA image data lifted from the system clipboard. Returned by
@@ -1209,7 +1211,7 @@ impl TextEditorComponent {
             stripped.len() != t.len() && normalise(stripped) == wanted
         });
         if let Some(row) = row {
-            ta.move_cursor(CursorMove::Jump(row as u16, 0));
+            ta.jump_to(row, 0);
         }
     }
 
@@ -1286,13 +1288,13 @@ impl TextEditorComponent {
                         count
                     };
                     if count > 0 {
-                        ta.move_cursor(CursorMove::Jump(row as u16, 0));
+                        edit_buffer::checked_jump(ta, row, 0);
                         ta.delete_str(count);
                         any_change = true;
                     }
                     row_deltas.push(-(count as isize));
                 } else {
-                    ta.move_cursor(CursorMove::Jump(row as u16, 0));
+                    edit_buffer::checked_jump(ta, row, 0);
                     ta.insert_str(&indent);
                     row_deltas.push(indent_chars as isize);
                     any_change = true;
@@ -1320,7 +1322,7 @@ impl TextEditorComponent {
             None => {
                 let (cr, cc) = saved_cursor.expect("captured when sel is None");
                 let new_col = adj(cr, cc);
-                ta.move_cursor(CursorMove::Jump(cr as u16, new_col as u16));
+                ta.jump_to(cr, new_col);
             }
         }
 
@@ -1871,14 +1873,14 @@ impl TextEditorComponent {
                 let (lrow, lcol) = self
                     .view
                     .click_at_screen((mouse.row - r.y) as usize, (mouse.column - r.x) as usize);
-                ta.move_cursor(CursorMove::Jump(lrow, lcol));
+                ta.jump_to(lrow as usize, lcol as usize);
                 ta.start_selection();
             }
             MouseEventKind::Drag(_) => {
                 let (lrow, lcol) = self
                     .view
                     .click_at_screen((mouse.row - r.y) as usize, (mouse.column - r.x) as usize);
-                ta.move_cursor(CursorMove::Jump(lrow, lcol));
+                ta.jump_to(lrow as usize, lcol as usize);
             }
             _ => {
                 ta.mouse_input(*mouse);
@@ -4439,6 +4441,43 @@ mod tests {
             editor.get_text(),
             "a\nb\nc",
             "one `u` must revert the whole indent, not one row"
+        );
+    }
+
+    /// End-to-end for the anchor invariant: `n` moved the cursor while a
+    /// selection anchor was live, turning it into an unpainted selection that
+    /// the next keystroke deleted. `"foo bar foo"` became `"Xfoo"`.
+    #[test]
+    fn vim_n_cannot_leave_an_invisible_selection() {
+        let mut editor = make_vim_editor();
+        let tx = dummy_tx();
+        editor.set_text("foo bar foo".to_string());
+        editor.open_or_advance_search();
+        for c in "foo".chars() {
+            editor.handle_input(
+                &InputEvent::Key(key(KeyCode::Char(c), KeyModifiers::NONE)),
+                &tx,
+            );
+        }
+        editor.handle_input(&InputEvent::Key(key(KeyCode::Esc, KeyModifiers::NONE)), &tx);
+        // A selection made after the bar closed, then `n`.
+        get_ta(&mut editor).move_cursor(CursorMove::Jump(0, 0));
+        get_ta(&mut editor).start_selection();
+        get_ta(&mut editor).move_cursor(CursorMove::Jump(0, 3));
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('n'), KeyModifiers::NONE)),
+            &tx,
+        );
+        for c in ['i', 'X'] {
+            editor.handle_input(
+                &InputEvent::Key(key(KeyCode::Char(c), KeyModifiers::NONE)),
+                &tx,
+            );
+        }
+        assert!(
+            editor.get_text().contains("bar"),
+            "typing after `n` must not eat unhighlighted text, got {:?}",
+            editor.get_text()
         );
     }
 
