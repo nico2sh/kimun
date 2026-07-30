@@ -1,0 +1,13 @@
+---
+source: tui/tests/editor_render_snapshots.rs
+expression: "painted(\"```\\n#nope\\n```\", 80)"
+---
+ 0 |```                                                                             |
+   0..5 fg=Rgb(235, 219, 178) bg=Rgb(50, 48, 47) mods=NONE
+   5..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+ 1 |#nope                                                                           |
+   0..5 fg=Rgb(235, 219, 178) bg=Rgb(50, 48, 47) mods=NONE
+   5..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+ 2 |```                                                                             |
+   0..5 fg=Rgb(235, 219, 178) bg=Rgb(50, 48, 47) mods=NONE
+   5..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE

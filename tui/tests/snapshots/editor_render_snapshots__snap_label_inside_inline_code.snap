@@ -1,0 +1,8 @@
+---
+source: tui/tests/editor_render_snapshots.rs
+expression: "painted(\"use `#foo` here\", 80)"
+---
+ 0 |use #foo here                                                                   |
+   0..4 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+   4..8 fg=Rgb(142, 192, 124) bg=Rgb(60, 56, 54) mods=NONE
+   8..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE

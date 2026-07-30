@@ -1,0 +1,8 @@
+---
+source: tui/tests/editor_render_snapshots.rs
+expression: "painted(\"prefix #tag suffix\", 80)"
+---
+ 0 |prefix #tag suffix                                                              |
+   0..7 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+   7..11 fg=Rgb(254, 128, 25) bg=Rgb(40, 40, 40) mods=BOLD
+   11..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE

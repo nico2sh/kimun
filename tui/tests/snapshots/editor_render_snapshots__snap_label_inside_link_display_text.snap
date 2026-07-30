@@ -1,0 +1,7 @@
+---
+source: tui/tests/editor_render_snapshots.rs
+expression: "painted(\"[#todo](notes/project.md)\", 80)"
+---
+ 0 |#todo                                                                           |
+   0..5 fg=Rgb(250, 189, 47) bg=Rgb(40, 40, 40) mods=UNDERLINED
+   5..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE

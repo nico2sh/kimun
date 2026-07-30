@@ -1,0 +1,8 @@
+---
+source: tui/tests/editor_render_snapshots.rs
+expression: "painted(\"call `#tag` here\", 80)"
+---
+ 0 |call #tag here                                                                  |
+   0..5 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+   5..9 fg=Rgb(142, 192, 124) bg=Rgb(60, 56, 54) mods=NONE
+   9..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE

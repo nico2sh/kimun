@@ -1,0 +1,7 @@
+---
+source: tui/tests/editor_render_snapshots.rs
+expression: "painted(\"    let x = 1;\", 80)"
+---
+ 0 |    let x = 1;                                                                  |
+   0..14 fg=Rgb(235, 219, 178) bg=Rgb(50, 48, 47) mods=NONE
+   14..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE

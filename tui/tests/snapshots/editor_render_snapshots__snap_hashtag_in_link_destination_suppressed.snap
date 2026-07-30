@@ -1,0 +1,8 @@
+---
+source: tui/tests/editor_render_snapshots.rs
+expression: "painted(\"See [docs](https://example.com/#fragment).\", 80)"
+---
+ 0 |See docs.                                                                       |
+   0..4 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+   4..8 fg=Rgb(250, 189, 47) bg=Rgb(40, 40, 40) mods=UNDERLINED
+   8..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE

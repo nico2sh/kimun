@@ -1,0 +1,20 @@
+---
+source: tui/tests/editor_render_snapshots.rs
+expression: "painted(\"before\\n```\\nshort\\na longer line here\\n```\\nafter\", 40)"
+---
+ 0 |before                                  |
+   0..40 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+ 1 |```                                     |
+   0..18 fg=Rgb(235, 219, 178) bg=Rgb(50, 48, 47) mods=NONE
+   18..40 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+ 2 |short                                   |
+   0..18 fg=Rgb(235, 219, 178) bg=Rgb(50, 48, 47) mods=NONE
+   18..40 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+ 3 |a longer line here                      |
+   0..18 fg=Rgb(235, 219, 178) bg=Rgb(50, 48, 47) mods=NONE
+   18..40 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+ 4 |```                                     |
+   0..18 fg=Rgb(235, 219, 178) bg=Rgb(50, 48, 47) mods=NONE
+   18..40 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+ 5 |after                                   |
+   0..40 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE

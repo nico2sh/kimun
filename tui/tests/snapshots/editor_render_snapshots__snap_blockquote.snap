@@ -1,0 +1,8 @@
+---
+source: tui/tests/editor_render_snapshots.rs
+expression: "painted(\"> A quoted line.\", 80)"
+---
+ 0 |│ A quoted line.                                                                |
+   0..2 fg=Rgb(250, 189, 47) bg=Rgb(40, 40, 40) mods=NONE
+   2..16 fg=Rgb(168, 153, 132) bg=Rgb(40, 40, 40) mods=NONE
+   16..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
