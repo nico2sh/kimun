@@ -107,8 +107,10 @@ pub struct RopeBuffer {
     goal: Option<Column>,
     yank: String,
     search: Option<regex::Regex>,
-    /// Rebuilt after every change, so reads can take `&self` — a `&mut` read
-    /// would not survive the call sites this shim exists to keep compiling.
+    /// Kept in step with the text, so reads can take `&self` — a `&mut` read would
+    /// not survive the call sites this shim exists to keep compiling. Spliced from
+    /// the change rather than rebuilt, so a keystroke costs its own rows and not
+    /// the note's.
     lines: Vec<String>,
     tab_length: u8,
     hard_tab_indent: bool,
@@ -134,7 +136,7 @@ impl RopeBuffer {
             tab_length: DEFAULT_TAB_LENGTH,
             hard_tab_indent: false,
         };
-        buffer.refresh_lines();
+        buffer.rebuild_lines();
         buffer
     }
 
@@ -147,7 +149,7 @@ impl RopeBuffer {
         self.inner.set_text(text);
         self.pending = EditOutcome::default();
         self.goal = None;
-        self.refresh_lines();
+        self.rebuild_lines();
     }
 
     pub fn text(&self) -> &Text {
@@ -185,10 +187,36 @@ impl RopeBuffer {
         &self.lines
     }
 
-    fn refresh_lines(&mut self) {
+    fn rebuild_lines(&mut self) {
         self.lines.clear();
         self.lines
             .extend(self.inner.text().lines().map(|line| line.to_string()));
+    }
+
+    /// Replace only the rows the change touched.
+    ///
+    /// The same coordinate care as the layout's relayout: `rows` is in the *new*
+    /// text's numbering, so the span being replaced has to be named twice — once
+    /// to find what to drop, once to say what replaces it.
+    fn sync_lines(&mut self, change: &Change) {
+        let text = self.inner.text();
+        let rows =
+            change.rows().start.min(text.line_count())..change.rows().end.min(text.line_count());
+        let old_end = (rows.end as isize - change.line_delta()).max(rows.start as isize) as usize;
+        let old = rows.start.min(self.lines.len())..old_end.min(self.lines.len());
+        if rows.is_empty() && old.is_empty() {
+            return;
+        }
+        let replacement: Vec<String> = rows
+            .clone()
+            .filter_map(|row| text.line(row).map(|line| line.to_string()))
+            .collect();
+        self.lines.splice(old, replacement);
+        debug_assert_eq!(
+            self.lines.len(),
+            text.line_count(),
+            "the line shim drifted from the text it mirrors"
+        );
     }
 
     pub fn cursor(&self) -> (usize, usize) {
@@ -262,7 +290,7 @@ impl RopeBuffer {
         };
         self.pending.changed = true;
         self.pending.bulk |= change.is_bulk();
-        self.refresh_lines();
+        self.sync_lines(&change);
         true
     }
 
