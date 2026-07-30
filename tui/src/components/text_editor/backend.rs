@@ -315,7 +315,7 @@ impl BackendState {
             EditorBackendSetting::Vim => TextareaBackend::vim(ropetext::Text::new()),
             // Nvim is handled by the early return above; Textarea and any
             // future non-modal setting use the direct interpreter.
-            EditorBackendSetting::Textarea | EditorBackendSetting::Nvim => {
+            EditorBackendSetting::Plain | EditorBackendSetting::Nvim => {
                 TextareaBackend::direct(ropetext::Text::new())
             }
         };

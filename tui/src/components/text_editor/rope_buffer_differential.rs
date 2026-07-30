@@ -36,8 +36,8 @@
 //!   cursor to *that earlier edit's* position. Cursors are therefore compared only
 //!   after an operation that actually changed the text.
 
-use kimun_notes::components::text_editor::edit_buffer::EditBuffer;
-use kimun_notes::components::text_editor::rope_buffer::{CursorMove as RopeMove, RopeBuffer};
+use super::edit_buffer::EditBuffer;
+use super::rope_buffer::{CursorMove as RopeMove, RopeBuffer};
 use proptest::prelude::*;
 use proptest::strategy::Union;
 use ratatui_textarea::{CursorMove, DataCursor, TextArea};

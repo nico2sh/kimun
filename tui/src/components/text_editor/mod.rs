@@ -1,5 +1,9 @@
 pub mod autocomplete_glue;
 pub mod backend;
+/// The superseded `ratatui-textarea` buffer, kept only as the differential
+/// oracle. Test-gated so the shipped binary does not contain it — and so the
+/// dependency it needs is a dev-dependency.
+#[cfg(test)]
 pub mod edit_buffer;
 pub mod find_bar;
 pub mod find_replace;
@@ -10,6 +14,8 @@ pub mod nvim_rpc;
 pub mod parse_incremental;
 mod revisions;
 pub mod rope_buffer;
+#[cfg(test)]
+mod rope_buffer_differential;
 use revisions::Revisions;
 pub mod snapshot;
 pub mod text_coords;
