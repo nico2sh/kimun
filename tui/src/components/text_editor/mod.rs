@@ -1896,7 +1896,6 @@ impl TextEditorComponent {
 /// (`color_search_match`, bold) and style task checkboxes — `[ ]` accent,
 /// `[x]` rows dimmed + struck (spec §5.1). Operates on the rendered buffer
 /// rows, so cost is bounded by the visible area regardless of note size.
-
 impl Component for TextEditorComponent {
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
         self.maybe_recover_from_dead_nvim();

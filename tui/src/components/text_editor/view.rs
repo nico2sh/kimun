@@ -1411,13 +1411,6 @@ fn byte_offset_for_display_width(s: &str, target_width: usize) -> usize {
     s.len()
 }
 
-/// Re-style spans to apply `selection_bg` over the given rendered-column range.
-///
-
-/// Re-style spans to apply `highlight_bg` over the given rendered-column
-/// range, optionally emboldening it.
-///
-
 /// Split `spans` at the boundaries of a rendered-column range and apply
 /// `restyle` to the overlapping portion. The one place column-to-byte
 /// accounting for a partial restyle lives.
@@ -2270,23 +2263,36 @@ mod tests {
         );
     }
 
+    /// Assert the view's cached parse matches a fresh one.
+    ///
+    /// The per-line comparison uses `debug_assert_eq_to`, which is
+    /// `#[cfg(debug_assertions)]` like its one production caller — so the
+    /// *body* is gated, not the function. Gating the whole helper would remove
+    /// a symbol six tests call; leaving it ungated stops the lib-test target
+    /// compiling under any profile with assertions off, which is why
+    /// `cargo bench --no-run` did not build.
     fn full_rebuild_equals_view_state(v: &MarkdownEditorView, lines: &[String]) {
-        let fresh = ParsedBuffer::parse(lines);
-        assert_eq!(v.parse_state.buf().kinds, fresh.kinds, "kinds diverge");
-        assert_eq!(
-            v.parse_state.buf().lines.len(),
-            fresh.lines.len(),
-            "row count diverge"
-        );
-        for (i, (got, exp)) in v
-            .parse_state
-            .buf()
-            .lines
-            .iter()
-            .zip(fresh.lines.iter())
-            .enumerate()
+        #[cfg(not(debug_assertions))]
+        let _ = (v, lines);
+        #[cfg(debug_assertions)]
         {
-            got.debug_assert_eq_to(exp, i);
+            let fresh = ParsedBuffer::parse(lines);
+            assert_eq!(v.parse_state.buf().kinds, fresh.kinds, "kinds diverge");
+            assert_eq!(
+                v.parse_state.buf().lines.len(),
+                fresh.lines.len(),
+                "row count diverge"
+            );
+            for (i, (got, exp)) in v
+                .parse_state
+                .buf()
+                .lines
+                .iter()
+                .zip(fresh.lines.iter())
+                .enumerate()
+            {
+                got.debug_assert_eq_to(exp, i);
+            }
         }
     }
 
