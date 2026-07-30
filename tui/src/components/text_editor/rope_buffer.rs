@@ -119,6 +119,10 @@ pub struct RopeBuffer {
     /// Whether the open group has recorded anything yet, so the first mutation
     /// inside `edit` starts the group and the rest extend it.
     group_started: bool,
+    /// Set by a backend that has decided the next mutation continues what the
+    /// last one started — a typing run, an insert session. Cleared by using it,
+    /// so continuing is asked for per edit rather than left switched on.
+    continue_group: bool,
     /// The column a vertical movement is aiming at, which is why walking down
     /// through a short row and out the other side returns to where it started.
     goal: Option<Column>,
@@ -141,6 +145,7 @@ impl RopeBuffer {
             pending: EditOutcome::default(),
             depth: 0,
             group_started: false,
+            continue_group: false,
             goal: None,
             yank: String::new(),
             search: None,
@@ -263,9 +268,20 @@ impl RopeBuffer {
         out
     }
 
+    /// The next mutation joins the previous group instead of starting one.
+    ///
+    /// The policy is the backend's, because only it knows what the user was doing
+    /// — mid-word against after a pause, inside an Insert session against having
+    /// left it. This is the mechanism; `typing_run` and the vim engine are the two
+    /// callers that hold an opinion.
+    pub fn continue_group(&mut self) {
+        self.continue_group = true;
+    }
+
     /// Apply one primitive as its own group, or as part of an open one.
     fn mutate(&mut self, f: impl FnOnce(&mut ropetext::Txn<'_>)) -> bool {
-        let extending = self.depth > 0 && self.group_started;
+        let extending =
+            (self.depth > 0 && self.group_started) || std::mem::take(&mut self.continue_group);
         let mut txn = if extending {
             self.inner.begin_extending()
         } else {
