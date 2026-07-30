@@ -193,6 +193,7 @@ impl EditBuffer {
         self.merge(EditOutcome {
             changed: true,
             bulk,
+            damage: None,
         });
         out
     }
@@ -301,8 +302,9 @@ impl EditBuffer {
             self.redo.push(g);
         }
         let out = self.outcome_against(&before);
+        let changed = out.changed;
         self.merge(out);
-        out.changed
+        changed
     }
 
     /// Redo one *user action*. Mirror of [`Self::undo`].
@@ -336,8 +338,9 @@ impl EditBuffer {
             self.undo.push(g);
         }
         let out = self.outcome_against(&before);
+        let changed = out.changed;
         self.merge(out);
-        out.changed
+        changed
     }
 
     fn outcome_against(&self, before: &[String]) -> EditOutcome {
@@ -350,6 +353,7 @@ impl EditBuffer {
             // An undo can restore a whole-buffer rewrite in one step, which the
             // cursor damage hint cannot describe.
             bulk: is_bulk(before, after, self.ta.cursor().0),
+            damage: None,
         }
     }
 

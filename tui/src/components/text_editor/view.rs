@@ -214,6 +214,14 @@ pub struct MarkdownEditorView {
     /// Tracks how Gate 1 changed (or did not change) the parse caches.
     /// Gate 2 reads this to decide the scope of rendered_cache rebuild.
     last_text_change: TextChangeKind,
+    /// Rows the last edits changed, as the **edit buffer** reported them.
+    ///
+    /// Consumed by the next `update`, which then has no reason to compare the
+    /// buffer against a copy of its previous self. `None` means nobody told us —
+    /// the **nvim** backend hands over lines rather than changes, and whole-buffer
+    /// replacements report nothing — and the diff is the fallback for exactly
+    /// those.
+    reported_damage: Option<std::ops::Range<usize>>,
 }
 
 /// True when `KIMUN_VIEW_VERIFY_INCREMENTAL=1` is set. Reads the
@@ -325,6 +333,7 @@ impl MarkdownEditorView {
             last_parse_was_incremental: false,
             last_splice_path: None,
             last_text_change: TextChangeKind::Full, // first update is a full rebuild
+            reported_damage: None,
         }
     }
 
@@ -466,6 +475,14 @@ impl MarkdownEditorView {
     /// edited row and will otherwise under-report the damage, leaving distant
     /// rows rendered from a stale parse. Every edit that rewrites more than the
     /// cursor's neighbourhood must call this.
+    /// Record which rows an edit changed, for the next `update` to act on.
+    pub fn note_damage(&mut self, rows: std::ops::Range<usize>) {
+        self.reported_damage = Some(match self.reported_damage.take() {
+            Some(seen) => seen.start.min(rows.start)..seen.end.max(rows.end),
+            None => rows,
+        });
+    }
+
     pub fn note_bulk_edit(&mut self) {
         self.bulk_edit_pending = true;
     }
@@ -490,10 +507,11 @@ impl MarkdownEditorView {
 
         // Gate 1: content changed — rebuild parse cache and snapshots.
         if generation != self.last_seen_generation {
+            let reported = self.reported_damage.take();
             let incremental = if self.parse_state.is_placeholder() {
                 None
             } else {
-                self.try_incremental_parse(lines, cursor)
+                self.try_incremental_parse(lines, cursor, reported)
             };
             // Consumed here, not inside `try_incremental_parse`: the flag must
             // clear even on the placeholder path above, or a bulk edit
@@ -819,6 +837,7 @@ impl MarkdownEditorView {
         &self,
         lines: &[String],
         cursor: (usize, usize),
+        reported: Option<std::ops::Range<usize>>,
     ) -> Option<(std::ops::Range<usize>, ParsedBuffer, SplicePath)> {
         use super::parse_incremental::{
             LineConstructKind, WidenResult, compute_damage_range, expand_to_reset_boundary,
@@ -845,9 +864,22 @@ impl MarkdownEditorView {
         } else {
             cursor.0
         };
-        let Some(damaged) = compute_damage_range(&self.lines_snapshot, lines, hint) else {
-            return METRICS.bail(BailReason::NoDamage);
+        // Told, not found: the engine knows which rows its own edit touched, so the
+        // only reason to compare the buffer with a copy of its previous self is
+        // that nobody told us — a whole-buffer replacement, or the **nvim**
+        // backend, which reports lines rather than changes.
+        let damaged = match reported {
+            Some(rows) if rows.end <= lines.len() => rows,
+            _ => {
+                let Some(damaged) = compute_damage_range(&self.lines_snapshot, lines, hint) else {
+                    return METRICS.bail(BailReason::NoDamage);
+                };
+                damaged
+            }
         };
+        if damaged.is_empty() {
+            return METRICS.bail(BailReason::NoDamage);
+        }
 
         // Structural-marker change guard: any edit that converts a fence
         // marker line into a non-marker (or vice versa) can shift the
@@ -1864,6 +1896,56 @@ mod tests {
     }
 
     #[test]
+    fn reported_damage_agrees_with_the_diff_it_replaced() {
+        // The engine tells the view which rows it changed, so the view no longer
+        // compares the buffer against a copy of its previous self. The two must
+        // reach the same answer, or "told" quietly means something else than
+        // "found" and every parse after an edit is subtly wrong.
+        // Blank lines between blocks, so widening stops at a paragraph boundary
+        // rather than reaching the buffer's edges. Without them every damage range
+        // widens to the whole buffer and this would pass whatever the report says,
+        // proving nothing about it being read.
+        let mut lines: Vec<String> = Vec::new();
+        for block in 0..4 {
+            lines.push(format!("block {block} first line"));
+            lines.push(format!("block {block} second line"));
+            lines.push(String::new());
+        }
+        let mut edited = lines.clone();
+        edited[7].push_str(" more");
+
+        let mut found = MarkdownEditorView::new();
+        update_view(&mut found, &lines, (7, 0), rect(20), 1, None);
+        let by_diff = found.try_incremental_parse(&edited, (7, 0), None);
+
+        let mut told = MarkdownEditorView::new();
+        update_view(&mut told, &lines, (7, 0), rect(20), 1, None);
+        let by_report = told.try_incremental_parse(&edited, (7, 0), Some(7..8));
+
+        assert!(by_diff.is_some(), "the diff finds this edit incrementally");
+        let (diff_range, diff_slice, _) = by_diff.expect("checked");
+        let (report_range, report_slice, _) = by_report.expect("the report must too");
+        assert_eq!(diff_range, report_range, "widened ranges diverge");
+        assert_eq!(diff_slice.kinds, report_slice.kinds, "parsed kinds diverge");
+    }
+
+    #[test]
+    fn a_report_past_the_end_of_the_buffer_falls_back_to_the_diff() {
+        // A stale report — rows that no longer exist — must not be trusted. The
+        // guard is what keeps a report from indexing outside the buffer.
+        let lines = vec!["alpha".to_string(), "beta".to_string()];
+        let mut edited = lines.clone();
+        edited[1].push_str(" more");
+        let mut v = MarkdownEditorView::new();
+        update_view(&mut v, &lines, (1, 0), rect(20), 1, None);
+        assert!(
+            v.try_incremental_parse(&edited, (1, 0), Some(0..99))
+                .is_some(),
+            "an out-of-range report falls back rather than panicking"
+        );
+    }
+
+    #[test]
     fn try_incremental_parse_falls_back_on_indented_code_flip() {
         // Regression: a Plain row flipping to IndentedCode (4 leading
         // spaces) can lazy-extend an indented-code block across the
@@ -1879,7 +1961,7 @@ mod tests {
         ];
         // try_incremental_parse must return None (full-rebuild signal).
         assert!(
-            v.try_incremental_parse(&new_lines, (1, 0)).is_none(),
+            v.try_incremental_parse(&new_lines, (1, 0), None).is_none(),
             "indented-code flip must force a full rebuild"
         );
     }
@@ -1910,7 +1992,7 @@ mod tests {
             "    more".to_string(),
         ];
         assert!(
-            v.try_incremental_parse(&new_lines, (1, 1)).is_none(),
+            v.try_incremental_parse(&new_lines, (1, 1), None).is_none(),
             "edit inside an open lazy-continuable block must force a full rebuild"
         );
     }
@@ -1929,7 +2011,7 @@ mod tests {
             "gamma".to_string(),
         ];
         assert!(
-            v.try_incremental_parse(&new_lines, (1, 0)).is_none(),
+            v.try_incremental_parse(&new_lines, (1, 0), None).is_none(),
             "HTML-block opener flip must force a full rebuild"
         );
     }

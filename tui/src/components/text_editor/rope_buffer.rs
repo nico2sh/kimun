@@ -30,7 +30,7 @@ const DEFAULT_TAB_LENGTH: u8 = 4;
 /// exactly the failure this type exists to prevent. A warning is a check; a
 /// convention is not.
 #[must_use = "an edit's outcome drives the revision bump and the parse-damage signal"]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct EditOutcome {
     /// The buffer's text differs from before the edit. A content comparison —
     /// never a library return value, which can report `false` after mutating.
@@ -38,6 +38,14 @@ pub struct EditOutcome {
     /// The change is not confined to the cursor's row, so the incremental
     /// parser's cursor damage hint would under-report it (adr/0035).
     pub bulk: bool,
+    /// Which rows the edits changed, in the new text's numbering — the hull when
+    /// several ran before this was drained.
+    ///
+    /// Told by the engine rather than found by comparing the buffer with a copy
+    /// of its previous self, which is what ADR-0040 exists to make possible. The
+    /// **nvim** backend reports lines and not changes, so it leaves this `None`
+    /// and its consumer falls back to a diff.
+    pub damage: Option<std::ops::Range<usize>>,
 }
 
 impl EditOutcome {
@@ -290,6 +298,10 @@ impl RopeBuffer {
         };
         self.pending.changed = true;
         self.pending.bulk |= change.is_bulk();
+        self.pending.damage = Some(match self.pending.damage.take() {
+            Some(seen) => seen.start.min(change.rows().start)..seen.end.max(change.rows().end),
+            None => change.rows(),
+        });
         self.sync_lines(&change);
         true
     }
