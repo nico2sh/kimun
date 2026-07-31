@@ -750,8 +750,18 @@ impl MarkdownEditorView {
                     got.debug_assert_eq_to(exp, i);
                 }
             }
-            self.fence_ranges =
-                super::parse_incremental::fence_ranges_from_kinds(&self.parse_state.buf().kinds);
+            // Skip on a successful incremental splice: `try_incremental_parse`
+            // already refuses to splice any edit that could flip a row into
+            // or out of a fence/indented-code/HTML-block role (the
+            // structural-marker and opener-shape guards bail to a full
+            // rebuild first) — so `fence_ranges` is provably identical to
+            // before, and re-scanning the whole `kinds` array to confirm
+            // that would defeat the point of having taken the fast path.
+            if !self.last_parse_was_incremental {
+                self.fence_ranges = super::parse_incremental::fence_ranges_from_kinds(
+                    &self.parse_state.buf().kinds,
+                );
+            }
             // Incremental update of `lines_snapshot` mirrors the parse
             // path: on the splice path only the rows in `range` can
             // have changed (try_incremental_parse already bails when
@@ -906,7 +916,18 @@ impl MarkdownEditorView {
             //   cursor-position-sensitive whenever the cursor crosses
             //   an inline element boundary — same row or different
             //   row.
-            self.rebuild_gutter_insets(row_count, cursor.0);
+            // Full rebuild only on a genuine full-rebuild frame (or a
+            // length mismatch, defensively) — otherwise the structural
+            // guards that gate the incremental splice already guarantee no
+            // row's blockquote depth changed, so only the rows the cursor
+            // just left or entered need a fresh inset.
+            if matches!(self.last_text_change, TextChangeKind::Full)
+                || self.gutter_insets.len() != row_count
+            {
+                self.rebuild_gutter_insets(row_count, cursor.0);
+            } else if !cursor_affected_rows.is_empty() {
+                self.patch_gutter_insets(&cursor_affected_rows, cursor.0);
+            }
             let line_count_changed = self.layout.row_count() != row_count;
             // A stub is still outstanding from an earlier full rebuild and
             // content changed again this frame: re-stub for the new
@@ -955,9 +976,19 @@ impl MarkdownEditorView {
             }
             // Code-box widths depend only on text content and the wrap width,
             // not the cursor — so skip the (grapheme-walking) rebuild on
-            // cursor-only moves, where neither changed.
-            if !matches!(self.last_text_change, TextChangeKind::None) || width_changed {
+            // cursor-only moves, where neither changed. A width change caps
+            // every block afresh regardless of content, so it always forces
+            // the full rebuild; a successful incremental splice narrows to
+            // just the block(s) overlapping the edited range — the same
+            // structural guards mean any OTHER block's boundaries (and thus
+            // whether it needs re-measuring at all) can't have moved.
+            if width_changed
+                || matches!(self.last_text_change, TextChangeKind::Full)
+                || self.code_box_width.len() != row_count
+            {
                 self.rebuild_code_box_width(text, rect.width);
+            } else if let TextChangeKind::Incremental(range) = &self.last_text_change {
+                self.patch_code_box_width(text, rect.width, range.clone());
             }
             self.last_layout_generation = generation;
             self.last_layout_width = rect.width;
@@ -1514,9 +1545,47 @@ impl MarkdownEditorView {
         self.code_box_width = out;
     }
 
+    /// Update `code_box_width` for just the code-block range(s) overlapping
+    /// `damaged` — the incremental-path sibling of `rebuild_code_box_width`.
+    /// Safe because the structural guards in `try_incremental_parse` already
+    /// refuse to splice an edit that adds, removes, or moves a code-block
+    /// boundary; a block that doesn't overlap the edit can only have kept
+    /// the same lines it had before, so its width can't have changed. A
+    /// block's own content growing or shrinking *can* change its width, and
+    /// that only happens inside `damaged`.
+    fn patch_code_box_width(
+        &mut self,
+        text: &ropetext::Text,
+        width: u16,
+        damaged: std::ops::Range<usize>,
+    ) {
+        let ranges =
+            super::parse_incremental::code_block_ranges_from_kinds(&self.parse_state.buf().kinds);
+        for r in ranges {
+            if r.start >= damaged.end || r.end <= damaged.start {
+                continue; // no overlap — this block's width can't have changed
+            }
+            let mut max_w = 0usize;
+            for row in r.clone() {
+                if let Some(line) = text.line(row) {
+                    max_w = max_w.max(super::markdown::raw_display_width(&line));
+                }
+            }
+            let boxed = (max_w.min(width as usize)) as u16;
+            for row in r {
+                if let Some(entry) = self.code_box_width.get_mut(row) {
+                    *entry = Some(boxed);
+                }
+            }
+        }
+    }
+
     /// Rebuild `gutter_insets` from parse state + cursor. A blockquote row
     /// that is not the cursor row reserves `depth + 1` cols for the bar; the
-    /// cursor row reserves 0 (its markers are revealed raw).
+    /// cursor row reserves 0 (its markers are revealed raw). Full
+    /// `O(row_count)` rebuild — see `patch_gutter_insets` for the
+    /// incremental-path sibling that only touches the rows that can
+    /// plausibly have changed.
     fn rebuild_gutter_insets(&mut self, row_count: usize, cursor_row: usize) {
         let parsed = &self.parse_state.buf().lines;
         self.gutter_insets = (0..row_count)
@@ -1530,6 +1599,29 @@ impl MarkdownEditorView {
                 }
             })
             .collect();
+    }
+
+    /// Update `gutter_insets` for exactly `rows`, in place. Safe whenever
+    /// the parse took the incremental splice path: the structural guards in
+    /// `try_incremental_parse` (opener-shape / lazy-depth) already refuse
+    /// to splice an edit that could change a row's blockquote depth, so the
+    /// only thing that can legitimately change `gutter_insets` between two
+    /// incrementally-linked frames is which row the cursor is on.
+    fn patch_gutter_insets(&mut self, rows: &[usize], cursor_row: usize) {
+        let parsed = &self.parse_state.buf().lines;
+        for &row in rows {
+            let inset = if row == cursor_row {
+                0
+            } else {
+                match parsed.get(row).and_then(|p| p.blockquote_depth()) {
+                    Some(d) => super::markdown::blockquote_gutter_width(d),
+                    None => 0,
+                }
+            };
+            if let Some(entry) = self.gutter_insets.get_mut(row) {
+                *entry = inset;
+            }
+        }
     }
 
     /// Markdown-aware mouse click: maps a rendered screen column to
@@ -3081,6 +3173,112 @@ mod tests {
         );
 
         assert!(v.last_parse_was_incremental, "expected incremental path");
+    }
+
+    #[test]
+    fn incremental_edit_reuses_fence_ranges_without_rescanning() {
+        // A fence block plus plain paragraphs elsewhere. An edit inside a
+        // plain paragraph (not touching the fence) must take the
+        // incremental path — at which point `fence_ranges` is skipped
+        // rather than rescanned, per the structural guards that already
+        // gate the splice. Verify it stays correct anyway.
+        let mut v = MarkdownEditorView::new();
+        let mut lines: Vec<String> = vec![
+            "```".to_string(),
+            "code line".to_string(),
+            "```".to_string(),
+        ];
+        lines.extend((0..200).map(|i| format!("paragraph {i} with some text")));
+        update_view(&mut v, &lines, (100, 0), rect(40), 1, None);
+
+        lines[100].push('x');
+        update_view(&mut v, &lines, (100, lines[100].len()), rect(40), 2, None);
+        assert!(v.last_parse_was_incremental, "expected incremental path");
+
+        let fresh = ParsedBuffer::parse_lines(&lines);
+        assert_eq!(
+            v.fence_ranges,
+            super::super::parse_incremental::fence_ranges_from_kinds(&fresh.kinds),
+            "fence_ranges must stay correct after a skipped recompute"
+        );
+    }
+
+    #[test]
+    fn incremental_edit_patches_only_cursor_rows_of_gutter_insets() {
+        // Blockquote rows at the top; a content edit far away (row 150)
+        // combined with the cursor moving between two blockquote rows in
+        // the same frame. The edit alone keeps the parse incremental; the
+        // cursor move is what gutter_insets must still react to correctly
+        // without re-walking every row.
+        let mut v = MarkdownEditorView::new();
+        // Blank line after the blockquote so the paragraph run below gets
+        // its own reset boundary instead of lazily continuing the quote —
+        // otherwise every row folds into one giant construct and even a
+        // distant edit falls back to a full rebuild.
+        let mut lines: Vec<String> = vec![
+            "> quoted line 0".to_string(),
+            "> quoted line 1".to_string(),
+            "> quoted line 2".to_string(),
+            String::new(),
+        ];
+        lines.extend((0..200).map(|i| format!("paragraph {i} with some text")));
+        update_view(&mut v, &lines, (0, 0), rect(40), 1, None);
+
+        lines[151].push('x');
+        update_view(&mut v, &lines, (1, 0), rect(40), 2, None);
+        assert!(v.last_parse_was_incremental, "expected incremental path");
+
+        let mut fresh_view = MarkdownEditorView::new();
+        update_view(&mut fresh_view, &lines, (1, 0), rect(40), 1, None);
+        assert_eq!(
+            v.gutter_insets_for_testing(),
+            fresh_view.gutter_insets_for_testing(),
+            "patched gutter_insets must match a full rebuild"
+        );
+    }
+
+    #[test]
+    fn incremental_edit_patches_only_the_touched_code_block_of_code_box_width() {
+        // Two fenced blocks. Growing a line inside the SECOND block must
+        // not touch the first block's cached width, and the result must
+        // match a full rebuild.
+        let mut v = MarkdownEditorView::new();
+        let mut lines: Vec<String> = vec![
+            "```".to_string(),
+            "short".to_string(),
+            "```".to_string(),
+            "paragraph between blocks".to_string(),
+            "```".to_string(),
+            "also short".to_string(),
+            "```".to_string(),
+        ];
+        update_view(&mut v, &lines, (5, 0), rect(40), 1, None);
+        let before_first_block = v.code_box_width_for_testing()[0..3].to_vec();
+
+        lines[5].push_str(" grown considerably wider now");
+        update_view(&mut v, &lines, (5, lines[5].len()), rect(40), 2, None);
+        assert!(v.last_parse_was_incremental, "expected incremental path");
+
+        assert_eq!(
+            v.code_box_width_for_testing()[0..3],
+            before_first_block[..],
+            "the untouched first block's width must be unchanged"
+        );
+
+        let mut fresh_view = MarkdownEditorView::new();
+        update_view(
+            &mut fresh_view,
+            &lines,
+            (5, lines[5].len()),
+            rect(40),
+            1,
+            None,
+        );
+        assert_eq!(
+            v.code_box_width_for_testing(),
+            fresh_view.code_box_width_for_testing(),
+            "patched code_box_width must match a full rebuild"
+        );
     }
 
     #[test]
