@@ -290,13 +290,43 @@ impl RopeBuffer {
     }
 
     fn record(&mut self, change: Option<Change>) -> bool {
+        /// `range`, renumbered for a change of `delta` lines starting at `at`.
+        ///
+        /// Rows above the change keep their index; the rest move with it. A
+        /// `delta` of zero — every edit that stays within its rows, which is
+        /// most of them — leaves the range alone.
+        fn shift_rows(
+            range: std::ops::Range<usize>,
+            at: usize,
+            delta: isize,
+        ) -> std::ops::Range<usize> {
+            let shift = |row: usize| {
+                if row < at {
+                    row
+                } else {
+                    row.saturating_add_signed(delta)
+                }
+            };
+            shift(range.start)..shift(range.end)
+        }
+
         let Some(change) = change else {
             return false;
         };
         self.pending.changed = true;
         self.pending.bulk |= change.is_bulk();
         self.pending.damage = Some(match self.pending.damage.take() {
-            Some(seen) => seen.start.min(change.rows().start)..seen.end.max(change.rows().end),
+            Some(seen) => {
+                // `seen` was recorded against the text as it stood before *this*
+                // change, which may have moved those rows. Hulling the two
+                // directly unions ranges from two different numberings, and the
+                // result is not a superset of either: an edit high in the buffer
+                // followed by one above it that adds a line leaves the first
+                // edit's row below the hull's end, so it is never re-parsed and
+                // renders stale. Bring it into the current numbering first.
+                let seen = shift_rows(seen, change.rows().start, change.line_delta());
+                seen.start.min(change.rows().start)..seen.end.max(change.rows().end)
+            }
             None => change.rows(),
         });
         true
@@ -904,5 +934,32 @@ mod cluster_tests {
         buf.move_cursor(CursorMove::Jump(0, 0));
         buf.insert_char('a');
         assert_eq!(buf.rows(), &["a\u{301}f"]);
+    }
+}
+
+#[cfg(test)]
+mod damage_tests {
+    use super::*;
+    use ropetext::Text;
+
+    #[test]
+    fn damage_from_several_edits_is_in_one_numbering() {
+        // Two mutations in one group, the second ABOVE the first and changing
+        // the line count — so the first edit's row moves before the group ends.
+        let mut buf = RopeBuffer::new(Text::from("r0\nr1\nr2\nr3\nr4"));
+        buf.edit(|b| {
+            b.move_cursor(CursorMove::Jump(4, 0));
+            b.insert_str("X");
+            b.move_cursor(CursorMove::Jump(0, 0));
+            b.insert_newline();
+        });
+        assert_eq!(buf.rows(), ["", "r0", "r1", "r2", "r3", "Xr4"]);
+
+        let damage = buf.take_outcome().damage.expect("the edits were reported");
+        assert!(
+            damage.contains(&5),
+            "the row edited first is row 5 once the group ends, but the damage \
+             reported was {damage:?} — a range in the older numbering"
+        );
     }
 }
