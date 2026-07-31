@@ -1218,10 +1218,20 @@ impl MarkdownEditorView {
                 // inside another lazy construct (a list inside a
                 // blockquote) where the OUTER construct can shift.
                 //
-                // Blockquote / Plain / ListContinuation unlocks are
-                // deferred to a follow-up that adds a post-widening
-                // sanity check on `widened.end + 1` (cheap re-parse
-                // of one extra row to detect downstream flips).
+                // Blockquote / Plain / ListContinuation unlocks remain
+                // deferred. A post-widening sanity check on
+                // `widened.end + 1` was the proposed fix — re-parse one
+                // extra row and compare it against the parent to catch a
+                // downstream flip. It was built and measured against the
+                // soak in `widener_soak` below, and it does NOT work:
+                // with the unlock applied, the soak still diverges on
+                // `lazy_depth` within a few thousand cases, whether the
+                // check compares `kinds` alone or `kinds` and
+                // `lazy_depth` together. The flip lands further out than
+                // one row, so a fixed one-row lookahead cannot see it.
+                // Whatever closes this has to bound how far a
+                // reclassification can travel, or verify to the next
+                // reset boundary rather than to the next row.
                 let kind_qualifies = matches!(old_kind, LineConstructKind::ListMarker);
                 let depth_qualifies = row < lazy.len() && lazy[row] == 1;
                 if kind_qualifies && depth_qualifies {
@@ -1299,37 +1309,7 @@ impl MarkdownEditorView {
                 }
             }
         };
-        // One parse, one row longer than the splice needs — see the downstream
-        // check below, which reads that extra row and then trims it off.
-        let probe_end = (widened.end + 1).min(text.line_count());
-        let mut slice = ParsedBuffer::parse_range(text, widened.start..probe_end);
-
-        // Downstream check: the first row the splice will NOT replace.
-        //
-        // The post-slice verify below only covers rows INSIDE `widened`, so an
-        // edit that changes how the row *after* the window classifies is
-        // invisible to it — the splice lands, that row keeps its old kind, and it
-        // renders as something it no longer is. That blind spot is why the
-        // §3.0 relaxation had to be narrowed to `ListMarker` after the 100k soak:
-        // `Blockquote`, `Plain` and `ListContinuation` all failed exactly here,
-        // and the guard's own comment names this check as the prerequisite for
-        // unlocking them.
-        //
-        // Cheap because `widened.start` is a safe construct boundary: parsing one
-        // row further tells us what the unreplaced row becomes under the new
-        // text, and the parent still holds what it was. If they disagree, the
-        // edit reached past the window and the splice is not sound.
-        if probe_end > widened.end {
-            let past = widened.end - widened.start;
-            if slice.kinds[past] != self.parse_state.buf().kinds[widened.end] {
-                // Counted as VerifyFailed: it is the same failure the post-slice
-                // verify exists to catch, one row further out. Worth its own
-                // counter when the unlocks land, so a soak can tell the two apart.
-                return METRICS.bail(BailReason::VerifyFailed);
-            }
-            // The extra row belongs to the parent, not to the splice.
-            slice.truncate(widened.len());
-        }
+        let slice = ParsedBuffer::parse_range(text, widened.clone());
 
         // Post-slice undamaged-row verification.
         //
@@ -1991,7 +1971,7 @@ mod tests {
         );
     }
 
-    fn update_view(
+    pub(super) fn update_view(
         v: &mut MarkdownEditorView,
         lines: &[String],
         cursor: (usize, usize),
@@ -3585,5 +3565,154 @@ mod tests {
         // Click screen col 2 ('h' after the 2-col "│ " gutter) → logical col 2.
         let (row, col) = view.click_to_logical_for_testing(0, 2);
         assert_eq!((row, col), (0, 2));
+    }
+}
+
+/// Differential soak for the incremental parse widener.
+///
+/// The widener's guards were narrowed to `ListMarker` because a 100 000-case run
+/// found `Blockquote`, `Plain` and `ListContinuation` producing classifications
+/// that disagreed with a fresh parse — usually on a row *past* `widened.end`,
+/// where the in-window post-slice verify does not look. Nothing in the ordinary
+/// suite reproduces that: unlocking `Blockquote` leaves every test green. This is
+/// the harness that does not.
+///
+/// Ignored by default because 100k cases is minutes, not milliseconds:
+///
+/// ```text
+/// SOAK_CASES=100000 cargo test -p kimun-notes --lib widener_soak -- --ignored --nocapture
+/// ```
+///
+/// **To evaluate an unlock**, widen `kind_qualifies` in `try_incremental_parse`
+/// to the kind under test and re-run. A green soak is the evidence the guard's
+/// own comment asks for; anything else is a reason the kind stays excluded.
+#[cfg(test)]
+mod widener_soak {
+    use super::tests::update_view;
+    use super::*;
+    use proptest::prelude::*;
+
+    /// Blocks, not independent rows.
+    ///
+    /// The failure this harness exists to reproduce needs a specific
+    /// arrangement — a `>` row nested *inside* a list item (so `lazy_depth == 1`)
+    /// with a blank immediately after it, which is where `damaged.end` lands and
+    /// where the post-edit parse can flip the row to `ListContinuation`. Rows
+    /// drawn independently produce blockquotes and lists constantly and that
+    /// arrangement almost never, which is why the first version of this soak
+    /// passed 20 000 cases of a configuration known to be wrong.
+    fn block() -> impl Strategy<Value = Vec<String>> {
+        prop_oneof![
+            Just(vec!["plain paragraph text".to_string(), String::new()]),
+            Just(vec![
+                "plain paragraph".to_string(),
+                "second line of it".to_string(),
+                String::new(),
+            ]),
+            // A list holding a quote: the nested-lazy shape.
+            Just(vec![
+                "- list item".to_string(),
+                "  > nested quote".to_string(),
+                String::new(),
+            ]),
+            // The same with a marker carrying only whitespace — the exact row the
+            // soak's original finding named.
+            Just(vec![
+                "- list item".to_string(),
+                ">     ".to_string(),
+                String::new(),
+            ]),
+            Just(vec![
+                "- list item".to_string(),
+                "  continuation".to_string(),
+                "  > quote inside".to_string(),
+                String::new(),
+            ]),
+            Just(vec![
+                "> quoted line".to_string(),
+                "lazy continuation".to_string(),
+                String::new(),
+            ]),
+            Just(vec![">     ".to_string(), String::new()]),
+            Just(vec!["# heading".to_string(), String::new()]),
+            Just(vec![
+                "```".to_string(),
+                "fenced".to_string(),
+                "```".to_string(),
+                String::new(),
+            ]),
+            Just(vec!["    indented code".to_string(), String::new()]),
+            Just(vec!["setext".to_string(), "=====".to_string(), String::new()]),
+        ]
+    }
+
+    /// Edits that keep the row count. Marker-altering ones included: an edit that
+    /// flips a kind is *supposed* to be refused by the guards above the
+    /// relaxation, and a soak that only appends letters never tests that.
+    fn edit(original: &str) -> Vec<String> {
+        let mut out = vec![
+            format!("{original}x"),
+            format!("{original} "),
+            format!("> {original}"),
+            format!("  {original}"),
+        ];
+        if !original.is_empty() {
+            out.push(original[..original.len() - 1].to_string());
+            out.push(original.trim_start().to_string());
+            out.push(original.replacen('>', " ", 1));
+            out.push(original.replacen('-', " ", 1));
+        }
+        out
+    }
+
+    fn cases() -> u32 {
+        std::env::var("SOAK_CASES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(256)
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: cases(), ..ProptestConfig::default() })]
+
+        #[test]
+        #[ignore = "soak: run explicitly with SOAK_CASES"]
+        fn an_incremental_splice_agrees_with_a_fresh_parse(
+            blocks in prop::collection::vec(block(), 2..8),
+            row_pick in any::<prop::sample::Index>(),
+            edit_pick in any::<prop::sample::Index>(),
+        ) {
+            let lines: Vec<String> = blocks.concat();
+            prop_assume!(lines.len() >= 3);
+            let target = row_pick.index(lines.len());
+            let variants = edit(&lines[target]);
+            let mut edited = lines.clone();
+            edited[target] = variants[edit_pick.index(variants.len())].clone();
+            prop_assume!(edited[target] != lines[target]);
+            prop_assume!(edited.len() == lines.len());
+
+            let mut view = MarkdownEditorView::new();
+            update_view(&mut view, &lines, (target, 0), Rect::new(0, 0, 40, 20), 1, None);
+            view.note_damage(target..target + 1, 0);
+            update_view(&mut view, &edited, (target, 0), Rect::new(0, 0, 40, 20), 2, None);
+
+            // A full-parse fallback trivially agrees; only a *wrong splice* fails.
+            let fresh = ParsedBuffer::parse_lines(&edited);
+            prop_assert_eq!(
+                &view.parse_state.buf().kinds,
+                &fresh.kinds,
+                "kinds diverged (incremental={}) for {:?} -> row {} = {:?}",
+                view.last_parse_was_incremental(),
+                lines,
+                target,
+                edited[target]
+            );
+            prop_assert_eq!(
+                &view.parse_state.buf().lazy_depth,
+                &fresh.lazy_depth,
+                "lazy_depth diverged (incremental={})",
+                view.last_parse_was_incremental()
+            );
+        }
     }
 }
