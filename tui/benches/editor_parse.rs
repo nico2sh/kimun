@@ -389,8 +389,129 @@ fn bench_incremental_range_parse_5000_lines(c: &mut Criterion) {
     });
 }
 
+/// What pressing Enter costs, against what typing a character costs.
+///
+/// A newline changes the line count, which makes `try_incremental_parse` bail
+/// AND makes `view.rs`'s layout gate take the full-rebuild branch — so the whole
+/// document is re-parsed and re-wrapped. Typing a character does neither. The
+/// pair is the measurement: the gap between them is what an incremental path
+/// across a line-count change would be worth.
+///
+/// Run at two sizes because the behaviour differs either side of
+/// `LARGE_BUFFER_THRESHOLD` (1000 rows): above it both gates install a stub and
+/// defer to a background task, so the keystroke does not pay the rebuild — it
+/// pays a frame of unstyled, unwrapped rendering instead.
+fn bench_newline_vs_typing(c: &mut Criterion) {
+    use kimun_notes::components::text_editor::view::MarkdownEditorView;
+    use ratatui::layout::Rect;
+
+    let rect = Rect { x: 0, y: 0, width: 80, height: 40 };
+
+    for rows in [800usize, 5000] {
+        let lines: Vec<String> = (0..rows)
+            .map(|i| {
+                format!("paragraph number {i} with some sample text to give the parser work to do")
+            })
+            .collect();
+        let mid = rows / 2;
+
+        // Build every `Text` ONCE. `EditorSnapshot::borrowed` joins the rows and
+        // constructs a rope, which is O(rows) — inside the loop it costs more
+        // than the thing being measured and hides it completely. The editor uses
+        // `of_buffer`, which rebuilds nothing, so that is what this must use.
+        let base = Text::from(lines.join("\n").as_str());
+
+        let mut typed_lines = lines.clone();
+        typed_lines[mid].push('x');
+        let typed = Text::from(typed_lines.join("\n").as_str());
+
+        // Enter: the row splits in two, so the line count changes.
+        let mut split_lines = lines.clone();
+        let tail = split_lines[mid].split_off(20);
+        split_lines.insert(mid + 1, tail);
+        let split = Text::from(split_lines.join("\n").as_str());
+
+        let rev = |n: u64| NonZeroU64::new(n).unwrap();
+        let mut warmed = MarkdownEditorView::new();
+        warmed.update(&EditorSnapshot::of_buffer(base.clone(), (mid, 0), rev(1)), rect);
+        // Above `LARGE_BUFFER_THRESHOLD` the first update installs a placeholder
+        // parse and an unwrapped layout stub and defers the real work to a
+        // background task. A bench that never completes that work measures a view
+        // permanently waiting — every later update re-stubs, which is O(rows) and
+        // buries the difference this is trying to see. Do what the component does
+        // when the task returns.
+        if let Some(generation) = warmed.take_pending_full_parse() {
+            warmed.install_full_parse(generation, ParsedBuffer::parse(&base));
+        }
+        if let Some(job) = warmed.take_pending_full_layout() {
+            let hints: Vec<RowHints<'_>> = Vec::new();
+            let layout = Layout::compute(&job.text, job.width, Metrics::default(), &hints);
+            warmed.install_full_layout(job.generation, layout);
+        }
+
+        // Which path a typing edit actually takes at this size. If this prints
+        // `incremental=false` the narrowed caches are not in play and the cost is
+        // a full rebuild, not a slow incremental one.
+        {
+            let mut probe = warmed.clone();
+            probe.note_damage(mid..mid + 1);
+            probe.update(
+                &EditorSnapshot::of_buffer(typed.clone(), (mid, 21), rev(2)),
+                rect,
+            );
+            eprintln!(
+                "PATH rows={rows} typing incremental={}",
+                probe.last_parse_was_incremental()
+            );
+            let mut probe = warmed.clone();
+            probe.note_damage(mid..mid + 2);
+            probe.update(
+                &EditorSnapshot::of_buffer(split.clone(), (mid + 1, 0), rev(2)),
+                rect,
+            );
+            eprintln!(
+                "PATH rows={rows} newline incremental={}",
+                probe.last_parse_was_incremental()
+            );
+        }
+
+        let mut group = c.benchmark_group(format!("keystroke_{rows}_rows"));
+        group.bench_function("typing", |b| {
+            b.iter_batched(
+                || warmed.clone(),
+                |mut v| {
+                    // The component reports the rows its own edit touched; without
+                    // this the view falls back to diffing two materialised copies
+                    // of the whole note, which is not what the editor does.
+                    v.note_damage(mid..mid + 1);
+                    let snap =
+                        EditorSnapshot::of_buffer(black_box(typed.clone()), (mid, 21), rev(2));
+                    v.update(&snap, rect);
+                    black_box(v);
+                },
+                BatchSize::SmallInput,
+            );
+        });
+        group.bench_function("newline", |b| {
+            b.iter_batched(
+                || warmed.clone(),
+                |mut v| {
+                    v.note_damage(mid..mid + 2);
+                    let snap =
+                        EditorSnapshot::of_buffer(black_box(split.clone()), (mid + 1, 0), rev(2));
+                    v.update(&snap, rect);
+                    black_box(v);
+                },
+                BatchSize::SmallInput,
+            );
+        });
+        group.finish();
+    }
+}
+
 criterion_group!(
     benches,
+    bench_newline_vs_typing,
     bench_incremental_range_parse_5000_lines,
     bench_full_parse_5000_lines,
     bench_compute_damage_range_5000_lines,
