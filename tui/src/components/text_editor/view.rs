@@ -1362,7 +1362,7 @@ impl MarkdownEditorView {
                     if probe.kinds[idx] != parent.kinds[row]
                         || probe.lazy_depth[idx] != parent.lazy_depth[row]
                     {
-                        return METRICS.bail(BailReason::VerifyFailed);
+                        return METRICS.bail(BailReason::DownstreamFlip);
                     }
                 }
             }
@@ -1777,6 +1777,13 @@ impl MarkdownEditorView {
             vl.first,
             force_raw,
         );
+        // Clamp to the visual line clicked. `rendered_col_to_logical_with` maps a
+        // cell to a column in the whole logical row, so a click in the blank
+        // space right of a soft-wrapped line walks straight into the span of the
+        // line below and the cursor lands a row further on than the one under the
+        // pointer. `ropetext::Layout::position_at_cell` clamps for this reason;
+        // this is the TUI's own mapper and had drifted from it.
+        let logical_col = logical_col.min(vl.chars.end);
         let col = logical_col.min(u16::MAX as usize) as u16;
         (row_u16, col)
     }
@@ -1980,6 +1987,121 @@ mod tests {
         assert!(
             hull.contains(&11),
             "row 10 became row 11; the hull reported was {hull:?}"
+        );
+    }
+
+    /// Does the engine's `position_at_cell` agree with the TUI's own click
+    /// mapper?
+    ///
+    /// The two compute the same thing by different routes — the TUI walks
+    /// rendered columns through `MarkdownSpanner`, the engine walks the same
+    /// information as `RowHints` (a visibility mask plus a gutter inset). Keeping
+    /// two of these in sync by hand is what let the wrap-clamp drift out of the
+    /// TUI copy in the first place. This says where they still differ, and is the
+    /// gate for deleting one of them.
+    ///
+    /// **Currently fails, with six disagreements of exactly two kinds** — and
+    /// neither is an algorithmic mismatch. The engine does honour concealment;
+    /// `cell_of` skips masked-out chars. What it lacks is data the TUI mapper
+    /// holds:
+    ///
+    /// 1. **Blockquote sigil skip.** On `> quoted ...`, cells 0-2 map to column 2
+    ///    in the TUI (it skips the `> ` via `blockquote_sigil_end` on a first
+    ///    visual line) and to 0 in the engine, which applies only `inset`. Mark
+    ///    those sigil chars invisible in `rendered_cache` and the engine reaches
+    ///    2 on its own.
+    /// 2. **Tie-breaking at the edge of a concealed run** — which side a click
+    ///    between a hidden run and its neighbour falls to. Needs stating as a
+    ///    rule in `position_at_cell`, not reproducing.
+    ///
+    /// So the fix is to the hints, not a translation layer: a third piece
+    /// between the two mappers would add the seam this is meant to remove. When
+    /// this passes, delete the TUI mapper. Run with `--ignored`.
+    ///
+    /// (An earlier version of this test reported 23 disagreements and concluded
+    /// the engine ignored concealment. It parked the cursor on the row under
+    /// test, and the cursor's row is *revealed* — so it compared concealment
+    /// against its own suspension.)
+    #[test]
+    #[ignore = "documents a real gap: the hints do not yet carry the blockquote \
+                sigil skip, so the engine's mapper cannot replace the TUI's"]
+    fn the_engine_and_the_tui_click_mappers_agree() {
+        let corpus: Vec<Vec<String>> = vec![
+            vec!["plain short".to_string()],
+            vec!["a long paragraph that certainly wraps more than once here".to_string()],
+            vec!["> quoted line that is long enough to wrap at this width".to_string()],
+            vec!["- list item with enough text on it to wrap somewhere".to_string()],
+            vec!["**bold** and *italic* markers that get concealed".to_string()],
+            vec!["# heading that runs on long enough to wrap around".to_string()],
+        ];
+
+        let mut disagreements = Vec::new();
+        for lines in &corpus {
+            // Park the cursor on an appended trailing row: the cursor's row is
+            // *revealed* (sigils shown raw), so testing the row it sits on
+            // compares concealment against its own suspension.
+            let mut lines = lines.clone();
+            lines.push(String::new());
+            let park = lines.len() - 1;
+            let mut v = MarkdownEditorView::new();
+            update_view(&mut v, &lines, (park, 0), rect(20), 1, None);
+            let text = v.text_snapshot.clone();
+            let hints = row_hints(&v.rendered_cache, &v.gutter_insets);
+            for vrow in 0..v.layout.visual_lines().len() {
+                for vcol in 0..24 {
+                    let (tui_row, tui_col) = v.click_to_logical_for_testing(vrow, vcol);
+                    let engine = v.layout.position_at_cell(
+                        &text,
+                        &hints,
+                        ropetext::Cell {
+                            row: vrow,
+                            column: vcol,
+                        },
+                    );
+                    let engine = engine.map(|p| (p.row() as u16, p.column().get() as u16));
+                    if engine != Some((tui_row, tui_col)) {
+                        disagreements.push(format!(
+                            "{:?} vrow={vrow} vcol={vcol}: tui={:?} engine={:?}",
+                            lines[0], (tui_row, tui_col), engine
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(
+            disagreements.is_empty(),
+            "{} disagreements, first 5:\n{}",
+            disagreements.len(),
+            disagreements.iter().take(5).cloned().collect::<Vec<_>>().join("\n")
+        );
+    }
+
+    #[test]
+    fn a_click_past_the_end_of_a_wrapped_line_stays_on_that_line() {
+        // Clicking the blank space to the right of a soft-wrapped line must land
+        // at the end of the line clicked, not inside the continuation below it.
+        // `ropetext::Layout::position_at_cell` clamps for exactly this reason;
+        // this mapper is the TUI's own copy and had drifted from it.
+        let lines = vec![
+            "a long paragraph that will certainly wrap more than once at this width"
+                .to_string(),
+        ];
+        let mut v = MarkdownEditorView::new();
+        update_view(&mut v, &lines, (0, 0), rect(20), 1, None);
+
+        let first = v.layout.visual_lines()[0].clone();
+        assert!(
+            v.layout.visual_lines().len() > 1,
+            "fixture must actually wrap"
+        );
+
+        // Far to the right of anything drawn on the first visual line.
+        let (row, col) = v.click_to_logical_for_testing(0, 60);
+        assert_eq!(row, 0);
+        assert!(
+            (col as usize) <= first.chars.end,
+            "clicked past visual line 0 (chars {:?}) and landed at column {col}",
+            first.chars
         );
     }
 
