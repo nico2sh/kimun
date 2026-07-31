@@ -290,6 +290,7 @@ fn bench_full_view_update_heavy_lists_typing(c: &mut Criterion) {
     let mut edited = lines.clone();
     edited[target_row].push('x');
 
+
     c.bench_function("full_view_update_heavy_lists_571_typing", |b| {
         b.iter_batched(
             || warmed.clone(),
@@ -371,6 +372,7 @@ fn bench_full_view_update_blockquotes_typing(c: &mut Criterion) {
 
     let mut edited = lines.clone();
     edited[target_row].push('x');
+
 
     c.bench_function("full_view_update_blockquotes_400_typing", |b| {
         b.iter_batched(
@@ -480,31 +482,6 @@ fn bench_newline_vs_typing(c: &mut Criterion) {
             warmed.install_full_layout(job.generation, layout);
         }
 
-        // Which path a typing edit actually takes at this size. If this prints
-        // `incremental=false` the narrowed caches are not in play and the cost is
-        // a full rebuild, not a slow incremental one.
-        {
-            let mut probe = warmed.clone();
-            probe.note_damage(mid..mid + 1, 0);
-            probe.update(
-                &EditorSnapshot::of_buffer(typed.clone(), (mid, 21), rev(2)),
-                rect,
-            );
-            eprintln!(
-                "PATH rows={rows} typing incremental={}",
-                probe.last_parse_was_incremental()
-            );
-            let mut probe = warmed.clone();
-            probe.note_damage(mid..mid + 2, 1);
-            probe.update(
-                &EditorSnapshot::of_buffer(split.clone(), (mid + 1, 0), rev(2)),
-                rect,
-            );
-            eprintln!(
-                "PATH rows={rows} newline incremental={}",
-                probe.last_parse_was_incremental()
-            );
-        }
 
         let mut group = c.benchmark_group(format!("keystroke_{rows}_rows"));
         group.bench_function("typing", |b| {
