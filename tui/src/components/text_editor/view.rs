@@ -2014,9 +2014,18 @@ mod tests {
     ///    between a hidden run and its neighbour falls to. Needs stating as a
     ///    rule in `position_at_cell`, not reproducing.
     ///
-    /// So the fix is to the hints, not a translation layer: a third piece
-    /// between the two mappers would add the seam this is meant to remove. When
-    /// this passes, delete the TUI mapper. Run with `--ignored`.
+    /// A translation layer between the two mappers is the wrong answer — it adds
+    /// the seam this exists to remove. But so, for now, is fixing the hints:
+    /// `row_hints` feeds `Layout::compute`/`relayout_rows` at six sites, so the
+    /// visibility mask is the **wrapping** input. Marking the sigil chars
+    /// invisible would change where every line breaks, editor-wide, to fix where
+    /// clicks land. The render snapshots would catch it, but that is a re-wrap,
+    /// not a tidy-up.
+    ///
+    /// So this test's job is to be a tripwire, not a plan: it fails if the two
+    /// mappers drift *further* apart. Unify them only when the mask has to change
+    /// for some other reason, at which point it comes along nearly free. Run with
+    /// `--ignored`.
     ///
     /// (An earlier version of this test reported 23 disagreements and concluded
     /// the engine ignored concealment. It parked the cursor on the row under
