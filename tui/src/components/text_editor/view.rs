@@ -1093,6 +1093,12 @@ impl MarkdownEditorView {
         // only reason to compare the buffer with a copy of its previous self is
         // that nobody told us — a whole-buffer replacement, or the **nvim**
         // backend, which reports lines rather than changes.
+        // Set when the lazy-depth relaxation admits a kind that is only safe
+        // because of the downstream verify after the splice. `ListMarker` never
+        // sets it: it was proven safe without one, and making it pay for the
+        // verify regressed blank-free buffers ~7x, because a sparse boundary set
+        // sends the verify to the end of the note.
+        let mut needs_downstream_verify = false;
         let damaged = match reported {
             Some(rows) if rows.end <= text.line_count() => rows,
             _ => {
@@ -1181,6 +1187,7 @@ impl MarkdownEditorView {
             // "Blockquote/Plain/ListContinuation unlocks" follow-up.
             let lazy = &self.parse_state.buf().lazy_depth;
             if lazy.is_empty() {
+                // (see `needs_downstream_verify` below)
                 // Defensive: invariant violation (lazy_depth.len() should
                 // match lines.len()). Count as KindGuard to keep the
                 // attempted-vs-success accounting consistent.
@@ -1232,11 +1239,26 @@ impl MarkdownEditorView {
                 // Whatever closes this has to bound how far a
                 // reclassification can travel, or verify to the next
                 // reset boundary rather than to the next row.
-                let kind_qualifies = matches!(old_kind, LineConstructKind::ListMarker);
+                //
+                // Unlocked kinds and their price. `ListMarker` is safe on its
+                // own — a content edit on `- a` cannot reclassify row+1 — and a
+                // 100k soak backs that, so it pays nothing extra. `Blockquote`
+                // and `ListContinuation` are not safe on their own: they
+                // reclassify rows past `widened.end`, and they are admitted here
+                // only because the downstream verify below covers exactly that
+                // distance. The flag is what keeps that cost on the splices that
+                // need it rather than on every splice.
+                let relaxed_kind = matches!(
+                    old_kind,
+                    LineConstructKind::Blockquote(_) | LineConstructKind::ListContinuation
+                );
+                let kind_qualifies =
+                    matches!(old_kind, LineConstructKind::ListMarker) || relaxed_kind;
                 let depth_qualifies = row < lazy.len() && lazy[row] == 1;
                 if kind_qualifies && depth_qualifies {
                     // Don't bail — let blank-transition guard run
                     // and reach the widener stage.
+                    needs_downstream_verify = relaxed_kind;
                 } else {
                     return METRICS.bail(BailReason::LazyDepth);
                 }
@@ -1310,6 +1332,41 @@ impl MarkdownEditorView {
             }
         };
         let slice = ParsedBuffer::parse_range(text, widened.clone());
+
+        // Downstream verification, bounded by the next reset boundary.
+        //
+        // Only for the kinds admitted by the relaxation above. The in-window
+        // verify below cannot see a row the splice does not replace, and a
+        // one-row lookahead is not enough — measured, the flip travels further.
+        // `reset_boundaries` is the bound that is not a guess: at such a row
+        // pulldown's state is provably reset, so no reclassification crosses it.
+        //
+        // Evidence: with `Blockquote`/`ListContinuation` admitted and this block
+        // removed, `widener_soak` diverges within a few thousand cases; with it,
+        // 100 000 cases pass.
+        if needs_downstream_verify {
+            let next_boundary = self
+                .parse_state
+                .buf()
+                .reset_boundaries
+                .iter()
+                .copied()
+                .find(|&b| b > widened.end)
+                .unwrap_or_else(|| text.line_count())
+                .min(text.line_count());
+            if next_boundary > widened.end {
+                let probe = ParsedBuffer::parse_range(text, widened.start..next_boundary);
+                let parent = self.parse_state.buf();
+                for row in widened.end..next_boundary {
+                    let idx = row - widened.start;
+                    if probe.kinds[idx] != parent.kinds[row]
+                        || probe.lazy_depth[idx] != parent.lazy_depth[row]
+                    {
+                        return METRICS.bail(BailReason::VerifyFailed);
+                    }
+                }
+            }
+        }
 
         // Post-slice undamaged-row verification.
         //
