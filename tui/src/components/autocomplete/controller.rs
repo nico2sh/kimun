@@ -318,7 +318,7 @@ impl AutocompleteController {
             Some(rev) => {
                 let hit = matches!(&self.cached_text, Some((r, _, _)) if *r == rev);
                 if !hit {
-                    self.cached_text = Some((rev, snap.lines.join("\n"), None));
+                    self.cached_text = Some((rev, snap.text.to_string(), None));
                 }
                 let (_, text, zones_slot) = self.cached_text.as_mut().expect("just populated");
                 let text: &str = text;
@@ -329,7 +329,7 @@ impl AutocompleteController {
                 detect_trigger_with_oracle(text, cursor, opts, &mut oracle)
             }
             None => {
-                let text = snap.lines.join("\n");
+                let text = snap.text.to_string();
                 let mut zones: Option<ExclusionZones> = None;
                 let mut oracle = LazyZoneOracle {
                     text: &text,
@@ -526,7 +526,7 @@ impl AutocompleteController {
         // Accept is a once-per-popup-acceptance path; allocating the
         // joined buffer text here is fine. The hot path is reconcile,
         // which uses the cached `text` slot built once per text edit.
-        let buffer = host.buffer_snapshot().lines.join("\n");
+        let buffer = host.buffer_snapshot().text.to_string();
 
         // Guard against a stale snapshot — if the live buffer shrank
         // below the trigger range, drop the accept rather than producing
@@ -752,7 +752,7 @@ mod tests {
     }
 
     impl AutocompleteHost for FakeHost {
-        fn buffer_snapshot(&self) -> EditorSnapshot<'_> {
+        fn buffer_snapshot(&self) -> EditorSnapshot {
             let rev = self.revision.unwrap_or_else(|| NonZeroU64::new(1).unwrap());
             let (lines, cursor) = self.lines_and_cursor();
             // Owned because we constructed `lines` locally — tests

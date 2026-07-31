@@ -18,6 +18,8 @@ path = "src/lib.rs"
 [dependencies]
 kimun_core = { path = "../core", version = "0.2.29" }
 kimun_server_client = { path = "../client", version = "0.2.0" }
+# Path-only, no version: nothing for release-plz to rewrite (see release-plz.toml).
+ropetext = { path = "../ropetext" }
 
 clap = { version = "4", features = ["derive"] }
 color-eyre = "0.6.5"
@@ -37,7 +39,6 @@ tracing-log = "0.2"
 tokio = { workspace = true }
 async-trait = "0.1"
 futures = "0.3"
-ratatui-textarea = { version = "0.9.2", features = ["search"] }
 nucleo = "0.5"
 throbber-widgets-tui = "0.11"
 chrono = { workspace = true }
@@ -63,6 +64,8 @@ self-replace = "1"
 tempfile = "3"
 proptest = "1"
 criterion = { version = "0.5", features = ["html_reports"] }
+# Pins what the editor paints, cell by cell — see tests/editor_render_snapshots.rs.
+insta = "1"
 
 [[bench]]
 name = "editor_parse"

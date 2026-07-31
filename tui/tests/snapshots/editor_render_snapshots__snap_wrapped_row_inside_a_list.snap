@@ -1,0 +1,11 @@
+---
+source: tui/tests/editor_render_snapshots.rs
+expression: "painted(\"- an item whose text is long enough to wrap twice over\", 24)"
+---
+ 0 |- an item whose text is |
+   0..2 fg=Rgb(124, 111, 100) bg=Rgb(40, 40, 40) mods=NONE
+   2..24 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+ 1 |long enough to wrap     |
+   0..24 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+ 2 |twice over              |
+   0..24 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE

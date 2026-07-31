@@ -1,0 +1,60 @@
+---
+source: tui/tests/editor_render_snapshots.rs
+expression: "painted(text, 80)"
+---
+ 0 |# Title                                                                         |
+   0..2 fg=Rgb(124, 111, 100) bg=Rgb(40, 40, 40) mods=NONE
+   2..7 fg=Rgb(251, 241, 199) bg=Rgb(40, 40, 40) mods=BOLD
+   7..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+ 1 |                                                                                |
+   0..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+ 2 |Intro with em and bold and code and #tag.                                       |
+   0..11 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+   11..13 fg=Rgb(168, 153, 132) bg=Rgb(40, 40, 40) mods=ITALIC
+   13..18 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+   18..22 fg=Rgb(250, 189, 47) bg=Rgb(40, 40, 40) mods=BOLD
+   22..27 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+   27..31 fg=Rgb(142, 192, 124) bg=Rgb(60, 56, 54) mods=NONE
+   31..36 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+   36..40 fg=Rgb(254, 128, 25) bg=Rgb(40, 40, 40) mods=BOLD
+   40..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+ 3 |                                                                                |
+   0..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+ 4 |## Section                                                                      |
+   0..3 fg=Rgb(124, 111, 100) bg=Rgb(40, 40, 40) mods=NONE
+   3..10 fg=Rgb(251, 241, 199) bg=Rgb(40, 40, 40) mods=BOLD
+   10..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+ 5 |                                                                                |
+   0..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+ 6 |│ Quoted line.                                                                  |
+   0..2 fg=Rgb(250, 189, 47) bg=Rgb(40, 40, 40) mods=NONE
+   2..14 fg=Rgb(168, 153, 132) bg=Rgb(40, 40, 40) mods=NONE
+   14..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+ 7 |                                                                                |
+   0..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+ 8 |- first                                                                         |
+   0..2 fg=Rgb(124, 111, 100) bg=Rgb(40, 40, 40) mods=NONE
+   2..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+ 9 |- second                                                                        |
+   0..2 fg=Rgb(124, 111, 100) bg=Rgb(40, 40, 40) mods=NONE
+   2..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+10 |- nested                                                                        |
+   0..2 fg=Rgb(124, 111, 100) bg=Rgb(40, 40, 40) mods=NONE
+   2..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+11 |                                                                                |
+   0..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+12 |```rust                                                                         |
+   0..12 fg=Rgb(235, 219, 178) bg=Rgb(50, 48, 47) mods=NONE
+   12..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+13 |fn main() {}                                                                    |
+   0..12 fg=Rgb(235, 219, 178) bg=Rgb(50, 48, 47) mods=NONE
+   12..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+14 |```                                                                             |
+   0..12 fg=Rgb(235, 219, 178) bg=Rgb(50, 48, 47) mods=NONE
+   12..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+15 |                                                                                |
+   0..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+16 |Trailer with link.                                                              |
+   0..13 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+   13..17 fg=Rgb(250, 189, 47) bg=Rgb(40, 40, 40) mods=UNDERLINED
+   17..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE

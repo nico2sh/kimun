@@ -1,0 +1,8 @@
+---
+source: tui/tests/editor_render_snapshots.rs
+expression: "painted(\"This is **strong** text.\", 80)"
+---
+ 0 |This is strong text.                                                            |
+   0..8 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+   8..14 fg=Rgb(250, 189, 47) bg=Rgb(40, 40, 40) mods=BOLD
+   14..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE

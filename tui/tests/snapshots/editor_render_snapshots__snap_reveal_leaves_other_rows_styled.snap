@@ -1,0 +1,11 @@
+---
+source: tui/tests/editor_render_snapshots.rs
+expression: "painted_with_cursor(\"# Heading One\\n## Heading Two\", 80, (1, 3))"
+---
+ 0 |# Heading One                                                                   |
+   0..2 fg=Rgb(124, 111, 100) bg=Rgb(40, 40, 40) mods=NONE
+   2..13 fg=Rgb(251, 241, 199) bg=Rgb(40, 40, 40) mods=BOLD
+   13..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+ 1 |## Heading Two                                                                  |
+   0..14 fg=Rgb(124, 111, 100) bg=Rgb(40, 40, 40) mods=NONE
+   14..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE

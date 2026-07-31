@@ -169,8 +169,10 @@ impl Prepared<'_> {
         } = self;
 
         let mut out = run_bounded(updates.into_iter().map(|(path, text)| async move {
-            let entry = nfs::save_note(workspace_path, &path, &text).await?;
-            Ok((entry, text))
+            // The written body, not `text`: a CRLF note is stored with the
+            // endings it had, and what gets indexed has to be what is on disk.
+            let (entry, written) = nfs::save_note(workspace_path, &path, &text).await?;
+            Ok((entry, written))
         }))
         .await?;
 
@@ -178,8 +180,8 @@ impl Prepared<'_> {
         let text = nfs::load_note(workspace_path, &to).await?;
         let (updated, changed) = note::replace_note_links(&text, &from, &to);
         if changed {
-            let entry = nfs::save_note(workspace_path, &to, &updated).await?;
-            out.push((entry, updated));
+            let (entry, written) = nfs::save_note(workspace_path, &to, &updated).await?;
+            out.push((entry, written));
         }
 
         Ok(out)

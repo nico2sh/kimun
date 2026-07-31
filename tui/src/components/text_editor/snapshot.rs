@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::num::NonZeroU64;
 
 /// Atomic view of the editor's `(lines, cursor, content_revision)`
@@ -6,7 +5,7 @@ use std::num::NonZeroU64;
 /// `TextEditorComponent::view_snapshot`) own the construction-time
 /// invariant: the cursor's row is in-bounds for `lines`. Consumers
 /// (`view.rs`, `click_to_logical_u16`, the autocomplete host, etc.)
-/// take a `&EditorSnapshot<'_>` and skip the per-leaf `.get()`
+/// take a `&EditorSnapshot` and skip the per-leaf `.get()`
 /// guards that previously defended against drift between cursor and
 /// lines.
 ///
@@ -14,12 +13,14 @@ use std::num::NonZeroU64;
 /// (zero clone) while the Nvim backend clones out from behind its
 /// `Mutex` (the lines must outlive the `MutexGuard`, which is
 /// dropped before the snapshot is returned).
-pub struct EditorSnapshot<'a> {
-    pub lines: Cow<'a, [String]>,
-    /// `(row, col)` with `row < lines.len()` (clamped at
-    /// construction when the producer's source was stale) UNLESS
-    /// `lines.is_empty()`, in which case the snapshot represents an
-    /// empty buffer and `cursor` is `(0, 0)`.
+pub struct EditorSnapshot {
+    /// The text itself. Cloning one is O(1) — the rope shares its structure — so
+    /// a snapshot *is* the buffer's text rather than a copy of it, and the cursor
+    /// below cannot drift away from what it was read with.
+    pub text: ropetext::Text,
+    /// `(row, col)`, clamped at construction when the producer's source was
+    /// stale. A text always has at least one row, so there is no empty-buffer
+    /// case to special-case.
     pub cursor: (usize, usize),
     /// Content identity at construction. Stable across cursor moves;
     /// bumps on real text changes only (see
@@ -27,15 +28,28 @@ pub struct EditorSnapshot<'a> {
     pub content_revision: NonZeroU64,
 }
 
-impl<'a> EditorSnapshot<'a> {
-    /// Borrow-mode constructor for the Textarea backend and tests.
+impl EditorSnapshot {
+    /// Build one from rows, for the nvim backend and for tests.
     pub fn borrowed(
-        lines: &'a [String],
+        lines: &[String],
         cursor: (usize, usize),
         content_revision: NonZeroU64,
     ) -> Self {
         Self {
-            lines: Cow::Borrowed(lines),
+            text: ropetext::Text::from(lines.join("\n").as_str()),
+            cursor,
+            content_revision,
+        }
+    }
+
+    /// The hot path: the buffer already holds the text, so nothing is rebuilt.
+    pub fn of_buffer(
+        text: ropetext::Text,
+        cursor: (usize, usize),
+        content_revision: NonZeroU64,
+    ) -> Self {
+        Self {
+            text,
             cursor,
             content_revision,
         }
@@ -48,62 +62,47 @@ impl<'a> EditorSnapshot<'a> {
         lines: Vec<String>,
         cursor: (usize, usize),
         content_revision: NonZeroU64,
-    ) -> EditorSnapshot<'static> {
+    ) -> EditorSnapshot {
         EditorSnapshot {
-            lines: Cow::Owned(lines),
+            text: ropetext::Text::from(lines.join("\n").as_str()),
             cursor,
             content_revision,
         }
     }
 
-    /// `true` when the cursor row is a valid index into `lines`.
-    /// `false` only when `lines` is empty (in which case both row 0
-    /// and any other row are out of bounds).
+    /// `true` when the cursor's row exists. A text always has at least one row,
+    /// so this is false only for a cursor past the end.
     pub fn cursor_in_bounds(&self) -> bool {
-        self.cursor.0 < self.lines.len()
+        self.cursor.0 < self.text.line_count()
     }
 
-    /// Cursor row guaranteed in-bounds for `lines`. Returns `0` on
-    /// an empty buffer (the only case where the producer cannot
-    /// clamp to a valid index).
+    /// Cursor row, guaranteed to exist.
     pub fn cursor_row_clamped(&self) -> usize {
-        if self.lines.is_empty() {
-            0
-        } else {
-            self.cursor.0.min(self.lines.len() - 1)
-        }
+        self.cursor.0.min(self.text.line_count().saturating_sub(1))
     }
 
-    /// Cursor row's logical line. Returns the empty slice when
-    /// `lines` is empty.
-    pub fn cursor_line(&self) -> &str {
-        self.lines
-            .get(self.cursor_row_clamped())
-            .map(String::as_str)
-            .unwrap_or("")
+    /// The cursor row's text.
+    pub fn cursor_line(&self) -> std::borrow::Cow<'_, str> {
+        self.text
+            .line(self.cursor_row_clamped())
+            .unwrap_or_default()
     }
 
-    /// Global byte offset of the cursor across `lines.join("\n")`.
-    /// Mirrors `autocomplete_glue::row_char_col_to_byte` but consumes
-    /// the snapshot directly so callers (e.g. the autocomplete
-    /// controller) don't need to depend on the editor's glue
-    /// module. Clamps the char column to the row's char count, then
-    /// returns the byte position of the char-column within the
-    /// joined buffer.
+    /// The cursor's byte offset into the whole buffer.
+    ///
+    /// Was a row walk summing lengths; the text addresses it directly. The row
+    /// is clamped and an unrepresentable column falls back to the end of the
+    /// buffer — the return type leaves no way to refuse, and the callers (the
+    /// autocomplete controller) treat the offset as a trigger point rather than
+    /// an edit site.
     pub fn cursor_byte_offset(&self) -> usize {
-        let row = self.cursor.0;
-        let mut byte = 0;
-        for line in self.lines.iter().take(row) {
-            byte += line.len() + 1; // +1 for the implicit `\n` separator
-        }
-        let Some(line) = self.lines.get(row) else {
-            return byte;
-        };
-        byte + line
-            .char_indices()
-            .nth(self.cursor.1)
-            .map(|(b, _)| b)
-            .unwrap_or(line.len())
+        self.text
+            .position(
+                self.cursor_row_clamped(),
+                ropetext::Column::new(self.cursor.1),
+            )
+            .map(|at| at.byte())
+            .unwrap_or_else(|| self.text.len_bytes())
     }
 }
 
@@ -218,8 +217,9 @@ mod tests {
 
     #[test]
     fn snapshot_helpers_on_empty_buffer() {
-        let snap: EditorSnapshot<'_> = EditorSnapshot::owned(Vec::new(), (0, 0), rev(1));
-        assert!(!snap.cursor_in_bounds());
+        let snap: EditorSnapshot = EditorSnapshot::owned(Vec::new(), (0, 0), rev(1));
+        // An empty buffer still has one empty row, so (0, 0) is a real place.
+        assert!(snap.cursor_in_bounds());
         assert_eq!(snap.cursor_row_clamped(), 0);
         assert_eq!(snap.cursor_line(), "");
     }

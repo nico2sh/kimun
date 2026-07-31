@@ -1,0 +1,8 @@
+---
+source: tui/tests/editor_render_snapshots.rs
+expression: "painted(\"Visit <https://example.com> now.\", 80)"
+---
+ 0 |Visit https://example.com now.                                                  |
+   0..6 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+   6..25 fg=Rgb(250, 189, 47) bg=Rgb(40, 40, 40) mods=UNDERLINED
+   25..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
