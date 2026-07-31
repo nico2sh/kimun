@@ -361,8 +361,37 @@ fn bench_full_view_update_blockquotes_typing(c: &mut Criterion) {
     });
 }
 
+/// The incremental parse as the view actually runs it.
+///
+/// `bench_incremental_paragraph_insert_5000_lines` above measures
+/// `parse_range_lines`, which takes rows the caller already has. The live path
+/// (`view.rs`, `try_incremental_parse`) holds a `Text` and calls `parse_range`,
+/// which has to produce the rows itself — so that is where a full-buffer copy
+/// could hide, and nothing was measuring it.
+fn bench_incremental_range_parse_5000_lines(c: &mut Criterion) {
+    let lines = make_5000_line_buffer();
+    let pb = ParsedBuffer::parse_lines(&lines);
+    let mut edited = lines.clone();
+    edited[2500].push('x');
+    let text = Text::from(edited.join("\n").as_str());
+
+    let damaged = compute_damage_range(&lines, &edited, 2500).expect("damaged should be Some");
+    let widened = match widen_to_safe(&pb.kinds, damaged) {
+        WidenResult::Widened(r) => r,
+        WidenResult::FullRebuild => panic!("a paragraph edit should stay incremental"),
+    };
+
+    c.bench_function("incremental_range_parse_5000_lines", |b| {
+        b.iter(|| {
+            let slice = ParsedBuffer::parse_range(black_box(&text), widened.clone());
+            black_box(slice);
+        });
+    });
+}
+
 criterion_group!(
     benches,
+    bench_incremental_range_parse_5000_lines,
     bench_full_parse_5000_lines,
     bench_compute_damage_range_5000_lines,
     bench_incremental_paragraph_insert_5000_lines,
