@@ -176,7 +176,7 @@ fn bench_full_view_update_5000_lines_incremental(c: &mut Criterion) {
                 // The component tells the view which rows its edit touched.
                 // Without it the view diffs two materialised copies of the whole
                 // note — work the editor never does, and ~6x the real cost.
-                v.note_damage(2500..2501);
+                v.note_damage(2500..2501, 0);
                 v.update(
                     &snap_for(black_box(&edited), (2500, edited[2500].len()), 2),
                     rect,
@@ -212,7 +212,7 @@ fn bench_full_view_update_5000_lines_backspace(c: &mut Criterion) {
                 // The component tells the view which rows its edit touched.
                 // Without it the view diffs two materialised copies of the whole
                 // note — work the editor never does, and ~6x the real cost.
-                v.note_damage(2500..2501);
+                v.note_damage(2500..2501, 0);
                 v.update(
                     &snap_for(black_box(&edited), (2500, edited[2500].len()), 2),
                     rect,
@@ -294,7 +294,7 @@ fn bench_full_view_update_heavy_lists_typing(c: &mut Criterion) {
         b.iter_batched(
             || warmed.clone(),
             |mut v| {
-                v.note_damage(target_row..target_row + 1);
+                v.note_damage(target_row..target_row + 1, 0);
                 v.update(
                     &snap_for(
                         black_box(&edited),
@@ -376,7 +376,7 @@ fn bench_full_view_update_blockquotes_typing(c: &mut Criterion) {
         b.iter_batched(
             || warmed.clone(),
             |mut v| {
-                v.note_damage(target_row..target_row + 1);
+                v.note_damage(target_row..target_row + 1, 0);
                 v.update(
                     &snap_for(
                         black_box(&edited),
@@ -485,7 +485,7 @@ fn bench_newline_vs_typing(c: &mut Criterion) {
         // a full rebuild, not a slow incremental one.
         {
             let mut probe = warmed.clone();
-            probe.note_damage(mid..mid + 1);
+            probe.note_damage(mid..mid + 1, 0);
             probe.update(
                 &EditorSnapshot::of_buffer(typed.clone(), (mid, 21), rev(2)),
                 rect,
@@ -495,7 +495,7 @@ fn bench_newline_vs_typing(c: &mut Criterion) {
                 probe.last_parse_was_incremental()
             );
             let mut probe = warmed.clone();
-            probe.note_damage(mid..mid + 2);
+            probe.note_damage(mid..mid + 2, 1);
             probe.update(
                 &EditorSnapshot::of_buffer(split.clone(), (mid + 1, 0), rev(2)),
                 rect,
@@ -514,7 +514,7 @@ fn bench_newline_vs_typing(c: &mut Criterion) {
                     // The component reports the rows its own edit touched; without
                     // this the view falls back to diffing two materialised copies
                     // of the whole note, which is not what the editor does.
-                    v.note_damage(mid..mid + 1);
+                    v.note_damage(mid..mid + 1, 0);
                     let snap =
                         EditorSnapshot::of_buffer(black_box(typed.clone()), (mid, 21), rev(2));
                     v.update(&snap, rect);
@@ -527,7 +527,7 @@ fn bench_newline_vs_typing(c: &mut Criterion) {
             b.iter_batched(
                 || warmed.clone(),
                 |mut v| {
-                    v.note_damage(mid..mid + 2);
+                    v.note_damage(mid..mid + 2, 1);
                     let snap =
                         EditorSnapshot::of_buffer(black_box(split.clone()), (mid + 1, 0), rev(2));
                     v.update(&snap, rect);
