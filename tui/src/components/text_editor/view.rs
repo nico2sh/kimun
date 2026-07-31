@@ -238,6 +238,38 @@ pub struct MarkdownEditorView {
     /// replacements report nothing — and the diff is the fallback for exactly
     /// those.
     reported_damage: Option<std::ops::Range<usize>>,
+    /// Set when Gate 2 installed a cheap `Layout::unwrapped` stub instead of
+    /// blocking on `Layout::compute`, mirroring `ParseState::Placeholder`.
+    /// While this is `Some`, every content-changing edit re-stubs and
+    /// re-arms for the new generation rather than relaying just the edited
+    /// rows — the same discipline Gate 1 applies via `is_placeholder()`, so
+    /// a run of edits can never leave the untouched rows of a large buffer
+    /// permanently unwrapped because one of them happened to parse
+    /// incrementally. Cleared by `install_full_layout`.
+    layout_pending: Option<PendingLayout>,
+}
+
+/// A `Layout::unwrapped` stub awaiting a background `Layout::compute`, the
+/// layout-side twin of `ParseState::Placeholder`. `generation` is the
+/// `content_revision` the stub was installed for; `spawned` flips true once
+/// `take_pending_full_layout` has handed the job out, so it is claimed
+/// exactly once per stub.
+#[derive(Debug, Clone, Copy)]
+struct PendingLayout {
+    generation: u64,
+    spawned: bool,
+}
+
+/// Everything a background task needs to compute the real `Layout` for a
+/// stubbed generation, fully owned so it can move into `tokio::spawn`.
+/// `RowHints` borrows, so it is rebuilt from `rendered_cache`/`gutter_insets`
+/// *inside* the task rather than carried across the boundary itself.
+pub struct PendingLayoutJob {
+    pub generation: u64,
+    pub text: ropetext::Text,
+    pub width: usize,
+    pub rendered_cache: Vec<Vec<bool>>,
+    pub gutter_insets: Vec<usize>,
 }
 
 /// True when `KIMUN_VIEW_VERIFY_INCREMENTAL=1` is set. Reads the
@@ -351,6 +383,7 @@ impl MarkdownEditorView {
             last_text_change: TextChangeKind::Full, // first update is a full rebuild
             visual_goal: None,
             reported_damage: None,
+            layout_pending: None,
         }
     }
 
@@ -407,6 +440,69 @@ impl MarkdownEditorView {
         // ranges and rendered masks than the real parse will.
         self.last_text_change = TextChangeKind::Full;
         self.last_layout_generation = u64::MAX;
+    }
+
+    /// Returns `Some(job)` if Gate 2 just installed a `Layout::unwrapped`
+    /// stub and the owning component should spawn a background
+    /// `Layout::compute` for it. Consumes the flag so the owner does not
+    /// spawn twice; the owner is responsible for calling
+    /// `install_full_layout` when the task completes.
+    pub fn take_pending_full_layout(&mut self) -> Option<PendingLayoutJob> {
+        let pending = self.layout_pending.as_mut()?;
+        if pending.spawned {
+            return None;
+        }
+        pending.spawned = true;
+        Some(PendingLayoutJob {
+            generation: pending.generation,
+            text: self.text_snapshot.clone(),
+            width: self.last_layout_width as usize,
+            rendered_cache: self.rendered_cache.clone(),
+            gutter_insets: self.gutter_insets.clone(),
+        })
+    }
+
+    /// Install the result of a background `Layout::compute`. No-op when the
+    /// editor has advanced past `generation` (a fresh spawn is already in
+    /// flight — mirrors `install_full_parse`'s staleness gate) or when the
+    /// pane was resized since the job was captured (`layout.width()` no
+    /// longer matches `last_layout_width` — a generation match alone
+    /// cannot catch this, since a resize with no content change never
+    /// bumps `content_revision`).
+    pub fn install_full_layout(&mut self, generation: u64, layout: Layout) {
+        if generation != self.last_seen_generation
+            || layout.width() != self.last_layout_width as usize
+        {
+            return; // stale
+        }
+        self.layout = layout;
+        self.layout_pending = None;
+        self.last_layout_generation = generation;
+    }
+
+    /// Full (non-incremental) layout rebuild: synchronous on a small
+    /// buffer, deferred to a background task on a large one — the
+    /// layout-side twin of Gate 1's placeholder-parse fallback. Called
+    /// from every Gate 2 branch that would otherwise call
+    /// `Layout::compute` unconditionally.
+    fn full_layout_rebuild(
+        &mut self,
+        text: &ropetext::Text,
+        width: u16,
+        row_count: usize,
+        generation: u64,
+    ) {
+        if row_count >= Self::LARGE_BUFFER_THRESHOLD {
+            self.layout = Layout::unwrapped(text);
+            self.layout_pending = Some(PendingLayout {
+                generation,
+                spawned: false,
+            });
+        } else {
+            let hints = row_hints(&self.rendered_cache, &self.gutter_insets);
+            self.layout = Layout::compute(text, width as usize, Metrics::default(), &hints);
+            self.layout_pending = None;
+        }
     }
 
     /// Hand the view this frame's **overlays**, in logical coordinates. Must be
@@ -812,20 +908,22 @@ impl MarkdownEditorView {
             //   row.
             self.rebuild_gutter_insets(row_count, cursor.0);
             let line_count_changed = self.layout.row_count() != row_count;
-            if width_changed || line_count_changed {
-                let hints = row_hints(&self.rendered_cache, &self.gutter_insets);
-                self.layout =
-                    Layout::compute(&snap.text, rect.width as usize, Metrics::default(), &hints);
+            // A stub is still outstanding from an earlier full rebuild and
+            // content changed again this frame: re-stub for the new
+            // generation rather than let an incremental relayout patch a
+            // couple of rows while the rest of the buffer stays permanently
+            // unwrapped waiting on a background result that will land too
+            // late (stale-generation) to matter. Mirrors Gate 1's
+            // `is_placeholder()` gate — a cursor-only frame (`None`) leaves
+            // an in-flight job alone rather than aborting it for nothing.
+            let stub_still_pending = self.layout_pending.is_some()
+                && !matches!(self.last_text_change, TextChangeKind::None);
+            if width_changed || line_count_changed || stub_still_pending {
+                self.full_layout_rebuild(&snap.text, rect.width, row_count, generation);
             } else {
                 match &self.last_text_change {
                     TextChangeKind::Full => {
-                        let hints = row_hints(&self.rendered_cache, &self.gutter_insets);
-                        self.layout = Layout::compute(
-                            &snap.text,
-                            rect.width as usize,
-                            Metrics::default(),
-                            &hints,
-                        );
+                        self.full_layout_rebuild(&snap.text, rect.width, row_count, generation);
                     }
                     TextChangeKind::Incremental(range) => {
                         let start = range
@@ -1629,7 +1727,13 @@ fn apply_code_box<'a>(
 ///
 /// Built per rebuild rather than stored, because both halves already live on the
 /// view and a third copy would be a third thing to keep in step.
-fn row_hints<'a>(rendered: &'a [Vec<bool>], insets: &'a [usize]) -> Vec<RowHints<'a>> {
+///
+/// `pub(super)`: the background wrap task spawned by the owning
+/// `TextEditorComponent` (`mod.rs`) rebuilds the same hints from a
+/// [`PendingLayoutJob`]'s owned `rendered_cache`/`gutter_insets` clones —
+/// `RowHints` borrows, so it cannot cross the `tokio::spawn` boundary
+/// itself and has to be reconstructed on the other side from owned data.
+pub(super) fn row_hints<'a>(rendered: &'a [Vec<bool>], insets: &'a [usize]) -> Vec<RowHints<'a>> {
     let rows = rendered.len().max(insets.len());
     (0..rows)
         .map(|row| RowHints {
@@ -2447,6 +2551,178 @@ mod tests {
             v.parse_state.buf().kinds,
             fresh.kinds,
             "post-install kinds must match fresh full parse"
+        );
+    }
+
+    /// Rows long enough that a real 40-wide wrap would split them into
+    /// more than one visual line each — needed to tell a `Layout::unwrapped`
+    /// stub (always exactly one visual line per row) apart from a real
+    /// compute that happens not to have wrapped anything.
+    fn make_long_lines(n: usize) -> Vec<String> {
+        (0..n)
+            .map(|i| {
+                format!(
+                    "paragraph number {i} with quite a bit of extra padding text \
+                     so this row is longer than forty columns wide for sure"
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn layout_defers_to_async_fallback_on_large_buffer() {
+        // Layout-side twin of `fence_toggle_on_large_buffer_defers_to_async_fallback`:
+        // above LARGE_BUFFER_THRESHOLD, a full-rebuild trigger installs a
+        // `Layout::unwrapped` stub + signals pending instead of blocking
+        // the typing thread on `Layout::compute`. The owning component
+        // spawns the real wrap on tokio and calls install_full_layout
+        // when done.
+        let mut v = MarkdownEditorView::new();
+        let mut lines = make_long_lines(1500);
+        update_view(&mut v, &lines, (750, 0), rect(40), 1, None);
+
+        // Line-count change forces a full layout rebuild regardless of
+        // what the parse decided.
+        lines.insert(750, "```".to_string());
+        update_view(&mut v, &lines, (750, 3), rect(40), 2, None);
+
+        let pending = v.take_pending_full_layout();
+        assert!(
+            pending.is_some(),
+            "large-buffer full layout rebuild must signal pending async wrap"
+        );
+        assert_eq!(
+            v.layout.row_count(),
+            lines.len(),
+            "stub row count must match input"
+        );
+        let real_visual_lines = {
+            let hints = row_hints(&v.rendered_cache, &v.gutter_insets);
+            Layout::compute(&v.text_snapshot, 40, Metrics::default(), &hints).visual_line_count()
+        };
+        assert!(
+            v.layout.visual_line_count() < real_visual_lines,
+            "the installed stub must not have wrapped these long rows yet \
+             (stub: {}, real: {})",
+            v.layout.visual_line_count(),
+            real_visual_lines
+        );
+
+        // Caller (TextEditorComponent in production) spawns the real wrap
+        // and installs the result. Simulate that here.
+        let job = pending.unwrap();
+        let hints = row_hints(&job.rendered_cache, &job.gutter_insets);
+        let real = Layout::compute(&job.text, job.width, Metrics::default(), &hints);
+        let real_count = real.visual_line_count();
+        v.install_full_layout(job.generation, real);
+        assert!(v.layout_pending.is_none(), "pending cleared on install");
+        assert_eq!(
+            v.layout.visual_line_count(),
+            real_count,
+            "post-install layout must equal a fresh compute"
+        );
+    }
+
+    #[test]
+    fn small_buffer_layout_stays_synchronous() {
+        // Mirrors `fence_toggle_triggers_full_rebuild_fallback`: below
+        // LARGE_BUFFER_THRESHOLD, layout rebuilds stay synchronous.
+        let mut v = MarkdownEditorView::new();
+        let mut lines = make_long_lines(700);
+        update_view(&mut v, &lines, (350, 0), rect(40), 1, None);
+        assert!(
+            v.take_pending_full_layout().is_none(),
+            "small buffer must not defer layout on first parse"
+        );
+
+        lines.insert(350, "```".to_string());
+        update_view(&mut v, &lines, (350, 3), rect(40), 2, None);
+        assert!(
+            v.take_pending_full_layout().is_none(),
+            "small-buffer full rebuild must NOT defer layout to async"
+        );
+    }
+
+    #[test]
+    fn edit_while_layout_pending_rearms() {
+        // Layout-side twin of
+        // `edit_while_placeholder_active_refuses_incremental_and_rearms`:
+        // an edit landing before the async wrap resolves must re-stub and
+        // re-arm for the new generation, and a stale (superseded)
+        // install must be a no-op.
+        let mut v = MarkdownEditorView::new();
+        let mut lines = make_long_lines(1500);
+        update_view(&mut v, &lines, (750, 0), rect(40), 1, None);
+        assert!(
+            v.layout_pending.is_some(),
+            "first layout defers on a large buffer"
+        );
+        assert_eq!(v.take_pending_full_layout().map(|j| j.generation), Some(1));
+
+        // Edit before the background wrap resolves.
+        lines[0].push('x');
+        update_view(&mut v, &lines, (0, lines[0].len()), rect(40), 2, None);
+        assert!(
+            v.layout_pending.is_some(),
+            "still pending — a content-changing edit must not silently keep the stale stub"
+        );
+        assert_eq!(
+            v.take_pending_full_layout().map(|j| j.generation),
+            Some(2),
+            "re-armed for the new generation"
+        );
+
+        // A stale install (superseded generation) must be dropped.
+        let stale = Layout::compute(&text_of(&lines), 40, Metrics::default(), &[]);
+        v.install_full_layout(1, stale);
+        assert!(
+            v.layout_pending.is_some(),
+            "stale-generation install must be a no-op"
+        );
+
+        // The current generation's install lands.
+        let hints = row_hints(&v.rendered_cache, &v.gutter_insets);
+        let real = Layout::compute(&v.text_snapshot, 40, Metrics::default(), &hints);
+        v.install_full_layout(2, real);
+        assert!(
+            v.layout_pending.is_none(),
+            "pending cleared on matching-generation install"
+        );
+    }
+
+    #[test]
+    fn install_full_layout_rejects_width_mismatch_from_a_resize() {
+        // A resize with no content change never bumps content_revision, so
+        // the generation check alone cannot catch a wrap job computed for
+        // a width the pane no longer has — `install_full_layout` must also
+        // compare `layout.width()` against the current `last_layout_width`.
+        let mut v = MarkdownEditorView::new();
+        let lines = make_long_lines(1200);
+        update_view(&mut v, &lines, (0, 0), rect(40), 1, None);
+        let job = v
+            .take_pending_full_layout()
+            .expect("large buffer defers layout on first parse");
+        assert_eq!(job.width, 40);
+
+        // Pane resized before the background wrap for width 40 lands.
+        update_view(
+            &mut v,
+            &lines,
+            (0, 0),
+            Rect {
+                width: 80,
+                ..rect(40)
+            },
+            1,
+            None,
+        );
+
+        let hints = row_hints(&job.rendered_cache, &job.gutter_insets);
+        let stale_width_layout = Layout::compute(&job.text, job.width, Metrics::default(), &hints);
+        v.install_full_layout(job.generation, stale_width_layout);
+        assert!(
+            v.layout_pending.is_some(),
+            "width-mismatched install must be rejected even though the generation matches"
         );
     }
 

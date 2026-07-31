@@ -93,6 +93,40 @@ impl Layout {
         self.revision == text.revision()
     }
 
+    /// Lay `text` out as one unwrapped visual line per row — no grapheme
+    /// segmentation, no width measurement, no break search.
+    ///
+    /// For a caller that needs *some* layout describing `text` right now and
+    /// cannot afford `compute`'s cost this instant (a large buffer, off the
+    /// keystroke that triggered a full rebuild). `describes` is true the
+    /// moment this returns, so nothing downstream has to know the wrap is
+    /// wrong — only that a genuinely long row will not soft-wrap until a
+    /// real `compute` replaces this one. `row_count` still matches `text`,
+    /// which is the invariant every other reader depends on.
+    pub fn unwrapped(text: &Text) -> Self {
+        let mut lines = Vec::with_capacity(text.line_count());
+        let mut row_starts = Vec::with_capacity(text.line_count());
+        for row in 0..text.line_count() {
+            row_starts.push(lines.len());
+            let Some(source) = text.line(row) else {
+                continue;
+            };
+            lines.push(VisualLine {
+                logical_row: row,
+                chars: 0..source.chars().count(),
+                bytes: 0..source.len(),
+                first: true,
+            });
+        }
+        Self {
+            lines,
+            row_starts,
+            width: 0,
+            metrics: Metrics::default(),
+            revision: text.revision(),
+        }
+    }
+
     /// Lay `text` out at `width` cells.
     pub fn compute(text: &Text, width: usize, metrics: Metrics, hints: &[RowHints<'_>]) -> Self {
         let mut layout = Self {
@@ -823,6 +857,37 @@ mod tests {
                 .expect("its own cell is inside the line");
             assert_eq!(back, position, "column {column}");
         }
+    }
+
+    // -- unwrapped ------------------------------------------------------------
+
+    #[test]
+    fn unwrapped_matches_row_count_and_describes_text() {
+        let t = text("short\na longer row that would wrap at a narrow width\nlast");
+        let layout = Layout::unwrapped(&t);
+        assert_eq!(layout.row_count(), t.line_count());
+        assert_eq!(layout.visual_line_count(), t.line_count());
+        assert!(
+            layout.describes(&t),
+            "unwrapped must describe the text it was built from"
+        );
+        assert_eq!(
+            drawn(&t, &layout),
+            [
+                "short",
+                "a longer row that would wrap at a narrow width",
+                "last"
+            ],
+            "one unwrapped visual line per row"
+        );
+    }
+
+    #[test]
+    fn unwrapped_handles_an_empty_text() {
+        let t = text("");
+        let layout = Layout::unwrapped(&t);
+        assert_eq!(layout.row_count(), t.line_count());
+        assert!(layout.describes(&t));
     }
 
     // -- relayout -----------------------------------------------------------

@@ -378,6 +378,13 @@ pub struct TextEditorComponent {
     /// previous spawn on a fresh edit, so a burst of edits resolves
     /// against the latest content.
     full_parse_task: SingleSlotTask<()>,
+    /// Background full-wrap fallback for large buffers, the layout-side
+    /// twin of `full_parse_task`. The view installs a `Layout::unwrapped`
+    /// stub and signals pending; this slot owns the spawned tokio task
+    /// that runs the real `Layout::compute`. `SingleSlotTask` aborts the
+    /// previous spawn on a fresh edit, so a burst of edits resolves
+    /// against the latest content.
+    layout_task: SingleSlotTask<()>,
     /// Whether the last key was handled while vim was in Insert. A change either
     /// way ends the open **undo group**: leaving Insert closes vim's session,
     /// entering it starts a fresh one.
@@ -391,8 +398,10 @@ pub struct TextEditorComponent {
     search_needles: Vec<String>,
     full_parse_tx: tokio::sync::mpsc::UnboundedSender<(u64, ParsedBuffer)>,
     full_parse_rx: tokio::sync::mpsc::UnboundedReceiver<(u64, ParsedBuffer)>,
+    layout_tx: tokio::sync::mpsc::UnboundedSender<(u64, ropetext::Layout)>,
+    layout_rx: tokio::sync::mpsc::UnboundedReceiver<(u64, ropetext::Layout)>,
     /// `AppTx` clone bound the first time `handle_input` runs, so the
-    /// spawned full-parse task can post `AppEvent::Redraw` on
+    /// spawned full-parse/full-wrap tasks can post `AppEvent::Redraw` on
     /// completion without waiting for the next user keystroke.
     redraw_tx: Option<AppTx>,
 }
@@ -400,6 +409,7 @@ pub struct TextEditorComponent {
 impl TextEditorComponent {
     pub fn new(key_bindings: KeyBindings, settings: &AppSettings) -> Self {
         let (full_parse_tx, full_parse_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (layout_tx, layout_rx) = tokio::sync::mpsc::unbounded_channel();
         Self {
             backend: BackendState::from_settings(
                 &settings.editor_backend,
@@ -416,11 +426,14 @@ impl TextEditorComponent {
             autocomplete_vault: None,
             autocomplete_redraw_bound: false,
             full_parse_task: SingleSlotTask::empty(),
+            layout_task: SingleSlotTask::empty(),
             last_insert_session: false,
             wants_context_menu: false,
             search_needles: Vec::new(),
             full_parse_tx,
             full_parse_rx,
+            layout_tx,
+            layout_rx,
             redraw_tx: None,
         }
     }
@@ -2153,6 +2166,12 @@ impl Component for TextEditorComponent {
         while let Ok((generation, buf)) = self.full_parse_rx.try_recv() {
             self.view.install_full_parse(generation, buf);
         }
+        // Same drain, for a just-finished background full wrap. Order
+        // relative to the parse drain above does not matter — the two
+        // are staleness-gated independently on `generation`.
+        while let Ok((generation, layout)) = self.layout_rx.try_recv() {
+            self.view.install_full_layout(generation, layout);
+        }
 
         // Phase 2: single producer for the atomic snapshot. Borrowed
         // on Textarea (zero clone), owned on Nvim (lines cloned out
@@ -2272,6 +2291,27 @@ impl Component for TextEditorComponent {
                 let _ = tx.send((generation, buf));
                 // Wake the render loop so the rich parse lands
                 // without waiting for the next keystroke.
+                if let Some(redraw) = redraw {
+                    let _ = redraw.send(AppEvent::Redraw);
+                }
+            });
+        }
+        // Same shape, for the layout side: `view.update` may have installed
+        // a `Layout::unwrapped` stub instead of blocking on `Layout::compute`.
+        // The job already carries its own `Text`/`rendered_cache`/
+        // `gutter_insets` clones — nothing here needs `view_lines`/`snap`.
+        if let Some(job) = self.view.take_pending_full_layout() {
+            let tx = self.layout_tx.clone();
+            let redraw = self.redraw_tx.clone();
+            self.layout_task.spawn(async move {
+                let hints = view::row_hints(&job.rendered_cache, &job.gutter_insets);
+                let layout = ropetext::Layout::compute(
+                    &job.text,
+                    job.width,
+                    ropetext::Metrics::default(),
+                    &hints,
+                );
+                let _ = tx.send((job.generation, layout));
                 if let Some(redraw) = redraw {
                     let _ = redraw.send(AppEvent::Redraw);
                 }
