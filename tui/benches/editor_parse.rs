@@ -26,6 +26,35 @@ fn snap_for(lines: &[String], cursor: (usize, usize), generation: u64) -> Editor
     EditorSnapshot::borrowed(lines, clamped, rev)
 }
 
+/// A view warmed on `lines`, with any deferred work completed.
+///
+/// Above `LARGE_BUFFER_THRESHOLD` (1000 rows) the first update installs a
+/// placeholder parse and an unwrapped layout stub and hands the real work to a
+/// background task. A bench that never completes it measures a view permanently
+/// waiting: every later update re-stubs, which is O(rows), so the incremental
+/// path it means to measure is buried. The component installs the results when
+/// the task returns; so does this.
+fn warmed_view(
+    lines: &[String],
+    cursor: (usize, usize),
+    rect: ratatui::layout::Rect,
+) -> kimun_notes::components::text_editor::view::MarkdownEditorView {
+    use kimun_notes::components::text_editor::view::MarkdownEditorView;
+
+    let mut view = MarkdownEditorView::new();
+    view.update(&snap_for(lines, cursor, 1), rect);
+    let text = Text::from(lines.join("\n").as_str());
+    if let Some(generation) = view.take_pending_full_parse() {
+        view.install_full_parse(generation, ParsedBuffer::parse(&text));
+    }
+    if let Some(job) = view.take_pending_full_layout() {
+        let hints: Vec<RowHints<'_>> = Vec::new();
+        let layout = Layout::compute(&job.text, job.width, Metrics::default(), &hints);
+        view.install_full_layout(job.generation, layout);
+    }
+    view
+}
+
 fn make_5000_line_buffer() -> Vec<String> {
     (0..5000)
         .map(|i| {
@@ -123,7 +152,6 @@ fn bench_wrap_5000_lines(c: &mut Criterion) {
 }
 
 fn bench_full_view_update_5000_lines_incremental(c: &mut Criterion) {
-    use kimun_notes::components::text_editor::view::MarkdownEditorView;
     use ratatui::layout::Rect;
 
     let lines = make_5000_line_buffer();
@@ -135,8 +163,7 @@ fn bench_full_view_update_5000_lines_incremental(c: &mut Criterion) {
     };
 
     // Warm the view: do a full parse on the original buffer once.
-    let mut warmed = MarkdownEditorView::new();
-    warmed.update(&snap_for(&lines, (2500, 0), 1), rect);
+    let warmed = warmed_view(&lines, (2500, 0), rect);
 
     // Edited buffer: single-char insert at row 2500 (same line count).
     let mut edited = lines.clone();
@@ -146,6 +173,10 @@ fn bench_full_view_update_5000_lines_incremental(c: &mut Criterion) {
         b.iter_batched(
             || warmed.clone(),
             |mut v| {
+                // The component tells the view which rows its edit touched.
+                // Without it the view diffs two materialised copies of the whole
+                // note — work the editor never does, and ~6x the real cost.
+                v.note_damage(2500..2501);
                 v.update(
                     &snap_for(black_box(&edited), (2500, edited[2500].len()), 2),
                     rect,
@@ -158,7 +189,6 @@ fn bench_full_view_update_5000_lines_incremental(c: &mut Criterion) {
 }
 
 fn bench_full_view_update_5000_lines_backspace(c: &mut Criterion) {
-    use kimun_notes::components::text_editor::view::MarkdownEditorView;
     use ratatui::layout::Rect;
 
     let lines = make_5000_line_buffer();
@@ -169,8 +199,7 @@ fn bench_full_view_update_5000_lines_backspace(c: &mut Criterion) {
         height: 40,
     };
 
-    let mut warmed = MarkdownEditorView::new();
-    warmed.update(&snap_for(&lines, (2500, 0), 1), rect);
+    let warmed = warmed_view(&lines, (2500, 0), rect);
 
     // Edited buffer: single-char delete at row 2500 (Backspace mid-line).
     let mut edited = lines.clone();
@@ -180,6 +209,10 @@ fn bench_full_view_update_5000_lines_backspace(c: &mut Criterion) {
         b.iter_batched(
             || warmed.clone(),
             |mut v| {
+                // The component tells the view which rows its edit touched.
+                // Without it the view diffs two materialised copies of the whole
+                // note — work the editor never does, and ~6x the real cost.
+                v.note_damage(2500..2501);
                 v.update(
                     &snap_for(black_box(&edited), (2500, edited[2500].len()), 2),
                     rect,
@@ -235,7 +268,6 @@ fn make_heavy_lists_buffer() -> Vec<String> {
 }
 
 fn bench_full_view_update_heavy_lists_typing(c: &mut Criterion) {
-    use kimun_notes::components::text_editor::view::MarkdownEditorView;
     use ratatui::layout::Rect;
 
     let lines = make_heavy_lists_buffer();
@@ -247,8 +279,7 @@ fn bench_full_view_update_heavy_lists_typing(c: &mut Criterion) {
     };
 
     let target_row = 250.min(lines.len() - 1);
-    let mut warmed = MarkdownEditorView::new();
-    warmed.update(&snap_for(&lines, (target_row, 0), 1), rect);
+    let warmed = warmed_view(&lines, (target_row, 0), rect);
 
     // Single-char append inside an item's content. Pre-edit row is a
     // ListMarker (lazy_depth == 1) inside the loose list. The v3 §3.0
@@ -263,6 +294,7 @@ fn bench_full_view_update_heavy_lists_typing(c: &mut Criterion) {
         b.iter_batched(
             || warmed.clone(),
             |mut v| {
+                v.note_damage(target_row..target_row + 1);
                 v.update(
                     &snap_for(
                         black_box(&edited),
@@ -323,7 +355,6 @@ fn make_blockquotes_lazy_buffer() -> Vec<String> {
 }
 
 fn bench_full_view_update_blockquotes_typing(c: &mut Criterion) {
-    use kimun_notes::components::text_editor::view::MarkdownEditorView;
     use ratatui::layout::Rect;
 
     let lines = make_blockquotes_lazy_buffer();
@@ -336,8 +367,7 @@ fn bench_full_view_update_blockquotes_typing(c: &mut Criterion) {
 
     // Edit the `>` row of the 50th blockquote (row 50*4 = 200).
     let target_row = 200;
-    let mut warmed = MarkdownEditorView::new();
-    warmed.update(&snap_for(&lines, (target_row, 0), 1), rect);
+    let warmed = warmed_view(&lines, (target_row, 0), rect);
 
     let mut edited = lines.clone();
     edited[target_row].push('x');
@@ -346,6 +376,7 @@ fn bench_full_view_update_blockquotes_typing(c: &mut Criterion) {
         b.iter_batched(
             || warmed.clone(),
             |mut v| {
+                v.note_damage(target_row..target_row + 1);
                 v.update(
                     &snap_for(
                         black_box(&edited),

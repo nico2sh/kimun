@@ -673,8 +673,16 @@ impl MarkdownEditorView {
         }
 
         // Gate 1: content changed — rebuild parse cache and snapshots.
+        //
+        // The layout gate below wants the same report. The parse cache cannot
+        // splice across a line-count change — `ParsedBuffer::splice` requires the
+        // replacement to have as many rows as it replaces — but the layout can,
+        // so the two must not share a verdict. This carries the report past Gate
+        // 1's `take` rather than re-deriving it.
+        let mut reported_for_layout: Option<std::ops::Range<usize>> = None;
         if generation != self.last_seen_generation {
             let reported = self.reported_damage.take();
+            reported_for_layout = reported.clone();
             let incremental = if self.parse_state.is_placeholder() {
                 None
             } else {
@@ -939,7 +947,24 @@ impl MarkdownEditorView {
             // an in-flight job alone rather than aborting it for nothing.
             let stub_still_pending = self.layout_pending.is_some()
                 && !matches!(self.last_text_change, TextChangeKind::None);
-            if width_changed || line_count_changed || stub_still_pending {
+            // A line-count change used to force a full re-wrap. It does not have
+            // to: `relayout_rows` takes a delta and renumbers the rows after the
+            // edit, and the delta is knowable without plumbing — the layout knows
+            // how many rows it was built for, and the text knows how many it has
+            // now. What was missing is the damaged range, and Gate 1 was handed
+            // one. Only the *parser* is obliged to give up here.
+            let relayout_across_line_change = line_count_changed
+                .then(|| reported_for_layout.clone())
+                .flatten()
+                .filter(|rows| rows.end <= row_count);
+            if width_changed || stub_still_pending {
+                self.full_layout_rebuild(&snap.text, rect.width, row_count, generation);
+            } else if let Some(rows) = relayout_across_line_change {
+                let delta = row_count as isize - self.layout.row_count() as isize;
+                let hints = row_hints(&self.rendered_cache, &self.gutter_insets);
+                self.layout
+                    .relayout_rows(&snap.text, &hints, rows, delta);
+            } else if line_count_changed {
                 self.full_layout_rebuild(&snap.text, rect.width, row_count, generation);
             } else {
                 match &self.last_text_change {
@@ -1862,6 +1887,51 @@ mod tests {
     /// Tests describe buffers as rows; the view takes the text they make up.
     fn text_of(lines: &[String]) -> ropetext::Text {
         ropetext::Text::from(lines.join("\n").as_str())
+    }
+
+    /// A newline patched into the layout must give the same layout a fresh
+    /// compute would.
+    ///
+    /// The layout no longer gives up when the line count changes — it patches the
+    /// damaged rows and renumbers the rest by the delta. That renumbering is the
+    /// part with no second opinion anywhere: a wrong `logical_row` on the rows
+    /// *after* the edit paints the right text against the wrong line, and every
+    /// existing test looks at the edited row.
+    #[test]
+    fn a_newline_patches_the_layout_to_match_a_fresh_one() {
+        // Rows long enough to wrap at width 20, so the visual lines outnumber the
+        // logical rows and a renumbering slip cannot hide.
+        let lines: Vec<String> = (0..12)
+            .map(|i| format!("row {i} with enough words on it to wrap at this width"))
+            .collect();
+        let mut split = lines.clone();
+        let tail = split[5].split_off(10);
+        split.insert(6, tail);
+
+        let mut patched = MarkdownEditorView::new();
+        update_view(&mut patched, &lines, (5, 0), rect(20), 1, None);
+        patched.note_damage(5..7);
+        update_view(&mut patched, &split, (6, 0), rect(20), 2, None);
+
+        let mut fresh = MarkdownEditorView::new();
+        update_view(&mut fresh, &split, (6, 0), rect(20), 1, None);
+
+        let patched_lines: Vec<_> = patched
+            .layout
+            .visual_lines()
+            .iter()
+            .map(|vl| (vl.logical_row, vl.bytes.clone(), vl.first))
+            .collect();
+        let fresh_lines: Vec<_> = fresh
+            .layout
+            .visual_lines()
+            .iter()
+            .map(|vl| (vl.logical_row, vl.bytes.clone(), vl.first))
+            .collect();
+        assert_eq!(
+            patched_lines, fresh_lines,
+            "patching a newline must land where a full recompute would"
+        );
     }
 
     fn update_view(
