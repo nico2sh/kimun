@@ -1299,7 +1299,37 @@ impl MarkdownEditorView {
                 }
             }
         };
-        let slice = ParsedBuffer::parse_range(text, widened.clone());
+        // One parse, one row longer than the splice needs — see the downstream
+        // check below, which reads that extra row and then trims it off.
+        let probe_end = (widened.end + 1).min(text.line_count());
+        let mut slice = ParsedBuffer::parse_range(text, widened.start..probe_end);
+
+        // Downstream check: the first row the splice will NOT replace.
+        //
+        // The post-slice verify below only covers rows INSIDE `widened`, so an
+        // edit that changes how the row *after* the window classifies is
+        // invisible to it — the splice lands, that row keeps its old kind, and it
+        // renders as something it no longer is. That blind spot is why the
+        // §3.0 relaxation had to be narrowed to `ListMarker` after the 100k soak:
+        // `Blockquote`, `Plain` and `ListContinuation` all failed exactly here,
+        // and the guard's own comment names this check as the prerequisite for
+        // unlocking them.
+        //
+        // Cheap because `widened.start` is a safe construct boundary: parsing one
+        // row further tells us what the unreplaced row becomes under the new
+        // text, and the parent still holds what it was. If they disagree, the
+        // edit reached past the window and the splice is not sound.
+        if probe_end > widened.end {
+            let past = widened.end - widened.start;
+            if slice.kinds[past] != self.parse_state.buf().kinds[widened.end] {
+                // Counted as VerifyFailed: it is the same failure the post-slice
+                // verify exists to catch, one row further out. Worth its own
+                // counter when the unlocks land, so a soak can tell the two apart.
+                return METRICS.bail(BailReason::VerifyFailed);
+            }
+            // The extra row belongs to the parent, not to the splice.
+            slice.truncate(widened.len());
+        }
 
         // Post-slice undamaged-row verification.
         //
