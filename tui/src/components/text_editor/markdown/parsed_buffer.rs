@@ -779,26 +779,6 @@ impl ParsedBuffer {
         Self::parse_lines(&lines[range])
     }
 
-    /// Drop everything past `rows`, keeping the buffer's invariants.
-    ///
-    /// For parsing one row further than a splice needs and then trimming the
-    /// extra: the row after a widened window classifies correctly only when it is
-    /// parsed *with* the rows before it, so it cannot be read on its own — but a
-    /// second parse of the window to get it costs as much as the first.
-    pub fn truncate(&mut self, rows: usize) {
-        if rows >= self.lines.len() {
-            return;
-        }
-        self.lines.truncate(rows);
-        self.kinds.truncate(rows);
-        self.lazy_depth.truncate(rows);
-        // `reset_boundaries` is sorted and carries `lines.len()` as its closing
-        // sentinel, so the trimmed end has to become one.
-        self.reset_boundaries.retain(|&b| b < rows);
-        self.reset_boundaries.push(rows);
-        self.reset_boundaries.dedup();
-    }
-
     /// Replace `self.lines[range]` and `self.kinds[range]` with the contents
     /// of `other`. Both `other` vectors must have `range.len()` entries.
     pub fn splice(&mut self, range: Range<usize>, other: ParsedBuffer) {
@@ -1026,52 +1006,5 @@ fn byte_to_row_col_unclamped(
             let char_col = line[..byte_in_line].chars().count();
             (row, char_col)
         }
-    }
-}
-
-#[cfg(test)]
-mod truncate_tests {
-    use super::*;
-
-    #[test]
-    fn truncate_keeps_the_buffer_consistent() {
-        // The splice reads all four structures by row index and trusts
-        // `reset_boundaries` to close on the last row, so a trim that leaves any
-        // of them disagreeing corrupts the parent it is spliced into.
-        let lines: Vec<String> = vec![
-            "# heading".into(),
-            String::new(),
-            "> quoted".into(),
-            "lazy continuation".into(),
-            String::new(),
-            "- item".into(),
-            "  continued".into(),
-        ];
-        let mut cut = ParsedBuffer::parse_lines(&lines);
-        cut.truncate(4);
-
-        assert_eq!(cut.lines.len(), 4);
-        assert_eq!(cut.kinds.len(), 4);
-        assert_eq!(cut.lazy_depth.len(), 4);
-        assert_eq!(
-            cut.reset_boundaries.last().copied(),
-            Some(4),
-            "the trimmed end has to become the closing sentinel"
-        );
-        assert!(
-            cut.reset_boundaries.windows(2).all(|w| w[0] < w[1]),
-            "boundaries stay sorted and deduped: {:?}",
-            cut.reset_boundaries
-        );
-    }
-
-    #[test]
-    fn truncate_past_the_end_is_a_no_op() {
-        let lines: Vec<String> = vec!["a".into(), "b".into()];
-        let mut buf = ParsedBuffer::parse_lines(&lines);
-        let before = buf.reset_boundaries.clone();
-        buf.truncate(99);
-        assert_eq!(buf.lines.len(), 2);
-        assert_eq!(buf.reset_boundaries, before);
     }
 }
