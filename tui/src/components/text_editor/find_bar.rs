@@ -133,6 +133,18 @@ impl FindBar {
     }
 
     /// Everything the bar wants painted this frame.
+    /// Costs one O(rows) pass per frame while the bar is open — the preview when
+    /// replacing, the match scan otherwise, never both. That is inherent to
+    /// adr/0035, where the preview *is* a synthetic whole-buffer snapshot.
+    ///
+    /// Memoizing on (revision, pattern, replacement, current) was considered and
+    /// left undone: the bar redraws on input, and find-bar input almost always
+    /// changes the pattern, so it would miss on the common case and help only on
+    /// redraws driven by something else (autosave, a background parse or layout
+    /// install). A hit would still clone the preview's rows, so it reduces the
+    /// constant rather than the order — and the call site holds `search` and
+    /// `backend` borrowed together, so it needs interior mutability to fit.
+    /// Measure it with a bench that renders with the bar open before building it.
     pub fn overlay(&self, buf: &RopeBuffer) -> BarOverlay {
         let preview = self.preview(buf);
         let matches = if preview.is_none() {
