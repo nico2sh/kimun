@@ -42,3 +42,4 @@ git_tag_name = "kimun_server_client-v{{ version }}"
 [[package]]
 name = "ropetext"
 release = false
+publish = false
