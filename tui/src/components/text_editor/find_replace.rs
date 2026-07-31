@@ -65,8 +65,9 @@ impl FindPattern {
     /// Total matches across every line. Cheap enough to run per keystroke:
     /// this is `find_iter` over strings the editor already holds, not the
     /// cell-by-cell row reconstruction that `paint_viewport_extras` avoids.
-    pub fn count_matches(&self, lines: &[String]) -> usize {
-        lines.iter().map(|l| self.re.find_iter(l).count()).sum()
+    pub fn count_matches<S: AsRef<str>>(&self, rows: impl Iterator<Item = S>) -> usize {
+        rows.map(|row| self.re.find_iter(row.as_ref()).count())
+            .sum()
     }
 
     /// Every match as a `(row, start_char, end_char)` span in **logical**
@@ -76,9 +77,13 @@ impl FindPattern {
     /// highlighting built from these cannot disagree with them about what
     /// matched — the way matching against rendered cell text does the moment a
     /// row contains concealed markdown.
-    pub fn match_spans(&self, lines: &[String]) -> Vec<(usize, usize, usize)> {
+    pub fn match_spans<S: AsRef<str>>(
+        &self,
+        rows: impl Iterator<Item = S>,
+    ) -> Vec<(usize, usize, usize)> {
         let mut out = Vec::new();
-        for (row, line) in lines.iter().enumerate() {
+        for (row, line) in rows.enumerate() {
+            let line = line.as_ref();
             for m in self.re.find_iter(line) {
                 let start = line[..m.start()].chars().count();
                 let end = start + line[m.range()].chars().count();
@@ -203,16 +208,17 @@ pub struct Preview {
 /// The line *count* never changes — the pattern cannot span a newline and the
 /// replace field is single-line — which is why callers may keep their scroll
 /// offset and row indices across a preview.
-pub fn build_preview(
+pub fn build_preview<S: AsRef<str>>(
     pattern: &FindPattern,
-    lines: &[String],
+    rows: impl Iterator<Item = S>,
     replacement: &str,
     current: Option<(usize, usize)>,
 ) -> Preview {
-    let mut out_lines = Vec::with_capacity(lines.len());
+    let mut out_lines = Vec::new();
     let mut spans = Vec::new();
 
-    for (row, line) in lines.iter().enumerate() {
+    for (row, line) in rows.enumerate() {
+        let line = line.as_ref();
         let mut rebuilt = String::with_capacity(line.len());
         // Byte cursor into the ORIGINAL line; char cursor into the REBUILT one.
         let mut last_byte = 0usize;
@@ -267,7 +273,7 @@ pub fn replace_all(
     lines: &[String],
     replacement: &str,
 ) -> Option<(Vec<String>, usize)> {
-    let preview = build_preview(pattern, lines, replacement, None);
+    let preview = build_preview(pattern, lines.iter(), replacement, None);
     let count = preview.spans.len();
     if count == 0 {
         return None;
@@ -289,14 +295,14 @@ mod tests {
     fn lowercase_pattern_matches_any_case() {
         let p = FindPattern::compile("todo").unwrap();
         assert!(!p.case_sensitive());
-        assert_eq!(p.count_matches(&lines(&["todo Todo TODO"])), 3);
+        assert_eq!(p.count_matches(lines(&["todo Todo TODO"]).iter()), 3);
     }
 
     #[test]
     fn pattern_with_uppercase_is_exact() {
         let p = FindPattern::compile("Todo").unwrap();
         assert!(p.case_sensitive());
-        assert_eq!(p.count_matches(&lines(&["todo Todo TODO"])), 1);
+        assert_eq!(p.count_matches(lines(&["todo Todo TODO"]).iter()), 1);
     }
 
     #[test]
@@ -304,7 +310,7 @@ mod tests {
         // Lowercase query, so smartcase prepends `(?i)` — the user's `(?-i)`
         // comes later in the pattern and must win.
         let p = FindPattern::compile("(?-i)todo").unwrap();
-        assert_eq!(p.count_matches(&lines(&["todo Todo TODO"])), 1);
+        assert_eq!(p.count_matches(lines(&["todo Todo TODO"]).iter()), 1);
     }
 
     // ── capture gating (adr/0034) ──────────────────────────────────────────
@@ -412,7 +418,7 @@ mod tests {
         // "ab" -> "XYZW" shifts everything after the first match right by 2,
         // so the second span must not be reported at its buffer column.
         let p = FindPattern::compile("ab").unwrap();
-        let pv = build_preview(&p, &lines(&["ab-ab"]), "XYZW", None);
+        let pv = build_preview(&p, lines(&["ab-ab"]).iter(), "XYZW", None);
         assert_eq!(pv.lines, lines(&["XYZW-XYZW"]));
         assert_eq!(pv.spans[0].start, 0);
         assert_eq!(pv.spans[0].end, 4);
@@ -424,7 +430,7 @@ mod tests {
     fn preview_flags_the_current_match_by_buffer_position() {
         let p = FindPattern::compile("ab").unwrap();
         // Second match starts at buffer char col 3 of "ab-ab".
-        let pv = build_preview(&p, &lines(&["ab-ab"]), "X", Some((0, 3)));
+        let pv = build_preview(&p, lines(&["ab-ab"]).iter(), "X", Some((0, 3)));
         assert_eq!(
             pv.spans.iter().map(|s| s.is_current).collect::<Vec<_>>(),
             vec![false, true]
@@ -434,7 +440,7 @@ mod tests {
     #[test]
     fn preview_handles_multibyte_content() {
         let p = FindPattern::compile("é").unwrap();
-        let pv = build_preview(&p, &lines(&["aéb"]), "ü", None);
+        let pv = build_preview(&p, lines(&["aéb"]).iter(), "ü", None);
         assert_eq!(pv.lines, lines(&["aüb"]));
         // Char columns, not byte offsets.
         assert_eq!(pv.spans[0].start, 1);
@@ -445,21 +451,21 @@ mod tests {
     fn preview_with_captures_differs_per_match() {
         // The case that makes previewing only the current match misleading.
         let p = FindPattern::compile(r"(\w)(\d)").unwrap();
-        let pv = build_preview(&p, &lines(&["a1 b2"]), "$2$1", None);
+        let pv = build_preview(&p, lines(&["a1 b2"]).iter(), "$2$1", None);
         assert_eq!(pv.lines, lines(&["1a 2b"]));
     }
 
     #[test]
     fn zero_width_pattern_terminates() {
         let p = FindPattern::compile(r"\b").unwrap();
-        let pv = build_preview(&p, &lines(&["hi there"]), "|", None);
+        let pv = build_preview(&p, lines(&["hi there"]).iter(), "|", None);
         assert_eq!(pv.lines, lines(&["|hi| |there|"]));
     }
 
     #[test]
     fn empty_lines_survive_preview() {
         let p = FindPattern::compile("x").unwrap();
-        let pv = build_preview(&p, &lines(&["", "x", ""]), "y", None);
+        let pv = build_preview(&p, lines(&["", "x", ""]).iter(), "y", None);
         assert_eq!(pv.lines, lines(&["", "y", ""]));
     }
 

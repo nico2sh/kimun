@@ -1,6 +1,5 @@
 pub mod autocomplete_glue;
 pub mod backend;
-pub mod edit_buffer;
 pub mod find_bar;
 pub mod find_replace;
 pub mod markdown;
@@ -8,28 +7,30 @@ pub mod nvim_decode;
 pub mod nvim_host;
 pub mod nvim_rpc;
 pub mod parse_incremental;
+pub mod plain_keys;
 mod revisions;
+pub mod rope_buffer;
+pub mod typing_run;
 use revisions::Revisions;
 pub mod snapshot;
 pub mod text_coords;
 pub mod view;
 mod vim;
+mod vim_objects;
 pub mod widener_metrics;
-pub mod word_wrap;
 
+use self::rope_buffer::CursorMove;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
-use ratatui_textarea::{CursorMove, DataCursor, TextArea};
 use std::num::NonZeroU64;
 
 /// Convert `TextArea::cursor()` from the library's `DataCursor` newtype to a
 /// plain `(row, col)` tuple — the neutral interchange type shared with the
 /// Nvim backend (whose `NvimSnapshot::cursor` is already a tuple).
-pub(crate) fn cursor_tuple(ta: &TextArea<'_>) -> (usize, usize) {
-    let DataCursor(r, c) = ta.cursor();
-    (r, c)
+pub(crate) fn cursor_tuple(ta: &rope_buffer::RopeBuffer) -> (usize, usize) {
+    ta.cursor()
 }
 
 /// Build an `EditorSnapshot` from the editor's backend + content
@@ -38,14 +39,11 @@ pub(crate) fn cursor_tuple(ta: &TextArea<'_>) -> (usize, usize) {
 /// `TextEditorComponent` afterwards can pass `&self.backend` and
 /// `self.revs.current()` directly — the borrow checker can split
 /// borrows across distinct fields but not across method calls.
-fn snapshot_from_backend(
-    backend: &BackendState,
-    content_revision: NonZeroU64,
-) -> EditorSnapshot<'_> {
+fn snapshot_from_backend(backend: &BackendState, content_revision: NonZeroU64) -> EditorSnapshot {
     match backend {
         BackendState::Textarea(tb) => {
             let cursor = cursor_tuple(&tb.ta);
-            EditorSnapshot::borrowed(tb.ta.lines(), cursor, content_revision)
+            EditorSnapshot::of_buffer(tb.ta.text().clone(), cursor, content_revision)
         }
         BackendState::Nvim(nvim) => {
             let snap = nvim.snapshot();
@@ -103,30 +101,12 @@ fn has_trigger_before_cursor(line: &str, col: usize) -> bool {
         .any(|c| c == '[' || c == '#')
 }
 
-/// Move or extend the selection by `movement`.
-///
-/// If `shift` is held and no selection is currently active, anchors the selection
-/// first; otherwise the existing anchor is kept. Without `shift`, any active
-/// selection is cancelled before the cursor moves.
-macro_rules! cursor_move {
-    ($ta:expr, $mv:expr, $shift:expr) => {{
-        if $shift {
-            if $ta.selection_range().is_none() {
-                $ta.start_selection();
-            }
-        } else {
-            $ta.cancel_selection();
-        }
-        $ta.move_cursor($mv);
-    }};
-}
-
 use self::backend::BackendState;
-use self::edit_buffer::EditBuffer;
 #[cfg(test)]
 use self::find_bar::{BarFocus, SearchStatus};
 use self::markdown::ParsedBuffer;
 use self::nvim_host::NvimHost;
+use self::rope_buffer::RopeBuffer;
 use self::snapshot::EditorSnapshot;
 use self::view::MarkdownEditorView;
 use crate::util::single_slot_task::SingleSlotTask;
@@ -154,36 +134,26 @@ pub(super) fn char_col_to_byte(line: &str, char_col: usize) -> usize {
 ///
 /// `selection_range()` returns char-column coordinates, so they must be
 /// converted to byte offsets before slicing to support multi-byte UTF-8 text.
-fn selection_text(ta: &TextArea<'_>) -> Option<String> {
+fn selection_text(ta: &rope_buffer::RopeBuffer) -> Option<String> {
     selection_text_in(ta, ta.selection_range()?)
 }
 
 /// Like [`selection_text`] but over an explicit char-column `range` rather than
 /// the textarea's live selection — lets read-only callers apply the vim
 /// charwise-Visual inclusive `+1` without mutating the live selection/cursor.
-fn selection_text_in(ta: &TextArea<'_>, range: ((usize, usize), (usize, usize))) -> Option<String> {
+fn selection_text_in(
+    ta: &rope_buffer::RopeBuffer,
+    range: ((usize, usize), (usize, usize)),
+) -> Option<String> {
     let ((sr, sc), (er, ec)) = range;
     if sr == er && sc == ec {
         return None;
     }
-    let lines = ta.lines();
-    Some(if sr == er {
-        let line = &lines[sr];
-        let sb = char_col_to_byte(line, sc);
-        let eb = char_col_to_byte(line, ec);
-        line[sb..eb].to_string()
-    } else {
-        let first = &lines[sr];
-        let sb = char_col_to_byte(first, sc);
-        let mut parts = vec![first[sb..].to_string()];
-        for line in &lines[(sr + 1)..er] {
-            parts.push(line.clone());
-        }
-        let last = &lines[er];
-        let eb = char_col_to_byte(last, ec);
-        parts.push(last[..eb].to_string());
-        parts.join("\n")
-    })
+    // The engine answers this directly, and checks the span against the text it
+    // came from — where the row-walk it replaces assumed every index was in range.
+    ta.span_between((sr, sc), (er, ec))
+        .and_then(|span| ta.text().slice(span))
+        .map(|text| text.into_owned())
 }
 
 /// Auto-surround pair for `c`: typing an opening pair character or a
@@ -212,7 +182,7 @@ fn surround_pair(c: char) -> Option<(&'static str, &'static str)> {
 /// Refuses rather than approximating: this used to saturate both endpoints at
 /// `u16::MAX`, which on a pathologically large buffer silently selected a
 /// *different* range — and callers then cut or overwrote it (adr/0038).
-fn set_selection(ta: &mut EditBuffer, start: (usize, usize), end: (usize, usize)) -> bool {
+fn set_selection(ta: &mut RopeBuffer, start: (usize, usize), end: (usize, usize)) -> bool {
     let max = u16::MAX as usize;
     if start.0 > max || start.1 > max || end.0 > max || end.1 > max {
         return false;
@@ -303,20 +273,20 @@ pub enum EditorClaim {
 /// position. The host's `cache_key` mirrors the editor's
 /// `content_revision`; `None` is reserved for hosts whose buffer
 /// has no stable identity (the search-box modal).
-struct EditorHostSnapshot<'a> {
-    snap: EditorSnapshot<'a>,
+struct EditorHostSnapshot {
+    snap: EditorSnapshot,
     cursor_screen: Option<(u16, u16)>,
     cache_key: Option<NonZeroU64>,
 }
 
-impl<'a> AutocompleteHost for EditorHostSnapshot<'a> {
-    fn buffer_snapshot(&self) -> EditorSnapshot<'_> {
-        // Re-package the inner snap as a fresh borrowed view tied
+impl AutocompleteHost for EditorHostSnapshot {
+    fn buffer_snapshot(&self) -> EditorSnapshot {
+        // Re-package the inner snap as a fresh view tied
         // to `&self`. `Cow::as_ref` works for both Borrowed and
         // Owned variants — the latter only occurs on the Nvim path
         // where the inner snapshot already paid the clone cost.
-        EditorSnapshot::borrowed(
-            self.snap.lines.as_ref(),
+        EditorSnapshot::of_buffer(
+            self.snap.text.clone(),
             self.snap.cursor,
             self.snap.content_revision,
         )
@@ -347,11 +317,11 @@ impl<'a> AutocompleteHost for EditorHostSnapshot<'a> {
 /// `self.view.last_cursor_screen` directly so the borrow checker
 /// can split borrows from `&mut self.autocomplete`. Returns `None`
 /// on the Nvim backend (autocomplete is Textarea-only).
-fn build_editor_host_snapshot<'a>(
-    backend: &'a BackendState,
+fn build_editor_host_snapshot(
+    backend: &BackendState,
     content_revision: NonZeroU64,
     cursor_screen: Option<(u16, u16)>,
-) -> Option<EditorHostSnapshot<'a>> {
+) -> Option<EditorHostSnapshot> {
     if !backend.is_textarea() {
         return None;
     }
@@ -408,6 +378,10 @@ pub struct TextEditorComponent {
     /// previous spawn on a fresh edit, so a burst of edits resolves
     /// against the latest content.
     full_parse_task: SingleSlotTask<()>,
+    /// Whether the last key was handled while vim was in Insert. A change either
+    /// way ends the open **undo group**: leaving Insert closes vim's session,
+    /// entering it starts a fresh one.
+    last_insert_session: bool,
     /// Set by a right-click with no selection: the host (which owns the note
     /// path) opens the note's context menu and clears the flag.
     pub wants_context_menu: bool,
@@ -442,6 +416,7 @@ impl TextEditorComponent {
             autocomplete_vault: None,
             autocomplete_redraw_bound: false,
             full_parse_task: SingleSlotTask::empty(),
+            last_insert_session: false,
             wants_context_menu: false,
             search_needles: Vec::new(),
             full_parse_tx,
@@ -494,7 +469,7 @@ impl TextEditorComponent {
     /// inline the free function instead so `&self.backend` and
     /// `&mut self.autocomplete` can coexist.
     #[allow(dead_code)]
-    fn autocomplete_host_snapshot(&self) -> Option<EditorHostSnapshot<'_>> {
+    fn autocomplete_host_snapshot(&self) -> Option<EditorHostSnapshot> {
         build_editor_host_snapshot(
             &self.backend,
             self.revs.current(),
@@ -564,8 +539,8 @@ impl TextEditorComponent {
                 return;
             };
             let (row, col) = cursor_tuple(ta);
-            let line = ta.lines().get(row).map(|s| s.as_str()).unwrap_or("");
-            if !has_trigger_before_cursor(line, col) {
+            let line = ta.row(row).unwrap_or_default();
+            if !has_trigger_before_cursor(&line, col) {
                 return;
             }
         }
@@ -593,10 +568,11 @@ impl TextEditorComponent {
     /// For the Textarea backend, returns the live lines.
     /// For the Nvim backend, returns an empty slice — use `get_text()` instead,
     /// which reads from the snapshot.
-    pub fn lines(&self) -> &[String] {
+    /// The open note's text. Empty for the nvim backend, which owns its own.
+    pub fn text(&self) -> ropetext::Text {
         match &self.backend {
-            BackendState::Textarea(tb) => tb.ta.lines(),
-            BackendState::Nvim(_) => &[],
+            BackendState::Textarea(tb) => tb.ta.text().clone(),
+            BackendState::Nvim(_) => ropetext::Text::new(),
         }
     }
 
@@ -618,7 +594,7 @@ impl TextEditorComponent {
     /// `snapshot_from_backend(&self.backend, self.revs.current())`
     /// so the borrow checker can split the borrows across distinct
     /// fields.
-    pub fn view_snapshot(&self) -> EditorSnapshot<'_> {
+    pub fn view_snapshot(&self) -> EditorSnapshot {
         snapshot_from_backend(&self.backend, self.revs.current())
     }
 
@@ -657,8 +633,7 @@ impl TextEditorComponent {
         }
         match &mut self.backend {
             BackendState::Textarea(tb) => {
-                let lines = text.lines();
-                tb.ta.replace(TextArea::from(lines));
+                tb.ta.replace(ropetext::Text::from(text.as_str()));
             }
             BackendState::Nvim(nvim) => {
                 nvim.set_text(&text);
@@ -715,6 +690,10 @@ impl TextEditorComponent {
         if !self.revs.mark_saved_at(rev) {
             return;
         }
+        // Below the guard on purpose: a stale completion marks nothing, and an
+        // action that did nothing must not close the group. One undo after a
+        // real save lands on exactly what is on disk (CONTEXT.md).
+        self.interrupt_typing();
         if let Some(nvim) = self.backend.as_nvim() {
             nvim.mark_clean();
         }
@@ -728,6 +707,7 @@ impl TextEditorComponent {
     /// clean state to preserve, and the user typing between
     /// `get_text()` and this call must show as dirty.
     pub fn mark_saved(&mut self, text: String) {
+        self.interrupt_typing();
         let matches = text == self.get_text();
         if matches {
             if let Some(nvim) = self.backend.as_nvim() {
@@ -740,6 +720,49 @@ impl TextEditorComponent {
             // snapshot in `revs` is what is_dirty consults on the
             // Textarea backend, and we explicitly forget it here.
             self.revs.mark_diverged();
+        }
+    }
+
+    /// Something happened that is not a continuation of typing.
+    ///
+    /// One entry point for every path that is not a keystroke — a click, a
+    /// find, an autocomplete accept, a save, a vim motion — because the state it
+    /// closes is kept on the component while those paths reach the buffer by
+    /// four different routes, and a rule applied on one of them is a rule the
+    /// other three forget.
+    ///
+    /// The two halves are deliberately not gated alike:
+    ///
+    /// - The **goal cell** belongs to a run of `↑`/`↓` and to nothing else, so
+    ///   any other action forgets it, in every mode.
+    /// - The **undo group** is closed only outside a vim Insert session. There
+    ///   the session *is* the group (CONTEXT.md), so an autosave landing
+    ///   mid-word, or an auto-surround typed inside Insert, must not split what
+    ///   one `u` is supposed to take back.
+    fn interrupt_typing(&mut self) {
+        self.view.clear_visual_goal();
+        if self.backend.modal_is_insert().unwrap_or(false) {
+            return;
+        }
+        if let Some((_, run)) = self.backend.as_textarea_parts_mut() {
+            run.end();
+        }
+    }
+
+    /// Notice that vim entered or left Insert, and close the group if it did.
+    ///
+    /// This marks a session's *start*: the first key of a session arrives here
+    /// with the flag still reading the old mode. The session's *end* is closed by
+    /// [`Self::interrupt_typing`] on the engine path, because `Esc` is consumed
+    /// there and never reaches this function at all.
+    fn sync_insert_session(&mut self) {
+        let in_insert = self.backend.modal_is_insert().unwrap_or(false);
+        if self.last_insert_session == in_insert {
+            return;
+        }
+        self.last_insert_session = in_insert;
+        if let Some((_, run)) = self.backend.as_textarea_parts_mut() {
+            run.end();
         }
     }
 
@@ -782,7 +805,7 @@ impl TextEditorComponent {
         let (_row, col, line) = match &self.backend {
             BackendState::Textarea(tb) => {
                 let (row, col) = cursor_tuple(&tb.ta);
-                let line = tb.ta.lines().get(row)?.to_string();
+                let line = tb.ta.row(row)?.into_owned();
                 (row, col, line)
             }
             BackendState::Nvim(nvim) => {
@@ -864,7 +887,7 @@ impl TextEditorComponent {
         let ta = self.backend.as_textarea()?;
         let (start, (er, ec)) = ta.selection_range()?;
         let end = if charwise {
-            let len = ta.lines().get(er).map(|l| l.chars().count()).unwrap_or(ec);
+            let len = ta.row(er).map(|l| l.chars().count()).unwrap_or(ec);
             (er, (ec + 1).min(len))
         } else {
             (er, ec)
@@ -1069,6 +1092,10 @@ impl TextEditorComponent {
         let inner_end_col = if sr == er { ec + shift } else { ec };
         set_selection(ta, (sr, sc + shift), (er, inner_end_col));
         self.selection = ta.selection_range();
+        // Only here, past every `return false` above: this function is consulted
+        // for each bare `( [ { < " ' ` * _ ~` keystroke, and the declining ones
+        // fall through to ordinary typing, which must keep its run.
+        self.interrupt_typing();
         self.apply_edit_outcome();
         true
     }
@@ -1085,6 +1112,7 @@ impl TextEditorComponent {
         if self.wrap_selection(marker, marker) {
             return;
         }
+        self.interrupt_typing();
         let Some(ta) = self.backend.as_textarea_mut() else {
             return;
         };
@@ -1119,7 +1147,7 @@ impl TextEditorComponent {
                 return false;
             }
             let (row, col) = cursor_tuple(ta);
-            let Some(line) = ta.lines().get(row) else {
+            let Some(line) = ta.row(row) else {
                 return false;
             };
             let total_chars = line.chars().count();
@@ -1127,7 +1155,7 @@ impl TextEditorComponent {
                 return false;
             }
             // ASCII whitespace, so byte index == char index here.
-            let ws_end = markdown::leading_ws_byte_len(line);
+            let ws_end = markdown::leading_ws_byte_len(&line);
             let (ws, after_ws) = line.split_at(ws_end);
             if let Some(marker_len) = markdown::list_marker_len(after_ws) {
                 if after_ws.len() == marker_len {
@@ -1204,8 +1232,11 @@ impl TextEditorComponent {
                 .replace(['*', '_', '`'], "")
         }
         let wanted = normalise(heading);
-        let row = ta.lines().iter().position(|l| {
-            let t = l.trim_start();
+        let row = (0..ta.row_count()).find(|&row| {
+            let Some(line) = ta.row(row) else {
+                return false;
+            };
+            let t = line.trim_start();
             let stripped = t.trim_start_matches('#');
             stripped.len() != t.len() && normalise(stripped) == wanted
         });
@@ -1268,7 +1299,7 @@ impl TextEditorComponent {
             for row in start_row..=end_row {
                 if dedent {
                     let count = {
-                        let line = ta.lines().get(row).map(|s| s.as_str()).unwrap_or("");
+                        let line = ta.row(row).unwrap_or_default();
                         let max_remove = if hard_tab { 1 } else { tab_len };
                         let mut count = 0usize;
                         for (i, c) in line.chars().enumerate() {
@@ -1287,13 +1318,13 @@ impl TextEditorComponent {
                         count
                     };
                     if count > 0 {
-                        edit_buffer::checked_jump(ta, row, 0);
+                        ta.jump_to(row, 0);
                         ta.delete_str(count);
                         any_change = true;
                     }
                     row_deltas.push(-(count as isize));
                 } else {
-                    edit_buffer::checked_jump(ta, row, 0);
+                    ta.jump_to(row, 0);
                     ta.insert_str(&indent);
                     row_deltas.push(indent_chars as isize);
                     any_change = true;
@@ -1432,7 +1463,7 @@ impl TextEditorComponent {
     /// measured. Returns `false` when no bar is open.
     fn dispatch_bar(
         &mut self,
-        f: impl FnOnce(&mut find_bar::FindBar, &mut EditBuffer) -> find_bar::KeyOutcome,
+        f: impl FnOnce(&mut find_bar::FindBar, &mut RopeBuffer) -> find_bar::KeyOutcome,
     ) -> bool {
         let BackendState::Textarea(tb) = &mut self.backend else {
             return false;
@@ -1527,6 +1558,9 @@ impl TextEditorComponent {
         if outcome.bulk {
             self.view.note_bulk_edit();
         }
+        if let Some(rows) = outcome.damage {
+            self.view.note_damage(rows);
+        }
         outcome.changed
     }
 
@@ -1565,6 +1599,24 @@ impl TextEditorComponent {
         // production caller — already routes to the bar before the vim engine,
         // so a second check could never fire. It survived only because tests
         // call this function directly.
+
+        // Whether this key types. Decided here rather than in the plain-key
+        // section below, because a key claimed earlier — Ctrl+Z, a clipboard
+        // chord, Tab — returns before ever reaching it, and a run left open
+        // across an undo would try to extend a group that was just taken back.
+        let stroke = plain_keys::operation(*key).and_then(|op| match op {
+            plain_keys::Operation::Insert(c) => Some(typing_run::Stroke::Insert(c)),
+            plain_keys::Operation::InsertNewline => Some(typing_run::Stroke::Insert('\n')),
+            plain_keys::Operation::DeleteBack | plain_keys::Operation::DeleteForward => {
+                Some(typing_run::Stroke::Delete)
+            }
+            _ => None,
+        });
+        if stroke.is_none()
+            && let Some((_, run)) = self.backend.as_textarea_parts_mut()
+        {
+            run.end();
+        }
 
         // System clipboard shortcuts — intercept before passing to textarea.
         if key.modifiers == KeyModifiers::CONTROL {
@@ -1622,56 +1674,6 @@ impl TextEditorComponent {
             }
         }
 
-        let Some(ta) = self.backend.as_textarea_mut() else {
-            unreachable!("handle_textarea_key called with non-Textarea backend")
-        };
-
-        // macOS-style navigation shortcuts not handled by ratatui-textarea.
-        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-        let handled = match (key.modifiers & !KeyModifiers::SHIFT, key.code) {
-            (KeyModifiers::ALT, KeyCode::Left) => {
-                cursor_move!(ta, CursorMove::WordBack, shift);
-                true
-            }
-            (KeyModifiers::ALT, KeyCode::Right) => {
-                cursor_move!(ta, CursorMove::WordForward, shift);
-                true
-            }
-            // Emacs-style word motions. macOS terminals (Terminal.app, Ghostty)
-            // translate Option+Left/Right into `Esc b` / `Esc f` by default,
-            // which crossterm reports as Alt+b / Alt+f. The shifted variants
-            // arrive as the uppercase char (with SHIFT set, so `shift` holds).
-            (KeyModifiers::ALT, KeyCode::Char('b') | KeyCode::Char('B')) => {
-                cursor_move!(ta, CursorMove::WordBack, shift);
-                true
-            }
-            (KeyModifiers::ALT, KeyCode::Char('f') | KeyCode::Char('F')) => {
-                cursor_move!(ta, CursorMove::WordForward, shift);
-                true
-            }
-            (KeyModifiers::SUPER, KeyCode::Left) => {
-                cursor_move!(ta, CursorMove::Head, shift);
-                true
-            }
-            (KeyModifiers::SUPER, KeyCode::Right) => {
-                cursor_move!(ta, CursorMove::End, shift);
-                true
-            }
-            (KeyModifiers::SUPER, KeyCode::Up) => {
-                cursor_move!(ta, CursorMove::Top, shift);
-                true
-            }
-            (KeyModifiers::SUPER, KeyCode::Down) => {
-                cursor_move!(ta, CursorMove::Bottom, shift);
-                true
-            }
-            _ => false,
-        };
-        if handled {
-            self.selection = ta.selection_range();
-            return EventState::Consumed;
-        }
-
         // FocusSidebar / FocusEditor shortcuts are intercepted at the
         // EditorScreen level for directional navigation.
 
@@ -1682,101 +1684,6 @@ impl TextEditorComponent {
         // moved the cursor, or did literally nothing (e.g. Ctrl+Z on an empty
         // undo stack) — so the revision clock is not
         // bumped on true no-ops.
-        enum ShortcutOutcome {
-            NoOp,
-            CursorOnly,
-            TextMutated,
-        }
-        let outcome: Option<ShortcutOutcome> =
-            match (key.modifiers & !KeyModifiers::SHIFT, key.code) {
-                // --- Cursor movement (Shift extends the selection) ---
-                (KeyModifiers::NONE, KeyCode::Left) => {
-                    cursor_move!(ta, CursorMove::Back, shift);
-                    Some(ShortcutOutcome::CursorOnly)
-                }
-                (KeyModifiers::NONE, KeyCode::Right) => {
-                    cursor_move!(ta, CursorMove::Forward, shift);
-                    Some(ShortcutOutcome::CursorOnly)
-                }
-                (KeyModifiers::NONE, KeyCode::Up) => {
-                    cursor_move!(ta, CursorMove::Up, shift);
-                    Some(ShortcutOutcome::CursorOnly)
-                }
-                (KeyModifiers::NONE, KeyCode::Down) => {
-                    cursor_move!(ta, CursorMove::Down, shift);
-                    Some(ShortcutOutcome::CursorOnly)
-                }
-                (KeyModifiers::NONE, KeyCode::Home) => {
-                    cursor_move!(ta, CursorMove::Head, shift);
-                    Some(ShortcutOutcome::CursorOnly)
-                }
-                (KeyModifiers::NONE, KeyCode::End) => {
-                    cursor_move!(ta, CursorMove::End, shift);
-                    Some(ShortcutOutcome::CursorOnly)
-                }
-                (KeyModifiers::NONE, KeyCode::PageUp) => {
-                    cursor_move!(ta, CursorMove::ParagraphBack, shift);
-                    Some(ShortcutOutcome::CursorOnly)
-                }
-                (KeyModifiers::NONE, KeyCode::PageDown) => {
-                    cursor_move!(ta, CursorMove::ParagraphForward, shift);
-                    Some(ShortcutOutcome::CursorOnly)
-                }
-                // Word navigation (Ctrl+arrow, Windows/Linux style)
-                (KeyModifiers::CONTROL, KeyCode::Left) => {
-                    cursor_move!(ta, CursorMove::WordBack, shift);
-                    Some(ShortcutOutcome::CursorOnly)
-                }
-                (KeyModifiers::CONTROL, KeyCode::Right) => {
-                    cursor_move!(ta, CursorMove::WordForward, shift);
-                    Some(ShortcutOutcome::CursorOnly)
-                }
-                // Document start / end
-                (KeyModifiers::CONTROL, KeyCode::Home) => {
-                    cursor_move!(ta, CursorMove::Top, shift);
-                    Some(ShortcutOutcome::CursorOnly)
-                }
-                (KeyModifiers::CONTROL, KeyCode::End) => {
-                    cursor_move!(ta, CursorMove::Bottom, shift);
-                    Some(ShortcutOutcome::CursorOnly)
-                }
-                // Select all
-                (KeyModifiers::CONTROL, KeyCode::Char('a')) => {
-                    ta.move_cursor(CursorMove::Top);
-                    ta.start_selection();
-                    ta.move_cursor(CursorMove::Bottom);
-                    Some(ShortcutOutcome::CursorOnly)
-                }
-                // Delete word before / after cursor. Returns `false` when at a
-                // word boundary with nothing to delete — no buffer/cursor change.
-                (KeyModifiers::CONTROL, KeyCode::Backspace)
-                | (KeyModifiers::ALT, KeyCode::Backspace) => {
-                    if ta.delete_word() {
-                        Some(ShortcutOutcome::TextMutated)
-                    } else {
-                        Some(ShortcutOutcome::NoOp)
-                    }
-                }
-                (KeyModifiers::CONTROL, KeyCode::Delete) | (KeyModifiers::ALT, KeyCode::Delete) => {
-                    if ta.delete_next_word() {
-                        Some(ShortcutOutcome::TextMutated)
-                    } else {
-                        Some(ShortcutOutcome::NoOp)
-                    }
-                }
-                _ => None,
-            };
-        if let Some(kind) = outcome {
-            self.selection = ta.selection_range();
-            match kind {
-                ShortcutOutcome::NoOp | ShortcutOutcome::CursorOnly => {}
-                ShortcutOutcome::TextMutated => {
-                    self.apply_edit_outcome();
-                }
-            }
-            return EventState::Consumed;
-        }
-
         // BackTab is what most terminals emit for Shift+Tab.
         match (key.modifiers, key.code) {
             (m, KeyCode::Tab)
@@ -1809,17 +1716,77 @@ impl TextEditorComponent {
             return EventState::Consumed;
         }
 
-        let Some(ta) = self.backend.as_textarea_mut() else {
+        // A change of modal state ends whatever run was open: leaving Insert
+        // closes vim's session, and entering it starts a fresh one. Also read in
+        // `handle_input` for the keys the engine consumes, which never arrive
+        // here — this call is what keeps the direct path (which the tests drive)
+        // bracketed too.
+        self.sync_insert_session();
+
+        // Read before the buffer is borrowed below.
+        let in_insert_session = self.last_insert_session;
+        let Some((ta, run)) = self.backend.as_textarea_parts_mut() else {
             unreachable!("handle_textarea_key called with non-Textarea backend")
         };
-        // `input_without_shortcuts` returns `false` for keys the textarea
-        // ignores (F1-F12, KeyCode::Null, modifier-only releases, IME
-        // composing events). Only bump `text_revision` when the buffer
-        // actually changed — otherwise harmless keys would silently flip
-        // the editor to dirty and trigger needless autosaves.
-        ta.input_without_shortcuts(*key);
-        self.selection = ta.selection_range();
-        self.apply_edit_outcome();
+        // Last: what the key means to the plain backend. It runs *after* the
+        // component's own claims — `Tab` indents rows, `Enter` may continue a
+        // list, an opening bracket over a selection wraps it — because those are
+        // the same keys and the component's reading of them wins.
+        if let Some(op) = plain_keys::operation(*key) {
+            // ↑/↓ move by *drawn* line, so they need the layout — which lives on
+            // the view, not the buffer. Everything else the buffer can answer
+            // alone. A run of them keeps its goal cell; anything else ends the run.
+            let vertical = match op {
+                plain_keys::Operation::Move {
+                    to: CursorMove::Up,
+                    extend,
+                } => Some((false, extend)),
+                plain_keys::Operation::Move {
+                    to: CursorMove::Down,
+                    extend,
+                } => Some((true, extend)),
+                _ => None,
+            };
+            if vertical.is_none() {
+                self.view.clear_visual_goal();
+            }
+            // Does this keystroke continue the last one's **undo group**? The
+            // policy is the backend's (adr/0041); the engine only offers a group
+            // that can span keystrokes. Everything that is not typing ends the
+            // run, which is what makes the idle rule correct without a timer:
+            // undo is itself one of those things.
+            if let Some(stroke) = stroke {
+                {
+                    let now = std::time::Instant::now();
+                    // In vim's Insert mode the session is the group: `u` takes
+                    // back everything typed since `i`, so neither a word boundary
+                    // nor a pause may break it. `sync_insert_session` above ended
+                    // the run at the boundary, which marks a session's start.
+                    let carries_on = if in_insert_session {
+                        run.continues_session(stroke, now)
+                    } else {
+                        run.continues(stroke, now)
+                    };
+                    if carries_on {
+                        ta.continue_group();
+                    }
+                }
+            }
+
+            let changed = match vertical {
+                // A stale layout — an edit landed before the frame that re-lays
+                // it out — falls back to the logical move rather than reading it.
+                Some((down, extend)) if self.view.move_cursor_visually(ta, down, extend) => false,
+                _ => plain_keys::apply(op, ta),
+            };
+            self.selection = ta.selection_range();
+            if changed {
+                self.apply_edit_outcome();
+            }
+        }
+        // A key the table declines — a function key, a modifier-only release, an
+        // IME composition event — leaves the buffer alone, so a harmless keypress
+        // cannot mark the note dirty and trigger an autosave.
         EventState::Consumed
     }
 
@@ -1829,7 +1796,7 @@ impl TextEditorComponent {
         mouse: &ratatui::crossterm::event::MouseEvent,
         tx: &AppTx,
     ) -> EventState {
-        let r = &self.rect;
+        let r = self.rect;
         let in_bounds = mouse.column >= r.x
             && mouse.column < r.x + r.width
             && mouse.row >= r.y
@@ -1837,6 +1804,10 @@ impl TextEditorComponent {
         if !in_bounds {
             return EventState::NotConsumed;
         }
+        // Past the bounds check the event is ours, so it is an action: a click
+        // moves the cursor, and even a scroll means attention moved. Placed above
+        // the context-menu return below so a right-click counts too.
+        self.interrupt_typing();
         // Right-click: with a selection it copies (unchanged behavior);
         // without one it asks the host to open the note's context menu
         // (spec §10 — file & note ops).
@@ -1881,13 +1852,15 @@ impl TextEditorComponent {
                     .click_at_screen((mouse.row - r.y) as usize, (mouse.column - r.x) as usize);
                 ta.jump_to(lrow as usize, lcol as usize);
             }
-            _ => {
-                ta.mouse_input(*mouse);
-            }
+            // Everything else is somebody else's: a click and a drag are handled
+            // above, and a scroll is classified as an **Intent** before it reaches
+            // the buffer. The incumbent forwarded these to the widget, which
+            // scrolled a viewport kimün never renders from.
+            _ => {}
         }
         self.selection = ta.selection_range();
         // Mouse handling moves the cursor / selection but does not insert
-        // text — `ratatui-textarea` mouse handling is click/drag/scroll only.
+        // text — click, drag and scroll are all it produces.
         EventState::Consumed
     }
 }
@@ -1921,6 +1894,7 @@ impl Component for TextEditorComponent {
                 {
                     match controller.handle_key(*key, &host) {
                         HandleKeyOutcome::Accepted(action) => {
+                            self.interrupt_typing();
                             if let Some(ta) = self.backend.as_textarea_mut() {
                                 ta.edit(|ta| apply_accept_to_textarea(ta, &action));
                                 self.selection = ta.selection_range();
@@ -1939,6 +1913,10 @@ impl Component for TextEditorComponent {
                 // (the textarea backend also intercepts inside handle_textarea_key,
                 // but the vim Normal-mode path never reaches that).
                 if self.dispatch_to_find_bar(key) {
+                    // Here rather than inside `dispatch_bar`: that runs for every
+                    // key whether or not a bar is open, so interrupting there
+                    // would make each keystroke its own undo group.
+                    self.interrupt_typing();
                     return EventState::Consumed;
                 }
                 // Vim interpreter: Normal/Visual consume the key here; Insert
@@ -1947,6 +1925,13 @@ impl Component for TextEditorComponent {
                 // keep working (adr/0012).
                 if let Some(outcome) = self.backend.vim_handle_key(key) {
                     use self::vim::VimKeyOutcome;
+                    // Anything the engine consumed is an action rather than a
+                    // continuation of typing. PassThrough is the exception: that
+                    // key falls through to the direct path below, where the plain
+                    // handler decides — and where a run of ↑/↓ keeps its goal.
+                    if !matches!(outcome, VimKeyOutcome::PassThrough) {
+                        self.interrupt_typing();
+                    }
                     // Whatever the engine did, the buffer measured it. One
                     // drain replaces the group handshake, the pre-dispatch
                     // clone and the hand-placed revision bump (adr/0037).
@@ -1977,7 +1962,7 @@ impl Component for TextEditorComponent {
                                 let len = self
                                     .backend
                                     .as_textarea()
-                                    .and_then(|ta| ta.lines().get(er))
+                                    .and_then(|ta| ta.row(er))
                                     .map(|l| l.chars().count())
                                     .unwrap_or(ec);
                                 self.selection = Some(((sr, sc), (er, (ec + 1).min(len))));
@@ -2272,14 +2257,18 @@ impl Component for TextEditorComponent {
             // parse of text that is not on screen and sail through
             // `install_full_parse`'s staleness check, styling a large note by
             // element boundaries computed against a different string.
-            let lines: Vec<String> = match &view_lines {
-                Some(lines) => lines.clone(),
-                None => snap.lines.iter().cloned().collect(),
+            // The task gets the text itself. A clone shares its structure, so
+            // handing a 5000-row note to a background parse costs a pointer
+            // rather than a copy of the note — where this used to clone every
+            // row.
+            let text = match &view_lines {
+                Some(lines) => ropetext::Text::from(lines.join("\n").as_str()),
+                None => snap.text.clone(),
             };
             let tx = self.full_parse_tx.clone();
             let redraw = self.redraw_tx.clone();
             self.full_parse_task.spawn(async move {
-                let buf = ParsedBuffer::parse(&lines);
+                let buf = ParsedBuffer::parse(&text);
                 let _ = tx.send((generation, buf));
                 // Wake the render loop so the rich parse lands
                 // without waiting for the next keystroke.
@@ -2312,7 +2301,7 @@ impl Component for TextEditorComponent {
         // Empty-note tip (spec §5.2): dim ghost text in a fresh/empty buffer,
         // gone the instant the first character lands (the buffer stops being
         // empty). Drawn after the view so it sits over the blank canvas.
-        if snap.lines.iter().all(|l| l.is_empty()) && editor_rect.height > 0 {
+        if snap.text.len_bytes() == 0 && editor_rect.height > 0 {
             let leader = self
                 .key_bindings
                 .first_combo_for(&crate::keys::action_shortcuts::ActionShortcuts::Leader)
@@ -2444,7 +2433,7 @@ mod tests {
         tokio::sync::mpsc::unbounded_channel().0
     }
 
-    fn get_ta(editor: &mut TextEditorComponent) -> &mut EditBuffer {
+    fn get_ta(editor: &mut TextEditorComponent) -> &mut RopeBuffer {
         match &mut editor.backend {
             BackendState::Textarea(tb) => &mut tb.ta,
             _ => panic!("expected Textarea backend"),
@@ -2598,7 +2587,7 @@ mod tests {
         editor.set_text("hello world".to_string());
         let ta = get_ta(&mut editor);
         ta.start_selection();
-        ta.move_cursor(ratatui_textarea::CursorMove::WordForward);
+        ta.move_cursor(CursorMove::WordForward);
         assert!(ta.selection_range().is_some());
         ta.cancel_selection();
         editor.selection = if let BackendState::Textarea(tb) = &editor.backend {
@@ -2614,12 +2603,12 @@ mod tests {
         let mut editor = make_editor();
         editor.set_text("hello world".to_string());
         let ta = get_ta(&mut editor);
-        ta.move_cursor(ratatui_textarea::CursorMove::Head);
+        ta.move_cursor(CursorMove::Head);
         ta.start_selection();
-        ta.move_cursor(ratatui_textarea::CursorMove::WordForward);
+        ta.move_cursor(CursorMove::WordForward);
         let range = ta.selection_range().unwrap();
         let ((sr, sc), (er, ec)) = range;
-        let lines = ta.lines();
+        let lines = ta.rows();
         let selected = if sr == er {
             lines[sr][sc..ec].to_string()
         } else {
@@ -2629,7 +2618,7 @@ mod tests {
     }
 
     /// Selects the char-coordinate range `start..end` in the editor's textarea.
-    fn select_range(editor: &mut TextEditorComponent, start: (u16, u16), end: (u16, u16)) {
+    fn select_range(editor: &mut TextEditorComponent, start: (usize, usize), end: (usize, usize)) {
         let ta = get_ta(editor);
         ta.cancel_selection();
         ta.move_cursor(CursorMove::Jump(start.0, start.1));
@@ -2771,19 +2760,43 @@ mod tests {
     }
 
     #[test]
-    fn wrap_undo_is_two_steps_back_to_original() {
-        // Documented trade-off: ratatui-textarea has no edit grouping, so a
-        // wrap is delete+insert = two history entries (same as bold/italic
-        // via apply_text_action). Two undos must restore the original text.
+    fn bold_undo_is_one_step_back_to_original() {
+        // The sibling of the wrap: `apply_text_action` reaches the same
+        // `wrap_selection`, so bolding a selection is one entry for the same
+        // reason. Pinned separately because it is the path a toolbar action
+        // takes, and nothing else would catch it regressing on its own.
+        let mut editor = make_editor();
+        editor.set_text("hello world".to_string());
+        select_range(&mut editor, (0, 0), (0, 5));
+        editor.apply_text_action(TextAction::Bold);
+        assert_eq!(editor.get_text(), "**hello** world");
+        assert!(get_ta(&mut editor).undo(), "the bold is one entry");
+        assert_eq!(editor.get_text(), "hello world");
+        assert!(
+            !get_ta(&mut editor).undo(),
+            "and has no second half left to take back"
+        );
+    }
+
+    #[test]
+    fn wrap_undo_is_one_step_back_to_original() {
+        // A wrap replaces the selection inside a single transaction, so the whole
+        // gesture is one history entry. Under the incumbent it was delete+insert
+        // and cost two, and this test asked for two undos — which proved nothing,
+        // since a second undo against a one-entry history is a no-op and lands on
+        // the same string. Asserting what each undo *returns* is what makes this a
+        // claim about grouping rather than about the final text.
         let mut editor = make_editor();
         editor.set_text("hello world".to_string());
         select_range(&mut editor, (0, 0), (0, 5));
         send_char(&mut editor, '(');
         assert_eq!(editor.get_text(), "(hello) world");
-        let ta = get_ta(&mut editor);
-        ta.undo();
-        ta.undo();
+        assert!(get_ta(&mut editor).undo(), "the wrap is one entry");
         assert_eq!(editor.get_text(), "hello world");
+        assert!(
+            !get_ta(&mut editor).undo(),
+            "and has no second half left to take back"
+        );
     }
 
     #[test]
@@ -2941,7 +2954,7 @@ mod tests {
         );
         // Cursor now at first match (col 0). Re-invoking advances to second.
         editor.open_or_advance_search();
-        let DataCursor(_, col) = get_ta(&mut editor).cursor();
+        let (_, col) = get_ta(&mut editor).cursor();
         assert_eq!(col, 3, "second invocation advances to next match");
     }
 
@@ -2960,7 +2973,7 @@ mod tests {
         let state = editor.search.as_ref().unwrap();
         assert_eq!(state.input.value(), "bar");
         assert!(matches!(state.status, SearchStatus::Match));
-        let DataCursor(_, col) = get_ta(&mut editor).cursor();
+        let (_, col) = get_ta(&mut editor).cursor();
         assert_eq!(col, 4, "cursor jumped to start of 'bar'");
     }
 
@@ -2983,7 +2996,7 @@ mod tests {
             &InputEvent::Key(key(KeyCode::Enter, KeyModifiers::NONE)),
             &tx,
         );
-        let DataCursor(_, col) = get_ta(&mut editor).cursor();
+        let (_, col) = get_ta(&mut editor).cursor();
         assert_eq!(col, 3, "Enter advances to second match");
     }
 
@@ -3102,7 +3115,7 @@ mod tests {
         editor.set_text("hello".to_string());
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::End);
+            ta.move_cursor(CursorMove::End);
         }
         editor.insert_at_cursor(" world", &dummy_tx());
         assert_eq!(editor.get_text(), "hello world");
@@ -3114,9 +3127,9 @@ mod tests {
         editor.set_text("hello world".to_string());
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::Head);
+            ta.move_cursor(CursorMove::Head);
             ta.start_selection();
-            ta.move_cursor(ratatui_textarea::CursorMove::WordForward);
+            ta.move_cursor(CursorMove::WordForward);
         }
         editor.insert_at_cursor("HEY ", &dummy_tx());
         assert_eq!(editor.get_text(), "HEY world");
@@ -3127,7 +3140,7 @@ mod tests {
         let mut editor = make_editor();
         editor.set_text("hello".to_string());
         let ta = get_ta(&mut editor);
-        ta.move_cursor(ratatui_textarea::CursorMove::End);
+        ta.move_cursor(CursorMove::End);
         ta.insert_str(" world");
         assert_eq!(editor.get_text(), "hello world");
     }
@@ -3138,7 +3151,7 @@ mod tests {
         editor.set_text("hello".to_string());
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::End);
+            ta.move_cursor(CursorMove::End);
         }
         editor.apply_text_action(TextAction::Bold);
         assert_eq!(editor.get_text(), "hello****");
@@ -3162,9 +3175,9 @@ mod tests {
         editor.set_text("hello world".to_string());
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::Head);
+            ta.move_cursor(CursorMove::Head);
             ta.start_selection();
-            ta.move_cursor(ratatui_textarea::CursorMove::WordForward);
+            ta.move_cursor(CursorMove::WordForward);
         }
         editor.apply_text_action(TextAction::Strikethrough);
         assert_eq!(editor.get_text(), "~~hello ~~world");
@@ -3176,10 +3189,10 @@ mod tests {
         editor.set_text("hello 你好 world".to_string());
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::Head);
-            ta.move_cursor(ratatui_textarea::CursorMove::WordForward);
+            ta.move_cursor(CursorMove::Head);
+            ta.move_cursor(CursorMove::WordForward);
             ta.start_selection();
-            ta.move_cursor(ratatui_textarea::CursorMove::WordForward);
+            ta.move_cursor(CursorMove::WordForward);
         }
         editor.apply_text_action(TextAction::Bold);
         assert_eq!(editor.get_text(), "hello **你好 **world");
@@ -3191,9 +3204,9 @@ mod tests {
         editor.set_text("foo bar".to_string());
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::Head);
+            ta.move_cursor(CursorMove::Head);
             ta.start_selection();
-            ta.move_cursor(ratatui_textarea::CursorMove::WordForward);
+            ta.move_cursor(CursorMove::WordForward);
         }
         editor.apply_text_action(TextAction::Bold);
         assert_eq!(editor.get_text(), "**foo **bar");
@@ -3205,10 +3218,10 @@ mod tests {
         editor.set_text("foo\nbar".to_string());
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::Bottom);
+            ta.move_cursor(CursorMove::Bottom);
         }
         editor.indent_lines(false);
-        let lines = get_ta(&mut editor).lines();
+        let lines = get_ta(&mut editor).rows();
         assert_eq!(lines[0], "foo");
         assert!(lines[1].starts_with(' ') || lines[1].starts_with('\t'));
         assert!(lines[1].trim_start() == "bar");
@@ -3220,16 +3233,16 @@ mod tests {
         editor.set_text("hello world".to_string());
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::Jump(0, 6));
+            ta.move_cursor(CursorMove::Jump(0, 6));
             ta.start_selection();
-            ta.move_cursor(ratatui_textarea::CursorMove::End);
+            ta.move_cursor(CursorMove::End);
         }
         editor.indent_lines(false);
         let ta = get_ta(&mut editor);
         // Text before the selection must survive; only a leading indent added.
-        assert_eq!(ta.lines()[0].trim_start(), "hello world");
+        assert_eq!(ta.rows()[0].trim_start(), "hello world");
         // Selection preserved, shifted right by the inserted indent.
-        let indent = ta.lines()[0].len() - "hello world".len();
+        let indent = ta.rows()[0].len() - "hello world".len();
         assert_eq!(
             ta.selection_range(),
             Some(((0, 6 + indent), (0, 11 + indent)))
@@ -3242,13 +3255,13 @@ mod tests {
         editor.set_text("foo\nbar\nbaz".to_string());
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::Top);
+            ta.move_cursor(CursorMove::Top);
             ta.start_selection();
-            ta.move_cursor(ratatui_textarea::CursorMove::Down);
-            ta.move_cursor(ratatui_textarea::CursorMove::End);
+            ta.move_cursor(CursorMove::Down);
+            ta.move_cursor(CursorMove::End);
         }
         editor.indent_lines(false);
-        let lines: Vec<String> = get_ta(&mut editor).lines().to_vec();
+        let lines: Vec<String> = get_ta(&mut editor).rows().to_vec();
         assert_eq!(lines[0].trim_start(), "foo");
         assert_eq!(lines[1].trim_start(), "bar");
         assert_eq!(lines[2], "baz");
@@ -3263,13 +3276,13 @@ mod tests {
         let tab_len = get_ta(&mut editor).tab_length() as usize;
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::Top);
+            ta.move_cursor(CursorMove::Top);
             ta.start_selection();
-            ta.move_cursor(ratatui_textarea::CursorMove::Bottom);
-            ta.move_cursor(ratatui_textarea::CursorMove::End);
+            ta.move_cursor(CursorMove::Bottom);
+            ta.move_cursor(CursorMove::End);
         }
         editor.indent_lines(true);
-        let lines: Vec<String> = get_ta(&mut editor).lines().to_vec();
+        let lines: Vec<String> = get_ta(&mut editor).rows().to_vec();
         // line 0 had 4 leading spaces; up to tab_len removed.
         assert_eq!(lines[0], format!("{}foo", " ".repeat(4 - tab_len.min(4))));
         // line 1 had 2 leading spaces; up to min(2, tab_len) removed.
@@ -3294,7 +3307,7 @@ mod tests {
         editor.set_text("- foo".to_string());
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::End);
+            ta.move_cursor(CursorMove::End);
         }
         assert!(editor.smart_enter());
         assert_eq!(editor.get_text(), "- foo\n- ");
@@ -3306,7 +3319,7 @@ mod tests {
         editor.set_text("1. foo".to_string());
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::End);
+            ta.move_cursor(CursorMove::End);
         }
         assert!(editor.smart_enter());
         assert_eq!(editor.get_text(), "1. foo\n2. ");
@@ -3318,7 +3331,7 @@ mod tests {
         editor.set_text("- ".to_string());
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::End);
+            ta.move_cursor(CursorMove::End);
         }
         assert!(editor.smart_enter());
         assert_eq!(editor.get_text(), "");
@@ -3330,7 +3343,7 @@ mod tests {
         editor.set_text("    body".to_string());
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::End);
+            ta.move_cursor(CursorMove::End);
         }
         assert!(editor.smart_enter());
         assert_eq!(editor.get_text(), "    body\n    ");
@@ -3342,7 +3355,7 @@ mod tests {
         editor.set_text("    ".to_string());
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::End);
+            ta.move_cursor(CursorMove::End);
         }
         let tab_len = get_ta(&mut editor).tab_length() as usize;
         assert!(editor.smart_enter());
@@ -3358,7 +3371,7 @@ mod tests {
         editor.set_text("plain".to_string());
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::End);
+            ta.move_cursor(CursorMove::End);
         }
         assert!(!editor.smart_enter());
         assert_eq!(editor.get_text(), "plain");
@@ -3370,9 +3383,9 @@ mod tests {
         editor.set_text("- foo".to_string());
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::Head);
-            ta.move_cursor(ratatui_textarea::CursorMove::Forward);
-            ta.move_cursor(ratatui_textarea::CursorMove::Forward);
+            ta.move_cursor(CursorMove::Head);
+            ta.move_cursor(CursorMove::Forward);
+            ta.move_cursor(CursorMove::Forward);
         }
         assert!(!editor.smart_enter());
     }
@@ -3385,7 +3398,7 @@ mod tests {
         editor.set_text(format!("{indent}- "));
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::End);
+            ta.move_cursor(CursorMove::End);
         }
         assert!(editor.smart_enter());
         assert_eq!(editor.get_text(), "- ");
@@ -3399,7 +3412,7 @@ mod tests {
         editor.set_text(format!("{indent}- "));
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::End);
+            ta.move_cursor(CursorMove::End);
         }
         // First Enter: dedent to "- ".
         assert!(editor.smart_enter());
@@ -3408,7 +3421,7 @@ mod tests {
         // Need to position cursor at end after the dedent.
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::End);
+            ta.move_cursor(CursorMove::End);
         }
         assert!(editor.smart_enter());
         assert_eq!(editor.get_text(), "");
@@ -3420,7 +3433,7 @@ mod tests {
         editor.set_text("- 你好".to_string());
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::End);
+            ta.move_cursor(CursorMove::End);
         }
         assert!(editor.smart_enter());
         assert_eq!(editor.get_text(), "- 你好\n- ");
@@ -3432,7 +3445,7 @@ mod tests {
         editor.set_text("\tbody".to_string());
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::End);
+            ta.move_cursor(CursorMove::End);
         }
         assert!(editor.smart_enter());
         assert_eq!(editor.get_text(), "\tbody\n\t");
@@ -3444,7 +3457,7 @@ mod tests {
         editor.set_text("\t\t".to_string());
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::End);
+            ta.move_cursor(CursorMove::End);
         }
         assert!(editor.smart_enter());
         // tab counts as one indent unit, regardless of tab_length spaces.
@@ -3457,7 +3470,7 @@ mod tests {
         editor.set_text("  - foo".to_string());
         {
             let ta = get_ta(&mut editor);
-            ta.move_cursor(ratatui_textarea::CursorMove::End);
+            ta.move_cursor(CursorMove::End);
         }
         assert!(editor.smart_enter());
         assert_eq!(editor.get_text(), "  - foo\n  - ");
@@ -3488,9 +3501,9 @@ mod tests {
     /// Helper: place cursor at a specific column on the first row.
     fn place_cursor_at_col(editor: &mut TextEditorComponent, col: usize) {
         let ta = get_ta(editor);
-        ta.move_cursor(ratatui_textarea::CursorMove::Head);
+        ta.move_cursor(CursorMove::Head);
         for _ in 0..col {
-            ta.move_cursor(ratatui_textarea::CursorMove::Forward);
+            ta.move_cursor(CursorMove::Forward);
         }
     }
 
@@ -3659,6 +3672,28 @@ mod tests {
             &tx,
         );
         assert_eq!(editor.get_text(), "done and todo");
+    }
+
+    #[test]
+    fn replacing_a_match_that_ends_inside_a_cluster_is_refused_not_corrupted() {
+        // "e\u{301}f" is a decomposed é followed by f. Searching `e` matches a
+        // scalar whose END sits inside the cluster, which is not an addressable
+        // column — so the second jump does nothing, the selection stays empty,
+        // and the replacement used to be INSERTED beside the match rather than
+        // over it, leaving "xe\u{301}f". Refusing is the contract (adr/0040).
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("e\u{301}f".to_string());
+        open_replace_bar(&mut editor, &tx, "e", "x");
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Enter, KeyModifiers::NONE)),
+            &tx,
+        );
+        assert_eq!(
+            editor.get_text(),
+            "e\u{301}f",
+            "the note is left alone rather than half-rewritten"
+        );
     }
 
     #[test]
@@ -4015,7 +4050,7 @@ mod tests {
         editor.set_text("todo elsewhere".to_string());
         assert!(editor.search.is_none(), "the bar belonged to the old note");
         // The buffer's groups went with it: `set_text` replaces the textarea,
-        // and `EditBuffer::replace` drops states the new history cannot reach.
+        // and `RopeBuffer::replace` drops states the new history cannot reach.
         assert!(
             !editor.backend.as_textarea_mut().unwrap().undo(),
             "the new note's history has nothing to undo"
@@ -4045,7 +4080,7 @@ mod tests {
             .pattern
             .as_ref()
             .unwrap()
-            .match_spans(editor.backend.as_textarea().unwrap().lines());
+            .match_spans(editor.backend.as_textarea().unwrap().text().lines());
         assert_eq!(
             spans,
             vec![(1, 0, 2)],
@@ -4548,6 +4583,391 @@ mod tests {
             &tx,
         );
         assert_eq!(editor.get_text(), "todo and todo");
+    }
+
+    // ── Undo grouping ────────────────────────────────────────────────────────
+
+    fn type_out(editor: &mut TextEditorComponent, tx: &AppTx, text: &str) {
+        use ratatui::crossterm::event::KeyEvent;
+        for c in text.chars() {
+            let code = if c == '\n' {
+                KeyCode::Enter
+            } else {
+                KeyCode::Char(c)
+            };
+            editor.handle_textarea_key(&KeyEvent::new(code, KeyModifiers::NONE), tx);
+        }
+    }
+
+    #[test]
+    fn undo_takes_back_a_word_not_a_letter() {
+        // The incumbent recorded one history entry per character, so leaving a
+        // sentence took as many presses as it had letters.
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text(String::new());
+        type_out(&mut editor, &tx, "hello world");
+        assert_eq!(editor.get_text(), "hello world");
+
+        assert!(get_ta(&mut editor).undo());
+        assert_eq!(editor.get_text(), "hello ", "the last word goes whole");
+        assert!(get_ta(&mut editor).undo());
+        assert_eq!(editor.get_text(), "", "and so does the first");
+    }
+
+    #[test]
+    fn a_cursor_move_separates_two_runs() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text(String::new());
+        type_out(&mut editor, &tx, "ab");
+        arrow(&mut editor, &tx, KeyCode::Home);
+        type_out(&mut editor, &tx, "cd");
+        assert_eq!(editor.get_text(), "cdab");
+
+        assert!(get_ta(&mut editor).undo());
+        assert_eq!(
+            editor.get_text(),
+            "ab",
+            "only what was typed after the move comes back off"
+        );
+    }
+
+    #[test]
+    fn backspacing_to_fix_a_typo_is_its_own_action() {
+        use ratatui::crossterm::event::KeyEvent;
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text(String::new());
+        type_out(&mut editor, &tx, "helllo");
+        editor.handle_textarea_key(&KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE), &tx);
+        assert_eq!(editor.get_text(), "helll");
+
+        assert!(get_ta(&mut editor).undo());
+        assert_eq!(
+            editor.get_text(),
+            "helllo",
+            "the delete undoes on its own, without taking the typing with it"
+        );
+    }
+
+    #[test]
+    fn an_undo_between_two_runs_separates_them() {
+        // Ctrl+Z is claimed before the plain key table, so the run has to be ended
+        // where every key passes rather than where typing is applied.
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text(String::new());
+        type_out(&mut editor, &tx, "ab");
+        assert!(get_ta(&mut editor).undo());
+        assert_eq!(editor.get_text(), "");
+        type_out(&mut editor, &tx, "cd");
+        assert_eq!(editor.get_text(), "cd");
+        assert!(get_ta(&mut editor).undo());
+        assert_eq!(
+            editor.get_text(),
+            "",
+            "the second run is its own group, not an extension of an undone one"
+        );
+    }
+
+    #[test]
+    fn a_save_closes_the_open_group() {
+        // CONTEXT.md: "a group never spans a save, and one undo after saving
+        // lands on exactly what is on disk". The save arrives by a path that is
+        // not a keystroke, so nothing on the key path could have closed it.
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        type_out(&mut editor, &tx, "abc");
+        let saved = editor.get_text();
+        editor.mark_saved(saved);
+        // Immediately, well inside the idle window, and mid-"word" so the
+        // boundary rule cannot close the run either.
+        type_out(&mut editor, &tx, "def");
+
+        assert!(get_ta(&mut editor).undo());
+        assert_eq!(
+            editor.get_text(),
+            "abc",
+            "one undo lands on what was saved, not before it"
+        );
+    }
+
+    #[test]
+    fn a_stale_save_completion_does_not_close_the_group() {
+        // The other half of the same rule: `mark_saved_at_revision` is a
+        // documented no-op when the revision moved on, and an action that did
+        // nothing must not split the user's word.
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        type_out(&mut editor, &tx, "abc");
+        let stale = NonZeroU64::new(1).expect("nonzero");
+        editor.mark_saved_at_revision(stale);
+        type_out(&mut editor, &tx, "def");
+
+        assert!(get_ta(&mut editor).undo());
+        assert_eq!(
+            editor.get_text(),
+            "",
+            "the run carried on across a completion that marked nothing"
+        );
+    }
+
+    #[test]
+    fn a_second_vim_insert_session_is_its_own_group() {
+        // The session flag was refreshed only on the pass-through path, which
+        // `Esc` never takes, so it latched true on the first `i` and every later
+        // session folded into whatever entry preceded it.
+        use ratatui::crossterm::event::KeyEvent;
+        let mut editor = make_vim_editor();
+        let tx = dummy_tx();
+        editor.set_text(String::new());
+        let press = |editor: &mut TextEditorComponent, code| {
+            let _ = editor.handle_input(
+                &InputEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)),
+                &tx,
+            );
+        };
+        press(&mut editor, KeyCode::Char('i'));
+        for c in "one".chars() {
+            press(&mut editor, KeyCode::Char(c));
+        }
+        press(&mut editor, KeyCode::Esc);
+        press(&mut editor, KeyCode::Char('i'));
+        for c in "two".chars() {
+            press(&mut editor, KeyCode::Char(c));
+        }
+        press(&mut editor, KeyCode::Esc);
+        // `Esc` steps the cursor left, so the second `i` inserts before the
+        // final `e` — the position is incidental, the grouping is the point.
+        assert_eq!(editor.get_text(), "ontwoe");
+
+        assert!(get_ta(&mut editor).undo());
+        assert_eq!(
+            editor.get_text(),
+            "one",
+            "`u` takes back the second session only"
+        );
+    }
+
+    #[test]
+    fn a_vim_insert_session_undoes_whole() {
+        use ratatui::crossterm::event::KeyEvent;
+        let mut editor = make_vim_editor();
+        let tx = dummy_tx();
+        editor.set_text(String::new());
+        // `i` enters Insert; the text then flows through the same plain key path.
+        let press = |editor: &mut TextEditorComponent, code| {
+            let _ = editor.handle_input(
+                &InputEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)),
+                &tx,
+            );
+        };
+        press(&mut editor, KeyCode::Char('i'));
+        for c in "hello world".chars() {
+            press(&mut editor, KeyCode::Char(c));
+        }
+        press(&mut editor, KeyCode::Esc);
+        assert_eq!(editor.get_text(), "hello world");
+
+        assert!(get_ta(&mut editor).undo());
+        assert_eq!(
+            editor.get_text(),
+            "",
+            "vim's `u` takes back the whole session, word boundaries included"
+        );
+    }
+
+    // ── Arrow keys move by drawn line ────────────────────────────────────────
+
+    /// Render once so the view has a layout for the width under test.
+    fn lay_out(editor: &mut TextEditorComponent, width: u16, height: u16) {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let theme = Theme::default();
+        let mut term = Terminal::new(TestBackend::new(width, height)).unwrap();
+        let area = Rect::new(0, 0, width, height);
+        term.draw(|f| editor.render(f, area, &theme, true)).unwrap();
+    }
+
+    fn arrow(editor: &mut TextEditorComponent, tx: &AppTx, code: KeyCode) {
+        use ratatui::crossterm::event::KeyEvent;
+        editor.handle_textarea_key(&KeyEvent::new(code, KeyModifiers::NONE), tx);
+    }
+
+    #[test]
+    fn down_moves_one_drawn_line_not_one_row() {
+        // The whole point of owning both the cursor and the layout. A paragraph
+        // that wraps into four drawn lines takes four presses to leave, not one.
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text(
+            "aaaa bbbb cccc dddd
+second row"
+                .to_string(),
+        );
+        lay_out(&mut editor, 6, 10);
+
+        get_ta(&mut editor).jump_to(0, 0);
+        arrow(&mut editor, &tx, KeyCode::Down);
+        assert_eq!(
+            get_ta(&mut editor).cursor(),
+            (0, 5),
+            "still inside the first row, on its second drawn line"
+        );
+        arrow(&mut editor, &tx, KeyCode::Down);
+        assert_eq!(get_ta(&mut editor).cursor(), (0, 10));
+        arrow(&mut editor, &tx, KeyCode::Down);
+        assert_eq!(get_ta(&mut editor).cursor(), (0, 15));
+        arrow(&mut editor, &tx, KeyCode::Down);
+        assert_eq!(
+            get_ta(&mut editor).cursor().0,
+            1,
+            "and only the fourth press reaches the next row"
+        );
+    }
+
+    #[test]
+    fn up_and_down_are_symmetric_across_a_wrap() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("aaaa bbbb cccc".to_string());
+        lay_out(&mut editor, 6, 10);
+
+        get_ta(&mut editor).jump_to(0, 0);
+        arrow(&mut editor, &tx, KeyCode::Down);
+        let middle = get_ta(&mut editor).cursor();
+        arrow(&mut editor, &tx, KeyCode::Up);
+        assert_eq!(get_ta(&mut editor).cursor(), (0, 0));
+        assert_eq!(middle, (0, 5));
+    }
+
+    #[test]
+    fn an_arrow_against_a_stale_layout_falls_back_instead_of_panicking() {
+        // `main.rs` drains queued input without redrawing between events, so an
+        // edit and an arrow can be processed in one batch. Shrinking a row does
+        // not change the row COUNT, which is all the old guard compared — and the
+        // layout's byte ranges then sliced past the end of the shortened row.
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("abcd\nefgh".to_string());
+        lay_out(&mut editor, 20, 10);
+
+        get_ta(&mut editor).jump_to(0, 4);
+        for _ in 0..3 {
+            get_ta(&mut editor).delete_char();
+        }
+        assert_eq!(get_ta(&mut editor).rows(), &["a", "efgh"]);
+
+        // The move falls back to a logical one rather than reading the layout.
+        arrow(&mut editor, &tx, KeyCode::Down);
+        assert_eq!(get_ta(&mut editor).cursor().0, 1, "still moved down a row");
+    }
+
+    #[test]
+    fn an_action_between_arrows_forgets_the_goal_cell() {
+        // The other side of `a_run_of_arrows_keeps_its_goal_cell`: the column is
+        // borrowed for a run of arrows and for nothing else, so anything that is
+        // not one forgets it. Driven here through a save, because that is a path
+        // with no keystroke on it at all — the same choke point serves the click,
+        // the find and the vim motion.
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text(
+            "aaaaaaaa
+bb
+cccccccc"
+                .to_string(),
+        );
+        lay_out(&mut editor, 20, 10);
+
+        get_ta(&mut editor).jump_to(0, 7);
+        arrow(&mut editor, &tx, KeyCode::Down);
+        assert_eq!(
+            get_ta(&mut editor).cursor(),
+            (1, 2),
+            "clamped to the short row"
+        );
+
+        let saved = editor.get_text();
+        editor.mark_saved(saved);
+
+        arrow(&mut editor, &tx, KeyCode::Down);
+        assert_eq!(
+            get_ta(&mut editor).cursor(),
+            (2, 2),
+            "the goal was forgotten, so the third row keeps the clamped column"
+        );
+    }
+
+    #[test]
+    fn a_run_of_arrows_keeps_its_goal_cell() {
+        // Passing through a shorter drawn line clamps, but does not forget: the
+        // column is borrowed for one line rather than lost.
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text(
+            "aaaaaaaa
+bb
+cccccccc"
+                .to_string(),
+        );
+        lay_out(&mut editor, 20, 10);
+
+        get_ta(&mut editor).jump_to(0, 7);
+        arrow(&mut editor, &tx, KeyCode::Down);
+        assert_eq!(
+            get_ta(&mut editor).cursor(),
+            (1, 2),
+            "clamped to the short row"
+        );
+        arrow(&mut editor, &tx, KeyCode::Down);
+        assert_eq!(
+            get_ta(&mut editor).cursor(),
+            (2, 7),
+            "and back out to the cell the run still wants"
+        );
+    }
+
+    #[test]
+    fn another_key_ends_the_run() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text(
+            "aaaaaaaa
+bb
+cccccccc"
+                .to_string(),
+        );
+        lay_out(&mut editor, 20, 10);
+
+        get_ta(&mut editor).jump_to(0, 7);
+        arrow(&mut editor, &tx, KeyCode::Down);
+        arrow(&mut editor, &tx, KeyCode::Home);
+        arrow(&mut editor, &tx, KeyCode::Down);
+        assert_eq!(
+            get_ta(&mut editor).cursor(),
+            (2, 0),
+            "Home set a new goal; the old one is gone"
+        );
+    }
+
+    #[test]
+    fn shift_down_extends_by_a_drawn_line() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("aaaa bbbb cccc".to_string());
+        lay_out(&mut editor, 6, 10);
+
+        get_ta(&mut editor).jump_to(0, 0);
+        editor.handle_textarea_key(
+            &ratatui::crossterm::event::KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT),
+            &tx,
+        );
+        assert_eq!(
+            get_ta(&mut editor).selection_range(),
+            Some(((0, 0), (0, 5)))
+        );
     }
 
     /// Helper: construct a vim-backend editor.

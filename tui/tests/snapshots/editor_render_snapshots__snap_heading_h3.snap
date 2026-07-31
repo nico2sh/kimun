@@ -1,0 +1,8 @@
+---
+source: tui/tests/editor_render_snapshots.rs
+expression: "painted(\"### Heading Three\", 80)"
+---
+ 0 |### Heading Three                                                               |
+   0..4 fg=Rgb(124, 111, 100) bg=Rgb(40, 40, 40) mods=NONE
+   4..17 fg=Rgb(250, 189, 47) bg=Rgb(40, 40, 40) mods=BOLD
+   17..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE

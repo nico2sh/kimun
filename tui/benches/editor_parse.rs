@@ -13,14 +13,10 @@ use kimun_notes::components::text_editor::parse_incremental::{
     WidenResult, compute_damage_range, widen_to_safe,
 };
 use kimun_notes::components::text_editor::snapshot::EditorSnapshot;
-use kimun_notes::components::text_editor::word_wrap::WordWrapLayout;
+use ropetext::{Layout, Metrics, RowHints, Text};
 use std::num::NonZeroU64;
 
-fn snap_for<'a>(
-    lines: &'a [String],
-    cursor: (usize, usize),
-    generation: u64,
-) -> EditorSnapshot<'a> {
+fn snap_for(lines: &[String], cursor: (usize, usize), generation: u64) -> EditorSnapshot {
     let rev = NonZeroU64::new(generation.max(1)).unwrap();
     let clamped = if lines.is_empty() {
         (0, 0)
@@ -42,7 +38,7 @@ fn bench_full_parse_5000_lines(c: &mut Criterion) {
     let lines = make_5000_line_buffer();
     c.bench_function("full_parse_5000_lines", |b| {
         b.iter(|| {
-            let pb = ParsedBuffer::parse(black_box(&lines));
+            let pb = ParsedBuffer::parse_lines(black_box(&lines));
             black_box(pb);
         });
     });
@@ -65,7 +61,7 @@ fn bench_compute_damage_range_5000_lines(c: &mut Criterion) {
 
 fn bench_incremental_paragraph_insert_5000_lines(c: &mut Criterion) {
     let lines = make_5000_line_buffer();
-    let initial_pb = ParsedBuffer::parse(&lines);
+    let initial_pb = ParsedBuffer::parse_lines(&lines);
     let mut edited = lines.clone();
     edited[2500].push('x');
 
@@ -81,7 +77,7 @@ fn bench_incremental_paragraph_insert_5000_lines(c: &mut Criterion) {
                         panic!("paragraph insert should take incremental path")
                     }
                 };
-                let slice = ParsedBuffer::parse_range(black_box(&edited), widened.clone());
+                let slice = ParsedBuffer::parse_range_lines(black_box(&edited), widened.clone());
                 pb.splice(widened, slice);
                 black_box(pb);
             },
@@ -92,7 +88,7 @@ fn bench_incremental_paragraph_insert_5000_lines(c: &mut Criterion) {
 
 fn bench_incremental_fallback_5000_lines(c: &mut Criterion) {
     let lines = make_5000_line_buffer();
-    let _initial_pb = ParsedBuffer::parse(&lines);
+    let _initial_pb = ParsedBuffer::parse_lines(&lines);
     // Insert ``` at row 2500 — line count changes → fallback path.
     let mut edited = lines.clone();
     edited.insert(2500, "```".to_string());
@@ -100,7 +96,7 @@ fn bench_incremental_fallback_5000_lines(c: &mut Criterion) {
     c.bench_function("incremental_fallback_5000_lines", |b| {
         b.iter(|| {
             // Simulate the fallback path: full parse of the edited buffer.
-            let pb = ParsedBuffer::parse(black_box(&edited));
+            let pb = ParsedBuffer::parse_lines(black_box(&edited));
             black_box(pb);
         });
     });
@@ -108,11 +104,19 @@ fn bench_incremental_fallback_5000_lines(c: &mut Criterion) {
 
 fn bench_wrap_5000_lines(c: &mut Criterion) {
     let lines = make_5000_line_buffer();
-    let pb = ParsedBuffer::parse(&lines);
+    let pb = ParsedBuffer::parse_lines(&lines);
     let rendered: Vec<Vec<bool>> = pb.lines.iter().map(|p| p.content_vis.clone()).collect();
     c.bench_function("wrap_5000_lines", |b| {
         b.iter(|| {
-            let layout = WordWrapLayout::compute(black_box(&lines), 80, &rendered, &[]);
+            let text = Text::from(lines.join("\n").as_str());
+            let hints: Vec<RowHints<'_>> = rendered
+                .iter()
+                .map(|row| RowHints {
+                    visible: row.as_slice(),
+                    inset: 0,
+                })
+                .collect();
+            let layout = Layout::compute(black_box(&text), 80, Metrics::default(), &hints);
             black_box(layout);
         });
     });

@@ -35,7 +35,7 @@ pub enum WidenResult {
     /// Widened range; caller passes this to `ParsedBuffer::parse_range`.
     Widened(Range<usize>),
     /// Range cannot be cheaply widened (cap trip, unbounded construct).
-    /// Caller falls back to `ParsedBuffer::parse(lines)`.
+    /// Caller falls back to `ParsedBuffer::parse_lines(lines)`.
     FullRebuild,
 }
 
@@ -363,7 +363,7 @@ mod tests {
 
     fn kinds_of(lines: &[&str]) -> Vec<LineConstructKind> {
         let owned: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
-        ParsedBuffer::parse(&owned).kinds
+        ParsedBuffer::parse_lines(&owned).kinds
     }
 
     #[test]
@@ -682,7 +682,7 @@ mod tests {
             lines.push(format!("paragraph {i}"));
             lines.push(String::new());
         }
-        let pb = ParsedBuffer::parse(&lines);
+        let pb = ParsedBuffer::parse_lines(&lines);
         // Expected: 0, then every Blank row (1, 3, 5, 7), then lines.len() (8).
         // The blank at row 7 == lines.len()-1 may or may not be
         // present depending on whether depth==0 was reached at that
@@ -878,12 +878,12 @@ mod tests {
             "".to_string(),      // 21: FenceContent
             "".to_string(),      // 22: FenceContent (last row → FenceMarker?)
         ];
-        let initial_pb = ParsedBuffer::parse(&initial);
+        let initial_pb = ParsedBuffer::parse_lines(&initial);
         eprintln!("initial kinds: {:?}", initial_pb.kinds);
 
         let mut edited = initial.clone();
         edited[9].push(' ');
-        let edited_pb = ParsedBuffer::parse(&edited);
+        let edited_pb = ParsedBuffer::parse_lines(&edited);
         eprintln!("edited  kinds: {:?}", edited_pb.kinds);
 
         // Compare just the first 10 rows to see where divergence starts

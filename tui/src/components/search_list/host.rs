@@ -20,7 +20,7 @@ pub(super) struct SearchBoxHostSnapshot {
 }
 
 impl AutocompleteHost for SearchBoxHostSnapshot {
-    fn buffer_snapshot(&self) -> crate::components::text_editor::snapshot::EditorSnapshot<'_> {
+    fn buffer_snapshot(&self) -> crate::components::text_editor::snapshot::EditorSnapshot {
         // content_revision unused (cache_key returns None); supply a
         // placeholder so the field stays NonZeroU64.
         let dummy = NonZeroU64::new(1).unwrap();

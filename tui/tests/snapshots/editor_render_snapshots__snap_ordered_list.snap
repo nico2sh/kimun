@@ -1,0 +1,13 @@
+---
+source: tui/tests/editor_render_snapshots.rs
+expression: "painted(\"1. first\\n2. second\\n3. third\", 80)"
+---
+ 0 |1. first                                                                        |
+   0..3 fg=Rgb(124, 111, 100) bg=Rgb(40, 40, 40) mods=NONE
+   3..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+ 1 |2. second                                                                       |
+   0..3 fg=Rgb(124, 111, 100) bg=Rgb(40, 40, 40) mods=NONE
+   3..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+ 2 |3. third                                                                        |
+   0..3 fg=Rgb(124, 111, 100) bg=Rgb(40, 40, 40) mods=NONE
+   3..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE

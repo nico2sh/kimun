@@ -4,7 +4,7 @@
 //! *char* index (nvim cursor decode, the markdown parser's offset mapping).
 //! This is the one canonical per-line kernel they share.
 //!
-//! Not every conversion fits here: [`super::autocomplete_glue::byte_to_row_char_col`]
+//! Not every conversion fits here: [`ropetext::Text::position_at_byte`]
 //! deliberately returns `None` when the offset is mid-codepoint or past the end
 //! (its callers rely on that to reject malformed offsets), whereas this kernel
 //! is *defensive* — it snaps to the nearest valid boundary and clamps past the

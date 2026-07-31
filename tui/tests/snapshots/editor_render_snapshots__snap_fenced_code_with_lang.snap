@@ -1,0 +1,13 @@
+---
+source: tui/tests/editor_render_snapshots.rs
+expression: "painted(\"```rust\\nfn main() {}\\n```\", 80)"
+---
+ 0 |```rust                                                                         |
+   0..12 fg=Rgb(235, 219, 178) bg=Rgb(50, 48, 47) mods=NONE
+   12..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+ 1 |fn main() {}                                                                    |
+   0..12 fg=Rgb(235, 219, 178) bg=Rgb(50, 48, 47) mods=NONE
+   12..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+ 2 |```                                                                             |
+   0..12 fg=Rgb(235, 219, 178) bg=Rgb(50, 48, 47) mods=NONE
+   12..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE

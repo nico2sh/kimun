@@ -1,0 +1,13 @@
+---
+source: tui/tests/editor_render_snapshots.rs
+expression: "painted(\"```\\nlet x = 1;\\n```\", 80)"
+---
+ 0 |```                                                                             |
+   0..10 fg=Rgb(235, 219, 178) bg=Rgb(50, 48, 47) mods=NONE
+   10..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+ 1 |let x = 1;                                                                      |
+   0..10 fg=Rgb(235, 219, 178) bg=Rgb(50, 48, 47) mods=NONE
+   10..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+ 2 |```                                                                             |
+   0..10 fg=Rgb(235, 219, 178) bg=Rgb(50, 48, 47) mods=NONE
+   10..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE

@@ -31,3 +31,14 @@ git_only = true
 [[package]]
 name = "kimun_server_client"
 git_tag_name = "kimun_server_client-v{{ version }}"
+
+# Internal editing engine, not released at all: no crates.io publish, no tag, no
+# changelog. `publish = false` alone would not be enough — as with kimun_server,
+# release-plz would consult crates.io, find nothing, and treat every run as an
+# unreleased first version. `release = false` takes it out of the picture
+# entirely. When kimun-notes starts depending on it, the dependency must stay
+# path-only with no version requirement, so there is no pin for release-plz to
+# rewrite (see the note in the workspace Cargo.toml).
+[[package]]
+name = "ropetext"
+release = false

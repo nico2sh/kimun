@@ -16,6 +16,15 @@ use super::{
 use pulldown_cmark::{CodeBlockKind, Event, Parser, Tag, TagEnd};
 use std::ops::Range;
 
+/// A text's rows, as owned strings.
+///
+/// The parse is line-shaped and pulldown wants `&str`, so the rows have to exist
+/// somewhere. Once per full parse, which is already O(buffer) — not once per
+/// keystroke, which is what this crate's whole design is about avoiding.
+fn rows_of(text: &ropetext::Text) -> Vec<String> {
+    text.lines().map(|line| line.to_string()).collect()
+}
+
 #[derive(Clone)]
 pub struct ParsedBuffer {
     pub lines: Vec<ParsedLine>,
@@ -65,7 +74,16 @@ impl ParsedBuffer {
     /// inline; three short O(n) post-passes (list-continuation,
     /// blockquote-depth, setext-underline) refine the result. No second
     /// invocation of the pulldown parser.
-    pub fn parse(lines: &[String]) -> ParsedBuffer {
+    pub fn parse(text: &ropetext::Text) -> ParsedBuffer {
+        Self::parse_lines(&rows_of(text))
+    }
+
+    /// The parse itself, over rows.
+    ///
+    /// Line-shaped because pulldown-cmark is: the walk indexes rows, and the
+    /// post-passes classify them. [`Self::parse`] is the door the editor uses —
+    /// this is what it does once the rows exist.
+    pub fn parse_lines(lines: &[String]) -> ParsedBuffer {
         // Build joined buffer and per-line byte-offset table.
         let total_bytes: usize =
             lines.iter().map(|l| l.len()).sum::<usize>() + lines.len().saturating_sub(1);
@@ -692,7 +710,12 @@ impl ParsedBuffer {
     /// runs on a background tokio task. Render produces unstyled
     /// markdown for one frame until the async result is installed
     /// via `install_full_parse`.
-    pub fn placeholder(lines: &[String]) -> ParsedBuffer {
+    pub fn placeholder(text: &ropetext::Text) -> ParsedBuffer {
+        Self::placeholder_lines(&rows_of(text))
+    }
+
+    /// [`Self::placeholder`] over rows.
+    pub fn placeholder_lines(lines: &[String]) -> ParsedBuffer {
         let mut out = Vec::with_capacity(lines.len());
         for line in lines {
             let total = line.chars().count();
@@ -735,8 +758,14 @@ impl ParsedBuffer {
     /// The returned `reset_boundaries` are in slice-local index space
     /// (`0..range.len()`); `splice` shifts them by `range.start` when
     /// merging into the parent buffer's boundary set.
-    pub fn parse_range(lines: &[String], range: Range<usize>) -> ParsedBuffer {
-        Self::parse(&lines[range])
+    pub fn parse_range(text: &ropetext::Text, range: Range<usize>) -> ParsedBuffer {
+        let rows = rows_of(text);
+        Self::parse_lines(&rows[range])
+    }
+
+    /// [`Self::parse_range`] over rows.
+    pub fn parse_range_lines(lines: &[String], range: Range<usize>) -> ParsedBuffer {
+        Self::parse_lines(&lines[range])
     }
 
     /// Replace `self.lines[range]` and `self.kinds[range]` with the contents

@@ -1,0 +1,6 @@
+---
+source: tui/tests/editor_render_snapshots.rs
+expression: "painted(\"<div>raw html</div>\", 80)"
+---
+ 0 |<div>raw html</div>                                                             |
+   0..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE

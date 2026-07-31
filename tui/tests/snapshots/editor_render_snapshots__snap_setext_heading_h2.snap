@@ -1,0 +1,9 @@
+---
+source: tui/tests/editor_render_snapshots.rs
+expression: "painted(\"Heading Two\\n---\", 80)"
+---
+ 0 |Heading Two                                                                     |
+   0..11 fg=Rgb(251, 241, 199) bg=Rgb(40, 40, 40) mods=BOLD
+   11..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+ 1 |────────────────────────────────────────────────────────────────────────────────|
+   0..80 fg=Rgb(124, 111, 100) bg=Rgb(40, 40, 40) mods=NONE

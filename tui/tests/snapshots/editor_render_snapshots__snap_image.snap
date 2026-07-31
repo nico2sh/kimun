@@ -1,0 +1,7 @@
+---
+source: tui/tests/editor_render_snapshots.rs
+expression: "painted(\"![alt](pic.png)\", 80)"
+---
+ 0 |[pic.png]                                                                       |
+   0..9 fg=Rgb(250, 189, 47) bg=Rgb(40, 40, 40) mods=ITALIC
+   9..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE

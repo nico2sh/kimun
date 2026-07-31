@@ -1,5 +1,4 @@
 use super::markdown::{MarkdownSpanner, ParsedBuffer, opener_shape};
-use super::word_wrap::WordWrapLayout;
 use crate::settings::themes::Theme;
 use ratatui::Frame;
 use ratatui::layout::Position;
@@ -7,6 +6,9 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Text};
 use ratatui::widgets::Paragraph;
+use ropetext::{Column, Layout, Metrics, RowHints, motion};
+
+use super::rope_buffer::RopeBuffer;
 use std::ops::Range;
 use std::sync::OnceLock;
 
@@ -133,12 +135,19 @@ enum RenderedCacheRebuild {
 
 #[derive(Clone)]
 pub struct MarkdownEditorView {
-    pub layout: WordWrapLayout,
+    pub layout: Layout,
     visual_scroll_offset: usize,
     /// Viewport height from the last `update`, so overlay derivation can bound
     /// itself to the visible rows.
     last_height: usize,
-    pub lines_snapshot: Vec<String>,
+    /// The text the caches below were built from.
+    ///
+    /// Held rather than borrowed because `render` runs without the frame's
+    /// snapshot in scope. Keeping it costs nothing: a `Text` clone shares its
+    /// structure, so this is the same text rather than a copy of it — which is why
+    /// the twenty lines that used to copy changed rows into a `Vec<String>` are
+    /// now one assignment.
+    pub text_snapshot: ropetext::Text,
     pub cursor_snapshot: (usize, usize),
     /// Line ranges of every fenced code block in the buffer. Text-keyed
     /// (rebuilt only when `text_revision` changes); `is_in_code_block`
@@ -214,6 +223,21 @@ pub struct MarkdownEditorView {
     /// Tracks how Gate 1 changed (or did not change) the parse caches.
     /// Gate 2 reads this to decide the scope of rendered_cache rebuild.
     last_text_change: TextChangeKind,
+    /// The cell a run of ↑/↓ is aiming at.
+    ///
+    /// Vim calls it `curswant`: without it, passing through a short drawn line
+    /// clamps the column and the next press continues from there, so a column is
+    /// lost permanently rather than borrowed. Cleared by any other cursor move —
+    /// the component says when, because only it sees the other keys.
+    visual_goal: Option<usize>,
+    /// Rows the last edits changed, as the **edit buffer** reported them.
+    ///
+    /// Consumed by the next `update`, which then has no reason to compare the
+    /// buffer against a copy of its previous self. `None` means nobody told us —
+    /// the **nvim** backend hands over lines rather than changes, and whole-buffer
+    /// replacements report nothing — and the diff is the fallback for exactly
+    /// those.
+    reported_damage: Option<std::ops::Range<usize>>,
 }
 
 /// True when `KIMUN_VIEW_VERIFY_INCREMENTAL=1` is set. Reads the
@@ -300,10 +324,10 @@ impl ParseState {
 impl MarkdownEditorView {
     pub fn new() -> Self {
         Self {
-            layout: WordWrapLayout::default(),
+            layout: Layout::compute(&ropetext::Text::new(), 0, Metrics::default(), &[]),
             visual_scroll_offset: 0,
             last_height: 0,
-            lines_snapshot: Vec::new(),
+            text_snapshot: ropetext::Text::new(),
             cursor_snapshot: (0, 0),
             fence_ranges: Vec::new(),
             code_box_width: Vec::new(),
@@ -312,7 +336,7 @@ impl MarkdownEditorView {
             applied_cursor_style: None,
             // Empty buffer, spliceable — preserves the previous
             // `placeholder_active: false` initial state.
-            parse_state: ParseState::Real(ParsedBuffer::placeholder(&[])),
+            parse_state: ParseState::Real(ParsedBuffer::placeholder(&ropetext::Text::new())),
             last_seen_generation: u64::MAX, // force rebuild on first update
             last_layout_generation: u64::MAX,
             last_layout_width: 0,
@@ -325,6 +349,8 @@ impl MarkdownEditorView {
             last_parse_was_incremental: false,
             last_splice_path: None,
             last_text_change: TextChangeKind::Full, // first update is a full rebuild
+            visual_goal: None,
+            reported_damage: None,
         }
     }
 
@@ -419,7 +445,7 @@ impl MarkdownEditorView {
                 continue; // wrapped continuation of a row already handled
             }
             seen = row;
-            let Some(line) = self.lines_snapshot.get(row) else {
+            let Some(line) = self.text_snapshot.line(row) else {
                 continue;
             };
             // Task checkboxes: optional indent, then `- [ ] ` / `- [x] `.
@@ -444,6 +470,7 @@ impl MarkdownEditorView {
                 }
             }
             // Needle emphasis, over the logical line rather than drawn cells.
+            let line = line.as_ref();
             for (s, e) in crate::components::preview_highlight::match_ranges(line, &self.needles) {
                 let start = line[..s].chars().count();
                 let end = start + line[s..e].chars().count();
@@ -466,17 +493,78 @@ impl MarkdownEditorView {
     /// edited row and will otherwise under-report the damage, leaving distant
     /// rows rendered from a stale parse. Every edit that rewrites more than the
     /// cursor's neighbourhood must call this.
+    /// Forget where a run of ↑/↓ was aiming. Any other cursor movement ends it.
+    pub fn clear_visual_goal(&mut self) {
+        self.visual_goal = None;
+    }
+
+    /// Move the cursor one *drawn* line, which is what an arrow key means in a
+    /// wrapped editor: one press moves one line the reader can see, not past the
+    /// whole remainder of a soft-wrapped paragraph.
+    ///
+    /// Lives on the view because only the view has the layout — the buffer holds
+    /// the text and the cursor, and neither alone can answer "which line is this
+    /// drawn on". That split is exactly why the incumbent could not do this.
+    ///
+    /// Returns `false` when the layout does not describe the buffer's current
+    /// text — an edit lands before the frame that re-lays it out — and the caller
+    /// falls back to a logical move rather than reading a stale layout.
+    pub fn move_cursor_visually(&mut self, buf: &mut RopeBuffer, down: bool, extend: bool) -> bool {
+        let text = buf.text().clone();
+        // Exactly, not approximately: comparing row counts missed every edit that
+        // stayed inside one row, and the stale byte ranges then sliced out of
+        // bounds — `end byte index 4 is out of bounds for string of length 1`.
+        if !self.layout.describes(&text) {
+            return false;
+        }
+        let Some(cursor) = text.position(buf.cursor().0, Column::new(buf.cursor().1)) else {
+            return false;
+        };
+        let hints = row_hints(&self.rendered_cache, &self.gutter_insets);
+        let goal = self
+            .visual_goal
+            .unwrap_or_else(|| self.layout.cell_of(&text, &hints, cursor).column);
+        let landed = motion::visual_vertical(
+            &text,
+            &self.layout,
+            &hints,
+            cursor,
+            if down { 1 } else { -1 },
+            motion::VisualGoal::Cell(goal),
+        );
+        self.visual_goal = Some(goal);
+
+        if extend {
+            if buf.selection_range().is_none() {
+                buf.start_selection();
+            }
+        } else {
+            buf.cancel_selection();
+        }
+        buf.move_to(landed);
+        true
+    }
+
+    /// Record which rows an edit changed, for the next `update` to act on.
+    pub fn note_damage(&mut self, rows: std::ops::Range<usize>) {
+        self.reported_damage = Some(match self.reported_damage.take() {
+            Some(seen) => seen.start.min(rows.start)..seen.end.max(rows.end),
+            None => rows,
+        });
+    }
+
     pub fn note_bulk_edit(&mut self) {
         self.bulk_edit_pending = true;
     }
 
-    pub fn update(&mut self, snap: &super::snapshot::EditorSnapshot<'_>, rect: Rect) {
+    pub fn update(&mut self, snap: &super::snapshot::EditorSnapshot, rect: Rect) {
         self.last_height = rect.height as usize;
         // Snapshot owns the (cursor, lines, content_revision) atomicity
         // — readers below can index `parsed_buffer.lines[cursor.0]`
         // without `.get()` guards once Gate 1 has rebuilt the parse
         // cache from these same `lines`.
-        let lines: &[String] = &snap.lines;
+        let text = &snap.text;
+        let row_count = text.line_count();
         let cursor = snap.cursor;
         let generation = snap.content_revision.get();
         // Overlays belong to the snapshot they were built from. Clearing here
@@ -490,10 +578,11 @@ impl MarkdownEditorView {
 
         // Gate 1: content changed — rebuild parse cache and snapshots.
         if generation != self.last_seen_generation {
+            let reported = self.reported_damage.take();
             let incremental = if self.parse_state.is_placeholder() {
                 None
             } else {
-                self.try_incremental_parse(lines, cursor)
+                self.try_incremental_parse(text, cursor, reported)
             };
             // Consumed here, not inside `try_incremental_parse`: the flag must
             // clear even on the placeholder path above, or a bulk edit
@@ -507,7 +596,7 @@ impl MarkdownEditorView {
                     TextChangeKind::Incremental(range)
                 }
                 None => {
-                    if lines.len() >= Self::LARGE_BUFFER_THRESHOLD {
+                    if row_count >= Self::LARGE_BUFFER_THRESHOLD {
                         // Async fallback: install a structurally-
                         // correct but unstyled placeholder so this
                         // frame can paint immediately; defer the
@@ -519,12 +608,12 @@ impl MarkdownEditorView {
                         // path stays in-bounds; only the markdown
                         // styling is missing for one frame.
                         self.parse_state = ParseState::Placeholder {
-                            buf: ParsedBuffer::placeholder(lines),
+                            buf: ParsedBuffer::placeholder(&snap.text),
                             generation,
                             spawned: false,
                         };
                     } else {
-                        self.parse_state = ParseState::Real(ParsedBuffer::parse(lines));
+                        self.parse_state = ParseState::Real(ParsedBuffer::parse(&snap.text));
                     }
                     self.last_parse_was_incremental = false;
                     self.last_splice_path = None;
@@ -533,7 +622,7 @@ impl MarkdownEditorView {
             };
             #[cfg(debug_assertions)]
             if self.last_parse_was_incremental && verify_incremental_enabled() {
-                let fresh = ParsedBuffer::parse(lines);
+                let fresh = ParsedBuffer::parse(&snap.text);
                 assert_eq!(
                     self.parse_state.buf().kinds,
                     fresh.kinds,
@@ -578,25 +667,8 @@ impl MarkdownEditorView {
             // single-char insert costs one String reallocation
             // (often zero — capacity stays put) instead of N.
             match &self.last_text_change {
-                TextChangeKind::Incremental(range) => {
-                    debug_assert_eq!(
-                        self.lines_snapshot.len(),
-                        lines.len(),
-                        "incremental path requires equal line counts"
-                    );
-                    for i in range.clone() {
-                        self.lines_snapshot[i].clone_from(&lines[i]);
-                    }
-                }
-                TextChangeKind::Full | TextChangeKind::None => {
-                    if self.lines_snapshot.len() == lines.len() {
-                        for (dst, src) in self.lines_snapshot.iter_mut().zip(lines.iter()) {
-                            dst.clone_from(src);
-                        }
-                    } else {
-                        self.lines_snapshot.clear();
-                        self.lines_snapshot.extend(lines.iter().cloned());
-                    }
+                TextChangeKind::Incremental(_) | TextChangeKind::Full | TextChangeKind::None => {
+                    self.text_snapshot = snap.text.clone();
                 }
             }
             self.last_seen_generation = generation;
@@ -654,10 +726,10 @@ impl MarkdownEditorView {
             // rendered_cache and wrap splices require in-range rows.
             let cursor_affected_rows: Vec<usize> = cursor_affected_rows
                 .into_iter()
-                .filter(|&r| r < lines.len())
+                .filter(|&r| r < row_count)
                 .collect();
             // Determine the set of rows to rebuild in rendered_cache.
-            let rebuild_strategy = if self.rendered_cache.len() != lines.len() {
+            let rebuild_strategy = if self.rendered_cache.len() != row_count {
                 // Line count differs → full rebuild required.
                 RenderedCacheRebuild::Full
             } else {
@@ -684,14 +756,14 @@ impl MarkdownEditorView {
             let _ = width_changed; // acknowledged: width doesn't affect rendered_cache
             match rebuild_strategy {
                 RenderedCacheRebuild::Full => {
-                    self.rendered_cache = lines
-                        .iter()
+                    self.rendered_cache = text
+                        .lines()
                         .enumerate()
                         .map(|(i, l)| {
                             let force_raw = self.is_in_code_block(i);
                             let cursor_col = if i == cursor.0 { Some(cursor.1) } else { None };
                             MarkdownSpanner::visible_positions_with(
-                                l,
+                                &l,
                                 &self.parse_state.buf().lines[i],
                                 cursor_col,
                                 force_raw,
@@ -701,7 +773,7 @@ impl MarkdownEditorView {
                 }
                 RenderedCacheRebuild::Rows(rows) => {
                     for row in rows {
-                        if row >= lines.len() {
+                        if row >= row_count {
                             continue; // defensive
                         }
                         let force_raw = self.is_in_code_block(row);
@@ -711,7 +783,7 @@ impl MarkdownEditorView {
                             None
                         };
                         let new_entry = MarkdownSpanner::visible_positions_with(
-                            &lines[row],
+                            &text.line(row).unwrap_or_default(),
                             &self.parse_state.buf().lines[row],
                             cursor_col,
                             force_raw,
@@ -738,23 +810,21 @@ impl MarkdownEditorView {
             //   cursor-position-sensitive whenever the cursor crosses
             //   an inline element boundary — same row or different
             //   row.
-            self.rebuild_gutter_insets(lines, cursor.0);
-            let line_count_changed = self.layout.row_starts_len() != lines.len();
+            self.rebuild_gutter_insets(row_count, cursor.0);
+            let line_count_changed = self.layout.row_count() != row_count;
             if width_changed || line_count_changed {
-                self.layout = WordWrapLayout::compute(
-                    lines,
-                    rect.width,
-                    &self.rendered_cache,
-                    &self.gutter_insets,
-                );
+                let hints = row_hints(&self.rendered_cache, &self.gutter_insets);
+                self.layout =
+                    Layout::compute(&snap.text, rect.width as usize, Metrics::default(), &hints);
             } else {
                 match &self.last_text_change {
                     TextChangeKind::Full => {
-                        self.layout = WordWrapLayout::compute(
-                            lines,
-                            rect.width,
-                            &self.rendered_cache,
-                            &self.gutter_insets,
+                        let hints = row_hints(&self.rendered_cache, &self.gutter_insets);
+                        self.layout = Layout::compute(
+                            &snap.text,
+                            rect.width as usize,
+                            Metrics::default(),
+                            &hints,
                         );
                     }
                     TextChangeKind::Incremental(range) => {
@@ -768,25 +838,19 @@ impl MarkdownEditorView {
                                 .map(|r| r + 1)
                                 .unwrap_or(range.end),
                         );
-                        self.layout.splice_range(
-                            lines,
-                            rect.width,
-                            &self.rendered_cache,
-                            &self.gutter_insets,
-                            start..end,
-                        );
+                        let hints = row_hints(&self.rendered_cache, &self.gutter_insets);
+                        // Line count is unchanged on this path — the caller above
+                        // takes the full-recompute branch when it is not — so the
+                        // relayout shifts nothing.
+                        self.layout.relayout_rows(&snap.text, &hints, start..end, 0);
                     }
                     TextChangeKind::None => {
                         if let (Some(&first), Some(&last)) =
                             (cursor_affected_rows.first(), cursor_affected_rows.last())
                         {
-                            self.layout.splice_range(
-                                lines,
-                                rect.width,
-                                &self.rendered_cache,
-                                &self.gutter_insets,
-                                first..last + 1,
-                            );
+                            let hints = row_hints(&self.rendered_cache, &self.gutter_insets);
+                            self.layout
+                                .relayout_rows(&snap.text, &hints, first..last + 1, 0);
                         }
                     }
                 }
@@ -795,15 +859,19 @@ impl MarkdownEditorView {
             // not the cursor — so skip the (grapheme-walking) rebuild on
             // cursor-only moves, where neither changed.
             if !matches!(self.last_text_change, TextChangeKind::None) || width_changed {
-                self.rebuild_code_box_width(lines, rect.width);
+                self.rebuild_code_box_width(text, rect.width);
             }
             self.last_layout_generation = generation;
             self.last_layout_width = rect.width;
             self.last_layout_cursor = cursor;
         }
 
-        // Cache cursor_vrow for render() — avoids a second logical_to_visual call.
-        self.cursor_vrow = self.layout.logical_to_visual(cursor.0, cursor.1).0;
+        // Cache cursor_vrow for render() — avoids a second lookup there.
+        self.cursor_vrow = snap
+            .text
+            .position(cursor.0, Column::new(cursor.1))
+            .map(|at| self.layout.visual_row_of(at))
+            .unwrap_or(0);
         let height = rect.height as usize;
         if self.cursor_vrow < self.visual_scroll_offset {
             self.visual_scroll_offset = self.cursor_vrow;
@@ -821,8 +889,9 @@ impl MarkdownEditorView {
     /// tier produced the splice (see [`SplicePath`]).
     fn try_incremental_parse(
         &self,
-        lines: &[String],
+        text: &ropetext::Text,
         cursor: (usize, usize),
+        reported: Option<std::ops::Range<usize>>,
     ) -> Option<(std::ops::Range<usize>, ParsedBuffer, SplicePath)> {
         use super::parse_incremental::{
             LineConstructKind, WidenResult, compute_damage_range, expand_to_reset_boundary,
@@ -837,7 +906,14 @@ impl MarkdownEditorView {
         // the widened range covers the same number of lines in the new buffer
         // as in the old kinds array, so a splice cannot reconcile the length
         // mismatch.
-        if lines.len() != self.parse_state.buf().lines.len() {
+        if text.line_count() != self.parse_state.buf().lines.len() {
+            return METRICS.bail(BailReason::LineCountChange);
+        }
+        // The row-by-row guards below read the previous content, so it has to
+        // describe the same buffer shape. It does not on the first update, and an
+        // empty text still has one row — so "no previous state" cannot be inferred
+        // from the parse cache being empty.
+        if self.text_snapshot.line_count() != text.line_count() {
             return METRICS.bail(BailReason::LineCountChange);
         }
         // A bulk edit invalidates the cursor hint: pass `usize::MAX` so the
@@ -849,9 +925,28 @@ impl MarkdownEditorView {
         } else {
             cursor.0
         };
-        let Some(damaged) = compute_damage_range(&self.lines_snapshot, lines, hint) else {
-            return METRICS.bail(BailReason::NoDamage);
+        // Told, not found: the engine knows which rows its own edit touched, so the
+        // only reason to compare the buffer with a copy of its previous self is
+        // that nobody told us — a whole-buffer replacement, or the **nvim**
+        // backend, which reports lines rather than changes.
+        let damaged = match reported {
+            Some(rows) if rows.end <= text.line_count() => rows,
+            _ => {
+                // Only this path needs the previous content as rows, and only
+                // because it has to compare. Materialising it here keeps that cost
+                // where the comparison is, rather than on every edit.
+                let previous: Vec<String> =
+                    self.text_snapshot.lines().map(|l| l.to_string()).collect();
+                let current: Vec<String> = text.lines().map(|l| l.to_string()).collect();
+                let Some(damaged) = compute_damage_range(&previous, &current, hint) else {
+                    return METRICS.bail(BailReason::NoDamage);
+                };
+                damaged
+            }
         };
+        if damaged.is_empty() {
+            return METRICS.bail(BailReason::NoDamage);
+        }
 
         // Structural-marker change guard: any edit that converts a fence
         // marker line into a non-marker (or vice versa) can shift the
@@ -859,8 +954,10 @@ impl MarkdownEditorView {
         // underlines. Conservative fallback to full parse for correctness.
         for row in damaged.clone() {
             let old_kind = self.parse_state.buf().kinds[row];
-            let old_line = self.lines_snapshot[row].as_str();
-            let new_line = lines[row].as_str();
+            let previous_row = self.text_snapshot.line(row).unwrap_or_default();
+            let old_line = previous_row.as_ref();
+            let current_row = text.line(row).unwrap_or_default();
+            let new_line = current_row.as_ref();
 
             // Old kind was a structural marker whose role an in-place edit
             // can change (fence opener↔closer↔content, setext underline
@@ -1038,7 +1135,7 @@ impl MarkdownEditorView {
                 }
             }
         };
-        let slice = ParsedBuffer::parse_range(lines, widened.clone());
+        let slice = ParsedBuffer::parse_range(text, widened.clone());
 
         // Post-slice undamaged-row verification.
         //
@@ -1094,7 +1191,7 @@ impl MarkdownEditorView {
         if rect.height == 0 {
             return;
         }
-        let lines = &self.lines_snapshot;
+        let text = &self.text_snapshot;
         let cursor = self.cursor_snapshot;
         let scroll = self.visual_scroll_offset;
         let height = rect.height as usize;
@@ -1103,11 +1200,23 @@ impl MarkdownEditorView {
         let parsed_lines = &self.parse_state.buf().lines;
         let fence_ranges = &self.fence_ranges;
 
+        // The rows the visible lines draw from, materialised for this frame.
+        // Bounded by the pane's height rather than the note's length, and needed
+        // because the spans below borrow their row and outlive the closure that
+        // builds them.
+        let window: Vec<String> = vlines
+            .iter()
+            .skip(scroll)
+            .take(height)
+            .map(|vl| text.line(vl.logical_row).unwrap_or_default().into_owned())
+            .collect();
+
         let visible: Vec<Line> = vlines
             .iter()
             .skip(scroll)
             .take(height)
-            .map(|vl| {
+            .zip(window.iter())
+            .map(|(vl, row_text)| {
                 let cursor_col = if vl.logical_row == cursor.0 {
                     Some(cursor.1)
                 } else {
@@ -1117,16 +1226,16 @@ impl MarkdownEditorView {
                 // Snapshot invariant: every `vl.logical_row` is < lines.len()
                 // because `layout` and `lines_snapshot` were rebuilt from
                 // the same `EditorSnapshot` in the last `update()`.
-                let logical_line = lines[vl.logical_row].as_str();
+                let logical_line = row_text.as_str();
                 let parsed = &parsed_lines[vl.logical_row];
-                let content = vl.content(logical_line);
+                let content = &logical_line[vl.bytes.clone()];
                 let spans = MarkdownSpanner::render_with(
                     content,
                     logical_line,
                     parsed,
-                    vl.start_col,
+                    vl.chars.start,
                     cursor_col,
-                    vl.is_first_visual_line,
+                    vl.first,
                     force_raw,
                     rect.width,
                     theme,
@@ -1145,7 +1254,7 @@ impl MarkdownEditorView {
                 // "preview wins over selection" is a property of the enum
                 // rather than of where the code happens to sit.
                 let spans = {
-                    let gutter_off = if vl.is_first_visual_line {
+                    let gutter_off = if vl.first {
                         0
                     } else {
                         self.gutter_insets.get(vl.logical_row).copied().unwrap_or(0)
@@ -1154,10 +1263,10 @@ impl MarkdownEditorView {
                         MarkdownSpanner::rendered_col_with_reveal(
                             logical_line,
                             parsed,
-                            vl.start_col,
+                            vl.chars.start,
                             col,
                             cursor_col,
-                            vl.is_first_visual_line,
+                            vl.first,
                             force_raw,
                         ) + gutter_off
                     };
@@ -1215,14 +1324,15 @@ impl MarkdownEditorView {
                 let parsed = &self.parse_state.buf().lines[cursor.0];
                 // Snapshot invariant + outer `!is_empty()` guard: cursor.0
                 // is in-bounds for `lines_snapshot` here.
-                let logical_line = lines[cursor.0].as_str();
+                let row_text = text.line(cursor.0).unwrap_or_default();
+                let logical_line = row_text.as_ref();
                 let force_raw = self.is_in_code_block(cursor.0);
                 let rendered_col = MarkdownSpanner::rendered_cursor_col_with(
                     logical_line,
                     parsed,
-                    vl.start_col,
+                    vl.chars.start,
                     cursor.1,
-                    vl.is_first_visual_line,
+                    vl.first,
                     force_raw,
                 );
                 let cx = rect.x + rendered_col as u16;
@@ -1285,15 +1395,15 @@ impl MarkdownEditorView {
     /// Rebuild `code_box_width` from the current parse kinds and snapshot
     /// lines. Box width per block = max rendered display width of its lines,
     /// capped at `width`.
-    fn rebuild_code_box_width(&mut self, lines: &[String], width: u16) {
-        let mut out = vec![None; lines.len()];
+    fn rebuild_code_box_width(&mut self, text: &ropetext::Text, width: u16) {
+        let mut out = vec![None; text.line_count()];
         let ranges =
             super::parse_incremental::code_block_ranges_from_kinds(&self.parse_state.buf().kinds);
         for r in ranges {
             let mut max_w = 0usize;
             for row in r.clone() {
-                if let Some(line) = lines.get(row) {
-                    max_w = max_w.max(super::markdown::raw_display_width(line));
+                if let Some(line) = text.line(row) {
+                    max_w = max_w.max(super::markdown::raw_display_width(&line));
                 }
             }
             let boxed = (max_w.min(width as usize)) as u16;
@@ -1309,9 +1419,9 @@ impl MarkdownEditorView {
     /// Rebuild `gutter_insets` from parse state + cursor. A blockquote row
     /// that is not the cursor row reserves `depth + 1` cols for the bar; the
     /// cursor row reserves 0 (its markers are revealed raw).
-    fn rebuild_gutter_insets(&mut self, lines: &[String], cursor_row: usize) {
+    fn rebuild_gutter_insets(&mut self, row_count: usize, cursor_row: usize) {
         let parsed = &self.parse_state.buf().lines;
-        self.gutter_insets = (0..lines.len())
+        self.gutter_insets = (0..row_count)
             .map(|row| {
                 if row == cursor_row {
                     return 0;
@@ -1352,7 +1462,8 @@ impl MarkdownEditorView {
         let vrow = vrow.min(vlines.len() - 1);
         let vl = &vlines[vrow];
         let row_u16 = vl.logical_row.min(u16::MAX as usize) as u16;
-        let logical_line = self.lines_snapshot[vl.logical_row].as_str();
+        let row_text = self.text_snapshot.line(vl.logical_row).unwrap_or_default();
+        let logical_line = row_text.as_ref();
         let parsed = &self.parse_state.buf().lines[vl.logical_row];
         let force_raw = self.is_in_code_block(vl.logical_row);
         let gutter = self.gutter_insets.get(vl.logical_row).copied().unwrap_or(0);
@@ -1361,17 +1472,17 @@ impl MarkdownEditorView {
         // sigil chars are hidden and replaced by the "│ " bar. On the first
         // visual line, skip those hidden sigil chars so that rendered_col 0
         // maps to the first content char, not to the hidden ">".
-        let effective_start_col = if gutter > 0 && vl.is_first_visual_line {
-            parsed.blockquote_sigil_end().unwrap_or(vl.start_col)
+        let effective_start_col = if gutter > 0 && vl.first {
+            parsed.blockquote_sigil_end().unwrap_or(vl.chars.start)
         } else {
-            vl.start_col
+            vl.chars.start
         };
         let logical_col = MarkdownSpanner::rendered_col_to_logical_with(
             logical_line,
             parsed,
             effective_start_col,
             vcol,
-            vl.is_first_visual_line,
+            vl.first,
             force_raw,
         );
         let col = logical_col.min(u16::MAX as usize) as u16;
@@ -1513,6 +1624,21 @@ fn apply_code_box<'a>(
     out
 }
 
+/// Per-row hints for the layout: what the syntax layer draws, and how far each
+/// row is inset by its gutter.
+///
+/// Built per rebuild rather than stored, because both halves already live on the
+/// view and a third copy would be a third thing to keep in step.
+fn row_hints<'a>(rendered: &'a [Vec<bool>], insets: &'a [usize]) -> Vec<RowHints<'a>> {
+    let rows = rendered.len().max(insets.len());
+    (0..rows)
+        .map(|row| RowHints {
+            visible: rendered.get(row).map(Vec::as_slice).unwrap_or(&[]),
+            inset: insets.get(row).copied().unwrap_or(0),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1537,6 +1663,11 @@ mod tests {
     /// so tests that pass an intentionally-stale `cursor` (e.g. the
     /// regression for the Nvim shrink panic) still exercise the
     /// real production path: producer clamps, render trusts.
+    /// Tests describe buffers as rows; the view takes the text they make up.
+    fn text_of(lines: &[String]) -> ropetext::Text {
+        ropetext::Text::from(lines.join("\n").as_str())
+    }
+
     fn update_view(
         v: &mut MarkdownEditorView,
         lines: &[String],
@@ -1726,7 +1857,7 @@ mod tests {
             "```".to_string(),
             "more".to_string(),
         ];
-        let pb = ParsedBuffer::parse(&lines);
+        let pb = ParsedBuffer::parse_lines(&lines);
         let ranges = super::super::parse_incremental::fence_ranges_from_kinds(&pb.kinds);
         let block = ranges.iter().find(|r| r.contains(&2)).cloned();
         assert!(block.is_some());
@@ -1743,7 +1874,7 @@ mod tests {
             "code".to_string(),
             "```".to_string(),
         ];
-        let pb = ParsedBuffer::parse(&lines);
+        let pb = ParsedBuffer::parse_lines(&lines);
         let ranges = super::super::parse_incremental::fence_ranges_from_kinds(&pb.kinds);
         assert!(ranges.iter().find(|r| r.contains(&0)).is_none());
     }
@@ -1853,6 +1984,56 @@ mod tests {
     }
 
     #[test]
+    fn reported_damage_agrees_with_the_diff_it_replaced() {
+        // The engine tells the view which rows it changed, so the view no longer
+        // compares the buffer against a copy of its previous self. The two must
+        // reach the same answer, or "told" quietly means something else than
+        // "found" and every parse after an edit is subtly wrong.
+        // Blank lines between blocks, so widening stops at a paragraph boundary
+        // rather than reaching the buffer's edges. Without them every damage range
+        // widens to the whole buffer and this would pass whatever the report says,
+        // proving nothing about it being read.
+        let mut lines: Vec<String> = Vec::new();
+        for block in 0..4 {
+            lines.push(format!("block {block} first line"));
+            lines.push(format!("block {block} second line"));
+            lines.push(String::new());
+        }
+        let mut edited = lines.clone();
+        edited[7].push_str(" more");
+
+        let mut found = MarkdownEditorView::new();
+        update_view(&mut found, &lines, (7, 0), rect(20), 1, None);
+        let by_diff = found.try_incremental_parse(&text_of(&edited), (7, 0), None);
+
+        let mut told = MarkdownEditorView::new();
+        update_view(&mut told, &lines, (7, 0), rect(20), 1, None);
+        let by_report = told.try_incremental_parse(&text_of(&edited), (7, 0), Some(7..8));
+
+        assert!(by_diff.is_some(), "the diff finds this edit incrementally");
+        let (diff_range, diff_slice, _) = by_diff.expect("checked");
+        let (report_range, report_slice, _) = by_report.expect("the report must too");
+        assert_eq!(diff_range, report_range, "widened ranges diverge");
+        assert_eq!(diff_slice.kinds, report_slice.kinds, "parsed kinds diverge");
+    }
+
+    #[test]
+    fn a_report_past_the_end_of_the_buffer_falls_back_to_the_diff() {
+        // A stale report — rows that no longer exist — must not be trusted. The
+        // guard is what keeps a report from indexing outside the buffer.
+        let lines = vec!["alpha".to_string(), "beta".to_string()];
+        let mut edited = lines.clone();
+        edited[1].push_str(" more");
+        let mut v = MarkdownEditorView::new();
+        update_view(&mut v, &lines, (1, 0), rect(20), 1, None);
+        assert!(
+            v.try_incremental_parse(&text_of(&edited), (1, 0), Some(0..99))
+                .is_some(),
+            "an out-of-range report falls back rather than panicking"
+        );
+    }
+
+    #[test]
     fn try_incremental_parse_falls_back_on_indented_code_flip() {
         // Regression: a Plain row flipping to IndentedCode (4 leading
         // spaces) can lazy-extend an indented-code block across the
@@ -1868,7 +2049,8 @@ mod tests {
         ];
         // try_incremental_parse must return None (full-rebuild signal).
         assert!(
-            v.try_incremental_parse(&new_lines, (1, 0)).is_none(),
+            v.try_incremental_parse(&text_of(&new_lines), (1, 0), None)
+                .is_none(),
             "indented-code flip must force a full rebuild"
         );
     }
@@ -1899,7 +2081,8 @@ mod tests {
             "    more".to_string(),
         ];
         assert!(
-            v.try_incremental_parse(&new_lines, (1, 1)).is_none(),
+            v.try_incremental_parse(&text_of(&new_lines), (1, 1), None)
+                .is_none(),
             "edit inside an open lazy-continuable block must force a full rebuild"
         );
     }
@@ -1918,7 +2101,8 @@ mod tests {
             "gamma".to_string(),
         ];
         assert!(
-            v.try_incremental_parse(&new_lines, (1, 0)).is_none(),
+            v.try_incremental_parse(&text_of(&new_lines), (1, 0), None)
+                .is_none(),
             "HTML-block opener flip must force a full rebuild"
         );
     }
@@ -2006,7 +2190,7 @@ mod tests {
         // Update with different content but same generation — snapshot must NOT change.
         let lines2 = vec!["changed".to_string()];
         update_view(&mut v, &lines2, (0, 0), rect(10), 1, None);
-        assert_eq!(v.lines_snapshot, vec!["original".to_string()]);
+        assert_eq!(v.text_snapshot.to_string(), "original");
     }
 
     #[test]
@@ -2016,7 +2200,7 @@ mod tests {
         update_view(&mut v, &lines, (0, 0), rect(10), 1, None);
         let lines2 = vec!["changed".to_string()];
         update_view(&mut v, &lines2, (0, 0), rect(10), 2, None);
-        assert_eq!(v.lines_snapshot, vec!["changed".to_string()]);
+        assert_eq!(v.text_snapshot.to_string(), "changed");
     }
 
     /// Task and needle decoration moved out of a cell-space post-pass and into
@@ -2090,7 +2274,7 @@ mod tests {
         // edit so the next update splices against a real (non-placeholder)
         // buffer; Gate 1 deliberately refuses to incrementally splice the
         // all-`Plain` placeholder.
-        v.install_full_parse(1, ParsedBuffer::parse(&lines));
+        v.install_full_parse(1, ParsedBuffer::parse_lines(&lines));
 
         // Single-char insert at row 500.
         lines[500].push('x');
@@ -2098,7 +2282,7 @@ mod tests {
         update_view(&mut v, &lines, (500, edited_len), rect(40), 2, None);
 
         // The spliced result must equal a fresh full parse.
-        let fresh = ParsedBuffer::parse(&lines);
+        let fresh = ParsedBuffer::parse_lines(&lines);
         assert_eq!(v.parse_state.buf().lines.len(), fresh.lines.len());
         assert_eq!(v.parse_state.buf().kinds, fresh.kinds);
         // Regression: the heuristic widener splices a slice whose
@@ -2153,12 +2337,15 @@ mod tests {
         );
 
         // Background parse for the latest generation completes.
-        v.install_full_parse(2, ParsedBuffer::parse(&lines));
+        v.install_full_parse(2, ParsedBuffer::parse_lines(&lines));
         assert!(
             !v.parse_state.is_placeholder(),
             "placeholder cleared on install"
         );
-        assert_eq!(v.parse_state.buf().kinds, ParsedBuffer::parse(&lines).kinds);
+        assert_eq!(
+            v.parse_state.buf().kinds,
+            ParsedBuffer::parse_lines(&lines).kinds
+        );
     }
 
     #[test]
@@ -2169,11 +2356,11 @@ mod tests {
         // directly so a future caller can't route a splice into a
         // placeholder without tripping the assert.
         let mut state = ParseState::Placeholder {
-            buf: ParsedBuffer::placeholder(&["x".to_string()]),
+            buf: ParsedBuffer::placeholder_lines(&["x".to_string()]),
             generation: 1,
             spawned: false,
         };
-        state.splice_real(0..1, ParsedBuffer::parse(&["y".to_string()]));
+        state.splice_real(0..1, ParsedBuffer::parse_lines(&["y".to_string()]));
     }
 
     #[test]
@@ -2191,7 +2378,7 @@ mod tests {
         lines.insert(350, "```".to_string());
         update_view(&mut v, &lines, (350, 3), rect(40), 2, None);
 
-        let fresh = ParsedBuffer::parse(&lines);
+        let fresh = ParsedBuffer::parse_lines(&lines);
         assert_eq!(
             v.parse_state.buf().kinds,
             fresh.kinds,
@@ -2252,10 +2439,10 @@ mod tests {
 
         // Caller (TextEditorComponent in production) spawns the real
         // parse and installs the result. Simulate that here.
-        let real = ParsedBuffer::parse(&lines);
+        let real = ParsedBuffer::parse_lines(&lines);
         let generation = pending.unwrap();
         v.install_full_parse(generation, real);
-        let fresh = ParsedBuffer::parse(&lines);
+        let fresh = ParsedBuffer::parse_lines(&lines);
         assert_eq!(
             v.parse_state.buf().kinds,
             fresh.kinds,
@@ -2276,7 +2463,7 @@ mod tests {
         let _ = (v, lines);
         #[cfg(debug_assertions)]
         {
-            let fresh = ParsedBuffer::parse(lines);
+            let fresh = ParsedBuffer::parse_lines(lines);
             assert_eq!(v.parse_state.buf().kinds, fresh.kinds, "kinds diverge");
             assert_eq!(
                 v.parse_state.buf().lines.len(),
@@ -2590,8 +2777,9 @@ mod tests {
         update_view(&mut v, &edited, (100, edited[100].len()), rect(40), 2, None);
 
         // After incremental wrap, layout must equal a fresh compute of the edited buffer.
-        let fresh_layout =
-            WordWrapLayout::compute(&edited, 40, v.rendered_cache_for_testing(), &[]);
+        let fresh_text = ropetext::Text::from(edited.join("\n").as_str());
+        let fresh_hints = row_hints(v.rendered_cache_for_testing(), &[]);
+        let fresh_layout = Layout::compute(&fresh_text, 40, Metrics::default(), &fresh_hints);
 
         let actual = v.layout.visual_lines();
         let fresh = fresh_layout.visual_lines();
