@@ -642,9 +642,19 @@ impl MarkdownEditorView {
     }
 
     /// Record which rows an edit changed, for the next `update` to act on.
-    pub fn note_damage(&mut self, rows: std::ops::Range<usize>) {
+    ///
+    /// `line_delta` is what this edit did to the row count. Several edits can
+    /// land between two frames, and a range recorded before one of them that
+    /// moved rows no longer means what it said — so the accumulated hull is
+    /// brought into the new numbering first. This matters more than it used to:
+    /// the layout now patches across a line-count change rather than rebuilding,
+    /// so an under-reported hull leaves rows wrapped as they used to be.
+    pub fn note_damage(&mut self, rows: std::ops::Range<usize>, line_delta: isize) {
         self.reported_damage = Some(match self.reported_damage.take() {
-            Some(seen) => seen.start.min(rows.start)..seen.end.max(rows.end),
+            Some(seen) => {
+                let seen = super::rope_buffer::shift_rows(seen, rows.start, line_delta);
+                seen.start.min(rows.start)..seen.end.max(rows.end)
+            }
             None => rows,
         });
     }
@@ -1889,6 +1899,23 @@ mod tests {
         ropetext::Text::from(lines.join("\n").as_str())
     }
 
+    /// Two reports between one pair of frames, the second changing the line
+    /// count above the first — the first report's row has moved by the time the
+    /// hull is used.
+    #[test]
+    fn damage_reported_twice_across_a_line_change_is_renumbered() {
+        let mut v = MarkdownEditorView::new();
+        // An edit at row 10, then a newline inserted at row 0, which pushes the
+        // first edit's row down to 11.
+        v.note_damage(10..11, 0);
+        v.note_damage(0..2, 1);
+        let hull = v.reported_damage.clone().expect("both edits were reported");
+        assert!(
+            hull.contains(&11),
+            "row 10 became row 11; the hull reported was {hull:?}"
+        );
+    }
+
     /// A newline patched into the layout must give the same layout a fresh
     /// compute would.
     ///
@@ -1910,7 +1937,7 @@ mod tests {
 
         let mut patched = MarkdownEditorView::new();
         update_view(&mut patched, &lines, (5, 0), rect(20), 1, None);
-        patched.note_damage(5..7);
+        patched.note_damage(5..7, 1);
         update_view(&mut patched, &split, (6, 0), rect(20), 2, None);
 
         let mut fresh = MarkdownEditorView::new();

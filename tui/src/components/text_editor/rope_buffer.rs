@@ -42,6 +42,37 @@ pub struct EditOutcome {
     /// **nvim** backend reports lines and not changes, so it leaves this `None`
     /// and its consumer falls back to a diff.
     pub damage: Option<std::ops::Range<usize>>,
+    /// Net rows added (or removed, when negative) by the edits behind `damage`.
+    ///
+    /// Travels with the range because the range is only meaningful in a
+    /// numbering, and a consumer that accumulates reports across several drains
+    /// has to bring the older one forward before it can union them.
+    pub line_delta: isize,
+}
+
+/// `range`, renumbered for a change of `delta` lines starting at `at`.
+///
+/// Rows above the change keep their index; the rest move with it. A `delta` of
+/// zero — every edit that stays within its rows, which is most of them — leaves
+/// the range alone.
+///
+/// Shared because damage is accumulated in two places: here, across the
+/// mutations of one group, and in the view, across the drains between two
+/// frames. Both union ranges recorded against different texts, and both are
+/// wrong in the same way without this.
+pub(super) fn shift_rows(
+    range: std::ops::Range<usize>,
+    at: usize,
+    delta: isize,
+) -> std::ops::Range<usize> {
+    let shift = |row: usize| {
+        if row < at {
+            row
+        } else {
+            row.saturating_add_signed(delta)
+        }
+    };
+    shift(range.start)..shift(range.end)
 }
 
 /// Whether a delete fills the register it removed text from.
@@ -290,31 +321,13 @@ impl RopeBuffer {
     }
 
     fn record(&mut self, change: Option<Change>) -> bool {
-        /// `range`, renumbered for a change of `delta` lines starting at `at`.
-        ///
-        /// Rows above the change keep their index; the rest move with it. A
-        /// `delta` of zero — every edit that stays within its rows, which is
-        /// most of them — leaves the range alone.
-        fn shift_rows(
-            range: std::ops::Range<usize>,
-            at: usize,
-            delta: isize,
-        ) -> std::ops::Range<usize> {
-            let shift = |row: usize| {
-                if row < at {
-                    row
-                } else {
-                    row.saturating_add_signed(delta)
-                }
-            };
-            shift(range.start)..shift(range.end)
-        }
 
         let Some(change) = change else {
             return false;
         };
         self.pending.changed = true;
         self.pending.bulk |= change.is_bulk();
+        self.pending.line_delta += change.line_delta();
         self.pending.damage = Some(match self.pending.damage.take() {
             Some(seen) => {
                 // `seen` was recorded against the text as it stood before *this*

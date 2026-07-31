@@ -1572,7 +1572,7 @@ impl TextEditorComponent {
             self.view.note_bulk_edit();
         }
         if let Some(rows) = outcome.damage {
-            self.view.note_damage(rows);
+            self.view.note_damage(rows, outcome.line_delta);
         }
         outcome.changed
     }
