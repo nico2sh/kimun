@@ -3662,6 +3662,13 @@ mod widener_soak {
             out.push(original.replacen('>', " ", 1));
             out.push(original.replacen('-', " ", 1));
         }
+        // Only variants that actually change the row. Several of these are
+        // no-ops on some inputs — `trim_start` on an already-trimmed row,
+        // `replacen('>')` on a row without one — and filtering here rather than
+        // rejecting in the test is what keeps proptest from aborting on global
+        // rejects long before it has explored anything.
+        out.retain(|candidate| candidate != original);
+        out.dedup();
         out
     }
 
@@ -3686,10 +3693,9 @@ mod widener_soak {
             prop_assume!(lines.len() >= 3);
             let target = row_pick.index(lines.len());
             let variants = edit(&lines[target]);
+            prop_assume!(!variants.is_empty());
             let mut edited = lines.clone();
             edited[target] = variants[edit_pick.index(variants.len())].clone();
-            prop_assume!(edited[target] != lines[target]);
-            prop_assume!(edited.len() == lines.len());
 
             let mut view = MarkdownEditorView::new();
             update_view(&mut view, &lines, (target, 0), Rect::new(0, 0, 40, 20), 1, None);
