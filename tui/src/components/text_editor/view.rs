@@ -1031,11 +1031,20 @@ impl MarkdownEditorView {
         }
 
         // Cache cursor_vrow for render() — avoids a second lookup there.
+        //
+        // Falling back to the last known row, not to zero. The text being asked
+        // is not always the buffer's: `render` builds a snapshot from the
+        // **replace preview**'s rows paired with the real cursor, and a
+        // replacement shorter than what it replaces leaves that cursor past the
+        // end of the previewed row. Answering "row 0" then scrolls the note to
+        // the top while the user is still typing in the replace field. The
+        // preview cannot place a cursor that does not belong to it, so the honest
+        // answer is to leave the viewport where it was.
         self.cursor_vrow = snap
             .text
             .position(cursor.0, Column::new(cursor.1))
             .map(|at| self.layout.visual_row_of(at))
-            .unwrap_or(0);
+            .unwrap_or(self.cursor_vrow);
         let height = rect.height as usize;
         if self.cursor_vrow < self.visual_scroll_offset {
             self.visual_scroll_offset = self.cursor_vrow;
@@ -1758,7 +1767,7 @@ impl MarkdownEditorView {
         let logical_line = row_text.as_ref();
         let parsed = &self.parse_state.buf().lines[vl.logical_row];
         let force_raw = self.is_in_code_block(vl.logical_row);
-        let gutter = self.gutter_insets.get(vl.logical_row).copied().unwrap_or(0);
+        let gutter = self.gutter_insets.get(vl.logical_row).copied().unwrap_or(self.cursor_vrow);
         let vcol = vcol.saturating_sub(gutter);
         // When a blockquote gutter is drawn (gutter > 0), the ">" and space
         // sigil chars are hidden and replaced by the "│ " bar. On the first
@@ -2082,6 +2091,31 @@ mod tests {
             "{} disagreements, first 5:\n{}",
             disagreements.len(),
             disagreements.iter().take(5).cloned().collect::<Vec<_>>().join("\n")
+        );
+    }
+
+    #[test]
+    fn a_preview_that_cannot_place_the_cursor_leaves_the_viewport_alone() {
+        // `render` pairs the replace preview's rows with the real buffer's
+        // cursor. A replacement shorter than what it replaces puts that cursor
+        // past the end of the previewed row, and answering "visual row 0" threw
+        // the note to the top mid-keystroke.
+        let mut lines: Vec<String> = (0..200).map(|i| format!("row {i} plain text")).collect();
+        lines[150] = "  the configuration value goes here".to_string();
+
+        let mut v = MarkdownEditorView::new();
+        update_view(&mut v, &lines, (150, 25), rect(20), 1, None);
+        let scrolled = v.visual_scroll_offset;
+        assert!(scrolled > 0, "fixture must have scrolled away from the top");
+
+        // The preview: that row shrinks below the cursor's column.
+        let mut preview = lines.clone();
+        preview[150] = "  the cfg value".to_string();
+        update_view(&mut v, &preview, (150, 25), rect(20), 2, None);
+
+        assert_eq!(
+            v.visual_scroll_offset, scrolled,
+            "the viewport must not jump to the top of the note"
         );
     }
 
