@@ -972,8 +972,7 @@ impl MarkdownEditorView {
             } else if let Some(rows) = relayout_across_line_change {
                 let delta = row_count as isize - self.layout.row_count() as isize;
                 let hints = row_hints(&self.rendered_cache, &self.gutter_insets);
-                self.layout
-                    .relayout_rows(&snap.text, &hints, rows, delta);
+                self.layout.relayout_rows(&snap.text, &hints, rows, delta);
             } else if line_count_changed {
                 self.full_layout_rebuild(&snap.text, rect.width, row_count, generation);
             } else {
@@ -1776,7 +1775,11 @@ impl MarkdownEditorView {
         let logical_line = row_text.as_ref();
         let parsed = &self.parse_state.buf().lines[vl.logical_row];
         let force_raw = self.is_in_code_block(vl.logical_row);
-        let gutter = self.gutter_insets.get(vl.logical_row).copied().unwrap_or(self.cursor_vrow);
+        let gutter = self
+            .gutter_insets
+            .get(vl.logical_row)
+            .copied()
+            .unwrap_or(self.cursor_vrow);
         let vcol = vcol.saturating_sub(gutter);
         // When a blockquote gutter is drawn (gutter > 0), the ">" and space
         // sigil chars are hidden and replaced by the "│ " bar. On the first
@@ -2100,7 +2103,9 @@ mod tests {
                     if engine != Some((tui_row, tui_col)) {
                         disagreements.push(format!(
                             "{:?} vrow={vrow} vcol={vcol}: tui={:?} engine={:?}",
-                            lines[0], (tui_row, tui_col), engine
+                            lines[0],
+                            (tui_row, tui_col),
+                            engine
                         ));
                     }
                 }
@@ -2110,7 +2115,12 @@ mod tests {
             disagreements.is_empty(),
             "{} disagreements, first 5:\n{}",
             disagreements.len(),
-            disagreements.iter().take(5).cloned().collect::<Vec<_>>().join("\n")
+            disagreements
+                .iter()
+                .take(5)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n")
         );
     }
 
@@ -2146,8 +2156,7 @@ mod tests {
         // `ropetext::Layout::position_at_cell` clamps for exactly this reason;
         // this mapper is the TUI's own copy and had drifted from it.
         let lines = vec![
-            "a long paragraph that will certainly wrap more than once at this width"
-                .to_string(),
+            "a long paragraph that will certainly wrap more than once at this width".to_string(),
         ];
         let mut v = MarkdownEditorView::new();
         update_view(&mut v, &lines, (0, 0), rect(20), 1, None);
@@ -3884,7 +3893,11 @@ mod widener_soak {
                 String::new(),
             ]),
             Just(vec!["    indented code".to_string(), String::new()]),
-            Just(vec!["setext".to_string(), "=====".to_string(), String::new()]),
+            Just(vec![
+                "setext".to_string(),
+                "=====".to_string(),
+                String::new()
+            ]),
         ]
     }
 

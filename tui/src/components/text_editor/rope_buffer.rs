@@ -333,7 +333,6 @@ impl RopeBuffer {
     }
 
     fn record(&mut self, change: Option<Change>) -> bool {
-
         let Some(change) = change else {
             return false;
         };
