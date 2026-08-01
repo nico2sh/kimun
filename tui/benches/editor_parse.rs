@@ -290,7 +290,6 @@ fn bench_full_view_update_heavy_lists_typing(c: &mut Criterion) {
     let mut edited = lines.clone();
     edited[target_row].push('x');
 
-
     c.bench_function("full_view_update_heavy_lists_571_typing", |b| {
         b.iter_batched(
             || warmed.clone(),
@@ -373,7 +372,6 @@ fn bench_full_view_update_blockquotes_typing(c: &mut Criterion) {
     let mut edited = lines.clone();
     edited[target_row].push('x');
 
-
     c.bench_function("full_view_update_blockquotes_400_typing", |b| {
         b.iter_batched(
             || warmed.clone(),
@@ -438,7 +436,12 @@ fn bench_newline_vs_typing(c: &mut Criterion) {
     use kimun_notes::components::text_editor::view::MarkdownEditorView;
     use ratatui::layout::Rect;
 
-    let rect = Rect { x: 0, y: 0, width: 80, height: 40 };
+    let rect = Rect {
+        x: 0,
+        y: 0,
+        width: 80,
+        height: 40,
+    };
 
     for rows in [800usize, 5000] {
         let lines: Vec<String> = (0..rows)
@@ -466,7 +469,10 @@ fn bench_newline_vs_typing(c: &mut Criterion) {
 
         let rev = |n: u64| NonZeroU64::new(n).unwrap();
         let mut warmed = MarkdownEditorView::new();
-        warmed.update(&EditorSnapshot::of_buffer(base.clone(), (mid, 0), rev(1)), rect);
+        warmed.update(
+            &EditorSnapshot::of_buffer(base.clone(), (mid, 0), rev(1)),
+            rect,
+        );
         // Above `LARGE_BUFFER_THRESHOLD` the first update installs a placeholder
         // parse and an unwrapped layout stub and defers the real work to a
         // background task. A bench that never completes that work measures a view
@@ -481,7 +487,6 @@ fn bench_newline_vs_typing(c: &mut Criterion) {
             let layout = Layout::compute(&job.text, job.width, Metrics::default(), &hints);
             warmed.install_full_layout(job.generation, layout);
         }
-
 
         let mut group = c.benchmark_group(format!("keystroke_{rows}_rows"));
         group.bench_function("typing", |b| {
