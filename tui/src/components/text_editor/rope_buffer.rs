@@ -373,16 +373,6 @@ impl RopeBuffer {
         self.insert_str("\n");
     }
 
-    pub fn insert_tab(&mut self) -> bool {
-        if self.hard_tab_indent {
-            return self.insert_str("\t");
-        }
-        let width = self.tab_length.max(1) as usize;
-        let column = self.inner.cursor().column().get();
-        let fill = width - (column % width);
-        self.insert_str(" ".repeat(fill))
-    }
-
     /// Delete `clusters` grapheme clusters forward, a line break counting as one.
     ///
     /// Clusters and not scalars, because a delete may not leave half a character

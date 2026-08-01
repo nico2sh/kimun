@@ -1494,16 +1494,25 @@ impl MarkdownEditorView {
                 // "preview wins over selection" is a property of the enum
                 // rather than of where the code happens to sit.
                 let spans = {
-                    let gutter_off = if vl.first {
-                        0
+                    // Skip the hidden `> ` and add the bar back, rather than
+                    // zeroing the offset and letting the mapper credit the
+                    // sigils as the cells the bar occupies. The credit is exact
+                    // only for clusters whose width is column-independent: a tab
+                    // consumes it, measuring to a nearer stop from the inflated
+                    // column, and every overlay at or after it lands short by
+                    // the bar. `click_to_logical_u16` already skips rather than
+                    // credits — this is the same basis, in the same direction.
+                    let gutter_off = self.gutter_insets.get(vl.logical_row).copied().unwrap_or(0);
+                    let effective_start_col = if gutter_off > 0 && vl.first {
+                        parsed.blockquote_sigil_end().unwrap_or(vl.chars.start)
                     } else {
-                        self.gutter_insets.get(vl.logical_row).copied().unwrap_or(0)
+                        vl.chars.start
                     };
                     let to_rendered = |col: usize| {
                         MarkdownSpanner::rendered_col_with_reveal(
                             logical_line,
                             parsed,
-                            vl.chars.start,
+                            effective_start_col,
                             col,
                             cursor_col,
                             vl.first,

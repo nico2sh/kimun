@@ -16,10 +16,16 @@ pub use spanner::MarkdownSpanner;
 /// Shared parser options used by all pulldown-cmark call sites in this module.
 pub(super) const PARSER_OPTIONS: Options = Options::ENABLE_STRIKETHROUGH;
 
-/// Visual columns per tab stop. Single source of truth: the nvim backend sets
-/// nvim's `tabstop` from this constant (see `backend.rs`), so the renderer's tab
-/// expansion and nvim's own column math can never diverge.
-pub(super) const TAB_STOP: usize = 4;
+/// Visual columns per tab stop, for everything that draws a tab: the renderer's
+/// expansion, the **code box** sizing via [`raw_display_width`], and nvim's own
+/// `tabstop` (set from here in `backend.rs`).
+///
+/// Derived, not declared. The **Layout** measures a tab while wrapping and the
+/// renderer measures it while painting; the two must agree to the cell or every
+/// column past a tab is wrong by the difference, so there is one number and it
+/// lives with the engine that wraps. Writing `4` here again would agree only by
+/// luck, and nothing would catch the luck running out.
+pub(super) const TAB_STOP: usize = ropetext::Metrics::DEFAULT_TAB_WIDTH;
 
 /// Compute the display width of a tab character at the given visual column.
 pub(super) fn tab_width_at(col: usize) -> usize {
@@ -458,6 +464,24 @@ mod tests {
     use ratatui::style::Modifier;
     fn t() -> Theme {
         Theme::default()
+    }
+
+    /// The renderer expands a tab; the **Layout** measures one while wrapping.
+    /// They must land on the same stop, so this pins the derivation rather than
+    /// two constants that happen to match. Both directions, since a caller could
+    /// pass a non-default `Metrics` and only the default is what the renderer
+    /// tracks.
+    #[test]
+    fn the_renderer_measures_a_tab_exactly_as_the_engine_does() {
+        let metrics = ropetext::Metrics::default();
+        assert_eq!(TAB_STOP, metrics.tab_width);
+        for col in 0..(TAB_STOP * 3) {
+            assert_eq!(
+                tab_width_at(col),
+                metrics.width_at("\t", col),
+                "a tab drawn at column {col}"
+            );
+        }
     }
     fn text(spans: &[Span]) -> String {
         spans.iter().map(|s| s.content.as_ref()).collect()

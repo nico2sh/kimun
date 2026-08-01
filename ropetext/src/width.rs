@@ -12,11 +12,21 @@ pub struct Metrics {
 
 impl Default for Metrics {
     fn default() -> Self {
-        Self { tab_width: 4 }
+        Self {
+            tab_width: Metrics::DEFAULT_TAB_WIDTH,
+        }
     }
 }
 
 impl Metrics {
+    /// Cells between tab stops, absent a caller saying otherwise.
+    ///
+    /// Public because a caller that draws the text this crate wrapped has to
+    /// measure a tab the same way, and a second `4` written down beside this one
+    /// agrees only by luck. Anything that expands or paints a tab should derive
+    /// its stop from here rather than declare its own.
+    pub const DEFAULT_TAB_WIDTH: usize = 4;
+
     /// Cells `cluster` occupies when drawn starting at cell `column`.
     ///
     /// Position-dependent, because a tab's width is the distance to the next tab
