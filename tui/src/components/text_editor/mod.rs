@@ -1258,14 +1258,14 @@ impl TextEditorComponent {
         }
     }
 
-    /// Indent or dedent whole lines. Tab unit is `\t` if `hard_tab_indent` is
-    /// on, else `tab_length` spaces. Dedent counts a leading tab as one unit.
+    /// Indent or dedent whole lines. One step is `\t` if `hard_tab_indent` is
+    /// on, else `indent_width` spaces. Dedent counts a leading tab as one step.
     /// No-op on Nvim backend.
     pub fn indent_lines(&mut self, dedent: bool) {
         let Some(ta) = self.backend.as_textarea_mut() else {
             return;
         };
-        let tab_len = ta.tab_length() as usize;
+        let tab_len = ta.indent_width() as usize;
         let hard_tab = ta.hard_tab_indent();
         let indent: String = if hard_tab {
             "\t".to_string()
@@ -3313,7 +3313,7 @@ mod tests {
     fn dedent_removes_leading_indent() {
         let mut editor = make_editor();
         editor.set_text("    foo\n  bar\nbaz".to_string());
-        let tab_len = get_ta(&mut editor).tab_length() as usize;
+        let tab_len = get_ta(&mut editor).indent_width() as usize;
         {
             let ta = get_ta(&mut editor);
             ta.move_cursor(CursorMove::Top);
@@ -3397,7 +3397,7 @@ mod tests {
             let ta = get_ta(&mut editor);
             ta.move_cursor(CursorMove::End);
         }
-        let tab_len = get_ta(&mut editor).tab_length() as usize;
+        let tab_len = get_ta(&mut editor).indent_width() as usize;
         assert!(editor.smart_enter());
         assert_eq!(
             editor.get_text(),
@@ -3433,7 +3433,7 @@ mod tests {
     #[test]
     fn smart_enter_on_empty_indented_list_marker_dedents_keeping_marker() {
         let mut editor = make_editor();
-        let tab_len = get_ta(&mut editor).tab_length() as usize;
+        let tab_len = get_ta(&mut editor).indent_width() as usize;
         let indent = " ".repeat(tab_len);
         editor.set_text(format!("{indent}- "));
         {
@@ -3447,7 +3447,7 @@ mod tests {
     #[test]
     fn smart_enter_on_empty_list_marker_clears_line_after_full_dedent() {
         let mut editor = make_editor();
-        let tab_len = get_ta(&mut editor).tab_length() as usize;
+        let tab_len = get_ta(&mut editor).indent_width() as usize;
         let indent = " ".repeat(tab_len);
         editor.set_text(format!("{indent}- "));
         {
@@ -3500,7 +3500,7 @@ mod tests {
             ta.move_cursor(CursorMove::End);
         }
         assert!(editor.smart_enter());
-        // tab counts as one indent unit, regardless of tab_length spaces.
+        // tab counts as one indent unit, regardless of indent_width spaces.
         assert_eq!(editor.get_text(), "\t");
     }
 

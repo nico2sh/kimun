@@ -2116,10 +2116,16 @@ impl VimEngine {
         }
     }
 
-    /// Indent (add 4 spaces) or outdent (remove up to 4 leading spaces) the
-    /// cursor's line, then repeat for `count` lines total (moving down after
-    /// each). Used by `>>`, `<<`, and the visual `>`/`<` operators.
+    /// Indent or outdent the cursor's line by one **indent step**, then repeat
+    /// for `count` lines total (moving down after each). Used by `>>`, `<<`, and
+    /// the visual `>`/`<` operators.
+    ///
+    /// The step comes from the buffer rather than a literal here, so vim's `>>`
+    /// and the plain backend's Tab move a line by the same amount. (Vim's own
+    /// name for this is `shiftwidth`, which is not `tabstop` — see
+    /// `DEFAULT_INDENT_WIDTH`.)
     fn indent_lines(&self, outdent: bool, count: usize, ta: &mut RopeBuffer) {
+        let step = ta.indent_width() as usize;
         // One vim command is one undo: this pushes an entry per row, so the
         // whole block goes in a single `edit()` scope (adr/0037).
         ta.edit(|ta| {
@@ -2128,11 +2134,11 @@ impl VimEngine {
             for i in 0..count.max(1) {
                 ta.move_cursor(CursorMove::Head);
                 if outdent {
-                    // Remove up to 4 leading spaces.
+                    // Remove up to one step's worth of leading spaces.
                     let (row, _) = super::cursor_tuple(ta);
                     let n = ta
                         .row(row)
-                        .map(|l| l.chars().take(4).take_while(|c| *c == ' ').count())
+                        .map(|l| l.chars().take(step).take_while(|c| *c == ' ').count())
                         .unwrap_or(0);
                     if i == 0 {
                         first_line_delta = n;
@@ -2142,9 +2148,9 @@ impl VimEngine {
                     }
                 } else {
                     if i == 0 {
-                        first_line_delta = 4;
+                        first_line_delta = step;
                     }
-                    ta.insert_str("    ");
+                    ta.insert_str(" ".repeat(step));
                 }
                 ta.move_cursor(CursorMove::Down);
             }
