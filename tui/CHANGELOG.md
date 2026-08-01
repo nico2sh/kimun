@@ -7,6 +7,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.0](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.21.0...kimun-notes-v0.22.0) - 2026-08-01
+
+### Added
+
+- undo coalescing
+- up and down arrows move on visual lines
+- find and replace
+- flash actions on key combos
+
+### Fixed
+
+- home path exansion test
+- fmt
+- image rendering correct
+- overlay fix
+- tui and engine consistent rendering
+- proper click mapper on links
+- rendering
+- find match scroll
+- blockquote final fix
+- blockquote unblock
+- record numers correctly the changes
+- range performance
+- fmt
+- position panic
+- bugs
+- no string vectors
+- clippy and benches on CI
+- selection bug on search
+- correctness on bump
+- proper rendering full text on replace
+- highlight logical text
+- visual fixes
+- highlights correct on rendered links
+- highlight changes on replace
+- bugfixes
+- paste images in vim mode
+- fixed copy paste on vim mode using ctrl C V X
+
+### Other
+
+- unified tab width definition
+- context update
+- document overlay improvement opportunity
+- document decision on no translator mapping
+- position_at_cell
+- reset regression
+- incremental parse on block
+- removed bench
+- line delta on edits
+- newline decouple
+- new benches
+- micro otimizations
+- async render
+- removed ?Send requirement
+- test for single undo for wrapping words
+- removed reference old code
+- key table
+- ratatui-textarea out from build
+- shim removed on text editor
+- vim connection
+- wired in the view
+- markdown tie in
+- tests on ropetext
+- performance on keystroke
+- no textarea
+- snapshot
+- highlighting code
+- find bar
+- consolidate undo
+- input ownership
+
 ## [0.21.0](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.20.1...kimun-notes-v0.21.0) - 2026-07-20
 
 ### Added
