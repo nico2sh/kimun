@@ -141,6 +141,7 @@ impl MarkdownSpanner {
             &parsed,
             visual_start_col,
             rendered_col,
+            None,
             is_first_visual_line,
             force_raw,
         )
@@ -641,11 +642,22 @@ impl MarkdownSpanner {
             .collect()
     }
 
+    /// Logical column for the cell at `rendered_col`, inverse of
+    /// [`Self::rendered_col_with_reveal`].
+    ///
+    /// `reveal_col` is the row's real caret column, or `None` when the caret is
+    /// on another row — the same value the render loop passes as `cursor_col`.
+    /// It has to be threaded here because `render_with` reveals the element
+    /// under the caret, and a revealed element's sigils occupy cells: measuring
+    /// the row as if nothing were revealed put every column past the first
+    /// revealed sigil out by the width of what was wrongly skipped.
+    #[allow(clippy::too_many_arguments)]
     pub fn rendered_col_to_logical_with(
         logical_line: &str,
         parsed: &ParsedLine,
         visual_start_col: usize,
         rendered_col: usize,
+        reveal_col: Option<usize>,
         is_first_visual_line: bool,
         force_raw: bool,
     ) -> usize {
@@ -679,6 +691,10 @@ impl MarkdownSpanner {
         // has to land inside a sigil region that outran the pane, not past it.
         let heading_sigil_end: Option<usize> = parsed.heading_sigil_end();
         let list_sigil_end: Option<usize> = parsed.list_sigil_end();
+        // Reveal, exactly as `render_with` applies it.
+        let expanded: Option<usize> = reveal_col.and_then(|c| parsed.elem_at(c));
+        let reveals_whole_row =
+            Self::row_reveals_whole(logical_line, parsed, reveal_col, force_raw);
         // Mirror `rendered_cursor_col_with`: on the first visual line a
         // blockquote's `> ` markers are revealed (visible) when the cursor is on
         // the row. On non-cursor rows the caller passes `visual_start_col` past
@@ -718,11 +734,16 @@ impl MarkdownSpanner {
             let in_heading_sigil = heading_sigil_end.is_some_and(|end| pos < end);
             let in_list_sigil = list_sigil_end.is_some_and(|end| pos < end);
             let in_blockquote_sigil = blockquote_sigil_end.is_some_and(|end| pos < end);
+            let in_expanded_elem = expanded.is_some_and(|i| {
+                parsed.elements[i].start_char <= pos && pos < parsed.elements[i].end_char
+            });
             let in_any_element = parsed.in_any_element(pos);
             if is_content
                 || in_heading_sigil
                 || in_list_sigil
                 || in_blockquote_sigil
+                || in_expanded_elem
+                || reveals_whole_row
                 || !in_any_element
             {
                 rendered_count += cluster_width_at(cluster, rendered_count);
