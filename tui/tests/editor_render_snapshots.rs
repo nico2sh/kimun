@@ -440,6 +440,28 @@ fn snap_caret_at_end_of_a_fully_concealed_row() {
     assert_snapshot!(painted_with_cursor("[](url)\nafter", 80, (0, 7)));
 }
 
+/// An image row is fully concealed — the placeholder stands in for the whole
+/// span, so no character of it is content — which makes it reveal in full at end
+/// of line. The placeholder must then step aside, exactly as it does when the
+/// caret is inside the image: it is a stand-in for markdown that is not being
+/// shown, and drawing both gives `[url]![text](url)`.
+#[test]
+fn snap_caret_at_end_of_an_image_row_reveals_it_without_the_placeholder() {
+    assert_snapshot!(painted_with_cursor("![text](url)\nafter", 80, (0, 12)));
+}
+
+/// The same row off the caret: the placeholder alone.
+#[test]
+fn snap_image_row_without_the_caret_draws_its_placeholder() {
+    assert_snapshot!(painted_with_cursor("![text](url)\nafter", 80, (1, 0)));
+}
+
+/// The caret inside the image already took this path; it must keep it.
+#[test]
+fn snap_caret_inside_an_image_reveals_it_without_the_placeholder() {
+    assert_snapshot!(painted_with_cursor("![text](url)\nafter", 80, (0, 4)));
+}
+
 /// The same row with the caret elsewhere: its styled form is nothing at all.
 #[test]
 fn snap_fully_concealed_row_without_the_caret() {
