@@ -1,0 +1,17 @@
+---
+source: tui/tests/editor_render_snapshots.rs
+expression: "painted_with_cursor(\"> <div class=\\\"note\\\">a long html line inside a quote that wraps at forty columns</div>\\n\\nafter\",\n40, (0, 85))"
+---
+ 0 |> <div class="note">a long html line    |
+   0..36 fg=Rgb(168, 153, 132) bg=Rgb(40, 40, 40) mods=NONE
+   36..40 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+ 1 |inside a quote that wraps at forty      |
+   0..34 fg=Rgb(168, 153, 132) bg=Rgb(40, 40, 40) mods=NONE
+   34..40 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+ 2 |columns</div>                           |
+   0..13 fg=Rgb(168, 153, 132) bg=Rgb(40, 40, 40) mods=NONE
+   13..40 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+ 3 |                                        |
+   0..40 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+ 4 |after                                   |
+   0..40 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE

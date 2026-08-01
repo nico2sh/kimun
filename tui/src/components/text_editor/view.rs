@@ -238,6 +238,38 @@ pub struct MarkdownEditorView {
     /// replacements report nothing — and the diff is the fallback for exactly
     /// those.
     reported_damage: Option<std::ops::Range<usize>>,
+    /// Set when Gate 2 installed a cheap `Layout::unwrapped` stub instead of
+    /// blocking on `Layout::compute`, mirroring `ParseState::Placeholder`.
+    /// While this is `Some`, every content-changing edit re-stubs and
+    /// re-arms for the new generation rather than relaying just the edited
+    /// rows — the same discipline Gate 1 applies via `is_placeholder()`, so
+    /// a run of edits can never leave the untouched rows of a large buffer
+    /// permanently unwrapped because one of them happened to parse
+    /// incrementally. Cleared by `install_full_layout`.
+    layout_pending: Option<PendingLayout>,
+}
+
+/// A `Layout::unwrapped` stub awaiting a background `Layout::compute`, the
+/// layout-side twin of `ParseState::Placeholder`. `generation` is the
+/// `content_revision` the stub was installed for; `spawned` flips true once
+/// `take_pending_full_layout` has handed the job out, so it is claimed
+/// exactly once per stub.
+#[derive(Debug, Clone, Copy)]
+struct PendingLayout {
+    generation: u64,
+    spawned: bool,
+}
+
+/// Everything a background task needs to compute the real `Layout` for a
+/// stubbed generation, fully owned so it can move into `tokio::spawn`.
+/// `RowHints` borrows, so it is rebuilt from `rendered_cache`/`gutter_insets`
+/// *inside* the task rather than carried across the boundary itself.
+pub struct PendingLayoutJob {
+    pub generation: u64,
+    pub text: ropetext::Text,
+    pub width: usize,
+    pub rendered_cache: Vec<Vec<bool>>,
+    pub gutter_insets: Vec<usize>,
 }
 
 /// True when `KIMUN_VIEW_VERIFY_INCREMENTAL=1` is set. Reads the
@@ -351,6 +383,7 @@ impl MarkdownEditorView {
             last_text_change: TextChangeKind::Full, // first update is a full rebuild
             visual_goal: None,
             reported_damage: None,
+            layout_pending: None,
         }
     }
 
@@ -407,6 +440,69 @@ impl MarkdownEditorView {
         // ranges and rendered masks than the real parse will.
         self.last_text_change = TextChangeKind::Full;
         self.last_layout_generation = u64::MAX;
+    }
+
+    /// Returns `Some(job)` if Gate 2 just installed a `Layout::unwrapped`
+    /// stub and the owning component should spawn a background
+    /// `Layout::compute` for it. Consumes the flag so the owner does not
+    /// spawn twice; the owner is responsible for calling
+    /// `install_full_layout` when the task completes.
+    pub fn take_pending_full_layout(&mut self) -> Option<PendingLayoutJob> {
+        let pending = self.layout_pending.as_mut()?;
+        if pending.spawned {
+            return None;
+        }
+        pending.spawned = true;
+        Some(PendingLayoutJob {
+            generation: pending.generation,
+            text: self.text_snapshot.clone(),
+            width: self.last_layout_width as usize,
+            rendered_cache: self.rendered_cache.clone(),
+            gutter_insets: self.gutter_insets.clone(),
+        })
+    }
+
+    /// Install the result of a background `Layout::compute`. No-op when the
+    /// editor has advanced past `generation` (a fresh spawn is already in
+    /// flight — mirrors `install_full_parse`'s staleness gate) or when the
+    /// pane was resized since the job was captured (`layout.width()` no
+    /// longer matches `last_layout_width` — a generation match alone
+    /// cannot catch this, since a resize with no content change never
+    /// bumps `content_revision`).
+    pub fn install_full_layout(&mut self, generation: u64, layout: Layout) {
+        if generation != self.last_seen_generation
+            || layout.width() != self.last_layout_width as usize
+        {
+            return; // stale
+        }
+        self.layout = layout;
+        self.layout_pending = None;
+        self.last_layout_generation = generation;
+    }
+
+    /// Full (non-incremental) layout rebuild: synchronous on a small
+    /// buffer, deferred to a background task on a large one — the
+    /// layout-side twin of Gate 1's placeholder-parse fallback. Called
+    /// from every Gate 2 branch that would otherwise call
+    /// `Layout::compute` unconditionally.
+    fn full_layout_rebuild(
+        &mut self,
+        text: &ropetext::Text,
+        width: u16,
+        row_count: usize,
+        generation: u64,
+    ) {
+        if row_count >= Self::LARGE_BUFFER_THRESHOLD {
+            self.layout = Layout::unwrapped(text);
+            self.layout_pending = Some(PendingLayout {
+                generation,
+                spawned: false,
+            });
+        } else {
+            let hints = row_hints(&self.rendered_cache, &self.gutter_insets);
+            self.layout = Layout::compute(text, width as usize, Metrics::default(), &hints);
+            self.layout_pending = None;
+        }
     }
 
     /// Hand the view this frame's **overlays**, in logical coordinates. Must be
@@ -546,9 +642,19 @@ impl MarkdownEditorView {
     }
 
     /// Record which rows an edit changed, for the next `update` to act on.
-    pub fn note_damage(&mut self, rows: std::ops::Range<usize>) {
+    ///
+    /// `line_delta` is what this edit did to the row count. Several edits can
+    /// land between two frames, and a range recorded before one of them that
+    /// moved rows no longer means what it said — so the accumulated hull is
+    /// brought into the new numbering first. This matters more than it used to:
+    /// the layout now patches across a line-count change rather than rebuilding,
+    /// so an under-reported hull leaves rows wrapped as they used to be.
+    pub fn note_damage(&mut self, rows: std::ops::Range<usize>, line_delta: isize) {
         self.reported_damage = Some(match self.reported_damage.take() {
-            Some(seen) => seen.start.min(rows.start)..seen.end.max(rows.end),
+            Some(seen) => {
+                let seen = super::rope_buffer::shift_rows(seen, rows.start, line_delta);
+                seen.start.min(rows.start)..seen.end.max(rows.end)
+            }
             None => rows,
         });
     }
@@ -577,8 +683,16 @@ impl MarkdownEditorView {
         }
 
         // Gate 1: content changed — rebuild parse cache and snapshots.
+        //
+        // The layout gate below wants the same report. The parse cache cannot
+        // splice across a line-count change — `ParsedBuffer::splice` requires the
+        // replacement to have as many rows as it replaces — but the layout can,
+        // so the two must not share a verdict. This carries the report past Gate
+        // 1's `take` rather than re-deriving it.
+        let mut reported_for_layout: Option<std::ops::Range<usize>> = None;
         if generation != self.last_seen_generation {
             let reported = self.reported_damage.take();
+            reported_for_layout = reported.clone();
             let incremental = if self.parse_state.is_placeholder() {
                 None
             } else {
@@ -654,8 +768,18 @@ impl MarkdownEditorView {
                     got.debug_assert_eq_to(exp, i);
                 }
             }
-            self.fence_ranges =
-                super::parse_incremental::fence_ranges_from_kinds(&self.parse_state.buf().kinds);
+            // Skip on a successful incremental splice: `try_incremental_parse`
+            // already refuses to splice any edit that could flip a row into
+            // or out of a fence/indented-code/HTML-block role (the
+            // structural-marker and opener-shape guards bail to a full
+            // rebuild first) — so `fence_ranges` is provably identical to
+            // before, and re-scanning the whole `kinds` array to confirm
+            // that would defeat the point of having taken the fast path.
+            if !self.last_parse_was_incremental {
+                self.fence_ranges = super::parse_incremental::fence_ranges_from_kinds(
+                    &self.parse_state.buf().kinds,
+                );
+            }
             // Incremental update of `lines_snapshot` mirrors the parse
             // path: on the splice path only the rows in `range` can
             // have changed (try_incremental_parse already bails when
@@ -810,22 +934,51 @@ impl MarkdownEditorView {
             //   cursor-position-sensitive whenever the cursor crosses
             //   an inline element boundary — same row or different
             //   row.
-            self.rebuild_gutter_insets(row_count, cursor.0);
+            // Full rebuild only on a genuine full-rebuild frame (or a
+            // length mismatch, defensively) — otherwise the structural
+            // guards that gate the incremental splice already guarantee no
+            // row's blockquote depth changed, so only the rows the cursor
+            // just left or entered need a fresh inset.
+            if matches!(self.last_text_change, TextChangeKind::Full)
+                || self.gutter_insets.len() != row_count
+            {
+                self.rebuild_gutter_insets(row_count, cursor.0);
+            } else if !cursor_affected_rows.is_empty() {
+                self.patch_gutter_insets(&cursor_affected_rows, cursor.0);
+            }
             let line_count_changed = self.layout.row_count() != row_count;
-            if width_changed || line_count_changed {
+            // A stub is still outstanding from an earlier full rebuild and
+            // content changed again this frame: re-stub for the new
+            // generation rather than let an incremental relayout patch a
+            // couple of rows while the rest of the buffer stays permanently
+            // unwrapped waiting on a background result that will land too
+            // late (stale-generation) to matter. Mirrors Gate 1's
+            // `is_placeholder()` gate — a cursor-only frame (`None`) leaves
+            // an in-flight job alone rather than aborting it for nothing.
+            let stub_still_pending = self.layout_pending.is_some()
+                && !matches!(self.last_text_change, TextChangeKind::None);
+            // A line-count change used to force a full re-wrap. It does not have
+            // to: `relayout_rows` takes a delta and renumbers the rows after the
+            // edit, and the delta is knowable without plumbing — the layout knows
+            // how many rows it was built for, and the text knows how many it has
+            // now. What was missing is the damaged range, and Gate 1 was handed
+            // one. Only the *parser* is obliged to give up here.
+            let relayout_across_line_change = line_count_changed
+                .then(|| reported_for_layout.clone())
+                .flatten()
+                .filter(|rows| rows.end <= row_count);
+            if width_changed || stub_still_pending {
+                self.full_layout_rebuild(&snap.text, rect.width, row_count, generation);
+            } else if let Some(rows) = relayout_across_line_change {
+                let delta = row_count as isize - self.layout.row_count() as isize;
                 let hints = row_hints(&self.rendered_cache, &self.gutter_insets);
-                self.layout =
-                    Layout::compute(&snap.text, rect.width as usize, Metrics::default(), &hints);
+                self.layout.relayout_rows(&snap.text, &hints, rows, delta);
+            } else if line_count_changed {
+                self.full_layout_rebuild(&snap.text, rect.width, row_count, generation);
             } else {
                 match &self.last_text_change {
                     TextChangeKind::Full => {
-                        let hints = row_hints(&self.rendered_cache, &self.gutter_insets);
-                        self.layout = Layout::compute(
-                            &snap.text,
-                            rect.width as usize,
-                            Metrics::default(),
-                            &hints,
-                        );
+                        self.full_layout_rebuild(&snap.text, rect.width, row_count, generation);
                     }
                     TextChangeKind::Incremental(range) => {
                         let start = range
@@ -857,9 +1010,19 @@ impl MarkdownEditorView {
             }
             // Code-box widths depend only on text content and the wrap width,
             // not the cursor — so skip the (grapheme-walking) rebuild on
-            // cursor-only moves, where neither changed.
-            if !matches!(self.last_text_change, TextChangeKind::None) || width_changed {
+            // cursor-only moves, where neither changed. A width change caps
+            // every block afresh regardless of content, so it always forces
+            // the full rebuild; a successful incremental splice narrows to
+            // just the block(s) overlapping the edited range — the same
+            // structural guards mean any OTHER block's boundaries (and thus
+            // whether it needs re-measuring at all) can't have moved.
+            if width_changed
+                || matches!(self.last_text_change, TextChangeKind::Full)
+                || self.code_box_width.len() != row_count
+            {
                 self.rebuild_code_box_width(text, rect.width);
+            } else if let TextChangeKind::Incremental(range) = &self.last_text_change {
+                self.patch_code_box_width(text, rect.width, range.clone());
             }
             self.last_layout_generation = generation;
             self.last_layout_width = rect.width;
@@ -867,11 +1030,20 @@ impl MarkdownEditorView {
         }
 
         // Cache cursor_vrow for render() — avoids a second lookup there.
+        //
+        // Falling back to the last known row, not to zero. The text being asked
+        // is not always the buffer's: `render` builds a snapshot from the
+        // **replace preview**'s rows paired with the real cursor, and a
+        // replacement shorter than what it replaces leaves that cursor past the
+        // end of the previewed row. Answering "row 0" then scrolls the note to
+        // the top while the user is still typing in the replace field. The
+        // preview cannot place a cursor that does not belong to it, so the honest
+        // answer is to leave the viewport where it was.
         self.cursor_vrow = snap
             .text
             .position(cursor.0, Column::new(cursor.1))
             .map(|at| self.layout.visual_row_of(at))
-            .unwrap_or(0);
+            .unwrap_or(self.cursor_vrow);
         let height = rect.height as usize;
         if self.cursor_vrow < self.visual_scroll_offset {
             self.visual_scroll_offset = self.cursor_vrow;
@@ -929,6 +1101,12 @@ impl MarkdownEditorView {
         // only reason to compare the buffer with a copy of its previous self is
         // that nobody told us — a whole-buffer replacement, or the **nvim**
         // backend, which reports lines rather than changes.
+        // Set when the lazy-depth relaxation admits a kind that is only safe
+        // because of the downstream verify after the splice. `ListMarker` never
+        // sets it: it was proven safe without one, and making it pay for the
+        // verify regressed blank-free buffers ~7x, because a sparse boundary set
+        // sends the verify to the end of the note.
+        let mut needs_downstream_verify = false;
         let damaged = match reported {
             Some(rows) if rows.end <= text.line_count() => rows,
             _ => {
@@ -1017,6 +1195,7 @@ impl MarkdownEditorView {
             // "Blockquote/Plain/ListContinuation unlocks" follow-up.
             let lazy = &self.parse_state.buf().lazy_depth;
             if lazy.is_empty() {
+                // (see `needs_downstream_verify` below)
                 // Defensive: invariant violation (lazy_depth.len() should
                 // match lines.len()). Count as KindGuard to keep the
                 // attempted-vs-success accounting consistent.
@@ -1054,15 +1233,40 @@ impl MarkdownEditorView {
                 // inside another lazy construct (a list inside a
                 // blockquote) where the OUTER construct can shift.
                 //
-                // Blockquote / Plain / ListContinuation unlocks are
-                // deferred to a follow-up that adds a post-widening
-                // sanity check on `widened.end + 1` (cheap re-parse
-                // of one extra row to detect downstream flips).
-                let kind_qualifies = matches!(old_kind, LineConstructKind::ListMarker);
+                // Blockquote / Plain / ListContinuation unlocks remain
+                // deferred. A post-widening sanity check on
+                // `widened.end + 1` was the proposed fix — re-parse one
+                // extra row and compare it against the parent to catch a
+                // downstream flip. It was built and measured against the
+                // soak in `widener_soak` below, and it does NOT work:
+                // with the unlock applied, the soak still diverges on
+                // `lazy_depth` within a few thousand cases, whether the
+                // check compares `kinds` alone or `kinds` and
+                // `lazy_depth` together. The flip lands further out than
+                // one row, so a fixed one-row lookahead cannot see it.
+                // Whatever closes this has to bound how far a
+                // reclassification can travel, or verify to the next
+                // reset boundary rather than to the next row.
+                //
+                // Unlocked kinds and their price. `ListMarker` is safe on its
+                // own — a content edit on `- a` cannot reclassify row+1 — and a
+                // 100k soak backs that, so it pays nothing extra. `Blockquote`
+                // and `ListContinuation` are not safe on their own: they
+                // reclassify rows past `widened.end`, and they are admitted here
+                // only because the downstream verify below covers exactly that
+                // distance. The flag is what keeps that cost on the splices that
+                // need it rather than on every splice.
+                let relaxed_kind = matches!(
+                    old_kind,
+                    LineConstructKind::Blockquote(_) | LineConstructKind::ListContinuation
+                );
+                let kind_qualifies =
+                    matches!(old_kind, LineConstructKind::ListMarker) || relaxed_kind;
                 let depth_qualifies = row < lazy.len() && lazy[row] == 1;
                 if kind_qualifies && depth_qualifies {
                     // Don't bail — let blank-transition guard run
                     // and reach the widener stage.
+                    needs_downstream_verify = relaxed_kind;
                 } else {
                     return METRICS.bail(BailReason::LazyDepth);
                 }
@@ -1136,6 +1340,41 @@ impl MarkdownEditorView {
             }
         };
         let slice = ParsedBuffer::parse_range(text, widened.clone());
+
+        // Downstream verification, bounded by the next reset boundary.
+        //
+        // Only for the kinds admitted by the relaxation above. The in-window
+        // verify below cannot see a row the splice does not replace, and a
+        // one-row lookahead is not enough — measured, the flip travels further.
+        // `reset_boundaries` is the bound that is not a guess: at such a row
+        // pulldown's state is provably reset, so no reclassification crosses it.
+        //
+        // Evidence: with `Blockquote`/`ListContinuation` admitted and this block
+        // removed, `widener_soak` diverges within a few thousand cases; with it,
+        // 100 000 cases pass.
+        if needs_downstream_verify {
+            let next_boundary = self
+                .parse_state
+                .buf()
+                .reset_boundaries
+                .iter()
+                .copied()
+                .find(|&b| b > widened.end)
+                .unwrap_or_else(|| text.line_count())
+                .min(text.line_count());
+            if next_boundary > widened.end {
+                let probe = ParsedBuffer::parse_range(text, widened.start..next_boundary);
+                let parent = self.parse_state.buf();
+                for row in widened.end..next_boundary {
+                    let idx = row - widened.start;
+                    if probe.kinds[idx] != parent.kinds[row]
+                        || probe.lazy_depth[idx] != parent.lazy_depth[row]
+                    {
+                        return METRICS.bail(BailReason::DownstreamFlip);
+                    }
+                }
+            }
+        }
 
         // Post-slice undamaged-row verification.
         //
@@ -1254,16 +1493,25 @@ impl MarkdownEditorView {
                 // "preview wins over selection" is a property of the enum
                 // rather than of where the code happens to sit.
                 let spans = {
-                    let gutter_off = if vl.first {
-                        0
+                    // Skip the hidden `> ` and add the bar back, rather than
+                    // zeroing the offset and letting the mapper credit the
+                    // sigils as the cells the bar occupies. The credit is exact
+                    // only for clusters whose width is column-independent: a tab
+                    // consumes it, measuring to a nearer stop from the inflated
+                    // column, and every overlay at or after it lands short by
+                    // the bar. `click_to_logical_u16` already skips rather than
+                    // credits — this is the same basis, in the same direction.
+                    let gutter_off = self.gutter_insets.get(vl.logical_row).copied().unwrap_or(0);
+                    let effective_start_col = if gutter_off > 0 && vl.first {
+                        parsed.blockquote_sigil_end().unwrap_or(vl.chars.start)
                     } else {
-                        self.gutter_insets.get(vl.logical_row).copied().unwrap_or(0)
+                        vl.chars.start
                     };
                     let to_rendered = |col: usize| {
                         MarkdownSpanner::rendered_col_with_reveal(
                             logical_line,
                             parsed,
-                            vl.chars.start,
+                            effective_start_col,
                             col,
                             cursor_col,
                             vl.first,
@@ -1416,9 +1664,47 @@ impl MarkdownEditorView {
         self.code_box_width = out;
     }
 
+    /// Update `code_box_width` for just the code-block range(s) overlapping
+    /// `damaged` — the incremental-path sibling of `rebuild_code_box_width`.
+    /// Safe because the structural guards in `try_incremental_parse` already
+    /// refuse to splice an edit that adds, removes, or moves a code-block
+    /// boundary; a block that doesn't overlap the edit can only have kept
+    /// the same lines it had before, so its width can't have changed. A
+    /// block's own content growing or shrinking *can* change its width, and
+    /// that only happens inside `damaged`.
+    fn patch_code_box_width(
+        &mut self,
+        text: &ropetext::Text,
+        width: u16,
+        damaged: std::ops::Range<usize>,
+    ) {
+        let ranges =
+            super::parse_incremental::code_block_ranges_from_kinds(&self.parse_state.buf().kinds);
+        for r in ranges {
+            if r.start >= damaged.end || r.end <= damaged.start {
+                continue; // no overlap — this block's width can't have changed
+            }
+            let mut max_w = 0usize;
+            for row in r.clone() {
+                if let Some(line) = text.line(row) {
+                    max_w = max_w.max(super::markdown::raw_display_width(&line));
+                }
+            }
+            let boxed = (max_w.min(width as usize)) as u16;
+            for row in r {
+                if let Some(entry) = self.code_box_width.get_mut(row) {
+                    *entry = Some(boxed);
+                }
+            }
+        }
+    }
+
     /// Rebuild `gutter_insets` from parse state + cursor. A blockquote row
     /// that is not the cursor row reserves `depth + 1` cols for the bar; the
-    /// cursor row reserves 0 (its markers are revealed raw).
+    /// cursor row reserves 0 (its markers are revealed raw). Full
+    /// `O(row_count)` rebuild — see `patch_gutter_insets` for the
+    /// incremental-path sibling that only touches the rows that can
+    /// plausibly have changed.
     fn rebuild_gutter_insets(&mut self, row_count: usize, cursor_row: usize) {
         let parsed = &self.parse_state.buf().lines;
         self.gutter_insets = (0..row_count)
@@ -1432,6 +1718,29 @@ impl MarkdownEditorView {
                 }
             })
             .collect();
+    }
+
+    /// Update `gutter_insets` for exactly `rows`, in place. Safe whenever
+    /// the parse took the incremental splice path: the structural guards in
+    /// `try_incremental_parse` (opener-shape / lazy-depth) already refuse
+    /// to splice an edit that could change a row's blockquote depth, so the
+    /// only thing that can legitimately change `gutter_insets` between two
+    /// incrementally-linked frames is which row the cursor is on.
+    fn patch_gutter_insets(&mut self, rows: &[usize], cursor_row: usize) {
+        let parsed = &self.parse_state.buf().lines;
+        for &row in rows {
+            let inset = if row == cursor_row {
+                0
+            } else {
+                match parsed.get(row).and_then(|p| p.blockquote_depth()) {
+                    Some(d) => super::markdown::blockquote_gutter_width(d),
+                    None => 0,
+                }
+            };
+            if let Some(entry) = self.gutter_insets.get_mut(row) {
+                *entry = inset;
+            }
+        }
     }
 
     /// Markdown-aware mouse click: maps a rendered screen column to
@@ -1466,7 +1775,11 @@ impl MarkdownEditorView {
         let logical_line = row_text.as_ref();
         let parsed = &self.parse_state.buf().lines[vl.logical_row];
         let force_raw = self.is_in_code_block(vl.logical_row);
-        let gutter = self.gutter_insets.get(vl.logical_row).copied().unwrap_or(0);
+        let gutter = self
+            .gutter_insets
+            .get(vl.logical_row)
+            .copied()
+            .unwrap_or(self.cursor_vrow);
         let vcol = vcol.saturating_sub(gutter);
         // When a blockquote gutter is drawn (gutter > 0), the ">" and space
         // sigil chars are hidden and replaced by the "│ " bar. On the first
@@ -1477,14 +1790,27 @@ impl MarkdownEditorView {
         } else {
             vl.chars.start
         };
+        // The same rule the render loop uses to decide `cursor_col`: only the
+        // caret's own row is revealed, so only there does the mapping have to
+        // account for a revealed element's sigils occupying cells.
+        let reveal_col =
+            (vl.logical_row == self.cursor_snapshot.0).then_some(self.cursor_snapshot.1);
         let logical_col = MarkdownSpanner::rendered_col_to_logical_with(
             logical_line,
             parsed,
             effective_start_col,
             vcol,
+            reveal_col,
             vl.first,
             force_raw,
         );
+        // Clamp to the visual line clicked. `rendered_col_to_logical_with` maps a
+        // cell to a column in the whole logical row, so a click in the blank
+        // space right of a soft-wrapped line walks straight into the span of the
+        // line below and the cursor lands a row further on than the one under the
+        // pointer. `ropetext::Layout::position_at_cell` clamps for this reason;
+        // this is the TUI's own mapper and had drifted from it.
+        let logical_col = logical_col.min(vl.chars.end);
         let col = logical_col.min(u16::MAX as usize) as u16;
         (row_u16, col)
     }
@@ -1629,7 +1955,13 @@ fn apply_code_box<'a>(
 ///
 /// Built per rebuild rather than stored, because both halves already live on the
 /// view and a third copy would be a third thing to keep in step.
-fn row_hints<'a>(rendered: &'a [Vec<bool>], insets: &'a [usize]) -> Vec<RowHints<'a>> {
+///
+/// `pub(super)`: the background wrap task spawned by the owning
+/// `TextEditorComponent` (`mod.rs`) rebuilds the same hints from a
+/// [`PendingLayoutJob`]'s owned `rendered_cache`/`gutter_insets` clones —
+/// `RowHints` borrows, so it cannot cross the `tokio::spawn` boundary
+/// itself and has to be reconstructed on the other side from owned data.
+pub(super) fn row_hints<'a>(rendered: &'a [Vec<bool>], insets: &'a [usize]) -> Vec<RowHints<'a>> {
     let rows = rendered.len().max(insets.len());
     (0..rows)
         .map(|row| RowHints {
@@ -1668,7 +2000,229 @@ mod tests {
         ropetext::Text::from(lines.join("\n").as_str())
     }
 
-    fn update_view(
+    /// Two reports between one pair of frames, the second changing the line
+    /// count above the first — the first report's row has moved by the time the
+    /// hull is used.
+    #[test]
+    fn damage_reported_twice_across_a_line_change_is_renumbered() {
+        let mut v = MarkdownEditorView::new();
+        // An edit at row 10, then a newline inserted at row 0, which pushes the
+        // first edit's row down to 11.
+        v.note_damage(10..11, 0);
+        v.note_damage(0..2, 1);
+        let hull = v.reported_damage.clone().expect("both edits were reported");
+        assert!(
+            hull.contains(&11),
+            "row 10 became row 11; the hull reported was {hull:?}"
+        );
+    }
+
+    /// Does the engine's `position_at_cell` agree with the TUI's own click
+    /// mapper?
+    ///
+    /// The two compute the same thing by different routes — the TUI walks
+    /// rendered columns through `MarkdownSpanner`, the engine walks the same
+    /// information as `RowHints` (a visibility mask plus a gutter inset). Keeping
+    /// two of these in sync by hand is what let the wrap-clamp drift out of the
+    /// TUI copy in the first place. This says where they still differ, and is the
+    /// gate for deleting one of them.
+    ///
+    /// **Currently fails, with six disagreements of exactly two kinds** — and
+    /// neither is an algorithmic mismatch. The engine does honour concealment;
+    /// `cell_of` skips masked-out chars. What it lacks is data the TUI mapper
+    /// holds:
+    ///
+    /// 1. **Blockquote sigil skip.** On `> quoted ...`, cells 0-2 map to column 2
+    ///    in the TUI (it skips the `> ` via `blockquote_sigil_end` on a first
+    ///    visual line) and to 0 in the engine, which applies only `inset`. Mark
+    ///    those sigil chars invisible in `rendered_cache` and the engine reaches
+    ///    2 on its own.
+    /// 2. **Tie-breaking at the edge of a concealed run** — which side a click
+    ///    between a hidden run and its neighbour falls to. Needs stating as a
+    ///    rule in `position_at_cell`, not reproducing.
+    ///
+    /// A translation layer between the two mappers is the wrong answer — it adds
+    /// the seam this exists to remove. But so, for now, is fixing the hints:
+    /// `row_hints` feeds `Layout::compute`/`relayout_rows` at six sites, so the
+    /// visibility mask is the **wrapping** input. Marking the sigil chars
+    /// invisible would change where every line breaks, editor-wide, to fix where
+    /// clicks land. The render snapshots would catch it, but that is a re-wrap,
+    /// not a tidy-up.
+    ///
+    /// So this test's job is to be a tripwire, not a plan: it fails if the two
+    /// mappers drift *further* apart. Unify them only when the mask has to change
+    /// for some other reason, at which point it comes along nearly free. Run with
+    /// `--ignored`.
+    ///
+    /// (An earlier version of this test reported 23 disagreements and concluded
+    /// the engine ignored concealment. It parked the cursor on the row under
+    /// test, and the cursor's row is *revealed* — so it compared concealment
+    /// against its own suspension.)
+    /// Now green, and it is the precondition for deleting `click_to_logical_u16`:
+    /// the engine's mapper may replace the TUI's exactly when the two agree.
+    /// Closing the last six took a change on each side — the TUI resolving a
+    /// cell to the drawn column *after* a concealed run rather than to the run's
+    /// head, and `position_at_cell` dropping a short circuit that returned the
+    /// row's first char for any cell inside the inset, skipping the very loop
+    /// that walks past a blockquote's hidden `> `.
+    #[test]
+    fn the_engine_and_the_tui_click_mappers_agree() {
+        let corpus: Vec<Vec<String>> = vec![
+            vec!["plain short".to_string()],
+            vec!["a long paragraph that certainly wraps more than once here".to_string()],
+            vec!["> quoted line that is long enough to wrap at this width".to_string()],
+            vec!["- list item with enough text on it to wrap somewhere".to_string()],
+            vec!["**bold** and *italic* markers that get concealed".to_string()],
+            vec!["# heading that runs on long enough to wrap around".to_string()],
+        ];
+
+        let mut disagreements = Vec::new();
+        for lines in &corpus {
+            // Park the cursor on an appended trailing row: the cursor's row is
+            // *revealed* (sigils shown raw), so testing the row it sits on
+            // compares concealment against its own suspension.
+            let mut lines = lines.clone();
+            lines.push(String::new());
+            let park = lines.len() - 1;
+            let mut v = MarkdownEditorView::new();
+            update_view(&mut v, &lines, (park, 0), rect(20), 1, None);
+            let text = v.text_snapshot.clone();
+            let hints = row_hints(&v.rendered_cache, &v.gutter_insets);
+            for vrow in 0..v.layout.visual_lines().len() {
+                for vcol in 0..24 {
+                    let (tui_row, tui_col) = v.click_to_logical_for_testing(vrow, vcol);
+                    let engine = v.layout.position_at_cell(
+                        &text,
+                        &hints,
+                        ropetext::Cell {
+                            row: vrow,
+                            column: vcol,
+                        },
+                    );
+                    let engine = engine.map(|p| (p.row() as u16, p.column().get() as u16));
+                    if engine != Some((tui_row, tui_col)) {
+                        disagreements.push(format!(
+                            "{:?} vrow={vrow} vcol={vcol}: tui={:?} engine={:?}",
+                            lines[0],
+                            (tui_row, tui_col),
+                            engine
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(
+            disagreements.is_empty(),
+            "{} disagreements, first 5:\n{}",
+            disagreements.len(),
+            disagreements
+                .iter()
+                .take(5)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+
+    #[test]
+    fn a_preview_that_cannot_place_the_cursor_leaves_the_viewport_alone() {
+        // `render` pairs the replace preview's rows with the real buffer's
+        // cursor. A replacement shorter than what it replaces puts that cursor
+        // past the end of the previewed row, and answering "visual row 0" threw
+        // the note to the top mid-keystroke.
+        let mut lines: Vec<String> = (0..200).map(|i| format!("row {i} plain text")).collect();
+        lines[150] = "  the configuration value goes here".to_string();
+
+        let mut v = MarkdownEditorView::new();
+        update_view(&mut v, &lines, (150, 25), rect(20), 1, None);
+        let scrolled = v.visual_scroll_offset;
+        assert!(scrolled > 0, "fixture must have scrolled away from the top");
+
+        // The preview: that row shrinks below the cursor's column.
+        let mut preview = lines.clone();
+        preview[150] = "  the cfg value".to_string();
+        update_view(&mut v, &preview, (150, 25), rect(20), 2, None);
+
+        assert_eq!(
+            v.visual_scroll_offset, scrolled,
+            "the viewport must not jump to the top of the note"
+        );
+    }
+
+    #[test]
+    fn a_click_past_the_end_of_a_wrapped_line_stays_on_that_line() {
+        // Clicking the blank space to the right of a soft-wrapped line must land
+        // at the end of the line clicked, not inside the continuation below it.
+        // `ropetext::Layout::position_at_cell` clamps for exactly this reason;
+        // this mapper is the TUI's own copy and had drifted from it.
+        let lines = vec![
+            "a long paragraph that will certainly wrap more than once at this width".to_string(),
+        ];
+        let mut v = MarkdownEditorView::new();
+        update_view(&mut v, &lines, (0, 0), rect(20), 1, None);
+
+        let first = v.layout.visual_lines()[0].clone();
+        assert!(
+            v.layout.visual_lines().len() > 1,
+            "fixture must actually wrap"
+        );
+
+        // Far to the right of anything drawn on the first visual line.
+        let (row, col) = v.click_to_logical_for_testing(0, 60);
+        assert_eq!(row, 0);
+        assert!(
+            (col as usize) <= first.chars.end,
+            "clicked past visual line 0 (chars {:?}) and landed at column {col}",
+            first.chars
+        );
+    }
+
+    /// A newline patched into the layout must give the same layout a fresh
+    /// compute would.
+    ///
+    /// The layout no longer gives up when the line count changes — it patches the
+    /// damaged rows and renumbers the rest by the delta. That renumbering is the
+    /// part with no second opinion anywhere: a wrong `logical_row` on the rows
+    /// *after* the edit paints the right text against the wrong line, and every
+    /// existing test looks at the edited row.
+    #[test]
+    fn a_newline_patches_the_layout_to_match_a_fresh_one() {
+        // Rows long enough to wrap at width 20, so the visual lines outnumber the
+        // logical rows and a renumbering slip cannot hide.
+        let lines: Vec<String> = (0..12)
+            .map(|i| format!("row {i} with enough words on it to wrap at this width"))
+            .collect();
+        let mut split = lines.clone();
+        let tail = split[5].split_off(10);
+        split.insert(6, tail);
+
+        let mut patched = MarkdownEditorView::new();
+        update_view(&mut patched, &lines, (5, 0), rect(20), 1, None);
+        patched.note_damage(5..7, 1);
+        update_view(&mut patched, &split, (6, 0), rect(20), 2, None);
+
+        let mut fresh = MarkdownEditorView::new();
+        update_view(&mut fresh, &split, (6, 0), rect(20), 1, None);
+
+        let patched_lines: Vec<_> = patched
+            .layout
+            .visual_lines()
+            .iter()
+            .map(|vl| (vl.logical_row, vl.bytes.clone(), vl.first))
+            .collect();
+        let fresh_lines: Vec<_> = fresh
+            .layout
+            .visual_lines()
+            .iter()
+            .map(|vl| (vl.logical_row, vl.bytes.clone(), vl.first))
+            .collect();
+        assert_eq!(
+            patched_lines, fresh_lines,
+            "patching a newline must land where a full recompute would"
+        );
+    }
+
+    pub(super) fn update_view(
         v: &mut MarkdownEditorView,
         lines: &[String],
         cursor: (usize, usize),
@@ -2450,6 +3004,178 @@ mod tests {
         );
     }
 
+    /// Rows long enough that a real 40-wide wrap would split them into
+    /// more than one visual line each — needed to tell a `Layout::unwrapped`
+    /// stub (always exactly one visual line per row) apart from a real
+    /// compute that happens not to have wrapped anything.
+    fn make_long_lines(n: usize) -> Vec<String> {
+        (0..n)
+            .map(|i| {
+                format!(
+                    "paragraph number {i} with quite a bit of extra padding text \
+                     so this row is longer than forty columns wide for sure"
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn layout_defers_to_async_fallback_on_large_buffer() {
+        // Layout-side twin of `fence_toggle_on_large_buffer_defers_to_async_fallback`:
+        // above LARGE_BUFFER_THRESHOLD, a full-rebuild trigger installs a
+        // `Layout::unwrapped` stub + signals pending instead of blocking
+        // the typing thread on `Layout::compute`. The owning component
+        // spawns the real wrap on tokio and calls install_full_layout
+        // when done.
+        let mut v = MarkdownEditorView::new();
+        let mut lines = make_long_lines(1500);
+        update_view(&mut v, &lines, (750, 0), rect(40), 1, None);
+
+        // Line-count change forces a full layout rebuild regardless of
+        // what the parse decided.
+        lines.insert(750, "```".to_string());
+        update_view(&mut v, &lines, (750, 3), rect(40), 2, None);
+
+        let pending = v.take_pending_full_layout();
+        assert!(
+            pending.is_some(),
+            "large-buffer full layout rebuild must signal pending async wrap"
+        );
+        assert_eq!(
+            v.layout.row_count(),
+            lines.len(),
+            "stub row count must match input"
+        );
+        let real_visual_lines = {
+            let hints = row_hints(&v.rendered_cache, &v.gutter_insets);
+            Layout::compute(&v.text_snapshot, 40, Metrics::default(), &hints).visual_line_count()
+        };
+        assert!(
+            v.layout.visual_line_count() < real_visual_lines,
+            "the installed stub must not have wrapped these long rows yet \
+             (stub: {}, real: {})",
+            v.layout.visual_line_count(),
+            real_visual_lines
+        );
+
+        // Caller (TextEditorComponent in production) spawns the real wrap
+        // and installs the result. Simulate that here.
+        let job = pending.unwrap();
+        let hints = row_hints(&job.rendered_cache, &job.gutter_insets);
+        let real = Layout::compute(&job.text, job.width, Metrics::default(), &hints);
+        let real_count = real.visual_line_count();
+        v.install_full_layout(job.generation, real);
+        assert!(v.layout_pending.is_none(), "pending cleared on install");
+        assert_eq!(
+            v.layout.visual_line_count(),
+            real_count,
+            "post-install layout must equal a fresh compute"
+        );
+    }
+
+    #[test]
+    fn small_buffer_layout_stays_synchronous() {
+        // Mirrors `fence_toggle_triggers_full_rebuild_fallback`: below
+        // LARGE_BUFFER_THRESHOLD, layout rebuilds stay synchronous.
+        let mut v = MarkdownEditorView::new();
+        let mut lines = make_long_lines(700);
+        update_view(&mut v, &lines, (350, 0), rect(40), 1, None);
+        assert!(
+            v.take_pending_full_layout().is_none(),
+            "small buffer must not defer layout on first parse"
+        );
+
+        lines.insert(350, "```".to_string());
+        update_view(&mut v, &lines, (350, 3), rect(40), 2, None);
+        assert!(
+            v.take_pending_full_layout().is_none(),
+            "small-buffer full rebuild must NOT defer layout to async"
+        );
+    }
+
+    #[test]
+    fn edit_while_layout_pending_rearms() {
+        // Layout-side twin of
+        // `edit_while_placeholder_active_refuses_incremental_and_rearms`:
+        // an edit landing before the async wrap resolves must re-stub and
+        // re-arm for the new generation, and a stale (superseded)
+        // install must be a no-op.
+        let mut v = MarkdownEditorView::new();
+        let mut lines = make_long_lines(1500);
+        update_view(&mut v, &lines, (750, 0), rect(40), 1, None);
+        assert!(
+            v.layout_pending.is_some(),
+            "first layout defers on a large buffer"
+        );
+        assert_eq!(v.take_pending_full_layout().map(|j| j.generation), Some(1));
+
+        // Edit before the background wrap resolves.
+        lines[0].push('x');
+        update_view(&mut v, &lines, (0, lines[0].len()), rect(40), 2, None);
+        assert!(
+            v.layout_pending.is_some(),
+            "still pending — a content-changing edit must not silently keep the stale stub"
+        );
+        assert_eq!(
+            v.take_pending_full_layout().map(|j| j.generation),
+            Some(2),
+            "re-armed for the new generation"
+        );
+
+        // A stale install (superseded generation) must be dropped.
+        let stale = Layout::compute(&text_of(&lines), 40, Metrics::default(), &[]);
+        v.install_full_layout(1, stale);
+        assert!(
+            v.layout_pending.is_some(),
+            "stale-generation install must be a no-op"
+        );
+
+        // The current generation's install lands.
+        let hints = row_hints(&v.rendered_cache, &v.gutter_insets);
+        let real = Layout::compute(&v.text_snapshot, 40, Metrics::default(), &hints);
+        v.install_full_layout(2, real);
+        assert!(
+            v.layout_pending.is_none(),
+            "pending cleared on matching-generation install"
+        );
+    }
+
+    #[test]
+    fn install_full_layout_rejects_width_mismatch_from_a_resize() {
+        // A resize with no content change never bumps content_revision, so
+        // the generation check alone cannot catch a wrap job computed for
+        // a width the pane no longer has — `install_full_layout` must also
+        // compare `layout.width()` against the current `last_layout_width`.
+        let mut v = MarkdownEditorView::new();
+        let lines = make_long_lines(1200);
+        update_view(&mut v, &lines, (0, 0), rect(40), 1, None);
+        let job = v
+            .take_pending_full_layout()
+            .expect("large buffer defers layout on first parse");
+        assert_eq!(job.width, 40);
+
+        // Pane resized before the background wrap for width 40 lands.
+        update_view(
+            &mut v,
+            &lines,
+            (0, 0),
+            Rect {
+                width: 80,
+                ..rect(40)
+            },
+            1,
+            None,
+        );
+
+        let hints = row_hints(&job.rendered_cache, &job.gutter_insets);
+        let stale_width_layout = Layout::compute(&job.text, job.width, Metrics::default(), &hints);
+        v.install_full_layout(job.generation, stale_width_layout);
+        assert!(
+            v.layout_pending.is_some(),
+            "width-mismatched install must be rejected even though the generation matches"
+        );
+    }
+
     /// Assert the view's cached parse matches a fresh one.
     ///
     /// The per-line comparison uses `debug_assert_eq_to`, which is
@@ -2808,6 +3534,112 @@ mod tests {
     }
 
     #[test]
+    fn incremental_edit_reuses_fence_ranges_without_rescanning() {
+        // A fence block plus plain paragraphs elsewhere. An edit inside a
+        // plain paragraph (not touching the fence) must take the
+        // incremental path — at which point `fence_ranges` is skipped
+        // rather than rescanned, per the structural guards that already
+        // gate the splice. Verify it stays correct anyway.
+        let mut v = MarkdownEditorView::new();
+        let mut lines: Vec<String> = vec![
+            "```".to_string(),
+            "code line".to_string(),
+            "```".to_string(),
+        ];
+        lines.extend((0..200).map(|i| format!("paragraph {i} with some text")));
+        update_view(&mut v, &lines, (100, 0), rect(40), 1, None);
+
+        lines[100].push('x');
+        update_view(&mut v, &lines, (100, lines[100].len()), rect(40), 2, None);
+        assert!(v.last_parse_was_incremental, "expected incremental path");
+
+        let fresh = ParsedBuffer::parse_lines(&lines);
+        assert_eq!(
+            v.fence_ranges,
+            super::super::parse_incremental::fence_ranges_from_kinds(&fresh.kinds),
+            "fence_ranges must stay correct after a skipped recompute"
+        );
+    }
+
+    #[test]
+    fn incremental_edit_patches_only_cursor_rows_of_gutter_insets() {
+        // Blockquote rows at the top; a content edit far away (row 150)
+        // combined with the cursor moving between two blockquote rows in
+        // the same frame. The edit alone keeps the parse incremental; the
+        // cursor move is what gutter_insets must still react to correctly
+        // without re-walking every row.
+        let mut v = MarkdownEditorView::new();
+        // Blank line after the blockquote so the paragraph run below gets
+        // its own reset boundary instead of lazily continuing the quote —
+        // otherwise every row folds into one giant construct and even a
+        // distant edit falls back to a full rebuild.
+        let mut lines: Vec<String> = vec![
+            "> quoted line 0".to_string(),
+            "> quoted line 1".to_string(),
+            "> quoted line 2".to_string(),
+            String::new(),
+        ];
+        lines.extend((0..200).map(|i| format!("paragraph {i} with some text")));
+        update_view(&mut v, &lines, (0, 0), rect(40), 1, None);
+
+        lines[151].push('x');
+        update_view(&mut v, &lines, (1, 0), rect(40), 2, None);
+        assert!(v.last_parse_was_incremental, "expected incremental path");
+
+        let mut fresh_view = MarkdownEditorView::new();
+        update_view(&mut fresh_view, &lines, (1, 0), rect(40), 1, None);
+        assert_eq!(
+            v.gutter_insets_for_testing(),
+            fresh_view.gutter_insets_for_testing(),
+            "patched gutter_insets must match a full rebuild"
+        );
+    }
+
+    #[test]
+    fn incremental_edit_patches_only_the_touched_code_block_of_code_box_width() {
+        // Two fenced blocks. Growing a line inside the SECOND block must
+        // not touch the first block's cached width, and the result must
+        // match a full rebuild.
+        let mut v = MarkdownEditorView::new();
+        let mut lines: Vec<String> = vec![
+            "```".to_string(),
+            "short".to_string(),
+            "```".to_string(),
+            "paragraph between blocks".to_string(),
+            "```".to_string(),
+            "also short".to_string(),
+            "```".to_string(),
+        ];
+        update_view(&mut v, &lines, (5, 0), rect(40), 1, None);
+        let before_first_block = v.code_box_width_for_testing()[0..3].to_vec();
+
+        lines[5].push_str(" grown considerably wider now");
+        update_view(&mut v, &lines, (5, lines[5].len()), rect(40), 2, None);
+        assert!(v.last_parse_was_incremental, "expected incremental path");
+
+        assert_eq!(
+            v.code_box_width_for_testing()[0..3],
+            before_first_block[..],
+            "the untouched first block's width must be unchanged"
+        );
+
+        let mut fresh_view = MarkdownEditorView::new();
+        update_view(
+            &mut fresh_view,
+            &lines,
+            (5, lines[5].len()),
+            rect(40),
+            1,
+            None,
+        );
+        assert_eq!(
+            v.code_box_width_for_testing(),
+            fresh_view.code_box_width_for_testing(),
+            "patched code_box_width must match a full rebuild"
+        );
+    }
+
+    #[test]
     fn incremental_text_change_does_not_rebuild_all_of_rendered_cache() {
         // Verify that after an incremental text edit, rendered_cache rows
         // outside the widened range are NOT re-derived from scratch. We
@@ -2984,5 +3816,164 @@ mod tests {
         // Click screen col 2 ('h' after the 2-col "│ " gutter) → logical col 2.
         let (row, col) = view.click_to_logical_for_testing(0, 2);
         assert_eq!((row, col), (0, 2));
+    }
+}
+
+/// Differential soak for the incremental parse widener.
+///
+/// The widener's guards were narrowed to `ListMarker` because a 100 000-case run
+/// found `Blockquote`, `Plain` and `ListContinuation` producing classifications
+/// that disagreed with a fresh parse — usually on a row *past* `widened.end`,
+/// where the in-window post-slice verify does not look. Nothing in the ordinary
+/// suite reproduces that: unlocking `Blockquote` leaves every test green. This is
+/// the harness that does not.
+///
+/// Ignored by default because 100k cases is minutes, not milliseconds:
+///
+/// ```text
+/// SOAK_CASES=100000 cargo test -p kimun-notes --lib widener_soak -- --ignored --nocapture
+/// ```
+///
+/// **To evaluate an unlock**, widen `kind_qualifies` in `try_incremental_parse`
+/// to the kind under test and re-run. A green soak is the evidence the guard's
+/// own comment asks for; anything else is a reason the kind stays excluded.
+#[cfg(test)]
+mod widener_soak {
+    use super::tests::update_view;
+    use super::*;
+    use proptest::prelude::*;
+
+    /// Blocks, not independent rows.
+    ///
+    /// The failure this harness exists to reproduce needs a specific
+    /// arrangement — a `>` row nested *inside* a list item (so `lazy_depth == 1`)
+    /// with a blank immediately after it, which is where `damaged.end` lands and
+    /// where the post-edit parse can flip the row to `ListContinuation`. Rows
+    /// drawn independently produce blockquotes and lists constantly and that
+    /// arrangement almost never, which is why the first version of this soak
+    /// passed 20 000 cases of a configuration known to be wrong.
+    fn block() -> impl Strategy<Value = Vec<String>> {
+        prop_oneof![
+            Just(vec!["plain paragraph text".to_string(), String::new()]),
+            Just(vec![
+                "plain paragraph".to_string(),
+                "second line of it".to_string(),
+                String::new(),
+            ]),
+            // A list holding a quote: the nested-lazy shape.
+            Just(vec![
+                "- list item".to_string(),
+                "  > nested quote".to_string(),
+                String::new(),
+            ]),
+            // The same with a marker carrying only whitespace — the exact row the
+            // soak's original finding named.
+            Just(vec![
+                "- list item".to_string(),
+                ">     ".to_string(),
+                String::new(),
+            ]),
+            Just(vec![
+                "- list item".to_string(),
+                "  continuation".to_string(),
+                "  > quote inside".to_string(),
+                String::new(),
+            ]),
+            Just(vec![
+                "> quoted line".to_string(),
+                "lazy continuation".to_string(),
+                String::new(),
+            ]),
+            Just(vec![">     ".to_string(), String::new()]),
+            Just(vec!["# heading".to_string(), String::new()]),
+            Just(vec![
+                "```".to_string(),
+                "fenced".to_string(),
+                "```".to_string(),
+                String::new(),
+            ]),
+            Just(vec!["    indented code".to_string(), String::new()]),
+            Just(vec![
+                "setext".to_string(),
+                "=====".to_string(),
+                String::new()
+            ]),
+        ]
+    }
+
+    /// Edits that keep the row count. Marker-altering ones included: an edit that
+    /// flips a kind is *supposed* to be refused by the guards above the
+    /// relaxation, and a soak that only appends letters never tests that.
+    fn edit(original: &str) -> Vec<String> {
+        let mut out = vec![
+            format!("{original}x"),
+            format!("{original} "),
+            format!("> {original}"),
+            format!("  {original}"),
+        ];
+        if !original.is_empty() {
+            out.push(original[..original.len() - 1].to_string());
+            out.push(original.trim_start().to_string());
+            out.push(original.replacen('>', " ", 1));
+            out.push(original.replacen('-', " ", 1));
+        }
+        // Only variants that actually change the row. Several of these are
+        // no-ops on some inputs — `trim_start` on an already-trimmed row,
+        // `replacen('>')` on a row without one — and filtering here rather than
+        // rejecting in the test is what keeps proptest from aborting on global
+        // rejects long before it has explored anything.
+        out.retain(|candidate| candidate != original);
+        out.dedup();
+        out
+    }
+
+    fn cases() -> u32 {
+        std::env::var("SOAK_CASES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(256)
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: cases(), ..ProptestConfig::default() })]
+
+        #[test]
+        #[ignore = "soak: run explicitly with SOAK_CASES"]
+        fn an_incremental_splice_agrees_with_a_fresh_parse(
+            blocks in prop::collection::vec(block(), 2..8),
+            row_pick in any::<prop::sample::Index>(),
+            edit_pick in any::<prop::sample::Index>(),
+        ) {
+            let lines: Vec<String> = blocks.concat();
+            prop_assume!(lines.len() >= 3);
+            let target = row_pick.index(lines.len());
+            let variants = edit(&lines[target]);
+            prop_assume!(!variants.is_empty());
+            let mut edited = lines.clone();
+            edited[target] = variants[edit_pick.index(variants.len())].clone();
+
+            let mut view = MarkdownEditorView::new();
+            update_view(&mut view, &lines, (target, 0), Rect::new(0, 0, 40, 20), 1, None);
+            view.note_damage(target..target + 1, 0);
+            update_view(&mut view, &edited, (target, 0), Rect::new(0, 0, 40, 20), 2, None);
+
+            // A full-parse fallback trivially agrees; only a *wrong splice* fails.
+            let fresh = ParsedBuffer::parse_lines(&edited);
+            prop_assert_eq!(
+                &view.parse_state.buf().kinds,
+                &fresh.kinds,
+                "kinds diverged (incremental={}) for {:?} -> row {} = {:?}",
+                view.last_parse_was_incremental(),
+                lines,
+                target,
+                edited[target]
+            );
+            prop_assert_eq!(
+                &view.parse_state.buf().lazy_depth,
+                &fresh.lazy_depth,
+                "lazy_depth diverged (incremental={})",
+                view.last_parse_was_incremental()
+            );
+        }
     }
 }

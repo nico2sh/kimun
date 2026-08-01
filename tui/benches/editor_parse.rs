@@ -26,6 +26,35 @@ fn snap_for(lines: &[String], cursor: (usize, usize), generation: u64) -> Editor
     EditorSnapshot::borrowed(lines, clamped, rev)
 }
 
+/// A view warmed on `lines`, with any deferred work completed.
+///
+/// Above `LARGE_BUFFER_THRESHOLD` (1000 rows) the first update installs a
+/// placeholder parse and an unwrapped layout stub and hands the real work to a
+/// background task. A bench that never completes it measures a view permanently
+/// waiting: every later update re-stubs, which is O(rows), so the incremental
+/// path it means to measure is buried. The component installs the results when
+/// the task returns; so does this.
+fn warmed_view(
+    lines: &[String],
+    cursor: (usize, usize),
+    rect: ratatui::layout::Rect,
+) -> kimun_notes::components::text_editor::view::MarkdownEditorView {
+    use kimun_notes::components::text_editor::view::MarkdownEditorView;
+
+    let mut view = MarkdownEditorView::new();
+    view.update(&snap_for(lines, cursor, 1), rect);
+    let text = Text::from(lines.join("\n").as_str());
+    if let Some(generation) = view.take_pending_full_parse() {
+        view.install_full_parse(generation, ParsedBuffer::parse(&text));
+    }
+    if let Some(job) = view.take_pending_full_layout() {
+        let hints: Vec<RowHints<'_>> = Vec::new();
+        let layout = Layout::compute(&job.text, job.width, Metrics::default(), &hints);
+        view.install_full_layout(job.generation, layout);
+    }
+    view
+}
+
 fn make_5000_line_buffer() -> Vec<String> {
     (0..5000)
         .map(|i| {
@@ -123,7 +152,6 @@ fn bench_wrap_5000_lines(c: &mut Criterion) {
 }
 
 fn bench_full_view_update_5000_lines_incremental(c: &mut Criterion) {
-    use kimun_notes::components::text_editor::view::MarkdownEditorView;
     use ratatui::layout::Rect;
 
     let lines = make_5000_line_buffer();
@@ -135,8 +163,7 @@ fn bench_full_view_update_5000_lines_incremental(c: &mut Criterion) {
     };
 
     // Warm the view: do a full parse on the original buffer once.
-    let mut warmed = MarkdownEditorView::new();
-    warmed.update(&snap_for(&lines, (2500, 0), 1), rect);
+    let warmed = warmed_view(&lines, (2500, 0), rect);
 
     // Edited buffer: single-char insert at row 2500 (same line count).
     let mut edited = lines.clone();
@@ -146,6 +173,10 @@ fn bench_full_view_update_5000_lines_incremental(c: &mut Criterion) {
         b.iter_batched(
             || warmed.clone(),
             |mut v| {
+                // The component tells the view which rows its edit touched.
+                // Without it the view diffs two materialised copies of the whole
+                // note — work the editor never does, and ~6x the real cost.
+                v.note_damage(2500..2501, 0);
                 v.update(
                     &snap_for(black_box(&edited), (2500, edited[2500].len()), 2),
                     rect,
@@ -158,7 +189,6 @@ fn bench_full_view_update_5000_lines_incremental(c: &mut Criterion) {
 }
 
 fn bench_full_view_update_5000_lines_backspace(c: &mut Criterion) {
-    use kimun_notes::components::text_editor::view::MarkdownEditorView;
     use ratatui::layout::Rect;
 
     let lines = make_5000_line_buffer();
@@ -169,8 +199,7 @@ fn bench_full_view_update_5000_lines_backspace(c: &mut Criterion) {
         height: 40,
     };
 
-    let mut warmed = MarkdownEditorView::new();
-    warmed.update(&snap_for(&lines, (2500, 0), 1), rect);
+    let warmed = warmed_view(&lines, (2500, 0), rect);
 
     // Edited buffer: single-char delete at row 2500 (Backspace mid-line).
     let mut edited = lines.clone();
@@ -180,6 +209,10 @@ fn bench_full_view_update_5000_lines_backspace(c: &mut Criterion) {
         b.iter_batched(
             || warmed.clone(),
             |mut v| {
+                // The component tells the view which rows its edit touched.
+                // Without it the view diffs two materialised copies of the whole
+                // note — work the editor never does, and ~6x the real cost.
+                v.note_damage(2500..2501, 0);
                 v.update(
                     &snap_for(black_box(&edited), (2500, edited[2500].len()), 2),
                     rect,
@@ -235,7 +268,6 @@ fn make_heavy_lists_buffer() -> Vec<String> {
 }
 
 fn bench_full_view_update_heavy_lists_typing(c: &mut Criterion) {
-    use kimun_notes::components::text_editor::view::MarkdownEditorView;
     use ratatui::layout::Rect;
 
     let lines = make_heavy_lists_buffer();
@@ -247,8 +279,7 @@ fn bench_full_view_update_heavy_lists_typing(c: &mut Criterion) {
     };
 
     let target_row = 250.min(lines.len() - 1);
-    let mut warmed = MarkdownEditorView::new();
-    warmed.update(&snap_for(&lines, (target_row, 0), 1), rect);
+    let warmed = warmed_view(&lines, (target_row, 0), rect);
 
     // Single-char append inside an item's content. Pre-edit row is a
     // ListMarker (lazy_depth == 1) inside the loose list. The v3 §3.0
@@ -263,6 +294,7 @@ fn bench_full_view_update_heavy_lists_typing(c: &mut Criterion) {
         b.iter_batched(
             || warmed.clone(),
             |mut v| {
+                v.note_damage(target_row..target_row + 1, 0);
                 v.update(
                     &snap_for(
                         black_box(&edited),
@@ -323,7 +355,6 @@ fn make_blockquotes_lazy_buffer() -> Vec<String> {
 }
 
 fn bench_full_view_update_blockquotes_typing(c: &mut Criterion) {
-    use kimun_notes::components::text_editor::view::MarkdownEditorView;
     use ratatui::layout::Rect;
 
     let lines = make_blockquotes_lazy_buffer();
@@ -336,8 +367,7 @@ fn bench_full_view_update_blockquotes_typing(c: &mut Criterion) {
 
     // Edit the `>` row of the 50th blockquote (row 50*4 = 200).
     let target_row = 200;
-    let mut warmed = MarkdownEditorView::new();
-    warmed.update(&snap_for(&lines, (target_row, 0), 1), rect);
+    let warmed = warmed_view(&lines, (target_row, 0), rect);
 
     let mut edited = lines.clone();
     edited[target_row].push('x');
@@ -346,6 +376,7 @@ fn bench_full_view_update_blockquotes_typing(c: &mut Criterion) {
         b.iter_batched(
             || warmed.clone(),
             |mut v| {
+                v.note_damage(target_row..target_row + 1, 0);
                 v.update(
                     &snap_for(
                         black_box(&edited),
@@ -361,8 +392,140 @@ fn bench_full_view_update_blockquotes_typing(c: &mut Criterion) {
     });
 }
 
+/// The incremental parse as the view actually runs it.
+///
+/// `bench_incremental_paragraph_insert_5000_lines` above measures
+/// `parse_range_lines`, which takes rows the caller already has. The live path
+/// (`view.rs`, `try_incremental_parse`) holds a `Text` and calls `parse_range`,
+/// which has to produce the rows itself — so that is where a full-buffer copy
+/// could hide, and nothing was measuring it.
+fn bench_incremental_range_parse_5000_lines(c: &mut Criterion) {
+    let lines = make_5000_line_buffer();
+    let pb = ParsedBuffer::parse_lines(&lines);
+    let mut edited = lines.clone();
+    edited[2500].push('x');
+    let text = Text::from(edited.join("\n").as_str());
+
+    let damaged = compute_damage_range(&lines, &edited, 2500).expect("damaged should be Some");
+    let widened = match widen_to_safe(&pb.kinds, damaged) {
+        WidenResult::Widened(r) => r,
+        WidenResult::FullRebuild => panic!("a paragraph edit should stay incremental"),
+    };
+
+    c.bench_function("incremental_range_parse_5000_lines", |b| {
+        b.iter(|| {
+            let slice = ParsedBuffer::parse_range(black_box(&text), widened.clone());
+            black_box(slice);
+        });
+    });
+}
+
+/// What pressing Enter costs, against what typing a character costs.
+///
+/// A newline changes the line count, which makes `try_incremental_parse` bail
+/// AND makes `view.rs`'s layout gate take the full-rebuild branch — so the whole
+/// document is re-parsed and re-wrapped. Typing a character does neither. The
+/// pair is the measurement: the gap between them is what an incremental path
+/// across a line-count change would be worth.
+///
+/// Run at two sizes because the behaviour differs either side of
+/// `LARGE_BUFFER_THRESHOLD` (1000 rows): above it both gates install a stub and
+/// defer to a background task, so the keystroke does not pay the rebuild — it
+/// pays a frame of unstyled, unwrapped rendering instead.
+fn bench_newline_vs_typing(c: &mut Criterion) {
+    use kimun_notes::components::text_editor::view::MarkdownEditorView;
+    use ratatui::layout::Rect;
+
+    let rect = Rect {
+        x: 0,
+        y: 0,
+        width: 80,
+        height: 40,
+    };
+
+    for rows in [800usize, 5000] {
+        let lines: Vec<String> = (0..rows)
+            .map(|i| {
+                format!("paragraph number {i} with some sample text to give the parser work to do")
+            })
+            .collect();
+        let mid = rows / 2;
+
+        // Build every `Text` ONCE. `EditorSnapshot::borrowed` joins the rows and
+        // constructs a rope, which is O(rows) — inside the loop it costs more
+        // than the thing being measured and hides it completely. The editor uses
+        // `of_buffer`, which rebuilds nothing, so that is what this must use.
+        let base = Text::from(lines.join("\n").as_str());
+
+        let mut typed_lines = lines.clone();
+        typed_lines[mid].push('x');
+        let typed = Text::from(typed_lines.join("\n").as_str());
+
+        // Enter: the row splits in two, so the line count changes.
+        let mut split_lines = lines.clone();
+        let tail = split_lines[mid].split_off(20);
+        split_lines.insert(mid + 1, tail);
+        let split = Text::from(split_lines.join("\n").as_str());
+
+        let rev = |n: u64| NonZeroU64::new(n).unwrap();
+        let mut warmed = MarkdownEditorView::new();
+        warmed.update(
+            &EditorSnapshot::of_buffer(base.clone(), (mid, 0), rev(1)),
+            rect,
+        );
+        // Above `LARGE_BUFFER_THRESHOLD` the first update installs a placeholder
+        // parse and an unwrapped layout stub and defers the real work to a
+        // background task. A bench that never completes that work measures a view
+        // permanently waiting — every later update re-stubs, which is O(rows) and
+        // buries the difference this is trying to see. Do what the component does
+        // when the task returns.
+        if let Some(generation) = warmed.take_pending_full_parse() {
+            warmed.install_full_parse(generation, ParsedBuffer::parse(&base));
+        }
+        if let Some(job) = warmed.take_pending_full_layout() {
+            let hints: Vec<RowHints<'_>> = Vec::new();
+            let layout = Layout::compute(&job.text, job.width, Metrics::default(), &hints);
+            warmed.install_full_layout(job.generation, layout);
+        }
+
+        let mut group = c.benchmark_group(format!("keystroke_{rows}_rows"));
+        group.bench_function("typing", |b| {
+            b.iter_batched(
+                || warmed.clone(),
+                |mut v| {
+                    // The component reports the rows its own edit touched; without
+                    // this the view falls back to diffing two materialised copies
+                    // of the whole note, which is not what the editor does.
+                    v.note_damage(mid..mid + 1, 0);
+                    let snap =
+                        EditorSnapshot::of_buffer(black_box(typed.clone()), (mid, 21), rev(2));
+                    v.update(&snap, rect);
+                    black_box(v);
+                },
+                BatchSize::SmallInput,
+            );
+        });
+        group.bench_function("newline", |b| {
+            b.iter_batched(
+                || warmed.clone(),
+                |mut v| {
+                    v.note_damage(mid..mid + 2, 1);
+                    let snap =
+                        EditorSnapshot::of_buffer(black_box(split.clone()), (mid + 1, 0), rev(2));
+                    v.update(&snap, rect);
+                    black_box(v);
+                },
+                BatchSize::SmallInput,
+            );
+        });
+        group.finish();
+    }
+}
+
 criterion_group!(
     benches,
+    bench_newline_vs_typing,
+    bench_incremental_range_parse_5000_lines,
     bench_full_parse_5000_lines,
     bench_compute_damage_range_5000_lines,
     bench_incremental_paragraph_insert_5000_lines,

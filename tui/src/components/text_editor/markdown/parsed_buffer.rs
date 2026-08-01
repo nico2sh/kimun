@@ -759,8 +759,19 @@ impl ParsedBuffer {
     /// (`0..range.len()`); `splice` shifts them by `range.start` when
     /// merging into the parent buffer's boundary set.
     pub fn parse_range(text: &ropetext::Text, range: Range<usize>) -> ParsedBuffer {
-        let rows = rows_of(text);
-        Self::parse_lines(&rows[range])
+        // Only the range's rows. This built every row of the note and then threw
+        // all but `range` away — on the incremental path, which runs per
+        // keystroke, so a widened window of a dozen rows cost a full copy of the
+        // document. Reading rows straight from the rope is what the text being a
+        // value is for; the parser still needs them owned, but only these.
+        let rows: Vec<String> = range
+            .map(|row| {
+                text.line(row)
+                    .expect("parse_range: the caller's range is inside the text")
+                    .into_owned()
+            })
+            .collect();
+        Self::parse_lines(&rows)
     }
 
     /// [`Self::parse_range`] over rows.

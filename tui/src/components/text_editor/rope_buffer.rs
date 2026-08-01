@@ -16,8 +16,18 @@
 use ropetext::motion::{self, Goal, Words};
 use ropetext::{Change, Column, EditBuffer as Rope, Position, Span, Text};
 
-/// Visual columns per tab stop when `hard_tab_indent` is off.
-const DEFAULT_TAB_LENGTH: u8 = 4;
+/// How far one indent step moves a line, in spaces, when `hard_tab_indent` is
+/// off — what Tab, `>>` and the visual `>` add, and what their inverses remove.
+///
+/// Not a tab stop, and deliberately not derived from one. A tab stop is elastic
+/// (a `\t` advances to the next multiple of it, so its width depends on where it
+/// starts) and describes how an existing character *draws*; an indent step is a
+/// fixed amount of text an edit *inserts*. Vim keeps the two apart as `tabstop`
+/// and `shiftwidth`, EditorConfig as `tab_width` and `indent_size`, and
+/// `hard_tab_indent` is exactly the setting under which they must differ: insert
+/// one literal `\t`, still draw it [`ropetext::Metrics::DEFAULT_TAB_WIDTH`]
+/// cells wide. That both are 4 today is a coincidence of defaults.
+const DEFAULT_INDENT_WIDTH: u8 = 4;
 
 /// What one call to [`RopeBuffer::edit`] did, measured rather than predicted.
 ///
@@ -42,6 +52,37 @@ pub struct EditOutcome {
     /// **nvim** backend reports lines and not changes, so it leaves this `None`
     /// and its consumer falls back to a diff.
     pub damage: Option<std::ops::Range<usize>>,
+    /// Net rows added (or removed, when negative) by the edits behind `damage`.
+    ///
+    /// Travels with the range because the range is only meaningful in a
+    /// numbering, and a consumer that accumulates reports across several drains
+    /// has to bring the older one forward before it can union them.
+    pub line_delta: isize,
+}
+
+/// `range`, renumbered for a change of `delta` lines starting at `at`.
+///
+/// Rows above the change keep their index; the rest move with it. A `delta` of
+/// zero — every edit that stays within its rows, which is most of them — leaves
+/// the range alone.
+///
+/// Shared because damage is accumulated in two places: here, across the
+/// mutations of one group, and in the view, across the drains between two
+/// frames. Both union ranges recorded against different texts, and both are
+/// wrong in the same way without this.
+pub(super) fn shift_rows(
+    range: std::ops::Range<usize>,
+    at: usize,
+    delta: isize,
+) -> std::ops::Range<usize> {
+    let shift = |row: usize| {
+        if row < at {
+            row
+        } else {
+            row.saturating_add_signed(delta)
+        }
+    };
+    shift(range.start)..shift(range.end)
 }
 
 /// Whether a delete fills the register it removed text from.
@@ -122,7 +163,7 @@ pub struct RopeBuffer {
     goal: Option<Column>,
     yank: String,
     search: Option<regex::Regex>,
-    tab_length: u8,
+    indent_width: u8,
     hard_tab_indent: bool,
 }
 
@@ -143,7 +184,7 @@ impl RopeBuffer {
             goal: None,
             yank: String::new(),
             search: None,
-            tab_length: DEFAULT_TAB_LENGTH,
+            indent_width: DEFAULT_INDENT_WIDTH,
             hard_tab_indent: false,
         }
     }
@@ -159,12 +200,14 @@ impl RopeBuffer {
         self.inner.text()
     }
 
-    pub fn tab_length(&self) -> u8 {
-        self.tab_length
+    /// Spaces one indent step inserts. Both backends read this, so `>>` and Tab
+    /// move a line by the same amount.
+    pub fn indent_width(&self) -> u8 {
+        self.indent_width
     }
 
-    pub fn set_tab_length(&mut self, columns: u8) {
-        self.tab_length = columns;
+    pub fn set_indent_width(&mut self, spaces: u8) {
+        self.indent_width = spaces;
     }
 
     pub fn hard_tab_indent(&self) -> bool {
@@ -295,8 +338,19 @@ impl RopeBuffer {
         };
         self.pending.changed = true;
         self.pending.bulk |= change.is_bulk();
+        self.pending.line_delta += change.line_delta();
         self.pending.damage = Some(match self.pending.damage.take() {
-            Some(seen) => seen.start.min(change.rows().start)..seen.end.max(change.rows().end),
+            Some(seen) => {
+                // `seen` was recorded against the text as it stood before *this*
+                // change, which may have moved those rows. Hulling the two
+                // directly unions ranges from two different numberings, and the
+                // result is not a superset of either: an edit high in the buffer
+                // followed by one above it that adds a line leaves the first
+                // edit's row below the hull's end, so it is never re-parsed and
+                // renders stale. Bring it into the current numbering first.
+                let seen = shift_rows(seen, change.rows().start, change.line_delta());
+                seen.start.min(change.rows().start)..seen.end.max(change.rows().end)
+            }
             None => change.rows(),
         });
         true
@@ -328,16 +382,6 @@ impl RopeBuffer {
 
     pub fn insert_newline(&mut self) {
         self.insert_str("\n");
-    }
-
-    pub fn insert_tab(&mut self) -> bool {
-        if self.hard_tab_indent {
-            return self.insert_str("\t");
-        }
-        let width = self.tab_length.max(1) as usize;
-        let column = self.inner.cursor().column().get();
-        let fill = width - (column % width);
-        self.insert_str(" ".repeat(fill))
     }
 
     /// Delete `clusters` grapheme clusters forward, a line break counting as one.
@@ -904,5 +948,32 @@ mod cluster_tests {
         buf.move_cursor(CursorMove::Jump(0, 0));
         buf.insert_char('a');
         assert_eq!(buf.rows(), &["a\u{301}f"]);
+    }
+}
+
+#[cfg(test)]
+mod damage_tests {
+    use super::*;
+    use ropetext::Text;
+
+    #[test]
+    fn damage_from_several_edits_is_in_one_numbering() {
+        // Two mutations in one group, the second ABOVE the first and changing
+        // the line count — so the first edit's row moves before the group ends.
+        let mut buf = RopeBuffer::new(Text::from("r0\nr1\nr2\nr3\nr4"));
+        buf.edit(|b| {
+            b.move_cursor(CursorMove::Jump(4, 0));
+            b.insert_str("X");
+            b.move_cursor(CursorMove::Jump(0, 0));
+            b.insert_newline();
+        });
+        assert_eq!(buf.rows(), ["", "r0", "r1", "r2", "r3", "Xr4"]);
+
+        let damage = buf.take_outcome().damage.expect("the edits were reported");
+        assert!(
+            damage.contains(&5),
+            "the row edited first is row 5 once the group ends, but the damage \
+             reported was {damage:?} — a range in the older numbering"
+        );
     }
 }
