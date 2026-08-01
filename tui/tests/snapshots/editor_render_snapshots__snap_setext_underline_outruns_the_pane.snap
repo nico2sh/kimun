@@ -1,0 +1,19 @@
+---
+source: tui/tests/editor_render_snapshots.rs
+expression: "painted(\"A rather long setext title that will certainly wrap\\n==================================================\\n\\nbody text after\",\n40)"
+---
+ 0 |A rather long setext title that will    |
+   0..36 fg=Rgb(251, 241, 199) bg=Rgb(40, 40, 40) mods=BOLD
+   36..40 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+ 1 |certainly wrap                          |
+   0..14 fg=Rgb(251, 241, 199) bg=Rgb(40, 40, 40) mods=BOLD
+   14..40 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+ 2 |========================================|
+   0..40 fg=Rgb(124, 111, 100) bg=Rgb(40, 40, 40) mods=NONE
+ 3 |==========                              |
+   0..10 fg=Rgb(124, 111, 100) bg=Rgb(40, 40, 40) mods=NONE
+   10..40 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+ 4 |                                        |
+   0..40 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+ 5 |body text after                         |
+   0..40 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE

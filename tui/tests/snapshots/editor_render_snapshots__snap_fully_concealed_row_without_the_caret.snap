@@ -1,0 +1,8 @@
+---
+source: tui/tests/editor_render_snapshots.rs
+expression: "painted_with_cursor(\"[](url)\\nafter\", 80, (1, 0))"
+---
+ 0 |                                                                                |
+   0..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
+ 1 |after                                                                           |
+   0..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
