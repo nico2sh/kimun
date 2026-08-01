@@ -78,11 +78,13 @@ The visual lines an **edit buffer** wraps into at a given width, together with t
 _Avoid_: wrap (names one step of it), view (collides with **drawer view**), screen map.
 
 **Sigil**:
-The markdown marker characters that signal a construct rather than being read as prose — `#` for headings, `>` for blockquotes, the list bullet/number, the backtick/tilde code fences. The styled view hides or mutes them so the prose reads cleanly.
+The markdown marker characters that signal a construct rather than being read as prose — `#` for headings, `>` for blockquotes, the list bullet/number, the backtick/tilde code fences. The styled view hides or mutes them so the prose reads cleanly. A sigil region runs to the construct's first content character, not to the end of the marker itself, so `>` followed by four spaces is five sigil characters — and on a construct with no content at all it is the whole row, which is why a sigil region can outrun the pane and wrap.
 _Avoid_: marker token, syntax char
 
 **Reveal**:
-When the cursor sits on a styled construct, the editor drops the styling for that line and shows the raw markdown (sigils included, muted) so it can be edited directly. The cursor leaving re-applies the styled form. The element-scoped form of this is an **expanded element**.
+When the cursor sits on a styled construct, the editor shows its raw markdown (**sigils** included, muted) so it can be edited directly, and the cursor leaving re-applies the styled form. Scoped to the element under the cursor — that scoping is an **expanded element** — except on a row whose styled form would draw nothing at all, where the whole row reveals instead: a construct that is *entirely* sigil (`[](url)`, `**<br/>**`) has no visible form to fall back to, and a row the cursor is on must never be invisible. The whole-row case is what answers end of line, where there is no element under the cursor to expand.
+Off the cursor's row there is no reveal and no fallback: the row draws its styled form, which for an all-sigil construct is blank. Painting raw markdown there instead — as the editor did until the empty-content fallback was removed — was never the model, and disagreed with the wrap, which had already sized the row at nothing.
+_Avoid_: raw mode, edit mode (it is not a mode — it follows the cursor)
 
 **Blockquote bar**:
 The vertical `│` gutter the editor paints in place of the `>` sigils of a blockquote. One bar per nesting depth, repeated on wrapped continuation rows so the quote reads as a single left-edged block. Replaced by the raw `> ` on the line being edited (see **Reveal**).

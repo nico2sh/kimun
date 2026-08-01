@@ -9,6 +9,7 @@
 //! of {`incremental_reset`, `incremental_fallback`,
 //! `full_line_count_change`, `full_kind_guard`, `full_lazy_depth`,
 //! `full_blank_transition`, `full_cap_trip`, `full_verify_failed`,
+//! `full_downstream_flip`,
 //! `full_no_damage`}. `attempted` is the sum.
 //!
 //! Derived metrics the consumer cares about:
@@ -54,6 +55,15 @@ pub enum BailReason {
     /// Post-slice undamaged-row verify (widen_to_safe fallback path)
     /// detected a kinds/elements/content_vis divergence.
     VerifyFailed,
+    /// Downstream verify (the reset-boundary walk past `widened.end`) found a
+    /// row the splice would not replace whose classification the edit changed.
+    ///
+    /// Separate from [`Self::VerifyFailed`] because they answer different
+    /// questions. The in-window verify says the slice disagrees with the parent
+    /// where it overlaps it; this says the edit reached *past* the window. Only
+    /// the second gates the `Blockquote`/`ListContinuation` relaxation, so
+    /// conflating them hides whether that relaxation is paying for itself.
+    DownstreamFlip,
 }
 
 /// Which widener produced the splice that succeeded.
@@ -79,6 +89,7 @@ pub struct WidenerMetrics {
     pub full_blank_transition: AtomicU64,
     pub full_cap_trip: AtomicU64,
     pub full_verify_failed: AtomicU64,
+    pub full_downstream_flip: AtomicU64,
 }
 
 impl WidenerMetrics {
@@ -93,6 +104,7 @@ impl WidenerMetrics {
             full_blank_transition: AtomicU64::new(0),
             full_cap_trip: AtomicU64::new(0),
             full_verify_failed: AtomicU64::new(0),
+            full_downstream_flip: AtomicU64::new(0),
         }
     }
 
@@ -107,6 +119,7 @@ impl WidenerMetrics {
             BailReason::BlankTransition => &self.full_blank_transition,
             BailReason::CapTrip => &self.full_cap_trip,
             BailReason::VerifyFailed => &self.full_verify_failed,
+            BailReason::DownstreamFlip => &self.full_downstream_flip,
         };
         counter.fetch_add(1, Ordering::Relaxed);
         None
@@ -133,6 +146,7 @@ impl WidenerMetrics {
             full_blank_transition: self.full_blank_transition.load(Ordering::Relaxed),
             full_cap_trip: self.full_cap_trip.load(Ordering::Relaxed),
             full_verify_failed: self.full_verify_failed.load(Ordering::Relaxed),
+            full_downstream_flip: self.full_downstream_flip.load(Ordering::Relaxed),
         }
     }
 }
@@ -150,6 +164,7 @@ pub struct Snapshot {
     pub full_blank_transition: u64,
     pub full_cap_trip: u64,
     pub full_verify_failed: u64,
+    pub full_downstream_flip: u64,
 }
 
 impl Snapshot {
@@ -163,6 +178,7 @@ impl Snapshot {
             + self.full_blank_transition
             + self.full_cap_trip
             + self.full_verify_failed
+            + self.full_downstream_flip
     }
 
     pub fn successful_incremental(&self) -> u64 {
@@ -212,6 +228,10 @@ impl Snapshot {
     pub fn verify_hit_rate(&self) -> f64 {
         // Verify runs on the widen_to_safe (heuristic) path only.
         // Hit rate = verify_failed / (verify_failed + verify-eligible-success).
+        // Deliberately excludes `full_downstream_flip`: that verify runs on a
+        // different condition (a relaxed kind, not the heuristic path) and has no
+        // counted denominator here, so folding it in would produce a rate over a
+        // population it was not measured against.
         let denom = self.full_verify_failed + self.incremental_fallback;
         if denom == 0 {
             0.0

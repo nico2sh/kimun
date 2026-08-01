@@ -1188,17 +1188,39 @@ mod backend_tests {
     #[test]
     #[cfg(unix)]
     fn expand_path_tilde_uses_home_unix() {
-        let home = std::env::var("HOME").expect("HOME must be set on Unix");
+        // `expand_path` canonicalizes when the target exists and returns the
+        // plain join when it does not, so which form comes back depends on
+        // whether this machine happens to have `~/Documents/notes` — and, if it
+        // does, on whether any component of `$HOME` is a symlink. macOS reaches
+        // both branches routinely (`/var`, `/tmp` and `/etc` are symlinks into
+        // `/private`, and relocated or network homes are ordinary), where Linux
+        // usually reaches neither. Accept either rooting rather than pin the one
+        // this machine happens to produce.
+        let home = PathBuf::from(std::env::var("HOME").expect("HOME must be set on Unix"));
+        let canonical_home = home.canonicalize().unwrap_or_else(|_| home.clone());
         let base = PathBuf::from("/irrelevant");
         let result = AppSettings::expand_path(std::path::Path::new("~/Documents/notes"), &base);
         assert!(result.is_absolute());
         assert!(
-            result.starts_with(&home),
-            "expected path to start with HOME={}, got {:?}",
-            home,
-            result
+            result.starts_with(&home) || result.starts_with(&canonical_home),
+            "expected path under HOME={home:?} (canonically {canonical_home:?}), got {result:?}"
         );
         assert!(result.to_string_lossy().contains("Documents/notes"));
+    }
+
+    /// The expansion itself, with the canonicalization taken out of the picture:
+    /// a target that cannot exist always takes `expand_path`'s plain-join
+    /// branch, so this pins `~/` → `$HOME` on every machine.
+    #[test]
+    #[cfg(unix)]
+    fn expand_path_tilde_expands_to_home_even_when_the_target_is_missing_unix() {
+        let home = PathBuf::from(std::env::var("HOME").expect("HOME must be set on Unix"));
+        let base = PathBuf::from("/irrelevant");
+        let result = AppSettings::expand_path(
+            std::path::Path::new("~/kimun-no-such-directory-2f8a1c/notes"),
+            &base,
+        );
+        assert_eq!(result, home.join("kimun-no-such-directory-2f8a1c/notes"));
     }
 
     #[test]

@@ -407,3 +407,149 @@ fn snap_wrapped_row_inside_a_list() {
         24
     ));
 }
+
+/// A setext underline is an all-sigil row: `heading_sigil_end` covers every
+/// char of it, so once the underline outruns the pane the wrap mask reserves
+/// cells on a continuation row that `render_with` has to fill.
+#[test]
+fn snap_setext_underline_outruns_the_pane() {
+    assert_snapshot!(painted(
+        "A rather long setext title that will certainly wrap\n==================================================\n\nbody text after",
+        40
+    ));
+}
+
+/// Every char is a concealed sigil of a Link the cursor is not in, so the
+/// styled form of this row is nothing at all.
+#[test]
+fn snap_empty_link_alone_on_a_row() {
+    assert_snapshot!(painted("before\n[](url)\nafter", 80));
+}
+
+/// An ATX heading with no text: the sigil run *is* the row, and it wraps.
+#[test]
+fn snap_all_sigil_heading_wraps() {
+    assert_snapshot!(painted("######", 3));
+}
+
+/// A row that is entirely concealed markdown reveals in full when the caret is
+/// on it, including at end of line — where `elem_at` resolves to no element, so
+/// the element-scoped reveal has nothing to expand.
+#[test]
+fn snap_caret_at_end_of_a_fully_concealed_row() {
+    assert_snapshot!(painted_with_cursor("[](url)\nafter", 80, (0, 7)));
+}
+
+/// An image row is fully concealed — the placeholder stands in for the whole
+/// span, so no character of it is content — which makes it reveal in full at end
+/// of line. The placeholder must then step aside, exactly as it does when the
+/// caret is inside the image: it is a stand-in for markdown that is not being
+/// shown, and drawing both gives `[url]![text](url)`.
+#[test]
+fn snap_caret_at_end_of_an_image_row_reveals_it_without_the_placeholder() {
+    assert_snapshot!(painted_with_cursor("![text](url)\nafter", 80, (0, 12)));
+}
+
+/// The same row off the caret: the placeholder alone.
+#[test]
+fn snap_image_row_without_the_caret_draws_its_placeholder() {
+    assert_snapshot!(painted_with_cursor("![text](url)\nafter", 80, (1, 0)));
+}
+
+/// The caret inside the image already took this path; it must keep it.
+#[test]
+fn snap_caret_inside_an_image_reveals_it_without_the_placeholder() {
+    assert_snapshot!(painted_with_cursor("![text](url)\nafter", 80, (0, 4)));
+}
+
+/// The same row with the caret elsewhere: its styled form is nothing at all.
+#[test]
+fn snap_fully_concealed_row_without_the_caret() {
+    assert_snapshot!(painted_with_cursor("[](url)\nafter", 80, (1, 0)));
+}
+
+/// `blockquote_sigil_end` is the quote's first content char, which is the whole
+/// row when it holds no text event — so the reveal window outruns the pane and
+/// wraps. Every char must still paint.
+#[test]
+fn snap_blockquote_html_wraps_under_the_caret() {
+    assert_snapshot!(painted_with_cursor(
+        "> <div class=\"note\">a long html line inside a quote that wraps at forty columns</div>\n\nafter",
+        40,
+        (0, 85)
+    ));
+}
+
+/// A click on the caret's own row lands on the character clicked.
+///
+/// `render_with` reveals the element under the caret, and a revealed element's
+/// sigils occupy cells. The inverse mapper used to measure the row as if
+/// nothing were revealed, so every column past the first revealed sigil came
+/// back short by the width of what it wrongly skipped — clicking the `]` of
+/// `see [docs](url) here` put the caret seven characters away.
+#[test]
+fn a_click_on_the_revealed_row_lands_where_it_was_clicked() {
+    use kimun_notes::components::text_editor::markdown::{MarkdownSpanner, ParsedBuffer};
+
+    let line = "see [docs](url) here";
+    let buf = ParsedBuffer::parse(&ropetext::Text::from(line));
+    let parsed = &buf.lines[0];
+    let caret = Some(8); // inside the link, so the row reveals raw
+
+    // With the row revealed every char draws, so the mapping is the identity.
+    for col in 0..=line.chars().count() {
+        let cell =
+            MarkdownSpanner::rendered_col_with_reveal(line, parsed, 0, col, caret, true, false);
+        let back = MarkdownSpanner::rendered_col_to_logical_with(
+            line, parsed, 0, cell, caret, true, false,
+        );
+        assert_eq!(
+            back, col,
+            "logical {col} drew at cell {cell}, which mapped back to {back}"
+        );
+    }
+}
+
+/// The row-level reveal must not become an element-level one: the caret sitting
+/// just past a link — at end of a row that has visible prose — reveals nothing,
+/// because the row already draws.
+#[test]
+fn caret_at_end_of_a_drawn_row_reveals_nothing() {
+    let out = painted_with_cursor("hello [a](b)\nafter", 40, (0, 12));
+    assert!(
+        out.contains(" 0 |hello a"),
+        "the link must stay styled, not reveal:\n{out}"
+    );
+}
+
+/// The tail of a wrapped setext underline belongs to the heading, so it draws
+/// in the sigil style with no colour seam at the wrap column.
+///
+/// `visible_positions_with` computes `heading_sigil_end` ungated, and that
+/// vector is the wrap mask — so the Layout reserves every cell of the
+/// underline. `render_with` gated the same value on `is_first_visual_line`,
+/// left the continuation row with no spans, and the empty-content fallback
+/// papered over it by re-emitting the raw slice in body `fg`.
+#[test]
+fn wrapped_setext_underline_draws_in_the_sigil_style() {
+    let title = "A rather long setext title that will certainly wrap";
+    let out = painted(
+        &format!("{title}\n{}\n\nbody text after", "=".repeat(50)),
+        40,
+    );
+    let tail: Vec<&str> = out
+        .lines()
+        .skip_while(|line| !line.starts_with(" 3 |"))
+        .take(2)
+        .collect();
+    assert!(
+        tail.first()
+            .is_some_and(|row| row.starts_with(" 3 |==========")),
+        "the reserved 10-cell tail of the underline must be painted:\n{out}"
+    );
+    assert!(
+        tail.get(1)
+            .is_some_and(|run| run.contains("fg=Rgb(124, 111, 100)")),
+        "the tail is heading sigil, so it must not draw in body fg:\n{out}"
+    );
+}

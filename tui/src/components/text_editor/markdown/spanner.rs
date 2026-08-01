@@ -141,6 +141,7 @@ impl MarkdownSpanner {
             &parsed,
             visual_start_col,
             rendered_col,
+            None,
             is_first_visual_line,
             force_raw,
         )
@@ -220,22 +221,27 @@ impl MarkdownSpanner {
         let content_char_count = content.chars().count();
 
         let expanded: Option<usize> = cursor_col.and_then(|c| parsed.elem_at(c));
+        // The caret's row is never left invisible: see `row_reveals_whole`.
+        let reveals_whole_row =
+            Self::row_reveals_whole(logical_line, parsed, cursor_col, force_raw);
 
-        let heading_sigil_end: Option<usize> = if is_first_visual_line {
-            parsed.heading_sigil_end()
-        } else {
-            None
-        };
-        let list_sigil_end: Option<usize> = if is_first_visual_line {
-            parsed.list_sigil_end()
-        } else {
-            None
-        };
-        let blockquote_sigil_end: Option<usize> = if is_first_visual_line {
-            parsed.blockquote_sigil_end()
-        } else {
-            None
-        };
+        // Ungated on the visual row, matching `visible_positions_with` — which
+        // is the wrap mask, and so decides how many cells each row reserves. A
+        // sigil region can outrun the pane (a setext underline, a heading whose
+        // `#` run is the whole row), and the mask reserves those cells on the
+        // continuation row. Gating here left that row with no spans at all.
+        // Inert for an ordinary `# Title` / `- item`, whose `visual_start_col`
+        // is already past the sigil on every row but the first.
+        let heading_sigil_end: Option<usize> = parsed.heading_sigil_end();
+        let list_sigil_end: Option<usize> = parsed.list_sigil_end();
+        // Ungated too, and for the same reason — the reveal window is not the
+        // `>` run: `blockquote_sigil_end` is the element's first content char,
+        // which is the *whole row* when the quote holds no `Event::Text` (an
+        // HTML block inside a quote), so it outruns the pane readily. The
+        // cursor-vs-gutter distinction that does the real work here is
+        // `bq_gutter.is_none()` at the emit site below, which makes this
+        // predicate identical to the mask's `cursor_col.is_some()` gate.
+        let blockquote_sigil_end: Option<usize> = parsed.blockquote_sigil_end();
 
         let mut spans: Vec<Span<'a>> = Vec::new();
         let mut seg_str: String = String::new();
@@ -294,9 +300,11 @@ impl MarkdownSpanner {
                 .iter()
                 .find(|p| p.start_char == pos)
             {
-                let cursor_in_image = expanded.is_some_and(|i| {
-                    elements[i].start_char == img.start_char && elements[i].end_char == img.end_char
-                });
+                let cursor_in_image = reveals_whole_row
+                    || expanded.is_some_and(|i| {
+                        elements[i].start_char == img.start_char
+                            && elements[i].end_char == img.end_char
+                    });
                 if !cursor_in_image {
                     flush(
                         &mut seg_str,
@@ -331,6 +339,7 @@ impl MarkdownSpanner {
                 || in_list_sigil
                 || in_blockquote_sigil
                 || in_expanded_elem
+                || reveals_whole_row
                 || this_elem.is_none();
             if !emit {
                 flush(
@@ -347,10 +356,13 @@ impl MarkdownSpanner {
                 seg_mods = 0;
                 continue;
             }
-            let this_is_expanded = in_expanded_elem;
+            // A row revealing in full is styled as an expanded element would
+            // be — muted, so it reads as raw source under the caret rather than
+            // as a live link the reader could follow.
+            let this_is_expanded = in_expanded_elem || reveals_whole_row;
             let this_is_sigil = (in_heading_sigil || in_list_sigil || in_blockquote_sigil)
                 && !is_content
-                && !in_expanded_elem;
+                && !this_is_expanded;
             let this_mods = parsed.modifiers_at(pos);
             if this_elem != seg_elem
                 || this_is_sigil != seg_is_sigil
@@ -390,18 +402,7 @@ impl MarkdownSpanner {
             &mut spans,
         );
 
-        // Empty-content fallback. Skipped when a blockquote gutter will be
-        // prepended, otherwise a bare `>` line would re-emit its hidden raw
-        // marker on top of the gutter.
-        if spans.is_empty() && bq_gutter.is_none() {
-            spans.push(Span::styled(
-                content,
-                Style::default().fg(theme.fg.to_ratatui()),
-            ));
-        }
-        // Prepend the blockquote bar gutter (cursor-off-line case). Placed after
-        // the empty-fallback so a bare `>` line still gets its gutter without
-        // panicking.
+        // Prepend the blockquote bar gutter (cursor-off-line case).
         if let Some(mut gutter) = bq_gutter {
             gutter.extend(spans);
             spans = gutter;
@@ -483,16 +484,15 @@ impl MarkdownSpanner {
 
         // Reveal follows the caret, never the column being measured.
         let expanded: Option<usize> = reveal_col.and_then(|c| parsed.elem_at(c));
-        let heading_sigil_end: Option<usize> = if is_first_visual_line {
-            parsed.heading_sigil_end()
-        } else {
-            None
-        };
-        let list_sigil_end: Option<usize> = if is_first_visual_line {
-            parsed.list_sigil_end()
-        } else {
-            None
-        };
+        // Must match `render_with`, or the caret draws in the wrong cell on a
+        // row that reveals in full.
+        let reveals_whole_row =
+            Self::row_reveals_whole(logical_line, parsed, reveal_col, force_raw);
+        // Ungated on the visual row, as in `render_with`: a sigil region that
+        // outruns the pane draws on its continuation row, so a column there
+        // must measure it rather than collapsing to zero.
+        let heading_sigil_end: Option<usize> = parsed.heading_sigil_end();
+        let list_sigil_end: Option<usize> = parsed.list_sigil_end();
         let blockquote_sigil_end: Option<usize> = if is_first_visual_line {
             parsed.blockquote_sigil_end()
         } else {
@@ -519,9 +519,11 @@ impl MarkdownSpanner {
                 .iter()
                 .find(|p| p.start_char == pos)
             {
-                let cursor_in_image = expanded.is_some_and(|i| {
-                    elements[i].start_char == img.start_char && elements[i].end_char == img.end_char
-                });
+                let cursor_in_image = reveals_whole_row
+                    || expanded.is_some_and(|i| {
+                        elements[i].start_char == img.start_char
+                            && elements[i].end_char == img.end_char
+                    });
                 if !cursor_in_image {
                     rendered_col += img.placeholder_width;
                 }
@@ -539,6 +541,7 @@ impl MarkdownSpanner {
                 || in_list_sigil
                 || in_blockquote_sigil
                 || in_expanded_elem
+                || reveals_whole_row
                 || !in_any_element;
             if visible {
                 rendered_col += cluster_width_at(cluster, rendered_col);
@@ -548,6 +551,52 @@ impl MarkdownSpanner {
     }
 
     pub fn visible_positions_with(
+        logical_line: &str,
+        parsed: &ParsedLine,
+        cursor_col: Option<usize>,
+        force_raw: bool,
+    ) -> Vec<bool> {
+        let mut visible = Self::visible_positions_raw(logical_line, parsed, cursor_col, force_raw);
+        if cursor_col.is_some() && Self::draws_nothing(&visible) {
+            visible.iter_mut().for_each(|v| *v = true);
+        }
+        visible
+    }
+
+    /// Whether a row's visibility mask would leave it entirely unpainted.
+    fn draws_nothing(visible: &[bool]) -> bool {
+        !visible.is_empty() && visible.iter().all(|v| !v)
+    }
+
+    /// Whether the caret's own row reveals in full rather than element-wise.
+    ///
+    /// **Reveal** is scoped to the element under the caret, and at end of line
+    /// there is no element under the caret — `elem_at` is half-open — so a row
+    /// that is *entirely* concealed markdown (`[](url)`, `**<br/>**`) reveals
+    /// nothing and draws nothing, while the caret sits on it. A row the caret
+    /// is on must never be invisible, so the whole row reveals instead.
+    ///
+    /// A fact about the logical row, not about a visual slice of it, so both
+    /// the wrap mask and the renderer derive it from the same predicate and
+    /// cannot disagree. The empty-content fallback this replaces was keyed on
+    /// the *slice* — which is decided by the wrap that the mask feeds, and so
+    /// could never be stated as a hint.
+    fn row_reveals_whole(
+        logical_line: &str,
+        parsed: &ParsedLine,
+        cursor_col: Option<usize>,
+        force_raw: bool,
+    ) -> bool {
+        cursor_col.is_some()
+            && Self::draws_nothing(&Self::visible_positions_raw(
+                logical_line,
+                parsed,
+                cursor_col,
+                force_raw,
+            ))
+    }
+
+    fn visible_positions_raw(
         logical_line: &str,
         parsed: &ParsedLine,
         cursor_col: Option<usize>,
@@ -597,11 +646,22 @@ impl MarkdownSpanner {
             .collect()
     }
 
+    /// Logical column for the cell at `rendered_col`, inverse of
+    /// [`Self::rendered_col_with_reveal`].
+    ///
+    /// `reveal_col` is the row's real caret column, or `None` when the caret is
+    /// on another row — the same value the render loop passes as `cursor_col`.
+    /// It has to be threaded here because `render_with` reveals the element
+    /// under the caret, and a revealed element's sigils occupy cells: measuring
+    /// the row as if nothing were revealed put every column past the first
+    /// revealed sigil out by the width of what was wrongly skipped.
+    #[allow(clippy::too_many_arguments)]
     pub fn rendered_col_to_logical_with(
         logical_line: &str,
         parsed: &ParsedLine,
         visual_start_col: usize,
         rendered_col: usize,
+        reveal_col: Option<usize>,
         is_first_visual_line: bool,
         force_raw: bool,
     ) -> usize {
@@ -631,16 +691,14 @@ impl MarkdownSpanner {
 
         let content_vis = &parsed.content_vis;
         let logical_char_count = logical_line.chars().count();
-        let heading_sigil_end: Option<usize> = if is_first_visual_line {
-            parsed.heading_sigil_end()
-        } else {
-            None
-        };
-        let list_sigil_end: Option<usize> = if is_first_visual_line {
-            parsed.list_sigil_end()
-        } else {
-            None
-        };
+        // Ungated on the visual row, as in `render_with`: the inverse mapping
+        // has to land inside a sigil region that outran the pane, not past it.
+        let heading_sigil_end: Option<usize> = parsed.heading_sigil_end();
+        let list_sigil_end: Option<usize> = parsed.list_sigil_end();
+        // Reveal, exactly as `render_with` applies it.
+        let expanded: Option<usize> = reveal_col.and_then(|c| parsed.elem_at(c));
+        let reveals_whole_row =
+            Self::row_reveals_whole(logical_line, parsed, reveal_col, force_raw);
         // Mirror `rendered_cursor_col_with`: on the first visual line a
         // blockquote's `> ` markers are revealed (visible) when the cursor is on
         // the row. On non-cursor rows the caller passes `visual_start_col` past
@@ -660,9 +718,6 @@ impl MarkdownSpanner {
                 continue;
             }
 
-            if rendered_count >= rendered_col {
-                return pos;
-            }
             // A click landing inside the placeholder region maps back to the
             // start of the image span (the only logical position that visually
             // corresponds to the placeholder).
@@ -671,22 +726,47 @@ impl MarkdownSpanner {
                 .iter()
                 .find(|p| p.start_char == pos)
             {
-                if rendered_count + img.placeholder_width > rendered_col {
-                    return pos;
+                // Only when a placeholder is actually drawn. A revealed image —
+                // the caret inside it, or the whole row revealing — shows its raw
+                // markdown instead, and counting a placeholder that is not on
+                // screen walks this mapping past every column after it.
+                let drawn = !reveals_whole_row
+                    && !expanded.is_some_and(|i| {
+                        parsed.elements[i].start_char == img.start_char
+                            && parsed.elements[i].end_char == img.end_char
+                    });
+                if drawn {
+                    if rendered_count + img.placeholder_width > rendered_col {
+                        return pos;
+                    }
+                    rendered_count += img.placeholder_width;
                 }
-                rendered_count += img.placeholder_width;
             }
             let is_content = pos < content_vis.len() && content_vis[pos];
             let in_heading_sigil = heading_sigil_end.is_some_and(|end| pos < end);
             let in_list_sigil = list_sigil_end.is_some_and(|end| pos < end);
             let in_blockquote_sigil = blockquote_sigil_end.is_some_and(|end| pos < end);
+            let in_expanded_elem = expanded.is_some_and(|i| {
+                parsed.elements[i].start_char <= pos && pos < parsed.elements[i].end_char
+            });
             let in_any_element = parsed.in_any_element(pos);
-            if is_content
+            let drawn = is_content
                 || in_heading_sigil
                 || in_list_sigil
                 || in_blockquote_sigil
-                || !in_any_element
-            {
+                || in_expanded_elem
+                || reveals_whole_row
+                || !in_any_element;
+            // An undrawn column belongs to the drawn column that follows it, so
+            // the cell resolves past a concealed run rather than to its head.
+            // `ropetext::Layout::position_at_cell` steps the same way, and this
+            // is what keeps `position_at_cell ∘ cell_of` monotone — the reason
+            // to prefer it over "the first position at this cell boundary",
+            // which lands the caret inside the markup that was concealed.
+            if drawn {
+                if rendered_count >= rendered_col {
+                    return pos;
+                }
                 rendered_count += cluster_width_at(cluster, rendered_count);
             }
         }
