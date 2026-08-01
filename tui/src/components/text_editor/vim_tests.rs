@@ -861,6 +861,36 @@ fn indent_line_adds_spaces() {
     assert_eq!(t.rows(), &["    x"]);
 }
 
+/// `>>` reads the buffer's indent step rather than a literal, so it moves a line
+/// by the same amount the plain backend's Tab does.
+///
+/// Pinned with a non-default width because both are 4 today: a reintroduced
+/// literal would pass at the default and fail here. Outdent too, since it counts
+/// the spaces it removes separately.
+#[test]
+fn indent_follows_the_buffers_indent_width() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("x"));
+    t.set_indent_width(2);
+    e.handle_key(&key('>'), &mut t);
+    e.handle_key(&key('>'), &mut t);
+    assert_eq!(t.rows(), &["  x"]);
+    e.handle_key(&key('<'), &mut t);
+    e.handle_key(&key('<'), &mut t);
+    assert_eq!(t.rows(), &["x"]);
+}
+
+/// An outdent removes at most one step, never a second line's worth.
+#[test]
+fn outdent_removes_one_step_not_all_leading_space() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("        x"));
+    t.set_indent_width(3);
+    e.handle_key(&key('<'), &mut t);
+    e.handle_key(&key('<'), &mut t);
+    assert_eq!(t.rows(), &["     x"]);
+}
+
 #[test]
 fn indent_keeps_cursor_over_same_char() {
     // regression: >> left the cursor one row BELOW the indented block;

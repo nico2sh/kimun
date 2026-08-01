@@ -16,8 +16,18 @@
 use ropetext::motion::{self, Goal, Words};
 use ropetext::{Change, Column, EditBuffer as Rope, Position, Span, Text};
 
-/// Visual columns per tab stop when `hard_tab_indent` is off.
-const DEFAULT_TAB_LENGTH: u8 = 4;
+/// How far one indent step moves a line, in spaces, when `hard_tab_indent` is
+/// off — what Tab, `>>` and the visual `>` add, and what their inverses remove.
+///
+/// Not a tab stop, and deliberately not derived from one. A tab stop is elastic
+/// (a `\t` advances to the next multiple of it, so its width depends on where it
+/// starts) and describes how an existing character *draws*; an indent step is a
+/// fixed amount of text an edit *inserts*. Vim keeps the two apart as `tabstop`
+/// and `shiftwidth`, EditorConfig as `tab_width` and `indent_size`, and
+/// `hard_tab_indent` is exactly the setting under which they must differ: insert
+/// one literal `\t`, still draw it [`ropetext::Metrics::DEFAULT_TAB_WIDTH`]
+/// cells wide. That both are 4 today is a coincidence of defaults.
+const DEFAULT_INDENT_WIDTH: u8 = 4;
 
 /// What one call to [`RopeBuffer::edit`] did, measured rather than predicted.
 ///
@@ -153,7 +163,7 @@ pub struct RopeBuffer {
     goal: Option<Column>,
     yank: String,
     search: Option<regex::Regex>,
-    tab_length: u8,
+    indent_width: u8,
     hard_tab_indent: bool,
 }
 
@@ -174,7 +184,7 @@ impl RopeBuffer {
             goal: None,
             yank: String::new(),
             search: None,
-            tab_length: DEFAULT_TAB_LENGTH,
+            indent_width: DEFAULT_INDENT_WIDTH,
             hard_tab_indent: false,
         }
     }
@@ -190,12 +200,14 @@ impl RopeBuffer {
         self.inner.text()
     }
 
-    pub fn tab_length(&self) -> u8 {
-        self.tab_length
+    /// Spaces one indent step inserts. Both backends read this, so `>>` and Tab
+    /// move a line by the same amount.
+    pub fn indent_width(&self) -> u8 {
+        self.indent_width
     }
 
-    pub fn set_tab_length(&mut self, columns: u8) {
-        self.tab_length = columns;
+    pub fn set_indent_width(&mut self, spaces: u8) {
+        self.indent_width = spaces;
     }
 
     pub fn hard_tab_indent(&self) -> bool {
