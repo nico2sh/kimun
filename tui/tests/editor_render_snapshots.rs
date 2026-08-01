@@ -458,6 +458,36 @@ fn snap_blockquote_html_wraps_under_the_caret() {
     ));
 }
 
+/// A click on the caret's own row lands on the character clicked.
+///
+/// `render_with` reveals the element under the caret, and a revealed element's
+/// sigils occupy cells. The inverse mapper used to measure the row as if
+/// nothing were revealed, so every column past the first revealed sigil came
+/// back short by the width of what it wrongly skipped — clicking the `]` of
+/// `see [docs](url) here` put the caret seven characters away.
+#[test]
+fn a_click_on_the_revealed_row_lands_where_it_was_clicked() {
+    use kimun_notes::components::text_editor::markdown::{MarkdownSpanner, ParsedBuffer};
+
+    let line = "see [docs](url) here";
+    let buf = ParsedBuffer::parse(&ropetext::Text::from(line));
+    let parsed = &buf.lines[0];
+    let caret = Some(8); // inside the link, so the row reveals raw
+
+    // With the row revealed every char draws, so the mapping is the identity.
+    for col in 0..=line.chars().count() {
+        let cell =
+            MarkdownSpanner::rendered_col_with_reveal(line, parsed, 0, col, caret, true, false);
+        let back = MarkdownSpanner::rendered_col_to_logical_with(
+            line, parsed, 0, cell, caret, true, false,
+        );
+        assert_eq!(
+            back, col,
+            "logical {col} drew at cell {cell}, which mapped back to {back}"
+        );
+    }
+}
+
 /// The row-level reveal must not become an element-level one: the caret sitting
 /// just past a link — at end of a row that has visible prose — reveals nothing,
 /// because the row already draws.

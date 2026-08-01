@@ -326,9 +326,14 @@ impl Layout {
         let source = text.line(line.logical_row)?;
         let mut column = hint.inset;
         let mut chars = line.chars.start;
-        if cell.column <= column {
-            return text.position(line.logical_row, Column::new(chars));
-        }
+        // No short circuit for a cell inside the inset. Returning the row's
+        // first char here would skip the loop that walks past the row's leading
+        // undrawn clusters, and a syntax layer that hides a marker *and* insets
+        // the row for it — a blockquote drawing a bar in place of `> ` — would
+        // land a click on the hidden marker rather than on the first drawn
+        // character. The loop already answers this: undrawn clusters measure
+        // zero, so a cell in the gutter falls into the first drawn cluster's
+        // span and resolves to it.
         for cluster in source[line.bytes.clone()].graphemes(true) {
             let width = if visible(&hint, chars) {
                 self.metrics.width_at(cluster, column - hint.inset)
