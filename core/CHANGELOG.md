@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.30](https://github.com/nico2sh/kimun/compare/kimun_core-v0.2.29...kimun_core-v0.2.30) - 2026-08-01
+
+### Fixed
+
+- fmt
+- position panic
+- line breaks are not changed on save
+
 ## [0.2.29](https://github.com/nico2sh/kimun/compare/kimun_core-v0.2.28...kimun_core-v0.2.29) - 2026-07-20
 
 ### Added
