@@ -36,7 +36,6 @@ pub enum Operation {
     DeleteWordForward,
     Insert(char),
     InsertNewline,
-    InsertTab,
     /// Backspace.
     DeleteBack,
     /// Delete.
@@ -94,7 +93,11 @@ pub fn operation(key: KeyEvent) -> Option<Operation> {
         // than ignoring it.
         (KeyModifiers::NONE, KeyCode::Char(c)) => Some(Operation::Insert(c)),
         (KeyModifiers::NONE, KeyCode::Enter) => Some(Operation::InsertNewline),
-        (KeyModifiers::NONE, KeyCode::Tab) => Some(Operation::InsertTab),
+        // No Tab: the component intercepts it ahead of this table and routes it
+        // to `indent_lines`, which indents whole lines by the **indent step**.
+        // The operation that used to sit here inserted spaces to the next tab
+        // stop computed from the cursor's *char* column — a third statement of
+        // the tab-stop rule, on a basis neither the wrap nor the renderer uses.
         (KeyModifiers::NONE, KeyCode::Backspace) => Some(Operation::DeleteBack),
         (KeyModifiers::NONE, KeyCode::Delete) => Some(Operation::DeleteForward),
 
@@ -134,7 +137,6 @@ pub fn apply(op: Operation, buf: &mut RopeBuffer) -> bool {
             buf.insert_newline();
             true
         }
-        Operation::InsertTab => buf.insert_tab(),
         Operation::DeleteBack => buf.delete_char(),
         Operation::DeleteForward => buf.delete_next_char(),
     }
@@ -236,7 +238,9 @@ mod tests {
     fn unmodified_keys_type() {
         assert_eq!(plain(KeyCode::Char('x')), Some(Operation::Insert('x')));
         assert_eq!(plain(KeyCode::Enter), Some(Operation::InsertNewline));
-        assert_eq!(plain(KeyCode::Tab), Some(Operation::InsertTab));
+        // Tab is claimed by the component ahead of this table, so it is not a
+        // typing key here — see the note beside `InsertNewline` in `operation`.
+        assert_eq!(plain(KeyCode::Tab), None);
         assert_eq!(plain(KeyCode::Backspace), Some(Operation::DeleteBack));
         assert_eq!(plain(KeyCode::Delete), Some(Operation::DeleteForward));
         assert_eq!(
