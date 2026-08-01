@@ -300,9 +300,11 @@ impl MarkdownSpanner {
                 .iter()
                 .find(|p| p.start_char == pos)
             {
-                let cursor_in_image = expanded.is_some_and(|i| {
-                    elements[i].start_char == img.start_char && elements[i].end_char == img.end_char
-                });
+                let cursor_in_image = reveals_whole_row
+                    || expanded.is_some_and(|i| {
+                        elements[i].start_char == img.start_char
+                            && elements[i].end_char == img.end_char
+                    });
                 if !cursor_in_image {
                     flush(
                         &mut seg_str,
@@ -517,9 +519,11 @@ impl MarkdownSpanner {
                 .iter()
                 .find(|p| p.start_char == pos)
             {
-                let cursor_in_image = expanded.is_some_and(|i| {
-                    elements[i].start_char == img.start_char && elements[i].end_char == img.end_char
-                });
+                let cursor_in_image = reveals_whole_row
+                    || expanded.is_some_and(|i| {
+                        elements[i].start_char == img.start_char
+                            && elements[i].end_char == img.end_char
+                    });
                 if !cursor_in_image {
                     rendered_col += img.placeholder_width;
                 }
@@ -722,10 +726,21 @@ impl MarkdownSpanner {
                 .iter()
                 .find(|p| p.start_char == pos)
             {
-                if rendered_count + img.placeholder_width > rendered_col {
-                    return pos;
+                // Only when a placeholder is actually drawn. A revealed image —
+                // the caret inside it, or the whole row revealing — shows its raw
+                // markdown instead, and counting a placeholder that is not on
+                // screen walks this mapping past every column after it.
+                let drawn = !reveals_whole_row
+                    && !expanded.is_some_and(|i| {
+                        parsed.elements[i].start_char == img.start_char
+                            && parsed.elements[i].end_char == img.end_char
+                    });
+                if drawn {
+                    if rendered_count + img.placeholder_width > rendered_col {
+                        return pos;
+                    }
+                    rendered_count += img.placeholder_width;
                 }
-                rendered_count += img.placeholder_width;
             }
             let is_content = pos < content_vis.len() && content_vis[pos];
             let in_heading_sigil = heading_sigil_end.is_some_and(|end| pos < end);
