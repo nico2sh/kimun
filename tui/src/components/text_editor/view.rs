@@ -1778,11 +1778,16 @@ impl MarkdownEditorView {
         } else {
             vl.chars.start
         };
+        // The same rule the render loop uses to decide `cursor_col`: only the
+        // caret's own row is revealed, so only there does the mapping have to
+        // account for a revealed element's sigils occupying cells.
+        let reveal_col = (vl.logical_row == self.cursor_snapshot.0).then_some(self.cursor_snapshot.1);
         let logical_col = MarkdownSpanner::rendered_col_to_logical_with(
             logical_line,
             parsed,
             effective_start_col,
             vcol,
+            reveal_col,
             vl.first,
             force_raw,
         );
