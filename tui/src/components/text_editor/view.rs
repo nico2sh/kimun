@@ -1781,7 +1781,8 @@ impl MarkdownEditorView {
         // The same rule the render loop uses to decide `cursor_col`: only the
         // caret's own row is revealed, so only there does the mapping have to
         // account for a revealed element's sigils occupying cells.
-        let reveal_col = (vl.logical_row == self.cursor_snapshot.0).then_some(self.cursor_snapshot.1);
+        let reveal_col =
+            (vl.logical_row == self.cursor_snapshot.0).then_some(self.cursor_snapshot.1);
         let logical_col = MarkdownSpanner::rendered_col_to_logical_with(
             logical_line,
             parsed,
@@ -2045,9 +2046,14 @@ mod tests {
     /// the engine ignored concealment. It parked the cursor on the row under
     /// test, and the cursor's row is *revealed* — so it compared concealment
     /// against its own suspension.)
+    /// Now green, and it is the precondition for deleting `click_to_logical_u16`:
+    /// the engine's mapper may replace the TUI's exactly when the two agree.
+    /// Closing the last six took a change on each side — the TUI resolving a
+    /// cell to the drawn column *after* a concealed run rather than to the run's
+    /// head, and `position_at_cell` dropping a short circuit that returned the
+    /// row's first char for any cell inside the inset, skipping the very loop
+    /// that walks past a blockquote's hidden `> `.
     #[test]
-    #[ignore = "documents a real gap: the hints do not yet carry the blockquote \
-                sigil skip, so the engine's mapper cannot replace the TUI's"]
     fn the_engine_and_the_tui_click_mappers_agree() {
         let corpus: Vec<Vec<String>> = vec![
             vec!["plain short".to_string()],

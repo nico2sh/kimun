@@ -714,9 +714,6 @@ impl MarkdownSpanner {
                 continue;
             }
 
-            if rendered_count >= rendered_col {
-                return pos;
-            }
             // A click landing inside the placeholder region maps back to the
             // start of the image span (the only logical position that visually
             // corresponds to the placeholder).
@@ -738,14 +735,23 @@ impl MarkdownSpanner {
                 parsed.elements[i].start_char <= pos && pos < parsed.elements[i].end_char
             });
             let in_any_element = parsed.in_any_element(pos);
-            if is_content
+            let drawn = is_content
                 || in_heading_sigil
                 || in_list_sigil
                 || in_blockquote_sigil
                 || in_expanded_elem
                 || reveals_whole_row
-                || !in_any_element
-            {
+                || !in_any_element;
+            // An undrawn column belongs to the drawn column that follows it, so
+            // the cell resolves past a concealed run rather than to its head.
+            // `ropetext::Layout::position_at_cell` steps the same way, and this
+            // is what keeps `position_at_cell ∘ cell_of` monotone — the reason
+            // to prefer it over "the first position at this cell boundary",
+            // which lands the caret inside the markup that was concealed.
+            if drawn {
+                if rendered_count >= rendered_col {
+                    return pos;
+                }
                 rendered_count += cluster_width_at(cluster, rendered_count);
             }
         }
