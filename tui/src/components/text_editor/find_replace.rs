@@ -1,6 +1,6 @@
 //! The pure half of find-and-replace: compiling a **find pattern**, counting
 //! its matches, expanding a replacement, and building the substituted lines a
-//! **replace preview** draws (adr/0033, adr/0034, adr/0035).
+//! **replace preview** draws.
 //!
 //! Nothing here touches a `TextArea`, a `Frame`, or the editor — it is
 //! `&[String]` in, values out, so the semantics that are easy to get wrong
@@ -20,7 +20,7 @@ pub struct FindPattern {
     /// smartcase is never a silent decision.
     case_sensitive: bool,
     /// True when the pattern captures, which is what gates `$1` expansion in
-    /// the replacement (adr/0034).
+    /// the replacement.
     has_captures: bool,
 }
 
@@ -96,7 +96,7 @@ impl FindPattern {
     /// Expand `replacement` for one match.
     ///
     /// Capture syntax (`$1`, `${name}`) is honoured **only when the pattern
-    /// captures** (adr/0034). Otherwise the replacement is literal, so a `$`
+    /// captures**. Otherwise the replacement is literal, so a `$`
     /// in ordinary note content — a price, inline LaTeX — survives instead of
     /// silently expanding to the empty string.
     ///
@@ -313,7 +313,7 @@ mod tests {
         assert_eq!(p.count_matches(lines(&["todo Todo TODO"]).iter()), 1);
     }
 
-    // ── capture gating (adr/0034) ──────────────────────────────────────────
+    // ── capture gating ──────────────────────────────────────────
 
     #[test]
     fn dollar_is_literal_when_pattern_does_not_capture() {

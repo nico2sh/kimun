@@ -1,12 +1,16 @@
 //! The component inside Kimün that owns every dealing with the RAG server:
 //! connection/capability probing, pushing note changes, and hash-diff
-//! reconciliation (see CONTEXT.md "RAG client", adr/0018–0021). Core stays
-//! network-free; it feeds this module only through the [`observer`] seam.
+//! reconciliation (see CONTEXT.md, "Server client"). Core stays network-free;
+//! it feeds this module only through the [`observer`] seam, which reports a
+//! path, a content hash and upsert-or-delete, and knows nothing of RAG.
 //!
-//! Published as the `kimun_server_client` crate until ADR-0042 folded it in.
-//! Like the `ropetext` module, it stays self-contained: nothing here may name
-//! `crate::` outside `crate::server_client::`, checked in CI. `kimun_core` is
-//! the one kimün dependency it keeps, and it would keep it as a crate too.
+//! Published as the `kimun_server_client` crate until kimun-notes went to
+//! crates.io — which forced every path dependency of a published crate to be
+//! published too, and this one was on crates.io for no reason of its own. Like
+//! the `ropetext` module it stays self-contained, so it can go back out if a
+//! second consumer (a GUI) ever wants it: nothing here may name `crate::`
+//! outside `crate::server_client::`, checked in CI. `kimun_core` is the one
+//! kimün dependency it keeps, and it would keep that as a crate too.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -224,7 +228,7 @@ impl RagClient {
     /// The server's `{note-path → hash}` set for this vault (reconcile input).
     ///
     /// `vault_id` is interpolated into the URL path un-encoded; this is safe
-    /// because it is always a UUID (from `.kimun/vault-id`, adr/0020) and thus
+    /// because it is always a UUID (from `.kimun/vault-id`) and thus
     /// URL-safe. If that ever changes, percent-encode the segment here.
     pub async fn server_hashes(&self) -> Result<HashMap<String, String>, RagError> {
         let path = format!("/api/collections/{}/hashes", self.vault_id);

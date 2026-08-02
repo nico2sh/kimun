@@ -2,7 +2,7 @@
 //!
 //! A child module of `vim`, attached by `#[path]` rather than moved into a
 //! directory: it reaches the engine's private parse methods exactly as it did
-//! inline, which ADR-0016 relies on — the parse seam is exercised from here
+//! inline, which the parse seam's design relies on — it is exercised from here
 //! precisely because it is *not* a public interface.
 
 use super::*;
@@ -25,8 +25,7 @@ fn ta() -> RopeBuffer {
 // they pin the grammar — counts, the operator×motion count multiply, the
 // g-grammar, pending cancel, text objects, find targets — as `Parsed`/
 // `Command` values. The 173 handle_key tests below cover parse+apply
-// end-to-end; these document the command contract in isolation (adr/0011,
-// adr/0016).
+// end-to-end; these document the command contract in isolation.
 
 /// Unwrap the `Command` a key parsed into, or fail loudly.
 fn cmd(p: Parsed) -> Command {
@@ -45,7 +44,7 @@ fn parse_seq(e: &mut VimEngine, keys: &str) -> Parsed {
     last
 }
 
-// ── OS clipboard chords (adr/0031) ───────────────────────────────────────
+// ── OS clipboard chords ───────────────────────────────────────
 //
 // The bug these pin: the engine ran BEFORE the host's clipboard shortcuts
 // and swallowed every Ctrl-modified char as `NoOp`, so Ctrl-C/X/V worked in
@@ -110,7 +109,7 @@ fn visual_line_clipboard_copy_takes_whole_lines_with_a_trailing_newline() {
 
 #[test]
 fn clipboard_chords_never_touch_the_unnamed_register() {
-    // The two channels are independent (adr/0031): a Ctrl-X must not
+    // The two channels are independent: a Ctrl-X must not
     // clobber what `y` put in the register, the mirror of the rule that
     // `dd` must not clobber the OS clipboard.
     let mut e = VimEngine::default();

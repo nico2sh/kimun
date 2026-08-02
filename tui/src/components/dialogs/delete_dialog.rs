@@ -43,7 +43,7 @@ impl DeleteConfirmDialog {
                 let tx_clone = tx.clone();
                 tokio::spawn(async move {
                     // Core classifies the entry and routes to the right delete
-                    // (note / directory / attachment); see ADR-0017.
+                    // (note / directory / attachment).
                     let result = vault.delete_entry(&path).await;
                     match result {
                         Ok(()) => {

@@ -1,5 +1,5 @@
 //! The [`IndexObserver`] the client registers on the vault, and the dirty-set it
-//! feeds. Per adr/0019 the dirty-set is best-effort in-memory: a lost entry
+//! feeds. The dirty-set is deliberately best-effort in-memory: a lost entry
 //! costs a reconciliation pass, not a lost update.
 
 use std::collections::HashMap;

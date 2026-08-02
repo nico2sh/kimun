@@ -21,7 +21,7 @@ pub struct VecQdrant {
     dim: usize,
     /// Namespace prefix; the effective Qdrant collection for a vault is
     /// `<prefix>-<vault-id>` (or just the vault-id when the prefix is empty).
-    /// One vault ↔ one Qdrant collection (adr/0020).
+    /// One vault ↔ one Qdrant collection.
     collection_prefix: String,
 }
 
@@ -47,7 +47,7 @@ impl VecQdrant {
 
     /// The reserved qdrant collection holding the embedder fingerprint — inside
     /// the server's prefix namespace, excluded from collection listings by the
-    /// `__` marker (adr/0025).
+    /// `__` marker.
     fn fingerprint_collection(&self) -> String {
         self.collection_name("__fingerprint")
     }

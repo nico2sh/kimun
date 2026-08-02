@@ -250,7 +250,7 @@ impl KimunHandler {
         let topics = self.extract_leaf_headings(&vault_path).await?;
 
         // Search each topic; deduplicate results; cap at max. Normalize to the
-        // canonical (vault-absolute) form the index returns (adr/0021) so the
+        // canonical (vault-absolute) form the index returns so the
         // relative source path excludes itself from its own related list.
         let norm = |p: &VaultPath| p.flatten().absolute().to_string();
         let mut seen: HashSet<String> = HashSet::new();
@@ -663,7 +663,7 @@ impl KimunHandler {
 
         // Build exclusion set: outlinks + backlinks + source itself. Normalize
         // every path to the canonical (vault-absolute) form the index search
-        // returns (adr/0021) — self and outlinks arrive relative, backlinks
+        // returns — self and outlinks arrive relative, backlinks
         // absolute, so a raw string mix would never match the candidates.
         let norm = |p: &VaultPath| p.flatten().absolute().to_string();
         let mut excluded: HashSet<String> = HashSet::new();

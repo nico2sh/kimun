@@ -272,7 +272,7 @@ impl MoveDialog {
                     tokio::spawn(async move {
                         // A move is a cross-directory rename; core classifies the
                         // entry and routes to the right rename (note / directory
-                        // / attachment); see ADR-0017.
+                        // / attachment).
                         let result = vault.rename_entry(&from, &new_path).await;
                         match result {
                             Ok(()) => {

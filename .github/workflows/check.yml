@@ -45,19 +45,23 @@ jobs:
       - name: Format check
         run: cargo fmt --all -- --check
 
-      # `tui/src/ropetext` and `tui/src/server_client` were workspace crates until
-      # adr/0042 folded them in. What made them crates was not the manifest but the
+      # `tui/src/ropetext` and `tui/src/server_client` were workspace crates,
+      # folded in because crates.io will not publish a crate that path-depends on
+      # an unpublished one. What made them crates was not the manifest but the
       # boundary — nothing kimün-flavoured could reach inside, because a separate
       # crate cannot say `crate::settings::Theme`. A module can, so the compiler
       # stopped enforcing it and this step took over. Keeping the rule keeps the
       # option of `git mv`-ing either one back out into a crate of its own.
       - name: Module boundary (ropetext, server_client stay extractable)
         run: |
+          # Comment lines are dropped first: the module docs state the rule, and
+          # stating it means writing `crate::`. Only real paths are checked.
           leaks=$(grep -rn --include='*.rs' -E '\bcrate::' \
                     tui/src/ropetext tui/src/server_client \
+                  | grep -vE '^[^:]+:[0-9]+: *//' \
                   | grep -vE '\bcrate::(ropetext|server_client)::' || true)
           if [ -n "$leaks" ]; then
-            echo "::error::These modules must not reach into the rest of kimün (adr/0042):"
+            echo "::error::These modules must not reach into the rest of kimün:"
             echo "$leaks"
             exit 1
           fi

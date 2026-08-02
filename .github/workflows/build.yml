@@ -127,7 +127,7 @@ jobs:
             platform="${platform#dist-}"
             base="kimun-${VERSION}-${platform}"
 
-            # Raw, uncompressed binary asset for in-app self-update (adr/0014).
+            # Raw, uncompressed binary asset for in-app self-update.
             # The running app downloads this directly, checksum-verifies it, and
             # swaps it in place — no client-side archive extraction needed.
             if [[ "$platform" == windows-* ]]; then

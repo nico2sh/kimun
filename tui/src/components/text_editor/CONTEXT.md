@@ -10,8 +10,7 @@ the seams between the backend, the snapshot, and the render layer.
 
 **Backend** (`BackendState`):
 The editing engine driving the buffer — either the in-process `TextArea` or an
-external `nvim --embed` process. An enum with inherent op-methods, not a trait
-(see ADR-0009).
+external `nvim --embed` process. An enum with inherent op-methods, not a trait.
 _Avoid_: driver, engine, provider, adapter (the enum is not a trait seam).
 
 **Snapshot** (`NvimSnapshot` / `EditorSnapshot`):

@@ -1,6 +1,6 @@
 //! What the editor actually paints, pinned cell by cell.
 //!
-//! This is the contract the editing-engine swap (adr/0039) must preserve: any
+//! This is the contract the editing-engine swap must preserve: any
 //! diff here is a regression until argued otherwise, and the handful of intended
 //! differences are enumerated in `plans/2026-07-30-editor-engine.md`.
 //!

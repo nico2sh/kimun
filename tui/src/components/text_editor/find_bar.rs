@@ -1,5 +1,4 @@
-//! The **find bar**: searching and replacing inside the open buffer
-//! (adr/0033–0036).
+//! The **find bar**: searching and replacing inside the open buffer.
 //!
 //! A module rather than a cluster of methods on the editor. The bar reaches
 //! outside itself for exactly one thing — the **edit buffer** — so it takes one
@@ -61,7 +60,7 @@ pub struct FindBar {
     // `RopeBuffer` — is the follow-up that lets these go private again.
     pub(super) input: SingleLineInput,
     /// `Some` once the **replace field** is revealed. Its presence is what
-    /// puts the bar in replace mode (adr/0033).
+    /// puts the bar in replace mode.
     pub(super) replace: Option<SingleLineInput>,
     pub(super) focus: BarFocus,
     pub(super) status: SearchStatus,
@@ -135,7 +134,7 @@ impl FindBar {
     /// Everything the bar wants painted this frame.
     /// Costs one O(rows) pass per frame while the bar is open — the preview when
     /// replacing, the match scan otherwise, never both. That is inherent to
-    /// adr/0035, where the preview *is* a synthetic whole-buffer snapshot.
+    /// the replace preview being a synthetic whole-buffer snapshot.
     ///
     /// Memoizing on (revision, pattern, replacement, current) was considered and
     /// left undone: the bar redraws on input, and find-bar input almost always
@@ -360,8 +359,8 @@ impl FindBar {
         };
         // Hand the textarea the *effective* pattern (smartcase already baked
         // in), not the raw query — otherwise its stepping and our highlighting
-        // would disagree about case, which is exactly the split adr/0033 set
-        // out to close.
+        // would disagree about case, which is exactly the split the bar's own
+        // case model sets out to close.
         let _ = buf.set_search_pattern(compiled.as_regex().as_str());
         self.match_count = compiled.count_matches(buf.text().lines());
         self.pattern = Some(compiled);
@@ -436,7 +435,7 @@ impl FindBar {
         // Both ends have to be addressable before anything is edited. A match can
         // END inside a grapheme cluster — searching `e` over a decomposed `é`
         // does exactly that — and `Jump` refuses such a column by design
-        // (adr/0040: a position the buffer cannot address is a no-op, never a
+        // (a position the buffer cannot address is a no-op, never a
         // clamp). Discovering that half-way through the edit below leaves the
         // selection empty, so the replacement is *inserted* beside the match
         // instead of replacing it. Refuse rather than corrupt; `advance` below
@@ -495,7 +494,7 @@ impl FindBar {
         // One **undo group** spanning the whole rewrite. The buffer also
         // derives `bulk` from it — a replace all rewrites rows the cursor does
         // not point at, which is exactly what `compute_damage_range`'s cursor
-        // fast path assumes cannot happen (adr/0035).
+        // fast path assumes cannot happen.
         buf.edit(|buf| {
             buf.select_all();
             buf.insert_str(&joined);
@@ -574,7 +573,7 @@ impl FindBar {
     ///
     /// The key map is the same on both backends — the vim emulation's old
     /// "Enter confirms and closes" special case is gone, because two Enters
-    /// over one widget is what made the bar ambiguous (adr/0033).
+    /// over one widget is what made the bar ambiguous.
     pub fn handle_key(&mut self, key: &KeyEvent, buf: &mut RopeBuffer) -> KeyOutcome {
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -597,7 +596,7 @@ impl FindBar {
         // Replace all. `SingleLineInput` deliberately bubbles Ctrl-modified
         // chars rather than typing them, so this is the documented seam. The
         // chord is shared with the editor's select-all and resolved by focus,
-        // as adr/0032 does for Ctrl+Y.
+        // as the row-declared yank does for Ctrl+Y.
         if ctrl && matches!(key.code, KeyCode::Char('a') | KeyCode::Char('A')) {
             self.replace_all_key(buf);
             return stay;

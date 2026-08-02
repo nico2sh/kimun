@@ -7,7 +7,7 @@
 //! effect on restart** — the embedder, vector store, and LLM client are all
 //! built at startup (changing the embedder even changes the vector width), so
 //! the running instance is never mutated live. The page says as much, and the
-//! Restart button triggers that restart in-process (adr/0028): the binary's
+//! Restart button triggers that restart in-process: the binary's
 //! serving loop drains, re-reads the file, and rebinds.
 //!
 //! Auth reuses the server's bearer token: a login form exchanges the token for
@@ -310,7 +310,7 @@ provider = "gemini"
         Arc::new(AppState::new(Some(rag), config).with_config_path(path))
     }
 
-    /// An unconfigured server: no embedder in config, no pipeline (adr/0024).
+    /// An unconfigured server: no embedder in config, no pipeline.
     fn unconfigured_state() -> Arc<AppState> {
         let config: RagConfig =
             toml::from_str("[server]\n[vector_db]\ntype = \"sqlite\"\n[reranker]\n").unwrap();
@@ -505,7 +505,7 @@ api_key = "gemini-key"
     #[tokio::test]
     async fn saving_provider_none_clears_llm_to_semantic_only() {
         // Selecting "none" disables Q&A: llm is cleared to None, not written as a
-        // keyless provider that would fail the boot key gate (adr/0022).
+        // keyless provider that would fail the boot key gate.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("server.toml");
         let app = app(state_from(
@@ -699,7 +699,7 @@ api_key = "gemini-key"
     #[tokio::test]
     async fn answer_handler_rejects_when_semantic_only() {
         // A semantic-only server (no [llm]) must reject /api/answer at submit
-        // time with 503, not mint a job that can only fail (adr/0022).
+        // time with 503, not mint a job that can only fail.
         let config: RagConfig =
             toml::from_str("[server]\n[vector_db]\ntype = \"qdrant\"\n[reranker]\n").unwrap();
         assert!(config.llm.is_none());

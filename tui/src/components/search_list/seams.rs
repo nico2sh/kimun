@@ -34,7 +34,7 @@ pub trait SearchRow: Clone + Send + Sync + 'static {
     /// Declared by the row rather than by the surface displaying it, so every
     /// list built on [`SearchList`](super::SearchList) inherits the yank instead
     /// of each panel wiring its own key — which is how the note browser ended up
-    /// without one while the Query panel had it (adr/0032).
+    /// without one while the Query panel had it.
     fn yank_target(&self) -> Option<YankTarget> {
         None
     }

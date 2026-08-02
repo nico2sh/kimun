@@ -239,8 +239,8 @@ pub fn default_quit_combo() -> KeyCombo {
 
 /// Canonical default combo for [`ActionShortcuts::YankRow`]. Sourced once for
 /// the same reason as [`default_quit_combo`], plus one more: `SearchList` claims
-/// this chord itself so every list surface yanks without per-panel wiring
-/// (adr/0032), and it must be the same chord the shortcut tier advertises.
+/// this chord itself so every list surface yanks without per-panel wiring,
+/// and it must be the same chord the shortcut tier advertises.
 pub fn default_yank_combo() -> KeyCombo {
     KeyCombo::new(KeyModifiers::new().and_ctrl(), KeyStrike::KeyY)
 }
@@ -421,7 +421,7 @@ mod tests {
 
     /// `SearchList` resolves its yank chords through this, so a rebinding has to
     /// come back out of it — otherwise the help dialog advertises one chord
-    /// while the lists answer to another (adr/0032).
+    /// while the lists answer to another.
     #[test]
     fn combos_for_follows_a_rebinding() {
         let default = crate::settings::AppSettings::default().key_bindings;

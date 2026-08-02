@@ -1,6 +1,7 @@
 //! Self-update: download the raw binary, verify its checksum, and swap the
 //! running executable in place. Blocking (ureq) — call on `spawn_blocking`.
-//! See adr/0014.
+//! The release ships a raw, uncompressed binary asset precisely so this step
+//! never has to decompress anything.
 
 use std::io::Read;
 

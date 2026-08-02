@@ -16,12 +16,25 @@
 //!
 //! # It knows nothing of kimün
 //!
-//! This was a workspace crate until ADR-0042 folded it in, and it is written to
-//! go back out to one on demand — a reusable editor widget is the likely reason.
-//! Nothing here may name `crate::` outside `crate::ropetext::`, which is the one
-//! property extraction depends on; `.github/workflows/check.yml` enforces it now
-//! that the crate graph no longer can. See adr/0039 for why the engine exists at
-//! all, adr/0041 for why markdown stays outside it, and adr/0042 for the move.
+//! The omissions above are not incidental — they are the reason this module was
+//! written. It replaced a third-party textarea whose contract kept leaking
+//! editor policy (its own undo keybindings, its own idea of what a line is) into
+//! callers, and it earns its place only by staying narrower than what it
+//! replaced. The name carries no `kimun` prefix for the same reason: anything
+//! kimün-flavoured that tries to move in should look wrong on sight.
+//!
+//! This was a separate workspace crate, which made that a compiler rule — a
+//! crate cannot say `crate::settings::Theme`. It was folded in because
+//! kimun-notes is published to crates.io, and crates.io refuses to publish a
+//! crate that path-depends on an unpublished one: a workspace member the
+//! published crate depends on is either published forever or not a crate. This
+//! had no API worth stabilising, so it stopped being a crate.
+//!
+//! The rule outlived the crate. Nothing here may name `crate::` outside
+//! `crate::ropetext::`, checked in `.github/workflows/check.yml` now that the
+//! crate graph no longer can. That is the one property extraction depends on:
+//! going back out to a crate — for a reusable editor widget, say — is a `git mv`
+//! and a manifest, with nothing to untangle first.
 //!
 //! # Positions are checked, never approximated
 //!

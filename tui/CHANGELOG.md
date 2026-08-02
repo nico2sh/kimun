@@ -512,7 +512,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - *(tui)* add CloseOverlay event; modals impl Overlay and emit it
 - *(tui)* add OverlayHost + Overlay trait (single-slot, focus save/restore)
 - *(tui)* note-name autocomplete on </>/= operators (ADR-0005 alphabet)
-- *(core)* query operator alphabet (ADR-0005) + forward-links filter
+- *(core)* query operator alphabet + forward-links filter
 - *(tui)* SearchList .intercept + render/render_query/render_autocomplete + handle_mouse
 - *(tui)* autocomplete host inside SearchList (one canonical snapshot)
 - *(tui)* SuggestionSource port (SuggestionItem) — autocomplete decoupled from the vault

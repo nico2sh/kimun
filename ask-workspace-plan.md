@@ -4,7 +4,7 @@
 
 **Goal:** Replace the single-shot `RagAnswerOverlay` with the **Ask workspace**: a rail entry that swaps the drawer to a per-turn Sources view and the editor area to a conversation Thread with docked composer, citations, source reader, and save-answer-as-note.
 
-**Architecture:** Panel content inside the editor screen, not a screen or overlay (adr/0030). Server gains an optional `history` field on `/api/answer` and a citation-numbered prompt; the client crate forwards history; the TUI grows an `ask` domain module (thread state, citation logic, note export) plus two components (`ThreadPanel` in the editor area, `SourcesPanel` in the drawer). Design decisions are recorded in CONTEXT.md (Ask section), adr/0030, and the `ask-handoff-deviations` memory — the HTML prototype in `ask-rag-handoff/` is **not** the spec of record where they disagree.
+**Architecture:** Panel content inside the editor screen, not a screen or overlay. Server gains an optional `history` field on `/api/answer` and a citation-numbered prompt; the client crate forwards history; the TUI grows an `ask` domain module (thread state, citation logic, note export) plus two components (`ThreadPanel` in the editor area, `SourcesPanel` in the drawer). Design decisions are recorded in CONTEXT.md (Ask section) and the `ask-handoff-deviations` memory — the HTML prototype in `ask-rag-handoff/` is **not** the spec of record where they disagree.
 
 **Tech Stack:** Rust workspace — `kimun_core` (core), `kimun-notes` (TUI, ratatui), `kimun_server` (axum), `kimun_server_client` (reqwest).
 
@@ -636,7 +636,7 @@ fn note_content_links_citations_and_lists_sources() {
 
 ```rust
 /// Async data addressed to the Ask workspace. Its own family — Ask is a
-/// panel, and `OverlayData` is routed only to the OverlayHost (adr/0030).
+/// panel, and `OverlayData` is routed only to the OverlayHost.
 #[derive(Debug)]
 pub enum AskData {
     /// A completed (or failed) answer for the turn with this id. Stale ids
@@ -683,7 +683,7 @@ fn showing_an_attachment_replaces_ask() {
 ```
 
 - [ ] **Step 2: Verify failure** — `cargo test -p kimun-notes --bins panel_set` → FAIL
-- [ ] **Step 3: Implement** — mechanical: every `self.attachment.is_some()` → `matches!(self.content, EditorAreaContent::Attachment(_))` etc.; render/input dispatch gets an `Ask` arm mirroring the attachment arm. Keep the ADR-0017 comment updated to name three arms.
+- [ ] **Step 3: Implement** — mechanical: every `self.attachment.is_some()` → `matches!(self.content, EditorAreaContent::Attachment(_))` etc.; render/input dispatch gets an `Ask` arm mirroring the attachment arm. Keep the editor-area sum-type comment updated to name three arms.
 - [ ] **Step 4: Run** — `cargo test -p kimun-notes --bins` → PASS (whole bin — this refactor touches routing)
 - [ ] **Step 5: Report.**
 
@@ -819,7 +819,7 @@ Panel state tests: `set_turn` same-id keeps cursor; `ReaderNote` for the wrong p
   1. Drawer switches **to** `Ask` → `panel_set.show_ask(self.ask_stash.take().unwrap_or_else(new_panel))`; sync `SourcesPanel` from the thread's selected turn.
   2. Drawer switches **away** from `Ask` → `self.ask_stash = panel_set.take_ask()` (thread survives; CONTEXT.md: Thread lifetime).
   3. `AppEvent::Ask(data)` → route `AnswerReady` to the live ThreadPanel **or the stash** (an answer may land while the user browses FILES), `ReaderNote` to `drawer.ask_sources_mut()`. After `AnswerReady`, if the completed turn is the selected one, refresh the SourcesPanel.
-  4. `AppEvent::RagStatus(s)` (existing handler): when `s.llm_available()` changed, rebuild the rail with the new `ask_visible` (the SEM rebuild-on-config-change pattern) and call `set_capability` on the live panel and the stash. Active Ask view stays put when capability drops (adr/0030).
+  4. `AppEvent::RagStatus(s)` (existing handler): when `s.llm_available()` changed, rebuild the rail with the new `ask_visible` (the SEM rebuild-on-config-change pattern) and call `set_capability` on the live panel and the stash. Active Ask view stays put when capability drops.
   5. `ActionShortcuts::OpenRagAnswer` (label → `"Ask"`, serialized name kept for config compat): now performs rule 1 — the flash-message gates at :1435-1453 collapse to a single `llm_available` check (hidden rail entry ⇒ shortcut is the only path in).
   6. Leader tree: `a` subtree — `a` focus composer (entering Ask if needed) · `n` `thread_mut().clear()` + sources reset · `y`/`e`/`r` forward to the ThreadPanel's turn actions · `s` open top source of the selected turn in the reader. Follow the existing `LeaderAction` enum + which-key registration pattern (:1732 shows the arm idiom).
   7. Turn-selection sync each frame: `if let Some(turn_id) = panel.take_selection_dirty() { drawer.ask_sources_mut().set_turn(turn_id, sources.clone()) }`, plus citation clicks focusing the matching source row.

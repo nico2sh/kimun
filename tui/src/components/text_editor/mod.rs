@@ -181,7 +181,7 @@ fn surround_pair(c: char) -> Option<(&'static str, &'static str)> {
 ///
 /// Refuses rather than approximating: this used to saturate both endpoints at
 /// `u16::MAX`, which on a pathologically large buffer silently selected a
-/// *different* range — and callers then cut or overwrote it (adr/0038).
+/// *different* range — and callers then cut or overwrote it.
 fn set_selection(ta: &mut RopeBuffer, start: (usize, usize), end: (usize, usize)) -> bool {
     let max = u16::MAX as usize;
     if start.0 > max || start.1 > max || end.0 > max || end.1 > max {
@@ -251,8 +251,7 @@ pub enum LinkTarget {
     Label(String),
 }
 
-/// Which editor-internal surface currently holds input — the **editor claim**
-/// (adr/0036).
+/// Which editor-internal surface currently holds input — the **editor claim**.
 ///
 /// Read into the `Intent` classifier's snapshot so ownership is decided once,
 /// there, instead of being re-asserted per event kind further down. The holder
@@ -793,7 +792,7 @@ impl TextEditorComponent {
     /// A pure vim-mode fact. It used to also return false while the find bar
     /// was open — the bar's claim smuggled through the nearest differently
     /// named field, because the snapshot had nowhere to put it. That is now
-    /// [`Self::claim`]'s job (adr/0036).
+    /// [`Self::claim`]'s job.
     pub fn space_leads(&self) -> bool {
         self.backend.space_leads()
     }
@@ -863,7 +862,7 @@ impl TextEditorComponent {
     ///
     /// Routed through the shared [`crate::components::yank`] seam so a clipboard
     /// failure is reported rather than swallowed, and so "nothing was selected"
-    /// is distinguishable from "the copy failed" (adr/0031).
+    /// is distinguishable from "the copy failed".
     fn copy_selection_to_clipboard(&mut self, tx: &AppTx) {
         let text = {
             // Match the highlighted range in vim charwise Visual mode: the
@@ -910,7 +909,7 @@ impl TextEditorComponent {
 
     /// Paste text from the OS clipboard at the cursor, replacing any active
     /// selection. Every failure is reported — silence here is what made the
-    /// vim-mode paste bug so hard to place (adr/0031).
+    /// vim-mode paste bug so hard to place.
     fn paste_from_clipboard(&mut self, tx: &AppTx) {
         let text = match crate::components::with_clipboard(|c| c.get_text()) {
             Ok(t) if !t.is_empty() => t,
@@ -985,7 +984,7 @@ impl TextEditorComponent {
                 let wrapped = try_build_markdown_link(text, selection.as_deref());
                 let insert = wrapped.as_deref().unwrap_or(text).to_string();
                 // Replacing a selection is a cut plus an insert — one paste,
-                // one undo (adr/0037).
+                // one undo.
                 tb.ta.edit(|ta| {
                     if ta.selection_range().is_some() {
                         ta.cut();
@@ -1038,7 +1037,7 @@ impl TextEditorComponent {
     /// plus the image dimensions. The screen layer is responsible for encoding
     /// (e.g. PNG) and persisting via the vault.
     ///
-    /// Reads go through the same shared handle as writes (adr/0031) — not for
+    /// Reads go through the same shared handle as writes — not for
     /// ownership (only writes need that) but so there is one connection and one
     /// reconnect policy. No flash here: this is a *probe* run ahead of every
     /// Ctrl+V, and "no image on the clipboard" is the ordinary case, not a
@@ -1059,8 +1058,7 @@ impl TextEditorComponent {
     /// Removes the active selection (the incoming content replaces it, as with
     /// every other paste) and reconciles the vim engine out of Visual, through
     /// the same door the mouse path uses. Without this the engine keeps a mode
-    /// that the buffer no longer supports: still Visual, selection gone
-    /// (adr/0031).
+    /// that the buffer no longer supports: still Visual, selection gone.
     pub fn take_selection_for_external_paste(&mut self) {
         self.extend_visual_selection_inclusive();
         let cut = if let Some(ta) = self.backend.as_textarea_mut() {
@@ -1211,7 +1209,7 @@ impl TextEditorComponent {
                     unreachable!()
                 };
                 // Newline plus prefix is two history entries; one `edit()`
-                // scope makes continuing a list one undo (adr/0037).
+                // scope makes continuing a list one undo.
                 ta.edit(|ta| {
                     ta.insert_newline();
                     ta.insert_str(prefix);
@@ -1307,7 +1305,7 @@ impl TextEditorComponent {
         ta.cancel_selection();
 
         // Indenting N lines is 2N history entries; one `edit()` scope makes
-        // the whole block one undo instead of N (adr/0037).
+        // the whole block one undo instead of N.
         ta.edit(|ta| {
             for row in start_row..=end_row {
                 if dedent {
@@ -1557,7 +1555,7 @@ impl TextEditorComponent {
     /// parse-damage signal. Both facts are derived by the buffer from the
     /// content either side of the edit, so neither can be predicted wrongly
     /// (an `insert_str` that returns `false` after deleting) or simply
-    /// forgotten at one of 22 sites (adr/0037).
+    /// forgotten at one of 22 sites.
     ///
     /// The revision clock stays on the component because it serves the nvim
     /// backend too, which has no edit buffer.
@@ -1668,7 +1666,7 @@ impl TextEditorComponent {
         // Undo / Redo (Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z). Handled before the
         // textarea borrow below because the **undo group** bookkeeping lives on
         // the component, and `as_textarea_mut` borrows all of `self`. A replace
-        // is two history entries and must cost one Ctrl+Z, not two (adr/0033).
+        // is two history entries and must cost one Ctrl+Z, not two.
         if key.modifiers & !KeyModifiers::SHIFT == KeyModifiers::CONTROL {
             match key.code {
                 KeyCode::Char('z') if !key.modifiers.contains(KeyModifiers::SHIFT) => {
@@ -1764,7 +1762,7 @@ impl TextEditorComponent {
                 self.view.clear_visual_goal();
             }
             // Does this keystroke continue the last one's **undo group**? The
-            // policy is the backend's (adr/0041); the engine only offers a group
+            // policy is the backend's; the engine only offers a group
             // that can span keystrokes. Everything that is not typing ends the
             // run, which is what makes the idle rule correct without a timer:
             // undo is itself one of those things.
@@ -1935,7 +1933,7 @@ impl Component for TextEditorComponent {
                 // Vim interpreter: Normal/Visual consume the key here; Insert
                 // mode returns PassThrough and falls into the direct path below
                 // so typing, autocomplete, auto-surround and smart-Enter all
-                // keep working (adr/0012).
+                // keep working.
                 if let Some(outcome) = self.backend.vim_handle_key(key) {
                     use self::vim::VimKeyOutcome;
                     // Anything the engine consumed is an action rather than a
@@ -1947,7 +1945,7 @@ impl Component for TextEditorComponent {
                     }
                     // Whatever the engine did, the buffer measured it. One
                     // drain replaces the group handshake, the pre-dispatch
-                    // clone and the hand-placed revision bump (adr/0037).
+                    // clone and the hand-placed revision bump.
                     self.apply_edit_outcome();
                     match outcome {
                         VimKeyOutcome::TextMutated => {
@@ -2005,7 +2003,7 @@ impl Component for TextEditorComponent {
                                 VimHostAction::SearchPrev => self.search_repeat(true),
                                 // Copy and Cut: the engine already did the
                                 // editing and the mode transition; all that is
-                                // left is the I/O and reporting it (adr/0031).
+                                // left is the I/O and reporting it.
                                 VimHostAction::ClipboardCopy(text) => {
                                     self.selection = None;
                                     crate::components::yank(text, "copied", tx);
@@ -2180,9 +2178,9 @@ impl Component for TextEditorComponent {
         // The **replace preview** is computed before the snapshot borrow so it
         // owns its lines outright. The buffer is never touched — only this
         // frame's view of it is substituted, which is what makes the preview
-        // structurally incapable of committing (adr/0035).
+        // structurally incapable of committing.
         // One call gets everything the bar wants painted: preview lines and
-        // spans, match spans, and the current match (adr/0033 candidate seam).
+        // spans, match spans, and the current match (a candidate seam).
         let overlay = match (self.search.as_ref(), self.backend.as_textarea()) {
             (Some(bar), Some(buf)) => bar.overlay(buf),
             _ => find_bar::BarOverlay::default(),
@@ -3638,7 +3636,7 @@ mod tests {
         assert_eq!(editor.get_text(), "x");
     }
 
-    // ── Find and replace (adr/0033, adr/0034, adr/0035) ─────────────────────
+    // ── Find and replace ─────────────────────
 
     /// Drive the find bar: open it, type `pattern`, reveal the replace field
     /// with Tab, type `replacement`. Leaves the bar open and focused.
@@ -3720,7 +3718,7 @@ mod tests {
         // scalar whose END sits inside the cluster, which is not an addressable
         // column — so the second jump does nothing, the selection stays empty,
         // and the replacement used to be INSERTED beside the match rather than
-        // over it, leaving "xe\u{301}f". Refusing is the contract (adr/0040).
+        // over it, leaving "xe\u{301}f". Refusing is the contract.
         let mut editor = make_editor();
         let tx = dummy_tx();
         editor.set_text("e\u{301}f".to_string());
@@ -4132,7 +4130,7 @@ mod tests {
     /// A bracketed paste used to land in the buffer behind the open bar,
     /// leaving the match count and the highlighted match describing text that
     /// no longer existed. It belongs in the focused field — that is the
-    /// holder's own behaviour, which survives the claim refactor (adr/0036).
+    /// holder's own behaviour, which survives the claim refactor.
     #[test]
     fn paste_goes_into_the_focused_bar_field() {
         let mut editor = make_editor();
@@ -5109,7 +5107,7 @@ cccccccc"
     /// screen layer owns it, because only it can reach the vault), so it has to
     /// reconcile the engine itself. Before this, an image pasted in Visual mode
     /// left the engine in Visual with a selection that no longer existed —
-    /// every subsequent motion silently extended a ghost (adr/0031).
+    /// every subsequent motion silently extended a ghost.
     #[test]
     fn external_paste_drops_the_selection_and_leaves_visual() {
         let mut editor = make_vim_editor();
@@ -5289,7 +5287,7 @@ cccccccc"
     }
 
     /// Vim `/pattern`: Enter steps to the next match (same as the textarea
-    /// backend — one key map on both, adr/0033), `Esc` closes the bar, and
+    /// backend — one key map on both), `Esc` closes the bar, and
     /// `n` / `N` keep working afterwards because closing no longer wipes the
     /// pattern.
     #[test]

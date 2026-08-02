@@ -123,7 +123,7 @@ impl RenameDialog {
                     let tx2 = tx.clone();
                     tokio::spawn(async move {
                         // Core classifies the entry and routes to the right
-                        // rename (note / directory / attachment); see ADR-0017.
+                        // rename (note / directory / attachment).
                         let result = vault.rename_entry(&from, &new_path).await;
                         match result {
                             Ok(()) => {

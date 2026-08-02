@@ -175,7 +175,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - *(core)* add with_order_directive query rewrite helper
 - *(core)* wildcard (*) support for the / path operator
 - *(core)* wildcard (*) support for the = / name: filename operator
-- *(core)* query operator alphabet (ADR-0005) + forward-links filter
+- *(core)* query operator alphabet + forward-links filter
 - expose SearchTerms; generalise context preview to query-needle highlighting
 - *(core)* NoteVault saved-search list/save/delete/rename API
 - *(core)* SavedSearch model + .kimun/saved-searches.toml read/write

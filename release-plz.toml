@@ -28,8 +28,11 @@ git_only = true
 
 # `ropetext` and `kimun_server_client` used to be listed here. Both are now
 # modules inside kimun-notes (`tui/src/ropetext`, `tui/src/server_client`) and
-# have no manifest of their own — see adr/0042. The short version: crates.io
-# refuses to publish a crate that path-depends on an unpublished one, so a
-# workspace member kimun-notes depends on has only two ends — published forever,
-# or not a crate. Neither was worth a public API, so they stopped being crates.
-# kimun_server_client 0.1.0–0.2.0 remain on crates.io, unmaintained.
+# have no manifest of their own. crates.io refuses to publish a crate that
+# path-depends on an unpublished one, and adding a version requirement does not
+# help — cargo strips the `path` and then demands the crate exist in the
+# registry. So a workspace member kimun-notes depends on has only two ends:
+# published forever, or not a crate. Neither had an API worth stabilising, so
+# they stopped being crates. kimun_server_client 0.1.0–0.2.1 remain on
+# crates.io, unmaintained and unreferenced; they are not yanked, because yanking
+# would break anyone who already resolved them.

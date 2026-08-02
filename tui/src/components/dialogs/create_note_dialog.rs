@@ -22,7 +22,7 @@ pub struct CreateNoteDialog {
     pub error: Option<String>,
     /// Body content the created note starts with. `None` creates an empty
     /// note (the plain create flow); `Some` is the Ask "save as note" action
-    /// (`e` in `ThreadPanel`, adr/0030), which pre-fills the question/answer.
+    /// (`e` in `ThreadPanel`), which pre-fills the question/answer.
     pub content: Option<String>,
 }
 

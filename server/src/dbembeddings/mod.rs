@@ -43,7 +43,7 @@ pub struct EmbeddedChunk {
 }
 
 /// Pure vector storage, scoped per **collection** — one collection per vault,
-/// keyed by the vault's id (adr/0020). Adapters store, delete, and search rows;
+/// keyed by the vault's id. Adapters store, delete, and search rows;
 /// they never embed, split, or rank — that is pipeline policy above this seam.
 ///
 /// Shared contract (pinned by the conformance suite, run against every
@@ -98,7 +98,7 @@ pub trait VectorStore: Send + Sync {
     async fn collection_names(&self) -> anyhow::Result<Vec<String>>;
 
     /// The embedder fingerprint recorded with this store's data, if any —
-    /// `None` on a store that has never had one written (adr/0025).
+    /// `None` on a store that has never had one written.
     async fn read_fingerprint(&self) -> anyhow::Result<Option<String>>;
 
     /// Records the embedder fingerprint. Overwrites any previous value.
@@ -107,8 +107,8 @@ pub trait VectorStore: Send + Sync {
     /// Drops every vault collection (all stored vectors). Startup uses this
     /// when the configured embedder's fingerprint no longer matches the stored
     /// one — the old vectors are unusable by definition, and the now-empty
-    /// server makes every client's next reconciliation re-push everything
-    /// (adr/0025). The fingerprint slot itself is metadata and survives.
+    /// server makes every client's next reconciliation re-push everything.
+    /// The fingerprint slot itself is metadata and survives.
     async fn drop_all_collections(&self) -> anyhow::Result<()>;
 }
 
