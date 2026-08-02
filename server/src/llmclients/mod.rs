@@ -1,7 +1,7 @@
 //! The one LLM client. Every provider speaks "prompt in, answer text out";
 //! what varies is only the wire: endpoint path, auth header style, and the
 //! request/response JSON shape. `ChatClient` owns the shared behavior — prompt
-//! assembly, the HTTP cycle, error shaping — and a [`Wire`] value carries the
+//! assembly, the HTTP cycle, error shaping — and a `Wire` value carries the
 //! per-provider variation. Adding a provider means describing its wire, not
 //! cloning a client.
 //!

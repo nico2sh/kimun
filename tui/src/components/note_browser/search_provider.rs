@@ -10,7 +10,7 @@ use crate::components::file_list::FileListEntry;
 use crate::components::query_vars::QueryContext;
 use crate::components::search_list::{Emit, ResolvingRowSource, RowSource, Unresolvable};
 
-/// Build the note-browser search source: a [`SearchNotesProvider`] wrapped so it
+/// Build the note-browser search source: a `SearchNotesProvider` wrapped so it
 /// resolves `{note}` against `current_note` and falls back to the recent-notes
 /// (empty-query) view when a note-dependent query has no note to resolve
 /// against. The single place the browser's resolution policy lives — the app
@@ -72,7 +72,7 @@ impl RowSource<FileListEntry> for SearchNotesProvider {
             // Build a lookup map from all indexed notes so we can resolve each
             // last_path to its full metadata in O(1).
             let all_notes = self.vault.get_all_notes().await.unwrap_or_default();
-            // The index returns canonical (vault-absolute) paths (adr/0021),
+            // The index returns canonical (vault-absolute) paths,
             // while `last_paths` (from history) may be relative — normalize both
             // sides to the same form before matching.
             let norm = |p: &VaultPath| p.flatten().absolute();

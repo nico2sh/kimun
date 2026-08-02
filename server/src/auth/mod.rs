@@ -2,7 +2,7 @@
 //! present `Authorization: Bearer <token>`. When none is configured (localhost
 //! dev), the server is open. `/health` is never gated so liveness probes work.
 //!
-//! The web UI's session-cookie half lives in [`session`] — two mechanisms,
+//! The web UI's session-cookie half lives in `session` — two mechanisms,
 //! one token source.
 
 pub(crate) mod session;

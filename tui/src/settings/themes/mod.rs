@@ -230,7 +230,7 @@ impl Display for ThemeColor {
 /// ```
 ///
 /// Roles introduced after a theme file was written may be omitted — they are
-/// derived from the closest sibling role (see [`ThemeToml`]).
+/// derived from the closest sibling role (see `ThemeToml`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(from = "ThemeToml")]
 pub struct Theme {
@@ -306,7 +306,7 @@ pub struct Theme {
     /// match. Deliberately its own role rather than a reuse of `selection_bg`
     /// or `color_search_match`: the preview rewrites the note on screen while
     /// leaving the buffer untouched, so "this is not your note yet" must not
-    /// look like any committed-text style (adr/0035).
+    /// look like any committed-text style.
     pub color_replace_preview: ThemeColor,
 }
 

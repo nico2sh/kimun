@@ -6,6 +6,9 @@ pub mod components;
 pub mod event_handler;
 pub mod keys;
 pub mod rag;
+// Self-contained modules with no dependency on the rest of kimün; see lib.rs.
+pub mod ropetext;
+pub mod server_client;
 pub mod settings;
 pub mod ui;
 pub mod update;
@@ -208,8 +211,8 @@ async fn main() -> Result<()> {
     let mut app = App::new(cli.config).await?;
 
     // Mouse reporting is all-or-nothing: enabling it suppresses the terminal's
-    // native selection and middle-click paste. Honor the user's opt-out (see
-    // adr/0015). Read after App::new since the setting lives in its settings.
+    // native selection and middle-click paste. Honor the user's opt-out.
+    // Read after App::new since the setting lives in its settings.
     if app.settings.read().unwrap().mouse() {
         let _ = execute!(terminal.backend_mut(), EnableMouseCapture);
     }

@@ -25,7 +25,7 @@ pub(super) const PARSER_OPTIONS: Options = Options::ENABLE_STRIKETHROUGH;
 /// column past a tab is wrong by the difference, so there is one number and it
 /// lives with the engine that wraps. Writing `4` here again would agree only by
 /// luck, and nothing would catch the luck running out.
-pub(super) const TAB_STOP: usize = ropetext::Metrics::DEFAULT_TAB_WIDTH;
+pub(super) const TAB_STOP: usize = crate::ropetext::Metrics::DEFAULT_TAB_WIDTH;
 
 /// Compute the display width of a tab character at the given visual column.
 pub(super) fn tab_width_at(col: usize) -> usize {
@@ -81,7 +81,7 @@ pub(super) fn cluster_width_at(cluster: &str, col: usize) -> usize {
 
 /// Display width of a grapheme cluster.
 ///
-/// Measures the whole cluster via [`UnicodeWidthStr`], so emoji presentation
+/// Measures the whole cluster via [`unicode_width::UnicodeWidthStr`], so emoji presentation
 /// sequences match what terminals draw: a flag (🇪🇸, two regional indicators),
 /// a VS16 sequence (❤️ = U+2764 + U+FE0F), and a keycap (1️⃣) all render as 2
 /// columns even though their first codepoint is narrow. ZWJ sequences (👨‍👩‍👧‍👦)
@@ -473,7 +473,7 @@ mod tests {
     /// tracks.
     #[test]
     fn the_renderer_measures_a_tab_exactly_as_the_engine_does() {
-        let metrics = ropetext::Metrics::default();
+        let metrics = crate::ropetext::Metrics::default();
         assert_eq!(TAB_STOP, metrics.tab_width);
         for col in 0..(TAB_STOP * 3) {
             assert_eq!(

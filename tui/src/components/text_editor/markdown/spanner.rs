@@ -759,7 +759,7 @@ impl MarkdownSpanner {
                 || !in_any_element;
             // An undrawn column belongs to the drawn column that follows it, so
             // the cell resolves past a concealed run rather than to its head.
-            // `ropetext::Layout::position_at_cell` steps the same way, and this
+            // `crate::ropetext::Layout::position_at_cell` steps the same way, and this
             // is what keeps `position_at_cell ∘ cell_of` monotone — the reason
             // to prefer it over "the first position at this cell boundary",
             // which lands the caret inside the markup that was concealed.

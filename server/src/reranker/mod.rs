@@ -150,7 +150,7 @@ impl Reranker for CrossEncoderReranker {
                 // Raw cross-encoder logits go negative for irrelevant chunks;
                 // sigmoid maps them to 0..1 (order-preserving) — the adapter
                 // owns the conversion from its backend's native scale to the
-                // trait's calibrated 0..1 contract (adr/0029).
+                // trait's calibrated 0..1 contract.
                 .map(|r| (r.index, sigmoid(r.score as f64)))
                 .collect(),
             results.len(),

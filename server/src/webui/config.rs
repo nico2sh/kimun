@@ -1,5 +1,5 @@
 //! Config page: renders the form for the persisted TOML, saves edits to the
-//! file, and hosts the Restart trigger (adr/0028).
+//! file, and hosts the Restart trigger.
 
 use std::sync::Arc;
 
@@ -24,8 +24,8 @@ pub(super) async fn config_page(State(state): State<Arc<AppState>>) -> Markup {
 /// after a successful write so the fields reflect what's on disk).
 fn config_markup(state: &AppState, c: &RagConfig, flash: Option<Markup>) -> Markup {
     // "none" is the semantic-only sentinel (search, no Q&A). It maps to
-    // `llm = None` on save, and is what a server with no configured LLM shows
-    // (adr/0022). "openai-local" is the OpenAI wire pointed at a user-supplied
+    // `llm = None` on save, and is what a server with no configured LLM shows.
+    // "openai-local" is the OpenAI wire pointed at a user-supplied
     // endpoint (Ollama, llama.cpp, …) — same table-driven field groups as the
     // embedder select: each option's data-groups names the field divs it shows.
     let providers = [
@@ -39,7 +39,7 @@ fn config_markup(state: &AppState, c: &RagConfig, flash: Option<Markup>) -> Mark
     let current = c.llm.as_ref().map(|l| l.form_id()).unwrap_or("none");
     let current_llm_url = c.llm.as_ref().and_then(|l| l.url()).unwrap_or("");
     let can_save = state.config_path.is_some();
-    // Embedder section (adr/0024): "none" is the unconfigured sentinel; the
+    // Embedder section: "none" is the unconfigured sentinel; the
     // fastembed model is a dropdown so a local model is always an explicit
     // choice, never a hidden default.
     //
@@ -348,7 +348,7 @@ pub(super) async fn config_submit(
     }
 }
 
-/// POST /restart — asks the binary's serving loop (adr/0028) to drain
+/// POST /restart — asks the binary's serving loop to drain
 /// in-flight requests, reload the saved config file, and rebind. Pure
 /// trigger: what changed shows up on the reloaded pages afterwards.
 pub(super) async fn restart_submit(State(state): State<Arc<AppState>>) -> Response {

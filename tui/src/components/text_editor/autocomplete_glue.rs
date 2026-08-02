@@ -2,7 +2,7 @@
 //! against a single joined buffer string) and the **edit buffer**
 //! (which works in `(row, char_col)` per-line coordinates).
 //!
-//! The conversion between the two is [`ropetext::Text::position_at_byte`]: the
+//! The conversion between the two is [`crate::ropetext::Text::position_at_byte`]: the
 //! offsets the controller reports index the same bytes the rope does, so no
 //! joined copy of the note has to exist for them to be resolved.
 
@@ -108,7 +108,7 @@ mod tests {
 
     #[test]
     fn apply_accept_replaces_and_positions_cursor() {
-        let mut ta = RopeBuffer::new(ropetext::Text::from("see [[me"));
+        let mut ta = RopeBuffer::new(crate::ropetext::Text::from("see [[me"));
         // Move cursor to end so the textarea matches the spec scenario.
         ta.move_cursor(CursorMove::End);
         let action = AcceptAction {
@@ -130,7 +130,7 @@ mod tests {
         // The trigger range covers `[[` plus a flag: 4 scalars but 3 clusters.
         // `delete_str` steps clusters, so handing it the scalar count spent one
         // step past the range and swallowed the character after it.
-        let mut ta = RopeBuffer::new(ropetext::Text::from("see [[\u{1F1EA}\u{1F1F8} rest"));
+        let mut ta = RopeBuffer::new(crate::ropetext::Text::from("see [[\u{1F1EA}\u{1F1F8} rest"));
         ta.move_cursor(CursorMove::End);
         let action = AcceptAction {
             // bytes 4..14 — `[[` (2) plus the two 4-byte regional indicators.
@@ -152,7 +152,7 @@ mod tests {
         // User Ctrl+X's some text into the yank ring, then accepts an
         // autocomplete suggestion. The yank buffer must survive —
         // `RopeBuffer::delete_str` overwrites it by default.
-        let mut ta = RopeBuffer::new(ropetext::Text::from("see [[me"));
+        let mut ta = RopeBuffer::new(crate::ropetext::Text::from("see [[me"));
         ta.set_yank_text("previously yanked text");
         ta.move_cursor(CursorMove::End);
         let action = AcceptAction {
@@ -169,7 +169,7 @@ mod tests {
     fn apply_accept_replaces_across_multiple_lines_unaffected() {
         // Sanity: a single-line replacement on a multi-line buffer leaves
         // the other lines untouched.
-        let mut ta = RopeBuffer::new(ropetext::Text::from("alpha\nsee [[me"));
+        let mut ta = RopeBuffer::new(crate::ropetext::Text::from("alpha\nsee [[me"));
         let action = AcceptAction {
             range: 12..14, // bytes 12..14 in the joined "alpha\nsee [[me"
             new_text: "meeting]]".to_string(),

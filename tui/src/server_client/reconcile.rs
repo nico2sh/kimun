@@ -1,4 +1,4 @@
-//! Hash-diff reconciliation (adr/0019): the correctness backbone. Given the
+//! Hash-diff reconciliation: the correctness backbone. Given the
 //! vault's authoritative `{note-path → hash}` and the server's, compute exactly
 //! which notes to push and which to delete so the two agree.
 

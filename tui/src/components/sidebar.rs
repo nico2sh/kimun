@@ -67,7 +67,7 @@ impl RowSource<FileListEntry> for DirListingSource {
         let drain = tokio::task::spawn_blocking(move || {
             let mut entries: Vec<FileListEntry> = Vec::new();
             while let Ok(result) = rx.recv() {
-                // `is_like` ignores relative/absolute form (adr/0021): skip the
+                // `is_like` ignores relative/absolute form: skip the
                 // current dir's own "." entry whichever form each side carries.
                 if matches!(result.rtype, ResultType::Directory) && result.path.is_like(&dir) {
                     continue;

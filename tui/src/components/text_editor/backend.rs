@@ -73,7 +73,7 @@ impl Handler for NvimHandler {
 // InputInterpreter + TextareaBackend
 // ---------------------------------------------------------------------------
 
-/// How key events are translated into edits on the **edit buffer** (adr/0012).
+/// How key events are translated into edits on the **edit buffer**.
 /// The engine is boxed so the `Direct` arm doesn't pay the engine's size
 /// (registers, dot-repeat state, replace stack — ~230 bytes).
 #[derive(Debug, Default)]
@@ -91,21 +91,21 @@ pub struct TextareaBackend {
     /// Which keystrokes are sharing an undo group. The **plain** backend's
     /// policy; the **vim** engine has its own and leaves this alone.
     pub typing: super::typing_run::TypingRun,
-    /// The open note's text and its edit history (adr/0037). Mutations go
+    /// The open note's text and its edit history. Mutations go
     /// through `RopeBuffer::edit`.
     pub ta: RopeBuffer,
     pub input: InputInterpreter,
 }
 
 impl TextareaBackend {
-    pub fn direct(text: ropetext::Text) -> Self {
+    pub fn direct(text: crate::ropetext::Text) -> Self {
         Self {
             ta: RopeBuffer::new(text),
             typing: super::typing_run::TypingRun::default(),
             input: InputInterpreter::Direct,
         }
     }
-    pub fn vim(text: ropetext::Text) -> Self {
+    pub fn vim(text: crate::ropetext::Text) -> Self {
         Self {
             ta: RopeBuffer::new(text),
             typing: super::typing_run::TypingRun::default(),
@@ -207,7 +207,7 @@ impl BackendState {
             _ => return false,
         };
         tracing::warn!("nvim process died; falling back to textarea backend");
-        *self = BackendState::Textarea(TextareaBackend::direct(ropetext::Text::from(
+        *self = BackendState::Textarea(TextareaBackend::direct(crate::ropetext::Text::from(
             fallback_text.as_str(),
         )));
         true
@@ -328,11 +328,11 @@ impl BackendState {
             }
         }
         let tb = match editor_backend {
-            EditorBackendSetting::Vim => TextareaBackend::vim(ropetext::Text::new()),
+            EditorBackendSetting::Vim => TextareaBackend::vim(crate::ropetext::Text::new()),
             // Nvim is handled by the early return above; Textarea and any
             // future non-modal setting use the direct interpreter.
             EditorBackendSetting::Plain | EditorBackendSetting::Nvim => {
-                TextareaBackend::direct(ropetext::Text::new())
+                TextareaBackend::direct(crate::ropetext::Text::new())
             }
         };
         BackendState::Textarea(tb)
@@ -695,35 +695,40 @@ mod tests {
 
     #[test]
     fn direct_backend_has_no_mode_label() {
-        let b = BackendState::Textarea(TextareaBackend::direct(ropetext::Text::new()));
+        let b = BackendState::Textarea(TextareaBackend::direct(crate::ropetext::Text::new()));
         assert_eq!(b.mode_label(), None);
     }
 
     #[test]
     fn vim_backend_reports_normal_label() {
-        let b = BackendState::Textarea(TextareaBackend::vim(ropetext::Text::new()));
+        let b = BackendState::Textarea(TextareaBackend::vim(crate::ropetext::Text::new()));
         assert_eq!(b.mode_label().as_deref(), Some("NORMAL"));
     }
 
     #[test]
     fn space_leads_only_for_vim_backend() {
         assert!(
-            !BackendState::Textarea(TextareaBackend::direct(ropetext::Text::new())).space_leads()
+            !BackendState::Textarea(TextareaBackend::direct(crate::ropetext::Text::new()))
+                .space_leads()
         );
-        assert!(BackendState::Textarea(TextareaBackend::vim(ropetext::Text::new())).space_leads());
+        assert!(
+            BackendState::Textarea(TextareaBackend::vim(crate::ropetext::Text::new()))
+                .space_leads()
+        );
     }
 
     #[test]
     fn modal_is_insert_classifies_backends() {
         // Direct textarea → None (non-modal, leave terminal cursor alone).
         assert_eq!(
-            BackendState::Textarea(TextareaBackend::direct(ropetext::Text::new()))
+            BackendState::Textarea(TextareaBackend::direct(crate::ropetext::Text::new()))
                 .modal_is_insert(),
             None
         );
         // Vim backend starts in Normal mode → Some(false) (block cursor).
         assert_eq!(
-            BackendState::Textarea(TextareaBackend::vim(ropetext::Text::new())).modal_is_insert(),
+            BackendState::Textarea(TextareaBackend::vim(crate::ropetext::Text::new()))
+                .modal_is_insert(),
             Some(false)
         );
     }

@@ -215,7 +215,7 @@ impl EditorScreen {
         // PNG encode and the attachment save — and a cut done now would destroy
         // the user's text with nothing to replace it. `insert_at_cursor`, which
         // runs only on success, does the replacement and reconciles the vim
-        // engine out of Visual in the same breath (adr/0031).
+        // engine out of Visual in the same breath.
         let asset_path = self.vault.generate_attachment_path("image", "png");
         let link_path = asset_path.relative_link_from_note(&self.path);
         let markdown = format!("![]({link_path})");
@@ -344,7 +344,7 @@ impl EditorScreen {
             // A non-note path is either an attachment (show it in place of the
             // editor) or a directory (browse it). Classify so a stray
             // attachment open here still lands in the attachment view rather
-            // than the directory browser (ADR-0017).
+            // than the directory browser.
             if let Ok(kimun_core::EntryKind::Attachment) = self.vault.entry_kind(&path).await {
                 self.open_attachment(path, tx).await;
                 return;
@@ -439,7 +439,7 @@ impl EditorScreen {
     }
 
     /// Show the attachment at `path` in the editor area's read-only attachment
-    /// view (ADR-0017). Saves and unmounts the open note first; while an
+    /// view. Saves and unmounts the open note first; while an
     /// attachment is shown there is no open note, so the autosave task is
     /// aborted and the sidebar's open-note marker cleared. The next periodic
     /// autosave tick no-ops because the note editor is absent.
@@ -612,8 +612,8 @@ impl EditorScreen {
     async fn on_entry_op(&mut self, from: VaultPath, tx: &AppTx) {
         self.dismiss_overlay();
         // `is_like` ignores the vault-relative/absolute distinction: `from` (from
-        // a sidebar/query row) is index-absolute while `self.path` may be relative
-        // (adr/0021). A plain `==` would miss, leaving the stale autosave to
+        // a sidebar/query row) is index-absolute while `self.path` may be relative.
+        // A plain `==` would miss, leaving the stale autosave to
         // recreate a deleted/moved note.
         if from.is_like(&self.path) {
             self.autosave.stop();
@@ -638,7 +638,7 @@ impl EditorScreen {
         self.dismiss_overlay();
         self.panels.sidebar_mut().rename_note_row(&from, &to);
         // `is_like` so an absolute `from` (index row) matches a possibly-relative
-        // `self.path` (adr/0021) — otherwise the retarget + autosave-abort below
+        // `self.path` — otherwise the retarget + autosave-abort below
         // are skipped and the stale save resurrects the old path.
         if from.is_like(&self.path) {
             // The open note was renamed. Kill any in-flight autosave still
@@ -1140,7 +1140,7 @@ impl EditorScreen {
                 self.rag_status = status;
                 // Both rail entries are live-status-driven: ASK on whether the
                 // server can answer questions, SEM on whether it can search.
-                // Rebuild the rail when either flips (adr/0030: an active view
+                // Rebuild the rail when either flips (an active view
                 // stays put when its capability drops — only the rail entry
                 // goes). The Ask client only needs refreshing on the ASK flip.
                 let ask_now = status.llm_available();
@@ -1572,7 +1572,7 @@ impl EditorScreen {
     /// Switch to the Ask workspace and drop the cursor on the composer (the
     /// Ask shortcut / leader `a a`). The rail hides the ASK entry when the
     /// server can't answer questions, so this shortcut is the only remaining
-    /// way in — hence the `llm_available` gate (adr/0030). The gate only
+    /// way in — hence the `llm_available` gate. The gate only
     /// applies to that enter-from-outside path: when Ask is already showing,
     /// focusing the composer is ungated, matching the sibling `a n`/`a
     /// y`/`a e`/`a r` actions, which work fine on a degraded (capability-off)
@@ -3276,8 +3276,8 @@ mod tests {
         screen.open_ask_workspace(&tx);
         assert!(screen.panels.is_showing_ask());
 
-        // Capability drops mid-conversation; adr/0030 keeps the thread on
-        // screen with the composer merely disabled.
+        // Capability drops mid-conversation: the thread stays on screen with
+        // the composer merely disabled, never evicted.
         screen.rag_status = crate::rag::RagStatus::Offline;
 
         screen.open_ask_workspace(&tx);

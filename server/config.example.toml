@@ -128,7 +128,7 @@ model = "gemini-2.5-flash-preview-04-17"
 # request to plain vector ranking.
 enabled = true
 
-# Context cut: the one sizing rule for query results (adr/0029). The ranked
+# Context cut: the one sizing rule for query results. The ranked
 # pool (reranked when reranking is on, vector order otherwise) is cut, then
 # search shows the notes that survive and answer feeds the surviving chunks
 # to the LLM. Strategies, each with its own knobs:

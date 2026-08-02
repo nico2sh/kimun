@@ -171,7 +171,7 @@ impl HelpDialog {
 
     /// Reference card for the search query language (F1 over the Find drawer
     /// view). Operators, modifiers, and a few worked examples — mirrors the
-    /// canonical table in `docs/.../search.md` and ADR-0005, condensed to the
+    /// canonical table in `docs/.../search.md`, condensed to the
     /// keys|label shape the help widget already renders. The full prose guide
     /// lives on the docs site, not here.
     pub fn query_syntax() -> Self {

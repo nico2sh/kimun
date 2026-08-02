@@ -1,4 +1,4 @@
-//! Turning an ask [`Turn`](super::Turn) into a saved vault note
+//! Turning an ask [`Turn`] into a saved vault note
 //! (CONTEXT.md: **Saved answer**). The question becomes the note title, its
 //! citation markers become wikilinks so the note joins the vault link graph.
 

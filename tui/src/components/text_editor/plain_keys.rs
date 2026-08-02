@@ -1,12 +1,12 @@
 //! What a key means to the **plain** backend.
 //!
-//! The same shape ADR-0011 gives the vim engine — keys are *reified* into an
+//! The same shape the vim engine uses — keys are *reified* into an
 //! [`Operation`] first and applied second — for the same reason: the mapping can
 //! then be asserted without a buffer. "Ctrl+Left means a word back, without
 //! extending" is a fact about the table, and until this existed the only way to
 //! ask was to press the key at a buffer and look at where the cursor went.
 //!
-//! This is also where adr/0038's fourth surprise ends. The widget this replaced
+//! This is also where the last of the old widget's surprises ends. It
 //! bound Ctrl+U and Ctrl+R to undo and redo inside its own input handler, so a key
 //! could step history behind the caller's back. Nothing is bound here that is not
 //! written here.
@@ -112,7 +112,7 @@ pub fn apply(op: Operation, buf: &mut RopeBuffer) -> bool {
         Operation::Move { to, extend } => {
             // Extending starts an anchor if there is not one already; not
             // extending drops it. Saying which, per key, is what keeps a
-            // selection from outliving the gesture that made it (adr/0038).
+            // selection from outliving the gesture that made it.
             if extend {
                 if buf.selection_range().is_none() {
                     buf.start_selection();
@@ -145,7 +145,7 @@ pub fn apply(op: Operation, buf: &mut RopeBuffer) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ropetext::Text;
+    use crate::ropetext::Text;
 
     fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, modifiers)
@@ -288,7 +288,7 @@ mod tests {
 
     #[test]
     fn undo_and_redo_are_not_bound_here() {
-        // adr/0038's fourth surprise: the widget this replaced bound these inside
+        // The widget this replaced bound these inside
         // its own input handler, so a key stepped history behind the caller's
         // back. They belong to the component's shortcut layer, which sees the key
         // first — and if it ever stopped, this table must not quietly pick it up.

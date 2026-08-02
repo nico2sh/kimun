@@ -94,7 +94,7 @@ impl MoveDialog {
     // -----------------------------------------------------------------------
 
     /// Spawn a background task that retrieves all vault directories and sends
-    /// the result as [`AppEvent::OverlayData(OverlayData::MoveDirectoriesLoaded)`].
+    /// the result as [`OverlayData::MoveDirectoriesLoaded`].
     fn schedule_load(&mut self, tx: &AppTx) {
         let vault = Arc::clone(&self.vault);
         let tx_clone = tx.clone();
@@ -125,7 +125,7 @@ impl MoveDialog {
     /// Abort any in-flight filter task and schedule a new one for the current
     /// value of `self.search_query`.  If the query is empty the full
     /// `all_dirs` list is restored synchronously.  Otherwise the result is
-    /// sent as [`AppEvent::OverlayData(OverlayData::MoveFilterResults)`].
+    /// sent as [`OverlayData::MoveFilterResults`].
     fn schedule_filter(&mut self, tx: &AppTx) {
         if let Some(handle) = self.filter_task.take() {
             handle.abort();
@@ -177,7 +177,7 @@ impl MoveDialog {
 
     /// Abort any in-flight validation task and start a new one for the
     /// currently selected directory.  The result is sent as
-    /// [`AppEvent::OverlayData(OverlayData::MoveDestValidation)`].  Resets to `Idle` when nothing is selected.
+    /// [`OverlayData::MoveDestValidation`].  Resets to `Idle` when nothing is selected.
     pub fn spawn_validation(&mut self, tx: &AppTx) {
         if let Some(handle) = self.validation_task.take() {
             handle.abort();
@@ -272,7 +272,7 @@ impl MoveDialog {
                     tokio::spawn(async move {
                         // A move is a cross-directory rename; core classifies the
                         // entry and routes to the right rename (note / directory
-                        // / attachment); see ADR-0017.
+                        // / attachment).
                         let result = vault.rename_entry(&from, &new_path).await;
                         match result {
                             Ok(()) => {

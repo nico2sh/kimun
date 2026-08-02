@@ -1,5 +1,5 @@
 //! Compile-time release-platform identity, matching the asset names produced by
-//! `build.yml` (see adr/0014). Returns `None` on a target kimün does not
+//! `build.yml`. Returns `None` on a target kimün does not
 //! publish binaries for, which forces notify-only with no self-update path.
 
 /// The release platform string for this build (`linux-x64`, `linux-arm64`,

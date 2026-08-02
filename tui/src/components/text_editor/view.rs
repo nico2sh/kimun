@@ -1,4 +1,5 @@
 use super::markdown::{MarkdownSpanner, ParsedBuffer, opener_shape};
+use crate::ropetext::{Column, Layout, Metrics, RowHints, motion};
 use crate::settings::themes::Theme;
 use ratatui::Frame;
 use ratatui::layout::Position;
@@ -6,11 +7,9 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Text};
 use ratatui::widgets::Paragraph;
-use ropetext::{Column, Layout, Metrics, RowHints, motion};
 
 use super::rope_buffer::RopeBuffer;
 use std::ops::Range;
-use std::sync::OnceLock;
 
 /// A styled range of logical columns on one row (see CONTEXT.md **Overlay**).
 ///
@@ -84,7 +83,7 @@ impl OverlayKind {
             OverlayKind::Preview => style.bg(theme.color_replace_preview.to_ratatui()),
             // A foreground override, not a modifier: BOLD is a no-op on text
             // that is already bold, which once left the current match
-            // indistinguishable from the rest (adr/0035).
+            // indistinguishable from the rest.
             OverlayKind::PreviewCurrent => style
                 .bg(theme.color_replace_preview.to_ratatui())
                 .fg(cursor_fg(theme))
@@ -147,7 +146,7 @@ pub struct MarkdownEditorView {
     /// structure, so this is the same text rather than a copy of it — which is why
     /// the twenty lines that used to copy changed rows into a `Vec<String>` are
     /// now one assignment.
-    pub text_snapshot: ropetext::Text,
+    pub text_snapshot: crate::ropetext::Text,
     pub cursor_snapshot: (usize, usize),
     /// Line ranges of every fenced code block in the buffer. Text-keyed
     /// (rebuilt only when `text_revision` changes); `is_in_code_block`
@@ -266,7 +265,7 @@ struct PendingLayout {
 /// *inside* the task rather than carried across the boundary itself.
 pub struct PendingLayoutJob {
     pub generation: u64,
-    pub text: ropetext::Text,
+    pub text: crate::ropetext::Text,
     pub width: usize,
     pub rendered_cache: Vec<Vec<bool>>,
     pub gutter_insets: Vec<usize>,
@@ -278,7 +277,13 @@ pub struct PendingLayoutJob {
 /// splice against a fresh whole-buffer parse. (The per-splice
 /// undamaged-row verify on the heuristic path runs in release
 /// unconditionally — see `try_incremental_parse`.)
+///
+/// `cfg`-gated to match its only caller: without this, the release and bench
+/// profiles compile the function with the assertion it exists for gated out,
+/// and warn it is dead.
+#[cfg(debug_assertions)]
 fn verify_incremental_enabled() -> bool {
+    use std::sync::OnceLock;
     static VERIFY: OnceLock<bool> = OnceLock::new();
     *VERIFY.get_or_init(|| {
         std::env::var("KIMUN_VIEW_VERIFY_INCREMENTAL")
@@ -289,8 +294,8 @@ fn verify_incremental_enabled() -> bool {
 
 /// Which widener produced the splice for the most recent successful
 /// incremental parse. Test telemetry — read by `last_splice_path`
-/// in unit tests to assert the chosen path. Mirror of
-/// [`SuccessPath`] but kept private since callers shouldn't depend
+/// in unit tests to assert the chosen path. Mirror of the widener's
+/// own `SuccessPath` but kept separate since callers shouldn't depend
 /// on widener internals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SplicePath {
@@ -356,10 +361,10 @@ impl ParseState {
 impl MarkdownEditorView {
     pub fn new() -> Self {
         Self {
-            layout: Layout::compute(&ropetext::Text::new(), 0, Metrics::default(), &[]),
+            layout: Layout::compute(&crate::ropetext::Text::new(), 0, Metrics::default(), &[]),
             visual_scroll_offset: 0,
             last_height: 0,
-            text_snapshot: ropetext::Text::new(),
+            text_snapshot: crate::ropetext::Text::new(),
             cursor_snapshot: (0, 0),
             fence_ranges: Vec::new(),
             code_box_width: Vec::new(),
@@ -368,7 +373,7 @@ impl MarkdownEditorView {
             applied_cursor_style: None,
             // Empty buffer, spliceable — preserves the previous
             // `placeholder_active: false` initial state.
-            parse_state: ParseState::Real(ParsedBuffer::placeholder(&ropetext::Text::new())),
+            parse_state: ParseState::Real(ParsedBuffer::placeholder(&crate::ropetext::Text::new())),
             last_seen_generation: u64::MAX, // force rebuild on first update
             last_layout_generation: u64::MAX,
             last_layout_width: 0,
@@ -487,7 +492,7 @@ impl MarkdownEditorView {
     /// `Layout::compute` unconditionally.
     fn full_layout_rebuild(
         &mut self,
-        text: &ropetext::Text,
+        text: &crate::ropetext::Text,
         width: u16,
         row_count: usize,
         generation: u64,
@@ -1061,7 +1066,7 @@ impl MarkdownEditorView {
     /// tier produced the splice (see [`SplicePath`]).
     fn try_incremental_parse(
         &self,
-        text: &ropetext::Text,
+        text: &crate::ropetext::Text,
         cursor: (usize, usize),
         reported: Option<std::ops::Range<usize>>,
     ) -> Option<(std::ops::Range<usize>, ParsedBuffer, SplicePath)> {
@@ -1643,7 +1648,7 @@ impl MarkdownEditorView {
     /// Rebuild `code_box_width` from the current parse kinds and snapshot
     /// lines. Box width per block = max rendered display width of its lines,
     /// capped at `width`.
-    fn rebuild_code_box_width(&mut self, text: &ropetext::Text, width: u16) {
+    fn rebuild_code_box_width(&mut self, text: &crate::ropetext::Text, width: u16) {
         let mut out = vec![None; text.line_count()];
         let ranges =
             super::parse_incremental::code_block_ranges_from_kinds(&self.parse_state.buf().kinds);
@@ -1674,7 +1679,7 @@ impl MarkdownEditorView {
     /// that only happens inside `damaged`.
     fn patch_code_box_width(
         &mut self,
-        text: &ropetext::Text,
+        text: &crate::ropetext::Text,
         width: u16,
         damaged: std::ops::Range<usize>,
     ) {
@@ -1808,7 +1813,7 @@ impl MarkdownEditorView {
         // cell to a column in the whole logical row, so a click in the blank
         // space right of a soft-wrapped line walks straight into the span of the
         // line below and the cursor lands a row further on than the one under the
-        // pointer. `ropetext::Layout::position_at_cell` clamps for this reason;
+        // pointer. `crate::ropetext::Layout::position_at_cell` clamps for this reason;
         // this is the TUI's own mapper and had drifted from it.
         let logical_col = logical_col.min(vl.chars.end);
         let col = logical_col.min(u16::MAX as usize) as u16;
@@ -1831,7 +1836,7 @@ impl Default for MarkdownEditorView {
 /// If `target_width` exceeds the string's display width, returns `s.len()`.
 ///
 /// Walks whole grapheme clusters (not codepoints) and measures each with
-/// [`cluster_display_width`], so the result never lands mid-cluster (which would
+/// [`super::markdown::cluster_display_width`], so the result never lands mid-cluster (which would
 /// split an emoji across two styled spans) and stays consistent with the width
 /// model used by wrap and cursor math — an emoji presentation sequence (flag,
 /// VS16 heart, keycap) counts as its full rendered width, not its first codepoint.
@@ -1996,8 +2001,8 @@ mod tests {
     /// regression for the Nvim shrink panic) still exercise the
     /// real production path: producer clamps, render trusts.
     /// Tests describe buffers as rows; the view takes the text they make up.
-    fn text_of(lines: &[String]) -> ropetext::Text {
-        ropetext::Text::from(lines.join("\n").as_str())
+    fn text_of(lines: &[String]) -> crate::ropetext::Text {
+        crate::ropetext::Text::from(lines.join("\n").as_str())
     }
 
     /// Two reports between one pair of frames, the second changing the line
@@ -2094,7 +2099,7 @@ mod tests {
                     let engine = v.layout.position_at_cell(
                         &text,
                         &hints,
-                        ropetext::Cell {
+                        crate::ropetext::Cell {
                             row: vrow,
                             column: vcol,
                         },
@@ -2153,7 +2158,7 @@ mod tests {
     fn a_click_past_the_end_of_a_wrapped_line_stays_on_that_line() {
         // Clicking the blank space to the right of a soft-wrapped line must land
         // at the end of the line clicked, not inside the continuation below it.
-        // `ropetext::Layout::position_at_cell` clamps for exactly this reason;
+        // `crate::ropetext::Layout::position_at_cell` clamps for exactly this reason;
         // this mapper is the TUI's own copy and had drifted from it.
         let lines = vec![
             "a long paragraph that will certainly wrap more than once at this width".to_string(),
@@ -3503,7 +3508,7 @@ mod tests {
         update_view(&mut v, &edited, (100, edited[100].len()), rect(40), 2, None);
 
         // After incremental wrap, layout must equal a fresh compute of the edited buffer.
-        let fresh_text = ropetext::Text::from(edited.join("\n").as_str());
+        let fresh_text = crate::ropetext::Text::from(edited.join("\n").as_str());
         let fresh_hints = row_hints(v.rendered_cache_for_testing(), &[]);
         let fresh_layout = Layout::compute(&fresh_text, 40, Metrics::default(), &fresh_hints);
 

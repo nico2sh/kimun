@@ -1,5 +1,5 @@
 //! `SourcesPanel` — the Ask workspace's drawer view (CONTEXT.md: **Sources
-//! view**, **Source reader**; adr/0030): a ranked per-turn source list that
+//! view**, **Source reader**): a ranked per-turn source list that
 //! reveals the full note — the retrieved section highlighted — in an inline
 //! preview, without leaving the answer.
 //!
@@ -153,7 +153,7 @@ pub struct SourcesPanel {
     /// rebuilt list, so an interception here is unambiguously "open".
     intercept: Vec<KeyCombo>,
     /// The user's yank chords, handed to each rebuilt list so the engine can
-    /// claim them itself (adr/0032).
+    /// claim them itself.
     yank_combos: Vec<KeyCombo>,
     /// The preview content viewport height from the last render — the page size
     /// for PageUp/PageDown content scrolling in the Full preview.
@@ -170,7 +170,7 @@ impl SourcesPanel {
         // The yank chord is NOT intercepted here any more. It used to be a
         // hardcoded Ctrl+Y in this panel's intercept list — which also meant it
         // ignored any rebinding. SearchList now claims the chord itself, from
-        // the user's own binding (adr/0032).
+        // the user's own binding.
         let intercept = follow;
         let icons = Icons::new(false);
         // The initial (turn-less) list is empty and built synchronously
@@ -560,7 +560,7 @@ impl SourcesPanel {
     }
 
     /// Ensure the preview is backed by the *selected* source's note (the
-    /// interactive path — `open_reader` calls [`ensure_note_load`] directly with
+    /// interactive path — `open_reader` calls [`Self::ensure_note_load`] directly with
     /// its directed source). No-op while collapsed or with nothing selected.
     fn ensure_loaded(&mut self, tx: &AppTx) {
         if self.preview.is_collapsed() {

@@ -2,7 +2,7 @@
 
 use std::ops::Range;
 
-use crate::position::Revision;
+use crate::ropetext::position::Revision;
 
 /// One replaced region, in the coordinates of the text *after* the change.
 #[derive(Debug, Clone, PartialEq, Eq)]

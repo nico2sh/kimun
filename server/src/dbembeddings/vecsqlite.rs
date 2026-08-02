@@ -4,7 +4,7 @@
 //! Unlike Qdrant this needs no server: the whole store is a single
 //! `embeddings.db` file inside a local directory. Rows live in one `chunks`
 //! table, scoped by a `collections` table — one **collection per vault**
-//! (keyed by the vault id, adr/0020) — holding every chunk's embedding blob
+//! (keyed by the vault id) — holding every chunk's embedding blob
 //! plus its metadata columns.
 //!
 //! There is deliberately no ANN index. Vaults hold thousands to tens of
@@ -14,7 +14,7 @@
 //! L2-normalized at write time, which reduces cosine similarity to a plain
 //! dot product at query time and gives exact (not approximate) top-k.
 //!
-//! The embedder fingerprint (adr/0025) lives in a `meta` key/value table in
+//! The embedder fingerprint lives in a `meta` key/value table in
 //! the same file, so it survives `drop_all_collections` like VecQdrant's
 //! metadata collection does.
 

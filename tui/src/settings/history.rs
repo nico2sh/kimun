@@ -40,7 +40,7 @@ pub fn load_history(path: &Path) -> Vec<VaultPath> {
 /// to LAST_PATH_HISTORY_SIZE, atomic write. No-op if `path` is already at the
 /// front (common case: re-opening the same note).
 pub fn push_history(file_path: &Path, path: &VaultPath) -> std::io::Result<()> {
-    // Dedup with `is_like` (ignores relative/absolute form, adr/0021) so a note
+    // Dedup with `is_like` (ignores relative/absolute form) so a note
     // reopened via different-form paths isn't stored twice; the entry is stored
     // in whatever form it arrived, to avoid rewriting existing history files.
     let mut existing = load_history(file_path);
