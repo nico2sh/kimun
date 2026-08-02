@@ -1,6 +1,6 @@
 //! The Ask workspace's coordination layer: Thread↔Sources sync, capability
 //! refresh, async-result routing, and the show/stash transitions that keep the
-//! resident thread alive across drawer view switches (adr/0030). The editor
+//! resident thread alive across drawer view switches. The editor
 //! screen keeps only "which panel content is showing"; everything that decides
 //! *what the Ask panels should reflect* lives here, against `PanelSet`.
 

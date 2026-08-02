@@ -2,7 +2,7 @@
 //!
 //! The self-updater talks to a release backend only through this trait. To use
 //! a different source (GitLab, a self-hosted index, a mirror), implement
-//! `ReleaseProvider` and swap the constructor in [`super::provider`]. Everything
+//! `ReleaseProvider` and swap the constructor in `super::provider()`. Everything
 //! downstream (status computation, download, checksum, swap) is backend-neutral
 //! — it only consumes [`LatestRelease`]/[`Asset`] and their plain URLs.
 
@@ -34,7 +34,7 @@ impl LatestRelease {
 }
 
 /// Source of release information for the self-updater. Implement this and swap
-/// the constructor in [`super::provider`] to change backends without touching
+/// the constructor in `super::provider()` to change backends without touching
 /// any caller.
 pub trait ReleaseProvider {
     /// The newest stable release for this app, with its downloadable assets.

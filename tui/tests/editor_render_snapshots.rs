@@ -1,6 +1,6 @@
 //! What the editor actually paints, pinned cell by cell.
 //!
-//! This is the contract the editing-engine swap (adr/0039) must preserve: any
+//! This is the contract the editing-engine swap must preserve: any
 //! diff here is a regression until argued otherwise, and the handful of intended
 //! differences are enumerated in `plans/2026-07-30-editor-engine.md`.
 //!
@@ -492,7 +492,7 @@ fn a_click_on_the_revealed_row_lands_where_it_was_clicked() {
     use kimun_notes::components::text_editor::markdown::{MarkdownSpanner, ParsedBuffer};
 
     let line = "see [docs](url) here";
-    let buf = ParsedBuffer::parse(&ropetext::Text::from(line));
+    let buf = ParsedBuffer::parse(&kimun_notes::ropetext::Text::from(line));
     let parsed = &buf.lines[0];
     let caret = Some(8); // inside the link, so the row reveals raw
 

@@ -1,4 +1,4 @@
-//! Addresses into a [`Text`](crate::Text): revisions, columns, positions, spans.
+//! Addresses into a [`Text`](crate::ropetext::Text): revisions, columns, positions, spans.
 
 use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -64,7 +64,7 @@ impl From<usize> for Column {
 
 /// A place in a text.
 ///
-/// Built only by [`Text::position`](crate::Text::position) and its siblings, so
+/// Built only by [`Text::position`](crate::ropetext::Text::position) and its siblings, so
 /// a position that exists is one the text could address when it was made. Row,
 /// column and byte offset are all resolved at construction and the type is
 /// `Copy`, so reading them is free while *making* one costs a rope lookup —
@@ -74,7 +74,7 @@ impl From<usize> for Column {
 /// Deliberately not `Ord`. Comparing positions from two revisions is
 /// meaningless, and a comparison operator that quietly answers `false` for
 /// incomparable operands is the kind of wrong answer this crate exists to avoid.
-/// Use [`Text::span`](crate::Text::span), which checks both operands and orders
+/// Use [`Text::span`](crate::ropetext::Text::span), which checks both operands and orders
 /// them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Position {
@@ -127,7 +127,7 @@ pub struct Span {
 
 impl Span {
     /// `start` and `end` must share a revision, and `start` must not be after
-    /// `end`. Both are guaranteed by [`Text::span`](crate::Text::span), the only
+    /// `end`. Both are guaranteed by [`Text::span`](crate::ropetext::Text::span), the only
     /// caller.
     pub(crate) fn new(start: Position, end: Position) -> Self {
         debug_assert_eq!(start.revision(), end.revision());

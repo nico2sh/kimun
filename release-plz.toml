@@ -26,20 +26,13 @@ git_tag_name = "kimun_server-v{{ version }}"
 publish = false
 git_only = true
 
-# Published to crates.io: kimun-notes depends on it, and crates.io requires all
-# dependencies of a published crate to be published themselves.
-[[package]]
-name = "kimun_server_client"
-git_tag_name = "kimun_server_client-v{{ version }}"
-
-# Internal editing engine, not released at all: no crates.io publish, no tag, no
-# changelog. `publish = false` alone would not be enough — as with kimun_server,
-# release-plz would consult crates.io, find nothing, and treat every run as an
-# unreleased first version. `release = false` takes it out of the picture
-# entirely. When kimun-notes starts depending on it, the dependency must stay
-# path-only with no version requirement, so there is no pin for release-plz to
-# rewrite (see the note in the workspace Cargo.toml).
-[[package]]
-name = "ropetext"
-release = false
-publish = false
+# `ropetext` and `kimun_server_client` used to be listed here. Both are now
+# modules inside kimun-notes (`tui/src/ropetext`, `tui/src/server_client`) and
+# have no manifest of their own. crates.io refuses to publish a crate that
+# path-depends on an unpublished one, and adding a version requirement does not
+# help — cargo strips the `path` and then demands the crate exist in the
+# registry. So a workspace member kimun-notes depends on has only two ends:
+# published forever, or not a crate. Neither had an API worth stabilising, so
+# they stopped being crates. kimun_server_client 0.1.0–0.2.1 remain on
+# crates.io, unmaintained and unreferenced; they are not yanked, because yanking
+# would break anyone who already resolved them.

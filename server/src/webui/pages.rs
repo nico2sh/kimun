@@ -293,7 +293,7 @@ pub(super) async fn query_submit(
 }
 
 /// Where the **context cut** would slice an answer on this query — rendered
-/// as a divider in the result list plus a summary line (adr/0027).
+/// as a divider in the result list plus a summary line.
 struct CutSummary {
     /// Displayed rows whose chunk made the would-be LLM context (they form a
     /// prefix: rows and context are cut from the same score-ordered pool).
@@ -310,7 +310,7 @@ struct CutSummary {
 
 /// Hits plus the wall-clock milliseconds the search took — the same duration
 /// the API reports as `query_time_ms` — plus the context-cut preview, on
-/// both reranker paths (adr/0029).
+/// both reranker paths.
 type SearchOutcome = Result<(Vec<(f64, String, String)>, u64, Option<CutSummary>), String>;
 
 /// The same pipeline the API's `/api/embeddings` runs — the test query shows

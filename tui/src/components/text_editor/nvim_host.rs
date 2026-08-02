@@ -133,7 +133,7 @@ impl NvimHost {
     /// then forward / emit as the decision dictates.
     ///
     /// The snapshot Mutex (shared with the reverse-refresh task) is locked only
-    /// when the decision actually consults mode/cmdline — see [`needs_snapshot`].
+    /// when the decision actually consults mode/cmdline — see `needs_snapshot`.
     /// Ordinary keystrokes (insert-mode typing, the pending-Z second key) take
     /// the lock-free path: no lock, no clone.
     pub fn handle_key(&mut self, nvim: &NvimBackend, key: &KeyEvent, tx: &AppTx) {

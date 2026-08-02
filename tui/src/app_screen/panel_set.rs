@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use kimun_server_client::RagClient;
+use crate::server_client::RagClient;
 use ratatui::Frame;
 use ratatui::crossterm::event::{MouseButton, MouseEventKind};
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
@@ -200,7 +200,7 @@ fn kind_at(columns: &[(PanelKind, Rect)], column: u16, row: u16) -> Option<Panel
 }
 
 /// Which content the editor *area* currently shows — a pure selector, not a
-/// container (ADR-0017, extended by ADR-0030). The heavy stateful panels are
+/// container. The heavy stateful panels are
 /// permanent residents of `PanelSet`: the note editor is `PanelSet::editor`
 /// and the Ask workspace's conversation thread is `PanelSet::ask`, each living
 /// for the whole screen lifetime regardless of which content is selected — so
@@ -231,12 +231,11 @@ pub struct PanelSet {
     /// The note editor. Retained for the whole screen lifetime — including
     /// while an attachment or the Ask workspace is shown — so its backend
     /// (e.g. a live nvim process) and undo history survive the round trip.
-    /// See ADR-0017.
     editor: TextEditorComponent,
     /// The Ask workspace's conversation thread + composer. Like `editor`, a
     /// permanent resident: retained for the whole screen lifetime so the
     /// conversation survives switching the editor area to another view and
-    /// back (adr/0030; ADR-0017 pattern). Owns its own `RagClient`. Shown only
+    /// back, the same way the note editor does. Owns its own `RagClient`. Shown only
     /// when `content` is `EditorAreaContent::Ask`.
     ask: ThreadPanel,
     /// Which content the editor *area* currently shows: the note editor
@@ -300,7 +299,7 @@ impl PanelSet {
 
     /// The single injection point for the live RAG client: hands it to the
     /// resident Ask panel, which derives its composer-enabled state from the
-    /// client's presence (adr/0030 — a present client enables submission,
+    /// client's presence (a present client enables submission,
     /// `None` disables it without evicting the thread). Because the panel is
     /// resident, one call keeps it correct whether or not Ask is on screen.
     pub fn set_ask_client(&mut self, client: Option<Arc<RagClient>>) {
@@ -404,7 +403,7 @@ impl PanelSet {
     }
     /// The note editor, or `None` while an attachment or the Ask workspace is
     /// shown in its place. Callers reaching for the editor cross a mode
-    /// boundary and must handle that case (see ADR-0017).
+    /// boundary and must handle that case.
     pub fn editor(&self) -> Option<&TextEditorComponent> {
         matches!(self.content, EditorAreaContent::Note).then_some(&self.editor)
     }
@@ -1054,7 +1053,7 @@ mod tests {
         assert!(!ps.ask().has_client());
         // Handing a client back enables it. (A bare client over a throwaway
         // vault id is fine — it's never called here.)
-        let client = std::sync::Arc::new(kimun_server_client::RagClient::new(
+        let client = std::sync::Arc::new(crate::server_client::RagClient::new(
             "http://localhost:0".to_string(),
             None,
             "vault".to_string(),

@@ -13,9 +13,9 @@ use sqlx::{Row, Sqlite, Transaction};
 
 use crate::note::{ContentChunk, LinkType, NoteContentData, NoteDetails};
 
-/// A note change reported by the [`NoteIndex`] the moment it is recorded, for
+/// A note change reported by the `NoteIndex` the moment it is recorded, for
 /// consumers outside core (the RAG client). Thin by design — it carries a path,
-/// a content hash, and the kind of change, never chunk text (see adr/0019).
+/// a content hash, and the kind of change, never chunk text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NoteChange {
     /// A note was created or its content rewritten. `hash` is the note's
@@ -109,8 +109,8 @@ use super::{
 //      of each link destination) so the `>`/`lk:` link filter matches notes
 //      by name with an indexed lookup instead of a leading-`%` scan. Bump
 //      forces a clean reindex so the column is populated for existing vaults.
-// 0.11: Note paths are now stored in one canonical (vault-absolute) form
-//       (adr/0021). Existing vaults may hold rows written in relative form (or
+// 0.11: Note paths are now stored in one canonical (vault-absolute) form.
+// Existing vaults may hold rows written in relative form (or
 //       relative+absolute duplicates) that canonical reads no longer match.
 //       Bump forces a clean reindex so every row is rewritten canonical and
 //       stale duplicates are dropped.

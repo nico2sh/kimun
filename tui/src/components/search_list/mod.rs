@@ -78,7 +78,7 @@ pub enum KeyReaction {
     /// SearchList decides *that* the chord is a yank and *what* it would copy;
     /// it does not touch the clipboard, because it holds no `AppTx` and emits
     /// nothing on its own. Callers hand this straight to
-    /// [`crate::components::yank_row`] (adr/0032).
+    /// [`crate::components::yank_row`].
     Yank(Option<YankTarget>),
     Unhandled,
 }
@@ -89,7 +89,7 @@ pub struct SearchList<R: SearchRow> {
     /// Indices into `rows` in display order (after filtering/ranking).
     display: Vec<usize>,
     /// A synthetic, query-fresh, filter-exempt row pinned at visible position 0
-    /// (the "Create: <q>" affordance / saved-searches virtual entry). Held
+    /// (the `Create: <q>` affordance / saved-searches virtual entry). Held
     /// separately from `rows` so it works regardless of delivery (one-shot
     /// `Replace` or streamed `Push`) and refreshes on every query change. See
     /// [`RowSource::leading_row`].
@@ -427,7 +427,7 @@ impl<R: SearchRow> SearchList<R> {
     /// sources) or recomputes the display. This is the setter every external
     /// caller wants — a saved search applied, a sort directive rewritten — so
     /// the input bar always reflects the query. The interactive keystroke path
-    /// uses [`sync_query_from_input`](Self::sync_query_from_input) instead,
+    /// uses `sync_query_from_input` instead,
     /// because the input widget already holds the typed text (and its cursor
     /// must not jump back to the end on every keystroke).
     pub fn set_query(&mut self, q: impl Into<String>) {
@@ -470,7 +470,8 @@ impl<R: SearchRow> SearchList<R> {
     ///
     /// This is the one seam that touches rows outside the [`RowSource`]; every
     /// other change rebuilds from the source. Structural changes (add/remove/
-    /// reorder) must still reload. See `adr/0010`.
+    /// reorder) must still reload. `SearchList` stays ignorant of the row type;
+    /// callers layer the path-matched operations on top.
     pub fn update_rows(&mut self, mut mutate: impl FnMut(&mut R) -> bool) -> bool {
         let mut changed = false;
         for row in &mut self.rows {
@@ -640,7 +641,7 @@ impl<R: SearchRow> SearchList<R> {
         // The yank chord, claimed above the Ctrl/Alt drop below (which would
         // otherwise swallow it). Every surface built on SearchList gets this
         // without wiring a key — the note browser lacked one for exactly that
-        // reason (adr/0032). What gets copied is the ROW's business; performing
+        // reason. What gets copied is the ROW's business; performing
         // the copy is the CALLER's, since SearchList holds no `AppTx`.
         if let Some(combo) = crate::keys::key_event_to_combo(key)
             && self.yank_combos.contains(&combo)
@@ -975,7 +976,7 @@ impl<R: SearchRow> SearchListBuilder<R> {
         self
     }
     /// Bind the yank chord to whatever the user has bound
-    /// [`ActionShortcuts::YankRow`](crate::keys::ActionShortcuts::YankRow) to.
+    /// [`ActionShortcuts::YankRow`](crate::keys::action_shortcuts::ActionShortcuts::YankRow) to.
     /// Surfaces that hold `KeyBindings` should always call this — the builder
     /// default is only for those that do not (and for tests).
     pub fn yank_combos_from(self, bindings: &crate::keys::KeyBindings) -> Self {
@@ -1062,7 +1063,7 @@ mod tests {
         KeyEvent::new(c, KeyModifiers::NONE)
     }
 
-    // ── The yank chord (adr/0032) ────────────────────────────────────────────
+    // ── The yank chord ────────────────────────────────────────────
     //
     // The bug these pin: yanking the selected row was hand-rolled per surface,
     // so the note browser — the most-reached list — silently had none. Claiming
@@ -1098,7 +1099,7 @@ mod tests {
     #[test]
     fn yank_chord_reports_none_for_a_row_with_nothing_to_copy() {
         // Distinguishable from "the clipboard failed" only because the row
-        // says so — the caller flashes "nothing to copy" (adr/0032).
+        // says so — the caller flashes "nothing to copy".
         let mut list = yank_list(&["quiet"]);
         list.select_next();
         assert!(matches!(

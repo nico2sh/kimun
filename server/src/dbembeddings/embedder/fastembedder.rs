@@ -34,7 +34,7 @@ impl FastEmbedder {
 
 /// Every bundled fastembed model as `(model code, dimension, description)`,
 /// sorted alphabetically by code — feeds the web UI's model dropdown so
-/// choosing a local model is always explicit (adr/0024).
+/// choosing a local model is always explicit.
 pub fn supported_models() -> Vec<(String, usize, String)> {
     let mut models: Vec<_> = TextEmbedding::list_supported_models()
         .into_iter()

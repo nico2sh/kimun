@@ -1,6 +1,6 @@
 //! The CFG **drawer view** as a component — the same shape as its sibling
 //! views (Tags/Links/Outline), so `DrawerHost`'s dispatch stays uniform: one
-//! arm per view, never inline view logic in the host (see adr/0023).
+//! arm per view, never inline view logic in the host.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;

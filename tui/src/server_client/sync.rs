@@ -1,7 +1,7 @@
 //! Orchestration: turn observed changes and the vault's authoritative state into
 //! server pushes/deletes. [`RagSync`] wires the observer; `drain` flushes the
-//! dirty-set (the fast path); `reconcile` is the correctness backbone
-//! (adr/0019). All server I/O goes through [`RagTransport`], so this logic is
+//! dirty-set (the fast path); `reconcile` is the correctness backbone.
+//! All server I/O goes through [`RagTransport`], so this logic is
 //! tested with a fake against a real vault.
 
 use std::collections::HashMap;
@@ -9,12 +9,12 @@ use std::sync::Arc;
 
 use kimun_core::{IndexObserver, NoteVault, error::VaultError, nfs::VaultPath};
 
-use crate::dto::{WireDoc, WireSection};
-use crate::{
+use crate::server_client::dto::{WireDoc, WireSection};
+use crate::server_client::{
     DirtyOp, DirtySet, RagClient, RagError, RagObserver, RagTransport, hash_string, reconcile_diff,
 };
 
-/// What a reachable server can do, derived from `/health` (adr/0024): search
+/// What a reachable server can do, derived from `/health`: search
 /// needs an embedder, question-answering needs an embedder AND an LLM.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServerCapability {
@@ -29,7 +29,7 @@ pub enum ServerCapability {
 
 impl ServerCapability {
     /// Derives the capability from a health probe's fields.
-    pub fn from_health(health: &crate::dto::Health) -> Self {
+    pub fn from_health(health: &crate::server_client::dto::Health) -> Self {
         match (health.embedder.is_some(), health.llm_provider.is_some()) {
             (false, _) => ServerCapability::Unconfigured,
             (true, false) => ServerCapability::SemanticOnly,
@@ -305,7 +305,7 @@ mod tests {
 
     #[test]
     fn capability_from_health_fields() {
-        use crate::dto::Health;
+        use crate::server_client::dto::Health;
         let h = |embedder: Option<&str>, llm: Option<&str>| Health {
             status: "ok".into(),
             reranker: false,

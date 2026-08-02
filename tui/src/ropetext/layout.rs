@@ -21,9 +21,9 @@ use std::ops::Range;
 
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::position::{Column, Position, Revision};
-use crate::text::Text;
-use crate::width::Metrics;
+use crate::ropetext::position::{Column, Position, Revision};
+use crate::ropetext::text::Text;
+use crate::ropetext::width::Metrics;
 
 /// What a syntax layer tells the layout about one logical row.
 #[derive(Debug, Clone, Copy, Default)]
@@ -154,7 +154,7 @@ impl Layout {
 
     /// Re-wrap `rows` in place, leaving the rest alone.
     ///
-    /// For a caller holding a [`Change`](crate::Change), whose `rows` is exactly
+    /// For a caller holding a [`Change`](crate::ropetext::Change), whose `rows` is exactly
     /// this argument. Rows outside the range must be unchanged in content and in
     /// hints; rows inside it may have become any number of visual lines.
     pub fn relayout_rows(
@@ -899,7 +899,7 @@ mod tests {
 
     #[test]
     fn relayout_rewraps_only_what_changed() {
-        let mut buffer = crate::EditBuffer::new(text("aaaa bbbb\nkeep\ntail"));
+        let mut buffer = crate::ropetext::EditBuffer::new(text("aaaa bbbb\nkeep\ntail"));
         let mut layout = plain(buffer.text(), 5);
         assert_eq!(layout.visual_line_count(), 4);
 
@@ -916,7 +916,7 @@ mod tests {
 
     #[test]
     fn relayout_follows_added_rows() {
-        let mut buffer = crate::EditBuffer::new(text("one\ntwo"));
+        let mut buffer = crate::ropetext::EditBuffer::new(text("one\ntwo"));
         let mut layout = plain(buffer.text(), 10);
         let at_end = buffer.text().position(0, Column::new(3)).unwrap();
         let mut txn = buffer.begin();
@@ -930,7 +930,7 @@ mod tests {
 
     #[test]
     fn relayout_follows_removed_rows() {
-        let mut buffer = crate::EditBuffer::new(text("one\ntwo\nthree\nfour"));
+        let mut buffer = crate::ropetext::EditBuffer::new(text("one\ntwo\nthree\nfour"));
         let mut layout = plain(buffer.text(), 10);
         let mut txn = buffer.begin();
         txn.delete(buffer_span(&txn, 0, 3, 2, 5));
@@ -951,7 +951,7 @@ mod tests {
             ("one\ntwo", 0, 0, "prefix "),
             ("wrapped line that is long\nnext", 0, 8, "\n"),
         ] {
-            let mut buffer = crate::EditBuffer::new(text(initial));
+            let mut buffer = crate::ropetext::EditBuffer::new(text(initial));
             let mut layout = plain(buffer.text(), 6);
             let position = buffer.text().position(row, Column::new(col)).unwrap();
             let mut txn = buffer.begin();
@@ -969,12 +969,12 @@ mod tests {
     }
 
     fn buffer_span(
-        txn: &crate::Txn<'_>,
+        txn: &crate::ropetext::Txn<'_>,
         r1: usize,
         c1: usize,
         r2: usize,
         c2: usize,
-    ) -> crate::Span {
+    ) -> crate::ropetext::Span {
         let text = txn.text();
         let a = text.position(r1, Column::new(c1)).expect("addressable");
         let b = text.position(r2, Column::new(c2)).expect("addressable");
@@ -1064,7 +1064,7 @@ mod tests {
                 byte in 0usize..48,
                 width in 1usize..8,
             ) {
-                let mut buffer = crate::EditBuffer::new(Text::from(initial.as_str()));
+                let mut buffer = crate::ropetext::EditBuffer::new(Text::from(initial.as_str()));
                 let Some(position) = buffer.text().position_at_byte(byte.min(buffer.text().len_bytes()))
                 else {
                     return Ok(());
@@ -1095,7 +1095,7 @@ mod tests {
                 len in 0usize..12,
                 width in 1usize..8,
             ) {
-                let mut buffer = crate::EditBuffer::new(Text::from(initial.as_str()));
+                let mut buffer = crate::ropetext::EditBuffer::new(Text::from(initial.as_str()));
                 let end = buffer.text().len_bytes();
                 let Some(start) = buffer.text().position_at_byte(from.min(end)) else {
                     return Ok(());

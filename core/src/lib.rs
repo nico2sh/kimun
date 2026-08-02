@@ -197,7 +197,7 @@ pub struct NoteVault {
     note_locks: Arc<std::sync::Mutex<HashMap<VaultPath, Arc<tokio::sync::Mutex<()>>>>>,
     /// The vault id, read from disk once and then served from memory — every
     /// RAG query surface asks for it. Shared across clones; the id is stable
-    /// for the life of the vault (adr/0020), so caching cannot go stale.
+    /// for the life of the vault, so caching cannot go stale.
     vault_id: Arc<tokio::sync::OnceCell<nfs::vault_id::VaultId>>,
 }
 
@@ -275,7 +275,7 @@ impl NoteVault {
     /// This vault's stable [`VaultId`], read from `.kimun/vault-id` (or
     /// generated and persisted there) on first call and cached in memory after
     /// that. Survives renames and moves, and keys the vault's collection on
-    /// the RAG server (adr/0020).
+    /// the RAG server.
     pub async fn vault_id(&self) -> Result<VaultId, VaultError> {
         let id = self
             .vault_id

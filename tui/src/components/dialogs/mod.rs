@@ -133,7 +133,7 @@ impl ActiveDialog {
     /// Open the save-search dialog. `provenance` is the saved-search name the
     /// query came from (the breadcrumb), pre-filled as the default name. The
     /// existing names load in the background and arrive via
-    /// [`AppEvent::OverlayData(OverlayData::SavedSearchNamesLoaded)`] to drive the dialog's hint.
+    /// [`OverlayData::SavedSearchNamesLoaded`] to drive the dialog's hint.
     pub fn save_search(
         query: String,
         provenance: Option<String>,

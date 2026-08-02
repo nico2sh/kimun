@@ -30,8 +30,8 @@ pub mod webui;
 /// A retrieved chunk with its relevance score (higher = better).
 pub type ScoredChunk = (f64, FlattenedChunk);
 
-/// A validated collection key — the **Vault ID** as the server accepts it
-/// (adr/0020). Constructible only through [`parse`](Self::parse), so holding
+/// A validated collection key — the **Vault ID** as the server accepts it.
+/// Constructible only through [`parse`](Self::parse), so holding
 /// one *is* the proof of validation: every [`KimunRag`] operation demands a
 /// `&CollectionKey`, and a request path that skipped validation does not
 /// compile rather than serving an unchecked collection.
@@ -42,9 +42,9 @@ impl CollectionKey {
     /// Validates a raw vault id. Rejects blank ids (which would cross-mix every
     /// blank-id vault), any id with characters outside `[A-Za-z0-9._-]`, and
     /// ids starting with `__` — that prefix is reserved for server metadata
-    /// collections (the embedder fingerprint, adr/0025) and is excluded from
+    /// collections (the embedder fingerprint) and is excluded from
     /// listings and the fingerprint wipe. So a key stays a safe, non-colliding
-    /// collection-name segment (Kimün always sends a UUID; adr/0020).
+    /// collection-name segment (Kimün always sends a UUID).
     pub fn parse(vault_id: &str) -> Result<Self, RagError> {
         let ok = !vault_id.is_empty()
             && !vault_id.starts_with("__")
@@ -75,7 +75,7 @@ impl Display for CollectionKey {
 /// The answer to a question, with the chunks the LLM saw as context. Each
 /// source carries the 1-based **ordinal** the prompt numbered it with (the `[n]`
 /// citation marker) — assigned once, at the single numbering site in
-/// [`RagPipeline::answer`], so the citation↔source pairing is an explicit
+/// [`KimunRag::answer`], so the citation↔source pairing is an explicit
 /// contract rather than a shared vec-order convention.
 pub struct Answer {
     pub text: String,
@@ -84,8 +84,7 @@ pub struct Answer {
 
 /// Preview of where the **context cut** slices an answer's LLM context on a
 /// query's ranked pool — the web UI's test-query box renders it so the cut
-/// is observable against real vault data, with or without a reranker
-/// (adr/0029).
+/// is observable against real vault data, with or without a reranker.
 pub struct CutPreview {
     /// Chunks retrieved into the candidate pool.
     pub pool_chunks: usize,
@@ -102,7 +101,7 @@ pub struct CutPreview {
 /// The server's domain error: every way a request can fail, each variant
 /// carrying its meaning rather than a status code. The HTTP mapping lives in
 /// one place (`IntoResponse` in the handlers module): `Validation` → 400,
-/// `NotFound` → 404, `SemanticOnly`/`Unconfigured` → 503 (adr/0022, adr/0024),
+/// `NotFound` → 404, `SemanticOnly`/`Unconfigured` → 503,
 /// `Backend` → 500.
 #[derive(Debug, thiserror::Error)]
 pub enum RagError {
@@ -112,12 +111,11 @@ pub enum RagError {
     /// The named thing doesn't exist (e.g. an expired or unknown job).
     #[error("{0}")]
     NotFound(String),
-    /// No LLM configured — this server answers semantic searches only
-    /// (adr/0022).
+    /// No LLM configured — this server answers semantic searches only.
     #[error("no LLM configured; this server is semantic-only")]
     SemanticOnly,
     /// No embedder configured — the server is *unconfigured*: no vector store,
-    /// no indexing, no search, no answering (adr/0024). Distinct from
+    /// no indexing, no search, no answering. Distinct from
     /// [`SemanticOnly`](Self::SemanticOnly) (embedder present, LLM absent) so
     /// the two states never blur.
     #[error(
@@ -149,7 +147,7 @@ const CANDIDATE_POOL: usize = 80;
 /// The score-range cut's default cutoff (config `score_range_cutoff`): a
 /// chunk survives when its min-max-normalized score —
 /// `(s - s_min) / (s_max - s_min)` over the query's ranked pool — is at
-/// least this, on both reranker paths (adr/0029). Normalized (not an
+/// least this, on both reranker paths. Normalized (not an
 /// absolute cutoff) because absolute score bands are model-specific; within
 /// one query all pool scores share a scale, so the pool's own spread defines
 /// what "relevant" looks like.
@@ -187,11 +185,11 @@ pub struct KimunRag {
     store: Arc<dyn VectorStore + Send + Sync>,
     embedder: Arc<dyn Embedder>,
     /// `None` on a semantic-only server — search works, question-answering does
-    /// not (adr/0022).
+    /// not.
     llm_client: Option<Arc<dyn LLMClient + Send + Sync>>,
     reranker: Option<Arc<dyn Reranker>>,
     /// Which **context cut** sizes both query surfaces, on both reranker
-    /// paths (adr/0029).
+    /// paths.
     context_cut: ContextCut,
     /// The score-range cut's normalized cutoff (config `score_range_cutoff`,
     /// default [`SCORE_RANGE_DEFAULT_CUTOFF`]).
@@ -204,7 +202,7 @@ pub struct KimunRag {
     /// misconfigured backend logs once per run instead of per query.
     score_scale_warned: std::sync::atomic::AtomicBool,
     /// The embedder fingerprint this pipeline must find recorded with the
-    /// store's data (adr/0025). `None` skips the gate (tests, callers that
+    /// store's data. `None` skips the gate (tests, callers that
     /// enforce it themselves).
     expected_fingerprint: Option<String>,
     /// One-shot success marker for the fingerprint gate. A failed check is NOT
@@ -236,15 +234,14 @@ impl KimunRag {
     }
 
     /// Select the **context cut** that sizes search rows and answer contexts
-    /// on both reranker paths (default: [`ContextCut::ScoreRange`],
-    /// adr/0029).
+    /// on both reranker paths (default: [`ContextCut::ScoreRange`]).
     pub fn with_context_cut(mut self, context_cut: ContextCut) -> Self {
         self.context_cut = context_cut;
         self
     }
 
     /// Tune the score-range cut's normalized cutoff (default
-    /// [`SCORE_RANGE_DEFAULT_CUTOFF`]). Values outside `0.0..=1.0` are
+    /// `SCORE_RANGE_DEFAULT_CUTOFF`). Values outside `0.0..=1.0` are
     /// clamped — including a TOML `inf`/`-inf`, which land on 1.0/0.0 (the
     /// strictest/loosest cut, matching what such configs always did). Only
     /// NaN is ignored: `clamp` would propagate it and every score comparison
@@ -262,7 +259,7 @@ impl KimunRag {
     }
 
     /// Tune the largest-drop cut's note-position search window (defaults
-    /// [`DROP_WINDOW_MIN`]`..=`[`DROP_WINDOW_MAX`]); sanitized to `min ≥ 1`
+    /// `DROP_WINDOW_MIN..=DROP_WINDOW_MAX`); sanitized to `min ≥ 1`
     /// and `max ≥ min`.
     pub fn with_drop_window(mut self, min: usize, max: usize) -> Self {
         let min = min.max(1);
@@ -287,7 +284,7 @@ impl KimunRag {
         self.reranker.is_some()
     }
 
-    /// Arms the **embedder fingerprint** gate (adr/0025): before the first data
+    /// Arms the **embedder fingerprint** gate: before the first data
     /// operation touches the store, the recorded fingerprint is compared to
     /// `fingerprint` and a mismatch wipes all collections. Deliberately lazy —
     /// a store that is unreachable at boot (e.g. Qdrant still starting) must
@@ -322,13 +319,13 @@ impl KimunRag {
     }
 
     /// Whether this server can answer questions — the capability gate for
-    /// `answer` (false on a semantic-only server, adr/0022).
+    /// `answer` (false on a semantic-only server).
     pub fn can_answer(&self) -> bool {
         self.llm_client.is_some()
     }
 
     /// Semantic search: one row per note. The configured **context cut**
-    /// decides how many (adr/0029): under `fixed`, the classic `top_k` notes;
+    /// decides how many: under `fixed`, the classic `top_k` notes;
     /// under the adaptive cuts, every note whose best chunk survives the cut
     /// (and `top_k` is ignored).
     ///
@@ -347,8 +344,7 @@ impl KimunRag {
 
     /// [`Self::search`] plus a [`CutPreview`] of where the **context cut**
     /// slices an answer's LLM context on the same ranked pool — the web UI's
-    /// test-query box renders it. Applies with or without a reranker
-    /// (adr/0029).
+    /// test-query box renders it. Applies with or without a reranker.
     pub async fn search_with_cut_preview(
         &self,
         collection: &CollectionKey,
@@ -395,7 +391,7 @@ impl KimunRag {
     /// Question-answering: retrieves the best CHUNKS as context (the LLM wants
     /// sections, not one-per-note) and asks the configured LLM. The context
     /// cut sizes the context on the ranked pool — reranked scores when a
-    /// reranker is active, vector scores otherwise (adr/0029); `top_k` only
+    /// reranker is active, vector scores otherwise; `top_k` only
     /// applies under the `fixed` cut. Fails with [`RagError::SemanticOnly`]
     /// when no LLM is configured; the gate runs before the vector search so no
     /// work is thrown away.
@@ -403,7 +399,7 @@ impl KimunRag {
     /// `history` (prior question/answer pairs) does two jobs. It is forwarded
     /// verbatim to the LLM call, and — since a terse follow-up ("yes",
     /// "go on") embeds against nothing on its own — it also CONDITIONS the
-    /// retrieval/rerank query via [`build_retrieval_query`]: the most recent
+    /// retrieval/rerank query via `build_retrieval_query`: the most recent
     /// turn is folded in so the search still sees the topic under discussion.
     /// Only retrieval and ranking see the conditioned query; the prompt's
     /// "Question:" stays the raw `question`. With empty history the query is
@@ -664,7 +660,7 @@ impl KimunRag {
     }
 
     /// Reconcile support: the `{note path → content hash}` set the server holds
-    /// for a vault (adr/0019).
+    /// for a vault.
     pub async fn note_hashes(
         &self,
         collection: &CollectionKey,
@@ -925,7 +921,7 @@ fn deduplicate_chunks(results: Vec<ScoredChunk>) -> Vec<ScoredChunk> {
     deduplicated
 }
 
-/// Startup guard for the **embedder fingerprint** (adr/0025): compares the
+/// Startup guard for the **embedder fingerprint**: compares the
 /// configured embedder's fingerprint against the one recorded with the store's
 /// data. On mismatch the stored vectors are unusable by definition — drop every
 /// collection and record the new fingerprint; the now-empty server makes every
@@ -1592,7 +1588,7 @@ mod tests {
     async fn the_cut_runs_on_reranked_scores() {
         // Vector scores are flat (no cut signal at all); the reranker's spiky
         // scores are what the score-range cut must see → 1-chunk context,
-        // top_k ignored (adr/0029).
+        // top_k ignored.
         let store = || FakeVectorStore {
             results: pool(&[0.7, 0.7, 0.7, 0.7, 0.7]),
             ..Default::default()
@@ -2111,7 +2107,7 @@ mod tests {
     async fn fingerprint_mismatch_wipes_and_rerecords() {
         // The embedder changed: stored vectors are garbage for the new model,
         // and reconciliation can't see it (note hashes unchanged) — wipe, so
-        // every client's next reconcile re-pushes everything (adr/0025).
+        // every client's next reconcile re-pushes everything.
         let store = FakeVectorStore::default();
         *store.fingerprint.lock().unwrap() = Some("fastembed:default:1024".to_string());
         let wiped = enforce_embedder_fingerprint(&store, "ollama:nomic-embed-text:768")
@@ -2143,7 +2139,7 @@ mod tests {
     async fn fingerprint_gate_retries_after_store_outage() {
         // A store that is down at boot (Qdrant still starting) must not let
         // data ops run unverified — but must recover without a restart once
-        // the store is reachable (adr/0025).
+        // the store is reachable.
         let fake = Arc::new(FakeVectorStore::default());
         *fake.fingerprint_unavailable.lock().unwrap() = true;
         let rag = KimunRag::new(fake.clone(), Arc::new(FakeEmbedder), None)

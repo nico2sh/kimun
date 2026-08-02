@@ -5,7 +5,9 @@
 //! the binary in place. All network and filesystem work here is **blocking** —
 //! callers run it on `tokio::task::spawn_blocking` so the TUI never stalls.
 //!
-//! Design: adr/0013 (channel restriction) and adr/0014 (hand-rolled mechanics).
+//! Self-update is offered only on the `script` and `direct` channels; on
+//! `brew` and `cargo` a newer version is surfaced as the right upgrade command
+//! rather than an in-app binary swap.
 //! User-owned config (`update_check`) lives in `config.toml`; machine-managed
 //! state (throttle, last-known version, dismissals) lives in `update_state.toml`.
 
@@ -25,7 +27,7 @@ pub use state::UpdateState;
 ///
 /// Scope: the trait covers release discovery and the human releases URL only.
 /// Asset *naming* — the raw-binary filename ([`platform::binary_asset_name`])
-/// and the `checksums-sha256.txt` name in [`apply`] — is a property of this
+/// and the `checksums-sha256.txt` name in [`apply()`] — is a property of this
 /// project's CI (`build.yml`), constant across providers, and is intentionally
 /// not part of the trait. A provider for a different repo layout would also
 /// adjust those.
@@ -86,7 +88,7 @@ impl UpdateStatus {
 /// Check for an update (blocking — prefer the async [`check_now`]).
 ///
 /// When `force` is false the check is throttled: if the cached result is fresh
-/// (< [`CHECK_INTERVAL_HOURS`]) no network call is made and the cached version
+/// (< `CHECK_INTERVAL_HOURS`) no network call is made and the cached version
 /// is reused. `force` (manual check / `kimun update`) always queries GitHub.
 ///
 /// Returns `Ok(None)` only when throttled with no cached version yet.
@@ -136,7 +138,7 @@ pub fn status_for(config_dir: &Path, latest: &LatestRelease) -> UpdateStatus {
 }
 
 /// Fetch the full latest release (with downloadable assets), needed before
-/// [`apply`]. Blocking — prefer the async [`latest_release`].
+/// [`apply()`]. Blocking — prefer the async [`latest_release`].
 pub fn fetch_latest() -> Result<LatestRelease, UpdateError> {
     provider().latest_stable()
 }
@@ -177,7 +179,7 @@ pub async fn latest_release() -> Result<LatestRelease, UpdateError> {
     run_blocking(fetch_latest).await
 }
 
-/// Async [`apply`] — consumes `latest` so it can move onto the blocking pool.
+/// Async [`apply()`] — consumes `latest` so it can move onto the blocking pool.
 pub async fn install(latest: LatestRelease) -> Result<(), UpdateError> {
     run_blocking(move || apply(&latest)).await
 }

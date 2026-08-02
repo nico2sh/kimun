@@ -1,18 +1,18 @@
 //! Built-in vim emulation: a modal input interpreter over the **edit buffer**.
-//! Pure over `&mut RopeBuffer` — no component state, no async (adr/0012).
+//! Pure over `&mut RopeBuffer` — no component state, no async.
 
 use super::rope_buffer::{CursorMove, RopeBuffer};
 use super::snapshot::EditorMode;
 use super::vim_objects::{self as objects, TextObject};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-/// Screen-level actions the host performs on the engine's behalf (adr/0012).
+/// Screen-level actions the host performs on the engine's behalf.
 ///
 /// The clipboard variants exist because the engine must not link `arboard`
-/// (adr/0011 keeps the OS clipboard out of the engine) but *is* the only thing
+/// (the OS clipboard is deliberately kept out of the engine) but *is* the only thing
 /// that knows the vim-inclusive selection and owns the mode transition. So the
 /// engine does the editing and names the clipboard operation; the host performs
-/// the I/O and reports the outcome (adr/0031).
+/// the I/O and reports the outcome.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VimHostAction {
     OpenPalette, // `:`
@@ -48,7 +48,7 @@ pub enum VimKeyOutcome {
     Host(VimHostAction),
 }
 
-// ── Reified command model (adr/0011) ────────────────────────────────────────
+// ── Reified command model ────────────────────────────────────────
 
 /// A cursor motion. Operators consume a motion to form a range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,7 +112,7 @@ pub enum InsertEntry {
     OpenAbove, // O
 }
 
-/// The fully-parsed unit of work (adr/0011). `apply` is the only door that
+/// The fully-parsed unit of work. `apply` is the only door that
 /// mutates the buffer; dot-repeat (and future macros) replay these values
 /// through that same door, so first press and replay cannot diverge.
 #[derive(Debug, Clone)]
@@ -196,7 +196,7 @@ enum RegisterKind {
 }
 
 /// One register's value — content and kind live together so they cannot
-/// desync (adr/0011: the register is internal vim state, kept separate from
+/// desync (the register is internal vim state, kept separate from
 /// the textarea's yank buffer and the OS clipboard).
 #[derive(Debug, Clone)]
 struct RegisterValue {
@@ -256,7 +256,7 @@ pub struct VimEngine {
     awaiting: Option<Awaiting>,
     last_find: Option<(char, bool, bool)>, // (ch, till, forward) for ; and ,
     registers: Registers,
-    /// The last mutating command + captured insert delta, for `.` (adr/0011).
+    /// The last mutating command + captured insert delta, for `.`.
     last_change: Option<Change>,
     /// While in Insert via a vim command, the text typed is accumulated here
     /// (resulting delta) so `.` can replay it.
@@ -461,7 +461,7 @@ impl VimEngine {
         // OS clipboard chords. The engine claims them so the mode and selection
         // transition happens here rather than behind its back — the host used to
         // never see these keys at all, because the filter below swallowed every
-        // Ctrl-modified char (adr/0031).
+        // Ctrl-modified char.
         if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(c, 'c' | 'x' | 'v') {
             return self.clipboard_chord_visual(c, ta);
         }
@@ -529,7 +529,7 @@ impl VimEngine {
                     Self::select_range(ta, start, end, true);
                 }
                 // cut + insert is two history entries for one keypress; one
-                // `edit()` scope makes visual `p` a single undo (adr/0037).
+                // `edit()` scope makes visual `p` a single undo.
                 ta.cut(); // cursor lands at the deletion gap
                 self.fill_from_textarea(ta, RegisterKind::Charwise);
                 // Record where the paste starts so we can leave the cursor there
@@ -764,8 +764,7 @@ impl VimEngine {
     /// The text is lifted through the textarea's yank buffer — a transport only.
     /// The **unnamed register is deliberately not filled**: the OS clipboard and
     /// the register are independent channels, so a Ctrl-X must not clobber what
-    /// `y` put in the register any more than `dd` may clobber the OS clipboard
-    /// (adr/0031).
+    /// `y` put in the register any more than `dd` may clobber the OS clipboard.
     ///
     /// All three land in Normal, because vim's Ctrl-C is Esc.
     ///
@@ -984,7 +983,7 @@ impl VimEngine {
         VimKeyOutcome::CursorOnly
     }
 
-    // ── Normal mode: keys → parse → Command → execute/apply (adr/0011) ───────
+    // ── Normal mode: keys → parse → Command → execute/apply ───────
 
     fn handle_normal(&mut self, key: &KeyEvent, ta: &mut RopeBuffer) -> VimKeyOutcome {
         match self.parse_normal(key) {
@@ -1004,7 +1003,7 @@ impl VimEngine {
     }
 
     /// Parse one Normal-mode key into a `Parsed` value. Pure pending-state
-    /// accumulation — never touches the buffer (adr/0011).
+    /// accumulation — never touches the buffer.
     fn parse_normal(&mut self, key: &KeyEvent) -> Parsed {
         // One-key continuations (g-prefix, find target, replace char, object
         // key) consume the next key before anything else.
@@ -1023,7 +1022,7 @@ impl VimEngine {
             return Parsed::Cmd(Command::Redo(self.take_total_count()));
         }
 
-        // OS clipboard chords, likewise ahead of the plain filter (adr/0031).
+        // OS clipboard chords, likewise ahead of the plain filter.
         // Ctrl-C is vim's Esc: no selection can exist in Normal, so there is
         // nothing to copy and cancelling the pending sequence is the useful
         // meaning. Ctrl-V pastes at the cursor. Ctrl-X has no Normal-mode
@@ -1355,7 +1354,7 @@ impl VimEngine {
             'A' => Command::EnterInsert(InsertEntry::LineEnd),
             'o' => Command::EnterInsert(InsertEntry::OpenBelow),
             'O' => Command::EnterInsert(InsertEntry::OpenAbove),
-            // Host actions — `:` `/` `?` `n` `N` (adr/0012). `?` backward-first
+            // Host actions — `:` `/` `?` `n` `N`. `?` backward-first
             // is deferred; `/` and `?` both open the find bar for v1.
             ':' => return Parsed::Host(VimHostAction::OpenPalette),
             '/' => return Parsed::Host(VimHostAction::OpenSearch { forward: true }),
@@ -1542,7 +1541,7 @@ impl VimEngine {
             Command::Undo(n) => {
                 // The buffer groups by extent, so a bare `u` takes the whole
                 // action without the engine reporting anything back to the
-                // host (adr/0037). A counted `3u` is still entry-wise.
+                // host. A counted `3u` is still entry-wise.
                 for _ in 0..n {
                     ta.undo();
                 }
@@ -2127,7 +2126,7 @@ impl VimEngine {
     fn indent_lines(&self, outdent: bool, count: usize, ta: &mut RopeBuffer) {
         let step = ta.indent_width() as usize;
         // One vim command is one undo: this pushes an entry per row, so the
-        // whole block goes in a single `edit()` scope (adr/0037).
+        // whole block goes in a single `edit()` scope.
         ta.edit(|ta| {
             let (start_row, start_col) = super::cursor_tuple(ta);
             let mut first_line_delta = 0usize; // indent change on the cursor's own line
@@ -2211,7 +2210,7 @@ impl VimEngine {
                 // through the textarea yank buffer — the engine register is
                 // deliberately NOT filled (vim: case operators don't yank).
                 let start = ta.selection_range().map(|(s, _)| s);
-                // cut + insert as one **undo group** (adr/0037).
+                // cut + insert as one **undo group**.
                 ta.edit(|ta| {
                     ta.cut();
                     let transformed = Self::transform_case(&ta.yank_text(), op);

@@ -2,10 +2,10 @@
 
 use std::ops::Range;
 
-use crate::change::{Change, Edit};
-use crate::history::{DEFAULT_BUDGET_BYTES, Entry, History, Shape};
-use crate::position::{Position, Revision, Span};
-use crate::text::Text;
+use crate::ropetext::change::{Change, Edit};
+use crate::ropetext::history::{DEFAULT_BUDGET_BYTES, Entry, History, Shape};
+use crate::ropetext::position::{Position, Revision, Span};
+use crate::ropetext::text::Text;
 
 /// Which side of an insertion a remapped offset ends up on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,7 +168,7 @@ impl EditBuffer {
 
     /// Open a transaction that will record its own [undo group].
     ///
-    /// [undo group]: crate::EditBuffer
+    /// [undo group]: crate::ropetext::EditBuffer
     pub fn begin(&mut self) -> Txn<'_> {
         Txn::new(self, false)
     }
@@ -557,7 +557,7 @@ fn line_delta(from: &Text, to: &Text) -> isize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::position::Column;
+    use crate::ropetext::position::Column;
 
     fn buffer(text: &str) -> EditBuffer {
         EditBuffer::new(Text::from(text))

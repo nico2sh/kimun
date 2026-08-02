@@ -59,7 +59,7 @@ use crate::settings::themes::Theme;
 /// ownership, but a single failed `Clipboard::new()` at construction disabled
 /// that component's clipboard for the entire session, silently). The `Option`
 /// below is what avoids the latter — a failure is dropped, not cached, so the
-/// next attempt opens a fresh connection (adr/0031).
+/// next attempt opens a fresh connection.
 static CLIPBOARD: std::sync::OnceLock<std::sync::Mutex<Option<arboard::Clipboard>>> =
     std::sync::OnceLock::new();
 
@@ -86,7 +86,7 @@ pub(crate) fn with_clipboard<T>(
     // probes a text clipboard ahead of every Ctrl+V. Dropping on it would
     // release the X11 CLIPBOARD-selection ownership we hold from our own last
     // copy, losing the copied text: the exact failure this shared handle exists
-    // to prevent (adr/0031).
+    // to prevent.
     if matches!(&result, Err(e) if !matches!(e, arboard::Error::ContentNotAvailable)) {
         *guard = None;
     }
@@ -111,7 +111,7 @@ pub fn yank(text: String, done_msg: impl Into<String>, tx: &AppTx) {
 ///
 /// The `None` branch is the point. Silence there is indistinguishable from a
 /// clipboard failure or from an unbound key, which is precisely how the missing
-/// note-browser yank stayed invisible (adr/0032).
+/// note-browser yank stayed invisible.
 pub fn yank_row(target: Option<search_list::YankTarget>, tx: &AppTx) {
     match target {
         Some(t) => yank(t.text, format!("{} copied", t.noun), tx),

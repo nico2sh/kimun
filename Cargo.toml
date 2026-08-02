@@ -1,5 +1,5 @@
 [workspace]
-members = ["core", "ropetext", "tui", "client", "server"]
+members = ["core", "tui", "server"]
 resolver = "2"
 
 [profile.release]

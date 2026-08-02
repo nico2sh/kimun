@@ -482,7 +482,7 @@ impl QueryPanel {
             return EventState::Consumed;
         }
         // NOTE: the yank chord is NOT pre-checked here any more — SearchList
-        // claims it and reports the selected row's target (adr/0032).
+        // claims it and reports the selected row's target.
         //
         // NOTE: plain Enter is NOT pre-checked here. It must reach the engine
         // so an open autocomplete popup can accept on Enter; only when the
@@ -631,7 +631,7 @@ impl QueryPanel {
 
     /// The list-focus `y` verb. Reads the same [`SearchRow::yank_target`] the
     /// yank chord does, so the verb and the chord cannot report differently —
-    /// including when there is nothing to copy (adr/0032).
+    /// including when there is nothing to copy.
     fn yank_selected_row(&self, tx: &AppTx) {
         crate::components::yank_row(self.list.selected_row().and_then(|r| r.yank_target()), tx);
     }
@@ -654,7 +654,7 @@ impl QueryPanel {
     }
 
     /// Step the preview reveal backward (Full → Context → Collapsed): the `h`
-    /// list-focus verb, mirroring `l`'s forward cycle via [`toggle_expand`].
+    /// list-focus verb, mirroring `l`'s forward cycle via [`Self::toggle_expand`].
     fn collapse_expand(&mut self) {
         let sel = self.list.selected_row().map(|e| e.path.clone());
         if sel.is_none() {
@@ -1077,7 +1077,7 @@ mod tests {
                 opened = Some(path);
             }
         }
-        // The index returns canonical (vault-absolute) paths (adr/0021).
+        // The index returns canonical (vault-absolute) paths.
         assert_eq!(opened, Some(VaultPath::note_path_from("target").absolute()));
     }
 

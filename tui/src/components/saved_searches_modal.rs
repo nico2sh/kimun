@@ -3,7 +3,7 @@
 //! A query box on top of a list of the vault's saved searches, with a pinned
 //! virtual "Backlinks (current note)" entry at the top. Typing filters by name
 //! and by a leading 1–9 quick-select index (an exact index match ranks first).
-//! Enter emits [`AppEvent::SavedSearch(SavedSearchFlow::Selected)`] (the editor runs the query in
+//! Enter emits [`SavedSearchFlow::Selected`] (the editor runs the query in
 //! the panel and closes this overlay itself); Esc emits
 //! [`AppEvent::CloseOverlay`]; Delete removes the selected user entry.
 //!

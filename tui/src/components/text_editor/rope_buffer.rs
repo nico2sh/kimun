@@ -1,5 +1,5 @@
 //! The **edit buffer** over `ropetext`, presenting the surface the rest of the
-//! editor already calls (adr/0039).
+//! editor already calls.
 //!
 //! This exists so the engine swap does not have to happen everywhere at once.
 //! It keeps every method name and `(row, col)` signature the `TextArea`-backed
@@ -13,8 +13,8 @@
 //! rows ask for them ([`RopeBuffer::rows`]) and pay for them there; the buffer
 //! keeps one copy of the note and no derived copy in step with it.
 //!
-use ropetext::motion::{self, Goal, Words};
-use ropetext::{Change, Column, EditBuffer as Rope, Position, Span, Text};
+use crate::ropetext::motion::{self, Goal, Words};
+use crate::ropetext::{Change, Column, EditBuffer as Rope, Position, Span, Text};
 
 /// How far one indent step moves a line, in spaces, when `hard_tab_indent` is
 /// off — what Tab, `>>` and the visual `>` add, and what their inverses remove.
@@ -25,7 +25,7 @@ use ropetext::{Change, Column, EditBuffer as Rope, Position, Span, Text};
 /// fixed amount of text an edit *inserts*. Vim keeps the two apart as `tabstop`
 /// and `shiftwidth`, EditorConfig as `tab_width` and `indent_size`, and
 /// `hard_tab_indent` is exactly the setting under which they must differ: insert
-/// one literal `\t`, still draw it [`ropetext::Metrics::DEFAULT_TAB_WIDTH`]
+/// one literal `\t`, still draw it [`crate::ropetext::Metrics::DEFAULT_TAB_WIDTH`]
 /// cells wide. That both are 4 today is a coincidence of defaults.
 const DEFAULT_INDENT_WIDTH: u8 = 4;
 
@@ -42,15 +42,15 @@ pub struct EditOutcome {
     /// never a library return value, which can report `false` after mutating.
     pub changed: bool,
     /// The change is not confined to the cursor's row, so the incremental
-    /// parser's cursor damage hint would under-report it (adr/0035).
+    /// parser's cursor damage hint would under-report it.
     pub bulk: bool,
     /// Which rows the edits changed, in the new text's numbering — the hull when
     /// several ran before this was drained.
     ///
     /// Told by the engine rather than found by comparing the buffer with a copy
-    /// of its previous self, which is what ADR-0040 exists to make possible. The
-    /// **nvim** backend reports lines and not changes, so it leaves this `None`
-    /// and its consumer falls back to a diff.
+    /// of its previous self, which is what the revision-tagged rope makes
+    /// possible. The **nvim** backend reports lines and not changes, so it
+    /// leaves this `None` and its consumer falls back to a diff.
     pub damage: Option<std::ops::Range<usize>>,
     /// Net rows added (or removed, when negative) by the edits behind `damage`.
     ///
@@ -96,8 +96,8 @@ enum Yank {
 ///
 /// Deliberately the incumbent's variant set, so the 145 call sites need no
 /// rewriting — but `Jump` takes `usize` rather than `u16`, because clamping a
-/// row to 65535 is the defect adr/0038 recorded and this is the type where it
-/// stops being representable.
+/// row to 65535 is a defect the old widget's contract allowed, and this is the
+/// type where it stops being representable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CursorMove {
     Forward,
@@ -218,7 +218,7 @@ impl RopeBuffer {
         self.hard_tab_indent = hard;
     }
 
-    pub fn snapshot(&self) -> ropetext::Snapshot {
+    pub fn snapshot(&self) -> crate::ropetext::Snapshot {
         self.inner.snapshot()
     }
 
@@ -316,7 +316,7 @@ impl RopeBuffer {
     }
 
     /// Apply one primitive as its own group, or as part of an open one.
-    fn mutate(&mut self, f: impl FnOnce(&mut ropetext::Txn<'_>)) -> bool {
+    fn mutate(&mut self, f: impl FnOnce(&mut crate::ropetext::Txn<'_>)) -> bool {
         let extending =
             (self.depth > 0 && self.group_started) || std::mem::take(&mut self.continue_group);
         let mut txn = if extending {
@@ -517,7 +517,7 @@ impl RopeBuffer {
     /// Taking it is unconditional: an empty selection is not a range, so the
     /// caller proceeds as though there were none — but the anchor is gone either
     /// way. Leaving it alive is how an invisible selection outlives the gesture
-    /// that made it, which adr/0038 records costing two notes.
+    /// that made it — a defect that cost two notes before it was found.
     fn take_selection(&mut self) -> bool {
         let span = self.inner.selection().filter(|span| !span.is_empty());
         self.inner.clear_selection();
@@ -718,7 +718,7 @@ impl RopeBuffer {
 
     // ── Search ───────────────────────────────────────────────────────────────
     //
-    // Not the engine's business (adr/0041): it holds the pattern because vim's
+    // Not the engine's business: it holds the pattern because vim's
     // `n`/`N` outlive the find bar, and matches a row at a time because a **find
     // pattern** can never span a newline.
 
@@ -861,7 +861,7 @@ fn rc(position: Position) -> (usize, usize) {
 #[cfg(test)]
 mod search_tests {
     use super::*;
-    use ropetext::Text;
+    use crate::ropetext::Text;
 
     fn buffer(text: &str, pattern: &str, cursor: (usize, usize)) -> RopeBuffer {
         let mut buf = RopeBuffer::new(Text::from(text));
@@ -926,7 +926,7 @@ mod search_tests {
 #[cfg(test)]
 mod cluster_tests {
     use super::*;
-    use ropetext::Text;
+    use crate::ropetext::Text;
 
     #[test]
     fn delete_str_spends_its_count_on_clusters() {
@@ -954,7 +954,7 @@ mod cluster_tests {
 #[cfg(test)]
 mod damage_tests {
     use super::*;
-    use ropetext::Text;
+    use crate::ropetext::Text;
 
     #[test]
     fn damage_from_several_edits_is_in_one_numbering() {

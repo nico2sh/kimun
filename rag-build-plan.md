@@ -1,14 +1,14 @@
 # RAG Integration — Build Plan
 
 Sequenced plan to take the `server/` server from experimental/pull to the
-push-only, multi-vault, Kimün-owned architecture decided in adr/0018–0020 and
+push-only, multi-vault, Kimün-owned architecture and
 CONTEXT.md (RAG section).
 
 Decisions this plan implements:
-- Push-only sync; server never reads the vault (adr/0018).
+- Push-only sync; server never reads the vault.
 - Core network-free; **index observer** seam + `kimun_server_client` crate;
-  **reconciliation** (hash-diff) is the backbone, no durable outbox (adr/0019).
-- Multi-vault server, one **collection** per **Vault ID** in `.kimun/` (adr/0020).
+  **reconciliation** (hash-diff) is the backbone, no durable outbox.
+- Multi-vault server, one **collection** per **Vault ID** in `.kimun/`.
 - Server-owned LLM config, bearer-token auth, per-note hash (v1).
 - TUI: additive surfaces only.
 - Web UI: axum server-rendered (askama/maud) + htmx, assets embedded, no node.
@@ -30,7 +30,7 @@ No network in core. Everything here is offline-testable.
 
 **1.1 Index observer seam**
 - Define an `IndexObserver` trait: `on_change(path, content_hash, kind)` where
-  `kind = Upsert | Delete`. Thin event, no chunk text (adr/0019).
+  `kind = Upsert | Delete`. Thin event, no chunk text.
 - Register zero-or-one observer on `NoteVault` (or `NoteIndex`). Default none →
   zero cost when RAG unused.
 - Emit at the choke points already carrying the hash:
@@ -59,7 +59,7 @@ change for existing users (no observer registered).
 
 Independent of P1. Reshapes the existing `server/` crate.
 
-**2.1 Strip the pull model** (adr/0018)
+**2.1 Strip the pull model**
 - Delete `ChunkLoader` (`server/src/document.rs:222`), `index_all_impl` +
   `index_all_handler`, `index_single_*`, `store_single_note_impl`,
   `store_embeddings*` on `KimunRag` that read `kimun.sqlite`.
@@ -68,7 +68,7 @@ Independent of P1. Reshapes the existing `server/` crate.
   empty-doc return (handlers.rs:593), `ChunkLoader` column mismatch
   (document.rs:242), `store_embeddings_incremental` re-store-all (lib.rs:195).
 
-**2.2 Collection dimension** (adr/0020)
+**2.2 Collection dimension**
 - Every request carries a Vault ID. Add to `KimunDoc` wire type / request bodies.
 - SQLite backend (`dbembeddings/vecsqlite.rs`): add a collection column to the
   vectors + indexed-notes tables; scope all queries by it.
@@ -109,7 +109,7 @@ Needs P1 (seam + vault id) and P2 (endpoints). New workspace crate depending on
   `NoteVault::get_note_chunks` (core/src/lib.rs:470), assemble `KimunDoc`
   {path, hash, vault-id, sections (breadcrumb→title, text)}, `POST /index/docs`;
   for deletes, call the delete endpoint. On failure, stay dirty.
-- **Reconciliation** (adr/0019): fetch `/collections/{id}/hashes`, diff against
+- **Reconciliation**: fetch `/collections/{id}/hashes`, diff against
   `NoteIndex` authoritative `{path→hash}`, push/delete deltas. Run on connect +
   on an interval. First run = reconcile vs empty collection = full index.
 - Query helpers: `semantic_search(query)` → `/embeddings`; `ask(query)` →
@@ -164,10 +164,10 @@ Needs P2. axum server-rendered + htmx, assets embedded (rust-embed/include_dir).
 
 ## Cross-cutting / deferred
 
-- **Per-chunk hash** skip — payload is forward-shaped for it; not v1 (adr/0019).
-- **Per-collection LLM override** — global for v1 (adr/0020).
+- **Per-chunk hash** skip — payload is forward-shaped for it; not v1.
+- **Per-collection LLM override** — global for v1.
 - **Embedding model config** — hardcoded BGE-Large for v1; changing it later
   invalidates all vectors (dim change) → forces a full reconcile; document as a
   destructive action when it becomes configurable.
-- **Vault-copy shares collection** — regenerate Vault ID to fork (adr/0020).
+- **Vault-copy shares collection** — regenerate Vault ID to fork.
 - **TLS guidance** for remote (non-localhost) servers.

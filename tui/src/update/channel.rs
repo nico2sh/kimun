@@ -1,5 +1,7 @@
 //! Install-channel detection. Decides whether this binary may self-update or
-//! must defer to a package manager. See adr/0013.
+//! must defer to a package manager. Detection that is ambiguous or fails is
+//! treated as notify-only: the conservative default never risks corrupting a
+//! managed install.
 //!
 //! Order of precedence:
 //!   1. The install marker (`install.toml`) written by `install.sh` — deterministic.

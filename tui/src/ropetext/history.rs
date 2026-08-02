@@ -1,10 +1,10 @@
-//! The edit history: one entry per [undo group](crate::EditBuffer::begin).
+//! The edit history: one entry per [undo group](crate::ropetext::EditBuffer::begin).
 
 use std::collections::VecDeque;
 use std::ops::Range;
 
-use crate::change::Edit;
-use crate::text::Text;
+use crate::ropetext::change::Edit;
+use crate::ropetext::text::Text;
 
 /// Retained-byte budget for the history.
 ///
@@ -25,7 +25,7 @@ const ENTRY_OVERHEAD_BYTES: usize = 128;
 #[derive(Debug, Clone)]
 pub(crate) struct Shape {
     /// `None` once two shapes in different coordinate spaces have been folded
-    /// together — see [`crate::Change::edits`].
+    /// together — see [`crate::ropetext::Change::edits`].
     pub edits: Option<Vec<Edit>>,
     pub rows: Range<usize>,
     pub line_delta: isize,

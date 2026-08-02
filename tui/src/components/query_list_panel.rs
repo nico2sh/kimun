@@ -70,7 +70,7 @@ pub trait ListPanelSpec {
 pub struct QueryListPanel<S: ListPanelSpec> {
     icons: Icons,
     /// Handed to every rebuilt list, so the drawer views honour a rebound yank
-    /// chord like the other list surfaces (adr/0032).
+    /// chord like the other list surfaces.
     yank_combos: Vec<crate::keys::key_combo::KeyCombo>,
     list: Option<SearchList<S::Row>>,
 }
@@ -422,7 +422,7 @@ mod tests {
 
     /// A view with no filter input forwards only what it recognises, so the
     /// yank chord has to be forwarded on purpose. Without that, LINKS rows would
-    /// declare a yank target the panel could never deliver (adr/0032).
+    /// declare a yank target the panel could never deliver.
     #[tokio::test]
     async fn yank_chord_reaches_a_view_that_has_no_filter_input() {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};

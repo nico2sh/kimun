@@ -4,7 +4,7 @@
 //! operator then does with it. These are vim's conventions and not the
 //! engine's: whether `aw` swallows trailing whitespace, whether `i(` includes
 //! its brackets. The primitives underneath — word classes, the matching
-//! bracket — belong to `ropetext` (adr/0041).
+//! bracket — belong to `ropetext`.
 
 use super::rope_buffer::RopeBuffer;
 

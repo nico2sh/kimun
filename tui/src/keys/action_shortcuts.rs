@@ -47,7 +47,7 @@ pub enum ActionShortcuts {
     /// Copy the selected list row's [yank
     /// target](crate::components::search_list::YankTarget) to the OS clipboard.
     /// Claimed only when the editor is not focused, so the editor keeps this
-    /// chord for redo (adr/0032).
+    /// chord for redo.
     YankRow,
     // Query panel
     ToggleQueryPanel,
@@ -63,7 +63,7 @@ pub enum ActionShortcuts {
     FindInBuffer,
     // In-buffer replace: opens the find bar with the replace field already
     // revealed. Ships with no default chord — the Ctrl-letter namespace is
-    // full, and `Tab` from an open find bar reaches the same state (adr/0033).
+    // full, and `Tab` from an open find bar reaches the same state.
     ReplaceInBuffer,
     /// The leader gateway (Ctrl+G by default): starts a key sequence against
     /// the leader tree in every context, including mid-typing.

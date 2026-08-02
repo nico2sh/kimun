@@ -263,7 +263,7 @@ impl PreviewPane {
     }
 
     /// Step the reveal cycle backward: Full → Context → Collapsed, stopping at
-    /// Collapsed (the vim-natural `h` mirror of [`toggle`]). No-op without a
+    /// Collapsed (the vim-natural `h` mirror of [`Self::toggle`]). No-op without a
     /// selection, or already Collapsed.
     pub fn collapse_step(&mut self, selected: Option<VaultPath>) {
         if selected.is_none() {
@@ -287,7 +287,7 @@ impl PreviewPane {
 
     /// Draw the full-expand chrome (fixed title header + divider), record the
     /// header rect for click-to-collapse, and return the scrollable content
-    /// sub-rect. Used by [`render_full`].
+    /// sub-rect. Used by [`Self::render_full`].
     fn render_full_chrome(
         &mut self,
         f: &mut Frame,

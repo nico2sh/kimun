@@ -45,7 +45,7 @@ pub struct InputCtx {
     pub drawer_view: DrawerView,
     /// Bare Space starts the leader (vim Normal mode, empty pending state).
     pub space_leads: bool,
-    /// Which editor-internal surface holds input, if any (adr/0036). Without
+    /// Which editor-internal surface holds input, if any. Without
     /// this the classifier cannot know the **find bar** is open, and ownership
     /// gets re-decided further down, once per event kind.
     pub claim: EditorClaim,
@@ -188,7 +188,7 @@ pub enum EditorOp {
 ///
 /// Runs the precedence ladder, then applies the **editor claim** filter — an
 /// intent the current holder does not allow is rewritten so the event reaches
-/// the holder instead (adr/0036). With no claim held the filter is the identity,
+/// the holder instead. With no claim held the filter is the identity,
 /// which is why the ladder's own tests are unaffected by it.
 pub fn classify(event: &InputEvent, bindings: &KeyBindings, ctx: &InputCtx) -> Classification {
     let mut classification = classify_unclaimed(event, bindings, ctx);
@@ -479,7 +479,7 @@ pub(crate) fn classify_tail(
             // it inside `SearchList` and yanks the selected row's target; the
             // editor claims it as redo. The binding exists for the other two
             // things a hand-rolled pre-check could never give it — rebinding and
-            // a help-dialog entry (adr/0032).
+            // a help-dialog entry.
             Some(ActionShortcuts::YankRow) => None,
             Some(ActionShortcuts::OpenSortDialog) => {
                 // Sort applies only when a list is focused (the drawer's
@@ -665,7 +665,7 @@ mod tests {
         classify(event, &bindings(), ctx)
     }
 
-    // ---- editor claim (adr/0036) -----------------------------------------
+    // ---- editor claim -----------------------------------------
 
     /// The bug that motivated the claim: with the editor focused — which is
     /// exactly the state when the find bar is open — a formatting chord
