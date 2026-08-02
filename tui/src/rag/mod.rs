@@ -21,7 +21,7 @@ pub enum RagStatus {
     /// token). Distinct from `Offline` so the user learns it's a token
     /// problem, not an unreachable server.
     Unauthorized,
-    /// Reachable but the server has no embedder configured (adr/0024): nothing
+    /// Reachable but the server has no embedder configured: nothing
     /// works server-side, so the loop skips pushing and reconciling entirely —
     /// every call would 503 — and just reports the state.
     NotConfigured,
@@ -54,7 +54,7 @@ impl RagStatus {
     /// Whether question-answering (Ask) is available right now: the server is
     /// reachable AND has an LLM configured. `false` when offline, disabled, or
     /// connected to a semantic-only server — the ASK rail entry is hidden in
-    /// those cases (adr/0022).
+    /// those cases.
     pub fn llm_available(self) -> bool {
         matches!(
             self,

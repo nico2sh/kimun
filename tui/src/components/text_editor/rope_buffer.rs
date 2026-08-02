@@ -1,5 +1,5 @@
 //! The **edit buffer** over `ropetext`, presenting the surface the rest of the
-//! editor already calls (adr/0039).
+//! editor already calls.
 //!
 //! This exists so the engine swap does not have to happen everywhere at once.
 //! It keeps every method name and `(row, col)` signature the `TextArea`-backed
@@ -42,15 +42,15 @@ pub struct EditOutcome {
     /// never a library return value, which can report `false` after mutating.
     pub changed: bool,
     /// The change is not confined to the cursor's row, so the incremental
-    /// parser's cursor damage hint would under-report it (adr/0035).
+    /// parser's cursor damage hint would under-report it.
     pub bulk: bool,
     /// Which rows the edits changed, in the new text's numbering — the hull when
     /// several ran before this was drained.
     ///
     /// Told by the engine rather than found by comparing the buffer with a copy
-    /// of its previous self, which is what ADR-0040 exists to make possible. The
-    /// **nvim** backend reports lines and not changes, so it leaves this `None`
-    /// and its consumer falls back to a diff.
+    /// of its previous self, which is what the revision-tagged rope makes
+    /// possible. The **nvim** backend reports lines and not changes, so it
+    /// leaves this `None` and its consumer falls back to a diff.
     pub damage: Option<std::ops::Range<usize>>,
     /// Net rows added (or removed, when negative) by the edits behind `damage`.
     ///
@@ -96,8 +96,8 @@ enum Yank {
 ///
 /// Deliberately the incumbent's variant set, so the 145 call sites need no
 /// rewriting — but `Jump` takes `usize` rather than `u16`, because clamping a
-/// row to 65535 is the defect adr/0038 recorded and this is the type where it
-/// stops being representable.
+/// row to 65535 is a defect the old widget's contract allowed, and this is the
+/// type where it stops being representable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CursorMove {
     Forward,
@@ -517,7 +517,7 @@ impl RopeBuffer {
     /// Taking it is unconditional: an empty selection is not a range, so the
     /// caller proceeds as though there were none — but the anchor is gone either
     /// way. Leaving it alive is how an invisible selection outlives the gesture
-    /// that made it, which adr/0038 records costing two notes.
+    /// that made it — a defect that cost two notes before it was found.
     fn take_selection(&mut self) -> bool {
         let span = self.inner.selection().filter(|span| !span.is_empty());
         self.inner.clear_selection();
@@ -718,7 +718,7 @@ impl RopeBuffer {
 
     // ── Search ───────────────────────────────────────────────────────────────
     //
-    // Not the engine's business (adr/0041): it holds the pattern because vim's
+    // Not the engine's business: it holds the pattern because vim's
     // `n`/`N` outlive the find bar, and matches a row at a time because a **find
     // pattern** can never span a newline.
 

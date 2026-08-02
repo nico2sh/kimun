@@ -38,7 +38,7 @@ struct Cli {
 }
 
 /// Why one `run_server` iteration ended: an operator asked for an in-process
-/// restart (drain, reload the config file, rebind — adr/0028), or the process
+/// restart (drain, reload the config file, rebind), or the process
 /// is done (Ctrl-C).
 enum Shutdown {
     Restart,
@@ -63,7 +63,7 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
-    // The restart loop (adr/0028): each iteration builds and serves the whole
+    // The restart loop: each iteration builds and serves the whole
     // server; a web-UI restart drains in-flight requests, then the next
     // iteration re-reads the config file and rebinds, so every setting —
     // including the bind address — applies without a supervisor.
@@ -105,7 +105,7 @@ async fn run_server(
     tracing::info!("Configuration loaded successfully");
     tracing::debug!("Server: {}:{}", config.server.host, config.server.port);
 
-    // Create RAG instance based on config. `None` = unconfigured (adr/0024).
+    // Create RAG instance based on config. `None` = unconfigured.
     // A build failure (embedding model download failed, bad LLM key, …) does
     // NOT abort startup: the server comes up degraded — same 503-everything
     // behavior as unconfigured — so the web UI stays reachable to show the
@@ -224,7 +224,7 @@ async fn run_server(
 /// Builds the query pipeline from config. `Ok(None)` = *unconfigured* — no
 /// embedder means no vector store (its dimension comes from the embedder) and
 /// no pipeline at all; every data endpoint rejects with 503 until one is
-/// configured (adr/0024). The second tuple field is why the (non-fatal)
+/// configured. The second tuple field is why the (non-fatal)
 /// reranker failed to initialize, if it did — surfaced via `/health` and the
 /// dashboard so `reranker: false` is distinguishable from "disabled by
 /// config".
@@ -242,7 +242,7 @@ async fn create_rag_from_config(
         llmclients::ChatClient,
     };
 
-    // No embedder → unconfigured: nothing to build (adr/0024).
+    // No embedder → unconfigured: nothing to build.
     let Some(embedder_cfg) = &config.embedder else {
         return Ok(None);
     };
@@ -322,15 +322,15 @@ async fn create_rag_from_config(
         }
     };
 
-    // Embedder fingerprint (adr/0025): a changed embedder makes every stored
+    // Embedder fingerprint: a changed embedder makes every stored
     // vector garbage, and reconciliation can't detect it. The gate is armed on
     // the pipeline (every data op verifies before touching the store) rather
     // than enforced here, so a store that is unreachable at boot (e.g. Qdrant
     // still starting) degrades to failing requests instead of aborting startup.
     let fingerprint = embedder_cfg.fingerprint(embedder.dimension());
 
-    // Create LLM client based on config. `None` on a semantic-only server
-    // (adr/0022). The key comes from config or the provider's env var and is
+    // Create LLM client based on config. `None` on a semantic-only server.
+    // The key comes from config or the provider's env var and is
     // handed to the client directly — no env mutation, and a missing key is a
     // clean startup error, not a panic in the client.
     let llm_client: Option<Arc<dyn kimun_server::llmclients::LLMClient + Send + Sync>> =
@@ -415,8 +415,8 @@ async fn create_rag_from_config(
 
 /// Health + capability probe. The client hits this to decide which features to
 /// light up (adr: additive surfaces appear only when the server is reachable).
-/// `embedder: null` = unconfigured (adr/0024); `llm_provider: null` =
-/// semantic-only (adr/0022). A degraded server (embedder configured but its
+/// `embedder: null` = unconfigured; `llm_provider: null` =
+/// semantic-only. A degraded server (embedder configured but its
 /// initialization failed at startup) reports `embedder: null` too — the
 /// capability is genuinely absent — plus the error under `degraded`.
 /// `reranker` likewise reports the *active* reranker, not the config: an

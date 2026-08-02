@@ -83,7 +83,7 @@ impl OverlayKind {
             OverlayKind::Preview => style.bg(theme.color_replace_preview.to_ratatui()),
             // A foreground override, not a modifier: BOLD is a no-op on text
             // that is already bold, which once left the current match
-            // indistinguishable from the rest (adr/0035).
+            // indistinguishable from the rest.
             OverlayKind::PreviewCurrent => style
                 .bg(theme.color_replace_preview.to_ratatui())
                 .fg(cursor_fg(theme))

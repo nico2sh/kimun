@@ -5,7 +5,9 @@
 //! the binary in place. All network and filesystem work here is **blocking** —
 //! callers run it on `tokio::task::spawn_blocking` so the TUI never stalls.
 //!
-//! Design: adr/0013 (channel restriction) and adr/0014 (hand-rolled mechanics).
+//! Self-update is offered only on the `script` and `direct` channels; on
+//! `brew` and `cargo` a newer version is surfaced as the right upgrade command
+//! rather than an in-app binary swap.
 //! User-owned config (`update_check`) lives in `config.toml`; machine-managed
 //! state (throttle, last-known version, dismissals) lives in `update_state.toml`.
 

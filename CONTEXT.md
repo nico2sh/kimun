@@ -31,7 +31,7 @@ Which engine drives the TUI text editor, chosen in config (`editor_backend`): **
 _Avoid_: editor engine, editor mode (collides with **editing mode**), textarea (the superseded name for **plain**, from the library that used to back it).
 
 **Edit buffer**:
-The open note's text, its cursor, its selection and its edit history as one thing, behind which every mutation on the **plain** and **vim** backends passes. Because it observes each edit from both sides, the facts that follow from one — did the content change, what range was damaged, which edits belong to one **undo group** — are *derived* there rather than predicted by each caller. It knows nothing about markdown, about the terminal, or about how it will be drawn: it is text and the operations on it. That ignorance is structural: it lives in `tui/src/ropetext` — its own crate until adr/0042, and still forbidden from naming anything outside itself so it can become one again. The **nvim** backend has none — neovim owns its own buffer and history.
+The open note's text, its cursor, its selection and its edit history as one thing, behind which every mutation on the **plain** and **vim** backends passes. Because it observes each edit from both sides, the facts that follow from one — did the content change, what range was damaged, which edits belong to one **undo group** — are *derived* there rather than predicted by each caller. It knows nothing about markdown, about the terminal, or about how it will be drawn: it is text and the operations on it. That ignorance is structural: it lives in `tui/src/ropetext`, a former workspace crate still forbidden from naming anything outside itself, so it can become one again. The **nvim** backend has none — neovim owns its own buffer and history.
 _Avoid_: buffer (collides with ratatui's render buffer), document, model.
 
 **Editing mode**:
@@ -41,7 +41,7 @@ _Avoid_: vim mode (ambiguous — backend or state?), NvimMode (the superseded nv
 ### Vim emulation
 
 **Vim command**:
-The reified unit of work in the **vim** editor backend's engine (the `Command` enum): keys parse into a command value, and `apply` is the *only* door that mutates the buffer (adr/0011). Dot-repeat replays the recorded command (plus its captured insert delta) through that same door, so first press and replay cannot diverge; macros (v2) replay a longer log of them. Parsing (`parse_normal`) is pure pending-state accumulation and never touches the buffer.
+The reified unit of work in the **vim** editor backend's engine (the `Command` enum): keys parse into a command value, and `apply` is the *only* door that mutates the buffer. Dot-repeat replays the recorded command (plus its captured insert delta) through that same door, so first press and replay cannot diverge; macros (v2) replay a longer log of them. Parsing (`parse_normal`) is pure pending-state accumulation and never touches the buffer.
 _Avoid_: action, keystroke handler (those describe the superseded imperative form).
 
 **Unnamed register**:
@@ -49,7 +49,7 @@ The engine-owned register of the **vim** editor backend: text and its kind (char
 _Avoid_: yank buffer (the textarea's, not the register), clipboard.
 
 **OS clipboard**:
-The operating system's shared copy buffer — the channel kimün uses to exchange text with *other applications*. Reached by Ctrl-C / Ctrl-X / Ctrl-V in the editor and by the yank chord in the panels; never by `y`/`p`, which address the **unnamed register**. The two channels are deliberately independent: yanking does not publish outside kimün, and deleting cannot destroy what another application put there (adr/0031).
+The operating system's shared copy buffer — the channel kimün uses to exchange text with *other applications*. Reached by Ctrl-C / Ctrl-X / Ctrl-V in the editor and by the yank chord in the panels; never by `y`/`p`, which address the **unnamed register**. The two channels are deliberately independent: yanking does not publish outside kimün, and deleting cannot destroy what another application put there.
 _Avoid_: clipboard unqualified (ambiguous — register or OS?), system buffer, pasteboard.
 
 **Span kind**:
@@ -128,11 +128,11 @@ _Avoid_: global replace, bulk replace, replace everything.
 A note→note reference inside a note's body — either a `[[wikilink]]` or a markdown link resolving to a vault note. Attachments, images, and external URLs are *not* note links. Only note links participate in the **link filter**.
 
 **Link filter**:
-A search operator that selects notes by the note links between them, in one of two directions (see ADR-0005 for the full operator alphabet). The arrow points **relative to the named note**:
+A search operator that selects notes by the note links between them, in one of two directions (the full operator alphabet is in the user docs). The arrow points **relative to the named note**:
 - **Backlinks** — `<X` / `lk:X` — notes whose body contains a note link **to** X (links pointing *into* X).
 - **Forward links** — `>X` / `fwd:X` — the notes that **X links to** (links pointing *out* of X).
 The target is matched by note name (extension optional, case-insensitive, `*` wildcards), across any folder unless a path is given to disambiguate.
-_Avoid_: backlink search (names only one direction), `>`/`@` (the pre-ADR-0005 chars).
+_Avoid_: backlink search (names only one direction), `>`/`@` (the superseded chars).
 
 **Query variable**:
 A `{name}` placeholder inside a query that the TUI resolves to a runtime value before handing a plain query string to core. Core's query language has no notion of these — substitution happens entirely in the presentation layer. The first variable is `{note}`, the **clean name** of the note currently open in the editor; a bare `<` typed in the query panel is sugar that expands to `<{note}`. Backlinks of the current note are therefore just the query `<{note}`.
@@ -151,7 +151,7 @@ A global picker, opened by a single key binding, listing the vault's **saved sea
 _Avoid_: query menu
 
 **Saved-search expansion**:
-The inline alternative to the **Saved Searches modal**: a leading `?` typed in a query input (the **Query panel** and the **note browser**) opens an autocomplete over **saved search** names; accepting one replaces the whole field with that search's stored query — verbatim, query variables intact — so it is then editable like any query. `?` is a presentation-layer sigil only; core's query language never sees it (same boundary as the **query variable**; see `adr/0006`). The expansion pins a **saved-search breadcrumb**.
+The inline alternative to the **Saved Searches modal**: a leading `?` typed in a query input (the **Query panel** and the **note browser**) opens an autocomplete over **saved search** names; accepting one replaces the whole field with that search's stored query — verbatim, query variables intact — so it is then editable like any query. `?` is a presentation-layer sigil only; core's query language never sees it (same boundary as the **query variable**). The expansion pins a **saved-search breadcrumb**.
 _Avoid_: saved-search operator (it is not a core query operator), saved-search reference (we expand, not reference).
 
 **Saved-search breadcrumb**:
@@ -180,7 +180,7 @@ _Avoid_: query resolver (names the function, not the seam), template source.
 What a single row must tell its **SearchList** to be listed, filtered, navigated, and drawn — the only thing that varies with the row's type (a note, a saved search, a directory entry). It also declares its **yank target**. Anything richer is read back by the caller from the selected row.
 
 **Yank target**:
-What a **search row** offers to the **OS clipboard**, declared by the row rather than by the surface displaying it: the text plus the noun naming it ("path", "tag", "heading"), so the confirmation says which kind of thing was copied. Rows with nothing worth copying declare none, and the yank reports that rather than doing nothing silently — every clipboard attempt reports its outcome (adr/0032). Because the row declares it, a surface built on **SearchList** inherits the behaviour instead of having to wire it.
+What a **search row** offers to the **OS clipboard**, declared by the row rather than by the surface displaying it: the text plus the noun naming it ("path", "tag", "heading"), so the confirmation says which kind of thing was copied. Rows with nothing worth copying declare none, and the yank reports that rather than doing nothing silently — every clipboard attempt reports its outcome. Because the row declares it, a surface built on **SearchList** inherits the behaviour instead of having to wire it.
 _Avoid_: yank text (loses the noun), copyable field, clipboard value (collides with the **OS clipboard** itself).
 
 **Suggestion source**:
@@ -202,7 +202,7 @@ _Avoid_: action (collides with `ActionShortcuts`, one input to classification), 
 
 **Editor claim**:
 Which editor-internal surface currently holds input — the **find bar**, the autocomplete popup, or nothing. Part of the snapshot the **Intent** classifier reads, so ownership is decided once, inside the classifier, instead of being re-asserted per event kind further down. The holder is named rather than merely counted, because what a claim blocks differs by holder: the find bar blocks a paste, a click and a bare Space; the popup wants all three. A claim decides *ownership* only — the holder still decides what the event does.
-_Avoid_: capture (taken by the mouse-capture toggle, adr/0015), focus (collides with panel focus and **list focus**), lock/grab.
+_Avoid_: capture (taken by the mouse-capture toggle), focus (collides with panel focus and **list focus**), lock/grab.
 
 ### TUI surfaces
 
@@ -394,7 +394,7 @@ The **Kimün server**'s pure-storage seam (`VectorStore`): adapters (SQLite, Qdr
 _Avoid_: embeddings store (it stores vectors it did not make), db/backend (implementation, not the role), index (collides with **NoteIndex**).
 
 **Server client**:
-The component inside Kimün that owns every dealing with the **Kimün server** — connection and capability probing, the push of note changes, and **reconciliation**. The capability probe distinguishes three reachable states — **unconfigured**, *semantic-only*, and full — and the client gates each surface on it: no pushes or **reconciliation** against an unconfigured server. Lives outside core (`tui/src/server_client`, its own crate until adr/0042) so core stays free of network concerns; core feeds it only through the **index observer**.
+The component inside Kimün that owns every dealing with the **Kimün server** — connection and capability probing, the push of note changes, and **reconciliation**. The capability probe distinguishes three reachable states — **unconfigured**, *semantic-only*, and full — and the client gates each surface on it: no pushes or **reconciliation** against an unconfigured server. Lives outside core (`tui/src/server_client`, a former workspace crate) so core stays free of network concerns; core feeds it only through the **index observer**.
 _Avoid_: RAG client (see **Kimün server** on RAG), rag bridge, sync manager (too generic).
 
 **Index observer**:

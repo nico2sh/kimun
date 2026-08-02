@@ -7,14 +7,14 @@ pub struct RagConfig {
     pub vector_db: VectorDbConfig,
     /// Which embedder produces the vectors. Optional: with no `[embedder]`
     /// section the server is *unconfigured* — it boots, serves the web UI and
-    /// `/health`, and rejects every data operation until an embedder is chosen
-    /// (adr/0024). There is deliberately no silent default. A first-run
+    /// `/health`, and rejects every data operation until an embedder is chosen.
+    /// There is deliberately no silent default. A first-run
     /// generated config omits it.
     #[serde(default)]
     pub embedder: Option<EmbedderConfig>,
     /// The LLM used for question-answering. Optional: with no `[llm]` section the
     /// server is *semantic-only* — it answers `/api/embeddings` searches but
-    /// rejects `/api/answer` (adr/0022). A first-run generated config omits it.
+    /// rejects `/api/answer`. A first-run generated config omits it.
     #[serde(default)]
     pub llm: Option<LlmConfig>,
     pub reranker: RerankerConfig,
@@ -86,7 +86,7 @@ pub enum EmbedderConfig {
 
 impl EmbedderConfig {
     /// Short provider id (`fastembed` | `ollama` | `openai`) — used by the web
-    /// UI form and the `/health` capability probe (adr/0024).
+    /// UI form and the `/health` capability probe.
     pub fn provider(&self) -> &'static str {
         match self {
             EmbedderConfig::FastEmbed { .. } => "fastembed",
@@ -99,7 +99,7 @@ impl EmbedderConfig {
     /// model (lowercased), and vector dimension. Stored vectors are only
     /// comparable to queries embedded by the same model, and reconciliation
     /// cannot see a model swap (note hashes don't change) — on a fingerprint
-    /// mismatch at startup the server wipes all collections (adr/0025).
+    /// mismatch at startup the server wipes all collections.
     pub fn fingerprint(&self, dimension: usize) -> String {
         let model = match self {
             EmbedderConfig::FastEmbed { model } => {
@@ -290,7 +290,7 @@ pub struct RerankerConfig {
     /// The `fixed` context cut's size: search notes / answer chunks,
     /// overridable per request via `context_size`. Ignored by the adaptive
     /// cuts (`score-range`, `largest-drop`) — there the pool's score shape
-    /// decides (adr/0029).
+    /// decides.
     #[serde(default = "default_reranker_top_k")]
     pub top_k: usize,
     /// How reranking runs: the local fastembed cross-encoder (default, model
@@ -311,7 +311,7 @@ pub struct RerankerConfig {
     /// Bearer token for `type = "http"` endpoints that need one.
     #[serde(default)]
     pub api_key: Option<String>,
-    /// Which **context cut** sizes both retrieval surfaces (adr/0029):
+    /// Which **context cut** sizes both retrieval surfaces:
     /// `search` shows the notes whose best chunk survives it, `answer` feeds
     /// the chunks that survive it — with or without a reranker. Editable from
     /// the web UI Config page.
@@ -333,8 +333,8 @@ pub struct RerankerConfig {
 }
 
 /// The context cut algorithm — how many retrieved chunks/notes each query
-/// surface returns, applied with or without a reranker (adr/0029). `fixed`
-/// counts; the other two read the pool's score shape (adr/0027).
+/// surface returns, applied with or without a reranker. `fixed`
+/// counts; the other two read the pool's score shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ContextCut {
@@ -412,7 +412,7 @@ fn default_sqlite_path() -> PathBuf {
 /// SQLite store path baked into a *generated* first-run config: an absolute
 /// path under the OS data dir (`~/.local/share/kimun/rag_sqlite`) so the store
 /// does not float with the process's launch directory the way `./rag_sqlite`
-/// would (adr/0022). Falls back to the relative default if the data dir can't be
+/// would. Falls back to the relative default if the data dir can't be
 /// resolved.
 fn generated_sqlite_path() -> PathBuf {
     match dirs::data_dir() {
@@ -470,8 +470,8 @@ fn default_drop_window_max() -> usize {
 }
 
 /// A zero-config default: SQLite under the data dir, default `127.0.0.1`
-/// bind, no embedder (unconfigured, adr/0024), no LLM, no auth. This is what a
-/// first run with no config file boots from and writes to disk (adr/0022).
+/// bind, no embedder (unconfigured), no LLM, no auth. This is what a
+/// first run with no config file boots from and writes to disk.
 impl Default for RagConfig {
     fn default() -> Self {
         RagConfig {
@@ -505,9 +505,9 @@ impl Default for RagConfig {
 impl RagConfig {
     /// A ready-to-run config for `--default-config`: embedded SQLite plus the
     /// local fastembed embedder with its default model. Unlike [`Default`] —
-    /// which is *unconfigured* (no embedder, data operations rejected,
-    /// adr/0024) — this serves indexing and search out of the box. Still
-    /// semantic-only: no LLM, so `/api/answer` is rejected (adr/0022).
+    /// which is *unconfigured* (no embedder, data operations rejected) —
+    /// this serves indexing and search out of the box. Still
+    /// semantic-only: no LLM, so `/api/answer` is rejected.
     pub fn ready_default() -> Self {
         Self {
             embedder: Some(EmbedderConfig::FastEmbed { model: None }),
@@ -548,7 +548,7 @@ pub struct ConfigForm {
     #[serde(default)]
     pub llm_url: String,
     /// `none` | `fastembed` | `ollama` | `openai` — `none` clears the embedder
-    /// (unconfigured server, adr/0024).
+    /// (unconfigured server).
     pub embedder_provider: String,
     pub fastembed_model: String,
     pub embedder_url: String,
@@ -583,8 +583,8 @@ pub struct ConfigForm {
 impl RagConfig {
     /// Applies a submitted web form onto this (current) config, producing the
     /// config to persist. Every form→config rule lives here, not in the web
-    /// layer: numeric parsing, the `none` sentinels clearing the LLM (adr/0022)
-    /// and the embedder (adr/0024), the vector-db selection, and the carry
+    /// layer: numeric parsing, the `none` sentinels clearing the LLM
+    /// and the embedder, the vector-db selection, and the carry
     /// rules for values the form can't or doesn't resend — a blank secret keeps
     /// the current one, and provider-scoped values (API keys, endpoint url,
     /// embedder prefixes) carry over only while the provider is unchanged (a
@@ -603,7 +603,7 @@ impl RagConfig {
         }
 
         // "none" → semantic-only: clear the LLM entirely rather than writing a
-        // keyless provider that would fail the boot key gate (adr/0022).
+        // keyless provider that would fail the boot key gate.
         let llm = if f.provider == "none" {
             None
         } else {
@@ -643,7 +643,7 @@ impl RagConfig {
             )
         };
 
-        // "none" → unconfigured: clear the embedder entirely (adr/0024). The
+        // "none" → unconfigured: clear the embedder entirely. The
         // fastembed model is always an explicit choice — no hidden default.
         let embedder = match f.embedder_provider.as_str() {
             "none" => None,
@@ -833,8 +833,7 @@ impl RagConfig {
     /// An explicit `--config` path that does not exist is an error — an explicit
     /// path asserts the file is there, so a typo fails loud. But when no override
     /// is given and the *default* path is missing, this is a first run: generate
-    /// a semantic-only default config, persist it there, and boot from it
-    /// (adr/0022).
+    /// a semantic-only default config, persist it there, and boot from it.
     pub fn load(override_path: Option<PathBuf>) -> anyhow::Result<Self> {
         if let Some(path) = override_path {
             if !path.exists() {
@@ -850,7 +849,7 @@ impl RagConfig {
     }
 
     /// Load the config at `path`, or — when it does not exist — generate a
-    /// semantic-only default, persist it there, and return it (adr/0022). Split
+    /// semantic-only default, persist it there, and return it. Split
     /// out from [`load`] so the first-run generation is testable against a temp
     /// path instead of the hardcoded [`default_path`](Self::default_path).
     fn load_or_generate_default(path: &std::path::Path) -> anyhow::Result<Self> {
@@ -885,7 +884,7 @@ mod tests {
 
     #[test]
     fn test_default_config_values() {
-        // Push-only server: no [vault] section exists anymore (adr/0018).
+        // Push-only server: no [vault] section exists anymore.
         let config_toml = r#"
 [server]
 
@@ -1059,7 +1058,7 @@ api_key = "k"
 
     #[test]
     fn config_without_embedder_section_is_unconfigured() {
-        // No [embedder] section → None (unconfigured server, adr/0024). The old
+        // No [embedder] section → None (unconfigured server). The old
         // silent fastembed fallback is gone deliberately.
         let config_toml = r#"
 [server]
@@ -1553,7 +1552,7 @@ token = "secret-token"
 
     #[test]
     fn config_without_llm_section_is_semantic_only() {
-        // No [llm] section → llm is None (semantic-only server, adr/0022).
+        // No [llm] section → llm is None (semantic-only server).
         let config_toml = r#"
 [server]
 [vector_db]
@@ -1567,7 +1566,7 @@ type = "sqlite"
     #[test]
     fn default_config_is_unconfigured_sqlite() {
         // The generated first-run default: SQLite, no embedder, no LLM, no
-        // auth (adr/0024).
+        // auth.
         let config = RagConfig::default();
         assert!(config.llm.is_none());
         assert!(config.auth.token.is_none());

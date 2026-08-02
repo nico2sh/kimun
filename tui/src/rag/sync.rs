@@ -91,7 +91,7 @@ impl Cadence {
         self.ticks_since_reconcile = RECONCILE_EVERY_N_TICKS;
     }
 
-    /// Decide this tick's action from the probe (adr/0024): offline,
+    /// Decide this tick's action from the probe: offline,
     /// unconfigured (skip sync — the server rejects everything), unauthorized
     /// up front, or semantic-only/full (llm_available gates Ask).
     fn plan(&mut self, probe: Option<&ServerProbe>, has_token: bool, index_ready: bool) -> Plan {
@@ -210,7 +210,7 @@ pub fn spawn_rag_sync(
             }
             let sync = sync.as_ref().expect("sync established above");
 
-            // One probe drives reachability, capability, and auth (adr/0024).
+            // One probe drives reachability, capability, and auth.
             let probe = sync.probe().await;
 
             let reconcile = match cadence.plan(probe.as_ref(), token.is_some(), sync.index_ready())

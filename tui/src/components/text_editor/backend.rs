@@ -73,7 +73,7 @@ impl Handler for NvimHandler {
 // InputInterpreter + TextareaBackend
 // ---------------------------------------------------------------------------
 
-/// How key events are translated into edits on the **edit buffer** (adr/0012).
+/// How key events are translated into edits on the **edit buffer**.
 /// The engine is boxed so the `Direct` arm doesn't pay the engine's size
 /// (registers, dot-repeat state, replace stack — ~230 bytes).
 #[derive(Debug, Default)]
@@ -91,7 +91,7 @@ pub struct TextareaBackend {
     /// Which keystrokes are sharing an undo group. The **plain** backend's
     /// policy; the **vim** engine has its own and leaves this alone.
     pub typing: super::typing_run::TypingRun,
-    /// The open note's text and its edit history (adr/0037). Mutations go
+    /// The open note's text and its edit history. Mutations go
     /// through `RopeBuffer::edit`.
     pub ta: RopeBuffer,
     pub input: InputInterpreter,

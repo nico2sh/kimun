@@ -78,7 +78,7 @@ pub struct Health {
     #[serde(default)]
     pub reranker: bool,
     /// The configured embedder provider, or `None` on an *unconfigured* server
-    /// (no embedder → no indexing, no search, adr/0024). Optional for the same
+    /// (no embedder → no indexing, no search). Optional for the same
     /// reason as `llm_provider`: the server sends an explicit `null`.
     #[serde(default)]
     pub embedder: Option<String>,
@@ -170,7 +170,7 @@ mod tests {
 
     #[test]
     fn health_parses_unconfigured_null_embedder() {
-        // An unconfigured server (no embedder, adr/0024) sends embedder: null.
+        // An unconfigured server (no embedder) sends embedder: null.
         let json = r#"{"status":"ok","reranker":true,"embedder":null,"llm_provider":null,"auth_required":false}"#;
         let health: Health = serde_json::from_str(json).expect("must parse null embedder");
         assert!(health.embedder.is_none());

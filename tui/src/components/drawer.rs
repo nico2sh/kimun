@@ -60,7 +60,7 @@ pub struct DrawerHost {
     semantic: SemanticPanel,
     /// The Ask workspace's Sources drawer view. Its editor-area companion
     /// (`ThreadPanel`) lives in `PanelSet`; this face lists the selected
-    /// turn's sources and flips to the source reader (adr/0030).
+    /// turn's sources and flips to the source reader.
     ask_sources: SourcesPanel,
     tags: TagsPanel,
     links: LinksPanel,
@@ -287,7 +287,7 @@ mod tests {
         );
     }
 
-    /// The CFG arm delegates to the ConfigPanel component (adr/0023: no
+    /// The CFG arm delegates to the ConfigPanel component (no
     /// inline view logic in the host) — its launcher keys work through the
     /// host's dispatch.
     #[tokio::test]

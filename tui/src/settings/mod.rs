@@ -259,7 +259,7 @@ fn default_keybindings() -> KeyBindings {
         .add(KeyStrike::KeyF, ActionShortcuts::FindInBuffer)
         // Copy the selected list row. Shares Ctrl-Y with the editor's redo,
         // resolved by focus: the shortcut tier only claims it away from the
-        // editor (adr/0032). Sourced from `default_yank_combo` so SearchList,
+        // editor. Sourced from `default_yank_combo` so SearchList,
         // which claims the same chord internally, cannot drift from it.
         .add(
             crate::keys::default_yank_combo().key,
@@ -836,7 +836,7 @@ impl AppSettings {
 
     /// The chords bound to [`ActionShortcuts::YankRow`], for handing to a
     /// [`SearchList`](crate::components::search_list::SearchList) so a rebinding
-    /// reaches the list surfaces (adr/0032). Empty when the user unbound it.
+    /// reaches the list surfaces. Empty when the user unbound it.
     pub fn yank_combos(&self) -> Vec<crate::keys::key_combo::KeyCombo> {
         self.key_bindings.combos_for(&ActionShortcuts::YankRow)
     }

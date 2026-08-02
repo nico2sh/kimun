@@ -1,6 +1,6 @@
 //! When one keystroke continues the last one's **undo group**.
 //!
-//! The engine holds no clock and no policy (adr/0041): it offers a group that can
+//! The engine holds no clock and no policy: it offers a group that can
 //! span keystrokes, and the backend says where one ends. This is the **plain**
 //! backend's answer. The **vim** backend has a different one — a group is an
 //! Insert session — which is why the rule lives here rather than in the buffer.

@@ -64,7 +64,7 @@ pub enum AppEvent {
         emphasis: Option<Vec<String>>,
     },
     /// Open an attachment (a non-note file) in the editor area's read-only
-    /// attachment view (see ADR-0017). Sent by the file browser when an
+    /// attachment view. Sent by the file browser when an
     /// attachment row is activated.
     OpenAttachment(VaultPath),
     FocusSidebar,
@@ -144,7 +144,7 @@ pub enum AppEvent {
     OverlayData(OverlayData),
     /// An async result addressed to the Ask workspace (see CONTEXT.md: Ask
     /// workspace). Its own family — Ask is a panel, not an overlay, so it is
-    /// never routed through `OverlayData` (adr/0030).
+    /// never routed through `OverlayData`.
     Ask(AskData),
 
     /// A vault was found to be structurally unusable (conflicts, invalid layout, etc.).
@@ -179,7 +179,7 @@ pub enum AppEvent {
 }
 
 /// Async data addressed to the Ask workspace. Its own family — Ask is a
-/// panel, and `OverlayData` is routed only to the OverlayHost (adr/0030).
+/// panel, and `OverlayData` is routed only to the OverlayHost.
 #[derive(Debug)]
 pub enum AskData {
     /// A completed (or failed) answer for the turn with this id. Stale ids
@@ -227,7 +227,7 @@ pub enum FileOp {
     /// Request to show the move dialog for the given entry.
     ShowMove(VaultPath),
     /// Request to show the create-note dialog pre-filled with body content —
-    /// the Ask "save as note" action (`e` in `ThreadPanel`, adr/0030). Plain
+    /// the Ask "save as note" action (`e` in `ThreadPanel`). Plain
     /// creates (follow-link, missing-note open) go straight through
     /// `ActiveDialog::create_note` inside the editor screen instead, since
     /// they already hold `vault` and don't need to cross a component

@@ -1,6 +1,6 @@
 //! Vault ID: a stable identifier persisted in the vault under
 //! `.kimun/vault-id`, so it travels with the notes and survives renames and
-//! moves. It keys the vault's collection on the RAG server (see adr/0020).
+//! moves. It keys the vault's collection on the RAG server.
 //! All filesystem access lives here per the project rule that fs ops belong
 //! in `nfs`.
 
@@ -64,8 +64,8 @@ pub async fn read_or_create_vault_id(workspace_path: &Path) -> Result<VaultId, F
 /// everyone else re-reads that id under the same lock. A lock-free
 /// rename/create election was tried first and abandoned: any process that
 /// once observed corrupt content could re-run the election later and evict a
-/// freshly-healed valid id, splitting the vault across two server collections
-/// (adr/0020). A held lock has no such window, and lock staleness cannot
+/// freshly-healed valid id, splitting the vault across two server collections.
+/// A held lock has no such window, and lock staleness cannot
 /// occur because the OS drops it with the process.
 fn settle_vault_id(path: &Path) -> Result<VaultId, FSError> {
     if let Some(parent) = path.parent() {

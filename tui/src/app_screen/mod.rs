@@ -67,7 +67,7 @@ pub trait AppScreen: Send {
     }
 
     /// Try to open the attachment at `path` within this screen (the editor
-    /// screen shows it in its read-only attachment view; see ADR-0017). Return
+    /// screen shows it in its read-only attachment view). Return
     /// `Some(path)` if the screen does not handle it, in which case the main
     /// loop routes it to the editor screen. Default: not handled.
     async fn try_open_attachment(&mut self, path: VaultPath, _tx: &AppTx) -> Option<VaultPath> {

@@ -57,7 +57,7 @@ pub enum LeaderAction {
     NoteCopyWikilink,
     NoteExport,
     NoteYankPath,
-    // +ask (a) — the Ask workspace's conversation (adr/0030).
+    // +ask (a) — the Ask workspace's conversation.
     AskFocus,
     AskNew,
     AskCopy,

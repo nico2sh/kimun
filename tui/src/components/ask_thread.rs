@@ -1,10 +1,10 @@
 //! `ThreadPanel` — the editor area's Ask-workspace content (see CONTEXT.md:
-//! **Ask workspace**, **Thread**; adr/0030). Owns the conversation `Thread`,
+//! **Ask workspace**, **Thread**). Owns the conversation `Thread`,
 //! the docked question composer, and the live `RagClient` (when the Kimün
 //! server can answer questions).
 //!
-//! The panel is a permanent resident of `PanelSet` (like the note editor —
-//! ADR-0017): its conversation survives the user switching the editor area to
+//! The panel is a permanent resident of `PanelSet`, like the note editor:
+//! its conversation survives the user switching the editor area to
 //! another view because the panel itself is never dropped or moved. Losing the
 //! client (server unreachable / no LLM) disables the composer without evicting
 //! the thread — the thread's answers are already local.
@@ -145,7 +145,7 @@ impl ThreadPanel {
 
     /// Set (or clear) the live RAG client — the single injection point
     /// `PanelSet::set_ask_client` drives. A present client enables the
-    /// composer; `None` disables it without touching the thread (adr/0030).
+    /// composer; `None` disables it without touching the thread.
     pub fn set_client(&mut self, client: Option<Arc<RagClient>>) {
         self.client = client;
     }
@@ -494,7 +494,7 @@ impl ThreadPanel {
     }
 
     /// Open the create-note dialog pre-filled with the selected turn saved as
-    /// a note (adr/0030: **Saved answer**). The dialog owns validation and
+    /// a note (**Saved answer**). The dialog owns validation and
     /// the actual create call — this only supplies the path/content. Leader `a e`.
     pub(crate) fn save_selected(&self, tx: &AppTx) {
         let Some(turn) = self.thread.selected() else {

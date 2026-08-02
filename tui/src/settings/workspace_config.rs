@@ -49,14 +49,14 @@ pub struct GlobalConfig {
     /// Whether kimün captures the mouse for in-app use (divider drag, list
     /// scroll, click-to-focus). When off, the mouse is left to the terminal so
     /// its native selection and middle-click paste work; mouse reporting is
-    /// all-or-nothing, so there is no per-button middle ground (see adr/0015).
+    /// all-or-nothing, so there is no per-button middle ground.
     /// Read only at startup. Defaults on (today's behavior).
     #[serde(default = "default_mouse")]
     pub mouse: bool,
     /// Base URL of the optional RAG server (e.g. `http://localhost:7573`). When
-    /// set and reachable, kimün enables semantic search and Q&A (adr/0018).
-    /// Global (one server serves many vaults, each as its own collection —
-    /// adr/0020); `None` means the feature is off.
+    /// set and reachable, kimün enables semantic search and Q&A.
+    /// Global (one server serves many vaults, each as its own collection);
+    /// `None` means the feature is off.
     #[serde(default)]
     pub kimun_server_url: Option<String>,
     /// Bearer token for the RAG server, when it requires one.

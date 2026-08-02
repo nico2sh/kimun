@@ -18,7 +18,7 @@ use crate::{
 // Request/Response Types
 // ============================================================================
 
-/// Push a vault's documents (adr/0018). `vault_id` selects the collection.
+/// Push a vault's documents. `vault_id` selects the collection.
 #[derive(Debug, Deserialize)]
 pub struct IndexDocsRequest {
     pub vault_id: String,
@@ -39,7 +39,7 @@ pub struct QueryRequest {
     /// Overrides the server's default result count when set; otherwise
     /// `reranker.top_k` from config is used. Only meaningful under the
     /// `fixed` context cut — the adaptive cuts size results from the pool's
-    /// score shape on both surfaces and ignore it (adr/0029).
+    /// score shape on both surfaces and ignore it.
     #[serde(default)]
     pub context_size: Option<ContextSize>,
 }
@@ -285,7 +285,7 @@ pub async fn answer_handler(
     let collection = CollectionKey::parse(&request.vault_id)?;
     let rag = state.rag()?.clone();
     // Semantic-only server: reject question-answering up front rather than minting
-    // a job that can only fail (adr/0022). The client already gates on
+    // a job that can only fail. The client already gates on
     // /health.llm_provider; this is the belt-and-suspenders path. The pipeline
     // is the truth here, not the config — it holds the actually-constructed LLM.
     if !rag.can_answer() {
@@ -379,7 +379,7 @@ pub async fn index_delete_handler(
 
 /// Reconcile support: the `{note path → content hash}` set the server holds for
 /// a vault, so the client can diff it against its own authoritative set and
-/// push/delete only the differences (adr/0019).
+/// push/delete only the differences.
 pub async fn collection_hashes_handler(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(vault_id): axum::extract::Path<String>,
@@ -508,7 +508,7 @@ mod tests {
     #[tokio::test]
     async fn data_handlers_reject_unconfigured_with_503() {
         // An unconfigured server has no pipeline: every data endpoint rejects
-        // before doing any work (adr/0024). /health and /api/job stay live.
+        // before doing any work. /health and /api/job stay live.
         use crate::config::RagConfig;
         let config: RagConfig =
             toml::from_str("[server]\n[vector_db]\ntype = \"sqlite\"\n[reranker]\n").unwrap();
@@ -583,7 +583,7 @@ mod tests {
             Err(RagError::Validation(_))
         ));
         // "__" is reserved for server metadata collections (the embedder
-        // fingerprint, adr/0025) — a vault id there would collide with the
+        // fingerprint) — a vault id there would collide with the
         // qdrant fingerprint collection and be hidden from listings/wipes.
         assert!(matches!(
             CollectionKey::parse("__fingerprint"),

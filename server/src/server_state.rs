@@ -12,7 +12,7 @@ use crate::{KimunRag, RagError};
 #[derive(Clone)]
 pub struct AppState {
     /// The query pipeline, or `None` on an *unconfigured* server (no embedder →
-    /// no vector store, adr/0024). Immutable after startup (config edits apply
+    /// no vector store). Immutable after startup (config edits apply
     /// on restart), so it is shared plainly — no lock.
     pub rag: Option<Arc<KimunRag>>,
     pub config: Arc<RagConfig>,
@@ -36,7 +36,7 @@ pub struct AppState {
     /// collection can't double-insert chunks or race each other's updates.
     /// Queries never take this, so indexing does not block search/answer.
     pub index_lock: Arc<Mutex<()>>,
-    /// Signals the binary's restart loop (adr/0028): the web UI's Restart
+    /// Signals the binary's restart loop: the web UI's Restart
     /// button sends here, the serving loop drains and rebuilds from the saved
     /// config file. `None` when no loop is wired (tests).
     restart: Option<tokio::sync::mpsc::Sender<()>>,
@@ -58,7 +58,7 @@ impl AppState {
     }
 
     /// The pipeline, or the typed unconfigured rejection — the one gate every
-    /// data handler runs before touching a request (adr/0024).
+    /// data handler runs before touching a request.
     pub fn rag(&self) -> Result<&Arc<KimunRag>, RagError> {
         self.rag.as_ref().ok_or(RagError::Unconfigured)
     }
@@ -76,8 +76,8 @@ impl AppState {
         self
     }
 
-    /// Records why RAG initialization failed (degraded startup, adr/0024's
-    /// unconfigured behavior with a visible cause).
+    /// Records why RAG initialization failed: the unconfigured server's
+    /// behaviour, but with a visible cause.
     pub fn with_startup_error(mut self, error: Option<String>) -> Self {
         self.startup_error = error;
         self
@@ -95,8 +95,8 @@ impl AppState {
         self
     }
 
-    /// Requests an in-process restart: drain, re-read the config file, rebind
-    /// (adr/0028). `false` when no restart loop is wired or one is already in
+    /// Requests an in-process restart: drain, re-read the config file, rebind.
+    /// `false` when no restart loop is wired or one is already in
     /// flight — the caller should tell the operator to restart manually.
     pub fn request_restart(&self) -> bool {
         self.restart

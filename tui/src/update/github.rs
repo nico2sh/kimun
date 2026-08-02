@@ -34,7 +34,7 @@ impl ReleaseProvider for GitHubProvider {
     /// `/releases/latest` is deliberately **not** used: this repo interleaves
     /// `kimun_core-v*` library releases with `kimun-notes-v*` app releases, and
     /// "latest" is the newest of either — frequently a core release with no
-    /// binaries (see adr/0014). Instead the releases list (newest-first) is
+    /// binaries. Instead the releases list (newest-first) is
     /// scanned for the first `kimun-notes-v*` tag with no pre-release suffix.
     ///
     /// Pre-release status is determined by the **tag hyphen** (e.g.
