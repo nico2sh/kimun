@@ -511,7 +511,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - *(tui)* ActiveDialog impls Overlay; migrate dialog app-message handling; rename CloseDialog->CloseOverlay
 - *(tui)* add CloseOverlay event; modals impl Overlay and emit it
 - *(tui)* add OverlayHost + Overlay trait (single-slot, focus save/restore)
-- *(tui)* note-name autocomplete on </>/= operators (ADR-0005 alphabet)
+- *(tui)* note-name autocomplete on </>/= operators (query operator alphabet)
 - *(core)* query operator alphabet + forward-links filter
 - *(tui)* SearchList .intercept + render/render_query/render_autocomplete + handle_mouse
 - *(tui)* autocomplete host inside SearchList (one canonical snapshot)
@@ -603,7 +603,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - *(tui)* code-review cleanup — debounce builder knob, dedup centered_rect, drop dead search_str/list_rect, consistent mouse-rect contract
 - *(tui)* robust poll_until_idle for vault-backed loads (fix parallel-suite flake)
 - *(tui)* collision-free temp_vault nonce (atomic counter + pid)
-- *(tui)* sweep remaining refs to ADR-0005 alphabet (virtual entry, CLI/MCP help, docs)
+- *(tui)* sweep remaining refs to the query operator alphabet (virtual entry, CLI/MCP help, docs)
 - rustfmt SearchList refactor
 - *(tui)* retire FileListComponent — list engine absorbed by SearchList
 - *(tui)* sidebar hosts SearchList (streamed source + Filter::Fuzzy)
