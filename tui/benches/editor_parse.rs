@@ -13,7 +13,7 @@ use kimun_notes::components::text_editor::parse_incremental::{
     WidenResult, compute_damage_range, widen_to_safe,
 };
 use kimun_notes::components::text_editor::snapshot::EditorSnapshot;
-use ropetext::{Layout, Metrics, RowHints, Text};
+use kimun_notes::ropetext::{Layout, Metrics, RowHints, Text};
 use std::num::NonZeroU64;
 
 fn snap_for(lines: &[String], cursor: (usize, usize), generation: u64) -> EditorSnapshot {

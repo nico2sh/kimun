@@ -4,16 +4,24 @@
 //! and soft-wrap layout. It owns nothing else, and the omissions are deliberate:
 //!
 //! - **No renderer.** Layout returns visual lines and cell coordinates in this
-//!   crate's own plain geometry types. Painting belongs to the caller.
-//! - **No input handling.** Keys never reach this crate. It exposes operations;
+//!   module's own plain geometry types. Painting belongs to the caller.
+//! - **No input handling.** Keys never reach this module. It exposes operations;
 //!   deciding which key performs which operation is the caller's business.
 //! - **No syntax, no markdown.** What a construct *means* never enters. Where a
 //!   syntax layer must be heard from — wrapping has to know which characters are
 //!   hidden and how far a row is inset — it is heard as data passed in, not as a
-//!   trait this crate calls back into.
-//! - **No search, no clipboard, no registers.** The crate hands out the text in
-//!   a range; what a caller matches against it or stores it in is not its
-//!   concern.
+//!   trait this module calls back into.
+//! - **No search, no clipboard, no registers.** It hands out the text in a
+//!   range; what a caller matches against it or stores it in is not its concern.
+//!
+//! # It knows nothing of kimün
+//!
+//! This was a workspace crate until ADR-0042 folded it in, and it is written to
+//! go back out to one on demand — a reusable editor widget is the likely reason.
+//! Nothing here may name `crate::` outside `crate::ropetext::`, which is the one
+//! property extraction depends on; `.github/workflows/check.yml` enforces it now
+//! that the crate graph no longer can. See adr/0039 for why the engine exists at
+//! all, adr/0041 for why markdown stays outside it, and adr/0042 for the move.
 //!
 //! # Positions are checked, never approximated
 //!

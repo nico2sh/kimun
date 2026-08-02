@@ -2,9 +2,9 @@ pub mod citations;
 pub mod locate;
 pub mod save;
 
+use crate::server_client::dto::ChunkResult;
 use kimun_core::nfs::VaultPath;
 use kimun_core::note::BREADCRUMB_SEP;
-use kimun_server_client::dto::ChunkResult;
 
 /// How many trailing `Done` turns feed conversation history sent to the server.
 const HISTORY_WINDOW: usize = 5;
@@ -46,7 +46,7 @@ impl AskSource {
     ///
     /// A nested-section chunk's title is core's breadcrumb — the heading path
     /// joined with the control-char [`BREADCRUMB_SEP`] (`"Chapter\x1fSection"`).
-    /// We split it and re-join with a readable [`HEADING_JOINER`] so the raw
+    /// We split it and re-join with a readable `HEADING_JOINER` so the raw
     /// separator never reaches a Sources row or the reader title; the innermost
     /// segment (which drives section matching in `locate`) is recovered by
     /// [`AskSource::match_heading`].
@@ -73,7 +73,7 @@ impl AskSource {
 
     /// The innermost heading segment — the one that identifies the retrieved
     /// section within its note, for `locate::section_range`. `heading` is the
-    /// full breadcrumb rejoined with [`HEADING_JOINER`] for display, so section
+    /// full breadcrumb rejoined with `HEADING_JOINER` for display, so section
     /// matching takes only the last segment (`"Chapter › Section"` → `"Section"`).
     pub fn match_heading(&self) -> &str {
         self.heading
@@ -284,7 +284,7 @@ impl Thread {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kimun_server_client::dto::ChunkResult;
+    use crate::server_client::dto::ChunkResult;
 
     fn ask_source(path: &str, ordinal: usize) -> AskSource {
         AskSource {

@@ -13,7 +13,7 @@ use sqlx::{Row, Sqlite, Transaction};
 
 use crate::note::{ContentChunk, LinkType, NoteContentData, NoteDetails};
 
-/// A note change reported by the [`NoteIndex`] the moment it is recorded, for
+/// A note change reported by the `NoteIndex` the moment it is recorded, for
 /// consumers outside core (the RAG client). Thin by design — it carries a path,
 /// a content hash, and the kind of change, never chunk text (see adr/0019).
 #[derive(Debug, Clone, PartialEq, Eq)]

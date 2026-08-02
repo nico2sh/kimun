@@ -1,6 +1,6 @@
 //! The one HTTP embedder. Ollama's `/api/embed` and any OpenAI-compatible
 //! `/embeddings` endpoint take the same request (`{model, input}`) and differ
-//! only in path, auth, and response shape — an [`EmbedWire`] value carries that
+//! only in path, auth, and response shape — an `EmbedWire` value carries that
 //! variation, everything else (probe, batching, prefixing) is shared. Same
 //! pattern as the LLM `ChatClient`.
 

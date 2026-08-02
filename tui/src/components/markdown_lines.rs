@@ -104,7 +104,8 @@ impl MdStyles {
 
 /// Classify the block role of every logical (newline-free) source `line` in
 /// `lines`, in order, by delegating wholesale to the editor's markdown model
-/// ([`ParsedBuffer::parse`]) — so there is a single, buffer-aware opinion about
+/// ([`ParsedBuffer::parse`](crate::components::text_editor::markdown::ParsedBuffer::parse))
+/// — so there is a single, buffer-aware opinion about
 /// block identity shared with the note editor.
 ///
 /// Because the model sees the whole answer at once, cross-line constructs the
@@ -116,7 +117,8 @@ impl MdStyles {
 ///   resets the *title* row's coarse `LineConstructKind` back to `Plain`, so we
 ///   read the heading off each row's per-line `elements`, not the coarse kind;
 /// - a **lazy blockquote continuation** (a bare line folded into a preceding
-///   `>` quote) reports the quote's depth via [`ParsedLine::blockquote_depth`]
+///   `>` quote) reports the quote's depth via
+///   [`ParsedLine::blockquote_depth`](crate::components::text_editor::markdown::ParsedLine::blockquote_depth)
 ///   and so styles as `Quote`, matching what the editor renders.
 ///
 /// Code wins over the heading/quote signals: inside a fenced or indented code

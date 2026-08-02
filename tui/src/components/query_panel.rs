@@ -654,7 +654,7 @@ impl QueryPanel {
     }
 
     /// Step the preview reveal backward (Full → Context → Collapsed): the `h`
-    /// list-focus verb, mirroring `l`'s forward cycle via [`toggle_expand`].
+    /// list-focus verb, mirroring `l`'s forward cycle via [`Self::toggle_expand`].
     fn collapse_expand(&mut self) {
         let sel = self.list.selected_row().map(|e| e.path.clone());
         if sel.is_none() {

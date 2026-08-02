@@ -1,8 +1,8 @@
 //! Server configuration reading and [`RagClient`] construction — the single
 //! place the TUI turns settings into a live client handle.
 
+use crate::server_client::RagClient;
 use kimun_core::NoteVault;
-use kimun_server_client::RagClient;
 
 use crate::settings::SharedSettings;
 

@@ -13,8 +13,8 @@
 //! rows ask for them ([`RopeBuffer::rows`]) and pay for them there; the buffer
 //! keeps one copy of the note and no derived copy in step with it.
 //!
-use ropetext::motion::{self, Goal, Words};
-use ropetext::{Change, Column, EditBuffer as Rope, Position, Span, Text};
+use crate::ropetext::motion::{self, Goal, Words};
+use crate::ropetext::{Change, Column, EditBuffer as Rope, Position, Span, Text};
 
 /// How far one indent step moves a line, in spaces, when `hard_tab_indent` is
 /// off — what Tab, `>>` and the visual `>` add, and what their inverses remove.
@@ -25,7 +25,7 @@ use ropetext::{Change, Column, EditBuffer as Rope, Position, Span, Text};
 /// fixed amount of text an edit *inserts*. Vim keeps the two apart as `tabstop`
 /// and `shiftwidth`, EditorConfig as `tab_width` and `indent_size`, and
 /// `hard_tab_indent` is exactly the setting under which they must differ: insert
-/// one literal `\t`, still draw it [`ropetext::Metrics::DEFAULT_TAB_WIDTH`]
+/// one literal `\t`, still draw it [`crate::ropetext::Metrics::DEFAULT_TAB_WIDTH`]
 /// cells wide. That both are 4 today is a coincidence of defaults.
 const DEFAULT_INDENT_WIDTH: u8 = 4;
 
@@ -218,7 +218,7 @@ impl RopeBuffer {
         self.hard_tab_indent = hard;
     }
 
-    pub fn snapshot(&self) -> ropetext::Snapshot {
+    pub fn snapshot(&self) -> crate::ropetext::Snapshot {
         self.inner.snapshot()
     }
 
@@ -316,7 +316,7 @@ impl RopeBuffer {
     }
 
     /// Apply one primitive as its own group, or as part of an open one.
-    fn mutate(&mut self, f: impl FnOnce(&mut ropetext::Txn<'_>)) -> bool {
+    fn mutate(&mut self, f: impl FnOnce(&mut crate::ropetext::Txn<'_>)) -> bool {
         let extending =
             (self.depth > 0 && self.group_started) || std::mem::take(&mut self.continue_group);
         let mut txn = if extending {
@@ -861,7 +861,7 @@ fn rc(position: Position) -> (usize, usize) {
 #[cfg(test)]
 mod search_tests {
     use super::*;
-    use ropetext::Text;
+    use crate::ropetext::Text;
 
     fn buffer(text: &str, pattern: &str, cursor: (usize, usize)) -> RopeBuffer {
         let mut buf = RopeBuffer::new(Text::from(text));
@@ -926,7 +926,7 @@ mod search_tests {
 #[cfg(test)]
 mod cluster_tests {
     use super::*;
-    use ropetext::Text;
+    use crate::ropetext::Text;
 
     #[test]
     fn delete_str_spends_its_count_on_clusters() {
@@ -954,7 +954,7 @@ mod cluster_tests {
 #[cfg(test)]
 mod damage_tests {
     use super::*;
-    use ropetext::Text;
+    use crate::ropetext::Text;
 
     #[test]
     fn damage_from_several_edits_is_in_one_numbering() {

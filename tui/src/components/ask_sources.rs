@@ -560,7 +560,7 @@ impl SourcesPanel {
     }
 
     /// Ensure the preview is backed by the *selected* source's note (the
-    /// interactive path — `open_reader` calls [`ensure_note_load`] directly with
+    /// interactive path — `open_reader` calls [`Self::ensure_note_load`] directly with
     /// its directed source). No-op while collapsed or with nothing selected.
     fn ensure_loaded(&mut self, tx: &AppTx) {
         if self.preview.is_collapsed() {

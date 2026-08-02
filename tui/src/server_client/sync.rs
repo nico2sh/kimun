@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use kimun_core::{IndexObserver, NoteVault, error::VaultError, nfs::VaultPath};
 
-use crate::dto::{WireDoc, WireSection};
-use crate::{
+use crate::server_client::dto::{WireDoc, WireSection};
+use crate::server_client::{
     DirtyOp, DirtySet, RagClient, RagError, RagObserver, RagTransport, hash_string, reconcile_diff,
 };
 
@@ -29,7 +29,7 @@ pub enum ServerCapability {
 
 impl ServerCapability {
     /// Derives the capability from a health probe's fields.
-    pub fn from_health(health: &crate::dto::Health) -> Self {
+    pub fn from_health(health: &crate::server_client::dto::Health) -> Self {
         match (health.embedder.is_some(), health.llm_provider.is_some()) {
             (false, _) => ServerCapability::Unconfigured,
             (true, false) => ServerCapability::SemanticOnly,
@@ -305,7 +305,7 @@ mod tests {
 
     #[test]
     fn capability_from_health_fields() {
-        use crate::dto::Health;
+        use crate::server_client::dto::Health;
         let h = |embedder: Option<&str>, llm: Option<&str>| Health {
             status: "ok".into(),
             reranker: false,

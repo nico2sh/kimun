@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use kimun_server_client::RagClient;
+use crate::server_client::RagClient;
 use ratatui::Frame;
 use ratatui::crossterm::event::{MouseButton, MouseEventKind};
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
@@ -1054,7 +1054,7 @@ mod tests {
         assert!(!ps.ask().has_client());
         // Handing a client back enables it. (A bare client over a throwaway
         // vault id is fine — it's never called here.)
-        let client = std::sync::Arc::new(kimun_server_client::RagClient::new(
+        let client = std::sync::Arc::new(crate::server_client::RagClient::new(
             "http://localhost:0".to_string(),
             None,
             "vault".to_string(),

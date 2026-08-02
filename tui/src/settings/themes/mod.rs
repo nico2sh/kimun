@@ -230,7 +230,7 @@ impl Display for ThemeColor {
 /// ```
 ///
 /// Roles introduced after a theme file was written may be omitted — they are
-/// derived from the closest sibling role (see [`ThemeToml`]).
+/// derived from the closest sibling role (see `ThemeToml`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(from = "ThemeToml")]
 pub struct Theme {

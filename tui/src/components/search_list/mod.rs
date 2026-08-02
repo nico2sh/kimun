@@ -89,7 +89,7 @@ pub struct SearchList<R: SearchRow> {
     /// Indices into `rows` in display order (after filtering/ranking).
     display: Vec<usize>,
     /// A synthetic, query-fresh, filter-exempt row pinned at visible position 0
-    /// (the "Create: <q>" affordance / saved-searches virtual entry). Held
+    /// (the `Create: <q>` affordance / saved-searches virtual entry). Held
     /// separately from `rows` so it works regardless of delivery (one-shot
     /// `Replace` or streamed `Push`) and refreshes on every query change. See
     /// [`RowSource::leading_row`].
@@ -427,7 +427,7 @@ impl<R: SearchRow> SearchList<R> {
     /// sources) or recomputes the display. This is the setter every external
     /// caller wants — a saved search applied, a sort directive rewritten — so
     /// the input bar always reflects the query. The interactive keystroke path
-    /// uses [`sync_query_from_input`](Self::sync_query_from_input) instead,
+    /// uses `sync_query_from_input` instead,
     /// because the input widget already holds the typed text (and its cursor
     /// must not jump back to the end on every keystroke).
     pub fn set_query(&mut self, q: impl Into<String>) {
@@ -975,7 +975,7 @@ impl<R: SearchRow> SearchListBuilder<R> {
         self
     }
     /// Bind the yank chord to whatever the user has bound
-    /// [`ActionShortcuts::YankRow`](crate::keys::ActionShortcuts::YankRow) to.
+    /// [`ActionShortcuts::YankRow`](crate::keys::action_shortcuts::ActionShortcuts::YankRow) to.
     /// Surfaces that hold `KeyBindings` should always call this — the builder
     /// default is only for those that do not (and for tests).
     pub fn yank_combos_from(self, bindings: &crate::keys::KeyBindings) -> Self {

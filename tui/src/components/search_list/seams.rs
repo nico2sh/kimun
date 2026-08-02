@@ -225,7 +225,7 @@ pub trait RowSource<R: SearchRow>: Send + Sync + 'static {
     /// the prior load on requery, so a slow source may be left unfinished.
     async fn load(&self, query: &str, emit: Emit<R>);
 
-    /// An optional synthetic leading row (the "Create: <q>" affordance),
+    /// An optional synthetic leading row (the `Create: <q>` affordance),
     /// prepended and exempt from local filtering. Keeps create-policy here.
     fn leading_row(&self, _query: &str) -> Option<R> {
         None

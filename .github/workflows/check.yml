@@ -45,6 +45,23 @@ jobs:
       - name: Format check
         run: cargo fmt --all -- --check
 
+      # `tui/src/ropetext` and `tui/src/server_client` were workspace crates until
+      # adr/0042 folded them in. What made them crates was not the manifest but the
+      # boundary — nothing kimün-flavoured could reach inside, because a separate
+      # crate cannot say `crate::settings::Theme`. A module can, so the compiler
+      # stopped enforcing it and this step took over. Keeping the rule keeps the
+      # option of `git mv`-ing either one back out into a crate of its own.
+      - name: Module boundary (ropetext, server_client stay extractable)
+        run: |
+          leaks=$(grep -rn --include='*.rs' -E '\bcrate::' \
+                    tui/src/ropetext tui/src/server_client \
+                  | grep -vE '\bcrate::(ropetext|server_client)::' || true)
+          if [ -n "$leaks" ]; then
+            echo "::error::These modules must not reach into the rest of kimün (adr/0042):"
+            echo "$leaks"
+            exit 1
+          fi
+
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
@@ -62,6 +79,15 @@ jobs:
       # compile error.
       - name: Check benches (bench profile — debug_assertions off)
         run: cargo check --profile bench --workspace --all-targets
+
+      # Neither clippy nor rustc sees rustdoc's lints, so broken intra-doc links
+      # accumulated silently until the whole workspace was cleaned in one pass.
+      # -D warnings keeps them at zero: a link that stops resolving after a
+      # rename fails here rather than rotting in the docs.
+      - name: Docs
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps --workspace
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2

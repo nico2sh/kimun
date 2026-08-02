@@ -17,9 +17,6 @@ path = "src/lib.rs"
 
 [dependencies]
 kimun_core = { path = "../core", version = "0.2.30" }
-kimun_server_client = { path = "../client", version = "0.2.1" }
-# Path-only, no version: nothing for release-plz to rewrite (see release-plz.toml).
-ropetext = { path = "../ropetext" }
 
 clap = { version = "4", features = ["derive"] }
 color-eyre = "0.6.5"
@@ -53,6 +50,19 @@ rmpv = "1"
 unicode-width = "0.2"
 unicode-segmentation = "1"
 png = "0.18"
+# `src/ropetext` — the editing engine (adr/0039, adr/0042).
+# default-features = false drops `unicode_lines`/`cr_lines`, leaving `\n` as the
+# only line break. Ropey's default counts VT, FF, NEL, LS, PS and lone CR as
+# breaks too, which disagrees with CommonMark, with pulldown-cmark, and with
+# splitting a string on '\n' — a note containing U+2028 would give the editor
+# more rows than the markdown parser has lines. Carriage returns are handled on
+# construction instead, where the normalisation is visible.
+ropey = { version = "1.6", default-features = false, features = ["simd"] }
+# `src/server_client` — the RAG server client (adr/0018–0021, adr/0042).
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "rustls-tls",
+] }
 # Update check + self-update. ureq is a small blocking HTTP client (rustls TLS,
 # no OpenSSL) run on spawn_blocking; sha2 verifies downloads; self-replace
 # performs the cross-platform live-binary swap. See adr/0014.
@@ -69,4 +79,12 @@ insta = "1"
 
 [[bench]]
 name = "editor_parse"
+harness = false
+
+[[bench]]
+name = "rope_layout"
+harness = false
+
+[[bench]]
+name = "rope_edit"
 harness = false

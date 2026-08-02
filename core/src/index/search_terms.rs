@@ -542,7 +542,7 @@ fn dedup_preserving_order(v: &mut Vec<String>) {
 // ---------------------------------------------------------------------------
 
 /// Token class of a span in a query string, for syntax highlighting. Mirrors
-/// the grammar [`QueryTermExtractor::extract_and_consume`] consumes — the two
+/// the grammar `QueryTermExtractor::extract_and_consume` consumes — the two
 /// must stay in step (see the `lexer_agrees_with_parser_*` tests).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueryTokenClass {

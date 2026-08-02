@@ -68,7 +68,7 @@ impl RenameDialog {
 
     /// Abort any in-flight validation task and spawn a new one for the
     /// current value of `self.input`.  The result is sent as
-    /// [`AppEvent::OverlayData(OverlayData::RenameValidation)`] so that state updates happen in
+    /// [`OverlayData::RenameValidation`] so that state updates happen in
     /// `handle_app_message` rather than in `render`.
     fn spawn_validation(&mut self, tx: &AppTx) {
         // Abort the previous task if it is still running.

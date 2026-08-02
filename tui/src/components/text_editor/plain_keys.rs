@@ -145,7 +145,7 @@ pub fn apply(op: Operation, buf: &mut RopeBuffer) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ropetext::Text;
+    use crate::ropetext::Text;
 
     fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, modifiers)

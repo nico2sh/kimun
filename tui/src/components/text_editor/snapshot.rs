@@ -17,7 +17,7 @@ pub struct EditorSnapshot {
     /// The text itself. Cloning one is O(1) — the rope shares its structure — so
     /// a snapshot *is* the buffer's text rather than a copy of it, and the cursor
     /// below cannot drift away from what it was read with.
-    pub text: ropetext::Text,
+    pub text: crate::ropetext::Text,
     /// `(row, col)`, clamped at construction when the producer's source was
     /// stale. A text always has at least one row, so there is no empty-buffer
     /// case to special-case.
@@ -36,7 +36,7 @@ impl EditorSnapshot {
         content_revision: NonZeroU64,
     ) -> Self {
         Self {
-            text: ropetext::Text::from(lines.join("\n").as_str()),
+            text: crate::ropetext::Text::from(lines.join("\n").as_str()),
             cursor,
             content_revision,
         }
@@ -44,7 +44,7 @@ impl EditorSnapshot {
 
     /// The hot path: the buffer already holds the text, so nothing is rebuilt.
     pub fn of_buffer(
-        text: ropetext::Text,
+        text: crate::ropetext::Text,
         cursor: (usize, usize),
         content_revision: NonZeroU64,
     ) -> Self {
@@ -64,7 +64,7 @@ impl EditorSnapshot {
         content_revision: NonZeroU64,
     ) -> EditorSnapshot {
         EditorSnapshot {
-            text: ropetext::Text::from(lines.join("\n").as_str()),
+            text: crate::ropetext::Text::from(lines.join("\n").as_str()),
             cursor,
             content_revision,
         }
@@ -99,7 +99,7 @@ impl EditorSnapshot {
         self.text
             .position(
                 self.cursor_row_clamped(),
-                ropetext::Column::new(self.cursor.1),
+                crate::ropetext::Column::new(self.cursor.1),
             )
             .map(|at| at.byte())
             .unwrap_or_else(|| self.text.len_bytes())

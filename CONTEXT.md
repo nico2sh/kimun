@@ -31,7 +31,7 @@ Which engine drives the TUI text editor, chosen in config (`editor_backend`): **
 _Avoid_: editor engine, editor mode (collides with **editing mode**), textarea (the superseded name for **plain**, from the library that used to back it).
 
 **Edit buffer**:
-The open note's text, its cursor, its selection and its edit history as one thing, behind which every mutation on the **plain** and **vim** backends passes. Because it observes each edit from both sides, the facts that follow from one — did the content change, what range was damaged, which edits belong to one **undo group** — are *derived* there rather than predicted by each caller. It knows nothing about markdown, about the terminal, or about how it will be drawn: it is text and the operations on it. The **nvim** backend has none — neovim owns its own buffer and history.
+The open note's text, its cursor, its selection and its edit history as one thing, behind which every mutation on the **plain** and **vim** backends passes. Because it observes each edit from both sides, the facts that follow from one — did the content change, what range was damaged, which edits belong to one **undo group** — are *derived* there rather than predicted by each caller. It knows nothing about markdown, about the terminal, or about how it will be drawn: it is text and the operations on it. That ignorance is structural: it lives in `tui/src/ropetext` — its own crate until adr/0042, and still forbidden from naming anything outside itself so it can become one again. The **nvim** backend has none — neovim owns its own buffer and history.
 _Avoid_: buffer (collides with ratatui's render buffer), document, model.
 
 **Editing mode**:
@@ -394,7 +394,7 @@ The **Kimün server**'s pure-storage seam (`VectorStore`): adapters (SQLite, Qdr
 _Avoid_: embeddings store (it stores vectors it did not make), db/backend (implementation, not the role), index (collides with **NoteIndex**).
 
 **Server client**:
-The component inside Kimün that owns every dealing with the **Kimün server** — connection and capability probing, the push of note changes, and **reconciliation**. The capability probe distinguishes three reachable states — **unconfigured**, *semantic-only*, and full — and the client gates each surface on it: no pushes or **reconciliation** against an unconfigured server. Lives outside core (its own crate) so core stays free of network concerns; core feeds it only through the **index observer**.
+The component inside Kimün that owns every dealing with the **Kimün server** — connection and capability probing, the push of note changes, and **reconciliation**. The capability probe distinguishes three reachable states — **unconfigured**, *semantic-only*, and full — and the client gates each surface on it: no pushes or **reconciliation** against an unconfigured server. Lives outside core (`tui/src/server_client`, its own crate until adr/0042) so core stays free of network concerns; core feeds it only through the **index observer**.
 _Avoid_: RAG client (see **Kimün server** on RAG), rag bridge, sync manager (too generic).
 
 **Index observer**:

@@ -10,11 +10,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use kimun_core::NoteVault;
-use kimun_server_client::{
+use crate::server_client::{
     RagClient,
     sync::{RagSync, ServerCapability, ServerProbe},
 };
+use kimun_core::NoteVault;
 use tokio::task::JoinHandle;
 
 use super::RagStatus;
