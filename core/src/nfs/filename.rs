@@ -76,7 +76,7 @@ const MAX_TITLE_NAME_LEN: usize = 60;
 /// title (e.g. a saved ask question). The title is lowercased; disallowed
 /// characters (per [`is_disallowed_char`]) and whitespace collapse to a
 /// single `-`; the result is trimmed of leading/trailing `-` and truncated
-/// to [`MAX_TITLE_NAME_LEN`] characters on a char boundary. An empty result
+/// to `MAX_TITLE_NAME_LEN` characters on a char boundary. An empty result
 /// falls back to `"answer"`. Callers are responsible for assembling this
 /// into a full path (e.g. via `VaultPath`) and applying the note extension.
 ///

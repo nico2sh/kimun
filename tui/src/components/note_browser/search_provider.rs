@@ -10,7 +10,7 @@ use crate::components::file_list::FileListEntry;
 use crate::components::query_vars::QueryContext;
 use crate::components::search_list::{Emit, ResolvingRowSource, RowSource, Unresolvable};
 
-/// Build the note-browser search source: a [`SearchNotesProvider`] wrapped so it
+/// Build the note-browser search source: a `SearchNotesProvider` wrapped so it
 /// resolves `{note}` against `current_note` and falls back to the recent-notes
 /// (empty-query) view when a note-dependent query has no note to resolve
 /// against. The single place the browser's resolution policy lives — the app

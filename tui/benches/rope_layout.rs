@@ -7,7 +7,7 @@
 //! anything measurable.
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use ropetext::{EditBuffer, Layout, Metrics, Text};
+use kimun_notes::ropetext::{EditBuffer, Layout, Metrics, Text};
 
 /// The same corpus `tui`'s `wrap_5000_lines` uses, so the two numbers can be
 /// compared. Each row is one wrap at width 80.
@@ -42,7 +42,7 @@ fn bench_relayout(c: &mut Criterion) {
             // count and the number means nothing.
             let at = buffer
                 .text()
-                .position(2_500, ropetext::Column::new(1))
+                .position(2_500, kimun_notes::ropetext::Column::new(1))
                 .expect("addressable");
             let mut txn = buffer.begin();
             txn.insert(at, "x");

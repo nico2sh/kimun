@@ -75,7 +75,7 @@ impl Display for CollectionKey {
 /// The answer to a question, with the chunks the LLM saw as context. Each
 /// source carries the 1-based **ordinal** the prompt numbered it with (the `[n]`
 /// citation marker) — assigned once, at the single numbering site in
-/// [`RagPipeline::answer`], so the citation↔source pairing is an explicit
+/// [`KimunRag::answer`], so the citation↔source pairing is an explicit
 /// contract rather than a shared vec-order convention.
 pub struct Answer {
     pub text: String,
@@ -244,7 +244,7 @@ impl KimunRag {
     }
 
     /// Tune the score-range cut's normalized cutoff (default
-    /// [`SCORE_RANGE_DEFAULT_CUTOFF`]). Values outside `0.0..=1.0` are
+    /// `SCORE_RANGE_DEFAULT_CUTOFF`). Values outside `0.0..=1.0` are
     /// clamped — including a TOML `inf`/`-inf`, which land on 1.0/0.0 (the
     /// strictest/loosest cut, matching what such configs always did). Only
     /// NaN is ignored: `clamp` would propagate it and every score comparison
@@ -262,7 +262,7 @@ impl KimunRag {
     }
 
     /// Tune the largest-drop cut's note-position search window (defaults
-    /// [`DROP_WINDOW_MIN`]`..=`[`DROP_WINDOW_MAX`]); sanitized to `min ≥ 1`
+    /// `DROP_WINDOW_MIN..=DROP_WINDOW_MAX`); sanitized to `min ≥ 1`
     /// and `max ≥ min`.
     pub fn with_drop_window(mut self, min: usize, max: usize) -> Self {
         let min = min.max(1);
@@ -403,7 +403,7 @@ impl KimunRag {
     /// `history` (prior question/answer pairs) does two jobs. It is forwarded
     /// verbatim to the LLM call, and — since a terse follow-up ("yes",
     /// "go on") embeds against nothing on its own — it also CONDITIONS the
-    /// retrieval/rerank query via [`build_retrieval_query`]: the most recent
+    /// retrieval/rerank query via `build_retrieval_query`: the most recent
     /// turn is folded in so the search still sees the topic under discussion.
     /// Only retrieval and ranking see the conditioned query; the prompt's
     /// "Question:" stays the raw `question`. With empty history the query is

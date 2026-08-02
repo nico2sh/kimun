@@ -1,6 +1,6 @@
 //! All wiring for the optional RAG server lives in this module — config
-//! reading, client construction ([`client`]) and the background sync loop
-//! ([`sync`]). Everything talks to the server through `kimun_server_client`;
+//! reading, client construction (`client`) and the background sync loop
+//! (`sync`). Everything talks to the server through [`crate::server_client`];
 //! the rest of the TUI only consumes these helpers and renders status.
 
 mod client;

@@ -19,9 +19,9 @@
 //! act on a range that means something else. `f` with no matching character on the
 //! row is the plain case: deleting to it must delete nothing at all.
 
-use crate::layout::{Cell, Layout, RowHints};
-use crate::position::{Column, Position};
-use crate::text::Text;
+use crate::ropetext::layout::{Cell, Layout, RowHints};
+use crate::ropetext::position::{Column, Position};
+use crate::ropetext::text::Text;
 
 /// What kind of character a cluster starts with, for word motions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1014,8 +1014,8 @@ mod tests {
 
     mod visual {
         use super::*;
-        use crate::layout::{Layout, RowHints, Viewport};
-        use crate::width::Metrics;
+        use crate::ropetext::layout::{Layout, RowHints, Viewport};
+        use crate::ropetext::width::Metrics;
 
         fn layout(text: &Text, width: usize) -> Layout {
             Layout::compute(text, width, Metrics::default(), &[])

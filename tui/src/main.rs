@@ -6,6 +6,9 @@ pub mod components;
 pub mod event_handler;
 pub mod keys;
 pub mod rag;
+// Self-contained modules with no dependency on the rest of kimün — see adr/0042.
+pub mod ropetext;
+pub mod server_client;
 pub mod settings;
 pub mod ui;
 pub mod update;

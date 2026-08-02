@@ -42,7 +42,8 @@ pub struct SaveSearchDialog {
     /// editor re-pins by identity rather than by comparing query text.
     source: SaveSource,
     /// Existing saved-search names, loaded asynchronously after open (see
-    /// [`AppEvent::OverlayData(OverlayData::SavedSearchNamesLoaded)`]). `None` until the load lands —
+    /// [`OverlayData::SavedSearchNamesLoaded`](crate::components::events::OverlayData::SavedSearchNamesLoaded)).
+    /// `None` until the load lands —
     /// the hint shows [`SaveHint::Pending`] rather than guessing "save new".
     existing: Option<Vec<String>>,
 }

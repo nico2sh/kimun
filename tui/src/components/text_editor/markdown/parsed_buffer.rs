@@ -21,7 +21,7 @@ use std::ops::Range;
 /// The parse is line-shaped and pulldown wants `&str`, so the rows have to exist
 /// somewhere. Once per full parse, which is already O(buffer) — not once per
 /// keystroke, which is what this crate's whole design is about avoiding.
-fn rows_of(text: &ropetext::Text) -> Vec<String> {
+fn rows_of(text: &crate::ropetext::Text) -> Vec<String> {
     text.lines().map(|line| line.to_string()).collect()
 }
 
@@ -51,7 +51,7 @@ pub struct ParsedBuffer {
     /// the current row's deltas before being stored). Counts ONLY
     /// constructs that CommonMark allows to extend across blank rows
     /// (List, BlockQuote, IndentedCode, HtmlBlock — see
-    /// [`is_lazy_continuable_tag`]). Fenced code, Paragraph, Heading
+    /// `is_lazy_continuable_tag`). Fenced code, Paragraph, Heading
     /// are NOT counted because their parse state is reset at blank
     /// rows or single-row terminators.
     ///
@@ -74,7 +74,7 @@ impl ParsedBuffer {
     /// inline; three short O(n) post-passes (list-continuation,
     /// blockquote-depth, setext-underline) refine the result. No second
     /// invocation of the pulldown parser.
-    pub fn parse(text: &ropetext::Text) -> ParsedBuffer {
+    pub fn parse(text: &crate::ropetext::Text) -> ParsedBuffer {
         Self::parse_lines(&rows_of(text))
     }
 
@@ -710,7 +710,7 @@ impl ParsedBuffer {
     /// runs on a background tokio task. Render produces unstyled
     /// markdown for one frame until the async result is installed
     /// via `install_full_parse`.
-    pub fn placeholder(text: &ropetext::Text) -> ParsedBuffer {
+    pub fn placeholder(text: &crate::ropetext::Text) -> ParsedBuffer {
         Self::placeholder_lines(&rows_of(text))
     }
 
@@ -758,7 +758,7 @@ impl ParsedBuffer {
     /// The returned `reset_boundaries` are in slice-local index space
     /// (`0..range.len()`); `splice` shifts them by `range.start` when
     /// merging into the parent buffer's boundary set.
-    pub fn parse_range(text: &ropetext::Text, range: Range<usize>) -> ParsedBuffer {
+    pub fn parse_range(text: &crate::ropetext::Text, range: Range<usize>) -> ParsedBuffer {
         // Only the range's rows. This built every row of the note and then threw
         // all but `range` away — on the incremental path, which runs per
         // keystroke, so a widened window of a dozen rows cost a full copy of the

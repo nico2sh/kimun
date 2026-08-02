@@ -6,8 +6,8 @@
 //! precisely because it is *not* a public interface.
 
 use super::*;
+use crate::ropetext::Text;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ropetext::Text;
 
 fn key(c: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
@@ -1585,7 +1585,7 @@ fn replace_backspace_removes_appended_char() {
 
 fn at_after(keys: &[char], lines: &[&str], from: (usize, usize)) -> (usize, usize) {
     let mut e = VimEngine::default();
-    let mut t = RopeBuffer::new(ropetext::Text::from(lines.join("\n").as_str()));
+    let mut t = RopeBuffer::new(crate::ropetext::Text::from(lines.join("\n").as_str()));
     t.jump_to(from.0, from.1);
     for key_char in keys {
         e.handle_key(&key(*key_char), &mut t);

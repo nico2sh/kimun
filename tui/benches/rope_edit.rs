@@ -8,7 +8,7 @@
 //! should not scale with the note at all.
 
 use criterion::{BatchSize, Criterion, black_box, criterion_group, criterion_main};
-use ropetext::{Column, EditBuffer, Text};
+use kimun_notes::ropetext::{Column, EditBuffer, Text};
 
 /// The same corpus `benches/layout.rs` uses, so the two files' numbers describe
 /// the same note.

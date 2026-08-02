@@ -445,7 +445,10 @@ impl FindBar {
         // This replaced a guard that read `let Some(x) = Some(x)` — a tautology
         // left behind when `Jump` stopped taking a `u16`, checking nothing.
         let text = buf.text().clone();
-        let addressable = |col: usize| text.position(row, ropetext::Column::new(col)).is_some();
+        let addressable = |col: usize| {
+            text.position(row, crate::ropetext::Column::new(col))
+                .is_some()
+        };
         if !addressable(start_col) || !addressable(end_col) {
             return;
         }

@@ -492,7 +492,7 @@ fn a_click_on_the_revealed_row_lands_where_it_was_clicked() {
     use kimun_notes::components::text_editor::markdown::{MarkdownSpanner, ParsedBuffer};
 
     let line = "see [docs](url) here";
-    let buf = ParsedBuffer::parse(&ropetext::Text::from(line));
+    let buf = ParsedBuffer::parse(&kimun_notes::ropetext::Text::from(line));
     let parsed = &buf.lines[0];
     let caret = Some(8); // inside the link, so the row reveals raw
 

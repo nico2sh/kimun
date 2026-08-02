@@ -1,7 +1,12 @@
-//! `kimun_server_client` — the component inside Kimün that owns every dealing with
-//! the RAG server: connection/capability probing, pushing note changes, and
-//! hash-diff reconciliation (see CONTEXT.md "RAG client", adr/0018–0021). Core
-//! stays network-free; it feeds this crate only through the [`observer`] seam.
+//! The component inside Kimün that owns every dealing with the RAG server:
+//! connection/capability probing, pushing note changes, and hash-diff
+//! reconciliation (see CONTEXT.md "RAG client", adr/0018–0021). Core stays
+//! network-free; it feeds this module only through the [`observer`] seam.
+//!
+//! Published as the `kimun_server_client` crate until ADR-0042 folded it in.
+//! Like the `ropetext` module, it stays self-contained: nothing here may name
+//! `crate::` outside `crate::server_client::`, checked in CI. `kimun_core` is
+//! the one kimün dependency it keeps, and it would keep it as a crate too.
 
 use std::collections::HashMap;
 use std::time::Duration;

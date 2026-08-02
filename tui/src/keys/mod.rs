@@ -231,7 +231,7 @@ impl KeyBindings {
 }
 
 /// Canonical default combo for [`ActionShortcuts::Quit`]. Sourced once so the
-/// deserialize safety net and [`crate::settings::default_keybindings`] can't
+/// deserialize safety net and `settings::default_keybindings` can't
 /// drift.
 pub fn default_quit_combo() -> KeyCombo {
     KeyCombo::new(KeyModifiers::new().and_ctrl(), KeyStrike::KeyQ)

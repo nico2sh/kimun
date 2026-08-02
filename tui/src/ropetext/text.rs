@@ -6,7 +6,7 @@ use std::fmt;
 use ropey::{Rope, RopeSlice};
 use unicode_segmentation::{GraphemeCursor, GraphemeIncomplete, UnicodeSegmentation};
 
-use crate::position::{Column, Position, Revision, Span};
+use crate::ropetext::position::{Column, Position, Revision, Span};
 
 /// A text, as a value.
 ///

@@ -17,7 +17,7 @@
 use std::ops::Range;
 use std::sync::Arc;
 
-use kimun_server_client::RagClient;
+use crate::server_client::RagClient;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};

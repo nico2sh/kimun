@@ -398,8 +398,8 @@ pub struct TextEditorComponent {
     search_needles: Vec<String>,
     full_parse_tx: tokio::sync::mpsc::UnboundedSender<(u64, ParsedBuffer)>,
     full_parse_rx: tokio::sync::mpsc::UnboundedReceiver<(u64, ParsedBuffer)>,
-    layout_tx: tokio::sync::mpsc::UnboundedSender<(u64, ropetext::Layout)>,
-    layout_rx: tokio::sync::mpsc::UnboundedReceiver<(u64, ropetext::Layout)>,
+    layout_tx: tokio::sync::mpsc::UnboundedSender<(u64, crate::ropetext::Layout)>,
+    layout_rx: tokio::sync::mpsc::UnboundedReceiver<(u64, crate::ropetext::Layout)>,
     /// `AppTx` clone bound the first time `handle_input` runs, so the
     /// spawned full-parse/full-wrap tasks can post `AppEvent::Redraw` on
     /// completion without waiting for the next user keystroke.
@@ -582,10 +582,10 @@ impl TextEditorComponent {
     /// For the Nvim backend, returns an empty slice — use `get_text()` instead,
     /// which reads from the snapshot.
     /// The open note's text. Empty for the nvim backend, which owns its own.
-    pub fn text(&self) -> ropetext::Text {
+    pub fn text(&self) -> crate::ropetext::Text {
         match &self.backend {
             BackendState::Textarea(tb) => tb.ta.text().clone(),
-            BackendState::Nvim(_) => ropetext::Text::new(),
+            BackendState::Nvim(_) => crate::ropetext::Text::new(),
         }
     }
 
@@ -646,7 +646,7 @@ impl TextEditorComponent {
         }
         match &mut self.backend {
             BackendState::Textarea(tb) => {
-                tb.ta.replace(ropetext::Text::from(text.as_str()));
+                tb.ta.replace(crate::ropetext::Text::from(text.as_str()));
             }
             BackendState::Nvim(nvim) => {
                 nvim.set_text(&text);
@@ -1008,7 +1008,7 @@ impl TextEditorComponent {
     }
 
     /// Inserts `text` at the cursor, replacing any active selection. Routes
-    /// through `nvim_paste` on the Nvim backend (delegates to [`paste_text`]
+    /// through `nvim_paste` on the Nvim backend (delegates to [`Self::paste_text`]
     /// for that case — URL-wrap is a no-op when nothing in the supplied text
     /// matches `linkable_url`, so the two paths are equivalent on Nvim).
     pub fn insert_at_cursor(&mut self, text: &str, tx: &AppTx) {
@@ -2281,7 +2281,7 @@ impl Component for TextEditorComponent {
             // rather than a copy of the note — where this used to clone every
             // row.
             let text = match &view_lines {
-                Some(lines) => ropetext::Text::from(lines.join("\n").as_str()),
+                Some(lines) => crate::ropetext::Text::from(lines.join("\n").as_str()),
                 None => snap.text.clone(),
             };
             let tx = self.full_parse_tx.clone();
@@ -2305,10 +2305,10 @@ impl Component for TextEditorComponent {
             let redraw = self.redraw_tx.clone();
             self.layout_task.spawn(async move {
                 let hints = view::row_hints(&job.rendered_cache, &job.gutter_insets);
-                let layout = ropetext::Layout::compute(
+                let layout = crate::ropetext::Layout::compute(
                     &job.text,
                     job.width,
-                    ropetext::Metrics::default(),
+                    crate::ropetext::Metrics::default(),
                     &hints,
                 );
                 let _ = tx.send((job.generation, layout));
