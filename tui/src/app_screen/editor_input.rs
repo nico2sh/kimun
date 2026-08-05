@@ -50,7 +50,7 @@ pub struct InputCtx {
     /// gets re-decided further down, once per event kind.
     pub claim: EditorClaim,
     /// This mouse press completes a double-click in the editor column — the
-    /// mouse's way of following a link (`adr/0043`).
+    /// mouse's way of following a link (see `click_run`).
     ///
     /// An *input* to classification, not an output: it picks between
     /// [`EditorIntent::Mouse`] and [`EditorIntent::FollowLink`], so no intent
@@ -107,7 +107,7 @@ pub enum EditorIntent {
     /// Follow the **follow target** under the editor cursor — a link, or a
     /// label whose query is run. Reached two ways, deliberately one intent:
     /// the bound `FollowLink` shortcut, and a double-click, whose first press
-    /// put the cursor where the second one asks about (`adr/0043`).
+    /// put the cursor where the second one asks about (see `click_run`).
     FollowLink,
     /// Feed the key to the pending leader sequence.
     LeaderKey(KeyEvent),
@@ -233,8 +233,6 @@ pub fn classify(event: &InputEvent, bindings: &KeyBindings, ctx: &InputCtx) -> C
 /// which routes to the focused panel, which is the editor, which routes to its
 /// holder. The claim decides *ownership*; the holder decides behaviour.
 fn apply_claim(intent: EditorIntent, event: &InputEvent, claim: EditorClaim) -> EditorIntent {
-    use ratatui::crossterm::event::MouseEventKind;
-
     if claim == EditorClaim::None {
         return intent;
     }
@@ -271,13 +269,13 @@ fn apply_claim(intent: EditorIntent, event: &InputEvent, claim: EditorClaim) -> 
 
         // Ctrl+Enter must not follow a link out of the bar, so a key-origin
         // follow is delivered to it. A mouse-origin one carries the same intent
-        // but is a *click*, and the bar swallows clicks (see the `Mouse` arm
-        // below): it has no way to represent a cursor move, which is what the
-        // press underneath the follow would be. Same intent, different origin,
-        // different answer — hence the match on the event rather than a shared
-        // arm with the paste tiers.
+        // but is a *press* wearing a different name, so it degrades to whatever
+        // a plain press does under this claim — swallowed by the bar, delivered
+        // normally under the popup, which wants the click that dismisses it.
+        // Abandoning the follow is the point: a holder is mid-edit, and the
+        // link under the pointer is text it is still being typed into.
         EditorIntent::FollowLink => match event {
-            InputEvent::Mouse(_) if find_bar => EditorIntent::Consume,
+            InputEvent::Mouse(_) => claimed_mouse(event, find_bar),
             _ if find_bar => deliver,
             _ => intent,
         },
@@ -296,24 +294,34 @@ fn apply_claim(intent: EditorIntent, event: &InputEvent, claim: EditorClaim) -> 
             _ => intent,
         },
 
-        // Scrolling moves the viewport, not the cursor, so reading elsewhere
-        // mid-search stays available. Clicks and drags would move the cursor
-        // off the current match and overwrite the selection marking it.
-        EditorIntent::Mouse => match event {
-            InputEvent::Mouse(m)
-                if find_bar
-                    && !matches!(
-                        m.kind,
-                        MouseEventKind::ScrollUp
-                            | MouseEventKind::ScrollDown
-                            | MouseEventKind::ScrollLeft
-                            | MouseEventKind::ScrollRight
-                    ) =>
-            {
-                EditorIntent::Consume
-            }
-            _ => intent,
-        },
+        EditorIntent::Mouse => claimed_mouse(event, find_bar),
+    }
+}
+
+/// What a claim does to a press. The one policy, so a follow that arrived as a
+/// click cannot drift away from the click it is.
+///
+/// Scrolling moves the viewport, not the cursor, so reading elsewhere
+/// mid-search stays available. Clicks and drags would move the cursor off the
+/// current match and overwrite the selection marking it — the find bar has no
+/// way to represent either. Every other holder takes the press normally.
+fn claimed_mouse(event: &InputEvent, find_bar: bool) -> EditorIntent {
+    use ratatui::crossterm::event::MouseEventKind;
+
+    match event {
+        InputEvent::Mouse(m)
+            if find_bar
+                && !matches!(
+                    m.kind,
+                    MouseEventKind::ScrollUp
+                        | MouseEventKind::ScrollDown
+                        | MouseEventKind::ScrollLeft
+                        | MouseEventKind::ScrollRight
+                ) =>
+        {
+            EditorIntent::Consume
+        }
+        _ => EditorIntent::Mouse,
     }
 }
 
@@ -830,7 +838,7 @@ mod tests {
         );
     }
 
-    // ── Following a link with the mouse (adr/0043) ───────────────────────────
+    // ── Following a link with the mouse (see `click_run`) ───────────────────
 
     /// A press classifies as an ordinary mouse event whatever it lands on.
     /// Following is the *second* press of a pair, never the first — this is
@@ -902,6 +910,26 @@ mod tests {
                 fallback: PanelFallback::None
             },
             "but a follow that arrived as a key is delivered to the bar"
+        );
+    }
+
+    /// The claim filter has three holders, not two. A mouse-origin follow
+    /// degrades to whatever a plain press does under the holder — which for the
+    /// popup means being delivered, so it can dismiss itself and place the
+    /// cursor. Consuming it instead left the popup open over a note that had
+    /// navigated away.
+    #[test]
+    fn an_autocomplete_claim_turns_a_double_click_back_into_a_press() {
+        let popup = InputCtx {
+            claim: EditorClaim::Autocomplete,
+            double_click: true,
+            ..ctx()
+        };
+        assert_eq!(classify_it(&press(), &popup).intent, EditorIntent::Mouse);
+        assert_eq!(
+            classify_it(&key(KeyCode::Char('n'), KeyModifiers::CONTROL), &popup).intent,
+            EditorIntent::FollowLink,
+            "the popup does not own the keyboard follow"
         );
     }
 

@@ -803,6 +803,17 @@ impl TextEditorComponent {
         self.backend.space_leads()
     }
 
+    /// Whether a press in this editor moves the cursor to the cell under it.
+    ///
+    /// False on the **nvim** backend, where the terminal and nvim own the
+    /// mouse: [`Self::handle_mouse`] returns `NotConsumed` before any
+    /// `jump_to`. Anything that treats a click as pointing *at* something —
+    /// following a link, most obviously — has to ask this first, or it reads a
+    /// cursor the click never moved.
+    pub fn mouse_drives_cursor(&self) -> bool {
+        self.backend.is_textarea()
+    }
+
     /// Which editor-internal surface currently holds input.
     ///
     /// The find bar outranks the popup because opening the bar closes it
@@ -2072,7 +2083,7 @@ impl Component for TextEditorComponent {
                     self.refresh_autocomplete_if_open();
                 }
                 // A press only places the cursor. Following is a double-click
-                // (`adr/0043`) and is not decided here: it classifies to
+                // (see `app_screen::click_run`) and is not decided here: it classifies to
                 // `EditorIntent::FollowLink` — the same intent Ctrl+N produces
                 // — and the editor screen executes it against this cursor.
                 // The press that placed the cursor is the *first* of the pair,
@@ -3537,7 +3548,7 @@ mod tests {
     }
 
     #[test]
-    fn link_at_cursor_returns_label_when_cursor_on_hashtag() {
+    fn follow_target_at_cursor_returns_label_when_cursor_on_hashtag() {
         let mut editor = make_editor();
         editor.set_text("see #rust now".to_string());
         // "#rust" starts at col 4, ends at col 9 (5 chars). Place cursor at col 5 (inside).
@@ -3549,7 +3560,7 @@ mod tests {
     }
 
     #[test]
-    fn link_at_cursor_returns_label_at_hash_char() {
+    fn follow_target_at_cursor_returns_label_at_hash_char() {
         let mut editor = make_editor();
         editor.set_text("see #rust now".to_string());
         // Cursor exactly on '#' (col 4).
@@ -3561,7 +3572,7 @@ mod tests {
     }
 
     #[test]
-    fn link_at_cursor_returns_none_outside_hashtag() {
+    fn follow_target_at_cursor_returns_none_outside_hashtag() {
         let mut editor = make_editor();
         editor.set_text("see #rust now".to_string());
         // Cursor at col 0 ("s") — not on a hashtag.
@@ -3570,7 +3581,7 @@ mod tests {
     }
 
     #[test]
-    fn link_at_cursor_returns_note_for_wikilink() {
+    fn follow_target_at_cursor_returns_link_for_wikilink() {
         let mut editor = make_editor();
         editor.set_text("open [[my note]] please".to_string());
         // "my note" is inside [[…]]; cursor at col 7 (inside link text).
@@ -3578,14 +3589,14 @@ mod tests {
         let result = editor.follow_target_at_cursor();
         assert!(
             matches!(result, Some(FollowTarget::Link(_))),
-            "expected Note variant, got {result:?}"
+            "expected Link variant, got {result:?}"
         );
     }
 
     // ── F5: follow_target_at_cursor prioritises Link over Label ────────────────────────
 
     #[test]
-    fn link_at_cursor_returns_note_for_markdown_link_with_fragment() {
+    fn follow_target_at_cursor_returns_link_for_markdown_link_with_fragment() {
         // "[see docs](#section)" — cursor on `#section` should return Note, not Label.
         // After F3, the Label inside a link is never emitted, so the bug is
         // structurally prevented. This test guards F5: even if a future edit
@@ -3599,7 +3610,7 @@ mod tests {
         let result = editor.follow_target_at_cursor();
         assert!(
             matches!(result, Some(FollowTarget::Link(_))),
-            "expected Note variant for markdown link fragment, got {result:?}"
+            "expected Link variant for markdown link fragment, got {result:?}"
         );
     }
 

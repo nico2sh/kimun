@@ -1,8 +1,27 @@
 //! When two clicks are one gesture.
 //!
-//! Following a link with the mouse is a double-click rather than a
-//! modifier-click, because no modifier-click survives all three platforms —
-//! see `adr/0043`. This is the rule for what counts as one.
+//! Following a link with the mouse is a double-click, not the Ctrl+click every
+//! IDE uses, because no modifier-click survives all three platforms:
+//!
+//! - **Cmd+click cannot exist.** xterm mouse reporting encodes three modifier
+//!   bits — shift, alt, control. There is no super bit for a terminal to set
+//!   or a parser to read, and macOS terminals consume Cmd+click for their own
+//!   URL opening anyway.
+//! - **Ctrl+click is macOS's right-click**, synthesised by Terminal.app and
+//!   iTerm2 *before* mouse reporting. The application receives a right press,
+//!   which kimün already answers with the note context menu.
+//! - **Shift+click never arrives.** Most terminals use shift to bypass
+//!   application mouse reporting entirely.
+//! - **Alt+click** works on Linux and Windows, and fails silently on macOS
+//!   unless the user has turned on "Use Option as Meta key".
+//!
+//! A double-click needs no modifier bit and no terminal cooperation beyond the
+//! mouse reporting kimün already requires, so it behaves the same everywhere.
+//! Nothing is lost by not having a chord: the bound `FollowLink` shortcut
+//! (Ctrl-N by default) follows from the keyboard, and the footer advertises it
+//! whenever the cursor sits on a link.
+//!
+//! This module is the rule for what counts as one gesture.
 //!
 //! Two conditions, and the second is why the first can be strict:
 //!
@@ -30,7 +49,7 @@ use std::time::{Duration, Instant};
 /// Shorter than `TypingRun::IDLE`, which measures something else: that is a
 /// *pause* (how long before a human stops feeling they are still typing), this
 /// is a *deliberate burst*. macOS and Windows default to 500ms, GNOME to 400ms.
-pub const WINDOW: Duration = Duration::from_millis(400);
+const WINDOW: Duration = Duration::from_millis(400);
 
 /// The clicks currently forming one gesture.
 #[derive(Debug, Default)]
