@@ -81,7 +81,7 @@ pub struct EditorScreen {
     /// The leader-key sequence state machine (Ctrl-G gateway, spec §8a).
     leader: LeaderEngine,
     /// The mouse presses currently forming one gesture, so a double-click in
-    /// the editor can follow a link (`adr/0043`). Fed before each
+    /// the editor can follow a link (see `click_run`). Fed before each
     /// classification; its answer reaches the classifier as `InputCtx`.
     clicks: crate::app_screen::click_run::ClickRun,
     /// App event sender, captured on enter — render-side async kicks (the
@@ -706,21 +706,39 @@ impl EditorScreen {
     }
 
     /// Feed an event to the click run and report whether it completes a
-    /// double-click in the editor column.
+    /// double-click on the note buffer.
     ///
-    /// Only two things happen here: a non-mouse event ends the run, and the
-    /// screen answers "did this land in the editor" — the one question a
-    /// `ClickRun` cannot answer for itself. Which *mouse* events end a run is
-    /// `ClickRun`'s policy, and lives there so it can be tested against a real
-    /// event sequence.
+    /// The screen answers only what a `ClickRun` cannot answer for itself:
+    /// whether the event is a mouse event at all, whether an overlay is in the
+    /// way, and whether the press landed on the note buffer. Which *mouse*
+    /// events end a run is `ClickRun`'s policy and lives there, where it can be
+    /// tested against a real event sequence.
+    ///
+    /// An open overlay ends the run rather than merely failing to extend it.
+    /// The classifier already gives an overlay precedence, so no follow can
+    /// fire *while* one is open — but a modal is drawn over the editor column,
+    /// and a `SearchList` activates a row on a click-click of its own. Without
+    /// ending it here, those presses stay in the run and pair with the first
+    /// press that lands after the overlay closes.
     fn track_click(&mut self, event: &InputEvent) -> bool {
         let InputEvent::Mouse(mouse) = event else {
             self.clicks.end();
             return false;
         };
-        let in_editor = self.panels.is_editor_cell(mouse.column, mouse.row);
+        if self.overlays.is_open() {
+            self.clicks.end();
+            return false;
+        }
+        // Only a press consults the hit-test; `observe` discards the flag for
+        // every other kind. Motion is the reason to care — any-event tracking
+        // delivers one per cell of travel, and this would otherwise scan the
+        // column rects twice for each.
+        let on_buffer = matches!(
+            mouse.kind,
+            ratatui::crossterm::event::MouseEventKind::Down(_)
+        ) && self.panels.is_note_buffer_cell(mouse.column, mouse.row);
         self.clicks
-            .observe(mouse, in_editor, std::time::Instant::now())
+            .observe(mouse, on_buffer, std::time::Instant::now())
     }
 
     /// Apply a classification: pre-effects first (footer chord flash, leader
@@ -782,8 +800,20 @@ impl EditorScreen {
                 }
             }
             EditorIntent::FollowLink => {
-                self.follow_link_at_cursor(tx);
-                EventState::Consumed
+                if self.follow_link_at_cursor(tx) {
+                    EventState::Consumed
+                } else if matches!(event, InputEvent::Mouse(_)) {
+                    // Nothing under the cursor to follow, and this arrived as a
+                    // press. Swallowing it would make the second click of a
+                    // double a silent no-op anywhere but on a link, and would
+                    // claim the gesture buffer-wide for a follow that did not
+                    // happen. Hand it back to the panels as the press it is —
+                    // the same fallback-on-runtime-outcome shape `ImageProbe`
+                    // uses when the clipboard turns out to hold no image.
+                    self.execute_intent(EditorIntent::Mouse, event, tx)
+                } else {
+                    EventState::Consumed
+                }
             }
             EditorIntent::LeaderKey(key) => self.handle_leader_key(&key, tx),
             EditorIntent::LeaderStart => {
@@ -1624,27 +1654,34 @@ impl EditorScreen {
         self.panels.focus(PanelKind::Editor);
     }
 
-    /// Follow the wikilink / tag under the editor cursor (FollowLink action,
+    /// Follow the **follow target** under the editor cursor (FollowLink action,
     /// Ctrl+Enter on kitty-protocol terminals).
-    fn follow_link_at_cursor(&mut self, tx: &AppTx) {
+    ///
+    /// Returns whether anything was actually followed, so a caller that only
+    /// *guessed* there was something there can fall back. A double-click is
+    /// exactly that guess: the classifier cannot hit-test the buffer, so it
+    /// asks and lets the answer decide.
+    fn follow_link_at_cursor(&mut self, tx: &AppTx) -> bool {
         use crate::components::text_editor::FollowTarget;
         // In the attachment view, FollowLink (Ctrl+N) opens the attachment with
         // the OS default program rather than following a link (there is none).
         if self.panels.is_showing_attachment() {
             self.open_attachment_externally(tx);
-            return;
+            return true;
         }
         let Some(editor) = self.panels.editor_mut() else {
-            return;
+            return false;
         };
         match editor.follow_target_at_cursor() {
             Some(FollowTarget::Link(target)) => {
                 tx.send(AppEvent::FollowLink(target)).ok();
+                true
             }
             Some(FollowTarget::Label(name)) => {
                 tx.send(AppEvent::FollowLabel(name)).ok();
+                true
             }
-            None => {}
+            None => false,
         }
     }
 

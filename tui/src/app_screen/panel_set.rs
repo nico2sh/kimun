@@ -551,14 +551,28 @@ impl PanelSet {
         }
     }
 
-    /// Whether a screen cell lands in the editor column proper.
+    /// Whether a press on this cell points *at* somewhere in the note buffer.
     ///
-    /// Not on the drawer divider, which [`Self::handle_mouse`] claims before
-    /// any panel sees it — a press there never changes focus, so the click
-    /// run must not record it either (it would pair against stale focus and
-    /// follow a link the pointer was nowhere near).
-    pub fn is_editor_cell(&self, column: u16, row: u16) -> bool {
-        !self.on_divider(column, row)
+    /// Three conditions, and only the first is about geometry:
+    ///
+    /// - **In the editor column, off the divider.** A divider press is claimed
+    ///   by [`Self::handle_mouse`] before any panel sees it and never changes
+    ///   focus, so treating it as an editor press pairs it against stale focus.
+    /// - **The editor area is showing the note.** It may instead hold an
+    ///   attachment preview or the Ask workspace, neither of which has a cursor
+    ///   or a link under the pointer — an attachment would launch an external
+    ///   program and Ask would swallow the press.
+    /// - **The mouse drives the cursor.** False under the **nvim** backend,
+    ///   where a press never moves the cursor at all, so anything reading the
+    ///   cursor afterwards reads wherever the *keyboard* left it.
+    ///
+    /// The geometry alone was the original gate, and each of the other two was
+    /// a defect before it was a condition. Callers that only want the column
+    /// should not reuse this.
+    pub fn is_note_buffer_cell(&self, column: u16, row: u16) -> bool {
+        matches!(self.content, EditorAreaContent::Note)
+            && self.editor.mouse_drives_cursor()
+            && !self.on_divider(column, row)
             && kind_at(&self.column_rects, column, row) == Some(PanelKind::Editor)
     }
 
@@ -778,6 +792,60 @@ mod tests {
             &panels.order.visible_in_order(),
             Rect::new(0, 0, 120, 40),
             panels.drawer_width,
+        );
+    }
+
+    /// A cell in the middle of the editor column, as laid out.
+    fn editor_cell(panels: &PanelSet) -> (u16, u16) {
+        let (_, rect) = panels
+            .column_rects
+            .iter()
+            .find(|(kind, _)| *kind == PanelKind::Editor)
+            .expect("the editor is always visible");
+        (rect.x + rect.width / 2, rect.y + rect.height / 2)
+    }
+
+    /// The gate is not merely geometric. It read as "the editor column" once,
+    /// and a double-click in the Ask workspace was swallowed while one in an
+    /// attachment preview spawned an external viewer — the same cell, three
+    /// different things underneath it.
+    #[tokio::test]
+    async fn the_note_buffer_gate_tracks_what_the_editor_area_shows() {
+        let mut panels = make_panel_set().await;
+        lay_out(&mut panels);
+        let (col, row) = editor_cell(&panels);
+        assert!(
+            panels.is_note_buffer_cell(col, row),
+            "the note buffer is what the gate is for"
+        );
+
+        panels.show_ask();
+        assert!(
+            !panels.is_note_buffer_cell(col, row),
+            "the Ask workspace has no cursor to point at"
+        );
+
+        panels.hide_ask();
+        assert!(panels.is_note_buffer_cell(col, row), "and back again");
+    }
+
+    /// A divider press is claimed before any panel sees it and never changes
+    /// focus, so it must not count as pointing at the buffer either.
+    #[tokio::test]
+    async fn the_note_buffer_gate_rejects_the_divider_and_other_columns() {
+        let mut panels = make_panel_set().await;
+        lay_out(&mut panels);
+        let (_, drawer) = panels
+            .column_rects
+            .iter()
+            .find(|(kind, _)| *kind == PanelKind::Drawer)
+            .expect("the drawer is visible by default");
+        let (divider_col, row) = (drawer.right().saturating_sub(1), drawer.y + 1);
+        assert!(panels.on_divider(divider_col, row), "precondition");
+        assert!(!panels.is_note_buffer_cell(divider_col, row));
+        assert!(
+            !panels.is_note_buffer_cell(drawer.x + 1, row),
+            "and the drawer is not the editor"
         );
     }
 
