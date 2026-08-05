@@ -1,5 +1,6 @@
 pub mod ask;
 pub mod browse;
+pub mod click_run;
 pub mod doc_meta;
 pub mod editor;
 pub mod editor_input;

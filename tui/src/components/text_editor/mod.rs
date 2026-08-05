@@ -242,11 +242,17 @@ use crate::keys::action_shortcuts::TextAction;
 use crate::settings::AppSettings;
 use crate::settings::themes::Theme;
 
-/// The resolved target of a cursor follow-link action.
+/// What following resolves to — the **follow target** under the cursor.
+///
+/// Named for the action rather than the destination, because the destination is
+/// not known here: a `Link` is still the raw string as written in the note, and
+/// only `EditorScreen::follow_link` decides whether it names a vault note, an
+/// external URL, or an attachment. Wider than a **note link**, which is
+/// note→note only.
 #[derive(Debug, Clone, PartialEq)]
-pub enum LinkTarget {
-    /// A note reference (wiki-link or markdown link) with the raw target string.
-    Note(String),
+pub enum FollowTarget {
+    /// A wiki-link or markdown link, with the raw target string.
+    Link(String),
     /// A hashtag label with the name **without** the leading `#`.
     Label(String),
 }
@@ -813,7 +819,7 @@ impl TextEditorComponent {
 
     /// Returns the link or label target under the cursor, or `None` if the
     /// cursor is not inside a wikilink, markdown link, or hashtag span.
-    pub fn link_at_cursor(&self) -> Option<LinkTarget> {
+    pub fn follow_target_at_cursor(&self) -> Option<FollowTarget> {
         let (_row, col, line) = match &self.backend {
             BackendState::Textarea(tb) => {
                 let (row, col) = cursor_tuple(&tb.ta);
@@ -834,7 +840,7 @@ impl TextEditorComponent {
             .into_iter()
             .find(|s| s.start <= col && col < s.end)
         {
-            return Some(LinkTarget::Note(span.target));
+            return Some(FollowTarget::Link(span.target));
         }
 
         // Fallback: check for a hashtag label (via the markdown parser).
@@ -854,7 +860,7 @@ impl TextEditorComponent {
                     .take(e.end_char - e.start_char)
                     .collect();
                 let name = span.trim_start_matches('#').to_string();
-                LinkTarget::Label(name)
+                FollowTarget::Label(name)
             })
     }
 
@@ -2065,28 +2071,13 @@ impl Component for TextEditorComponent {
                 } else if cursor_before != cursor_after {
                     self.refresh_autocomplete_if_open();
                 }
-                // Spec §10: a left click landing on a wikilink follows it and
-                // a click on a #tag runs its query. The cursor has already
-                // been placed by `handle_mouse`, so `link_at_cursor` reads
-                // the clicked position.
-                if result == EventState::Consumed
-                    && matches!(
-                        mouse.kind,
-                        ratatui::crossterm::event::MouseEventKind::Down(
-                            ratatui::crossterm::event::MouseButton::Left
-                        )
-                    )
-                {
-                    match self.link_at_cursor() {
-                        Some(LinkTarget::Note(target)) => {
-                            tx.send(AppEvent::FollowLink(target)).ok();
-                        }
-                        Some(LinkTarget::Label(name)) => {
-                            tx.send(AppEvent::FollowLabel(name)).ok();
-                        }
-                        None => {}
-                    }
-                }
+                // A press only places the cursor. Following is a double-click
+                // (`adr/0043`) and is not decided here: it classifies to
+                // `EditorIntent::FollowLink` — the same intent Ctrl+N produces
+                // — and the editor screen executes it against this cursor.
+                // The press that placed the cursor is the *first* of the pair,
+                // which is why one path can serve both.
+
                 // Plan 3 Task 5: reconcile the vim engine mode from whether the
                 // textarea selection is live after the mouse event. A drag that
                 // creates a selection enters Visual; a click that clears one
@@ -2422,8 +2413,8 @@ impl Component for TextEditorComponent {
         // Cursor-context hints come first: what the cursor is on decides the
         // most relevant action (spec §5.2).
         let mut hints: Vec<(String, String)> = Vec::new();
-        match self.link_at_cursor() {
-            Some(LinkTarget::Note(_)) => {
+        match self.follow_target_at_cursor() {
+            Some(FollowTarget::Link(_)) => {
                 if let Some(k) = self
                     .key_bindings
                     .first_combo_for(&ActionShortcuts::FollowLink)
@@ -2431,7 +2422,7 @@ impl Component for TextEditorComponent {
                     hints.push((k, "follow link".to_string()));
                 }
             }
-            Some(LinkTarget::Label(_)) => {
+            Some(FollowTarget::Label(_)) => {
                 if let Some(k) = self
                     .key_bindings
                     .first_combo_for(&ActionShortcuts::FollowLink)
@@ -3534,7 +3525,7 @@ mod tests {
         );
     }
 
-    // ── link_at_cursor: label detection ──────────────────────────────────────
+    // ── follow_target_at_cursor: label detection ──────────────────────────────────────
 
     /// Helper: place cursor at a specific column on the first row.
     fn place_cursor_at_col(editor: &mut TextEditorComponent, col: usize) {
@@ -3552,8 +3543,8 @@ mod tests {
         // "#rust" starts at col 4, ends at col 9 (5 chars). Place cursor at col 5 (inside).
         place_cursor_at_col(&mut editor, 5);
         assert_eq!(
-            editor.link_at_cursor(),
-            Some(LinkTarget::Label("rust".into())),
+            editor.follow_target_at_cursor(),
+            Some(FollowTarget::Label("rust".into())),
         );
     }
 
@@ -3564,8 +3555,8 @@ mod tests {
         // Cursor exactly on '#' (col 4).
         place_cursor_at_col(&mut editor, 4);
         assert_eq!(
-            editor.link_at_cursor(),
-            Some(LinkTarget::Label("rust".into())),
+            editor.follow_target_at_cursor(),
+            Some(FollowTarget::Label("rust".into())),
         );
     }
 
@@ -3575,7 +3566,7 @@ mod tests {
         editor.set_text("see #rust now".to_string());
         // Cursor at col 0 ("s") — not on a hashtag.
         place_cursor_at_col(&mut editor, 0);
-        assert_eq!(editor.link_at_cursor(), None);
+        assert_eq!(editor.follow_target_at_cursor(), None);
     }
 
     #[test]
@@ -3584,14 +3575,14 @@ mod tests {
         editor.set_text("open [[my note]] please".to_string());
         // "my note" is inside [[…]]; cursor at col 7 (inside link text).
         place_cursor_at_col(&mut editor, 7);
-        let result = editor.link_at_cursor();
+        let result = editor.follow_target_at_cursor();
         assert!(
-            matches!(result, Some(LinkTarget::Note(_))),
+            matches!(result, Some(FollowTarget::Link(_))),
             "expected Note variant, got {result:?}"
         );
     }
 
-    // ── F5: link_at_cursor prioritises Link over Label ────────────────────────
+    // ── F5: follow_target_at_cursor prioritises Link over Label ────────────────────────
 
     #[test]
     fn link_at_cursor_returns_note_for_markdown_link_with_fragment() {
@@ -3605,9 +3596,9 @@ mod tests {
         // "#section" starts at byte/char offset 11 (after "[see docs](").
         let cursor = "[see docs](#sec".chars().count(); // col 15, inside #section
         place_cursor_at_col(&mut editor, cursor);
-        let result = editor.link_at_cursor();
+        let result = editor.follow_target_at_cursor();
         assert!(
-            matches!(result, Some(LinkTarget::Note(_))),
+            matches!(result, Some(FollowTarget::Link(_))),
             "expected Note variant for markdown link fragment, got {result:?}"
         );
     }

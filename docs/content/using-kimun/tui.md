@@ -102,7 +102,7 @@ Enter opens the selection (query matches stay highlighted in the editor until yo
 The editor renders Markdown styled in place — still plain editable source, no separate mode:
 
 - Headings bright/bold (H3 yellow), bold/italic styled, bullets dimmed, blockquotes get a `▏` bar, inline and fenced code get a code background
-- `[[wikilinks]]` blue and underlined, `#tags` colored — both **clickable** (click follows / runs the tag query; click again on the same spot to place the cursor for editing)
+- `[[wikilinks]]` blue and underlined, `#tags` colored — a single click places the cursor (so link text stays editable), a **double-click** follows the link / runs the tag query. `Ctrl+N` does the same from the keyboard
 - Task lists: `- [ ]` checkboxes accented, `- [x]` rows dimmed and struck through
 - The cursor line reveals raw markup for editing
 - An empty note shows a ghost tip (`Type to start · [[ to link · # to tag · Ctrl+G for commands`) that vanishes on the first keystroke
@@ -170,7 +170,8 @@ Full parity with the keyboard:
 | ------- | ------ |
 | Click | focus the panel / select the row |
 | Click the selected row again | open it |
-| Click a `[[link]]` / `#tag` in the editor | follow it / run the tag query |
+| Click in the editor | place the cursor |
+| Double-click a `[[link]]` / `#tag` in the editor | follow it / run the tag query (same as `Ctrl+N`) |
 | Right-click a file or note row | file-operations menu |
 | Right-click in the editor (no selection) | context menu for the open note |
 | Right-click in the editor (with selection) | copy the selection |
@@ -178,6 +179,8 @@ Full parity with the keyboard:
 | Click a breadcrumb segment | jump up the tree |
 | Click a rail cell / LINKS tab | switch view |
 | Scroll | scroll the pane under the cursor |
+
+Following a link is a double-click rather than `Ctrl`+click or `Cmd`+click because neither works in a terminal: the mouse protocol has no way to report `Cmd` at all, and macOS turns `Ctrl`+click into a right-click before Kimün ever sees it. A double-click behaves identically on Linux, macOS, and Windows.
 
 Capturing the mouse means your terminal's own gestures — middle-click paste, drag-to-select — are suppressed while Kimün runs. Hold `Shift` to borrow them back for one action, or set `mouse = false` to hand the mouse to your terminal entirely (every gesture above has a keyboard equivalent). See [Configuration → Mouse](@/getting-started/configuration.md#mouse).
 

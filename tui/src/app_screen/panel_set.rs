@@ -551,6 +551,17 @@ impl PanelSet {
         }
     }
 
+    /// Whether a screen cell lands in the editor column proper.
+    ///
+    /// Not on the drawer divider, which [`Self::handle_mouse`] claims before
+    /// any panel sees it — a press there never changes focus, so the click
+    /// run must not record it either (it would pair against stale focus and
+    /// follow a link the pointer was nowhere near).
+    pub fn is_editor_cell(&self, column: u16, row: u16) -> bool {
+        !self.on_divider(column, row)
+            && kind_at(&self.column_rects, column, row) == Some(PanelKind::Editor)
+    }
+
     /// The divider hit zone: the drawer's right border column (the cell
     /// between drawer content and editor).
     fn on_divider(&self, column: u16, row: u16) -> bool {
