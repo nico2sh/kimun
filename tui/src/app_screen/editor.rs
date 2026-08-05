@@ -708,37 +708,19 @@ impl EditorScreen {
     /// Feed an event to the click run and report whether it completes a
     /// double-click in the editor column.
     ///
-    /// Everything that is not a left press inside the editor ends the run: a
-    /// key, a paste, a drag, a scroll, a press on another panel or on the
-    /// divider. Two exceptions, both deliberate:
-    ///
-    /// - **Pointer motion does not.** `EnableMouseCapture` turns on any-event
-    ///   tracking, so `Moved` arrives for every pixel of travel — ending the
-    ///   run on those would mean no double-click ever completes. Requiring the
-    ///   same cell already handles drift.
-    /// - **A scroll does**, even though it moves no cursor: the viewport
-    ///   shifted, so the same cell now shows different text and a second press
-    ///   there would follow a link the user never saw.
+    /// Only two things happen here: a non-mouse event ends the run, and the
+    /// screen answers "did this land in the editor" — the one question a
+    /// `ClickRun` cannot answer for itself. Which *mouse* events end a run is
+    /// `ClickRun`'s policy, and lives there so it can be tested against a real
+    /// event sequence.
     fn track_click(&mut self, event: &InputEvent) -> bool {
-        use ratatui::crossterm::event::{MouseButton, MouseEventKind};
-
         let InputEvent::Mouse(mouse) = event else {
             self.clicks.end();
             return false;
         };
-        match mouse.kind {
-            MouseEventKind::Moved => false,
-            MouseEventKind::Down(MouseButton::Left)
-                if self.panels.is_editor_cell(mouse.column, mouse.row) =>
-            {
-                self.clicks
-                    .completes_double(mouse.column, mouse.row, std::time::Instant::now())
-            }
-            _ => {
-                self.clicks.end();
-                false
-            }
-        }
+        let in_editor = self.panels.is_editor_cell(mouse.column, mouse.row);
+        self.clicks
+            .observe(mouse, in_editor, std::time::Instant::now())
     }
 
     /// Apply a classification: pre-effects first (footer chord flash, leader
