@@ -14,7 +14,7 @@ use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 
 use crate::components::events::{AppEvent, AppTx};
-use crate::components::text_editor::LinkTarget;
+use crate::components::text_editor::FollowTarget;
 
 pub struct DocMeta {
     vault: Arc<NoteVault>,
@@ -113,12 +113,12 @@ impl DocMeta {
     /// screen's first on_enter) renders the target without a count.
     pub fn link_segment(
         &mut self,
-        link: Option<&LinkTarget>,
+        link: Option<&FollowTarget>,
         current_note: &VaultPath,
         tx: Option<&AppTx>,
     ) -> Option<String> {
         match link {
-            Some(LinkTarget::Note(target)) => {
+            Some(FollowTarget::Link(target)) => {
                 if self.link_meta.as_ref().map(|(t, _)| t.as_str()) != Some(target.as_str()) {
                     self.link_meta = Some((target.clone(), None));
                     if let Some(tx) = tx {
@@ -153,7 +153,7 @@ impl DocMeta {
                     None => None,
                 }
             }
-            Some(LinkTarget::Label(name)) => {
+            Some(FollowTarget::Label(name)) => {
                 self.link_meta = None;
                 Some(format!("→ #{name} · tag query"))
             }
@@ -268,7 +268,7 @@ mod tests {
         let (mut dm, _dir) = meta().await;
         let current = note("/a.md");
         let (tx, _rx) = unbounded_channel();
-        let target = LinkTarget::Note("b".to_string());
+        let target = FollowTarget::Link("b".to_string());
         // Cursor enters the link: target cached, no count yet.
         let seg = dm.link_segment(Some(&target), &current, Some(&tx));
         assert_eq!(seg.as_deref(), Some("→ b"));

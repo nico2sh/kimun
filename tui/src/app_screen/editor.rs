@@ -80,6 +80,10 @@ pub struct EditorScreen {
     ask: AskCoordinator,
     /// The leader-key sequence state machine (Ctrl-G gateway, spec §8a).
     leader: LeaderEngine,
+    /// The mouse presses currently forming one gesture, so a double-click in
+    /// the editor can follow a link (`adr/0043`). Fed before each
+    /// classification; its answer reaches the classifier as `InputCtx`.
+    clicks: crate::app_screen::click_run::ClickRun,
     /// App event sender, captured on enter — render-side async kicks (the
     /// link-affordance backlink fetch) need it where no `tx` is threaded.
     app_tx: Option<AppTx>,
@@ -158,6 +162,7 @@ impl EditorScreen {
             path,
             footer,
             leader: leader_engine,
+            clicks: Default::default(),
             app_tx: None,
             autosave: AutosaveTimer::new(),
             overlays: OverlayHost::new(),
@@ -684,7 +689,11 @@ impl EditorScreen {
 impl EditorScreen {
     /// Snapshot of the screen state the input classifier reads. Built per
     /// classification — cheap field reads only.
-    fn input_ctx(&self) -> InputCtx {
+    ///
+    /// `double_click` comes from [`Self::track_click`] rather than a field read
+    /// because feeding the click run mutates it; a snapshot is taken from
+    /// `&self` and cannot.
+    fn input_ctx(&self, double_click: bool) -> InputCtx {
         InputCtx {
             overlay: self.overlays.active_kind(),
             leader_pending: self.leader.is_pending(),
@@ -692,6 +701,43 @@ impl EditorScreen {
             drawer_view: self.panels.active_drawer_view(),
             space_leads: self.panels.editor().is_some_and(|e| e.space_leads()),
             claim: self.panels.editor().map(|e| e.claim()).unwrap_or_default(),
+            double_click,
+        }
+    }
+
+    /// Feed an event to the click run and report whether it completes a
+    /// double-click in the editor column.
+    ///
+    /// Everything that is not a left press inside the editor ends the run: a
+    /// key, a paste, a drag, a scroll, a press on another panel or on the
+    /// divider. Two exceptions, both deliberate:
+    ///
+    /// - **Pointer motion does not.** `EnableMouseCapture` turns on any-event
+    ///   tracking, so `Moved` arrives for every pixel of travel — ending the
+    ///   run on those would mean no double-click ever completes. Requiring the
+    ///   same cell already handles drift.
+    /// - **A scroll does**, even though it moves no cursor: the viewport
+    ///   shifted, so the same cell now shows different text and a second press
+    ///   there would follow a link the user never saw.
+    fn track_click(&mut self, event: &InputEvent) -> bool {
+        use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+
+        let InputEvent::Mouse(mouse) = event else {
+            self.clicks.end();
+            return false;
+        };
+        match mouse.kind {
+            MouseEventKind::Moved => false,
+            MouseEventKind::Down(MouseButton::Left)
+                if self.panels.is_editor_cell(mouse.column, mouse.row) =>
+            {
+                self.clicks
+                    .completes_double(mouse.column, mouse.row, std::time::Instant::now())
+            }
+            _ => {
+                self.clicks.end();
+                false
+            }
         }
     }
 
@@ -739,7 +785,8 @@ impl EditorScreen {
                     // the tail against fresh state — any leader cancel was
                     // already applied by the probe classification, so the
                     // tail must not re-cancel (`cancel_leader = false`).
-                    let ctx = self.input_ctx();
+                    // A key path (Ctrl+V): no press to pair, so no double.
+                    let ctx = self.input_ctx(false);
                     let classification = {
                         let s = self.settings.read().unwrap();
                         crate::app_screen::editor_input::classify_tail(
@@ -1598,7 +1645,7 @@ impl EditorScreen {
     /// Follow the wikilink / tag under the editor cursor (FollowLink action,
     /// Ctrl+Enter on kitty-protocol terminals).
     fn follow_link_at_cursor(&mut self, tx: &AppTx) {
-        use crate::components::text_editor::LinkTarget;
+        use crate::components::text_editor::FollowTarget;
         // In the attachment view, FollowLink (Ctrl+N) opens the attachment with
         // the OS default program rather than following a link (there is none).
         if self.panels.is_showing_attachment() {
@@ -1608,11 +1655,11 @@ impl EditorScreen {
         let Some(editor) = self.panels.editor_mut() else {
             return;
         };
-        match editor.link_at_cursor() {
-            Some(LinkTarget::Note(target)) => {
+        match editor.follow_target_at_cursor() {
+            Some(FollowTarget::Link(target)) => {
                 tx.send(AppEvent::FollowLink(target)).ok();
             }
-            Some(LinkTarget::Label(name)) => {
+            Some(FollowTarget::Label(name)) => {
                 tx.send(AppEvent::FollowLabel(name)).ok();
             }
             None => {}
@@ -1938,7 +1985,12 @@ impl AppScreen for EditorScreen {
         // Classify first, mutate after: the pure classifier resolves the
         // event against the input precedence (see `editor_input`), and the
         // executor methods below apply the resulting intent.
-        let ctx = self.input_ctx();
+        //
+        // The click run is fed ahead of the snapshot — it is the one piece of
+        // input-relevant state the event itself advances, and the classifier
+        // cannot advance it and stay pure. Nothing user-visible moves here.
+        let double_click = self.track_click(event);
+        let ctx = self.input_ctx(double_click);
         // The settings lock guards the key bindings, which only the
         // shortcut tier reads — never lock for mouse/paste traffic (mouse
         // motion is high-frequency).
@@ -2052,7 +2104,10 @@ impl AppScreen for EditorScreen {
         // The backlink count loads async, cached per target.
         let link_segment = if self.panels.focused() == PanelKind::Editor && !self.overlays.is_open()
         {
-            let link = self.panels.editor().and_then(|e| e.link_at_cursor());
+            let link = self
+                .panels
+                .editor()
+                .and_then(|e| e.follow_target_at_cursor());
             self.doc_meta
                 .link_segment(link.as_ref(), &self.path, self.app_tx.as_ref())
         } else {
