@@ -559,6 +559,27 @@ impl NvimBackend {
             if let Err(e) = buf.set_lines(0, -1, false, lines).await {
                 tracing::warn!("set_text buf_set_lines: {e}");
             }
+            // Send the cursor home in nvim too, not just in the snapshot above.
+            // `set_lines` replaces content and leaves the window cursor where
+            // the previous note left it (clamped to the new line count), and
+            // `apply_lua_state` assigns `snap.cursor` from nvim *unguarded* —
+            // unlike `snap.lines`, which `in_flight` protects. So the local
+            // (0, 0) is silently replaced by the old position within a refresh
+            // cycle. Nothing repaints until the next event, which is why this
+            // read as "the first movement key makes the cursor jump" rather
+            // than as the stale value it always was.
+            //
+            // After `set_lines`, so line 1 is guaranteed to exist. Before
+            // clearing `in_flight`, so the buffer is never observed mid-load.
+            match nvim.get_current_win().await {
+                Ok(win) => {
+                    // nvim rows are 1-based, columns 0-based.
+                    if let Err(e) = win.set_cursor((1, 0)).await {
+                        tracing::warn!("set_text win_set_cursor: {e}");
+                    }
+                }
+                Err(e) => tracing::warn!("set_text get_current_win: {e}"),
+            }
             in_flight.store(false, Ordering::SeqCst);
         });
     }
