@@ -92,6 +92,14 @@ pub const DEFAULT_INBOX_PATH: &str = "/inbox";
 /// [`NoteVault::default_attachments_path`]).
 pub const DEFAULT_ASSETS_PATH: &str = "/assets";
 
+/// How many incremented names ([`VaultPath::get_name_on_conflict`]) a
+/// conflict-avoiding create tries before giving up. High enough that no real
+/// vault reaches it, low enough to bound the work when something pathological
+/// (a name every increment collides with) would otherwise spin forever. Shared
+/// by [`NoteVault::free_note_path`] and
+/// [`NoteVault::create_note_avoiding_conflicts`] so the name they pick agrees.
+pub const MAX_CONFLICT_ATTEMPTS: usize = 100;
+
 /// Timing summary of an indexing pass.
 pub struct IndexReport {
     /// When the pass started.
@@ -778,20 +786,44 @@ impl NoteVault {
         Ok((entry_data, content_data))
     }
 
+    /// The first note path at or after `path` that no note occupies: `path`
+    /// itself when it is free, otherwise `path` with its name incremented (see
+    /// [`VaultPath::get_name_on_conflict`]) until one is.
+    ///
+    /// Advisory, not a reservation: another writer can take the returned path
+    /// before the caller gets to it. It answers "what name would this note
+    /// get?" for display — the write-side guarantee is
+    /// [`Self::create_note_avoiding_conflicts`], which resolves the same way
+    /// but atomically. When every one of [`MAX_CONFLICT_ATTEMPTS`] candidates
+    /// is taken, the last one is returned and the caller's create reports the
+    /// real error.
+    pub async fn free_note_path(&self, path: &VaultPath) -> VaultPath {
+        let mut candidate = path.to_owned();
+        for _ in 0..MAX_CONFLICT_ATTEMPTS {
+            if !self.exists(&candidate).await {
+                break;
+            }
+            candidate = candidate.get_name_on_conflict();
+        }
+        candidate
+    }
+
     /// Creates a note at `path` with `text`, falling back to
-    /// [`VaultPath::get_name_on_conflict`] (and further increments) up to 100
-    /// attempts if the name is already taken. Unlike [`Self::create_note`],
-    /// this never fails on collision — it never loads or overwrites an
-    /// existing note either, so content that must not be silently dropped
-    /// (e.g. a saved Ask answer) always lands in a fresh note. Returns the
-    /// path actually used, which may differ from `path`.
+    /// [`VaultPath::get_name_on_conflict`] (and further increments) for up to
+    /// [`MAX_CONFLICT_ATTEMPTS`] if the name is already taken. Unlike
+    /// [`Self::create_note`], this never fails on collision — it never loads
+    /// or overwrites an existing note either, so content that must not be
+    /// silently dropped (e.g. a saved Ask answer) always lands in a fresh
+    /// note. Returns the path actually used, which may differ from `path`;
+    /// callers showing a target path beforehand should pick it with
+    /// [`Self::free_note_path`] so the two agree.
     pub async fn create_note_avoiding_conflicts<S: AsRef<str>>(
         &self,
         path: &VaultPath,
         text: S,
     ) -> Result<VaultPath, VaultError> {
         let mut candidate = path.to_owned();
-        for _ in 0..100 {
+        for _ in 0..MAX_CONFLICT_ATTEMPTS {
             match self.create_note(&candidate, &text).await {
                 Ok(_) => return Ok(candidate),
                 Err(VaultError::NoteExists { .. }) => {
@@ -802,7 +834,7 @@ impl NoteVault {
         }
         Err(VaultError::FSError(FSError::InvalidPath {
             path: candidate.to_string(),
-            message: "Could not find a free name after 100 attempts".to_string(),
+            message: format!("Could not find a free name after {MAX_CONFLICT_ATTEMPTS} attempts"),
         }))
     }
 
@@ -2816,6 +2848,38 @@ mod tests {
 
         assert_eq!(used, path);
         assert_eq!(vault.get_note_text(&used).await.unwrap(), "the answer");
+    }
+
+    #[tokio::test]
+    async fn free_note_path_returns_the_requested_path_when_free() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
+        vault.validate_and_init().await.unwrap();
+
+        let path = VaultPath::note_path_from("ask/my-question");
+        assert_eq!(vault.free_note_path(&path).await, path);
+    }
+
+    /// The path a caller shows ("create this note?") and the path the
+    /// conflict-avoiding create actually writes must be the same one —
+    /// otherwise the user confirms one note and gets another.
+    #[tokio::test]
+    async fn free_note_path_agrees_with_the_name_the_create_picks() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
+        vault.validate_and_init().await.unwrap();
+
+        let path = VaultPath::note_path_from("ask/my-question");
+        vault.create_note(&path, "taken").await.unwrap();
+
+        let free = vault.free_note_path(&path).await;
+        assert_ne!(free, path);
+
+        let used = vault
+            .create_note_avoiding_conflicts(&path, "second answer")
+            .await
+            .unwrap();
+        assert_eq!(used, free);
     }
 
     #[tokio::test]

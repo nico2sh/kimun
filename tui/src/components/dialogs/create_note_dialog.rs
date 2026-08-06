@@ -15,6 +15,11 @@ use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::settings::themes::Theme;
 
 pub struct CreateNoteDialog {
+    /// The note to create. Every caller opens this dialog only for a path no
+    /// note occupies — either because the lookup that led here found nothing,
+    /// or (for a title-derived path) because it was run through
+    /// [`NoteVault::free_note_path`] first. The rendered body states that
+    /// outright, so a path that is already taken would make the dialog lie.
     pub path: VaultPath,
     pub vault: Arc<NoteVault>,
     /// Pre-formatted `"  {path}"` for zero-allocation rendering.
