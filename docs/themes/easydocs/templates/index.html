@@ -6,7 +6,7 @@
     <meta name="generator" content="Zola">
     {% if config.extra.favicon -%}
         {% set _favicon = config.extra.favicon -%}
-        {% if _favicon is not starting_with("http") -%}
+        {% if _favicon is not starting_with(pat="http") -%}
             {% set _favicon = get_url(path=config.extra.favicon) -%}
         {% endif -%}
         <link rel="icon" href="{{ _favicon | safe }}">
@@ -36,7 +36,7 @@
                 <a href="{{ config.base_url }}{{ _ugly_url }}" id="nav-title">
                     {% if config.extra.logo -%}
                         {% set _logo = config.extra.logo -%}
-                        {% if _logo is not starting_with("http") -%}
+                        {% if _logo is not starting_with(pat="http") -%}
                             {% set _logo = get_url(path=config.extra.logo) -%}
                         {% endif -%}
                         <img src="{{ _logo | safe }}" alt="logo"/>
@@ -72,7 +72,7 @@
 
 
                     <input class="tree-toggle" type="checkbox" id="{{ subsection.title | slugify }}"
-                           {% if current_path_safe is starting_with(subsection.path) %}checked{% endif %}/>
+                           {% if current_path_safe is starting_with(pat=subsection.path) %}checked{% endif %}/>
                     <div class="tree-section">
                         <label class="tree-toggle-label" for="{{ subsection.title | slugify }}" aria-label="Toggle {{ subsection.title }}"></label>
                         <a class="tree-section-link{% if current_path_safe == subsection.path %} active{% endif %}" href="{{ subsection.permalink | safe }}{{ _ugly_url }}">{{ subsection.title }}</a>
