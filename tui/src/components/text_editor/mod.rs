@@ -814,6 +814,20 @@ impl TextEditorComponent {
         self.backend.is_textarea()
     }
 
+    /// Whether this cell is one this editor would place the cursor on.
+    ///
+    /// Narrower than the editor *column*, which the panel set hit-tests: the
+    /// column includes the frame drawn around this component, and `self.rect`
+    /// is the interior it was handed at render — minus the find-bar row, which
+    /// `render` already excludes. [`Self::handle_mouse`] bounds-checks against
+    /// exactly this and returns `NotConsumed` outside it, so a press anywhere
+    /// else leaves the cursor where it was. Callers that read the cursor *after*
+    /// a press have to ask, or they read a position the press never set.
+    pub fn covers(&self, column: u16, row: u16) -> bool {
+        self.rect
+            .contains(ratatui::layout::Position::new(column, row))
+    }
+
     /// Which editor-internal surface currently holds input.
     ///
     /// The find bar outranks the popup because opening the bar closes it
@@ -1824,14 +1838,12 @@ impl TextEditorComponent {
         mouse: &ratatui::crossterm::event::MouseEvent,
         tx: &AppTx,
     ) -> EventState {
-        let r = self.rect;
-        let in_bounds = mouse.column >= r.x
-            && mouse.column < r.x + r.width
-            && mouse.row >= r.y
-            && mouse.row < r.y + r.height;
-        if !in_bounds {
+        if !self.covers(mouse.column, mouse.row) {
             return EventState::NotConsumed;
         }
+        // Kept for the screen→layout conversion below, which is only reachable
+        // past the bounds check that `covers` just made.
+        let r = self.rect;
         // Past the bounds check the event is ours, so it is an action: a click
         // moves the cursor, and even a scroll means attention moved. Placed above
         // the context-menu return below so a right-click counts too.

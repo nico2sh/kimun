@@ -171,7 +171,7 @@ Full parity with the keyboard:
 | Click | focus the panel / select the row |
 | Click the selected row again | open it |
 | Click in the editor | place the cursor |
-| Double-click a `[[link]]` / `#tag` in the editor | follow it / run the tag query (same as `Ctrl+N`) |
+| Double-click a `[[link]]` / `#tag` in the editor | follow it / run the tag query (same as `Ctrl+N`) — Textarea and Vim backends only |
 | Right-click a file or note row | file-operations menu |
 | Right-click in the editor (no selection) | context menu for the open note |
 | Right-click in the editor (with selection) | copy the selection |
@@ -181,6 +181,8 @@ Full parity with the keyboard:
 | Scroll | scroll the pane under the cursor |
 
 Following a link is a double-click rather than `Ctrl`+click or `Cmd`+click because neither works in a terminal: the mouse protocol has no way to report `Cmd` at all, and macOS turns `Ctrl`+click into a right-click before Kimün ever sees it. A double-click behaves identically on Linux, macOS, and Windows.
+
+On the [Neovim backend](@/getting-started/configuration.md#editor-backend) a click never moves the cursor — Neovim owns the mouse — so double-click-to-follow does nothing there. Use `Ctrl+N`, which follows whatever the cursor is on regardless of backend.
 
 Capturing the mouse means your terminal's own gestures — middle-click paste, drag-to-select — are suppressed while Kimün runs. Hold `Shift` to borrow them back for one action, or set `mouse = false` to hand the mouse to your terminal entirely (every gesture above has a keyboard equivalent). See [Configuration → Mouse](@/getting-started/configuration.md#mouse).
 
