@@ -6,7 +6,7 @@
     <meta name="generator" content="Zola">
     {% if config.extra.favicon -%}
         {% set _favicon = config.extra.favicon -%}
-        {% if (_favicon is starting_with("http")) == false -%}
+        {% if _favicon is not starting_with("http") -%}
             {% set _favicon = get_url(path=config.extra.favicon) -%}
         {% endif -%}
         <link rel="icon" href="{{ _favicon | safe }}">
@@ -36,7 +36,7 @@
                 <a href="{{ config.base_url }}{{ _ugly_url }}" id="nav-title">
                     {% if config.extra.logo -%}
                         {% set _logo = config.extra.logo -%}
-                        {% if (_logo is starting_with("http")) == false -%}
+                        {% if _logo is not starting_with("http") -%}
                             {% set _logo = get_url(path=config.extra.logo) -%}
                         {% endif -%}
                         <img src="{{ _logo | safe }}" alt="logo"/>
