@@ -819,10 +819,10 @@ impl TextEditorComponent {
     /// Narrower than the editor *column*, which the panel set hit-tests: the
     /// column includes the frame drawn around this component, and `self.rect`
     /// is the interior it was handed at render — minus the find-bar row, which
-    /// `render` already excludes. [`Self::handle_mouse`] bounds-checks against
-    /// exactly this and returns `NotConsumed` outside it, so a press anywhere
-    /// else leaves the cursor where it was. Callers that read the cursor *after*
-    /// a press have to ask, or they read a position the press never set.
+    /// `render` already excludes. `handle_mouse` bounds-checks against exactly
+    /// this and returns `NotConsumed` outside it, so a press anywhere else
+    /// leaves the cursor where it was. Callers that read the cursor *after* a
+    /// press have to ask, or they read a position the press never set.
     pub fn covers(&self, column: u16, row: u16) -> bool {
         self.rect
             .contains(ratatui::layout::Position::new(column, row))
