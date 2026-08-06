@@ -204,6 +204,10 @@ _Avoid_: action (collides with `ActionShortcuts`, one input to classification), 
 Which editor-internal surface currently holds input — the **find bar**, the autocomplete popup, or nothing. Part of the snapshot the **Intent** classifier reads, so ownership is decided once, inside the classifier, instead of being re-asserted per event kind further down. The holder is named rather than merely counted, because what a claim blocks differs by holder: the find bar blocks a paste, a click and a bare Space; the popup wants all three. A claim decides *ownership* only — the holder still decides what the event does.
 _Avoid_: capture (taken by the mouse-capture toggle), focus (collides with panel focus and **list focus**), lock/grab.
 
+**Follow target**:
+What following resolves to — a **link** (a note reference, an external URL, or an attachment, unresolved as written in the note) or a **label** (a `#tag`, whose query is run). Named for the action rather than the destination, because the destination is not known until the follow runs: only then is a link decided to be a note, a URL, or a file. Wider than **note link**, which is note→note only and excludes URLs and attachments. Reached by Ctrl-N or by a double-click; a single click only places the cursor.
+_Avoid_: link target (silent about labels), note target (a link is often not a note at all).
+
 ### TUI surfaces
 
 **Panel**:
@@ -215,7 +219,7 @@ The fixed-width icon strip on the far left of the editor screen. Each cell names
 _Avoid_: sidebar (the pre-rail name for the file browser), icon bar, toolbar.
 
 **Drawer**:
-The single panel between the **Activity rail** and the editor; renders whichever **drawer view** is active. Toggleable (Ctrl-B) — hiding it gives its width to the editor — and divider-drag resizable. Exactly one drawer renders at a time.
+The single panel between the **Activity rail** and the editor; renders whichever **drawer view** is active. Toggleable (Ctrl-T) — hiding it gives its width to the editor — and divider-drag resizable. Exactly one drawer renders at a time.
 _Avoid_: sidebar / Query panel as panel names (they are now drawer views), side panel.
 
 **Drawer view**:

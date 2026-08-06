@@ -49,6 +49,15 @@ pub struct InputCtx {
     /// this the classifier cannot know the **find bar** is open, and ownership
     /// gets re-decided further down, once per event kind.
     pub claim: EditorClaim,
+    /// This mouse press completes a double-click in the editor column — the
+    /// mouse's way of following a link (see `click_run`).
+    ///
+    /// An *input* to classification, not an output: it picks between
+    /// [`EditorIntent::Mouse`] and [`EditorIntent::FollowLink`], so no intent
+    /// variant has to name the gesture that produced it. The rule itself lives
+    /// in [`ClickRun`](crate::app_screen::click_run::ClickRun); the screen
+    /// records the press before building this snapshot.
+    pub double_click: bool,
 }
 
 impl InputCtx {
@@ -95,7 +104,10 @@ pub enum EditorIntent {
     /// screen state. Lazy on purpose: the common with-image press must not
     /// pay for a discarded fallback classification.
     ImageProbe,
-    /// Follow the note link under the editor cursor.
+    /// Follow the **follow target** under the editor cursor — a link, or a
+    /// label whose query is run. Reached two ways, deliberately one intent:
+    /// the bound `FollowLink` shortcut, and a double-click, whose first press
+    /// put the cursor where the second one asks about (see `click_run`).
     FollowLink,
     /// Feed the key to the pending leader sequence.
     LeaderKey(KeyEvent),
@@ -221,8 +233,6 @@ pub fn classify(event: &InputEvent, bindings: &KeyBindings, ctx: &InputCtx) -> C
 /// which routes to the focused panel, which is the editor, which routes to its
 /// holder. The claim decides *ownership*; the holder decides behaviour.
 fn apply_claim(intent: EditorIntent, event: &InputEvent, claim: EditorClaim) -> EditorIntent {
-    use ratatui::crossterm::event::MouseEventKind;
-
     if claim == EditorClaim::None {
         return intent;
     }
@@ -247,17 +257,28 @@ fn apply_claim(intent: EditorIntent, event: &InputEvent, claim: EditorClaim) -> 
         EditorIntent::Op(EditorOp::ApplyText(_)) => deliver,
         EditorIntent::Op(_) => intent,
 
-        // The find bar is a text field: a paste belongs in it, an image probe
-        // is meaningless there, Ctrl+Enter must not follow a link out of it,
-        // and a bare Space is a character, not the leader. The popup wants all
-        // of these to behave normally.
-        EditorIntent::EditorPaste | EditorIntent::ImageProbe | EditorIntent::FollowLink => {
+        // The find bar is a text field: a paste belongs in it and an image
+        // probe is meaningless there. The popup wants both to behave normally.
+        EditorIntent::EditorPaste | EditorIntent::ImageProbe => {
             if find_bar {
                 deliver
             } else {
                 intent
             }
         }
+
+        // Ctrl+Enter must not follow a link out of the bar, so a key-origin
+        // follow is delivered to it. A mouse-origin one carries the same intent
+        // but is a *press* wearing a different name, so it degrades to whatever
+        // a plain press does under this claim — swallowed by the bar, delivered
+        // normally under the popup, which wants the click that dismisses it.
+        // Abandoning the follow is the point: a holder is mid-edit, and the
+        // link under the pointer is text it is still being typed into.
+        EditorIntent::FollowLink => match event {
+            InputEvent::Mouse(_) => claimed_mouse(event, find_bar),
+            _ if find_bar => deliver,
+            _ => intent,
+        },
 
         // Bare Space is a character in a find pattern. The bound leader
         // gateway is not — it opens "in every context, including mid-typing",
@@ -273,24 +294,34 @@ fn apply_claim(intent: EditorIntent, event: &InputEvent, claim: EditorClaim) -> 
             _ => intent,
         },
 
-        // Scrolling moves the viewport, not the cursor, so reading elsewhere
-        // mid-search stays available. Clicks and drags would move the cursor
-        // off the current match and overwrite the selection marking it.
-        EditorIntent::Mouse => match event {
-            InputEvent::Mouse(m)
-                if find_bar
-                    && !matches!(
-                        m.kind,
-                        MouseEventKind::ScrollUp
-                            | MouseEventKind::ScrollDown
-                            | MouseEventKind::ScrollLeft
-                            | MouseEventKind::ScrollRight
-                    ) =>
-            {
-                EditorIntent::Consume
-            }
-            _ => intent,
-        },
+        EditorIntent::Mouse => claimed_mouse(event, find_bar),
+    }
+}
+
+/// What a claim does to a press. The one policy, so a follow that arrived as a
+/// click cannot drift away from the click it is.
+///
+/// Scrolling moves the viewport, not the cursor, so reading elsewhere
+/// mid-search stays available. Clicks and drags would move the cursor off the
+/// current match and overwrite the selection marking it — the find bar has no
+/// way to represent either. Every other holder takes the press normally.
+fn claimed_mouse(event: &InputEvent, find_bar: bool) -> EditorIntent {
+    use ratatui::crossterm::event::MouseEventKind;
+
+    match event {
+        InputEvent::Mouse(m)
+            if find_bar
+                && !matches!(
+                    m.kind,
+                    MouseEventKind::ScrollUp
+                        | MouseEventKind::ScrollDown
+                        | MouseEventKind::ScrollLeft
+                        | MouseEventKind::ScrollRight
+                ) =>
+        {
+            EditorIntent::Consume
+        }
+        _ => EditorIntent::Mouse,
     }
 }
 
@@ -557,6 +588,14 @@ pub(crate) fn classify_tail(
     }
 
     if matches!(event, InputEvent::Mouse(_)) {
+        // A double-click in the editor follows the link under it, exactly as
+        // Ctrl+N does — same intent, same executor, one follow path. The
+        // classifier cannot hit-test panels (that is `PanelSet`'s job, and why
+        // `Mouse` exists at all), so it leans on focus: the first press of the
+        // pair already focused whatever column it landed in.
+        if ctx.double_click && ctx.editor_active() {
+            return done(EditorIntent::FollowLink);
+        }
         return done(EditorIntent::Mouse);
     }
 
@@ -638,6 +677,7 @@ mod tests {
             drawer_view: DrawerView::Files,
             space_leads: false,
             claim: EditorClaim::None,
+            double_click: false,
         }
     }
 
@@ -647,6 +687,28 @@ mod tests {
             claim: EditorClaim::FindBar,
             ..ctx()
         }
+    }
+
+    /// The common ctx with the press completing a double-click. Whether it
+    /// *is* one is `ClickRun`'s question, answered before this snapshot.
+    fn ctx_double() -> InputCtx {
+        InputCtx {
+            double_click: true,
+            ..ctx()
+        }
+    }
+
+    /// A left press. Coordinates are irrelevant to the classifier — it never
+    /// hit-tests; the screen decided the cell was the editor's before it fed
+    /// the click run.
+    fn press() -> InputEvent {
+        use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        InputEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 1,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        })
     }
 
     fn key(code: KeyCode, mods: KeyModifiers) -> InputEvent {
@@ -773,6 +835,101 @@ mod tests {
             classify_it(&at(MouseEventKind::ScrollUp), &ctx_find_bar()).intent,
             EditorIntent::Mouse,
             "scrolling still works"
+        );
+    }
+
+    // ── Following a link with the mouse (see `click_run`) ───────────────────
+
+    /// A press classifies as an ordinary mouse event whatever it lands on.
+    /// Following is the *second* press of a pair, never the first — this is
+    /// the regression that a stray click can no longer navigate.
+    #[test]
+    fn a_single_press_only_reaches_the_editor() {
+        assert_eq!(classify_it(&press(), &ctx()).intent, EditorIntent::Mouse);
+    }
+
+    /// The whole point: a double-click means the same thing as Ctrl+N, so it
+    /// produces the same intent and runs through the same executor.
+    #[test]
+    fn a_double_click_follows_the_link_under_it() {
+        assert_eq!(
+            classify_it(&press(), &ctx_double()).intent,
+            EditorIntent::FollowLink,
+            "the same intent Ctrl+N produces"
+        );
+        assert_eq!(
+            classify_it(&key(KeyCode::Char('n'), KeyModifiers::CONTROL), &ctx()).intent,
+            EditorIntent::FollowLink,
+            "and Ctrl+N still produces it"
+        );
+    }
+
+    /// The classifier cannot hit-test panels, so it leans on focus — which the
+    /// *first* press of the pair set. Double-clicking a row in the drawer must
+    /// not follow whatever the editor's cursor happens to sit on.
+    #[test]
+    fn a_double_click_outside_the_editor_is_an_ordinary_click() {
+        let drawer = InputCtx {
+            focused: PanelKind::Drawer,
+            ..ctx_double()
+        };
+        assert_eq!(classify_it(&press(), &drawer).intent, EditorIntent::Mouse);
+    }
+
+    /// An overlay owns the input ahead of the panels, so a double-click under
+    /// one is the overlay's, not a follow against the buffer behind it.
+    #[test]
+    fn an_overlay_outranks_a_double_click() {
+        let covered = InputCtx {
+            overlay: Some(OverlayKind::NoteBrowser),
+            ..ctx_double()
+        };
+        assert_eq!(
+            classify_it(&press(), &covered).intent,
+            EditorIntent::Overlay
+        );
+    }
+
+    /// Same intent, different origin, different answer. Ctrl+Enter belongs to
+    /// the bar (it is a text field); the press underneath a double-click does
+    /// not, and the bar has no way to represent the cursor move it implies.
+    #[test]
+    fn a_find_bar_claim_swallows_a_double_click_but_takes_ctrl_enter() {
+        let bar_double = InputCtx {
+            double_click: true,
+            ..ctx_find_bar()
+        };
+        assert_eq!(
+            classify_it(&press(), &bar_double).intent,
+            EditorIntent::Consume,
+            "a follow that arrived as a click is still a click"
+        );
+        assert_eq!(
+            classify_it(&key(KeyCode::Enter, KeyModifiers::CONTROL), &ctx_find_bar()).intent,
+            EditorIntent::Panel {
+                fallback: PanelFallback::None
+            },
+            "but a follow that arrived as a key is delivered to the bar"
+        );
+    }
+
+    /// The claim filter has three holders, not two. A mouse-origin follow
+    /// degrades to whatever a plain press does under the holder — which for the
+    /// popup means being delivered, so it can dismiss itself and place the
+    /// cursor. Consuming it instead left the popup open over a note that had
+    /// navigated away.
+    #[test]
+    fn an_autocomplete_claim_turns_a_double_click_back_into_a_press() {
+        let popup = InputCtx {
+            claim: EditorClaim::Autocomplete,
+            double_click: true,
+            ..ctx()
+        };
+        assert_eq!(classify_it(&press(), &popup).intent, EditorIntent::Mouse);
+        assert_eq!(
+            classify_it(&key(KeyCode::Char('n'), KeyModifiers::CONTROL), &popup).intent,
+            EditorIntent::FollowLink,
+            "the popup does not own the keyboard follow"
         );
     }
 

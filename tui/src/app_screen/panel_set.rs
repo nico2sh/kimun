@@ -551,6 +551,36 @@ impl PanelSet {
         }
     }
 
+    /// Whether a press on this cell points *at* somewhere in the note buffer.
+    ///
+    /// Three conditions, and only the first is about geometry:
+    ///
+    /// - **Inside the editor component itself.** Asked of the component, not of
+    ///   [`Self::column_rects`], because the column is wider than the buffer: it
+    ///   also holds the frame `render` draws around the component (and, to its
+    ///   left, the divider that [`Self::handle_mouse`] claims before any panel
+    ///   sees it). A press on either is out of the component's bounds, so it
+    ///   returns `NotConsumed` and the cursor never moves.
+    /// - **The editor area is showing the note.** It may instead hold an
+    ///   attachment preview or the Ask workspace, neither of which has a cursor
+    ///   or a link under the pointer — an attachment would launch an external
+    ///   program and Ask would swallow the press.
+    /// - **The mouse drives the cursor.** False under the **nvim** backend,
+    ///   where a press never moves the cursor at all, so anything reading the
+    ///   cursor afterwards reads wherever the *keyboard* left it.
+    ///
+    /// Every one of them is the same question asked of a different layer: did
+    /// this press *place the cursor*? Anything that answers a press by reading
+    /// the cursor — following a link, most obviously — has to ask all three, or
+    /// it acts on a position the press never set. The column alone was the
+    /// original gate, and each of the others was a defect before it was a
+    /// condition. Callers that only want the column should not reuse this.
+    pub fn is_note_buffer_cell(&self, column: u16, row: u16) -> bool {
+        matches!(self.content, EditorAreaContent::Note)
+            && self.editor.mouse_drives_cursor()
+            && self.editor.covers(column, row)
+    }
+
     /// The divider hit zone: the drawer's right border column (the cell
     /// between drawer content and editor).
     fn on_divider(&self, column: u16, row: u16) -> bool {
@@ -761,12 +791,111 @@ mod tests {
         )
     }
 
-    /// Lay the visible panels out over a fixed area, as a render would.
+    /// Lay the visible panels out over a fixed area by actually rendering them.
+    ///
+    /// Assigning `column_rects` directly would be shorter and wrong: the hit
+    /// tests read the editor component's own rect too, and only `render`
+    /// assigns that. A layout that sets one and not the other describes a frame
+    /// that never existed.
     fn lay_out(panels: &mut PanelSet) {
-        panels.column_rects = layout_columns(
-            &panels.order.visible_in_order(),
-            Rect::new(0, 0, 120, 40),
-            panels.drawer_width,
+        let area = Rect::new(0, 0, 120, 40);
+        let theme = crate::settings::themes::Theme::default();
+        let mut term =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(area.width, area.height))
+                .unwrap();
+        term.draw(|f| panels.render(f, area, &theme, true)).unwrap();
+    }
+
+    /// A cell in the middle of the editor column, as laid out.
+    fn editor_cell(panels: &PanelSet) -> (u16, u16) {
+        let (_, rect) = panels
+            .column_rects
+            .iter()
+            .find(|(kind, _)| *kind == PanelKind::Editor)
+            .expect("the editor is always visible");
+        (rect.x + rect.width / 2, rect.y + rect.height / 2)
+    }
+
+    /// The gate is not merely geometric. It read as "the editor column" once,
+    /// and a double-click in the Ask workspace was swallowed while one in an
+    /// attachment preview spawned an external viewer — the same cell, three
+    /// different things underneath it.
+    #[tokio::test]
+    async fn the_note_buffer_gate_tracks_what_the_editor_area_shows() {
+        let mut panels = make_panel_set().await;
+        lay_out(&mut panels);
+        let (col, row) = editor_cell(&panels);
+        assert!(
+            panels.is_note_buffer_cell(col, row),
+            "the note buffer is what the gate is for"
+        );
+
+        panels.show_ask();
+        assert!(
+            !panels.is_note_buffer_cell(col, row),
+            "the Ask workspace has no cursor to point at"
+        );
+
+        panels.hide_ask();
+        assert!(panels.is_note_buffer_cell(col, row), "and back again");
+    }
+
+    /// A divider press is claimed before any panel sees it and never changes
+    /// focus, so it must not count as pointing at the buffer either.
+    #[tokio::test]
+    async fn the_note_buffer_gate_rejects_the_divider_and_other_columns() {
+        let mut panels = make_panel_set().await;
+        lay_out(&mut panels);
+        let (_, drawer) = panels
+            .column_rects
+            .iter()
+            .find(|(kind, _)| *kind == PanelKind::Drawer)
+            .expect("the drawer is visible by default");
+        let (divider_col, row) = (drawer.right().saturating_sub(1), drawer.y + 1);
+        assert!(panels.on_divider(divider_col, row), "precondition");
+        assert!(!panels.is_note_buffer_cell(divider_col, row));
+        assert!(
+            !panels.is_note_buffer_cell(drawer.x + 1, row),
+            "and the drawer is not the editor"
+        );
+    }
+
+    /// The editor *column* is not the editor *buffer*: `PanelSet::render` draws
+    /// a bordered frame around the component and hands it only the interior.
+    /// A press on the frame is out of the component's bounds, so it returns
+    /// `NotConsumed` and the cursor never moves — counting those cells let two
+    /// clicks on the `─ Editor` title bar follow whichever link the cursor was
+    /// parked on, a note the user never pointed at.
+    #[tokio::test]
+    async fn the_note_buffer_gate_rejects_the_editor_frame() {
+        let mut panels = make_panel_set().await;
+        lay_out(&mut panels);
+        let (_, rect) = panels
+            .column_rects
+            .iter()
+            .find(|(kind, _)| *kind == PanelKind::Editor)
+            .expect("the editor is always visible");
+        let rect = *rect;
+        let (mid_col, mid_row) = (rect.x + rect.width / 2, rect.y + rect.height / 2);
+        assert!(
+            panels.is_note_buffer_cell(mid_col, mid_row),
+            "precondition: the interior still counts"
+        );
+        assert!(
+            !panels.is_note_buffer_cell(mid_col, rect.y),
+            "the title row is frame"
+        );
+        assert!(
+            !panels.is_note_buffer_cell(mid_col, rect.bottom() - 1),
+            "so is the bottom border"
+        );
+        assert!(
+            !panels.is_note_buffer_cell(rect.x, mid_row),
+            "so is the left border"
+        );
+        assert!(
+            !panels.is_note_buffer_cell(rect.right() - 1, mid_row),
+            "so is the right border"
         );
     }
 
