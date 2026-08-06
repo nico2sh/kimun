@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.0](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.22.1...kimun-notes-v0.23.0) - 2026-08-06
+
+### Added
+
+- double click on links
+
+### Fixed
+
+- ci build docs
+- click boundaries fix
+- doc issue with private function
+- cursor position on new note on nvim
+- small bugs
+- double click ignore mouse up events
+
 ## [0.22.1](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.22.0...kimun-notes-v0.22.1) - 2026-08-02
 
 ### Other
