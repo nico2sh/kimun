@@ -806,7 +806,7 @@ impl TextEditorComponent {
     /// Whether a press in this editor moves the cursor to the cell under it.
     ///
     /// False on the **nvim** backend, where the terminal and nvim own the
-    /// mouse: [`Self::handle_mouse`] returns `NotConsumed` before any
+    /// mouse: this component's `handle_mouse` returns `NotConsumed` before any
     /// `jump_to`. Anything that treats a click as pointing *at* something —
     /// following a link, most obviously — has to ask this first, or it reads a
     /// cursor the click never moved.
