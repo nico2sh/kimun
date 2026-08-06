@@ -237,6 +237,7 @@ Worth knowing:
 - Neovim runs as a headless embedded process (`nvim --embed`), so no terminal window opens.
 - Your personal config (`init.lua` / `init.vim`) loads normally, so keymaps and plugins work as expected.
 - **Tab** inserts 4 spaces (`expandtab` + `tabstop=4` are set automatically so indentation renders correctly in the TUI).
+- Neovim owns the mouse, so a click does not move the Kimün cursor. Double-click-to-follow-a-link is unavailable; `Ctrl+N` follows the link under the cursor as usual.
 - If Neovim fails to start (binary missing, crash on init), Kimün logs a warning and falls back to the built-in textarea. No drama.
 
 ### Key Bindings
