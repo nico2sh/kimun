@@ -600,8 +600,19 @@ impl AppSettings {
                 setting.config_file = Some(path.clone());
 
                 // Resolve ~ and relative paths against the config file's directory.
+                // Canonicalized up front (it exists — we just read a file from
+                // inside it): `expand_path` only canonicalizes a relative path's
+                // *result* when that exact target already exists on disk (e.g.
+                // `cache_dir = "."`), so an as-yet-uncreated one (e.g.
+                // `history_dir` before its first write) would otherwise resolve
+                // relative to this directory's raw, un-canonicalized form,
+                // silently disagreeing with paths resolved after the target
+                // exists (`/var/...` vs macOS's real `/private/var/...`).
                 let config_dir = path.parent().unwrap_or(std::path::Path::new("."));
-                setting.resolve_paths(config_dir);
+                let config_dir = config_dir
+                    .canonicalize()
+                    .unwrap_or_else(|_| config_dir.to_path_buf());
+                setting.resolve_paths(&config_dir);
 
                 // Run config migrations (e.g. Phase 1 → Phase 2 workspace_dir).
                 if config_migration::ConfigMigration::run(&mut setting)? {
@@ -1188,24 +1199,33 @@ mod backend_tests {
     #[test]
     #[cfg(unix)]
     fn expand_path_tilde_uses_home_unix() {
-        // `expand_path` canonicalizes when the target exists and returns the
-        // plain join when it does not, so which form comes back depends on
-        // whether this machine happens to have `~/Documents/notes` — and, if it
-        // does, on whether any component of `$HOME` is a symlink. macOS reaches
-        // both branches routinely (`/var`, `/tmp` and `/etc` are symlinks into
-        // `/private`, and relocated or network homes are ordinary), where Linux
-        // usually reaches neither. Accept either rooting rather than pin the one
-        // this machine happens to produce.
+        // `expand_path` canonicalizes when the target exists. Testing that
+        // against a real user's `~/Documents/notes` is unreliable: besides
+        // `$HOME` symlinks, a case-insensitive filesystem (the macOS default)
+        // will happily match an already-existing differently-cased directory
+        // (e.g. `~/Documents/Notes`) and canonicalize returns that casing, not
+        // the literal target string. So we create our own unique, disposable
+        // directory under `$HOME` (tilde expansion always resolves against
+        // the real `$HOME`, not an injectable one) to exercise the
+        // exists-and-gets-canonicalized branch deterministically.
         let home = PathBuf::from(std::env::var("HOME").expect("HOME must be set on Unix"));
-        let canonical_home = home.canonicalize().unwrap_or_else(|_| home.clone());
+        let unique = format!("kimun-test-tilde-expand-{}", std::process::id());
+        let target_dir = home.join(&unique).join("notes");
+        std::fs::create_dir_all(&target_dir).unwrap();
+
+        struct RemoveOnDrop(PathBuf);
+        impl Drop for RemoveOnDrop {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = RemoveOnDrop(home.join(&unique));
+
         let base = PathBuf::from("/irrelevant");
-        let result = AppSettings::expand_path(std::path::Path::new("~/Documents/notes"), &base);
-        assert!(result.is_absolute());
-        assert!(
-            result.starts_with(&home) || result.starts_with(&canonical_home),
-            "expected path under HOME={home:?} (canonically {canonical_home:?}), got {result:?}"
-        );
-        assert!(result.to_string_lossy().contains("Documents/notes"));
+        let result =
+            AppSettings::expand_path(std::path::Path::new(&format!("~/{unique}/notes")), &base);
+
+        assert_eq!(result, target_dir.canonicalize().unwrap());
     }
 
     /// The expansion itself, with the canonicalization taken out of the picture:

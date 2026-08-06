@@ -427,9 +427,13 @@ async fn test_phase1_to_phase2_migration() {
         .workspaces
         .get("default")
         .expect("should have default workspace");
+    // Migration resolves the workspace path (same canonicalize-if-exists
+    // behavior as `AppSettings::expand_path`), so on macOS this comes back as
+    // `/private/var/...` while the raw `TempDir` path is the `/var/...`
+    // symlink. Compare canonical forms on both sides.
     assert_eq!(
         default_workspace.path,
-        workspace_dir.path(),
+        workspace_dir.path().canonicalize().unwrap(),
         "migrated workspace should have correct path"
     );
 

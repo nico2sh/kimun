@@ -248,10 +248,10 @@ pub(crate) async fn resolve_path_on_disk<P: AsRef<Path>>(
     workspace_path: P,
     vault_path: &VaultPath,
 ) -> PathBuf {
-    let canonical = vault_path.to_pathbuf(&workspace_path);
-    if matches!(tokio::fs::try_exists(&canonical).await, Ok(true)) {
-        return canonical;
-    }
+    // No exists()-then-return-canonical fast path: on a case-insensitive
+    // filesystem (the macOS/Windows default) it reports "exists" for a
+    // same-letters-different-case match too, which would short-circuit past
+    // this walk and return the wrong casing instead of the real on-disk name.
     let mut current = workspace_path.as_ref().to_path_buf();
     for slice in &vault_path.flatten().slices {
         let name = slice.to_string();
@@ -276,10 +276,8 @@ pub(crate) fn resolve_path_on_disk_sync<P: AsRef<Path>>(
     workspace_path: P,
     vault_path: &VaultPath,
 ) -> PathBuf {
-    let canonical = vault_path.to_pathbuf(&workspace_path);
-    if canonical.exists() {
-        return canonical;
-    }
+    // See resolve_path_on_disk: no exists()-then-return-canonical fast path,
+    // for the same case-insensitive-filesystem reason.
     let mut current = workspace_path.as_ref().to_path_buf();
     for slice in &vault_path.flatten().slices {
         let name = slice.to_string();
