@@ -1107,6 +1107,14 @@ impl EditorScreen {
                 )));
             }
             FileOp::ShowCreateWithContent { path, content } => {
+                // The suggested path is derived from a title (an Ask question),
+                // so unlike the other create-note entry points it is not known
+                // to be free — and the create behind this dialog avoids
+                // conflicts by incrementing the name. Resolve that name here so
+                // the dialog shows the note the user is actually confirming,
+                // instead of promising `ask/foo.md` and quietly writing
+                // `ask/foo_0.md`.
+                let path = self.vault.free_note_path(&path).await;
                 self.present_overlay(Box::new(ActiveDialog::create_note(
                     path,
                     self.vault.clone(),

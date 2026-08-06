@@ -70,6 +70,12 @@ const MAX_FILENAME_LEN: usize = 64;
 
 /// Maximum length, in characters, of a title-derived note name (see
 /// [`note_name_from_title`]).
+///
+/// A readability budget, not a filesystem one — [`MAX_FILENAME_LEN`] is what
+/// the filesystem cares about. A whole question slugified at full length reads
+/// as a wall of dashes in listings and is tedious to type or complete, so a
+/// title-derived name is cut well short of it; the tail of a long question
+/// rarely carries the identifying words anyway.
 const MAX_TITLE_NAME_LEN: usize = 30;
 
 /// Derives a filesystem-safe, extension-free note name from an arbitrary
