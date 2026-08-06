@@ -48,8 +48,24 @@ impl CreateNoteDialog {
                 let content = self.content.clone();
                 let tx_clone = tx.clone();
                 tokio::spawn(async move {
-                    match vault.load_or_create_note(&path, content).await {
-                        Ok((_, created)) => tx_clone.announce_and_open(path, created),
+                    // Pre-filled content (e.g. a saved Ask answer) must never be
+                    // silently dropped into a pre-existing note of the same name,
+                    // so it always lands in a fresh note rather than going through
+                    // load_or_create_note's load-if-exists behavior.
+                    let result = match &content {
+                        Some(text) => vault
+                            .create_note_avoiding_conflicts(&path, text)
+                            .await
+                            .map(|actual_path| (actual_path, true)),
+                        None => vault
+                            .load_or_create_note(&path, content)
+                            .await
+                            .map(|(_, created)| (path.clone(), created)),
+                    };
+                    match result {
+                        Ok((actual_path, created)) => {
+                            tx_clone.announce_and_open(actual_path, created)
+                        }
                         Err(e) => {
                             tx_clone
                                 .send(AppEvent::OverlayData(OverlayData::Error(e.to_string())))

@@ -778,6 +778,34 @@ impl NoteVault {
         Ok((entry_data, content_data))
     }
 
+    /// Creates a note at `path` with `text`, falling back to
+    /// [`VaultPath::get_name_on_conflict`] (and further increments) up to 100
+    /// attempts if the name is already taken. Unlike [`Self::create_note`],
+    /// this never fails on collision — it never loads or overwrites an
+    /// existing note either, so content that must not be silently dropped
+    /// (e.g. a saved Ask answer) always lands in a fresh note. Returns the
+    /// path actually used, which may differ from `path`.
+    pub async fn create_note_avoiding_conflicts<S: AsRef<str>>(
+        &self,
+        path: &VaultPath,
+        text: S,
+    ) -> Result<VaultPath, VaultError> {
+        let mut candidate = path.to_owned();
+        for _ in 0..100 {
+            match self.create_note(&candidate, &text).await {
+                Ok(_) => return Ok(candidate),
+                Err(VaultError::NoteExists { .. }) => {
+                    candidate = candidate.get_name_on_conflict();
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Err(VaultError::FSError(FSError::InvalidPath {
+            path: candidate.to_string(),
+            message: "Could not find a free name after 100 attempts".to_string(),
+        }))
+    }
+
     /// Creates a directory at `path`, failing with
     /// [`VaultError::DirectoryExists`] if one is already there.
     pub async fn create_directory(
@@ -2772,6 +2800,44 @@ mod tests {
         let details = vault.quick_note("test").await.unwrap();
         let (parent, _) = details.path.get_parent_path();
         assert!(parent.to_string().contains("capture"));
+    }
+
+    #[tokio::test]
+    async fn create_note_avoiding_conflicts_uses_requested_path_when_free() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
+        vault.validate_and_init().await.unwrap();
+
+        let path = VaultPath::note_path_from("ask/my-question");
+        let used = vault
+            .create_note_avoiding_conflicts(&path, "the answer")
+            .await
+            .unwrap();
+
+        assert_eq!(used, path);
+        assert_eq!(vault.get_note_text(&used).await.unwrap(), "the answer");
+    }
+
+    #[tokio::test]
+    async fn create_note_avoiding_conflicts_retries_on_collision() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
+        vault.validate_and_init().await.unwrap();
+
+        let path = VaultPath::note_path_from("ask/my-question");
+        let first = vault
+            .create_note_avoiding_conflicts(&path, "first answer")
+            .await
+            .unwrap();
+        let second = vault
+            .create_note_avoiding_conflicts(&path, "second answer")
+            .await
+            .unwrap();
+
+        assert_ne!(first, second);
+        assert_eq!(first, path);
+        assert_eq!(vault.get_note_text(&first).await.unwrap(), "first answer");
+        assert_eq!(vault.get_note_text(&second).await.unwrap(), "second answer");
     }
 
     #[tokio::test]
