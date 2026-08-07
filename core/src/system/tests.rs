@@ -348,6 +348,56 @@ fn cross_device_errors_are_recognized_per_host() {
     ));
 }
 
+/// "Somebody still has this open" is a Windows-only condition, and only for
+/// the two codes that actually mean it. Both answers checked from either host.
+#[test]
+fn open_file_errors_are_recognized_only_on_windows() {
+    let sharing = std::io::Error::from_raw_os_error(32);
+    let locked = std::io::Error::from_raw_os_error(33);
+    let denied = std::io::Error::from_raw_os_error(5);
+
+    assert!(is_locked_for(Host::Windows, &sharing));
+    assert!(is_locked_for(Host::Windows, &locked));
+    // A real permissions problem must be reported at once, not waited out.
+    assert!(!is_locked_for(Host::Windows, &denied));
+    assert!(!is_locked_for(
+        Host::Windows,
+        &std::io::Error::from_raw_os_error(2)
+    ));
+    assert!(!is_locked_for(
+        Host::Windows,
+        &std::io::Error::other("boom")
+    ));
+
+    // Unix renames and unlinks open files, so there is never anything to wait
+    // for — including for the codes that mean something else entirely there.
+    for err in [&sharing, &locked, &denied] {
+        assert!(!is_locked_for(Host::Unix, err));
+    }
+}
+
+/// The retry gives up and hands back the last error rather than looping
+/// forever, and a non-lock error is returned on the first attempt.
+#[test]
+fn retry_while_locked_stops_and_reports() {
+    let mut attempts = 0;
+    let result: std::io::Result<()> = retry_while_locked(|| {
+        attempts += 1;
+        Err(std::io::Error::from_raw_os_error(2))
+    });
+
+    assert!(result.is_err());
+    assert_eq!(attempts, 1, "a plain failure must not be retried");
+
+    let mut attempts = 0;
+    let result: std::io::Result<()> = retry_while_locked(|| {
+        attempts += 1;
+        Ok(())
+    });
+    assert!(result.is_ok());
+    assert_eq!(attempts, 1);
+}
+
 #[test]
 fn ensure_dir_creates_missing_parents_and_is_idempotent() {
     let dir = tempfile::TempDir::new().unwrap();
