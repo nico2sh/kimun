@@ -177,7 +177,7 @@ impl WorkspaceConfig {
             quick_note_path: None,
             inbox_path: None,
             resolved_path: None,
-            file_key: None,
+            file_key: self.free_file_key(&name),
         };
 
         self.workspaces.insert(name.clone(), entry);
@@ -189,6 +189,30 @@ impl WorkspaceConfig {
         }
 
         Ok(())
+    }
+
+    /// A file key no existing workspace is already using.
+    ///
+    /// `None` — meaning "my own name" — whenever the name is free, so a fresh
+    /// workspace's files stay readable as `work.kimuncache`. It is *not* always
+    /// free: renaming `work` to `job` leaves that workspace still using the
+    /// `work` files while freeing the name `work` for a new workspace, and
+    /// letting the newcomer take it too would point two workspaces at one
+    /// SQLite index — each reindexing over the other's notes.
+    ///
+    /// Terminates: `taken` is finite, so some suffix is always free.
+    fn free_file_key(&self, name: &str) -> Option<String> {
+        let taken: std::collections::HashSet<String> = self
+            .workspaces
+            .iter()
+            .map(|(key, entry)| entry.file_key_or(key))
+            .collect();
+        if !taken.contains(name) {
+            return None;
+        }
+        (2..)
+            .map(|n| format!("{name}-{n}"))
+            .find(|candidate| !taken.contains(candidate))
     }
 
     /// Re-files the workspace at `old_name` under `new_name`, pinning what its
@@ -348,6 +372,61 @@ mod validate_tests {
         assert!(wc.rename_workspace("second", "renamed".to_string()));
 
         assert_eq!(wc.global.current_workspace, "first");
+    }
+
+    /// Renaming frees the old *name* but not the old *files* — the renamed
+    /// workspace still uses them. A new workspace claiming that name must get
+    /// its own, or two workspaces share one SQLite index and each reindexes
+    /// over the other's notes.
+    #[test]
+    fn a_new_workspace_reusing_a_freed_name_gets_its_own_files() {
+        let mut wc = WorkspaceConfig::new_empty();
+        wc.add_workspace("work".to_string(), PathBuf::from("/tmp/a"))
+            .unwrap();
+        wc.rename_workspace("work", "job".to_string());
+
+        wc.add_workspace("work".to_string(), PathBuf::from("/tmp/b"))
+            .unwrap();
+
+        assert_eq!(wc.workspaces["job"].file_key_or("job"), "work");
+        assert_eq!(wc.workspaces["work"].file_key_or("work"), "work-2");
+    }
+
+    /// The suffix keeps climbing rather than colliding a second time.
+    #[test]
+    fn repeated_reuse_of_a_name_keeps_finding_a_free_key() {
+        let mut wc = WorkspaceConfig::new_empty();
+        wc.add_workspace("work".to_string(), PathBuf::from("/tmp/a"))
+            .unwrap();
+        wc.rename_workspace("work", "first".to_string());
+        wc.add_workspace("work".to_string(), PathBuf::from("/tmp/b"))
+            .unwrap();
+        wc.rename_workspace("work", "second".to_string());
+        wc.add_workspace("work".to_string(), PathBuf::from("/tmp/c"))
+            .unwrap();
+
+        let mut keys: Vec<String> = wc
+            .workspaces
+            .iter()
+            .map(|(name, entry)| entry.file_key_or(name))
+            .collect();
+        keys.sort();
+        assert_eq!(keys, ["work", "work-2", "work-3"]);
+    }
+
+    /// An untouched name still gets the readable form — the suffix is only for
+    /// genuine collisions, not for every workspace after the first rename.
+    #[test]
+    fn an_unclaimed_name_keeps_its_own_files() {
+        let mut wc = WorkspaceConfig::new_empty();
+        wc.add_workspace("work".to_string(), PathBuf::from("/tmp/a"))
+            .unwrap();
+        wc.rename_workspace("work", "job".to_string());
+        wc.add_workspace("other".to_string(), PathBuf::from("/tmp/b"))
+            .unwrap();
+
+        assert_eq!(wc.workspaces["other"].file_key, None);
+        assert_eq!(wc.workspaces["other"].file_key_or("other"), "other");
     }
 
     #[test]
