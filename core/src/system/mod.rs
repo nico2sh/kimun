@@ -461,38 +461,72 @@ pub fn is_locked_for(host: Host, err: &std::io::Error) -> bool {
     }
 }
 
-/// How long to keep retrying an operation blocked by another handle, and how
-/// the waits are spread. Backs off so the common case — the handle is gone
-/// within a millisecond — costs a millisecond.
+/// How long to wait, in total, for another handle to let go of a file.
 ///
-/// The ceiling is empirical, and the first guess was wrong: ~1.5s still lost a
-/// `workspace rename` on a loaded Windows CI runner, having spent the whole
-/// budget waiting. Whatever holds a freshly written index (Defender's
-/// real-time scan is the usual suspect) can hold it for seconds when sixteen
-/// test processes are competing for the disk, so this now totals ~9s.
+/// Twice now this ceiling has been set from a couple of observations and been
+/// wrong: 1.5s lost a `workspace rename`, and so did 9s — each time having
+/// spent the whole budget waiting. What is actually known about the wait is
+/// that it always *ends*: every measured lock cleared on its own, most within
+/// a second or two, and the failures were the tail of that distribution rather
+/// than a handle nobody ever released.
 ///
-/// That is a long time to block a rename, and it is still the right trade:
-/// the wait only ever happens on a lock that would otherwise have failed the
-/// operation outright, and losing a workspace's index is far worse than a
-/// rename that once took a few seconds.
-const LOCK_RETRY_DELAYS_MS: [u64; 12] = [1, 5, 20, 50, 100, 200, 400, 800, 1500, 2000, 2000, 2000];
+/// So the ceiling is deliberately far past any lock yet seen, and
+/// [`retry_while_locked`] logs what it actually waited. A ceiling that never
+/// fires costs nothing; the log is what will let this number be set from the
+/// distribution instead of from the last failure.
+const LOCK_RETRY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The gap between attempts, doubling from a millisecond up to this ceiling —
+/// so a lock that clears immediately costs a millisecond, and a long one is
+/// not polled thousands of times.
+const LOCK_RETRY_MAX_BACKOFF: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// A wait longer than this is worth a log line: below it the retry is doing its
+/// job invisibly, above it something held the file long enough to be worth
+/// knowing about.
+const LOCK_RETRY_LOG_THRESHOLD: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Runs `op`, retrying while it fails only because something still holds the
-/// file open (see [`is_locked_for`]). Any other error, and the last attempt's
-/// error, are returned as-is.
+/// file open (see [`is_locked_for`]). Any other error, and the error from the
+/// attempt that runs out of time, are returned as-is.
 ///
 /// On unix `is_locked_for` is always false, so this is one call and no sleep —
 /// the loop costs nothing on the platform that does not need it.
-fn retry_while_locked<T>(mut op: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
-    for delay in LOCK_RETRY_DELAYS_MS {
-        match op() {
-            Err(e) if is_locked_for(HOST, &e) => {
-                std::thread::sleep(std::time::Duration::from_millis(delay));
+///
+/// `what` and `path` name the operation in the log line; they are not used
+/// otherwise.
+fn retry_while_locked<T>(
+    what: &str,
+    path: &Path,
+    mut op: impl FnMut() -> std::io::Result<T>,
+) -> std::io::Result<T> {
+    let started = std::time::Instant::now();
+    let mut backoff = std::time::Duration::from_millis(1);
+    loop {
+        let result = op();
+        let Err(error) = &result else {
+            let waited = started.elapsed();
+            if waited >= LOCK_RETRY_LOG_THRESHOLD {
+                log::warn!(
+                    "waited {waited:?} for another handle to release {} before {what} succeeded",
+                    path.display()
+                );
             }
-            result => return result,
+            return result;
+        };
+        if !is_locked_for(HOST, error) || started.elapsed() >= LOCK_RETRY_TIMEOUT {
+            if is_locked_for(HOST, error) {
+                log::warn!(
+                    "gave up after {:?} waiting for another handle to release {} to {what}",
+                    started.elapsed(),
+                    path.display()
+                );
+            }
+            return result;
         }
+        std::thread::sleep(backoff);
+        backoff = (backoff * 2).min(LOCK_RETRY_MAX_BACKOFF);
     }
-    op()
 }
 
 /// Moves a file, including across volumes.
@@ -505,7 +539,7 @@ fn retry_while_locked<T>(mut op: impl FnMut() -> std::io::Result<T>) -> std::io:
 /// A destination still held open by another handle is waited out rather than
 /// reported; see [`is_locked_for`] for why that is a Windows-only wait.
 pub fn move_file(from: &Path, to: &Path) -> Result<(), SystemError> {
-    match retry_while_locked(|| std::fs::rename(from, to)) {
+    match retry_while_locked("move", from, || std::fs::rename(from, to)) {
         Ok(()) => Ok(()),
         Err(e) if is_cross_device_for(HOST, &e) => {
             std::fs::copy(from, to).map_err(|e| SystemError::io("copy", from, e))?;
@@ -581,7 +615,7 @@ pub fn replace_atomically(path: &Path, contents: &[u8]) -> Result<(), SystemErro
     // Same wait as `move_file`: the file being replaced is the config the app
     // rewrites on every preference change, and a scanner holding it briefly
     // must not surface as "could not save your settings".
-    retry_while_locked(|| std::fs::rename(&tmp, path))
+    retry_while_locked("replace", path, || std::fs::rename(&tmp, path))
         .map_err(|e| SystemError::io("replace", path, e))?;
     sync_dir(parent.unwrap_or(Path::new(".")));
     Ok(())
@@ -616,7 +650,7 @@ fn sync_dir(dir: &Path) {
 /// best-effort, so a transient lock there does not fail the command — it
 /// silently leaves the index behind forever.
 pub fn remove_file(path: &Path) -> Result<(), SystemError> {
-    match retry_while_locked(|| std::fs::remove_file(path)) {
+    match retry_while_locked("remove", path, || std::fs::remove_file(path)) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(SystemError::io("remove", path, e)),

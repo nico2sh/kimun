@@ -376,26 +376,58 @@ fn open_file_errors_are_recognized_only_on_windows() {
     }
 }
 
-/// The retry gives up and hands back the last error rather than looping
-/// forever, and a non-lock error is returned on the first attempt.
+/// A non-lock error is returned on the first attempt, and success is not
+/// retried either — the loop must cost nothing when there is no lock.
 #[test]
-fn retry_while_locked_stops_and_reports() {
+fn retry_while_locked_does_not_retry_what_it_should_not() {
+    let path = host_path("/some/file");
+
     let mut attempts = 0;
-    let result: std::io::Result<()> = retry_while_locked(|| {
+    let result: std::io::Result<()> = retry_while_locked("move", &path, || {
         attempts += 1;
         Err(std::io::Error::from_raw_os_error(2))
     });
-
     assert!(result.is_err());
     assert_eq!(attempts, 1, "a plain failure must not be retried");
 
     let mut attempts = 0;
-    let result: std::io::Result<()> = retry_while_locked(|| {
+    let result: std::io::Result<()> = retry_while_locked("move", &path, || {
         attempts += 1;
         Ok(())
     });
     assert!(result.is_ok());
     assert_eq!(attempts, 1);
+}
+
+/// A lock that clears is waited out and the operation then succeeds — the
+/// whole point of the retry, and the case a unix-only suite would otherwise
+/// never execute, since `is_locked_for(Host::Unix, _)` is always false.
+///
+/// Drives the loop through `HOST`, so on unix this asserts the no-wait path
+/// (first error returned immediately) and on Windows the retry path.
+#[test]
+fn retry_while_locked_waits_out_a_lock_that_clears() {
+    let path = host_path("/some/file");
+    let mut attempts = 0;
+
+    let result: std::io::Result<()> = retry_while_locked("move", &path, || {
+        attempts += 1;
+        if attempts < 3 {
+            Err(std::io::Error::from_raw_os_error(32)) // ERROR_SHARING_VIOLATION
+        } else {
+            Ok(())
+        }
+    });
+
+    if HOST == Host::Windows {
+        assert!(result.is_ok(), "a lock that clears must not fail the op");
+        assert_eq!(attempts, 3);
+    } else {
+        // Nothing to wait for: unix renames and unlinks open files, so error
+        // 32 is just an error and comes straight back.
+        assert!(result.is_err());
+        assert_eq!(attempts, 1);
+    }
 }
 
 #[test]
