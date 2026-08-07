@@ -10,10 +10,19 @@ use kimun_notes::cli::{CliCommand, run_cli};
 use tempfile::TempDir;
 
 /// Create a temporary vault with test notes indexed.
+///
+/// Test vaults keep their index at `.test-index.kimuncache` rather than the
+/// default `<workspace>/kimun.sqlite`. Two reasons, both about not colliding
+/// with the code under test: loading a Phase 1 config migrates `kimun.sqlite`
+/// into the cache dir, and Windows refuses to move a file whose handle is
+/// still open — which a live test vault's connection pool holds. The leading
+/// dot also keeps the file out of the vault walk.
 async fn setup_json_test_vault(dir: &TempDir) -> NoteVault {
-    let vault = NoteVault::new(VaultConfig::new(dir.path()))
-        .await
-        .expect("failed to create vault");
+    let vault = NoteVault::new(
+        VaultConfig::new(dir.path()).with_db_path(dir.path().join(".test-index.kimuncache")),
+    )
+    .await
+    .expect("failed to create vault");
     vault
         .validate_and_init()
         .await
@@ -73,9 +82,12 @@ async fn test_search_json_output_is_valid() {
     write_config(&config_path, workspace_dir.path());
 
     // Capture stdout by using the vault directly
-    let vault = NoteVault::new(VaultConfig::new(workspace_dir.path()))
-        .await
-        .unwrap();
+    let vault = NoteVault::new(
+        VaultConfig::new(workspace_dir.path())
+            .with_db_path(workspace_dir.path().join(".test-index.kimuncache")),
+    )
+    .await
+    .unwrap();
     vault.validate_and_init().await.unwrap();
 
     let results = vault.search_notes("rust").await.unwrap();
@@ -148,9 +160,12 @@ async fn test_notes_json_output_is_valid() {
     setup_json_test_vault(&workspace_dir).await;
     write_config(&config_path, workspace_dir.path());
 
-    let vault = NoteVault::new(VaultConfig::new(workspace_dir.path()))
-        .await
-        .unwrap();
+    let vault = NoteVault::new(
+        VaultConfig::new(workspace_dir.path())
+            .with_db_path(workspace_dir.path().join(".test-index.kimuncache")),
+    )
+    .await
+    .unwrap();
     vault.validate_and_init().await.unwrap();
 
     let results = vault.get_all_notes().await.unwrap();
@@ -198,9 +213,12 @@ async fn test_search_json_metadata_contains_tags_and_links() {
     setup_json_test_vault(&workspace_dir).await;
     write_config(&config_path, workspace_dir.path());
 
-    let vault = NoteVault::new(VaultConfig::new(workspace_dir.path()))
-        .await
-        .unwrap();
+    let vault = NoteVault::new(
+        VaultConfig::new(workspace_dir.path())
+            .with_db_path(workspace_dir.path().join(".test-index.kimuncache")),
+    )
+    .await
+    .unwrap();
     vault.validate_and_init().await.unwrap();
 
     let results = vault.search_notes("rust").await.unwrap();
@@ -262,9 +280,12 @@ async fn test_notes_json_journal_date_field_present() {
     setup_json_test_vault(&workspace_dir).await;
     write_config(&config_path, workspace_dir.path());
 
-    let vault = NoteVault::new(VaultConfig::new(workspace_dir.path()))
-        .await
-        .unwrap();
+    let vault = NoteVault::new(
+        VaultConfig::new(workspace_dir.path())
+            .with_db_path(workspace_dir.path().join(".test-index.kimuncache")),
+    )
+    .await
+    .unwrap();
     vault.validate_and_init().await.unwrap();
 
     // Create a journal note
@@ -320,9 +341,12 @@ async fn test_notes_json_created_field_present() {
 
     setup_json_test_vault(&workspace_dir).await;
 
-    let vault = NoteVault::new(VaultConfig::new(workspace_dir.path()))
-        .await
-        .unwrap();
+    let vault = NoteVault::new(
+        VaultConfig::new(workspace_dir.path())
+            .with_db_path(workspace_dir.path().join(".test-index.kimuncache")),
+    )
+    .await
+    .unwrap();
     vault.validate_and_init().await.unwrap();
 
     let results = vault.get_all_notes().await.unwrap();

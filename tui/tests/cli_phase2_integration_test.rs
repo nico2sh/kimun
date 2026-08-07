@@ -12,10 +12,19 @@ use kimun_notes::settings::AppSettings;
 use tempfile::TempDir;
 
 /// Create a temporary workspace with test notes and return both the vault and its directory.
+///
+/// Test vaults keep their index at `.test-index.kimuncache` rather than the
+/// default `<workspace>/kimun.sqlite`. Two reasons, both about not colliding
+/// with the code under test: loading a Phase 1 config migrates `kimun.sqlite`
+/// into the cache dir, and Windows refuses to move a file whose handle is
+/// still open — which a live test vault's connection pool holds. The leading
+/// dot also keeps the file out of the vault walk.
 async fn setup_test_workspace(name: &str, dir: &TempDir) -> NoteVault {
-    let vault = NoteVault::new(VaultConfig::new(dir.path()))
-        .await
-        .expect("failed to create vault");
+    let vault = NoteVault::new(
+        VaultConfig::new(dir.path()).with_db_path(dir.path().join(".test-index.kimuncache")),
+    )
+    .await
+    .expect("failed to create vault");
     vault
         .validate_and_init()
         .await
@@ -333,9 +342,12 @@ async fn test_json_output_multi_workspace() {
     );
 
     // Verify JSON structure by directly calling the vault (since CLI output goes to stdout)
-    let vault = NoteVault::new(VaultConfig::new(workspace_dir.path()))
-        .await
-        .unwrap();
+    let vault = NoteVault::new(
+        VaultConfig::new(workspace_dir.path())
+            .with_db_path(workspace_dir.path().join(".test-index.kimuncache")),
+    )
+    .await
+    .unwrap();
     vault.validate_and_init().await.unwrap();
 
     let results = vault.search_notes("test").await.unwrap();

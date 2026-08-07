@@ -11,7 +11,7 @@ fn migrate_phase1_to_phase2_config() {
     // Write Phase 1 config
     let phase1_toml = format!(
         r#"
-workspace_dir = "{}"
+workspace_dir = '{}'
 theme = "gruvbox_dark"
 "#,
         workspace_dir.display()
@@ -43,7 +43,7 @@ fn migrate_phase1_preserves_last_paths() {
 
     let phase1_toml = format!(
         r#"
-workspace_dir = "{}"
+workspace_dir = '{}'
 theme = "gruvbox_dark"
 last_paths = ["/journal", "/tasks"]
 "#,
@@ -111,7 +111,7 @@ current_workspace = "default"
 theme = "dark"
 
 [workspaces.default]
-path = "{}"
+path = '{}'
 last_paths = []
 created = "2024-01-15T10:30:00Z"
 "#,
@@ -147,7 +147,7 @@ theme = "gruvbox_dark"
 current_workspace = "notes"
 
 [workspaces.notes]
-path = "{}"
+path = '{}'
 last_paths = ["a.md", "b.md", "c.md"]
 created = "2026-01-01T00:00:00Z"
 "#,
@@ -203,7 +203,7 @@ theme = "gruvbox_dark"
 current_workspace = "bad/name"
 
 [workspaces."bad/name"]
-path = "{}"
+path = '{}'
 last_paths = []
 created = "2026-01-01T00:00:00Z"
 "#,
@@ -241,7 +241,7 @@ theme = "gruvbox_dark"
 current_workspace = "notes"
 
 [workspaces.notes]
-path = "{}"
+path = '{}'
 last_paths = ["x.md"]
 created = "2026-01-01T00:00:00Z"
 "#,
@@ -274,7 +274,7 @@ theme = "gruvbox_dark"
 current_workspace = "notes"
 
 [workspaces.notes]
-path = "{}"
+path = '{}'
 created = "2026-01-01T00:00:00Z"
 "#,
             workspace_dir.path().display()
@@ -315,7 +315,7 @@ theme = "gruvbox_dark"
 current_workspace = "notes"
 
 [workspaces.notes]
-path = "{}"
+path = '{}'
 last_paths = []
 created = "2026-01-01T00:00:00Z"
 "#,

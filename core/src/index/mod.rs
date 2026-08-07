@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use log::{debug, error};
 use search_terms::{OrderBy, SearchTerms};
-use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use sqlx::{Row, Sqlite, Transaction};
 
 use crate::note::{ContentChunk, LinkType, NoteContentData, NoteDetails};
@@ -166,12 +166,21 @@ impl NoteIndex {
         if let Some(parent) = db_path.parent() {
             crate::nfs::ensure_dir(parent).map_err(|e| DBError::Other(e.to_string()))?;
         }
-        let connection_string = format!("sqlite:{}?mode=rwc", db_path.display());
+        // The path is handed to sqlx as a path, never spliced into a
+        // `sqlite:{}?mode=rwc` URL. A formatted URL has to survive URL parsing,
+        // so the first `?` in it starts the query string — and on Windows every
+        // canonicalized path opens with the verbatim prefix `\\?\`, which made
+        // the rest of the path parse as a bogus query parameter and failed
+        // every open. `?` and `#` in a vault's own directory name would do the
+        // same on any platform. `create_if_missing` is what `mode=rwc` meant.
+        let options = SqliteConnectOptions::new()
+            .filename(&db_path)
+            .create_if_missing(true);
 
         let pool = SqlitePoolOptions::new()
             .max_connections(5)
             .acquire_timeout(Duration::from_secs(30))
-            .connect(&connection_string)
+            .connect_with(options)
             .await?;
 
         // Only a *readable* schema that is missing or stale heals (the
@@ -2150,6 +2159,45 @@ mod tests {
         assert!(nested.exists());
         // A fresh file has no schema — open must have healed it.
         assert!(!db.ready());
+        db.close().await;
+    }
+
+    /// A db path is a path, not a URL. Splicing one into `sqlite:{}?mode=rwc`
+    /// means the first `?` *in the path* starts the query string, so SQLite is
+    /// handed a truncated filename and a garbage parameter. `?` is legal in a
+    /// directory name on Unix, so this reproduces it directly; the Windows
+    /// manifestation of the same bug is
+    /// [`open_accepts_a_canonicalized_db_path`].
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn open_accepts_a_db_path_containing_a_question_mark() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let awkward = tmp.path().join("why not?").join("cache.kimuncache");
+
+        let db = super::NoteIndex::open(&awkward).await.unwrap();
+
+        assert!(awkward.exists(), "db must be created at {awkward:?}");
+        assert!(
+            !db.ready(),
+            "a fresh file has no schema — open must heal it"
+        );
+        db.close().await;
+    }
+
+    /// Every db path Kimun computes comes from a canonicalized directory
+    /// (`AppSettings::expand_path`, `ensure_dir_exists`). On Windows that means
+    /// the verbatim prefix `\\?\`, whose `?` broke the old URL-formatted
+    /// connection string on *every* open — the platform-specific face of
+    /// [`open_accepts_a_db_path_containing_a_question_mark`]. A no-op on Unix,
+    /// where canonicalize only resolves symlinks.
+    #[tokio::test]
+    async fn open_accepts_a_canonicalized_db_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let canonical = tmp.path().canonicalize().unwrap().join("cache.kimuncache");
+
+        let db = super::NoteIndex::open(&canonical).await.unwrap();
+
+        assert!(canonical.exists(), "db must be created at {canonical:?}");
         db.close().await;
     }
 
