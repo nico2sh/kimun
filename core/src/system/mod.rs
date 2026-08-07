@@ -463,18 +463,24 @@ pub fn is_locked_for(host: Host, err: &std::io::Error) -> bool {
 
 /// How long to wait, in total, for another handle to let go of a file.
 ///
-/// Twice now this ceiling has been set from a couple of observations and been
-/// wrong: 1.5s lost a `workspace rename`, and so did 9s — each time having
-/// spent the whole budget waiting. What is actually known about the wait is
-/// that it always *ends*: every measured lock cleared on its own, most within
-/// a second or two, and the failures were the tail of that distribution rather
-/// than a handle nobody ever released.
+/// Measured, after three wrong guesses. Raising the ceiling to 60s to find the
+/// shape of the wait produced the answer that matters: a lock either clears
+/// within a second or two, or it does not clear at all — one CI run held an
+/// index for the full sixty seconds and was still holding it at the end.
 ///
-/// So the ceiling is deliberately far past any lock yet seen, and
-/// [`retry_while_locked`] logs what it actually waited. A ceiling that never
-/// fires costs nothing; the log is what will let this number be set from the
-/// distribution instead of from the last failure.
-const LOCK_RETRY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+/// So a long ceiling buys nothing. It cannot rescue the second case, and the
+/// first is over almost immediately; all it does is make a doomed
+/// `workspace rename` hang for a minute before failing. Three seconds covers
+/// every wait yet observed to succeed (the longest was ~2.7s) and gives up
+/// promptly on the ones that never will.
+///
+/// The permanent case is a separate, unsolved bug — something on Windows keeps
+/// a handle on a closed SQLite index. It is not a descriptor kimün holds: the
+/// pool close is synchronous (sqlx drops the connection before acking
+/// shutdown), and probing `/proc/self/fd` after `close()` across 25 rounds
+/// found nothing open. [`retry_while_locked`] logs the waits so the next
+/// investigation starts from data.
+const LOCK_RETRY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// The gap between attempts, doubling from a millisecond up to this ceiling —
 /// so a lock that clears immediately costs a millisecond, and a long one is
