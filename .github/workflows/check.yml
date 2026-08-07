@@ -137,26 +137,6 @@ jobs:
         with:
           tool: cargo-nextest
 
-      # Defender scans a file as its handle closes and holds the file while it
-      # does — and Windows will not rename or delete a held file. The suite
-      # creates a SQLite index and renames it moments later, which lost that
-      # race on roughly one Windows run in three with ERROR_SHARING_VIOLATION,
-      # on an idle runner, past a nine-second wait. Excluding the temp
-      # directories the tests write into removes the scanner from the picture.
-      #
-      # This is a CI concession, not the fix: `kimun_core::system` waits such
-      # locks out (`is_locked_for`), because a real user runs Defender too and
-      # cannot be told to turn it off. What we lose is CI exercising that wait,
-      # which is why the wait has its own unit tests rather than relying on
-      # this leg to cover it.
-      #
-      # Non-fatal: a runner image without Defender must not fail the build.
-      - name: Exclude test temp directories from Defender
-        if: runner.os == 'Windows'
-        continue-on-error: true
-        shell: pwsh
-        run: Add-MpPreference -ExclusionPath $env:TEMP, $env:RUNNER_TEMP
-
       # `--no-fail-fast`: nextest's default cancels the run on the first
       # failure, which on a three-OS matrix turns one red platform into a
       # partial answer — the report reads "2871 tests were not run" and the
