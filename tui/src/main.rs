@@ -689,10 +689,20 @@ mod tests {
     #[test]
     fn init_logging_returns_none_on_bad_path() {
         use crate::init_logging;
-        // /nonexistent/readonly/path cannot be created; init_logging must return None
-        // without panicking. This test exercises the early-return path before try_init
-        // is called, so the global subscriber singleton is not set by this test.
-        let result = init_logging(std::path::Path::new("/nonexistent/readonly/path"));
+        // A directory nested under a regular *file* cannot be created on any
+        // platform, so this reliably exercises the early return before
+        // `try_init` — leaving the global subscriber singleton unset.
+        //
+        // A literal like `/nonexistent/readonly/path` does not do that: on
+        // Windows it has no drive prefix, so it is merely rooted and resolves
+        // against the current drive, where `create_dir_all` cheerfully creates
+        // it (and litters the drive root) and `init_logging` returns `Some`.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let not_a_dir = tmp.path().join("regular-file");
+        std::fs::write(&not_a_dir, b"not a directory").unwrap();
+
+        let result = init_logging(&not_a_dir.join("logs"));
+
         assert!(result.is_none());
     }
 }

@@ -129,6 +129,12 @@ async fn run_init(settings: &mut AppSettings, name: Option<String>, path: PathBu
         .validate_and_init()
         .await
         .map_err(|e| eyre!("Failed to initialize vault database: {}", e))?;
+    // This vault existed only to create the database; release its handle on the
+    // cache file rather than leaving that to pool drop, which merely schedules
+    // the close. A later `workspace rename` in the same process (the TUI, or a
+    // test driving several commands) has to move that file, and Windows will
+    // not move a file that is still open.
+    vault.close().await;
 
     let ws_config_mut = settings
         .workspace_config

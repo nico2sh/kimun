@@ -17,7 +17,12 @@ fn kimun_bin() -> std::path::PathBuf {
     if p.ends_with("deps") {
         p.pop();
     }
-    let bin = p.join("kimun");
+    // `EXE_SUFFIX` is "" everywhere except Windows, where the binary is
+    // `kimun.exe`. `Command::new` would paper over the difference (Windows
+    // appends the extension when spawning), but `Path::exists` does not — so a
+    // bare "kimun" makes the existence check below fail on Windows against a
+    // binary that is in fact right there.
+    let bin = p.join(format!("kimun{}", std::env::consts::EXE_SUFFIX));
     eprintln!("kimun binary path: {:?}", bin);
     bin
 }

@@ -786,6 +786,19 @@ impl NoteVault {
         Ok((entry_data, content_data))
     }
 
+    /// Releases the index file's handles now, instead of leaving it to
+    /// whenever the last clone of the connection pool drops.
+    ///
+    /// Call this before renaming, moving or deleting a workspace's index —
+    /// Windows refuses to touch a file that any handle still holds open, and
+    /// dropping a pool only *schedules* the close. A vault opened purely to
+    /// create or migrate a database should close it before the caller goes on
+    /// to move that file around. The vault must not be used afterwards; further
+    /// index operations fail with a closed-pool error.
+    pub async fn close(&self) {
+        self.index.close().await;
+    }
+
     /// The first note path at or after `path` that no note occupies: `path`
     /// itself when it is free, otherwise `path` with its name incremented (see
     /// [`VaultPath::get_name_on_conflict`]) until one is.

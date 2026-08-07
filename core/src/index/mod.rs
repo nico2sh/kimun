@@ -514,17 +514,25 @@ impl NoteIndex {
     }
 }
 
+impl NoteIndex {
+    /// Closes the pool, releasing the index file's handles now rather than
+    /// whenever the last clone happens to drop.
+    ///
+    /// Dropping a pool schedules the close; it does not perform it, so the file
+    /// can still be open afterwards. On Windows that is the difference between
+    /// being able to rename or delete the index file and getting "The process
+    /// cannot access the file because it is being used by another process".
+    pub(crate) async fn close(&self) {
+        self.pool.close().await;
+    }
+}
+
 #[cfg(test)]
 impl NoteIndex {
     /// Test-only pool accessor — index-internal tests exercise SQL and the
     /// query builders directly through this internal seam.
     fn pool(&self) -> &SqlitePool {
         &self.pool
-    }
-
-    /// Test-only: release the pool's file handles promptly.
-    async fn close(&self) {
-        self.pool.close().await;
     }
 }
 
