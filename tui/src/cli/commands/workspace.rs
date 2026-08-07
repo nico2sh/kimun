@@ -124,22 +124,12 @@ async fn run_init(settings: &mut AppSettings, name: Option<String>, path: PathBu
         println!("Created directory: {}", path.display());
     }
 
-    println!("Initializing workspace database...");
-    let cache_path = settings.index_for(&workspace_name);
-    let vault = NoteVault::new(VaultConfig::new(canonical_path.clone()).with_index(cache_path))
-        .await
-        .map_err(|e| eyre!("Failed to create vault at {}: {}", canonical_path, e))?;
-    let init_result = vault.validate_and_init().await;
-    // This vault existed only to create the database; release its handle on the
-    // cache file rather than leaving that to pool drop, which merely schedules
-    // the close. A later `workspace rename` in the same process (the TUI, or a
-    // test driving several commands) has to move that file, and Windows will
-    // not move a file that is still open. Closed before the `?` too: a failed
-    // init leaves the cache file on disk, so bailing out with it still open is
-    // the same locked file with nobody left holding a handle to close it.
-    vault.close().await;
-    init_result.map_err(|e| eyre!("Failed to initialize vault database: {}", e))?;
-
+    // The entry goes in BEFORE the index is named. `add_workspace` is what
+    // mints the key the files are called after, so asking for the index first
+    // would create it under the workspace's *name* and then look for it under
+    // the key — a database written once and never found again. Nothing is
+    // persisted until `save_to_disk` below, so bailing out after this point
+    // leaves the config on disk untouched.
     let ws_config_mut = settings
         .workspace_config
         .as_mut()
@@ -150,6 +140,22 @@ async fn run_init(settings: &mut AppSettings, name: Option<String>, path: PathBu
             canonical_path.clone().into_path_buf(),
         )
         .map_err(|e| eyre!("{}", e))?;
+
+    println!("Initializing workspace database...");
+    let cache_path = settings.index_for(&workspace_name);
+    let vault = NoteVault::new(VaultConfig::new(canonical_path.clone()).with_index(cache_path))
+        .await
+        .map_err(|e| eyre!("Failed to create vault at {}: {}", canonical_path, e))?;
+    let init_result = vault.validate_and_init().await;
+    // This vault existed only to create the database; release its handle on the
+    // cache file rather than leaving that to pool drop, which merely schedules
+    // the close. A later `workspace remove` in the same process (the TUI, or a
+    // test driving several commands) has to delete that file, and Windows will
+    // not delete a file that is still open. Closed before the `?` too: a failed
+    // init leaves the cache file on disk, so bailing out with it still open is
+    // the same locked file with nobody left holding a handle to close it.
+    vault.close().await;
+    init_result.map_err(|e| eyre!("Failed to initialize vault database: {}", e))?;
 
     settings.config_version = CURRENT_CONFIG_VERSION;
     settings.save_to_disk()?;
