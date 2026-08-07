@@ -91,6 +91,14 @@ async fn run_init(settings: &mut AppSettings, name: Option<String>, path: PathBu
         }
     };
 
+    // Validate before anything derived from the name touches the filesystem.
+    // `add_workspace` validates too, but only after the cache file below has
+    // already been created at `<cache_dir>/<name>.kimuncache` — a name with
+    // `..` or a separator in it puts that file (plus its -wal/-shm sidecars
+    // and any parent directories) outside the cache directory entirely, and
+    // the command then aborts having already written them.
+    kimun_core::nfs::filename::validate_filename(&workspace_name).map_err(|e| eyre!("{}", e))?;
+
     if ws_config.workspaces.contains_key(&workspace_name) {
         let existing_path = &ws_config.workspaces[&workspace_name].path;
         return Err(eyre!(
@@ -125,16 +133,16 @@ async fn run_init(settings: &mut AppSettings, name: Option<String>, path: PathBu
                 e
             )
         })?;
-    vault
-        .validate_and_init()
-        .await
-        .map_err(|e| eyre!("Failed to initialize vault database: {}", e))?;
+    let init_result = vault.validate_and_init().await;
     // This vault existed only to create the database; release its handle on the
     // cache file rather than leaving that to pool drop, which merely schedules
     // the close. A later `workspace rename` in the same process (the TUI, or a
     // test driving several commands) has to move that file, and Windows will
-    // not move a file that is still open.
+    // not move a file that is still open. Closed before the `?` too: a failed
+    // init leaves the cache file on disk, so bailing out with it still open is
+    // the same locked file with nobody left holding a handle to close it.
     vault.close().await;
+    init_result.map_err(|e| eyre!("Failed to initialize vault database: {}", e))?;
 
     let ws_config_mut = settings
         .workspace_config
@@ -400,7 +408,13 @@ async fn run_reindex(settings: &AppSettings, name: Option<String>) -> Result<()>
             )
         })?;
 
-    let report = match vault.recreate_index().await {
+    let index_result = vault.recreate_index().await;
+    // Reindexing is done with the vault; close it (on the error paths too)
+    // instead of letting the process hold the cache file open, which blocks a
+    // later rename or remove of that workspace on Windows.
+    vault.close().await;
+
+    let report = match index_result {
         Ok(r) => r,
         Err(VaultError::CaseConflict { conflicts }) => {
             eprintln!(

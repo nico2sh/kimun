@@ -196,13 +196,20 @@ impl PreferencesScreen {
                 }
                 let event = match NoteVault::new(config).await {
                     Err(e) => AppEvent::IndexingDone(Err(e.to_string())),
-                    Ok(vault) => match vault.recreate_index().await {
-                        Ok(r) => AppEvent::IndexingDone(Ok(r.duration)),
-                        Err(e @ VaultError::CaseConflict { .. }) => {
-                            AppEvent::VaultConflict(e.to_string())
+                    Ok(vault) => {
+                        let result = vault.recreate_index().await;
+                        // Throwaway vault with its own pool — closing it does
+                        // not touch the app's vault, and leaving it to drop
+                        // keeps a second handle on the cache file open.
+                        vault.close().await;
+                        match result {
+                            Ok(r) => AppEvent::IndexingDone(Ok(r.duration)),
+                            Err(e @ VaultError::CaseConflict { .. }) => {
+                                AppEvent::VaultConflict(e.to_string())
+                            }
+                            Err(e) => AppEvent::IndexingDone(Err(e.to_string())),
                         }
-                        Err(e) => AppEvent::IndexingDone(Err(e.to_string())),
-                    },
+                    }
                 };
                 tx2.send(event).ok();
             });
@@ -371,13 +378,19 @@ impl AppScreen for PreferencesScreen {
                                 }
                                 let event = match NoteVault::new(config).await {
                                     Err(e) => AppEvent::IndexingDone(Err(e.to_string())),
-                                    Ok(vault) => match vault.recreate_index().await {
-                                        Ok(r) => AppEvent::IndexingDone(Ok(r.duration)),
-                                        Err(e @ VaultError::CaseConflict { .. }) => {
-                                            AppEvent::VaultConflict(e.to_string())
+                                    Ok(vault) => {
+                                        let result = vault.recreate_index().await;
+                                        // Throwaway vault with its own pool —
+                                        // see the reindex task above.
+                                        vault.close().await;
+                                        match result {
+                                            Ok(r) => AppEvent::IndexingDone(Ok(r.duration)),
+                                            Err(e @ VaultError::CaseConflict { .. }) => {
+                                                AppEvent::VaultConflict(e.to_string())
+                                            }
+                                            Err(e) => AppEvent::IndexingDone(Err(e.to_string())),
                                         }
-                                        Err(e) => AppEvent::IndexingDone(Err(e.to_string())),
-                                    },
+                                    }
                                 };
                                 tx2.send(event).ok();
                             });
@@ -716,11 +729,11 @@ impl AppScreen for PreferencesScreen {
                             config = config.with_db_path(path);
                         }
                         let vault = NoteVault::new(config).await.map_err(|e| e.to_string())?;
-                        vault
-                            .index_notes(NotesValidation::Fast)
-                            .await
-                            .map_err(|e| e.to_string())
-                            .map(|r| r.duration)
+                        let result = vault.index_notes(NotesValidation::Fast).await;
+                        // Throwaway vault with its own pool — see the reindex
+                        // task above.
+                        vault.close().await;
+                        result.map_err(|e| e.to_string()).map(|r| r.duration)
                     }
                     .await;
                     tx2.send(AppEvent::IndexingDone(result)).ok();

@@ -237,9 +237,9 @@ impl ConfigMigration {
                         ))
                     })?;
                     if let Err(rename_err) = std::fs::rename(&old_db, &new_db) {
-                        // EXDEV: source and destination on different filesystems —
-                        // rename(2) cannot cross mount points; fall back to copy + unlink.
-                        if rename_err.raw_os_error() == Some(libc_exdev_code()) {
+                        // Source and destination on different filesystems — a
+                        // rename cannot cross them; fall back to copy + unlink.
+                        if is_cross_device_error(&rename_err) {
                             std::fs::copy(&old_db, &new_db)?;
                             std::fs::remove_file(&old_db)?;
                         } else {
@@ -353,13 +353,23 @@ impl ConfigMigration {
     }
 }
 
-#[cfg(unix)]
-fn libc_exdev_code() -> i32 {
-    18 // EXDEV on Linux
-}
-#[cfg(not(unix))]
-fn libc_exdev_code() -> i32 {
-    -1
+/// Whether a failed `rename` means "source and destination are on different
+/// volumes" — the one failure the copy + unlink fallback can recover from.
+///
+/// Two error codes, not one: unix reports `EXDEV`, but Windows `MoveFile`
+/// reports `ERROR_NOT_SAME_DEVICE` for a cross-drive move, so matching only
+/// the unix errno left the fallback dead exactly where it is most likely to
+/// fire — a vault on `D:\` with its cache dir under `C:\Users\...` failed the
+/// v2 → v3 migration outright.
+fn is_cross_device_error(err: &std::io::Error) -> bool {
+    #[cfg(unix)]
+    let code = Some(18); // EXDEV
+    #[cfg(windows)]
+    let code = Some(17); // ERROR_NOT_SAME_DEVICE
+    #[cfg(not(any(unix, windows)))]
+    let code: Option<i32> = None;
+
+    code.is_some_and(|c| err.raw_os_error() == Some(c))
 }
 
 #[cfg(test)]
@@ -373,6 +383,26 @@ mod tests {
         s.workspace_dir = Some(PathBuf::from(path));
         s.theme = "gruvbox_dark".to_string();
         s
+    }
+
+    /// The cache move's copy + unlink fallback only runs when the rename
+    /// failure is recognized as cross-volume, so the code has to be the host's
+    /// — matching only `EXDEV` left Windows (`ERROR_NOT_SAME_DEVICE`) with a
+    /// migration that hard-errors on a vault and a cache dir on different
+    /// drives.
+    #[test]
+    #[cfg(any(unix, windows))]
+    fn cross_device_rename_error_is_recognized_on_this_platform() {
+        let cross_device = if cfg!(windows) { 17 } else { 18 };
+
+        assert!(is_cross_device_error(&std::io::Error::from_raw_os_error(
+            cross_device
+        )));
+        assert!(!is_cross_device_error(&std::io::Error::from_raw_os_error(
+            2
+        )));
+        // No OS error at all must not read as cross-device.
+        assert!(!is_cross_device_error(&std::io::Error::other("boom")));
     }
 
     #[test]

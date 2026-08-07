@@ -771,8 +771,14 @@ impl AppSettings {
     }
 
     /// Expand `~` to the home directory and resolve relative paths against `base`.
-    /// Returns an absolute path. If the resolved path exists on disk, it is
-    /// canonicalized to remove `.` and `..` components.
+    /// Returns an absolute path, canonicalized when it exists on disk.
+    ///
+    /// `.` and `..` are always removed, canonicalize or not: `base` is already
+    /// canonical, which on Windows means the verbatim `\\?\C:\...` form, and
+    /// Win32 reads every component of a verbatim path literally. The default
+    /// `cache_dir = "."` would otherwise resolve to `\\?\C:\...\.\` — a
+    /// directory named `.` that cannot be created and a cache file that cannot
+    /// be opened, on the default config.
     fn expand_path(path: &std::path::Path, base: &std::path::Path) -> PathBuf {
         let s = path.to_string_lossy();
         let expanded = if s.starts_with("~/") || s == "~" {
@@ -789,7 +795,8 @@ impl AppSettings {
         } else {
             expanded
         };
-        // Canonicalize if the path exists, otherwise return as-is.
+        let absolute = kimun_core::normalize_path(&absolute);
+        // Canonicalize if the path exists, otherwise return the normalized form.
         absolute.canonicalize().unwrap_or(absolute)
     }
 
@@ -1241,6 +1248,32 @@ mod backend_tests {
         let result = AppSettings::expand_path(std::path::Path::new("../sibling"), &sub);
         assert!(result.is_absolute());
         assert_eq!(result, sibling.canonicalize().unwrap());
+    }
+
+    /// The `cache_dir = "."` default must not leave a `.` component in the
+    /// result. Asserted on the raw string, because `Path`'s `PartialEq` goes
+    /// through `Components` and drops `.` on its own — the comparison would
+    /// pass either way while Windows still got a verbatim `\\?\C:\...\.` that
+    /// no `create_dir_all` or SQLite open can use.
+    #[test]
+    fn expand_path_strips_cur_dir_from_the_result() {
+        let base = tempfile::TempDir::new().unwrap();
+        let canonical_base = base.path().canonicalize().unwrap();
+
+        let result = AppSettings::expand_path(std::path::Path::new("."), &canonical_base);
+
+        assert_eq!(result.as_os_str(), canonical_base.as_os_str());
+    }
+
+    /// Same for a path that does not exist yet (`history_dir` before its first
+    /// write), where there is no `canonicalize` to fall back on.
+    #[test]
+    fn expand_path_strips_cur_dir_when_the_target_is_missing() {
+        let base = absolute("/some/config/dir");
+
+        let result = AppSettings::expand_path(std::path::Path::new("./history"), &base);
+
+        assert_eq!(result.as_os_str(), base.join("history").as_os_str());
     }
 
     #[test]

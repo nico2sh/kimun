@@ -58,7 +58,7 @@ pub use index::{IndexDiff, IndexObserver, NoteChange, NoteSuggestion, TagSuggest
 pub use nfs::saved_searches::{saved_search_name_matches, SavedSearch};
 pub use nfs::vault_id::VaultId;
 pub use nfs::EntryKind;
-pub use utilities::{app_log_dir, ensure_dir_exists};
+pub use utilities::{app_log_dir, ensure_dir_exists, normalize_path};
 
 use std::{
     collections::HashMap,
@@ -786,16 +786,24 @@ impl NoteVault {
         Ok((entry_data, content_data))
     }
 
-    /// Releases the index file's handles now, instead of leaving it to
-    /// whenever the last clone of the connection pool drops.
+    /// Ends this vault, releasing the index file's handles now instead of
+    /// leaving it to whenever the last clone of the connection pool drops.
     ///
     /// Call this before renaming, moving or deleting a workspace's index —
     /// Windows refuses to touch a file that any handle still holds open, and
     /// dropping a pool only *schedules* the close. A vault opened purely to
     /// create or migrate a database should close it before the caller goes on
-    /// to move that file around. The vault must not be used afterwards; further
-    /// index operations fail with a closed-pool error.
-    pub async fn close(&self) {
+    /// to move that file around.
+    ///
+    /// Takes `self` because this is not a per-handle release: clones share one
+    /// connection pool, so closing ends the index for *every* clone, which
+    /// then fails with a closed-pool error on its next query. Consuming the
+    /// receiver keeps that an explicit end-of-life for a vault the caller owns
+    /// rather than something a stray clone can do to everyone else — clone
+    /// first and close the clone and the same damage is back, so a vault
+    /// shared with live readers (the TUI's `Arc<NoteVault>`) must not be
+    /// closed at all.
+    pub async fn close(self) {
         self.index.close().await;
     }
 

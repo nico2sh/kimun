@@ -78,30 +78,48 @@ pub async fn run_cli(command: CliCommand, config_path: Option<std::path::PathBuf
             )
             .await?;
             vault.set_inbox_path(kimun_core::nfs::VaultPath::new(&inbox_path));
-            if vault.index_ready() {
+            // Every one-shot command closes its vault before returning: the
+            // command owns that vault for its whole life, and dropping a pool
+            // only schedules the close, so anything the same process does next
+            // (a `workspace rename`/`remove`, a test driving several commands
+            // in a row) would find the cache file still open — fatal on
+            // Windows, which will not move or delete an open file.
+            let result = if vault.index_ready() {
                 commands::note_ops::run(subcommand, &vault, &quick_note_path, &workspace_name).await
             } else {
                 Err(eyre!(
                     "Workspace index is not ready.\nRun `kimun workspace reindex` to initialise it."
                 ))
-            }
+            };
+            vault.close().await;
+            result
         }
         CliCommand::Search { query, format } => {
             let (vault, workspace_name) = create_and_init_vault(config_path).await?;
-            commands::search::run(&vault, &query, format, &workspace_name, false).await
+            let result =
+                commands::search::run(&vault, &query, format, &workspace_name, false).await;
+            vault.close().await;
+            result
         }
         CliCommand::Notes { path, format } => {
             let (vault, workspace_name) = create_and_init_vault(config_path).await?;
-            commands::notes::run(&vault, path.as_deref(), format, &workspace_name, false).await
+            let result =
+                commands::notes::run(&vault, path.as_deref(), format, &workspace_name, false).await;
+            vault.close().await;
+            result
         }
         CliCommand::Journal(args) => {
             let (vault, workspace_name) = create_and_init_vault(config_path).await?;
-            commands::journal::run(args, &vault, &workspace_name).await
+            let result = commands::journal::run(args, &vault, &workspace_name).await;
+            vault.close().await;
+            result
         }
         CliCommand::Mcp => commands::mcp::run(config_path).await,
         CliCommand::Labels { format } => {
             let (vault, workspace_name) = create_and_init_vault(config_path).await?;
-            commands::labels::run(&vault, format, &workspace_name).await
+            let result = commands::labels::run(&vault, format, &workspace_name).await;
+            vault.close().await;
+            result
         }
         // Update is vault-independent: it talks to GitHub and the app config
         // dir, not a workspace.
