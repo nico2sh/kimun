@@ -6,7 +6,7 @@ use serde::{de::Visitor, Deserialize, Serialize};
 
 use super::filename;
 use crate::error::FSError;
-use crate::utilities::path_to_string;
+use crate::system::path_to_string;
 
 /// The vault-internal path separator. Always `/`, independent of the host OS:
 /// a [`VaultPath`] is logical and portable, and is only translated to native
@@ -745,7 +745,7 @@ mod tests {
         assert_eq!(with_note_extension("work/proj*"), "work/proj*.md");
     }
 
-    use crate::{error::FSError, utilities::path_to_string};
+    use crate::{error::FSError, system::path_to_string};
 
     use super::{VaultPath, VaultPathSlice};
 
