@@ -17,7 +17,7 @@
 //!   rebuilt at any time from the files, which remain the source of truth.
 //! - **`nfs` and `system` own the filesystem.** Every direct
 //!   `std::fs`/`tokio::fs` call lives in one of them: [`nfs`] for vault-scoped
-//!   work (notes, addressed by [`VaultPath`](nfs::VaultPath)) and [`system`]
+//!   work (notes, addressed by [`VaultPath`]) and [`system`]
 //!   for host-scoped work (the app's own directories, cross-volume moves).
 //!   The rest of the crate goes through them.
 //!
