@@ -495,6 +495,11 @@ impl OnboardingScreen {
                         AppSettings::default_workspace_suggestion()
                             .and_then(|p| p.parent().map(|p| p.to_path_buf()))
                     })
+                    .or_else(|| {
+                        kimun_core::system::browse_root()
+                            .ok()
+                            .map(|p| p.into_path_buf())
+                    })
                     .unwrap_or_else(|| std::path::PathBuf::from("/"));
                 self.overlay = OnbOverlay::Browser(FileBrowserState::load(start));
             }

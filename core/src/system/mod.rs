@@ -257,10 +257,16 @@ impl std::fmt::Display for SystemPath {
 /// only mislead — `C:\a\.\b` is a single component there. It is verified
 /// against real Windows paths on the Windows CI leg.
 fn normalize(path: &Path) -> PathBuf {
-    let rooted = matches!(
-        path.components().next(),
-        Some(Component::Prefix(_) | Component::RootDir)
-    );
+    // "Rooted" means there is a root above which `..` cannot climb — a
+    // `RootDir`, on its own or behind a Windows prefix. A bare prefix is *not*
+    // one: `C:..\a` is drive-relative, so its `..` still has a directory to
+    // climb out of and must be kept, exactly as in a relative path.
+    let mut components = path.components();
+    let rooted = match components.next() {
+        Some(Component::RootDir) => true,
+        Some(Component::Prefix(_)) => components.next() == Some(Component::RootDir),
+        _ => false,
+    };
     let mut out = PathBuf::new();
     // Named components `..` is allowed to cancel. Anything else already in
     // `out` (a prefix, a root, a kept `..`) must survive a `pop`.
@@ -327,6 +333,24 @@ pub fn app_dir() -> Result<SystemPath, SystemError> {
     Ok(app_dir_under(&home()?, HOST))
 }
 
+/// Where to open a directory browser when the caller has no better candidate:
+/// the home directory, or the working directory when there is none.
+///
+/// Here rather than at the call site because the obvious literal is wrong on
+/// one host: `Path::new("/")` is *not* absolute on Windows — it carries no
+/// drive prefix — so [`SystemPath`] refuses it and the browser opens on an
+/// empty listing with nothing to navigate to.
+pub fn browse_root() -> Result<SystemPath, SystemError> {
+    match home() {
+        Ok(home) => Ok(home),
+        Err(_) => {
+            let cwd = std::env::current_dir()
+                .map_err(|e| SystemError::io("resolve", Path::new("."), e))?;
+            SystemPath::try_absolute(cwd)
+        }
+    }
+}
+
 /// [`app_dir`], created if absent.
 pub fn ensure_app_dir() -> Result<SystemPath, SystemError> {
     let dir = app_dir()?;
@@ -343,17 +367,47 @@ pub fn ensure_app_dir() -> Result<SystemPath, SystemError> {
 pub fn log_dir() -> SystemPath {
     match app_dir() {
         Ok(dir) => dir.join(LOG_DIR_NAME),
-        Err(_) => SystemPath(std::env::temp_dir().join(APP_DIR_NAME).join(LOG_DIR_NAME)),
+        Err(_) => log_dir_in_temp(
+            &std::env::temp_dir(),
+            &std::env::current_dir().unwrap_or_default(),
+        ),
     }
+}
+
+/// kimün's log directory under `temp`, anchored to `cwd` if `temp` is relative.
+///
+/// Split out from [`log_dir`] and parameterized because the branch is
+/// unreachable in a test run (CI always has a home) and the input is hostile:
+/// `std::env::temp_dir` hands back `$TMPDIR` **verbatim** on unix, so it can be
+/// relative (`TMPDIR=./tmp`) or carry `.` components (`TMPDIR=/var/tmp/.`) —
+/// exactly the two things [`SystemPath`] must never hold. Building one straight
+/// from the join bypassed both checks.
+///
+/// The result can only fail to be absolute if `$TMPDIR` is relative *and* the
+/// process has no working directory, at which point logging is not the problem.
+fn log_dir_in_temp(temp: &Path, cwd: &Path) -> SystemPath {
+    let candidate = temp.join(APP_DIR_NAME).join(LOG_DIR_NAME);
+    let absolute = if candidate.is_absolute() {
+        candidate
+    } else {
+        cwd.join(candidate)
+    };
+    SystemPath(normalize(&absolute))
 }
 
 // ---------------------------------------------------------------------------
 // Operations — the ones that carry OS-specific knowledge
 // ---------------------------------------------------------------------------
 
-/// Creates `dir` and any missing parents. Succeeds if it already exists.
+/// Creates `dir` and any missing parents. Succeeds if it already exists as a
+/// directory; a *file* sitting at `dir` is an error, not a success — the caller
+/// asked for somewhere to put things.
+///
+/// The guard is `is_dir`, not `exists`: skipping the call for anything that
+/// exists reports success for a regular file, and the failure only surfaces
+/// later, somewhere else, as "not a directory".
 pub fn ensure_dir(dir: &SystemPath) -> Result<(), SystemError> {
-    if !dir.exists() {
+    if !dir.is_dir() {
         std::fs::create_dir_all(dir)
             .map_err(|e| SystemError::io("create directory", dir.as_path(), e))?;
     }
@@ -367,9 +421,13 @@ pub fn ensure_dir(dir: &SystemPath) -> Result<(), SystemError> {
 /// directory): it may be relative to the working directory *at the moment the
 /// user typed it*, which is the one place resolving against the cwd is what
 /// the user meant.
+///
+/// A file already at `path` is an error, for the reason given on
+/// [`ensure_dir`]: `canonical` succeeds on a regular file, so an `exists` guard
+/// would hand the caller a "directory" it cannot list.
 pub fn create_dir<P: AsRef<Path>>(path: P) -> Result<SystemPath, SystemError> {
     let path = path.as_ref();
-    if !path.exists() {
+    if !path.is_dir() {
         std::fs::create_dir_all(path).map_err(|e| SystemError::io("create directory", path, e))?;
     }
     SystemPath::canonical(path)
@@ -409,23 +467,43 @@ pub fn is_cross_device_for(host: Host, err: &std::io::Error) -> bool {
     err.raw_os_error() == Some(expected)
 }
 
+/// Distinguishes the temp files of two writers inside one process. Paired with
+/// the pid it makes [`temp_name_for`]'s result unique across the machine.
+static TEMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The sibling temp file [`replace_atomically`] writes before renaming.
+///
+/// Unique per writer, not derived from the target name alone. Two kimün
+/// instances saving preferences at the same moment would otherwise pick the
+/// same temp path: the second `File::create` truncates the first's half-written
+/// file, and whichever renames last publishes it. That is the exact failure
+/// this recipe exists to prevent, so the name carries the pid and a counter.
+///
+/// A sibling, so the rename that follows never crosses a volume.
+fn temp_name_for(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(format!(
+        ".{}.{}.tmp",
+        std::process::id(),
+        TEMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    PathBuf::from(name)
+}
+
 /// Replaces the file at `path` with `contents`, atomically.
 ///
 /// Writes a sibling temp file, flushes it to disk, then renames over the
 /// target: a crash mid-write leaves the previous contents intact rather than a
-/// truncated file. The temp file is a sibling so the rename never crosses a
-/// volume. Missing parent directories are created.
+/// truncated file. Missing parent directories are created.
 pub fn replace_atomically(path: &Path, contents: &[u8]) -> Result<(), SystemError> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() && !parent.exists() {
+    let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
+    if let Some(parent) = parent {
+        if !parent.is_dir() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| SystemError::io("create directory", parent, e))?;
         }
     }
-    let tmp = path.with_extension(match path.extension() {
-        Some(ext) => format!("{}.tmp", ext.to_string_lossy()),
-        None => "tmp".to_string(),
-    });
+    let tmp = temp_name_for(path);
     let write = (|| -> std::io::Result<()> {
         let mut file = std::fs::File::create(&tmp)?;
         file.write_all(contents)?;
@@ -435,7 +513,30 @@ pub fn replace_atomically(path: &Path, contents: &[u8]) -> Result<(), SystemErro
         let _ = std::fs::remove_file(&tmp);
         return Err(SystemError::io("write", &tmp, e));
     }
-    std::fs::rename(&tmp, path).map_err(|e| SystemError::io("replace", path, e))
+    std::fs::rename(&tmp, path).map_err(|e| SystemError::io("replace", path, e))?;
+    sync_dir(parent.unwrap_or(Path::new(".")));
+    Ok(())
+}
+
+/// Flushes a directory's own entries to disk, so a rename into it survives a
+/// crash.
+///
+/// `sync_all` on the temp file makes its *contents* durable; the rename that
+/// publishes them only touches a directory entry, which on ext4/xfs can still
+/// be in the page cache when the power goes. Without this, a write that
+/// returned successfully can silently roll back.
+///
+/// Best-effort and unix-only: the data is already renamed, so failing the call
+/// here would report a write that did happen as a failure, and Windows has no
+/// directory handle to sync (`NTFS` orders the metadata itself).
+fn sync_dir(dir: &Path) {
+    #[cfg(unix)]
+    match std::fs::File::open(dir).and_then(|d| d.sync_all()) {
+        Ok(()) => {}
+        Err(e) => log::debug!("could not flush directory {}: {e}", dir.display()),
+    }
+    #[cfg(not(unix))]
+    let _ = dir;
 }
 
 /// Deletes a file. A path that is already gone is not an error — callers

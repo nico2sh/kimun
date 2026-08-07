@@ -450,6 +450,73 @@ async fn test_workspace_rename_moves_the_index_sidecars() {
     assert!(!old_shm.exists(), "orphaned shm left behind");
 }
 
+/// A rename that cannot finish must not have started. The history destination
+/// is the second artifact to move, so an occupied one — left by a `remove`
+/// whose best-effort delete failed — used to abort *after* the index had
+/// already been renamed: the config still named the old workspace, whose index
+/// was now gone and had to be rebuilt from scratch.
+#[tokio::test]
+async fn test_workspace_rename_moves_nothing_when_the_history_destination_is_occupied() {
+    let config_dir = TempDir::new().unwrap();
+    let config_path = config_dir.path().join("config.toml");
+    let workspace_dir = TempDir::new().unwrap();
+    std::fs::write(&config_path, "# empty config\n").unwrap();
+
+    run_cli(
+        CliCommand::Workspace {
+            subcommand: WorkspaceSubcommand::Init {
+                name: Some("oldname".to_string()),
+                path: workspace_dir.path().to_path_buf(),
+            },
+        },
+        Some(config_path.clone()),
+    )
+    .await
+    .expect("init should succeed");
+
+    let cache_dir = config_dir.path().canonicalize().unwrap();
+    let history_dir = cache_dir.join("history");
+    std::fs::create_dir_all(&history_dir).unwrap();
+    std::fs::write(history_dir.join("oldname.txt"), "notes/a.md\n").unwrap();
+    // The leftover the rename has to notice before it moves anything.
+    std::fs::write(history_dir.join("newname.txt"), "someone else\n").unwrap();
+
+    let result = run_cli(
+        CliCommand::Workspace {
+            subcommand: WorkspaceSubcommand::Rename {
+                old_name: "oldname".to_string(),
+                new_name: "newname".to_string(),
+            },
+        },
+        Some(config_path.clone()),
+    )
+    .await;
+
+    assert!(result.is_err(), "rename should refuse an occupied history");
+    assert!(
+        cache_dir.join("oldname.kimuncache").exists(),
+        "the index must still be under the name the config points at"
+    );
+    assert!(
+        !cache_dir.join("newname.kimuncache").exists(),
+        "no half-renamed index left behind"
+    );
+    assert_eq!(
+        std::fs::read_to_string(history_dir.join("oldname.txt")).unwrap(),
+        "notes/a.md\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(history_dir.join("newname.txt")).unwrap(),
+        "someone else\n",
+        "the occupant must not be overwritten"
+    );
+
+    let settings = AppSettings::load_from_file(config_path).unwrap();
+    let ws_config = settings.workspace_config.as_ref().unwrap();
+    assert!(ws_config.workspaces.contains_key("oldname"));
+    assert!(!ws_config.workspaces.contains_key("newname"));
+}
+
 /// A workspace's history travels with it, and is deleted with it. Both go
 /// through `HistoryFile`, the same shape as the index — the point being that
 /// a renamed workspace keeps its recently-opened notes instead of silently

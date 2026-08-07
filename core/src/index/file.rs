@@ -70,16 +70,24 @@ impl IndexFile {
         self.path.exists()
     }
 
-    /// The sidecar paths that currently exist beside the main file.
+    /// The sidecars that currently exist beside the main file, each paired
+    /// with the suffix that named it.
     ///
     /// Empty for a cleanly closed index: SQLite checkpoints and removes the
     /// WAL pair when the last connection closes. A non-empty result means the
     /// index is open right now, or the process that held it died.
-    fn existing_sidecars(&self) -> Vec<SystemPath> {
+    ///
+    /// The suffix is carried rather than re-derived from the path: [`move_to`]
+    /// needs it to name the destination, and recovering it by comparing
+    /// formatted strings has a failure mode ("no suffix") that maps a WAL file
+    /// onto the destination's *main* path.
+    ///
+    /// [`move_to`]: IndexFile::move_to
+    fn existing_sidecars(&self) -> Vec<(&'static str, SystemPath)> {
         SIDECAR_SUFFIXES
             .iter()
-            .map(|suffix| self.path.with_name_suffix(suffix))
-            .filter(|p| p.exists())
+            .map(|suffix| (*suffix, self.path.with_name_suffix(suffix)))
+            .filter(|(_, path)| path.exists())
             .collect()
     }
 
@@ -90,11 +98,17 @@ impl IndexFile {
     /// fails partway, the main file is moved back, so a failure leaves the
     /// source index whole instead of split across two directories.
     ///
+    /// A no-op only when there is genuinely nothing here — no main file *and*
+    /// no sidecars. A stranded WAL with no index beside it (a cleanup that
+    /// failed halfway) still moves: leaving it behind would let the next
+    /// workspace of the same name adopt another database's transactions.
+    ///
     /// The caller must have closed any [`NoteVault`](crate::NoteVault) holding
     /// this index first: Windows refuses to move a file with an open handle,
     /// and that failure surfaces here as an ordinary I/O error.
     pub fn move_to(&self, dest: &IndexFile) -> Result<(), SystemError> {
-        if !self.exists() {
+        let sidecars = self.existing_sidecars();
+        if !self.exists() && sidecars.is_empty() {
             return Ok(());
         }
         if dest.exists() {
@@ -111,9 +125,11 @@ impl IndexFile {
             }
         }
 
-        let mut plan = vec![(self.path.clone(), dest.path.clone())];
-        for source in self.existing_sidecars() {
-            let suffix = sidecar_suffix(&source, &self.path);
+        let mut plan = Vec::new();
+        if self.exists() {
+            plan.push((self.path.clone(), dest.path.clone()));
+        }
+        for (suffix, source) in sidecars {
             plan.push((source, dest.path.with_name_suffix(suffix)));
         }
         move_all(&plan)
@@ -122,7 +138,7 @@ impl IndexFile {
     /// Deletes this index and its sidecars. A missing file is not an error —
     /// the point is that nothing is left behind.
     pub fn remove(&self) -> Result<(), SystemError> {
-        for sidecar in self.existing_sidecars() {
+        for (_, sidecar) in self.existing_sidecars() {
             system::remove_file(sidecar.as_path())?;
         }
         if self.exists() {
@@ -158,17 +174,6 @@ fn move_all(pairs: &[(SystemPath, SystemPath)]) -> Result<(), SystemError> {
         }
     }
     Ok(())
-}
-
-/// Which suffix `sidecar` carries relative to `main`. Only ever called with
-/// paths this module built, so the fallback cannot be reached in practice.
-fn sidecar_suffix<'a>(sidecar: &SystemPath, main: &SystemPath) -> &'a str {
-    let sidecar = sidecar.to_string();
-    let main = main.to_string();
-    SIDECAR_SUFFIXES
-        .into_iter()
-        .find(|suffix| sidecar == format!("{main}{suffix}"))
-        .unwrap_or("")
 }
 
 #[cfg(test)]
@@ -231,6 +236,58 @@ mod tests {
         from.move_to(&to).unwrap();
 
         assert!(!to.exists());
+    }
+
+    /// A WAL with no index beside it — a `remove` that deleted the sidecars
+    /// and then failed on the main file, or the inverse. Leaving it behind
+    /// lets the next workspace of the same name adopt another database's
+    /// transactions, so the move takes it even with nothing to lead it.
+    #[test]
+    fn move_takes_a_stranded_sidecar_with_no_main_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let from = index_in(&dir, "old");
+        let to = index_in(&dir, "new");
+        write(&from.path().with_name_suffix("-wal"), "orphan wal");
+
+        from.move_to(&to).unwrap();
+
+        assert!(
+            !from.path().with_name_suffix("-wal").exists(),
+            "the stale WAL must not stay under the old name"
+        );
+        assert_eq!(
+            std::fs::read_to_string(to.path().with_name_suffix("-wal").as_path()).unwrap(),
+            "orphan wal"
+        );
+        assert!(!to.exists(), "no main file was invented");
+    }
+
+    /// Every sidecar keeps its own suffix. Deriving it by comparing formatted
+    /// strings had a "no match" case that named the destination's *main* path,
+    /// which would rename the WAL over the index that had just landed there.
+    #[test]
+    fn each_sidecar_keeps_its_suffix_across_a_move() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let from = index_in(&dir, "old");
+        let to = index_in(&dir, "new");
+        write(from.path(), "index");
+        for suffix in SIDECAR_SUFFIXES {
+            write(&from.path().with_name_suffix(suffix), suffix);
+        }
+
+        from.move_to(&to).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(to.path().as_path()).unwrap(),
+            "index",
+            "the index must not be overwritten by a sidecar"
+        );
+        for suffix in SIDECAR_SUFFIXES {
+            assert_eq!(
+                std::fs::read_to_string(to.path().with_name_suffix(suffix).as_path()).unwrap(),
+                suffix
+            );
+        }
     }
 
     #[test]
