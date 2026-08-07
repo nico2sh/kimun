@@ -295,6 +295,84 @@ fn ensure_dir_creates_missing_parents_and_is_idempotent() {
 }
 
 #[test]
+fn canonical_resolves_an_existing_path() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let nested = dir.path().join("a").join("b");
+    std::fs::create_dir_all(&nested).unwrap();
+
+    let resolved = SystemPath::canonical(dir.path().join("a").join(".").join("b")).unwrap();
+
+    assert_same(&resolved, nested.canonicalize().unwrap());
+}
+
+#[test]
+fn canonical_fails_for_a_path_that_is_not_there() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let err = SystemPath::canonical(dir.path().join("nope")).unwrap_err();
+    assert!(matches!(err, SystemError::Io { .. }), "got {err:?}");
+}
+
+#[test]
+fn read_dir_lists_entries_as_absolute_paths() {
+    let dir = tempfile::TempDir::new().unwrap();
+    std::fs::write(dir.path().join("one.toml"), "").unwrap();
+    std::fs::create_dir(dir.path().join("two")).unwrap();
+
+    let mut names: Vec<String> = read_dir(&SystemPath::try_absolute(dir.path()).unwrap())
+        .unwrap()
+        .into_iter()
+        .inspect(|p| assert!(p.as_path().is_absolute(), "{p} is not absolute"))
+        .map(|p| p.as_path().file_name().unwrap().to_string_lossy().into())
+        .collect();
+    names.sort();
+
+    assert_eq!(names, ["one.toml", "two"]);
+}
+
+#[test]
+fn read_dir_reports_a_missing_directory() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let missing = SystemPath::try_absolute(dir.path()).unwrap().join("nope");
+    assert!(read_dir(&missing).is_err());
+}
+
+#[test]
+fn remove_empty_dir_removes_only_an_empty_one() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let empty = dir.path().join("empty");
+    let occupied = dir.path().join("occupied");
+    std::fs::create_dir(&empty).unwrap();
+    std::fs::create_dir(&occupied).unwrap();
+    std::fs::write(occupied.join("note.md"), "keep me").unwrap();
+
+    remove_empty_dir(&empty).unwrap();
+    assert!(!empty.exists());
+
+    // A directory holding the user's files must survive an undo.
+    assert!(remove_empty_dir(&occupied).is_err());
+    assert!(occupied.join("note.md").exists());
+
+    // Already gone is the desired state, not an error.
+    remove_empty_dir(&empty).unwrap();
+}
+
+#[test]
+fn make_executable_is_ok_on_every_host() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let file = dir.path().join("kimun");
+    std::fs::write(&file, b"#!/bin/sh\n").unwrap();
+
+    make_executable(&file).unwrap();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&file).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o755, "got {:o}", mode & 0o777);
+    }
+}
+
+#[test]
 fn move_file_moves_within_a_volume() {
     let dir = tempfile::TempDir::new().unwrap();
     let from = dir.path().join("a.txt");

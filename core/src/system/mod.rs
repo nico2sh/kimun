@@ -164,6 +164,21 @@ impl SystemPath {
         Self(absolute.canonicalize().unwrap_or(absolute))
     }
 
+    /// Resolves an existing path to its canonical form — symlinks followed,
+    /// `.`/`..` gone, absolute.
+    ///
+    /// Fails when the path does not exist: canonicalization is the OS
+    /// answering "what is this really", and there is no answer for something
+    /// that is not there. Callers resolving a path that may not exist yet want
+    /// [`SystemPath::resolve`].
+    pub fn canonical<P: AsRef<Path>>(path: P) -> Result<Self, SystemError> {
+        let path = path.as_ref();
+        let canonical = path
+            .canonicalize()
+            .map_err(|e| SystemError::io("resolve", path, e))?;
+        Self::try_absolute(canonical)
+    }
+
     /// This path with `segment` appended, staying normalized (so a `..`
     /// segment cancels rather than accumulating).
     pub fn join<S: AsRef<Path>>(&self, segment: S) -> Self {
@@ -347,10 +362,7 @@ pub fn create_dir<P: AsRef<Path>>(path: P) -> Result<SystemPath, SystemError> {
     if !path.exists() {
         std::fs::create_dir_all(path).map_err(|e| SystemError::io("create directory", path, e))?;
     }
-    let canonical = path
-        .canonicalize()
-        .map_err(|e| SystemError::io("resolve", path, e))?;
-    SystemPath::try_absolute(canonical)
+    SystemPath::canonical(path)
 }
 
 /// Moves a file, including across volumes.
@@ -424,6 +436,55 @@ pub fn remove_file(path: &Path) -> Result<(), SystemError> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(SystemError::io("remove", path, e)),
     }
+}
+
+/// Removes an empty directory. A directory that is already gone is not an
+/// error; one that still holds files is (this undoes a directory that was
+/// just created, and must never take a user's files with it).
+pub fn remove_empty_dir(path: &Path) -> Result<(), SystemError> {
+    match std::fs::remove_dir(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(SystemError::io("remove directory", path, e)),
+    }
+}
+
+/// The entries directly inside `dir`, as [`SystemPath`]s, in the order the
+/// filesystem reports them.
+///
+/// Returning `SystemPath`s is the point: a directory read is where raw OS
+/// paths enter the program, and every one of them is absolute here because
+/// `dir` is.
+pub fn read_dir(dir: &SystemPath) -> Result<Vec<SystemPath>, SystemError> {
+    let entries =
+        std::fs::read_dir(dir).map_err(|e| SystemError::io("read directory", dir.as_path(), e))?;
+    let mut out = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| SystemError::io("read directory", dir.as_path(), e))?;
+        out.push(SystemPath(normalize(&entry.path())));
+    }
+    Ok(out)
+}
+
+/// Marks a file executable.
+///
+/// A unix permission bit and nothing at all on Windows, where executability
+/// comes from the extension. Kept here rather than beside its one caller so
+/// the `cfg` split lives with the other host rules.
+pub fn make_executable(path: &Path) -> Result<(), SystemError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(path)
+            .map_err(|e| SystemError::io("read permissions of", path, e))?
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(path, perms)
+            .map_err(|e| SystemError::io("set permissions on", path, e))?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
 }
 
 /// The name an executable goes by on `host` — `nvim` against `nvim.exe`.

@@ -93,6 +93,15 @@ jobs:
             exit 1
           fi
 
+      # Filesystem operations live in `kimun_core::nfs` (vault-scoped) or
+      # `kimun_core::system` (host-scoped) — CLAUDE.md states the rule, this
+      # step keeps it true. Needs more than a grep: test code is exempt, and
+      # `#[cfg(test)]` blocks have to be stripped before matching. The script
+      # explains what it checks and what it deliberately does not.
+      - name: Filesystem operations stay in nfs and system
+        if: matrix.lint
+        run: python3 .github/scripts/check-host-fs.py
+
       - name: Clippy
         if: matrix.lint
         run: cargo clippy --workspace --all-targets -- -D warnings

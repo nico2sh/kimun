@@ -2,7 +2,7 @@ use crate::keys::action_shortcuts::{ActionShortcuts, TextAction};
 use crate::keys::key_strike::KeyStrike;
 use crate::settings::themes::Theme;
 use crate::settings::workspace_config::WorkspaceConfig;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
@@ -505,14 +505,15 @@ impl AppSettings {
         };
 
         // Read directory entries, return empty vec if it fails
-        let entries = match fs::read_dir(&themes_path) {
-            Ok(entries) => entries,
-            Err(_) => return themes,
-        };
+        let entries =
+            match SystemPath::try_absolute(&themes_path).and_then(|dir| system::read_dir(&dir)) {
+                Ok(entries) => entries,
+                Err(_) => return themes,
+            };
 
         // Iterate through all entries in the themes directory
-        for entry in entries.flatten() {
-            let path = entry.path();
+        for entry in entries {
+            let path = entry.into_path_buf();
 
             // Skip if not a file
             if !path.is_file() {
@@ -563,10 +564,11 @@ impl AppSettings {
     pub fn save_to_disk(&self) -> Result<(), SettingsError> {
         tracing::debug!("Saving settings to disk");
         let settings_file_path = self.get_config_file_path()?;
-        let mut file = File::create(settings_file_path)?;
-        file.write_all(CONFIG_HEADER.as_bytes())?;
-        let toml = toml::to_string(&self)?;
-        file.write_all(toml.as_bytes())?;
+        // Atomic: the config is rewritten on every preference change and on
+        // every migration, and a truncated one is what the corrupt-config
+        // branch below exists to clean up after.
+        let body = format!("{CONFIG_HEADER}{}", toml::to_string(&self)?);
+        system::replace_atomically(&settings_file_path, body.as_bytes())?;
         Ok(())
     }
 
@@ -603,7 +605,7 @@ impl AppSettings {
                         e
                     );
                     let corrupt_path = settings_file_path.with_extension("toml.corrupt");
-                    let _ = fs::rename(&settings_file_path, &corrupt_path);
+                    let _ = system::move_file(&settings_file_path, &corrupt_path);
                     let defaults = Self::defaults_for_config_file(settings_file_path);
                     defaults.save_to_disk()?;
                     Ok(defaults)
@@ -614,7 +616,7 @@ impl AppSettings {
 
     pub fn load_from_file(path: PathBuf) -> Result<Self, SettingsError> {
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
+            system::create_dir(parent)?;
         }
         if !path.exists() {
             let default_settings = Self::defaults_for_config_file(path);
@@ -647,7 +649,7 @@ impl AppSettings {
                     e
                 );
                 let corrupt_path = path.with_extension("toml.corrupt");
-                let _ = fs::rename(&path, &corrupt_path);
+                let _ = system::move_file(&path, &corrupt_path);
                 let defaults = Self::defaults_for_config_file(path);
                 defaults.save_to_disk()?;
                 Ok(defaults)
@@ -812,10 +814,12 @@ impl AppSettings {
         // `.` (a bare `--config kimun.toml`) is the one place resolving
         // against the working directory is what the user meant: they named
         // the file from there moments ago.
-        let absolute = dir
-            .canonicalize()
-            .unwrap_or_else(|_| std::env::current_dir().unwrap_or_default().join(dir));
-        SystemPath::try_absolute(&absolute).unwrap_or_else(|_| default_settings_base_dir())
+        SystemPath::canonical(dir)
+            .or_else(|_| {
+                let cwd = std::env::current_dir().unwrap_or_default();
+                SystemPath::try_absolute(cwd.join(dir))
+            })
+            .unwrap_or_else(|_| default_settings_base_dir())
     }
 
     pub fn set_theme(&mut self, theme: String) {

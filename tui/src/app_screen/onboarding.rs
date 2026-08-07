@@ -1069,7 +1069,7 @@ impl OnboardingScreen {
                 return;
             };
             let existed = path.is_dir();
-            if let Err(e) = std::fs::create_dir_all(&path) {
+            if let Err(e) = kimun_core::system::create_dir(&path) {
                 self.flash = Some(format!("cannot create {}: {e}", path.display()));
                 self.step = OnbStep::Workspace;
                 return;
@@ -1088,7 +1088,7 @@ impl OnboardingScreen {
                 // Roll back a directory this run created. Non-recursive, so a
                 // pre-existing or non-empty directory is never touched.
                 if !existed {
-                    std::fs::remove_dir(&path).ok();
+                    kimun_core::system::remove_empty_dir(&path).ok();
                 }
                 self.flash = Some(e.to_string());
                 self.step = OnbStep::Workspace;

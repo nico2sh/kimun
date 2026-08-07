@@ -96,7 +96,6 @@ async fn run_show(
     use crate::cli::metadata_extractor::{extract_headers, extract_links, extract_tags};
     use chrono::Utc;
     use kimun_core::error::{FSError, VaultError};
-    use std::time::UNIX_EPOCH;
 
     if matches!(format, OutputFormat::Paths) {
         return Err(color_eyre::eyre::eyre!(
@@ -140,13 +139,11 @@ async fn run_show(
             );
         }
         OutputFormat::Json => {
-            let meta = tokio::fs::metadata(vault.path_to_pathbuf(&vault_path))
+            let note_entry = vault
+                .note_entry(&vault_path)
                 .await
                 .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
-            let modified_secs = meta
-                .modified()
-                .map(|t| t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs())
-                .unwrap_or(0);
+            let modified_secs = note_entry.modified_secs;
             let tags = extract_tags(content);
             let links = extract_links(content);
             let headers = extract_headers(content);
@@ -157,7 +154,7 @@ async fn run_show(
                 path: vault_path.to_string_with_ext(),
                 title: content_data.title.clone(),
                 content: content.clone(),
-                size: meta.len(),
+                size: note_entry.size,
                 modified: modified_secs,
                 created: modified_secs,
                 hash: format!("{:x}", content_data.hash),

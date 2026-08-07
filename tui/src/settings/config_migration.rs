@@ -193,7 +193,8 @@ impl ConfigMigration {
         if let Some(ref cfg_path) = settings.config_file {
             let bak_path = cfg_path.with_extension("toml.bak.v2");
             if !bak_path.exists() {
-                std::fs::copy(cfg_path, &bak_path).map_err(|e| {
+                let current = std::fs::read(cfg_path)?;
+                system::replace_atomically(&bak_path, &current).map_err(|e| {
                     SettingsError::Migration(format!(
                         "failed to back up config to {bak_path:?}: {e}"
                     ))
@@ -250,9 +251,8 @@ impl ConfigMigration {
             if !last_paths.is_empty() {
                 let hist_path = history_dir.join(format!("{name}.txt"));
                 if !hist_path.exists() {
-                    std::fs::create_dir_all(&history_dir)?;
                     let body = last_paths.join("\n") + "\n";
-                    std::fs::write(&hist_path, body)?;
+                    system::replace_atomically(hist_path.as_path(), body.as_bytes())?;
                 }
             }
         }
