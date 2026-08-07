@@ -542,7 +542,7 @@ impl AppSettings {
         let settings_file_path = Self::default_config_file_path()?;
 
         if !settings_file_path.exists() {
-            let default_settings = Self::default();
+            let default_settings = Self::defaults_for_config_file(settings_file_path);
             default_settings.save_to_disk()?;
             Ok(default_settings)
         } else {
@@ -572,7 +572,7 @@ impl AppSettings {
                     );
                     let corrupt_path = settings_file_path.with_extension("toml.corrupt");
                     let _ = fs::rename(&settings_file_path, &corrupt_path);
-                    let defaults = Self::default();
+                    let defaults = Self::defaults_for_config_file(settings_file_path);
                     defaults.save_to_disk()?;
                     Ok(defaults)
                 }
@@ -585,10 +585,7 @@ impl AppSettings {
             fs::create_dir_all(parent)?;
         }
         if !path.exists() {
-            let default_settings = Self {
-                config_file: Some(path),
-                ..Self::default()
-            };
+            let default_settings = Self::defaults_for_config_file(path);
             default_settings.save_to_disk()?;
             return Ok(default_settings);
         }
@@ -619,10 +616,7 @@ impl AppSettings {
                 );
                 let corrupt_path = path.with_extension("toml.corrupt");
                 let _ = fs::rename(&path, &corrupt_path);
-                let defaults = Self {
-                    config_file: Some(path),
-                    ..Self::default()
-                };
+                let defaults = Self::defaults_for_config_file(path);
                 defaults.save_to_disk()?;
                 Ok(defaults)
             }
@@ -727,6 +721,28 @@ impl AppSettings {
         }
         self.cache_dir_resolved = Some(Self::expand_path(&self.cache_dir, base));
         self.history_dir_resolved = Some(Self::expand_path(&self.history_dir, base));
+    }
+
+    /// Freshly defaulted settings for a config file that could not be loaded —
+    /// one that does not exist yet, or one too corrupt to parse — with
+    /// `config_file` pointing at it and its relative paths resolved against
+    /// its directory.
+    ///
+    /// The resolve is the whole point: [`Self::cache_path_for`] and
+    /// [`Self::history_path_for`] fall back to the *raw* `cache_dir` /
+    /// `history_dir` when the resolved forms are `None`, and those default to
+    /// `.` and `history`. Unresolved, they anchor to the process's working
+    /// directory instead of the config file's — so every process launched from
+    /// the same directory shares one workspace index, and a first run drops
+    /// its index wherever the binary happened to be started.
+    fn defaults_for_config_file(path: PathBuf) -> Self {
+        let base = Self::config_base_dir(&path);
+        let mut settings = Self {
+            config_file: Some(path),
+            ..Self::default()
+        };
+        settings.resolve_paths(&base);
+        settings
     }
 
     /// The directory a config file's relative paths resolve against, in the
@@ -1317,6 +1333,52 @@ created = "2026-01-01T00:00:00Z"
         // Resolved path is absolute
         assert!(entry.resolved_path.is_some());
         assert!(entry.effective_path().is_absolute());
+    }
+
+    /// A config file that does not exist yet still has to yield paths anchored
+    /// to its own directory. `cache_path_for`/`history_path_for` fall back to
+    /// the *raw* `cache_dir`/`history_dir` when nothing resolved them, and
+    /// those default to `.` and `history` — relative, so unresolved defaults
+    /// put the workspace index wherever the process happens to be running.
+    /// Every process sharing a working directory then shares one index file:
+    /// in CI that is several test binaries racing to create the same schema
+    /// ("table appData already exists"), and for a user it is a first-run
+    /// index dropped in whatever directory they launched from.
+    #[test]
+    fn load_from_file_resolves_paths_for_a_config_that_does_not_exist_yet() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config_dir = dir.path().canonicalize().unwrap();
+        let settings = AppSettings::load_from_file(config_dir.join("config.toml")).unwrap();
+
+        let cache = settings.cache_path_for("work");
+        let history = settings.history_path_for("work");
+        assert!(
+            cache.starts_with(&config_dir),
+            "cache path must sit next to the config file, got {cache:?}"
+        );
+        assert!(
+            history.starts_with(&config_dir),
+            "history path must sit next to the config file, got {history:?}"
+        );
+    }
+
+    /// Same requirement on the other branch that hands back bare defaults: an
+    /// unparseable config is renamed aside and replaced, and those
+    /// replacements need resolving just as much.
+    #[test]
+    fn load_from_file_resolves_paths_when_the_config_is_corrupt() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config_dir = dir.path().canonicalize().unwrap();
+        let config_path = config_dir.join("config.toml");
+        std::fs::write(&config_path, "not = valid toml [[[").unwrap();
+
+        let settings = AppSettings::load_from_file(config_path).unwrap();
+
+        let cache = settings.cache_path_for("work");
+        assert!(
+            cache.starts_with(&config_dir),
+            "cache path must sit next to the config file, got {cache:?}"
+        );
     }
 
     #[test]
