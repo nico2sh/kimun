@@ -1,3 +1,4 @@
+use crate::system::SystemPath;
 use std::path::Path;
 
 use super::{resolve_path_on_disk, VaultPath};
@@ -85,11 +86,10 @@ async fn reserve_backup_dest(base: &Path) -> Result<std::path::PathBuf, FSError>
 /// pre-image. Returns `Ok(())` without writing when the source note does not
 /// exist (nothing to back up). `.kimun` is hidden, so the indexer's walker skips
 /// it and backups never appear in search.
-pub(crate) async fn backup_note<P: AsRef<Path>>(
-    workspace_path: P,
+pub(crate) async fn backup_note(
+    workspace_path: &SystemPath,
     path: &VaultPath,
 ) -> Result<(), FSError> {
-    let workspace_path = workspace_path.as_ref();
     let src = resolve_path_on_disk(workspace_path, path).await;
     // Fail closed: only skip the backup when the source is genuinely absent.
     // A probe error (FS unhealthy) must abort the edit, not silently proceed
@@ -106,7 +106,7 @@ pub(crate) async fn backup_note<P: AsRef<Path>>(
             path: src.to_string_lossy().into_owned(),
             message: "note path escapes the workspace".to_string(),
         })?;
-    let backups_root = workspace_path.join(".kimun").join("backups");
+    let backups_root = workspace_path.as_path().join(".kimun").join("backups");
     purge_old_backups(&backups_root).await;
     let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let base = backups_root.join(date).join(rel);

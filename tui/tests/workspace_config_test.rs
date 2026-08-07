@@ -337,9 +337,9 @@ theme = "gruvbox_dark"
             .unwrap()
             .join("myvault.kimuncache")
     );
-    let hist = settings.history_path_for("myvault");
+    let hist = settings.history_for("myvault");
     assert_eq!(
-        hist.as_path(),
+        hist.path().as_path(),
         tmp.path()
             .canonicalize()
             .unwrap()

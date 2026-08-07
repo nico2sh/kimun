@@ -72,7 +72,7 @@ pub use system::{Host, SystemPath};
 use std::{
     collections::HashMap,
     fmt::Display,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         mpsc::{Receiver, Sender},
         Arc,
@@ -199,11 +199,14 @@ pub struct ReplacePreview {
 /// index. Cheap to clone — clones share the index pool and per-note locks.
 #[derive(Debug, Clone)]
 pub struct NoteVault {
-    /// Stored as `Arc<Path>` (not `Arc<PathBuf>`) because (a) it impls
-    /// `AsRef<Path>` directly so it can be passed to nfs helpers without
-    /// extra deref, (b) `Arc::clone` is a refcount bump for fan-out tasks
-    /// (backlink rewrites, indexing).
-    workspace_path: Arc<Path>,
+    /// A [`SystemPath`], so everything below this line knows the vault root is
+    /// absolute and normalized rather than taking the caller's word for it —
+    /// the same guarantee [`VaultConfig`] demands at construction, carried
+    /// inward instead of dropped at the door.
+    ///
+    /// Behind an `Arc` because `Arc::clone` is a refcount bump for the fan-out
+    /// tasks (backlink rewrites, indexing) that each need the root.
+    workspace_path: Arc<SystemPath>,
     journal_path: VaultPath,
     inbox_path: VaultPath,
     /// The vault's searchable note index. Crate-visible so the index module's
@@ -255,9 +258,9 @@ impl NoteVault {
         let index_file = config
             .index
             .unwrap_or_else(|| IndexFile::legacy_in_workspace(&workspace_path));
-        let index = NoteIndex::open(index_file.path()).await?;
+        let index = NoteIndex::open(&index_file).await?;
         let note_vault = Self {
-            workspace_path: Arc::from(workspace_path.as_path()),
+            workspace_path: Arc::new(workspace_path),
             journal_path: VaultPath::new(DEFAULT_JOURNAL_PATH),
             inbox_path: VaultPath::new(DEFAULT_INBOX_PATH),
             index,
@@ -269,7 +272,7 @@ impl NoteVault {
     }
 
     /// OS path to the workspace root (filesystem root of this vault).
-    pub fn workspace_path(&self) -> &Path {
+    pub fn workspace_path(&self) -> &SystemPath {
         &self.workspace_path
     }
 
@@ -2301,9 +2304,12 @@ mod tests {
             .unwrap();
 
         // The referrer file on disk must now use [[renamed]]
-        let updated = nfs::load_note(dir.path(), &VaultPath::new("/referrer.md"))
-            .await
-            .unwrap();
+        let updated = nfs::load_note(
+            &crate::system::sys(dir.path()),
+            &VaultPath::new("/referrer.md"),
+        )
+        .await
+        .unwrap();
         assert!(
             updated.contains("[[renamed]]"),
             "expected [[renamed]] in: {updated}"
@@ -2339,9 +2345,12 @@ mod tests {
             .await
             .unwrap();
 
-        let updated = nfs::load_note(dir.path(), &VaultPath::new("/referrer.md"))
-            .await
-            .unwrap();
+        let updated = nfs::load_note(
+            &crate::system::sys(dir.path()),
+            &VaultPath::new("/referrer.md"),
+        )
+        .await
+        .unwrap();
         assert!(
             updated.contains("[link](/renamed.md)"),
             "expected updated link in: {updated}"
@@ -2377,9 +2386,12 @@ mod tests {
             .await
             .unwrap();
 
-        let unrelated = nfs::load_note(dir.path(), &VaultPath::new("/unrelated.md"))
-            .await
-            .unwrap();
+        let unrelated = nfs::load_note(
+            &crate::system::sys(dir.path()),
+            &VaultPath::new("/unrelated.md"),
+        )
+        .await
+        .unwrap();
         assert_eq!(unrelated, "# Unrelated\nNo links here.");
     }
 
@@ -2410,9 +2422,12 @@ mod tests {
             "old file should be gone"
         );
         // New file exists with the self-link rewritten.
-        let body = nfs::load_note(dir.path(), &VaultPath::new("/renamed.md"))
-            .await
-            .unwrap();
+        let body = nfs::load_note(
+            &crate::system::sys(dir.path()),
+            &VaultPath::new("/renamed.md"),
+        )
+        .await
+        .unwrap();
         assert!(
             body.contains("[[renamed]]"),
             "expected self-link rewritten in: {body}"
@@ -2481,7 +2496,7 @@ mod tests {
 
         assert!(result.is_ok());
         let vault = result.unwrap();
-        assert_eq!(vault.workspace_path(), dir_path);
+        assert_eq!(vault.workspace_path().as_path(), dir_path);
         assert_eq!(vault.journal_path, VaultPath::new(DEFAULT_JOURNAL_PATH));
     }
 
@@ -2614,7 +2629,7 @@ mod tests {
         let vault_path = VaultPath::new("/test/note.md");
         let result = vault.path_to_pathbuf(&vault_path);
 
-        let expected = vault_path.to_pathbuf(&vault.workspace_path);
+        let expected = vault_path.to_pathbuf(vault.workspace_path());
         assert_eq!(result, expected);
     }
 
@@ -3441,7 +3456,7 @@ mod modify_backup_tests {
     use super::{NoteVault, VaultConfig};
     use crate::error::VaultError;
     use crate::nfs::VaultPath;
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
     async fn backup_vault() -> (tempfile::TempDir, NoteVault) {
         let temp = tempfile::TempDir::new().unwrap();
@@ -3453,9 +3468,13 @@ mod modify_backup_tests {
         (temp, vault)
     }
 
-    fn backups_dir_today(workspace: &Path) -> PathBuf {
+    fn backups_dir_today(workspace: &crate::system::SystemPath) -> PathBuf {
         let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
-        workspace.join(".kimun").join("backups").join(date)
+        workspace
+            .as_path()
+            .join(".kimun")
+            .join("backups")
+            .join(date)
     }
 
     // ---- replace_in_note ----
@@ -3637,7 +3656,7 @@ mod modify_backup_tests {
 
         vault.save_note(&p, "updated").await.unwrap();
 
-        let backup = backups_dir_today(temp.path()).join("note.md");
+        let backup = backups_dir_today(&crate::system::sys(temp.path())).join("note.md");
         assert_eq!(std::fs::read_to_string(&backup).unwrap(), "original");
         assert_eq!(vault.get_note_text(&p).await.unwrap(), "updated");
     }
@@ -3665,7 +3684,7 @@ mod modify_backup_tests {
 
         vault.delete_note(&p).await.unwrap();
 
-        let backup = backups_dir_today(temp.path()).join("note.md");
+        let backup = backups_dir_today(&crate::system::sys(temp.path())).join("note.md");
         assert_eq!(std::fs::read_to_string(&backup).unwrap(), "content");
     }
 
@@ -3677,7 +3696,7 @@ mod modify_backup_tests {
         vault.save_note(&p, "v1").await.unwrap();
         vault.save_note(&p, "v2").await.unwrap();
 
-        let dir = backups_dir_today(temp.path());
+        let dir = backups_dir_today(&crate::system::sys(temp.path()));
         let count = std::fs::read_dir(&dir).unwrap().count();
         assert_eq!(count, 2, "both pre-images should be retained");
     }
@@ -3700,7 +3719,7 @@ mod modify_backup_tests {
 
         assert!(!old.exists(), "stale date-dir should be purged");
         assert!(
-            backups_dir_today(temp.path()).exists(),
+            backups_dir_today(&crate::system::sys(temp.path())).exists(),
             "today's backup is kept"
         );
     }
@@ -3751,7 +3770,7 @@ mod modify_backup_tests {
         // The rename rewrites a's link b -> c. a's pre-rewrite content (still
         // pointing at b) must be backed up, since the rewrite goes through nfs
         // directly rather than NoteVault::save_note.
-        let backup = backups_dir_today(temp.path()).join("a.md");
+        let backup = backups_dir_today(&crate::system::sys(temp.path())).join("a.md");
         let content = std::fs::read_to_string(&backup)
             .unwrap_or_else(|e| panic!("victim backup a.md should exist: {e}"));
         assert!(

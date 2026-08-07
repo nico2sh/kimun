@@ -5,7 +5,10 @@
 //! `AppSettings::load_from_file` after deserialization.
 
 use kimun_core::IndexFile;
+use kimun_core::nfs::VaultPath;
 use kimun_core::system::{self, SystemPath};
+
+use super::history::HistoryFile;
 
 use super::AppSettings;
 use super::SettingsError;
@@ -249,10 +252,13 @@ impl ConfigMigration {
             }
 
             if !last_paths.is_empty() {
-                let hist_path = history_dir.join(format!("{name}.txt"));
-                if !hist_path.exists() {
-                    let body = last_paths.join("\n") + "\n";
-                    system::replace_atomically(hist_path.as_path(), body.as_bytes())?;
+                let history = HistoryFile::in_dir(&history_dir, &name);
+                if !history.exists() {
+                    // Through `VaultPath`, which is the form the history file
+                    // is read back as anyway — so a v2 entry written in some
+                    // other form lands here already normalized.
+                    let paths: Vec<VaultPath> = last_paths.iter().map(VaultPath::new).collect();
+                    history.write(&paths)?;
                 }
             }
         }

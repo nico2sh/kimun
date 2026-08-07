@@ -1,7 +1,6 @@
 pub(crate) mod search_terms;
 
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -163,10 +162,10 @@ impl NoteIndex {
     /// recreated, leaving a valid but empty index that the next sync pass
     /// fills. [`ready`](Self::ready) reports whether a heal
     /// happened.
-    pub(crate) async fn open<P: AsRef<Path>>(db_path: P) -> Result<Self, DBError> {
-        let db_path = db_path.as_ref().to_owned();
-        if let Some(parent) = db_path.parent() {
-            crate::nfs::ensure_dir(parent).map_err(|e| DBError::Other(e.to_string()))?;
+    pub(crate) async fn open(index_file: &file::IndexFile) -> Result<Self, DBError> {
+        let db_path = index_file.path().as_path().to_owned();
+        if let Some(parent) = index_file.path().parent() {
+            crate::system::ensure_dir(&parent).map_err(|e| DBError::Other(e.to_string()))?;
         }
         // The path is handed to sqlx as a path, never spliced into a
         // `sqlite:{}?mode=rwc` URL. A formatted URL has to survive URL parsing,
@@ -2164,7 +2163,9 @@ mod tests {
         // Parent dir does not exist yet.
         assert!(!nested.parent().unwrap().exists());
 
-        let db = super::NoteIndex::open(&nested).await.unwrap();
+        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&nested)))
+            .await
+            .unwrap();
         assert!(nested.parent().unwrap().exists());
         assert!(nested.exists());
         // A fresh file has no schema — open must have healed it.
@@ -2184,7 +2185,9 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let awkward = tmp.path().join("why not?").join("cache.kimuncache");
 
-        let db = super::NoteIndex::open(&awkward).await.unwrap();
+        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&awkward)))
+            .await
+            .unwrap();
 
         assert!(awkward.exists(), "db must be created at {awkward:?}");
         assert!(
@@ -2205,7 +2208,9 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let canonical = tmp.path().canonicalize().unwrap().join("cache.kimuncache");
 
-        let db = super::NoteIndex::open(&canonical).await.unwrap();
+        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&canonical)))
+            .await
+            .unwrap();
 
         assert!(canonical.exists(), "db must be created at {canonical:?}");
         db.close().await;
@@ -2573,7 +2578,9 @@ mod tests {
     async fn labels_table_exists_after_create_tables() {
         let tmp = tempfile::TempDir::new().unwrap();
         let path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&path).await.unwrap();
+        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&path)))
+            .await
+            .unwrap();
 
         let row: (i64,) = sqlx::query_as(
             "SELECT count(*) FROM sqlite_master \
@@ -2615,7 +2622,9 @@ mod tests {
 
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&db_path).await.unwrap();
+        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
+            .await
+            .unwrap();
 
         let path = VaultPath::note_path_from("/n.md");
         let body = "Title\n\nbody with #foo and #Foo and #bar".to_string();
@@ -2654,7 +2663,9 @@ mod tests {
 
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&db_path).await.unwrap();
+        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
+            .await
+            .unwrap();
 
         let path = VaultPath::note_path_from("/n.md");
         let body_v1 = "before #draft #keep".to_string();
@@ -2704,7 +2715,9 @@ mod tests {
 
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&db_path).await.unwrap();
+        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
+            .await
+            .unwrap();
 
         let path = VaultPath::note_path_from("/n.md");
         let body = "x #drop".to_string();
@@ -2859,7 +2872,9 @@ mod tests {
         use crate::nfs::{NoteEntryData, VaultPath};
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&db_path).await.unwrap();
+        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
+            .await
+            .unwrap();
 
         let entries: Vec<(NoteEntryData, String)> = vec![
             (
@@ -2944,7 +2959,9 @@ mod tests {
         use crate::nfs::{NoteEntryData, VaultPath};
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&db_path).await.unwrap();
+        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
+            .await
+            .unwrap();
 
         let entries: Vec<(NoteEntryData, String)> = vec![
             (
@@ -2983,7 +3000,9 @@ mod tests {
         use crate::nfs::{NoteEntryData, VaultPath};
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&db_path).await.unwrap();
+        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
+            .await
+            .unwrap();
 
         let entry = NoteEntryData {
             path: VaultPath::note_path_from("/a.md"),
@@ -3021,7 +3040,9 @@ mod tests {
         use crate::nfs::{NoteEntryData, VaultPath};
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&db_path).await.unwrap();
+        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
+            .await
+            .unwrap();
 
         let entries: Vec<(NoteEntryData, String)> = vec![
             (
@@ -3109,7 +3130,9 @@ mod tests {
         use crate::nfs::{NoteEntryData, VaultPath};
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&db_path).await.unwrap();
+        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
+            .await
+            .unwrap();
 
         // A links to B and C; B and C link nowhere; D links to A.
         let entries: Vec<(NoteEntryData, String)> = vec![
@@ -3189,7 +3212,9 @@ mod tests {
         use crate::nfs::{NoteEntryData, VaultPath};
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&db_path).await.unwrap();
+        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
+            .await
+            .unwrap();
 
         let mk = |p: &str, body: &str| {
             (
@@ -3265,7 +3290,9 @@ mod tests {
         use crate::nfs::{NoteEntryData, VaultPath};
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&db_path).await.unwrap();
+        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
+            .await
+            .unwrap();
 
         let entries: Vec<(NoteEntryData, String)> = vec![
             (
@@ -3322,7 +3349,9 @@ mod tests {
         use crate::nfs::{NoteEntryData, VaultPath};
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&db_path).await.unwrap();
+        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
+            .await
+            .unwrap();
 
         let entry = NoteEntryData {
             path: VaultPath::note_path_from("/a.md"),
@@ -3364,7 +3393,9 @@ mod tests {
         use crate::nfs::{NoteEntryData, VaultPath};
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&db_path).await.unwrap();
+        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
+            .await
+            .unwrap();
 
         let from = VaultPath::note_path_from("/old.md");
         let to = VaultPath::note_path_from("/new.md");
@@ -3406,7 +3437,9 @@ mod tests {
         use crate::nfs::{NoteEntryData, VaultPath};
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&db_path).await.unwrap();
+        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
+            .await
+            .unwrap();
 
         // One note directly in the renamed directory, one nested deeper.
         let mut tx = db.pool().begin().await.unwrap();
@@ -3453,7 +3486,9 @@ mod tests {
         use crate::nfs::{NoteEntryData, VaultPath};
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&db_path).await.unwrap();
+        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
+            .await
+            .unwrap();
 
         let note_path = VaultPath::note_path_from("/old_dir/note.md");
         let entry = NoteEntryData {
@@ -3491,7 +3526,9 @@ mod tests {
         use crate::nfs::{NoteEntryData, VaultPath};
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&db_path).await.unwrap();
+        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
+            .await
+            .unwrap();
 
         let note_path = VaultPath::note_path_from("/sub/note.md");
         let entry = NoteEntryData {
@@ -3522,7 +3559,9 @@ mod tests {
         use crate::nfs::{NoteEntryData, VaultPath};
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&db_path).await.unwrap();
+        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
+            .await
+            .unwrap();
 
         let target = VaultPath::note_path_from("/my_dir/a.md");
         let sibling = VaultPath::note_path_from("/myXdir/b.md");
@@ -3630,7 +3669,9 @@ mod tests {
         use crate::nfs::{NoteEntryData, VaultPath};
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&db_path).await.unwrap();
+        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
+            .await
+            .unwrap();
 
         let entries: Vec<(NoteEntryData, String)> = vec![
             (
@@ -3716,7 +3757,9 @@ mod tests {
         use crate::nfs::{NoteEntryData, VaultPath};
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&db_path).await.unwrap();
+        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
+            .await
+            .unwrap();
 
         let mk = |p: &str| NoteEntryData {
             path: VaultPath::note_path_from(p),
@@ -3776,7 +3819,9 @@ mod tests {
         use crate::nfs::{NoteEntryData, VaultPath};
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&db_path).await.unwrap();
+        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
+            .await
+            .unwrap();
 
         let target = VaultPath::note_path_from("/notes/a.md");
         let sibling = VaultPath::note_path_from("/notes_archive/b.md");
@@ -3823,7 +3868,9 @@ mod tests {
         use crate::nfs::{NoteEntryData, VaultPath};
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&db_path).await.unwrap();
+        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
+            .await
+            .unwrap();
 
         let target = VaultPath::note_path_from("/my_notes/a.md");
         let sibling = VaultPath::note_path_from("/myXnotes/b.md");
@@ -3865,7 +3912,9 @@ mod tests {
         use crate::nfs::{NoteEntryData, VaultPath};
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&db_path).await.unwrap();
+        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
+            .await
+            .unwrap();
 
         let target = VaultPath::note_path_from("/my_note.md");
         let sibling = VaultPath::note_path_from("/myXnote.md");
@@ -3906,7 +3955,9 @@ mod tests {
         use crate::nfs::{NoteEntryData, VaultPath};
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&db_path).await.unwrap();
+        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
+            .await
+            .unwrap();
 
         let entry = NoteEntryData {
             path: VaultPath::note_path_from("/a.md"),
@@ -3953,7 +4004,9 @@ mod tests {
         use crate::nfs::{NoteEntryData, VaultPath};
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&db_path).await.unwrap();
+        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
+            .await
+            .unwrap();
 
         let entry = NoteEntryData {
             path: VaultPath::note_path_from("/a.md"),
@@ -4121,7 +4174,9 @@ mod tests {
         let db_path = tmp.path().join("kimun.sqlite");
 
         // First open heals the fresh file into a current schema.
-        let first = super::NoteIndex::open(&db_path).await.unwrap();
+        let first = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
+            .await
+            .unwrap();
         assert!(!first.ready());
         sqlx::query("INSERT INTO appData (name, value) VALUES ('marker', 'kept')")
             .execute(first.pool())
@@ -4130,7 +4185,9 @@ mod tests {
         first.close().await;
 
         // Second open sees a current schema: no heal, data intact.
-        let second = super::NoteIndex::open(&db_path).await.unwrap();
+        let second = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
+            .await
+            .unwrap();
         assert!(second.ready());
         let marker: Option<String> =
             sqlx::query_scalar("SELECT value FROM appData WHERE name = 'marker'")

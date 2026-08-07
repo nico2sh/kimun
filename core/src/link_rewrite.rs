@@ -17,7 +17,7 @@
 //! Each stage consumes the previous, so running them out of order is a
 //! compile error, not a broken vault.
 
-use std::path::Path;
+use crate::system::SystemPath;
 
 use futures_util::stream::StreamExt;
 
@@ -35,14 +35,14 @@ const REWRITE_IO_CONCURRENCY: usize = 32;
 /// Entry point: a link-rewrite over one vault. Cheap to construct per call.
 pub(crate) struct LinkRewrite<'a> {
     index: &'a NoteIndex,
-    workspace_path: &'a Path,
+    workspace_path: &'a SystemPath,
     /// Whether `prepare` takes a pre-change backup of every note about to be
     /// rewritten (rename's collateral rewrites are automated edits).
     backup: bool,
 }
 
 impl<'a> LinkRewrite<'a> {
-    pub(crate) fn new(index: &'a NoteIndex, workspace_path: &'a Path, backup: bool) -> Self {
+    pub(crate) fn new(index: &'a NoteIndex, workspace_path: &'a SystemPath, backup: bool) -> Self {
         Self {
             index,
             workspace_path,
@@ -149,7 +149,7 @@ impl<'a> Scouted<'a> {
 /// caller renames the source note on disk, then calls
 /// [`commit`](Self::commit).
 pub(crate) struct Prepared<'a> {
-    workspace_path: &'a Path,
+    workspace_path: &'a SystemPath,
     from: VaultPath,
     to: VaultPath,
     updates: Vec<(VaultPath, String)>,

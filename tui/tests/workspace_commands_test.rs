@@ -450,6 +450,93 @@ async fn test_workspace_rename_moves_the_index_sidecars() {
     assert!(!old_shm.exists(), "orphaned shm left behind");
 }
 
+/// A workspace's history travels with it, and is deleted with it. Both go
+/// through `HistoryFile`, the same shape as the index — the point being that
+/// a renamed workspace keeps its recently-opened notes instead of silently
+/// starting empty.
+#[tokio::test]
+async fn test_workspace_rename_and_remove_carry_the_history_file() {
+    let config_dir = TempDir::new().unwrap();
+    let config_path = config_dir.path().join("config.toml");
+    let workspace_dir = TempDir::new().unwrap();
+    std::fs::write(&config_path, "# empty config\n").unwrap();
+
+    run_cli(
+        CliCommand::Workspace {
+            subcommand: WorkspaceSubcommand::Init {
+                name: Some("oldname".to_string()),
+                path: workspace_dir.path().to_path_buf(),
+            },
+        },
+        Some(config_path.clone()),
+    )
+    .await
+    .expect("init should succeed");
+
+    let history_dir = config_dir.path().canonicalize().unwrap().join("history");
+    std::fs::create_dir_all(&history_dir).unwrap();
+    std::fs::write(history_dir.join("oldname.txt"), "notes/a.md\n").unwrap();
+
+    run_cli(
+        CliCommand::Workspace {
+            subcommand: WorkspaceSubcommand::Rename {
+                old_name: "oldname".to_string(),
+                new_name: "newname".to_string(),
+            },
+        },
+        Some(config_path.clone()),
+    )
+    .await
+    .expect("rename should succeed");
+
+    assert!(!history_dir.join("oldname.txt").exists());
+    assert_eq!(
+        std::fs::read_to_string(history_dir.join("newname.txt")).unwrap(),
+        "notes/a.md\n",
+        "the renamed workspace keeps its history"
+    );
+
+    // A second workspace, so the first is not the current one when removed.
+    let other_dir = TempDir::new().unwrap();
+    run_cli(
+        CliCommand::Workspace {
+            subcommand: WorkspaceSubcommand::Init {
+                name: Some("other".to_string()),
+                path: other_dir.path().to_path_buf(),
+            },
+        },
+        Some(config_path.clone()),
+    )
+    .await
+    .expect("second init should succeed");
+    run_cli(
+        CliCommand::Workspace {
+            subcommand: WorkspaceSubcommand::Use {
+                name: "other".to_string(),
+            },
+        },
+        Some(config_path.clone()),
+    )
+    .await
+    .expect("use should succeed");
+
+    run_cli(
+        CliCommand::Workspace {
+            subcommand: WorkspaceSubcommand::Remove {
+                name: "newname".to_string(),
+            },
+        },
+        Some(config_path.clone()),
+    )
+    .await
+    .expect("remove should succeed");
+
+    assert!(
+        !history_dir.join("newname.txt").exists(),
+        "a removed workspace must not leave its history behind"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // workspace remove tests
 // ---------------------------------------------------------------------------
