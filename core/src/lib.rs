@@ -2456,7 +2456,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_note_vault_new_with_nonexistent_path() {
-        let nonexistent_path = "/this/path/does/not/exist";
+        // Host-absolute: `/this/…` carries no drive prefix, so on Windows it is
+        // not absolute, `sys` panics on it, and the test dies before it can
+        // assert anything about the vault.
+        let nonexistent_path = if cfg!(windows) {
+            r"C:\this\path\does\not\exist"
+        } else {
+            "/this/path/does/not/exist"
+        };
         let result = NoteVault::new(VaultConfig::new(crate::system::sys(nonexistent_path))).await;
 
         assert!(result.is_err());

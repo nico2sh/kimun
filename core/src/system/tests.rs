@@ -11,6 +11,15 @@ fn host_path(unix_style: &str) -> PathBuf {
     }
 }
 
+/// The *relative* counterpart of [`host_path`], separators and all.
+///
+/// `PathBuf::from("a/b")` keeps its `/` on Windows, while everything
+/// [`normalize`] builds comes back `\`-separated — and [`assert_same`]
+/// compares the raw strings, so the two never match there.
+fn rel_path(unix_style: &str) -> PathBuf {
+    unix_style.split('/').collect()
+}
+
 /// Compares raw strings, not `Path`s: `PartialEq` for paths goes through
 /// `Components`, which drops `.` itself and would pass whether or not
 /// normalization happened.
@@ -25,7 +34,7 @@ fn normalize_drops_cur_dir_components() {
     assert_same(normalize(&host_path("/a/./b")), host_path("/a/b"));
     // The case that breaks Windows: a trailing `.` on a verbatim path.
     assert_same(normalize(&host_path("/a/b").join(".")), host_path("/a/b"));
-    assert_same(normalize(Path::new("./a/./b")), PathBuf::from("a/b"));
+    assert_same(normalize(Path::new("./a/./b")), rel_path("a/b"));
 }
 
 #[test]
@@ -40,8 +49,8 @@ fn normalize_resolves_parent_dir_lexically() {
 fn normalize_keeps_leading_parent_dirs_of_relative_paths() {
     // Nothing to cancel and no root to stop at, so these must survive:
     // dropping them would silently retarget the path at the cwd.
-    assert_same(normalize(Path::new("../a")), PathBuf::from("../a"));
-    assert_same(normalize(Path::new("a/../../b")), PathBuf::from("../b"));
+    assert_same(normalize(Path::new("../a")), rel_path("../a"));
+    assert_same(normalize(Path::new("a/../../b")), rel_path("../b"));
 }
 
 /// A bare drive prefix is not a root. `C:..\a` is drive-relative — it still
