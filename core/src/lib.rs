@@ -55,8 +55,6 @@ pub(crate) mod sync;
 /// Host-scoped paths and file operations: the machine kimün runs on, its
 /// directories, and the file operations carrying OS-specific knowledge.
 pub mod system;
-/// Small standalone helpers (path strings, diacritic folding).
-pub mod utilities;
 pub use index::file::IndexFile;
 pub use index::search_terms::{
     expand_bare_note_prefixes, query_has_unterminated_quote, query_token_spans, quote_query_term,
@@ -88,7 +86,7 @@ use log::debug;
 use nfs::{NoteEntryData, VaultPath};
 use note::{ContentChunk, NoteContentData, NoteDetails};
 use sync::VaultSync;
-use utilities::path_to_string;
+use system::path_to_string;
 
 use crate::nfs::saved_searches;
 use crate::nfs::DirectoryEntryData;

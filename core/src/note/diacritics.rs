@@ -1,14 +1,8 @@
-use std::path::Path;
-
-/// Converts an OS path to a `String`, losslessly when the path is valid UTF-8
-/// and lossily (replacing invalid sequences) otherwise, so it never fails.
-pub fn path_to_string<P: AsRef<Path>>(path: P) -> String {
-    path.as_ref()
-        .to_path_buf()
-        .into_os_string()
-        .into_string()
-        .unwrap_or_else(|os_string| os_string.to_string_lossy().into())
-}
+//! Accent folding, for matching text the way a reader would read it.
+//!
+//! Used when a heading or a body span has to match a query that was typed
+//! without the accents (or with different ones): both sides are folded first,
+//! so `Café` matches `cafe`.
 
 /// Folds accented characters to their plain ASCII equivalents (e.g. `é` → `e`,
 /// `Æ` → `A`), dropping combining diacritical marks. Used to normalize names

@@ -492,14 +492,14 @@ pub fn is_inside_code_link_or_frontmatter(text: &str, byte_offset: usize) -> boo
 /// the start of the next heading line (any level), or the end of `text` if
 /// it's the last section. `None` when no heading line matches.
 pub fn heading_section_range(text: &str, heading: &str) -> Option<Range<usize>> {
-    let needle = crate::utilities::remove_diacritics(heading);
+    let needle = crate::note::diacritics::remove_diacritics(heading);
     let mut offset = 0usize;
     let mut start = None;
     for line in text.split_inclusive('\n') {
         let stripped = line.strip_suffix('\n').unwrap_or(line);
         if start.is_none() {
             if let Some(title) = atx_heading_text(stripped) {
-                let normalized = crate::utilities::remove_diacritics(title);
+                let normalized = crate::note::diacritics::remove_diacritics(title);
                 if normalized.eq_ignore_ascii_case(&needle) {
                     start = Some(offset);
                 }
@@ -948,7 +948,8 @@ fn chunks_from_text_lines(lines: Vec<TextLine>) -> Vec<ContentChunk> {
         match text_line {
             TextLine::Header(level, text) => {
                 if !current_breadcrumb.is_empty() || !current_content.is_empty() {
-                    let content = crate::utilities::remove_diacritics(&current_content.join("\n"));
+                    let content =
+                        crate::note::diacritics::remove_diacritics(&current_content.join("\n"));
                     if !content.trim().is_empty() {
                         content_chunks.push(ContentChunk {
                             breadcrumb: join_breadcrumb(&current_breadcrumb),
@@ -969,7 +970,7 @@ fn chunks_from_text_lines(lines: Vec<TextLine>) -> Vec<ContentChunk> {
     }
 
     if !current_breadcrumb.is_empty() || !current_content.is_empty() {
-        let content = crate::utilities::remove_diacritics(&current_content.join("\n"));
+        let content = crate::note::diacritics::remove_diacritics(&current_content.join("\n"));
         if !content.trim().is_empty() {
             content_chunks.push(ContentChunk {
                 breadcrumb: join_breadcrumb(&current_breadcrumb),

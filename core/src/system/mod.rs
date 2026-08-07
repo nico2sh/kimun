@@ -96,10 +96,20 @@ impl SystemError {
     fn io(action: &'static str, path: &Path, source: std::io::Error) -> Self {
         Self::Io {
             action,
-            path: crate::utilities::path_to_string(path),
+            path: path_to_string(path),
             source,
         }
     }
+}
+
+/// Converts an OS path to a `String`, losslessly when the path is valid UTF-8
+/// and lossily (replacing invalid sequences) otherwise, so it never fails.
+pub fn path_to_string<P: AsRef<Path>>(path: P) -> String {
+    path.as_ref()
+        .to_path_buf()
+        .into_os_string()
+        .into_string()
+        .unwrap_or_else(|os_string| os_string.to_string_lossy().into())
 }
 
 /// An OS path kimün has made usable on this machine: **absolute** and
@@ -130,7 +140,7 @@ impl SystemPath {
         let path = path.as_ref();
         if !path.is_absolute() {
             return Err(SystemError::NotAbsolute {
-                path: crate::utilities::path_to_string(path),
+                path: path_to_string(path),
             });
         }
         Ok(Self(normalize(path)))

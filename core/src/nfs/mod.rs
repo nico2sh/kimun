@@ -15,7 +15,7 @@ use twox_hash::XxHash64;
 
 use super::{error::FSError, DirectoryDetails, NoteDetails};
 
-use super::utilities::path_to_string;
+use crate::system::path_to_string;
 use crate::system::SystemPath;
 
 pub(crate) use backup::backup_note;
