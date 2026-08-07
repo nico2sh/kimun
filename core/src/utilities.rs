@@ -62,6 +62,61 @@ pub fn app_log_dir() -> PathBuf {
     }
 }
 
+/// Removes `.` components and resolves `..` lexically, without touching the
+/// filesystem.
+///
+/// [`Path::join`] keeps both verbatim, and on Windows that is not cosmetic: a
+/// `\\?\` (verbatim) path reaches the OS unnormalized, so `\\?\C:\kimun\.`
+/// names a file literally called `.` — `create_dir_all` cannot create its
+/// parent and SQLite cannot open it. Joining `cache_dir = "."` onto a
+/// canonicalized config directory produces exactly that, and `canonicalize`
+/// will not repair it (it early-returns for verbatim paths and then fails to
+/// open the literal `.`). Comparing two [`Path`]s hides the problem — their
+/// `PartialEq` goes through `Components`, which drops `.` — so only the real
+/// filesystem call notices.
+///
+/// The path's own root/prefix is kept. `..` cancels the preceding named
+/// component; at the root it is dropped (the root's parent is itself), and in
+/// a relative path with nothing left to cancel it is preserved. Purely
+/// lexical, so `a/../b` and a symlinked `a` can disagree with the filesystem —
+/// callers that need the on-disk truth still canonicalize; this only makes the
+/// path nameable first. An input that normalizes away entirely (`"."`,
+/// `"a/.."`) yields `.`.
+pub fn normalize_path(path: &Path) -> PathBuf {
+    use std::path::Component;
+
+    let rooted = matches!(
+        path.components().next(),
+        Some(Component::Prefix(_) | Component::RootDir)
+    );
+    let mut out = PathBuf::new();
+    // Named components `..` is allowed to cancel. Anything else already in
+    // `out` (a prefix, a root, a preserved `..`) must survive a `pop`.
+    let mut cancellable = 0usize;
+    for component in path.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir => out.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if cancellable > 0 {
+                    out.pop();
+                    cancellable -= 1;
+                } else if !rooted {
+                    out.push("..");
+                }
+            }
+            Component::Normal(name) => {
+                out.push(name);
+                cancellable += 1;
+            }
+        }
+    }
+    if out.as_os_str().is_empty() {
+        out.push(".");
+    }
+    out
+}
+
 /// Creates the directory (and any missing parents) at `path` if it does not
 /// already exist. Returns the canonicalized path on success.
 pub fn ensure_dir_exists(path: &Path) -> std::io::Result<std::path::PathBuf> {
@@ -247,6 +302,58 @@ mod tests {
         // The path must also be absolute — fallback chain ends at temp_dir(), never a relative dot.
         assert!(dir.is_absolute(), "log dir must be an absolute path");
         assert_eq!(name, "kimun_debug");
+    }
+
+    /// A `/`-separated literal as the host writes it, so these assertions read
+    /// the same on Windows (`C:\a\b`) as on unix (`/a/b`).
+    fn host(unix_style: &str) -> PathBuf {
+        let trimmed = unix_style.trim_start_matches('/');
+        if cfg!(windows) {
+            PathBuf::from(format!("C:\\{}", trimmed.replace('/', "\\")))
+        } else {
+            PathBuf::from(format!("/{trimmed}"))
+        }
+    }
+
+    /// Compares the raw string, not the `Path`: `PartialEq` for paths goes
+    /// through `Components`, which drops `.` itself and would pass whether or
+    /// not `normalize_path` did anything.
+    fn assert_path_eq(actual: PathBuf, expected: PathBuf) {
+        assert_eq!(actual.as_os_str(), expected.as_os_str());
+    }
+
+    #[test]
+    fn normalize_path_drops_cur_dir_components() {
+        assert_path_eq(normalize_path(&host("/a/./b")), host("/a/b"));
+        // The case that breaks Windows: a trailing `.` on a verbatim path.
+        assert_path_eq(normalize_path(&host("/a/b").join(".")), host("/a/b"));
+        assert_path_eq(normalize_path(Path::new("./a/./b")), PathBuf::from("a/b"));
+    }
+
+    #[test]
+    fn normalize_path_resolves_parent_dir_lexically() {
+        assert_path_eq(normalize_path(&host("/a/b/../c")), host("/a/c"));
+        assert_path_eq(normalize_path(&host("/a/b/../..")), host("/"));
+        // `..` cannot climb above a root; the root's parent is the root.
+        assert_path_eq(normalize_path(&host("/../..")), host("/"));
+    }
+
+    #[test]
+    fn normalize_path_keeps_leading_parent_dirs_of_relative_paths() {
+        // Nothing to cancel and no root to stop at, so these must survive:
+        // dropping them would silently retarget the path at the cwd.
+        assert_path_eq(normalize_path(Path::new("../a")), PathBuf::from("../a"));
+        assert_path_eq(
+            normalize_path(Path::new("a/../../b")),
+            PathBuf::from("../b"),
+        );
+    }
+
+    #[test]
+    fn normalize_path_of_an_empty_result_is_cur_dir() {
+        assert_path_eq(normalize_path(Path::new(".")), PathBuf::from("."));
+        assert_path_eq(normalize_path(Path::new("a/..")), PathBuf::from("."));
+        assert_path_eq(normalize_path(Path::new("")), PathBuf::from("."));
     }
 
     #[test]

@@ -126,6 +126,61 @@ async fn test_workspace_init_duplicate_name_fails() {
     );
 }
 
+/// An invalid name must be rejected before it is used to build a path.
+///
+/// The name becomes `<cache_dir>/<name>.kimuncache`, so a `..` or a separator
+/// in it aims that file — and its `-wal`/`-shm` sidecars, and any parent
+/// directories — outside the cache directory. Validating only when the entry
+/// reaches the config (as `add_workspace` does) is too late: the database has
+/// been created and indexed by then, and the command aborts leaving it behind.
+///
+/// The config lives one level down so an escaping name lands inside the
+/// tempdir, where the assertions can see it, rather than in the system temp
+/// directory.
+#[tokio::test]
+async fn test_workspace_init_rejects_names_that_escape_the_cache_dir() {
+    for name in ["../escape", "sub/escape", "con"] {
+        let config_dir = TempDir::new().unwrap();
+        let cache_dir = config_dir.path().join("nested");
+        std::fs::create_dir(&cache_dir).unwrap();
+        let config_path = cache_dir.join("config.toml");
+        std::fs::write(&config_path, "# empty config\n").unwrap();
+        let workspace_dir = TempDir::new().unwrap();
+
+        let result = run_cli(
+            CliCommand::Workspace {
+                subcommand: WorkspaceSubcommand::Init {
+                    name: Some(name.to_string()),
+                    path: workspace_dir.path().to_path_buf(),
+                },
+            },
+            Some(config_path.clone()),
+        )
+        .await;
+
+        assert!(result.is_err(), "init with name '{name}' should fail");
+
+        let stray: Vec<_> = std::fs::read_dir(config_dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .filter(|n| n != "nested")
+            .collect();
+        assert!(
+            stray.is_empty(),
+            "init with name '{name}' wrote outside the cache dir: {stray:?}"
+        );
+        let inside: Vec<_> = std::fs::read_dir(&cache_dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .filter(|n| n != "config.toml")
+            .collect();
+        assert!(
+            inside.is_empty(),
+            "init with name '{name}' left files in the cache dir: {inside:?}"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // workspace list tests
 // ---------------------------------------------------------------------------
