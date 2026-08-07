@@ -14,10 +14,14 @@ _Avoid_: vault (that is core's view of the opened directory), profile.
 Core's view of a **Workspace**'s directory once opened — the notes, their index, and the file operations over them (`NoteVault`). The TUI selects a workspace; core opens its directory as a vault. One workspace ↔ one vault at a time.
 _Avoid_: workspace (the config entry that points here), folder/directory (the OS path, not the opened thing).
 
+**History file**:
+A **Workspace**'s list of recently opened notes, newest first, one **Vault path** per line (`HistoryFile`). The other per-workspace artifact beside the **Index file**, and deliberately shaped the same way — the type owns its own naming, and renaming or removing a workspace goes through it, so the two cannot drift apart. Unlike the index it lives in the TUI: core has no notion of what you looked at last. Non-critical by design — a missing or truncated file costs an ordering, never a note — so reads never fail and writes are atomic.
+_Avoid_: recent files, MRU, last_paths (the superseded v2 config field it was migrated out of).
+
 ### Host paths
 
 **System path**:
-An OS path kimün has made usable on this machine: absolute, and normalized so no `.` or `..` component survives (`SystemPath`, in `kimun_core::system`). The invariant is the type's, not the caller's — a path that cannot be one is rejected where it is built rather than where it is opened, because a `.` inside a Windows verbatim path (`\\?\C:\…\.`) names a literal file that no directory creation and no SQLite open can use. Everything outside a **Vault** is addressed this way: the app directory, a workspace's root, its index cache, history and log files.
+An OS path kimün has made usable on this machine: absolute, and normalized so no `.` or `..` component survives (`SystemPath`, in `kimun_core::system`). The invariant is the type's, not the caller's — a path that cannot be one is rejected where it is built rather than where it is opened, because a `.` inside a Windows verbatim path (`\\?\C:\…\.`) names a literal file that no directory creation and no SQLite open can use. Everything outside a note is addressed this way: the app directory, a **Vault**'s own root, its **Index file**, history and log files. Inside a vault, notes are addressed by **Vault path** instead — that split is what separates core's `nfs` module (vault-scoped) from its `system` module (host-scoped); neither depends on the other.
 _Avoid_: absolute path (says less than the type guarantees), **Vault path** (that is the vault-internal one).
 
 **Host**:

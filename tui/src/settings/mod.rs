@@ -28,6 +28,8 @@ pub enum SettingsError {
 /// Shared settings handle — all screens and components reference the same instance.
 pub type SharedSettings = Arc<RwLock<AppSettings>>;
 use kimun_core::IndexFile;
+
+use self::history::HistoryFile;
 use kimun_core::nfs::VaultPath;
 use kimun_core::system::{self, SystemPath};
 
@@ -83,7 +85,6 @@ pub fn config_dir() -> Result<PathBuf, system::SystemError> {
 
 const BASE_CONFIG_FILE: &str = "config.toml";
 const THEMES_DIR: &str = "themes";
-const HISTORY_FILE_EXT: &str = "txt";
 
 const CONFIG_HEADER: &str = "\
 # ─── Kimün configuration ────────────────────────────────────────────────────
@@ -841,9 +842,9 @@ impl AppSettings {
         let Some(workspace_name) = self.current_workspace_name() else {
             return;
         };
-        let file_path = self.history_path_for(&workspace_name);
-        if let Err(e) = history::push_history(&file_path, note_path) {
-            tracing::warn!("failed to write history {:?}: {}", file_path, e);
+        let history = self.history_for(&workspace_name);
+        if let Err(e) = history.push(note_path) {
+            tracing::warn!("failed to write history {history}: {e}");
         }
     }
 
@@ -874,14 +875,11 @@ impl AppSettings {
         IndexFile::in_dir(&self.cache_dir_resolved, workspace_name)
     }
 
-    /// Path to the history file for the named workspace.
-    /// Caller must have already validated `workspace_name`.
-    pub fn history_path_for(&self, workspace_name: &str) -> SystemPath {
-        Self::workspace_file(&self.history_dir_resolved, workspace_name, HISTORY_FILE_EXT)
-    }
-
-    fn workspace_file(dir: &SystemPath, workspace_name: &str, ext: &str) -> SystemPath {
-        dir.join(format!("{workspace_name}.{ext}"))
+    /// The named workspace's history file — the artifact, not a path, for the
+    /// same reason as [`Self::index_for`]. Caller must have already validated
+    /// `workspace_name`.
+    pub fn history_for(&self, workspace_name: &str) -> HistoryFile {
+        HistoryFile::in_dir(&self.history_dir_resolved, workspace_name)
     }
 
     /// Returns the last-visited paths for the current workspace.
@@ -889,8 +887,7 @@ impl AppSettings {
         let Some(name) = self.current_workspace_name() else {
             return Vec::new();
         };
-        let file_path = self.history_path_for(&name);
-        history::load_history(file_path.as_path())
+        self.history_for(&name).load()
     }
 
     /// Build the icon set for the current `use_nerd_fonts` setting.
@@ -1253,13 +1250,13 @@ mod backend_tests {
             toml::from_str::<AppSettings>("theme = \"gruvbox_dark\"\n").unwrap(),
         ] {
             let cache = settings.index_for("w");
-            let history = settings.history_path_for("w");
+            let history = settings.history_for("w");
             assert!(
                 cache.path().as_path().is_absolute(),
                 "cache path not absolute: {cache}"
             );
             assert!(
-                history.as_path().is_absolute(),
+                history.path().as_path().is_absolute(),
                 "history path not absolute: {history}"
             );
         }
@@ -1297,7 +1294,7 @@ created = "2026-01-01T00:00:00Z"
     }
 
     /// A config file that does not exist yet still has to yield paths anchored
-    /// to its own directory. `cache_path_for`/`history_path_for` fall back to
+    /// to its own directory. `index_for`/`history_for` fall back to
     /// the *raw* `cache_dir`/`history_dir` when nothing resolved them, and
     /// those default to `.` and `history` — relative, so unresolved defaults
     /// put the workspace index wherever the process happens to be running.
@@ -1312,13 +1309,13 @@ created = "2026-01-01T00:00:00Z"
         let settings = AppSettings::load_from_file(config_dir.join("config.toml")).unwrap();
 
         let cache = settings.index_for("work");
-        let history = settings.history_path_for("work");
+        let history = settings.history_for("work");
         assert!(
             cache.path().as_path().starts_with(&config_dir),
             "cache path must sit next to the config file, got {cache}"
         );
         assert!(
-            history.as_path().starts_with(&config_dir),
+            history.path().as_path().starts_with(&config_dir),
             "history path must sit next to the config file, got {history}"
         );
     }

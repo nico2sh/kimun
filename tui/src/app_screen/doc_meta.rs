@@ -96,7 +96,7 @@ impl DocMeta {
             return;
         }
         self.last_git_fetch = Some(now);
-        let root = self.vault.workspace_path().to_path_buf();
+        let root = self.vault.workspace_path().as_path().to_path_buf();
         let tx2 = tx.clone();
         tokio::spawn(async move {
             let status = crate::util::git_status::fetch(root).await;

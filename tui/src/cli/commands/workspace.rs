@@ -260,28 +260,21 @@ fn run_rename(settings: &mut AppSettings, old_name: String, new_name: String) ->
         ));
     }
 
-    // Move index and history files BEFORE mutating config so a failed
-    // file move doesn't leave the config pointing at a workspace whose
-    // index is in the wrong place. The index refuses an occupied
-    // destination and takes its `-wal`/`-shm` siblings along itself.
+    // Move the workspace's files BEFORE mutating config, so a failed move
+    // doesn't leave the config pointing at a workspace whose index is in the
+    // wrong place. Each artifact refuses an occupied destination itself, and
+    // the index takes its `-wal`/`-shm` siblings along.
     let old_index = settings.index_for(&old_name);
     let new_index = settings.index_for(&new_name);
-    let old_history = settings.history_path_for(&old_name);
-    let new_history = settings.history_path_for(&new_name);
+    let old_history = settings.history_for(&old_name);
+    let new_history = settings.history_for(&new_name);
 
-    if new_history.exists() {
-        return Err(eyre!(
-            "Destination history already exists at {}. Refusing to overwrite.",
-            new_history
-        ));
-    }
     old_index
         .move_to(&new_index)
         .map_err(|e| eyre!("failed to move index: {}", e))?;
-    if old_history.exists() {
-        system::move_file(old_history.as_path(), new_history.as_path())
-            .map_err(|e| eyre!("failed to move history: {}", e))?;
-    }
+    old_history
+        .move_to(&new_history)
+        .map_err(|e| eyre!("failed to move history: {}", e))?;
 
     let ws_config_mut = settings
         .workspace_config
@@ -323,7 +316,7 @@ fn run_remove(settings: &mut AppSettings, name: String) -> Result<()> {
     }
 
     let index = settings.index_for(&name);
-    let history_path = settings.history_path_for(&name);
+    let history = settings.history_for(&name);
 
     settings
         .workspace_config
@@ -340,9 +333,9 @@ fn run_remove(settings: &mut AppSettings, name: String) -> Result<()> {
         Ok(()) => tracing::info!("removed index {}", index),
         Err(e) => tracing::warn!("failed to remove index {}: {}", index, e),
     }
-    match system::remove_file(history_path.as_path()) {
-        Ok(()) => tracing::info!("removed history {}", history_path),
-        Err(e) => tracing::warn!("failed to remove history {}: {}", history_path, e),
+    match history.remove() {
+        Ok(()) => tracing::info!("removed history {}", history),
+        Err(e) => tracing::warn!("failed to remove history {}: {}", history, e),
     }
 
     println!("Workspace '{}' removed.", name);

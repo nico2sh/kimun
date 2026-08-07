@@ -4,6 +4,7 @@
 //! All filesystem access lives here per the project rule that fs ops belong
 //! in `nfs`.
 
+use crate::system::SystemPath;
 use std::path::Path;
 use std::str::FromStr;
 
@@ -31,15 +32,15 @@ impl std::fmt::Display for VaultId {
     }
 }
 
-fn vault_id_path(workspace_path: &Path) -> std::path::PathBuf {
-    workspace_path.join(".kimun").join("vault-id")
+fn vault_id_path(workspace_path: &SystemPath) -> std::path::PathBuf {
+    workspace_path.as_path().join(".kimun").join("vault-id")
 }
 
 /// Reads the vault's [`VaultId`], creating and persisting a fresh one under
 /// `.kimun/vault-id` when none exists yet. A malformed or orphaned-empty
 /// stored id is replaced, so the file self-heals rather than wedging the
 /// vault.
-pub async fn read_or_create_vault_id(workspace_path: &Path) -> Result<VaultId, FSError> {
+pub async fn read_or_create_vault_id(workspace_path: &SystemPath) -> Result<VaultId, FSError> {
     let path = vault_id_path(workspace_path);
     // Fast path, no locking: [`settle_vault_id`] publishes atomically (temp
     // file + rename), so a reader sees either the previous or the new
@@ -120,10 +121,14 @@ mod tests {
     #[tokio::test]
     async fn creates_and_persists_on_first_read() {
         let dir = tempfile::TempDir::new().unwrap();
-        let id = read_or_create_vault_id(dir.path()).await.unwrap();
+        let id = read_or_create_vault_id(&crate::system::sys(dir.path()))
+            .await
+            .unwrap();
         assert!(dir.path().join(".kimun").join("vault-id").exists());
         // Second read returns the same id from disk.
-        let again = read_or_create_vault_id(dir.path()).await.unwrap();
+        let again = read_or_create_vault_id(&crate::system::sys(dir.path()))
+            .await
+            .unwrap();
         assert_eq!(id, again);
     }
 
@@ -135,9 +140,13 @@ mod tests {
         tokio::fs::write(kimun.join("vault-id"), "not-a-uuid")
             .await
             .unwrap();
-        let id = read_or_create_vault_id(dir.path()).await.unwrap();
+        let id = read_or_create_vault_id(&crate::system::sys(dir.path()))
+            .await
+            .unwrap();
         // Rewritten to a valid id, stable thereafter.
-        let again = read_or_create_vault_id(dir.path()).await.unwrap();
+        let again = read_or_create_vault_id(&crate::system::sys(dir.path()))
+            .await
+            .unwrap();
         assert_eq!(id, again);
         // The corrupt content was moved aside, not silently destroyed.
         let backup = tokio::fs::read_to_string(kimun.join("vault-id.corrupt"))
@@ -156,8 +165,12 @@ mod tests {
         tokio::fs::create_dir_all(&kimun).await.unwrap();
         tokio::fs::write(kimun.join("vault-id"), "").await.unwrap();
 
-        let id = read_or_create_vault_id(dir.path()).await.unwrap();
-        let again = read_or_create_vault_id(dir.path()).await.unwrap();
+        let id = read_or_create_vault_id(&crate::system::sys(dir.path()))
+            .await
+            .unwrap();
+        let again = read_or_create_vault_id(&crate::system::sys(dir.path()))
+            .await
+            .unwrap();
         assert_eq!(id, again);
     }
 
@@ -168,13 +181,20 @@ mod tests {
         // a valid id. The under-lock re-read must adopt that id, not mint a
         // fresh one (which would split the vault across two collections).
         let dir = tempfile::TempDir::new().unwrap();
-        let settled = read_or_create_vault_id(dir.path()).await.unwrap();
+        let settled = read_or_create_vault_id(&crate::system::sys(dir.path()))
+            .await
+            .unwrap();
 
-        let path = vault_id_path(dir.path());
+        let path = vault_id_path(&crate::system::sys(dir.path()));
         let straggler = settle_vault_id(&path).unwrap();
         assert_eq!(straggler, settled, "settle must adopt the existing id");
         // And the id on disk is unchanged.
-        assert_eq!(read_or_create_vault_id(dir.path()).await.unwrap(), settled);
+        assert_eq!(
+            read_or_create_vault_id(&crate::system::sys(dir.path()))
+                .await
+                .unwrap(),
+            settled
+        );
     }
 
     #[tokio::test]
@@ -193,7 +213,11 @@ mod tests {
         let handles: Vec<_> = (0..8)
             .map(|_| {
                 let workspace = workspace.clone();
-                tokio::spawn(async move { read_or_create_vault_id(&workspace).await.unwrap() })
+                tokio::spawn(async move {
+                    read_or_create_vault_id(&crate::system::sys(workspace))
+                        .await
+                        .unwrap()
+                })
             })
             .collect();
         let mut ids = Vec::new();
@@ -205,7 +229,9 @@ mod tests {
             "all concurrent readers must get the same id: {ids:?}"
         );
         // And the winner's id is what persists on disk.
-        let on_disk = read_or_create_vault_id(&workspace).await.unwrap();
+        let on_disk = read_or_create_vault_id(&crate::system::sys(workspace))
+            .await
+            .unwrap();
         assert_eq!(on_disk, ids[0]);
     }
 }

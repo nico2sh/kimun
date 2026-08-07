@@ -9,7 +9,7 @@
 
 mod visitor;
 
-use std::path::Path;
+use crate::system::SystemPath;
 use std::sync::mpsc::Sender;
 
 use log::debug;
@@ -25,11 +25,11 @@ use visitor::NoteListVisitorBuilder;
 /// it mirrors. Cheap to construct per call.
 pub(crate) struct VaultSync<'a> {
     index: &'a NoteIndex,
-    workspace_path: &'a Path,
+    workspace_path: &'a SystemPath,
 }
 
 impl<'a> VaultSync<'a> {
-    pub(crate) fn new(index: &'a NoteIndex, workspace_path: &'a Path) -> Self {
+    pub(crate) fn new(index: &'a NoteIndex, workspace_path: &'a SystemPath) -> Self {
         Self {
             index,
             workspace_path,
