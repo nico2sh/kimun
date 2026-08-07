@@ -1185,12 +1185,38 @@ mod backend_tests {
 
     // ── expand_path tests ──────────────────────────────────────────────
 
+    /// Builds a genuinely absolute path for the host from `/`-separated
+    /// components.
+    ///
+    /// A literal like `"/config/dir"` is absolute on Unix but merely *rooted*
+    /// on Windows, where [`Path::is_absolute`] also wants a prefix (`C:\`).
+    /// Passing the literal straight in doesn't just weaken these tests there,
+    /// it inverts them: `expand_path` sees a relative path, rebases it onto
+    /// `base`, and the `is_absolute` assertion then fails on behavior that is
+    /// in fact correct.
+    ///
+    /// [`Path::is_absolute`]: std::path::Path::is_absolute
+    fn absolute(unix_style: &str) -> PathBuf {
+        let trimmed = unix_style.trim_start_matches('/');
+        if cfg!(windows) {
+            PathBuf::from(format!("C:\\{}", trimmed.replace('/', "\\")))
+        } else {
+            PathBuf::from(format!("/{trimmed}"))
+        }
+    }
+
     #[test]
     fn expand_path_absolute_unchanged() {
-        let base = PathBuf::from("/config/dir");
-        let result = AppSettings::expand_path(std::path::Path::new("/absolute/path/notes"), &base);
+        let base = absolute("/config/dir");
+        let input = absolute("/absolute/path/notes");
+
+        let result = AppSettings::expand_path(&input, &base);
+
         assert!(result.is_absolute());
-        assert!(result.to_string_lossy().contains("absolute"));
+        assert_eq!(
+            result, input,
+            "an already-absolute path must come back untouched, not rebased on `base`"
+        );
     }
 
     #[test]
@@ -1219,10 +1245,12 @@ mod backend_tests {
 
     #[test]
     fn expand_path_nonexistent_relative_still_absolute() {
-        let base = PathBuf::from("/some/config/dir");
+        let base = absolute("/some/config/dir");
+
         let result = AppSettings::expand_path(std::path::Path::new("my-notes"), &base);
+
         assert!(result.is_absolute());
-        assert_eq!(result, PathBuf::from("/some/config/dir/my-notes"));
+        assert_eq!(result, base.join("my-notes"));
     }
 
     #[test]
