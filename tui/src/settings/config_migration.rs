@@ -4,6 +4,9 @@
 //! version transitions. `ConfigMigration::run` is called once during
 //! `AppSettings::load_from_file` after deserialization.
 
+use kimun_core::IndexFile;
+use kimun_core::system::{self, SystemPath};
+
 use super::AppSettings;
 use super::SettingsError;
 use super::workspace_config::{WorkspaceConfig, WorkspaceEntry};
@@ -215,35 +218,32 @@ impl ConfigMigration {
             .collect();
 
         for (name, ws_path, last_paths) in work {
-            let old_db = ws_path.join("kimun.sqlite");
-            let new_db = cache_dir.join(format!("{name}.kimuncache"));
-            if old_db.exists() {
-                if new_db.exists() {
+            let old_index = match SystemPath::try_absolute(&ws_path) {
+                Ok(path) => IndexFile::legacy_in_workspace(&path),
+                // A workspace path that is not absolute cannot name an index
+                // on this machine; the rest of this entry's migration (its
+                // history) still applies.
+                Err(e) => {
+                    tracing::warn!("skipping index migration for {name}: {e}");
+                    continue;
+                }
+            };
+            let new_index = IndexFile::in_dir(&cache_dir, &name);
+            if old_index.exists() {
+                if new_index.exists() {
                     tracing::warn!(
-                        "destination cache {:?} already exists, leaving old DB at {:?}",
-                        new_db,
-                        old_db
+                        "destination index {new_index} already exists, leaving the old one at {old_index}"
                     );
                 } else {
-                    std::fs::create_dir_all(&cache_dir).map_err(|e| {
-                        SettingsError::Migration(format!(
-                            "failed to create cache dir {cache_dir:?}: {e}"
-                        ))
+                    system::ensure_dir(&cache_dir).map_err(|e| {
+                        SettingsError::Migration(format!("failed to create cache dir: {e}"))
                     })?;
-                    if let Err(rename_err) = std::fs::rename(&old_db, &new_db) {
-                        // Source and destination on different filesystems — a
-                        // rename cannot cross them; fall back to copy + unlink.
-                        if is_cross_device_error(&rename_err) {
-                            std::fs::copy(&old_db, &new_db)?;
-                            std::fs::remove_file(&old_db)?;
-                        } else {
-                            return Err(SettingsError::Migration(format!(
-                                "failed to move {:?} -> {:?}: {}",
-                                old_db, new_db, rename_err
-                            )));
-                        }
-                    }
-                    tracing::info!("migrated {:?} -> {:?}", old_db, new_db);
+                    // Vault directory and cache directory are routinely on
+                    // different volumes, and the index brings its sidecars.
+                    old_index.move_to(&new_index).map_err(|e| {
+                        SettingsError::Migration(format!("failed to move the index: {e}"))
+                    })?;
+                    tracing::info!("migrated {old_index} -> {new_index}");
                 }
             }
 
@@ -347,25 +347,6 @@ impl ConfigMigration {
     }
 }
 
-/// Whether a failed `rename` means "source and destination are on different
-/// volumes" — the one failure the copy + unlink fallback can recover from.
-///
-/// Two error codes, not one: unix reports `EXDEV`, but Windows `MoveFile`
-/// reports `ERROR_NOT_SAME_DEVICE` for a cross-drive move, so matching only
-/// the unix errno left the fallback dead exactly where it is most likely to
-/// fire — a vault on `D:\` with its cache dir under `C:\Users\...` failed the
-/// v2 → v3 migration outright.
-fn is_cross_device_error(err: &std::io::Error) -> bool {
-    #[cfg(unix)]
-    let code = Some(18); // EXDEV
-    #[cfg(windows)]
-    let code = Some(17); // ERROR_NOT_SAME_DEVICE
-    #[cfg(not(any(unix, windows)))]
-    let code: Option<i32> = None;
-
-    code.is_some_and(|c| err.raw_os_error() == Some(c))
-}
-
 #[cfg(test)]
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
@@ -377,26 +358,6 @@ mod tests {
         s.workspace_dir = Some(PathBuf::from(path));
         s.theme = "gruvbox_dark".to_string();
         s
-    }
-
-    /// The cache move's copy + unlink fallback only runs when the rename
-    /// failure is recognized as cross-volume, so the code has to be the host's
-    /// — matching only `EXDEV` left Windows (`ERROR_NOT_SAME_DEVICE`) with a
-    /// migration that hard-errors on a vault and a cache dir on different
-    /// drives.
-    #[test]
-    #[cfg(any(unix, windows))]
-    fn cross_device_rename_error_is_recognized_on_this_platform() {
-        let cross_device = if cfg!(windows) { 17 } else { 18 };
-
-        assert!(is_cross_device_error(&std::io::Error::from_raw_os_error(
-            cross_device
-        )));
-        assert!(!is_cross_device_error(&std::io::Error::from_raw_os_error(
-            2
-        )));
-        // No OS error at all must not read as cross-device.
-        assert!(!is_cross_device_error(&std::io::Error::other("boom")));
     }
 
     #[test]

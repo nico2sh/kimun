@@ -185,14 +185,14 @@ impl PreferencesScreen {
                 .as_ref()
                 .map(|wc| wc.global.current_workspace.clone())
                 .filter(|n| !n.is_empty());
-            let cache_path = workspace_name.as_ref().map(|n| s.cache_path_for(n));
+            let cache_path = workspace_name.as_ref().map(|n| s.index_for(n));
             drop(s);
             self.pending_save_after_index = true;
             let tx2 = tx.clone();
             let handle = tokio::spawn(async move {
                 let mut config = VaultConfig::new(workspace);
                 if let Some(path) = cache_path {
-                    config = config.with_db_path(path);
+                    config = config.with_index(path);
                 }
                 let event = match NoteVault::new(config).await {
                     Err(e) => AppEvent::IndexingDone(Err(e.to_string())),
@@ -368,13 +368,13 @@ impl AppScreen for PreferencesScreen {
                                 .as_ref()
                                 .map(|wc| wc.global.current_workspace.clone())
                                 .filter(|n| !n.is_empty());
-                            let cache_path = workspace_name.as_ref().map(|n| s.cache_path_for(n));
+                            let cache_path = workspace_name.as_ref().map(|n| s.index_for(n));
                             drop(s);
                             let tx2 = tx.clone();
                             let handle = tokio::spawn(async move {
                                 let mut config = VaultConfig::new(workspace);
                                 if let Some(path) = cache_path {
-                                    config = config.with_db_path(path);
+                                    config = config.with_index(path);
                                 }
                                 let event = match NoteVault::new(config).await {
                                     Err(e) => AppEvent::IndexingDone(Err(e.to_string())),
@@ -720,14 +720,14 @@ impl AppScreen for PreferencesScreen {
                     .as_ref()
                     .map(|wc| wc.global.current_workspace.clone())
                     .filter(|n| !n.is_empty());
-                let cache_path = workspace_name.as_ref().map(|n| s.cache_path_for(n));
+                let cache_path = workspace_name.as_ref().map(|n| s.index_for(n));
                 drop(s);
                 let tx2 = tx.clone();
                 let handle = tokio::spawn(async move {
                     let result = async {
                         let mut config = VaultConfig::new(workspace);
                         if let Some(path) = cache_path {
-                            config = config.with_db_path(path);
+                            config = config.with_index(path);
                         }
                         let vault = NoteVault::new(config).await.map_err(|e| e.to_string())?;
                         let result = vault.index_notes(NotesValidation::Fast).await;

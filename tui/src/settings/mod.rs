@@ -27,6 +27,7 @@ pub enum SettingsError {
 
 /// Shared settings handle — all screens and components reference the same instance.
 pub type SharedSettings = Arc<RwLock<AppSettings>>;
+use kimun_core::IndexFile;
 use kimun_core::nfs::VaultPath;
 use kimun_core::system::{self, SystemPath};
 
@@ -82,7 +83,6 @@ pub fn config_dir() -> Result<PathBuf, system::SystemError> {
 
 const BASE_CONFIG_FILE: &str = "config.toml";
 const THEMES_DIR: &str = "themes";
-const CACHE_FILE_EXT: &str = "kimuncache";
 const HISTORY_FILE_EXT: &str = "txt";
 
 const CONFIG_HEADER: &str = "\
@@ -860,11 +860,14 @@ impl AppSettings {
         &self.history_dir_resolved
     }
 
-    /// Path to the SQLite cache file for the named workspace.
-    /// Caller must have already validated `workspace_name` via
+    /// The named workspace's index file.
+    ///
+    /// Returns the artifact, not a path: what the file is called, and that it
+    /// carries `-wal`/`-shm` siblings, is [`IndexFile`]'s business. Caller
+    /// must have already validated `workspace_name` via
     /// `kimun_core::nfs::filename::validate_filename`.
-    pub fn cache_path_for(&self, workspace_name: &str) -> SystemPath {
-        Self::workspace_file(&self.cache_dir_resolved, workspace_name, CACHE_FILE_EXT)
+    pub fn index_for(&self, workspace_name: &str) -> IndexFile {
+        IndexFile::in_dir(&self.cache_dir_resolved, workspace_name)
     }
 
     /// Path to the history file for the named workspace.
@@ -1245,10 +1248,10 @@ mod backend_tests {
             AppSettings::default(),
             toml::from_str::<AppSettings>("theme = \"gruvbox_dark\"\n").unwrap(),
         ] {
-            let cache = settings.cache_path_for("w");
+            let cache = settings.index_for("w");
             let history = settings.history_path_for("w");
             assert!(
-                cache.as_path().is_absolute(),
+                cache.path().as_path().is_absolute(),
                 "cache path not absolute: {cache}"
             );
             assert!(
@@ -1304,10 +1307,10 @@ created = "2026-01-01T00:00:00Z"
         let config_dir = dir.path().canonicalize().unwrap();
         let settings = AppSettings::load_from_file(config_dir.join("config.toml")).unwrap();
 
-        let cache = settings.cache_path_for("work");
+        let cache = settings.index_for("work");
         let history = settings.history_path_for("work");
         assert!(
-            cache.as_path().starts_with(&config_dir),
+            cache.path().as_path().starts_with(&config_dir),
             "cache path must sit next to the config file, got {cache}"
         );
         assert!(
@@ -1328,9 +1331,9 @@ created = "2026-01-01T00:00:00Z"
 
         let settings = AppSettings::load_from_file(config_path).unwrap();
 
-        let cache = settings.cache_path_for("work");
+        let cache = settings.index_for("work");
         assert!(
-            cache.as_path().starts_with(&config_dir),
+            cache.path().as_path().starts_with(&config_dir),
             "cache path must sit next to the config file, got {cache}"
         );
     }

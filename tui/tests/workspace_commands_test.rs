@@ -392,6 +392,64 @@ async fn test_workspace_rename_succeeds() {
     );
 }
 
+/// An index is three files when it is open or was not closed cleanly: the
+/// `.kimuncache` plus SQLite's `-wal` and `-shm`. Renaming only the first
+/// leaves the WAL behind — the renamed index then silently lacks whatever
+/// transactions the WAL still held, and the orphans sit in the cache
+/// directory forever.
+#[tokio::test]
+async fn test_workspace_rename_moves_the_index_sidecars() {
+    let config_dir = TempDir::new().unwrap();
+    let config_path = config_dir.path().join("config.toml");
+    let workspace_dir = TempDir::new().unwrap();
+    std::fs::write(&config_path, "# empty config\n").unwrap();
+
+    run_cli(
+        CliCommand::Workspace {
+            subcommand: WorkspaceSubcommand::Init {
+                name: Some("oldname".to_string()),
+                path: workspace_dir.path().to_path_buf(),
+            },
+        },
+        Some(config_path.clone()),
+    )
+    .await
+    .expect("init should succeed");
+
+    // Stand in for an index left open by a crashed process.
+    let cache_dir = config_dir.path().canonicalize().unwrap();
+    let old_wal = cache_dir.join("oldname.kimuncache-wal");
+    let old_shm = cache_dir.join("oldname.kimuncache-shm");
+    std::fs::write(&old_wal, b"wal").unwrap();
+    std::fs::write(&old_shm, b"shm").unwrap();
+
+    run_cli(
+        CliCommand::Workspace {
+            subcommand: WorkspaceSubcommand::Rename {
+                old_name: "oldname".to_string(),
+                new_name: "newname".to_string(),
+            },
+        },
+        Some(config_path.clone()),
+    )
+    .await
+    .expect("rename should succeed");
+
+    assert!(cache_dir.join("newname.kimuncache").exists());
+    assert_eq!(
+        std::fs::read(cache_dir.join("newname.kimuncache-wal")).unwrap(),
+        b"wal",
+        "the WAL must travel with the index"
+    );
+    assert_eq!(
+        std::fs::read(cache_dir.join("newname.kimuncache-shm")).unwrap(),
+        b"shm",
+        "the shared-memory file must travel with the index"
+    );
+    assert!(!old_wal.exists(), "orphaned WAL left behind");
+    assert!(!old_shm.exists(), "orphaned shm left behind");
+}
+
 // ---------------------------------------------------------------------------
 // workspace remove tests
 // ---------------------------------------------------------------------------
@@ -452,6 +510,57 @@ async fn test_workspace_remove_succeeds() {
     assert!(
         !ws_config.workspaces.contains_key("ws2"),
         "removed workspace should no longer exist"
+    );
+}
+
+/// Removing a workspace has to take the whole index with it, sidecars
+/// included — otherwise the cache directory accumulates `-wal`/`-shm` files
+/// belonging to workspaces that no longer exist.
+#[tokio::test]
+async fn test_workspace_remove_deletes_the_index_sidecars() {
+    let config_dir = TempDir::new().unwrap();
+    let config_path = config_dir.path().join("config.toml");
+    let keep_dir = TempDir::new().unwrap();
+    let doomed_dir = TempDir::new().unwrap();
+    std::fs::write(&config_path, "# empty config\n").unwrap();
+
+    for (name, dir) in [("keep", &keep_dir), ("doomed", &doomed_dir)] {
+        run_cli(
+            CliCommand::Workspace {
+                subcommand: WorkspaceSubcommand::Init {
+                    name: Some(name.to_string()),
+                    path: dir.path().to_path_buf(),
+                },
+            },
+            Some(config_path.clone()),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("init of '{name}' should succeed: {e:?}"));
+    }
+
+    let cache_dir = config_dir.path().canonicalize().unwrap();
+    let wal = cache_dir.join("doomed.kimuncache-wal");
+    let shm = cache_dir.join("doomed.kimuncache-shm");
+    std::fs::write(&wal, b"wal").unwrap();
+    std::fs::write(&shm, b"shm").unwrap();
+
+    run_cli(
+        CliCommand::Workspace {
+            subcommand: WorkspaceSubcommand::Remove {
+                name: "doomed".to_string(),
+            },
+        },
+        Some(config_path.clone()),
+    )
+    .await
+    .expect("remove should succeed");
+
+    assert!(!cache_dir.join("doomed.kimuncache").exists());
+    assert!(!wal.exists(), "orphaned WAL left behind");
+    assert!(!shm.exists(), "orphaned shm left behind");
+    assert!(
+        cache_dir.join("keep.kimuncache").exists(),
+        "the other workspace's index must be untouched"
     );
 }
 

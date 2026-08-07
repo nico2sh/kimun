@@ -32,9 +32,9 @@ created = "2026-01-01T00:00:00Z"
         workspace_dir.display()
     );
     std::fs::write(config_path, content).unwrap();
-    let cache_path = config_dir.join("default.kimuncache");
+    let index = kimun_core::IndexFile::in_dir(&sys(config_dir), "default");
     let vault = kimun_core::NoteVault::new(
-        kimun_core::VaultConfig::new(sys(workspace_dir)).with_db_path(sys(cache_path)),
+        kimun_core::VaultConfig::new(sys(workspace_dir)).with_index(index),
     )
     .await
     .unwrap();
@@ -136,9 +136,9 @@ quick_note_path = "/inbox"
         workspace_dir.path().display()
     );
     std::fs::write(&config_path, content).unwrap();
-    let cache_path = config_dir.path().join("default.kimuncache");
+    let index = kimun_core::IndexFile::in_dir(&sys(config_dir.path()), "default");
     let vault = kimun_core::NoteVault::new(
-        kimun_core::VaultConfig::new(sys(workspace_dir.path())).with_db_path(sys(cache_path)),
+        kimun_core::VaultConfig::new(sys(workspace_dir.path())).with_index(index),
     )
     .await
     .unwrap();
@@ -184,9 +184,9 @@ quick_note_path = "/inbox"
         workspace_dir.path().display()
     );
     std::fs::write(&config_path, content).unwrap();
-    let cache_path = config_dir.path().join("default.kimuncache");
+    let index = kimun_core::IndexFile::in_dir(&sys(config_dir.path()), "default");
     let vault = kimun_core::NoteVault::new(
-        kimun_core::VaultConfig::new(sys(workspace_dir.path())).with_db_path(sys(cache_path)),
+        kimun_core::VaultConfig::new(sys(workspace_dir.path())).with_index(index),
     )
     .await
     .unwrap();

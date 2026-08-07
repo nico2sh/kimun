@@ -7,9 +7,9 @@
 
 use std::path::{Path, PathBuf};
 
-use kimun_core::{NoteVault, SystemPath, VaultConfig};
+use kimun_core::{IndexFile, NoteVault, SystemPath, VaultConfig};
 
-/// Where test vaults keep their index, instead of the default
+/// The workspace name test vaults index under, instead of the default
 /// `<workspace>/kimun.sqlite`.
 ///
 /// Two reasons, both about not colliding with the code under test: loading a
@@ -17,7 +17,7 @@ use kimun_core::{NoteVault, SystemPath, VaultConfig};
 /// refuses to move a file whose handle is still open — which a live test
 /// vault's connection pool holds. The leading dot also keeps the file out of
 /// the vault walk.
-pub const TEST_INDEX_FILE: &str = ".test-index.kimuncache";
+pub const TEST_INDEX_NAME: &str = ".test-index";
 
 /// A [`SystemPath`] for a path a test has already made absolute (a `TempDir`,
 /// a host literal). Panics rather than returning a `Result`: a test handing
@@ -26,12 +26,12 @@ pub fn sys<P: AsRef<Path>>(path: P) -> SystemPath {
     SystemPath::try_absolute(&path).unwrap_or_else(|e| panic!("test path must be absolute: {e}"))
 }
 
-/// [`VaultConfig`] for a test vault rooted at `dir`, indexed at
-/// [`TEST_INDEX_FILE`].
+/// [`VaultConfig`] for a test vault rooted at `dir`, indexed under
+/// [`TEST_INDEX_NAME`].
 pub fn test_vault_config(dir: &Path) -> VaultConfig {
     let root = sys(dir);
-    let index = root.join(TEST_INDEX_FILE);
-    VaultConfig::new(root).with_db_path(index)
+    let index = IndexFile::in_dir(&root, TEST_INDEX_NAME);
+    VaultConfig::new(root).with_index(index)
 }
 
 /// Opens a test vault at `dir` with its database initialised.
