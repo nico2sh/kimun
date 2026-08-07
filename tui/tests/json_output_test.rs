@@ -1,19 +1,15 @@
 use kimun_core::nfs::{NoteEntryData, VaultPath};
 use kimun_core::note::NoteContentData;
-use kimun_core::{NoteVault, VaultConfig};
 use kimun_notes::cli::json_output::format_notes_with_content_as_json;
 use tempfile::TempDir;
+
+mod common;
+use common::open_test_vault;
 
 #[tokio::test]
 async fn json_output_includes_required_fields() {
     let workspace_dir = TempDir::new().unwrap();
-    let vault = NoteVault::new(
-        VaultConfig::new(workspace_dir.path())
-            .with_db_path(workspace_dir.path().join(".test-index.kimuncache")),
-    )
-    .await
-    .unwrap();
-    vault.validate_and_init().await.unwrap();
+    let vault = open_test_vault(workspace_dir.path()).await;
 
     let entries = vec![(
         NoteEntryData {
@@ -63,4 +59,6 @@ async fn json_output_includes_required_fields() {
     assert!(note["metadata"]["tags"].is_array());
     assert!(note["metadata"]["links"].is_array());
     assert!(note["metadata"]["headers"].is_array());
+
+    vault.close().await;
 }

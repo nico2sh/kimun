@@ -199,14 +199,8 @@ impl ConfigMigration {
             }
         }
 
-        let cache_dir = settings
-            .cache_dir_resolved()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| settings.cache_dir.clone());
-        let history_dir = settings
-            .history_dir_resolved()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| settings.history_dir.clone());
+        let cache_dir = settings.cache_dir_resolved().to_path_buf();
+        let history_dir = settings.history_dir_resolved().to_path_buf();
 
         let work: Vec<(String, std::path::PathBuf, Vec<String>)> = wc
             .workspaces
