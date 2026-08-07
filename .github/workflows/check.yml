@@ -128,8 +128,13 @@ jobs:
         with:
           tool: cargo-nextest
 
+      # `--no-fail-fast`: nextest's default cancels the run on the first
+      # failure, which on a three-OS matrix turns one red platform into a
+      # partial answer — the report reads "2871 tests were not run" and the
+      # next failure only surfaces after another full round trip. Finishing
+      # the run costs a couple of minutes and states the whole problem once.
       - name: Run tests
-        run: cargo nextest run --workspace
+        run: cargo nextest run --workspace --no-fail-fast
 
   # Release targets with no corresponding entry in the `test` matrix. macOS ARM
   # and Windows used to be checked here; they run the full suite now, which
