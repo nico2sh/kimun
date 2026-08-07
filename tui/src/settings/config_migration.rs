@@ -221,6 +221,10 @@ impl ConfigMigration {
             })
             .collect();
 
+        // Workspaces whose history could not be written out, so their
+        // `last_paths` must survive rather than be cleared as migrated.
+        let mut unwritten: std::collections::HashSet<String> = std::collections::HashSet::new();
+
         for (name, ws_path, last_paths) in work {
             // A workspace path that is not absolute cannot name an index on
             // this machine — but the rest of this entry's migration still
@@ -230,21 +234,30 @@ impl ConfigMigration {
                 Ok(path) => {
                     let old_index = IndexFile::legacy_in_workspace(&path);
                     let new_index = IndexFile::in_dir(&cache_dir, &name);
+                    // Moving the index is best-effort, and deliberately so: it
+                    // is a rebuildable cache, and this runs inside
+                    // `load_from_file` on the first launch after an upgrade.
+                    // Failing here used to propagate out and stop the app from
+                    // starting at all — on Windows, where a handle on the index
+                    // blocks the move, that turned a stale cache into "kimün
+                    // will not open". The worst case of leaving it behind is
+                    // one reindex.
                     if old_index.exists() {
                         if new_index.exists() {
                             tracing::warn!(
                                 "destination index {new_index} already exists, leaving the old one at {old_index}"
                             );
-                        } else {
-                            system::ensure_dir(&cache_dir).map_err(|e| {
-                                SettingsError::Migration(format!("failed to create cache dir: {e}"))
-                            })?;
+                        } else if let Err(e) = system::ensure_dir(&cache_dir)
+                            .and_then(|()| old_index.move_to(&new_index))
+                        {
                             // Vault directory and cache directory are routinely
                             // on different volumes, and the index brings its
                             // sidecars.
-                            old_index.move_to(&new_index).map_err(|e| {
-                                SettingsError::Migration(format!("failed to move the index: {e}"))
-                            })?;
+                            tracing::warn!(
+                                "could not move {old_index} to {new_index}: {e}. \
+                                 Leaving it in place; the workspace will reindex."
+                            );
+                        } else {
                             tracing::info!("migrated {old_index} -> {new_index}");
                         }
                     }
@@ -259,14 +272,24 @@ impl ConfigMigration {
                     // is read back as anyway — so a v2 entry written in some
                     // other form lands here already normalized.
                     let paths: Vec<VaultPath> = last_paths.iter().map(VaultPath::new).collect();
-                    history.write(&paths)?;
+                    // Non-fatal like the index move above, for the same reason:
+                    // a recent-notes list is not worth refusing to start over.
+                    // But the entry is then left alone below, because clearing
+                    // it after a failed write is how the list gets destroyed
+                    // rather than postponed.
+                    if let Err(e) = history.write(&paths) {
+                        tracing::warn!("could not write {history}: {e}");
+                        unwritten.insert(name.clone());
+                    }
                 }
             }
         }
 
         if let Some(ref mut wc) = settings.workspace_config {
-            for entry in wc.workspaces.values_mut() {
-                entry.last_paths.clear();
+            for (name, entry) in wc.workspaces.iter_mut() {
+                if !unwritten.contains(name) {
+                    entry.last_paths.clear();
+                }
             }
         }
 
@@ -416,6 +439,61 @@ mod tests {
     }
 
     /// A workspace path this machine cannot turn into an index path must still
+    /// An index that cannot be moved must not stop the app from starting.
+    ///
+    /// This migration runs inside `load_from_file`, on the first launch after
+    /// an upgrade. The index is a rebuildable cache, so the worst case of
+    /// leaving it where it is amounts to one reindex — whereas propagating the
+    /// error means kimün does not open at all, which is what a Windows handle
+    /// still on the index used to cause.
+    #[test]
+    fn v2_migration_survives_an_index_it_cannot_move() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let workspace = tempfile::TempDir::new().unwrap();
+        let legacy = workspace.path().join("kimun.sqlite");
+        std::fs::write(&legacy, b"an index").unwrap();
+
+        // A *file* where the cache directory should be, so the move cannot
+        // land. A stand-in for the Windows lock, which cannot be provoked on
+        // demand; what is under test is the error handling, not the cause.
+        let cache = dir.path().join("cache");
+        std::fs::write(&cache, b"not a directory").unwrap();
+
+        let mut settings = AppSettings::default();
+        settings.config_version = 2;
+        settings.cache_dir_resolved = kimun_core::system::SystemPath::try_absolute(&cache).unwrap();
+        settings.history_dir_resolved =
+            kimun_core::system::SystemPath::try_absolute(dir.path()).unwrap();
+
+        let mut wc = WorkspaceConfig::new_empty();
+        wc.workspaces.insert(
+            "notes".to_string(),
+            WorkspaceEntry {
+                path: workspace.path().to_path_buf(),
+                last_paths: Vec::new(),
+                created: chrono::Utc::now(),
+                quick_note_path: None,
+                inbox_path: None,
+                resolved_path: None,
+                file_key: None,
+            },
+        );
+        wc.global.current_workspace = "notes".to_string();
+        settings.workspace_config = Some(wc);
+
+        ConfigMigration::run(&mut settings)
+            .expect("a stuck index must not fail the migration, and so the launch");
+
+        assert_eq!(settings.config_version, CURRENT_CONFIG_VERSION);
+        // The failure really happened — the index is still where it was, and
+        // the workspace will simply reindex.
+        assert_eq!(
+            std::fs::read(&legacy).unwrap(),
+            b"an index",
+            "the index must be left in place, not lost"
+        );
+    }
+
     /// have its history extracted. `last_paths` is cleared for *every* entry
     /// once the loop finishes, so skipping the rest of an entry's migration
     /// does not postpone that work — it destroys it.

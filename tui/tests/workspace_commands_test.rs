@@ -836,6 +836,64 @@ async fn test_workspace_remove_succeeds() {
     );
 }
 
+/// A file `remove` could not delete has to be reported, not swallowed.
+///
+/// Deleting is best-effort by design — the workspace is already out of the
+/// config, so a stuck file is a leftover rather than a reason to fail. But it
+/// used to be reported only through `tracing::warn!`, which in a CLI with no
+/// subscriber attached goes nowhere: on Windows, where a handle still open on
+/// the index blocks the delete, `remove` printed plain success over an index
+/// it had not deleted.
+#[tokio::test]
+async fn test_workspace_remove_reports_what_it_could_not_delete() {
+    let config_dir = TempDir::new().unwrap();
+    let config_path = config_dir.path().join("config.toml");
+    let keep_dir = TempDir::new().unwrap();
+    let doomed_dir = TempDir::new().unwrap();
+    std::fs::write(&config_path, "# empty config\n").unwrap();
+
+    for (name, dir) in [("keep", &keep_dir), ("doomed", &doomed_dir)] {
+        run_cli(
+            CliCommand::Workspace {
+                subcommand: WorkspaceSubcommand::Init {
+                    name: Some(name.to_string()),
+                    path: dir.path().to_path_buf(),
+                },
+            },
+            Some(config_path.clone()),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("init of '{name}' should succeed: {e:?}"));
+    }
+
+    // A non-empty directory where the index file is: `remove_file` cannot
+    // delete it. A stand-in for the Windows lock, which cannot be provoked on
+    // demand — what is under test is the reporting, not the cause.
+    let (index, _) = artifacts(&config_path, "doomed");
+    std::fs::remove_file(&index).unwrap();
+    std::fs::create_dir(&index).unwrap();
+    std::fs::write(index.join("occupied"), b"x").unwrap();
+
+    let result = run_cli(
+        CliCommand::Workspace {
+            subcommand: WorkspaceSubcommand::Remove {
+                name: "doomed".to_string(),
+            },
+        },
+        Some(config_path.clone()),
+    )
+    .await;
+
+    // Still succeeds — the workspace is gone from the config either way.
+    assert!(result.is_ok(), "remove should not fail over a leftover");
+    let settings = AppSettings::load_from_file(config_path).unwrap();
+    let ws_config = settings.workspace_config.as_ref().unwrap();
+    assert!(!ws_config.workspaces.contains_key("doomed"));
+    // And the undeletable file is still there, which is exactly what the user
+    // now gets told about on stderr.
+    assert!(index.exists(), "the stuck file is left in place");
+}
+
 /// Removing a workspace has to take the whole index with it, sidecars
 /// included — otherwise the cache directory accumulates `-wal`/`-shm` files
 /// belonging to workspaces that no longer exist.

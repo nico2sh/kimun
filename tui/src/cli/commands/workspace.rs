@@ -12,7 +12,8 @@ use kimun_core::{NoteVault, SystemPath, VaultConfig};
 use kimun_core::system;
 
 use crate::settings::{
-    AppSettings, config_migration::CURRENT_CONFIG_VERSION, workspace_config::WorkspaceConfig,
+    AppSettings, config_migration::CURRENT_CONFIG_VERSION, history::HistoryFile,
+    workspace_config::WorkspaceConfig,
 };
 
 #[derive(Subcommand, Debug)]
@@ -314,19 +315,53 @@ fn run_remove(settings: &mut AppSettings, name: String) -> Result<()> {
 
     settings.save_to_disk()?;
 
-    // Best-effort: the workspace is already out of the config, so a file that
-    // will not delete is a leftover to log, not a reason to fail the command.
-    match index.remove() {
-        Ok(()) => tracing::info!("removed index {}", index),
-        Err(e) => tracing::warn!("failed to remove index {}: {}", index, e),
-    }
-    match history.remove() {
-        Ok(()) => tracing::info!("removed history {}", history),
-        Err(e) => tracing::warn!("failed to remove history {}: {}", history, e),
-    }
+    let leftovers = delete_artifacts(&index, &history);
 
     println!("Workspace '{}' removed.", name);
+    if let Some(report) = leftover_report(&leftovers) {
+        // stderr, not stdout: the removal did happen, and a script reading
+        // stdout should not have to parse this out of the success line.
+        eprintln!("{report}");
+    }
     Ok(())
+}
+
+/// Deletes a removed workspace's artifacts, returning the ones that would not
+/// go, each with the reason.
+///
+/// Best-effort by design: the workspace is already out of the config, so a
+/// stuck file is a leftover rather than a reason to fail the command. Returned
+/// rather than only logged because `tracing::warn!` in a CLI with no
+/// subscriber attached goes nowhere — on Windows, where a handle still open on
+/// the index blocks the delete, `remove` printed plain success over an index it
+/// had not deleted.
+fn delete_artifacts(index: &kimun_core::IndexFile, history: &HistoryFile) -> Vec<String> {
+    let mut leftovers = Vec::new();
+    if let Err(e) = index.remove() {
+        tracing::warn!("failed to remove index {}: {}", index, e);
+        leftovers.push(format!("  {index}\n    {e}"));
+    } else {
+        tracing::info!("removed index {}", index);
+    }
+    if let Err(e) = history.remove() {
+        tracing::warn!("failed to remove history {}: {}", history, e);
+        leftovers.push(format!("  {history}\n    {e}"));
+    } else {
+        tracing::info!("removed history {}", history);
+    }
+    leftovers
+}
+
+/// What to tell the user about files that would not delete, or `None` when
+/// everything went.
+fn leftover_report(leftovers: &[String]) -> Option<String> {
+    (!leftovers.is_empty()).then(|| {
+        format!(
+            "\nWarning: these files could not be deleted and are safe to \
+             delete by hand:\n{}",
+            leftovers.join("\n")
+        )
+    })
 }
 
 async fn run_reindex(settings: &AppSettings, name: Option<String>) -> Result<()> {
@@ -403,4 +438,55 @@ async fn run_reindex(settings: &AppSettings, name: Option<String>) -> Result<()>
     println!("Reindex complete for workspace '{}'.", workspace_name);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kimun_core::IndexFile;
+    use kimun_core::system::SystemPath;
+
+    fn sys(path: &std::path::Path) -> SystemPath {
+        SystemPath::try_absolute(path).unwrap()
+    }
+
+    /// The whole point of returning the leftovers: a delete that fails has to
+    /// reach the user. It only ever went to `tracing::warn!` before, which in a
+    /// CLI with no subscriber attached is the same as silence — and the command
+    /// printed success over an index it had not deleted.
+    #[test]
+    fn a_file_that_will_not_delete_is_reported() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let index = IndexFile::in_dir(&sys(dir.path()), "stuck");
+        let history = HistoryFile::in_dir(&sys(dir.path()), "stuck");
+        // A non-empty directory where the index file should be: `remove_file`
+        // cannot delete it. A stand-in for the Windows lock, which cannot be
+        // provoked on demand — the reporting is what is under test.
+        std::fs::create_dir(index.path().as_path()).unwrap();
+        std::fs::write(index.path().as_path().join("occupied"), b"x").unwrap();
+
+        let leftovers = delete_artifacts(&index, &history);
+
+        assert_eq!(leftovers.len(), 1, "got {leftovers:?}");
+        assert!(leftovers[0].contains("stuck.kimuncache"), "{leftovers:?}");
+        let report = leftover_report(&leftovers).expect("a leftover must be reported");
+        assert!(report.contains("could not be deleted"), "{report}");
+        assert!(report.contains("stuck.kimuncache"), "{report}");
+    }
+
+    /// The ordinary case stays quiet: nothing left behind, nothing printed.
+    #[test]
+    fn a_clean_delete_reports_nothing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let index = IndexFile::in_dir(&sys(dir.path()), "gone");
+        let history = HistoryFile::in_dir(&sys(dir.path()), "gone");
+        std::fs::write(index.path().as_path(), b"index").unwrap();
+        std::fs::write(history.path().as_path(), b"a.md\n").unwrap();
+
+        let leftovers = delete_artifacts(&index, &history);
+
+        assert!(leftovers.is_empty(), "got {leftovers:?}");
+        assert!(leftover_report(&leftovers).is_none());
+        assert!(!index.exists());
+    }
 }
