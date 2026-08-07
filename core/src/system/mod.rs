@@ -462,10 +462,20 @@ pub fn is_locked_for(host: Host, err: &std::io::Error) -> bool {
 }
 
 /// How long to keep retrying an operation blocked by another handle, and how
-/// the waits are spread. Backs off so the common case (the handle is gone
-/// within a millisecond) stays fast, while a scanner holding the file for most
-/// of a second still resolves. Totals ~1.5s before the error is reported.
-const LOCK_RETRY_DELAYS_MS: [u64; 8] = [1, 5, 20, 50, 100, 200, 400, 800];
+/// the waits are spread. Backs off so the common case — the handle is gone
+/// within a millisecond — costs a millisecond.
+///
+/// The ceiling is empirical, and the first guess was wrong: ~1.5s still lost a
+/// `workspace rename` on a loaded Windows CI runner, having spent the whole
+/// budget waiting. Whatever holds a freshly written index (Defender's
+/// real-time scan is the usual suspect) can hold it for seconds when sixteen
+/// test processes are competing for the disk, so this now totals ~9s.
+///
+/// That is a long time to block a rename, and it is still the right trade:
+/// the wait only ever happens on a lock that would otherwise have failed the
+/// operation outright, and losing a workspace's index is far worse than a
+/// rename that once took a few seconds.
+const LOCK_RETRY_DELAYS_MS: [u64; 12] = [1, 5, 20, 50, 100, 200, 400, 800, 1500, 2000, 2000, 2000];
 
 /// Runs `op`, retrying while it fails only because something still holds the
 /// file open (see [`is_locked_for`]). Any other error, and the last attempt's
