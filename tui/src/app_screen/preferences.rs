@@ -629,13 +629,15 @@ impl AppScreen for PreferencesScreen {
                                     && new_name != old_name
                                 {
                                     let mut s = self.settings.write().unwrap();
-                                    if let Some(ref mut wc) = s.workspace_config
-                                        && let Some(entry) = wc.workspaces.remove(old_name)
-                                    {
-                                        wc.workspaces.insert(new_name.clone(), entry);
-                                        if wc.global.current_workspace == old_name {
-                                            wc.global.current_workspace = new_name.clone();
-                                        }
+                                    if let Some(ref mut wc) = s.workspace_config {
+                                        // Through `rename_workspace`, never by
+                                        // re-keying the map here: it also pins
+                                        // what the index and history files are
+                                        // called, and a rename that skips that
+                                        // step points the workspace at files
+                                        // that were never created — an empty
+                                        // index and a lost history, silently.
+                                        wc.rename_workspace(old_name, new_name.clone());
                                     }
                                 }
                                 self.workspaces_section.reset_mode();

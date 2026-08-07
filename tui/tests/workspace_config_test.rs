@@ -26,6 +26,7 @@ fn workspace_config_serializes_to_toml() {
                 quick_note_path: None,
                 inbox_path: None,
                 resolved_path: None,
+                file_key: None,
             },
         )]),
     };
@@ -51,6 +52,7 @@ fn workspace_serialization_order_is_deterministic() {
         quick_note_path: None,
         inbox_path: None,
         resolved_path: None,
+        file_key: None,
     };
     let make = || WorkspaceConfig {
         global: GlobalConfig {

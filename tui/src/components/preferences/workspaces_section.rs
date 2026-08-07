@@ -357,6 +357,7 @@ mod tests {
                     quick_note_path: None,
                     inbox_path: None,
                     resolved_path: None,
+                    file_key: None,
                 },
             );
         }

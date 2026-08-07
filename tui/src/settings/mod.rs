@@ -871,6 +871,22 @@ impl AppSettings {
         &self.history_dir_resolved
     }
 
+    /// What the named workspace's files are called on disk.
+    ///
+    /// Its name, until the workspace is renamed — from then on the name it had
+    /// when its files were created (see [`WorkspaceEntry::file_key`]). Falling
+    /// back to the name when there is no entry is what lets `workspace init`
+    /// name the index before the entry exists.
+    ///
+    /// [`WorkspaceEntry::file_key`]: workspace_config::WorkspaceEntry::file_key
+    fn file_key_for(&self, workspace_name: &str) -> String {
+        self.workspace_config
+            .as_ref()
+            .and_then(|wc| wc.get_workspace(workspace_name))
+            .map(|entry| entry.file_key_or(workspace_name))
+            .unwrap_or_else(|| workspace_name.to_string())
+    }
+
     /// The named workspace's index file.
     ///
     /// Returns the artifact, not a path: what the file is called, and that it
@@ -878,14 +894,17 @@ impl AppSettings {
     /// must have already validated `workspace_name` via
     /// `kimun_core::nfs::filename::validate_filename`.
     pub fn index_for(&self, workspace_name: &str) -> IndexFile {
-        IndexFile::in_dir(&self.cache_dir_resolved, workspace_name)
+        IndexFile::in_dir(&self.cache_dir_resolved, &self.file_key_for(workspace_name))
     }
 
     /// The named workspace's history file — the artifact, not a path, for the
     /// same reason as [`Self::index_for`]. Caller must have already validated
     /// `workspace_name`.
     pub fn history_for(&self, workspace_name: &str) -> HistoryFile {
-        HistoryFile::in_dir(&self.history_dir_resolved, workspace_name)
+        HistoryFile::in_dir(
+            &self.history_dir_resolved,
+            &self.file_key_for(workspace_name),
+        )
     }
 
     /// Returns the last-visited paths for the current workspace.
