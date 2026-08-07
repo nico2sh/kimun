@@ -229,8 +229,8 @@ theme = "gruvbox_dark"
     .unwrap();
 
     let settings = kimun_notes::settings::AppSettings::load_from_file(cfg_path.clone()).unwrap();
-    let resolved_cache = settings.cache_dir_resolved();
-    let resolved_hist = settings.history_dir_resolved();
+    let resolved_cache = settings.cache_dir_resolved().as_path();
+    let resolved_hist = settings.history_dir_resolved().as_path();
     assert_eq!(resolved_cache, tmp.path().canonicalize().unwrap());
     assert_eq!(
         resolved_hist,
@@ -259,7 +259,7 @@ theme = "gruvbox_dark"
 
     let settings = kimun_notes::settings::AppSettings::load_from_file(cfg_path.clone()).unwrap();
     assert_eq!(
-        settings.cache_dir_resolved(),
+        settings.cache_dir_resolved().as_path(),
         abs_cache.path().canonicalize().unwrap()
     );
 }
@@ -331,7 +331,7 @@ theme = "gruvbox_dark"
     let settings = kimun_notes::settings::AppSettings::load_from_file(cfg_path.clone()).unwrap();
     let cache = settings.cache_path_for("myvault");
     assert_eq!(
-        cache,
+        cache.as_path(),
         tmp.path()
             .canonicalize()
             .unwrap()
@@ -339,7 +339,7 @@ theme = "gruvbox_dark"
     );
     let hist = settings.history_path_for("myvault");
     assert_eq!(
-        hist,
+        hist.as_path(),
         tmp.path()
             .canonicalize()
             .unwrap()

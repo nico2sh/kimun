@@ -773,7 +773,7 @@ mod tests {
         tag_notes: &[(&str, &str)],
     ) -> (TempDir, Arc<NoteVault>) {
         let tmp = TempDir::new().unwrap();
-        let cfg = VaultConfig::new(tmp.path().to_path_buf());
+        let cfg = VaultConfig::new(crate::test_support::sys(tmp.path()));
         let vault = NoteVault::new(cfg).await.unwrap();
         vault.validate_and_init().await.unwrap();
         for name in notes {

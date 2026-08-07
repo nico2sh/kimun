@@ -216,9 +216,11 @@ mod tests {
     async fn meta() -> (DocMeta, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let vault = Arc::new(
-            NoteVault::new(kimun_core::VaultConfig::new(dir.path()))
-                .await
-                .unwrap(),
+            NoteVault::new(kimun_core::VaultConfig::new(crate::test_support::sys(
+                dir.path(),
+            )))
+            .await
+            .unwrap(),
         );
         (DocMeta::new(vault), dir)
     }

@@ -4004,7 +4004,9 @@ mod tests {
 
         // Bring the index up at the current version with one indexed note.
         {
-            let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
+            let vault = NoteVault::new(VaultConfig::new(crate::system::sys(dir.path())))
+                .await
+                .unwrap();
             vault.validate_and_init().await.unwrap();
             // A brand-new index is healed-on-open, hence not ready; reopening
             // it below (current version) must report ready.
@@ -4041,7 +4043,9 @@ mod tests {
 
         // Reopen: the outdated schema is healed silently; the probe reports
         // not-ready until a sync pass fills the empty index.
-        let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(crate::system::sys(dir.path())))
+            .await
+            .unwrap();
         assert!(!vault.index_ready(), "healed index must not report ready");
         vault.validate_and_init().await.unwrap();
         // The sync pass marks the index synced: the SAME instance now
@@ -4093,7 +4097,9 @@ mod tests {
         // A second reopen with a current schema must report ready.
         vault.index.close().await;
         drop(vault);
-        let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(crate::system::sys(dir.path())))
+            .await
+            .unwrap();
         assert!(vault.index_ready(), "current schema must report ready");
 
         // recreate_index drops the tables and runs a full sync; the probe
@@ -4144,7 +4150,9 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::write(dir.path().join("note.md"), "# Note\nbody").unwrap();
 
-        let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(crate::system::sys(dir.path())))
+            .await
+            .unwrap();
         assert!(!vault.index_ready(), "fresh index is healed, not ready");
 
         let (options, rx) = VaultBrowseOptionsBuilder::new(&crate::nfs::VaultPath::root())

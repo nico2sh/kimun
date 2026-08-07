@@ -130,7 +130,7 @@ async fn main() -> Result<()> {
     color_eyre::install()?;
 
     // Compute once, reuse for both init_logging and the panic hook.
-    let log_dir: PathBuf = kimun_core::app_log_dir();
+    let log_dir: PathBuf = kimun_core::system::log_dir().into_path_buf();
     // _guard declared early so it is dropped last (reverse declaration order).
     let _guard = init_logging(&log_dir);
 
@@ -269,7 +269,7 @@ async fn rebuild_vault(
         (wp, cache, ip)
     };
     let workspace = workspace_path?;
-    let mut config = kimun_core::VaultConfig::new(&workspace);
+    let mut config = kimun_core::VaultConfig::new(workspace.clone());
     if let Some(cp) = cache_path {
         config = config.with_db_path(cp);
     }
@@ -286,7 +286,7 @@ async fn rebuild_vault(
         // no-vault start screen either way, but the reason must reach the
         // log instead of looking like an unconfigured workspace.
         Err(e) => {
-            tracing::error!("could not open vault at {}: {e}", workspace.display());
+            tracing::error!("could not open vault at {}: {e}", workspace);
             None
         }
     }

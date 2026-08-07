@@ -1,6 +1,9 @@
 use kimun_core::nfs::VaultPath;
 use kimun_notes::settings::history::{load_history, push_history};
 
+mod common;
+use common::sys;
+
 #[test]
 fn missing_file_returns_empty() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -13,7 +16,7 @@ fn push_creates_parent_dir_and_writes_path() {
     let tmp = tempfile::TempDir::new().unwrap();
     let path = tmp.path().join("nested/dir/hist.txt");
     let p = VaultPath::new("notes/a.md");
-    push_history(&path, &p).unwrap();
+    push_history(&sys(&path), &p).unwrap();
 
     assert!(path.exists());
     let loaded = load_history(&path);
@@ -25,9 +28,9 @@ fn push_creates_parent_dir_and_writes_path() {
 fn push_dedupes_existing_entry_and_moves_to_front() {
     let tmp = tempfile::TempDir::new().unwrap();
     let path = tmp.path().join("hist.txt");
-    push_history(&path, &VaultPath::new("a.md")).unwrap();
-    push_history(&path, &VaultPath::new("b.md")).unwrap();
-    push_history(&path, &VaultPath::new("a.md")).unwrap();
+    push_history(&sys(&path), &VaultPath::new("a.md")).unwrap();
+    push_history(&sys(&path), &VaultPath::new("b.md")).unwrap();
+    push_history(&sys(&path), &VaultPath::new("a.md")).unwrap();
 
     let loaded = load_history(&path);
     assert_eq!(
@@ -41,7 +44,7 @@ fn push_truncates_to_50() {
     let tmp = tempfile::TempDir::new().unwrap();
     let path = tmp.path().join("hist.txt");
     for i in 0..60 {
-        push_history(&path, &VaultPath::new(format!("note{i}.md"))).unwrap();
+        push_history(&sys(&path), &VaultPath::new(format!("note{i}.md"))).unwrap();
     }
     let loaded = load_history(&path);
     assert_eq!(loaded.len(), 50);
@@ -63,7 +66,7 @@ fn load_skips_blank_and_invalid_lines() {
 fn atomic_write_leaves_no_tmp_on_success() {
     let tmp = tempfile::TempDir::new().unwrap();
     let path = tmp.path().join("hist.txt");
-    push_history(&path, &VaultPath::new("a.md")).unwrap();
+    push_history(&sys(&path), &VaultPath::new("a.md")).unwrap();
     let entries: Vec<_> = std::fs::read_dir(tmp.path()).unwrap().collect();
     assert_eq!(entries.len(), 1);
     let entry_path = entries[0].as_ref().unwrap().path();

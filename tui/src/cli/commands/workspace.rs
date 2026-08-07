@@ -7,7 +7,9 @@ use std::path::PathBuf;
 use clap::Subcommand;
 use color_eyre::eyre::{Result, eyre};
 use kimun_core::error::VaultError;
-use kimun_core::{NoteVault, VaultConfig};
+use kimun_core::{NoteVault, SystemPath, VaultConfig};
+
+use kimun_core::system;
 
 use crate::settings::{
     AppSettings, config_migration::CURRENT_CONFIG_VERSION, workspace_config::WorkspaceConfig,
@@ -111,7 +113,7 @@ async fn run_init(settings: &mut AppSettings, name: Option<String>, path: PathBu
 
     // Validate/create the target path
     let created = !path.exists();
-    let canonical_path = kimun_core::ensure_dir_exists(&path).map_err(|e| {
+    let canonical_path = system::create_dir(&path).map_err(|e| {
         eyre!(
             "Failed to create workspace directory {}: {}",
             path.display(),
@@ -124,15 +126,9 @@ async fn run_init(settings: &mut AppSettings, name: Option<String>, path: PathBu
 
     println!("Initializing workspace database...");
     let cache_path = settings.cache_path_for(&workspace_name);
-    let vault = NoteVault::new(VaultConfig::new(&canonical_path).with_db_path(cache_path))
+    let vault = NoteVault::new(VaultConfig::new(canonical_path.clone()).with_db_path(cache_path))
         .await
-        .map_err(|e| {
-            eyre!(
-                "Failed to create vault at {}: {}",
-                canonical_path.display(),
-                e
-            )
-        })?;
+        .map_err(|e| eyre!("Failed to create vault at {}: {}", canonical_path, e))?;
     let init_result = vault.validate_and_init().await;
     // This vault existed only to create the database; release its handle on the
     // cache file rather than leaving that to pool drop, which merely schedules
@@ -149,7 +145,10 @@ async fn run_init(settings: &mut AppSettings, name: Option<String>, path: PathBu
         .as_mut()
         .expect("workspace_config must exist after init");
     ws_config_mut
-        .add_workspace(workspace_name.clone(), canonical_path.clone())
+        .add_workspace(
+            workspace_name.clone(),
+            canonical_path.clone().into_path_buf(),
+        )
         .map_err(|e| eyre!("{}", e))?;
 
     settings.config_version = CURRENT_CONFIG_VERSION;
@@ -157,8 +156,7 @@ async fn run_init(settings: &mut AppSettings, name: Option<String>, path: PathBu
 
     println!(
         "Workspace '{}' initialized at {}",
-        workspace_name,
-        canonical_path.display()
+        workspace_name, canonical_path
     );
 
     let ws_config = settings
@@ -273,34 +271,22 @@ fn run_rename(settings: &mut AppSettings, old_name: String, new_name: String) ->
     if new_cache.exists() {
         return Err(eyre!(
             "Destination cache already exists at {}. Refusing to overwrite.",
-            new_cache.display()
+            new_cache
         ));
     }
     if new_history.exists() {
         return Err(eyre!(
             "Destination history already exists at {}. Refusing to overwrite.",
-            new_history.display()
+            new_history
         ));
     }
     if old_cache.exists() {
-        std::fs::rename(&old_cache, &new_cache).map_err(|e| {
-            eyre!(
-                "failed to move cache {} -> {}: {}",
-                old_cache.display(),
-                new_cache.display(),
-                e
-            )
-        })?;
+        system::move_file(old_cache.as_path(), new_cache.as_path())
+            .map_err(|e| eyre!("failed to move cache: {}", e))?;
     }
     if old_history.exists() {
-        std::fs::rename(&old_history, &new_history).map_err(|e| {
-            eyre!(
-                "failed to move history {} -> {}: {}",
-                old_history.display(),
-                new_history.display(),
-                e
-            )
-        })?;
+        system::move_file(old_history.as_path(), new_history.as_path())
+            .map_err(|e| eyre!("failed to move history: {}", e))?;
     }
 
     let ws_config_mut = settings
@@ -357,8 +343,8 @@ fn run_remove(settings: &mut AppSettings, name: String) -> Result<()> {
     for path in [&cache_path, &history_path] {
         if path.exists() {
             match std::fs::remove_file(path) {
-                Ok(()) => tracing::info!("removed {}", path.display()),
-                Err(e) => tracing::warn!("failed to remove {}: {}", path.display(), e),
+                Ok(()) => tracing::info!("removed {}", path),
+                Err(e) => tracing::warn!("failed to remove {}: {}", path, e),
             }
         }
     }
@@ -397,16 +383,11 @@ async fn run_reindex(settings: &AppSettings, name: Option<String>) -> Result<()>
     println!("Reindexing workspace '{}'...", workspace_name);
 
     let cache_path = settings.cache_path_for(&workspace_name);
-    let workspace_path = entry.effective_path().clone();
-    let vault = NoteVault::new(VaultConfig::new(&workspace_path).with_db_path(cache_path))
+    let workspace_path = SystemPath::try_absolute(entry.effective_path())
+        .map_err(|e| eyre!("Workspace '{}' has an unusable path: {}", workspace_name, e))?;
+    let vault = NoteVault::new(VaultConfig::new(workspace_path.clone()).with_db_path(cache_path))
         .await
-        .map_err(|e| {
-            eyre!(
-                "Failed to open vault at {}: {}",
-                workspace_path.display(),
-                e
-            )
-        })?;
+        .map_err(|e| eyre!("Failed to open vault at {}: {}", workspace_path, e))?;
 
     let index_result = vault.recreate_index().await;
     // Reindexing is done with the vault; close it (on the error paths too)

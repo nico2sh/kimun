@@ -914,7 +914,9 @@ mod tests {
 
     async fn test_vault() -> (TempDir, NoteVault) {
         let dir = TempDir::new().unwrap();
-        let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(crate::test_support::sys(dir.path())))
+            .await
+            .unwrap();
         (dir, vault)
     }
 
