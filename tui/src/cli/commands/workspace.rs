@@ -260,54 +260,17 @@ fn run_rename(settings: &mut AppSettings, old_name: String, new_name: String) ->
         ));
     }
 
-    // Move the workspace's files BEFORE mutating config, so a failed move
-    // doesn't leave the config pointing at a workspace whose index is in the
-    // wrong place. Each artifact refuses an occupied destination itself, and
-    // the index takes its `-wal`/`-shm` siblings along.
-    let old_index = settings.index_for(&old_name);
-    let new_index = settings.index_for(&new_name);
-    let old_history = settings.history_for(&old_name);
-    let new_history = settings.history_for(&new_name);
-
-    // Check BOTH destinations before moving either. An occupied history file
-    // (left by a `remove` whose best-effort delete failed) discovered after
-    // the index has already been renamed aborts the command with the config
-    // still naming `old_name` — whose index is now gone, and has to be rebuilt
-    // from scratch.
-    if new_index.exists() {
-        return Err(eyre!("index {} already exists", new_index));
-    }
-    if new_history.exists() {
-        return Err(eyre!("history file {} already exists", new_history));
-    }
-
-    old_index
-        .move_to(&new_index)
-        .map_err(|e| eyre!("failed to move index: {}", e))?;
-    if let Err(e) = old_history.move_to(&new_history) {
-        // The pre-flight above rules out a collision, so this is an I/O
-        // failure — put the index back rather than leave the two artifacts
-        // under different names.
-        if let Err(undo) = new_index.move_to(&old_index) {
-            tracing::warn!("could not move index back to {old_index}: {undo}");
-        }
-        return Err(eyre!("failed to move history: {}", e));
-    }
-
+    // Nothing on disk moves. The index and history keep the name they were
+    // created under, which `rename_workspace` pins into the entry — see
+    // `WorkspaceEntry::file_key`. Renaming used to move an open SQLite
+    // database, and Windows will not move a file any handle still holds, so
+    // this is the one rename that cannot fail halfway.
     let ws_config_mut = settings
         .workspace_config
         .as_mut()
         .expect("workspace_config must exist after init");
-
-    let entry = ws_config_mut
-        .workspaces
-        .remove(&old_name)
-        .expect("entry must exist (checked above)");
-    ws_config_mut.workspaces.insert(new_name.clone(), entry);
-
-    if ws_config_mut.global.current_workspace == old_name {
-        ws_config_mut.global.current_workspace = new_name.clone();
-    }
+    let renamed = ws_config_mut.rename_workspace(&old_name, new_name.clone());
+    debug_assert!(renamed, "entry existence was checked above");
 
     settings.save_to_disk()?;
 

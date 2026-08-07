@@ -328,6 +328,7 @@ impl ConfigMigration {
                     quick_note_path: None,
                     inbox_path: None,
                     resolved_path: None,
+                    file_key: None,
                 };
                 wc.workspaces.insert(name, entry);
             }
@@ -440,6 +441,7 @@ mod tests {
                 quick_note_path: None,
                 inbox_path: None,
                 resolved_path: None,
+                file_key: None,
             },
         );
         wc.global.current_workspace = "notes".to_string();
