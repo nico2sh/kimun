@@ -1137,6 +1137,24 @@ mod settings_screen_tests {
         Arc::new(RwLock::new(AppSettings::default()))
     }
 
+    /// A host-absolute workspace path from a `/`-separated literal.
+    ///
+    /// `do_save` compares workspaces through `resolve_workspace_path`, which
+    /// drops anything `SystemPath` cannot make absolute — and `/original/path`
+    /// carries no drive prefix, so on Windows *both* sides resolve to `None`,
+    /// the save sees no change, and the test asserts on a branch it never
+    /// entered.
+    fn abs(unix_style: &str) -> PathBuf {
+        if cfg!(windows) {
+            PathBuf::from(format!(
+                "C:\\{}",
+                unix_style.trim_start_matches('/').replace('/', "\\")
+            ))
+        } else {
+            PathBuf::from(unix_style)
+        }
+    }
+
     fn make_screen() -> PreferencesScreen {
         PreferencesScreen::new(shared_defaults())
     }
@@ -1203,14 +1221,14 @@ mod settings_screen_tests {
     async fn confirm_save_vault_changed_sets_pending_and_shows_progress() {
         let (tx, _rx) = unbounded_channel();
         let mut settings = AppSettings::default();
-        settings.set_workspace(&PathBuf::from("/original/path"));
+        settings.set_workspace(&abs("/original/path"));
         let shared = Arc::new(RwLock::new(settings));
         let mut screen = PreferencesScreen::new(shared);
         screen
             .settings
             .write()
             .unwrap()
-            .set_workspace(&PathBuf::from("/new/path"));
+            .set_workspace(&abs("/new/path"));
         screen.overlay = Overlay::ConfirmSave {
             focused_button: SaveButton::Save,
         };
