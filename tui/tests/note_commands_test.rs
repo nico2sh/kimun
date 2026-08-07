@@ -22,7 +22,7 @@ current_workspace = "default"
 theme = "Nord"
 
 [workspaces.default]
-path = "{}"
+path = '{}'
 last_paths = []
 created = "2026-01-01T00:00:00Z"
 "#,
@@ -121,7 +121,7 @@ current_workspace = "default"
 theme = "Nord"
 
 [workspaces.default]
-path = "{}"
+path = '{}'
 last_paths = []
 created = "2026-01-01T00:00:00Z"
 quick_note_path = "/inbox"
@@ -170,7 +170,7 @@ current_workspace = "default"
 theme = "Nord"
 
 [workspaces.default]
-path = "{}"
+path = '{}'
 last_paths = []
 created = "2026-01-01T00:00:00Z"
 quick_note_path = "/inbox"

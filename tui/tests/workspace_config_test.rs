@@ -248,7 +248,7 @@ fn cache_dir_supports_absolute_path() {
         format!(
             r#"
 config_version = 3
-cache_dir = "{}"
+cache_dir = '{}'
 history_dir = "history"
 theme = "gruvbox_dark"
 "#,
@@ -279,7 +279,7 @@ history_dir = "history"
 theme = "gruvbox_dark"
 
 [workspaces.notes]
-path = "{}"
+path = '{}'
 last_paths = []
 created = "2026-01-01T00:00:00Z"
 

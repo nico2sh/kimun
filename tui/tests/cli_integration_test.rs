@@ -6,10 +6,19 @@ use kimun_notes::settings::AppSettings;
 use tempfile::TempDir;
 
 /// Create a temporary vault with test notes indexed.
+///
+/// Test vaults keep their index at `.test-index.kimuncache` rather than the
+/// default `<workspace>/kimun.sqlite`. Two reasons, both about not colliding
+/// with the code under test: loading a Phase 1 config migrates `kimun.sqlite`
+/// into the cache dir, and Windows refuses to move a file whose handle is
+/// still open — which a live test vault's connection pool holds. The leading
+/// dot also keeps the file out of the vault walk.
 async fn setup_test_vault(dir: &TempDir) -> NoteVault {
-    let vault = NoteVault::new(VaultConfig::new(dir.path()))
-        .await
-        .expect("failed to create vault");
+    let vault = NoteVault::new(
+        VaultConfig::new(dir.path()).with_db_path(dir.path().join(".test-index.kimuncache")),
+    )
+    .await
+    .expect("failed to create vault");
 
     // Initialize DB schema before creating notes
     vault
@@ -209,10 +218,19 @@ async fn test_cli_custom_config() {
 // ---------------------------------------------------------------------------
 
 /// Create a temporary vault with notes designed for exclusion testing.
+///
+/// Test vaults keep their index at `.test-index.kimuncache` rather than the
+/// default `<workspace>/kimun.sqlite`. Two reasons, both about not colliding
+/// with the code under test: loading a Phase 1 config migrates `kimun.sqlite`
+/// into the cache dir, and Windows refuses to move a file whose handle is
+/// still open — which a live test vault's connection pool holds. The leading
+/// dot also keeps the file out of the vault walk.
 async fn setup_exclusion_test_vault(dir: &TempDir) -> NoteVault {
-    let vault = NoteVault::new(VaultConfig::new(dir.path()))
-        .await
-        .expect("failed to create vault");
+    let vault = NoteVault::new(
+        VaultConfig::new(dir.path()).with_db_path(dir.path().join(".test-index.kimuncache")),
+    )
+    .await
+    .expect("failed to create vault");
     vault
         .validate_and_init()
         .await
@@ -557,7 +575,11 @@ async fn test_paths_format_empty_results() {
 #[tokio::test]
 async fn test_paths_format_path_with_spaces() {
     let dir = TempDir::new().unwrap();
-    let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
+    let vault = NoteVault::new(
+        VaultConfig::new(dir.path()).with_db_path(dir.path().join(".test-index.kimuncache")),
+    )
+    .await
+    .unwrap();
     vault.validate_and_init().await.unwrap();
 
     // Create two notes whose paths contain spaces
