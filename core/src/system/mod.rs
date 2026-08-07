@@ -433,18 +433,73 @@ pub fn create_dir<P: AsRef<Path>>(path: P) -> Result<SystemPath, SystemError> {
     SystemPath::canonical(path)
 }
 
+/// Whether a failed rename or delete means "somebody still holds this file
+/// open" — a condition that passes on its own, unlike every other failure.
+///
+/// Only Windows has one: unix renames and unlinks a file whatever handles are
+/// open on it, so there is nothing there to wait for. Windows refuses, and the
+/// handle routinely outlives the code that owned it — closing a SQLite pool
+/// returns before the OS has finished releasing the database file, and the
+/// search indexer and antivirus both open files they find, unasked. That is
+/// what made `workspace rename` fail on roughly one CI run in two with
+/// `ERROR_SHARING_VIOLATION` on an index that had already been closed.
+///
+/// `ERROR_ACCESS_DENIED` is deliberately *not* here: it is also what a genuine
+/// permissions problem returns, and waiting a second before reporting one
+/// helps nobody. A file that is merely open reports 32 or 33.
+///
+/// Selected by `host` rather than by `cfg`, like [`is_cross_device_for`], so
+/// both answers are exercised from whichever platform runs the suite.
+pub fn is_locked_for(host: Host, err: &std::io::Error) -> bool {
+    match host {
+        Host::Unix => false,
+        Host::Windows => matches!(
+            err.raw_os_error(),
+            Some(32) | // ERROR_SHARING_VIOLATION
+            Some(33) //  ERROR_LOCK_VIOLATION
+        ),
+    }
+}
+
+/// How long to keep retrying an operation blocked by another handle, and how
+/// the waits are spread. Backs off so the common case (the handle is gone
+/// within a millisecond) stays fast, while a scanner holding the file for most
+/// of a second still resolves. Totals ~1.5s before the error is reported.
+const LOCK_RETRY_DELAYS_MS: [u64; 8] = [1, 5, 20, 50, 100, 200, 400, 800];
+
+/// Runs `op`, retrying while it fails only because something still holds the
+/// file open (see [`is_locked_for`]). Any other error, and the last attempt's
+/// error, are returned as-is.
+///
+/// On unix `is_locked_for` is always false, so this is one call and no sleep —
+/// the loop costs nothing on the platform that does not need it.
+fn retry_while_locked<T>(mut op: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    for delay in LOCK_RETRY_DELAYS_MS {
+        match op() {
+            Err(e) if is_locked_for(HOST, &e) => {
+                std::thread::sleep(std::time::Duration::from_millis(delay));
+            }
+            result => return result,
+        }
+    }
+    op()
+}
+
 /// Moves a file, including across volumes.
 ///
 /// A rename cannot cross a filesystem, and the two hosts say so with different
 /// codes; when that is the failure, this falls back to copy + unlink. Every
 /// other failure is reported as-is — a cross-volume fallback must not paper
 /// over a permissions error.
+///
+/// A destination still held open by another handle is waited out rather than
+/// reported; see [`is_locked_for`] for why that is a Windows-only wait.
 pub fn move_file(from: &Path, to: &Path) -> Result<(), SystemError> {
-    match std::fs::rename(from, to) {
+    match retry_while_locked(|| std::fs::rename(from, to)) {
         Ok(()) => Ok(()),
         Err(e) if is_cross_device_for(HOST, &e) => {
             std::fs::copy(from, to).map_err(|e| SystemError::io("copy", from, e))?;
-            std::fs::remove_file(from).map_err(|e| SystemError::io("remove", from, e))?;
+            remove_file(from)?;
             Ok(())
         }
         Err(e) => Err(SystemError::io("move", from, e)),
@@ -513,7 +568,11 @@ pub fn replace_atomically(path: &Path, contents: &[u8]) -> Result<(), SystemErro
         let _ = std::fs::remove_file(&tmp);
         return Err(SystemError::io("write", &tmp, e));
     }
-    std::fs::rename(&tmp, path).map_err(|e| SystemError::io("replace", path, e))?;
+    // Same wait as `move_file`: the file being replaced is the config the app
+    // rewrites on every preference change, and a scanner holding it briefly
+    // must not surface as "could not save your settings".
+    retry_while_locked(|| std::fs::rename(&tmp, path))
+        .map_err(|e| SystemError::io("replace", path, e))?;
     sync_dir(parent.unwrap_or(Path::new(".")));
     Ok(())
 }
@@ -541,8 +600,13 @@ fn sync_dir(dir: &Path) {
 
 /// Deletes a file. A path that is already gone is not an error — callers
 /// reach for this to make something absent, and it is.
+///
+/// A file another handle still holds open is waited out rather than reported,
+/// for the reason on [`is_locked_for`]: `workspace remove`'s delete is
+/// best-effort, so a transient lock there does not fail the command — it
+/// silently leaves the index behind forever.
 pub fn remove_file(path: &Path) -> Result<(), SystemError> {
-    match std::fs::remove_file(path) {
+    match retry_while_locked(|| std::fs::remove_file(path)) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(SystemError::io("remove", path, e)),

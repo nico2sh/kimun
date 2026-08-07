@@ -19,17 +19,25 @@ pub fn sys<P: AsRef<std::path::Path>>(path: P) -> SystemPath {
 }
 
 /// Spawn a fresh `NoteVault` rooted in a per-test temp directory.
-/// `prefix` disambiguates concurrent test names sharing the same temp dir.
+/// `prefix` names the caller in the directory, for anyone reading a temp dir.
+///
+/// The unique part comes from `tempfile`, which creates the directory
+/// atomically under a random name and retries on collision. Deriving it from
+/// the pid and a counter instead looks unique and is not: nextest runs every
+/// test in its own process, so the counter is almost always 0, nothing here
+/// ever cleaned the directory up, and Windows recycles pids briskly over a
+/// several-thousand-process run — a later test with the same prefix inherited
+/// the earlier one's notes and failed with `NoteExists`. It reached CI as a
+/// test that failed roughly one run in four.
+///
+/// The directory is deliberately leaked rather than guarded: callers hold the
+/// vault, not a `TempDir`, and the OS clears its own temp directory.
 pub async fn temp_vault(prefix: &str) -> Arc<NoteVault> {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    // A process-wide monotonic counter guarantees a unique temp dir per call,
-    // regardless of timing or thread scheduling. (A sub-second timestamp wraps
-    // every second and collides under parallel test runs.)
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let nonce = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let pid = std::process::id();
-    let dir = std::env::temp_dir().join(format!("kimun_{prefix}_test_{pid}_{nonce}"));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = tempfile::Builder::new()
+        .prefix(&format!("kimun_{prefix}_test_"))
+        .tempdir()
+        .unwrap()
+        .keep();
     Arc::new(NoteVault::new(VaultConfig::new(sys(&dir))).await.unwrap())
 }
 
