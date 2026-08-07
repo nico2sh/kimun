@@ -70,7 +70,13 @@ const MAX_FILENAME_LEN: usize = 64;
 
 /// Maximum length, in characters, of a title-derived note name (see
 /// [`note_name_from_title`]).
-const MAX_TITLE_NAME_LEN: usize = 60;
+///
+/// A readability budget, not a filesystem one — [`MAX_FILENAME_LEN`] is what
+/// the filesystem cares about. A whole question slugified at full length reads
+/// as a wall of dashes in listings and is tedious to type or complete, so a
+/// title-derived name is cut well short of it; the tail of a long question
+/// rarely carries the identifying words anyway.
+const MAX_TITLE_NAME_LEN: usize = 30;
 
 /// Derives a filesystem-safe, extension-free note name from an arbitrary
 /// title (e.g. a saved ask question). The title is lowercased; disallowed
@@ -377,15 +383,15 @@ mod tests {
             "how-do-i-ship-v2"
         );
         assert_eq!(note_name_from_title("///???"), "answer");
-        assert!(note_name_from_title(&"x".repeat(200)).len() <= 60);
+        assert!(note_name_from_title(&"x".repeat(200)).len() <= 30);
     }
 
-    /// Truncation must count chars, not bytes — a `.len() <= 60` check alone
+    /// Truncation must count chars, not bytes — a `.len() <= 30` check alone
     /// (as in the ASCII case above) would pass even if truncation sliced
     /// through the middle of a multi-byte char's UTF-8 encoding.
     #[test]
     fn note_name_from_title_truncates_multi_byte_chars_by_char_count() {
-        assert!(note_name_from_title(&"ñ".repeat(100)).chars().count() <= 60);
+        assert!(note_name_from_title(&"ñ".repeat(100)).chars().count() <= 30);
     }
 
     #[test]

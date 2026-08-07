@@ -177,9 +177,13 @@ async fn test_cli_custom_config() {
         .workspaces
         .get("default")
         .expect("should have 'default' workspace after migration");
+    // `resolve_paths` canonicalizes `workspace_dir` since it exists on disk
+    // (same as `AppSettings::expand_path`), so on macOS the loaded path comes
+    // back as `/private/var/...` while the raw `TempDir` path is `/var/...`
+    // (a symlink). Compare canonical forms on both sides.
     assert_eq!(
         default_ws.path.as_path(),
-        workspace_dir.path(),
+        workspace_dir.path().canonicalize().unwrap().as_path(),
         "--config flag should load settings from the specified file"
     );
 

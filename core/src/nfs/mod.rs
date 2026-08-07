@@ -236,21 +236,36 @@ pub(crate) fn hash_text<S: AsRef<str>>(text: S) -> u64 {
     XxHash64::oneshot(42, text.as_ref().as_bytes())
 }
 
+/// Whether this platform's *usual* filesystem matches names case-insensitively
+/// — true on macOS (APFS/HFS+ default) and Windows, false on Linux and the
+/// BSDs. A per-platform default, not a per-mount fact: a case-insensitive
+/// mount under Linux, or a case-sensitive APFS volume, is not detected. That
+/// only costs accuracy of the *casing string* [`resolve_path_on_disk`] returns
+/// — never which file it names, because a filesystem that ignores case opens
+/// the same file for either casing.
+const CASE_INSENSITIVE_FS: bool = cfg!(any(target_os = "macos", target_os = "windows"));
+
 /// Resolves a VaultPath to the real PathBuf on disk by matching each component
 /// case-insensitively. When a component doesn't exist on disk yet, the stored
 /// (lowercase) name is used for the remainder of the path.
 ///
-/// Fast path: stored paths are always lowercase, so `vault_path.to_pathbuf` is
-/// the canonical form. We try it directly first; only fall back to the
-/// per-slice walk when something exists on disk under a different case
-/// (legacy mixed-case files imported from outside Kimun).
+/// Costs one directory read per path component, except on case-sensitive
+/// platforms ([`CASE_INSENSITIVE_FS`]), which take an `exists()` fast path
+/// first: stored paths are lowercase, so when a file exists under that exact
+/// name it *is* the answer there, and the walk only earns its cost for legacy
+/// mixed-case files imported from outside Kimun. The fast path stays off where
+/// the filesystem ignores case, since `exists()` also answers true for a
+/// differently-cased neighbour and would hand back the stored lowercase name
+/// in place of the real on-disk one.
 pub(crate) async fn resolve_path_on_disk<P: AsRef<Path>>(
     workspace_path: P,
     vault_path: &VaultPath,
 ) -> PathBuf {
-    let canonical = vault_path.to_pathbuf(&workspace_path);
-    if matches!(tokio::fs::try_exists(&canonical).await, Ok(true)) {
-        return canonical;
+    if !CASE_INSENSITIVE_FS {
+        let canonical = vault_path.to_pathbuf(&workspace_path);
+        if matches!(tokio::fs::try_exists(&canonical).await, Ok(true)) {
+            return canonical;
+        }
     }
     let mut current = workspace_path.as_ref().to_path_buf();
     for slice in &vault_path.flatten().slices {
@@ -271,14 +286,17 @@ pub(crate) async fn resolve_path_on_disk<P: AsRef<Path>>(
     current
 }
 
-/// Sync variant of `resolve_path_on_disk` for use in non-async contexts.
+/// Sync variant of `resolve_path_on_disk` for use in non-async contexts,
+/// including its case-sensitivity-gated fast path.
 pub(crate) fn resolve_path_on_disk_sync<P: AsRef<Path>>(
     workspace_path: P,
     vault_path: &VaultPath,
 ) -> PathBuf {
-    let canonical = vault_path.to_pathbuf(&workspace_path);
-    if canonical.exists() {
-        return canonical;
+    if !CASE_INSENSITIVE_FS {
+        let canonical = vault_path.to_pathbuf(&workspace_path);
+        if canonical.exists() {
+            return canonical;
+        }
     }
     let mut current = workspace_path.as_ref().to_path_buf();
     for slice in &vault_path.flatten().slices {
@@ -1435,6 +1453,34 @@ mod tests {
         let result =
             super::resolve_path_on_disk(tmp.path(), &VaultPath::new("/projects/mynote.md")).await;
         assert_eq!(result, tmp.path().join("Projects").join("MyNote.md"));
+    }
+
+    /// The exact-cased-name case, which takes the `exists()` fast path on
+    /// case-sensitive platforms and the walk on case-insensitive ones. Both
+    /// must answer the same, so this pins that the fast path is a shortcut
+    /// and not a second behavior.
+    #[tokio::test]
+    async fn resolve_uses_the_exact_name_when_it_is_the_one_on_disk() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        tokio::fs::create_dir(tmp.path().join("journal"))
+            .await
+            .unwrap();
+        tokio::fs::write(tmp.path().join("journal").join("note.md"), "hi")
+            .await
+            .unwrap();
+
+        let result =
+            super::resolve_path_on_disk(tmp.path(), &VaultPath::new("/journal/note.md")).await;
+        assert_eq!(result, tmp.path().join("journal").join("note.md"));
+    }
+
+    #[test]
+    fn resolve_sync_uses_the_exact_name_when_it_is_the_one_on_disk() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(tmp.path().join("archive")).unwrap();
+
+        let result = super::resolve_path_on_disk_sync(tmp.path(), &VaultPath::new("/archive"));
+        assert_eq!(result, tmp.path().join("archive"));
     }
 
     #[tokio::test]
