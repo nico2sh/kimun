@@ -19,7 +19,6 @@ mod test_support;
 
 use clap::Parser;
 use color_eyre::Result;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use tracing_subscriber::Layer;
@@ -70,7 +69,7 @@ use crate::keys::key_event_to_combo;
 /// the guard alive for the duration of the program. Returns `None` and prints
 /// a warning to stderr on failure — startup is not aborted.
 fn init_logging(log_dir: &Path) -> Option<tracing_appender::non_blocking::WorkerGuard> {
-    if let Err(e) = fs::create_dir_all(log_dir) {
+    if let Err(e) = kimun_core::system::create_dir(log_dir) {
         eprintln!("kimun: could not create log directory: {e}");
         return None;
     }
@@ -150,7 +149,7 @@ async fn main() -> Result<()> {
 
         // Direct fallback write — independent of the tracing subscriber.
         let parent = log_path.parent().unwrap_or(std::path::Path::new("."));
-        let _ = fs::create_dir_all(parent);
+        let _ = kimun_core::system::create_dir(parent);
         match std::fs::OpenOptions::new()
             .create(true)
             .append(true)

@@ -801,6 +801,17 @@ impl NoteVault {
         Ok((entry_data, content_data))
     }
 
+    /// The on-disk facts about one note — its size and modification time —
+    /// without reading it.
+    ///
+    /// Exists so callers that need a note's mtime (the CLI's JSON output) ask
+    /// the vault instead of stat-ing the path themselves: the vault is what
+    /// knows where a [`VaultPath`] really lives, including the
+    /// case-insensitive resolution behind it.
+    pub async fn note_entry(&self, path: &VaultPath) -> Result<NoteEntryData, VaultError> {
+        Ok(nfs::entry_data_at(self.workspace_path(), path).await?)
+    }
+
     /// Ends this vault, releasing the index file's handles now instead of
     /// leaving it to whenever the last clone of the connection pool drops.
     ///
@@ -3091,6 +3102,30 @@ mod vault_config_tests {
             cfg.index.map(|i| i.path().to_string()),
             Some(cache_dir.join("foo.kimuncache").to_string())
         );
+    }
+
+    /// The CLI's JSON output needs a note's size and mtime; it asks the vault
+    /// rather than stat-ing the path, because the vault is what knows where a
+    /// `VaultPath` really lives.
+    #[tokio::test]
+    async fn note_entry_reports_size_and_mtime() {
+        use crate::{nfs::VaultPath, NoteVault, VaultConfig};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let vault = NoteVault::new(VaultConfig::new(crate::system::sys(tmp.path())))
+            .await
+            .unwrap();
+        let path = VaultPath::note_path_from("note");
+        vault.create_note(&path, "# Note\n").await.unwrap();
+
+        let entry = vault.note_entry(&path).await.unwrap();
+
+        assert_eq!(entry.path, path);
+        assert_eq!(entry.size, "# Note\n".len() as u64);
+        assert!(entry.modified_secs > 0, "mtime should be populated");
+
+        let missing = vault.note_entry(&VaultPath::note_path_from("absent")).await;
+        assert!(missing.is_err(), "a missing note must not report an entry");
+        vault.close().await;
     }
 
     #[tokio::test]

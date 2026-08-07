@@ -45,12 +45,14 @@ pub fn self_update(latest: &LatestRelease) -> Result<(), UpdateError> {
     let exe = std::env::current_exe()?;
     let dir = exe.parent().unwrap_or_else(|| std::path::Path::new("."));
     let staged = dir.join(format!(".{asset_name}.new"));
-    std::fs::write(&staged, &bytes)?;
-    set_executable(&staged)?;
+    kimun_core::system::replace_atomically(&staged, &bytes)
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    kimun_core::system::make_executable(&staged)
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
 
     let result = self_replace::self_replace(&staged).map_err(UpdateError::Replace);
     // Clean up the staging file regardless of outcome.
-    let _ = std::fs::remove_file(&staged);
+    let _ = kimun_core::system::remove_file(&staged);
     result
 }
 
@@ -85,17 +87,4 @@ fn hex_sha256(bytes: &[u8]) -> String {
         let _ = write!(out, "{byte:02x}");
     }
     out
-}
-
-#[cfg(unix)]
-fn set_executable(path: &std::path::Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let mut perms = std::fs::metadata(path)?.permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(path, perms)
-}
-
-#[cfg(not(unix))]
-fn set_executable(_path: &std::path::Path) -> std::io::Result<()> {
-    Ok(())
 }

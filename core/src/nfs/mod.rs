@@ -578,6 +578,21 @@ pub(crate) async fn metadata_at<P: AsRef<Path>>(
     }
 }
 
+/// The on-disk facts about one note — size and modification time — without
+/// reading its content.
+pub(crate) async fn entry_data_at<P: AsRef<Path>>(
+    workspace_path: P,
+    path: &VaultPath,
+) -> Result<NoteEntryData, FSError> {
+    let metadata = metadata_at(&workspace_path, path).await?;
+    let (size, modified_secs) = size_and_mtime(&metadata);
+    Ok(NoteEntryData {
+        path: path.to_owned(),
+        size,
+        modified_secs,
+    })
+}
+
 /// Resolves both endpoints, ensures the destination's parent directory exists,
 /// and renames atomically. Returns `FSError::AlreadyExists` if the destination
 /// is occupied (the OS rename would silently overwrite on Linux otherwise).

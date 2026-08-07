@@ -17,11 +17,11 @@ pub struct FileBrowserState {
 impl FileBrowserState {
     pub fn load(path: PathBuf) -> Self {
         let has_parent = path.parent().is_some();
-        let mut entries: Vec<PathBuf> = std::fs::read_dir(&path)
+        let mut entries: Vec<PathBuf> = kimun_core::SystemPath::try_absolute(&path)
+            .and_then(|dir| kimun_core::system::read_dir(&dir))
+            .unwrap_or_default()
             .into_iter()
-            .flatten()
-            .flatten()
-            .map(|e| e.path())
+            .map(|p| p.into_path_buf())
             .filter(|p| p.is_dir())
             .collect();
         entries.sort();
@@ -92,7 +92,7 @@ impl FileBrowserState {
         // separators, '..', Windows-reserved names, trailing dots, etc.
         kimun_core::nfs::filename::validate_filename(name).map_err(|e| e.to_string())?;
         let target = self.current_path.join(name);
-        std::fs::create_dir_all(&target).map_err(|e| e.to_string())?;
+        kimun_core::system::create_dir(&target).map_err(|e| e.to_string())?;
         self.navigate_into(target.clone());
         Ok(target)
     }
