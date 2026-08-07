@@ -125,8 +125,8 @@ async fn run_init(settings: &mut AppSettings, name: Option<String>, path: PathBu
     }
 
     println!("Initializing workspace database...");
-    let cache_path = settings.cache_path_for(&workspace_name);
-    let vault = NoteVault::new(VaultConfig::new(canonical_path.clone()).with_db_path(cache_path))
+    let cache_path = settings.index_for(&workspace_name);
+    let vault = NoteVault::new(VaultConfig::new(canonical_path.clone()).with_index(cache_path))
         .await
         .map_err(|e| eyre!("Failed to create vault at {}: {}", canonical_path, e))?;
     let init_result = vault.validate_and_init().await;
@@ -260,30 +260,24 @@ fn run_rename(settings: &mut AppSettings, old_name: String, new_name: String) ->
         ));
     }
 
-    // Move cache and history files BEFORE mutating config so a failed
+    // Move index and history files BEFORE mutating config so a failed
     // file move doesn't leave the config pointing at a workspace whose
-    // cache is in the wrong place.
-    let old_cache = settings.cache_path_for(&old_name);
-    let new_cache = settings.cache_path_for(&new_name);
+    // index is in the wrong place. The index refuses an occupied
+    // destination and takes its `-wal`/`-shm` siblings along itself.
+    let old_index = settings.index_for(&old_name);
+    let new_index = settings.index_for(&new_name);
     let old_history = settings.history_path_for(&old_name);
     let new_history = settings.history_path_for(&new_name);
 
-    if new_cache.exists() {
-        return Err(eyre!(
-            "Destination cache already exists at {}. Refusing to overwrite.",
-            new_cache
-        ));
-    }
     if new_history.exists() {
         return Err(eyre!(
             "Destination history already exists at {}. Refusing to overwrite.",
             new_history
         ));
     }
-    if old_cache.exists() {
-        system::move_file(old_cache.as_path(), new_cache.as_path())
-            .map_err(|e| eyre!("failed to move cache: {}", e))?;
-    }
+    old_index
+        .move_to(&new_index)
+        .map_err(|e| eyre!("failed to move index: {}", e))?;
     if old_history.exists() {
         system::move_file(old_history.as_path(), new_history.as_path())
             .map_err(|e| eyre!("failed to move history: {}", e))?;
@@ -328,7 +322,7 @@ fn run_remove(settings: &mut AppSettings, name: String) -> Result<()> {
         ));
     }
 
-    let cache_path = settings.cache_path_for(&name);
+    let index = settings.index_for(&name);
     let history_path = settings.history_path_for(&name);
 
     settings
@@ -340,13 +334,15 @@ fn run_remove(settings: &mut AppSettings, name: String) -> Result<()> {
 
     settings.save_to_disk()?;
 
-    for path in [&cache_path, &history_path] {
-        if path.exists() {
-            match std::fs::remove_file(path) {
-                Ok(()) => tracing::info!("removed {}", path),
-                Err(e) => tracing::warn!("failed to remove {}: {}", path, e),
-            }
-        }
+    // Best-effort: the workspace is already out of the config, so a file that
+    // will not delete is a leftover to log, not a reason to fail the command.
+    match index.remove() {
+        Ok(()) => tracing::info!("removed index {}", index),
+        Err(e) => tracing::warn!("failed to remove index {}: {}", index, e),
+    }
+    match system::remove_file(history_path.as_path()) {
+        Ok(()) => tracing::info!("removed history {}", history_path),
+        Err(e) => tracing::warn!("failed to remove history {}: {}", history_path, e),
     }
 
     println!("Workspace '{}' removed.", name);
@@ -382,10 +378,10 @@ async fn run_reindex(settings: &AppSettings, name: Option<String>) -> Result<()>
 
     println!("Reindexing workspace '{}'...", workspace_name);
 
-    let cache_path = settings.cache_path_for(&workspace_name);
+    let cache_path = settings.index_for(&workspace_name);
     let workspace_path = SystemPath::try_absolute(entry.effective_path())
         .map_err(|e| eyre!("Workspace '{}' has an unusable path: {}", workspace_name, e))?;
-    let vault = NoteVault::new(VaultConfig::new(workspace_path.clone()).with_db_path(cache_path))
+    let vault = NoteVault::new(VaultConfig::new(workspace_path.clone()).with_index(cache_path))
         .await
         .map_err(|e| eyre!("Failed to open vault at {}: {}", workspace_path, e))?;
 

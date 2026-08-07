@@ -72,6 +72,13 @@ pub enum SystemError {
     /// The home directory could not be determined (`HOME`/`USERPROFILE` unset).
     #[error("cannot determine the home directory")]
     NoHome,
+    /// The destination of a move is occupied, and this module never
+    /// overwrites: the caller decides what to do with the file already there.
+    #[error("already exists: {path}")]
+    AlreadyExists {
+        /// The occupied path.
+        path: String,
+    },
     /// A filesystem call failed.
     #[error("could not {action} {path}: {source}")]
     Io {
@@ -161,6 +168,15 @@ impl SystemPath {
     /// segment cancels rather than accumulating).
     pub fn join<S: AsRef<Path>>(&self, segment: S) -> Self {
         Self(normalize(&self.0.join(segment)))
+    }
+
+    /// This path with `suffix` appended to its file name — `index.db` plus
+    /// `-wal` is `index.db-wal`, not `index.db/-wal` and not `index-wal.db`.
+    /// How SQLite names the files beside a database.
+    pub fn with_name_suffix(&self, suffix: &str) -> Self {
+        let mut name = self.0.as_os_str().to_os_string();
+        name.push(suffix);
+        Self(PathBuf::from(name))
     }
 
     /// The containing directory, or `None` at the root.
@@ -398,6 +414,16 @@ pub fn replace_atomically(path: &Path, contents: &[u8]) -> Result<(), SystemErro
         return Err(SystemError::io("write", &tmp, e));
     }
     std::fs::rename(&tmp, path).map_err(|e| SystemError::io("replace", path, e))
+}
+
+/// Deletes a file. A path that is already gone is not an error — callers
+/// reach for this to make something absent, and it is.
+pub fn remove_file(path: &Path) -> Result<(), SystemError> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(SystemError::io("remove", path, e)),
+    }
 }
 
 /// The name an executable goes by on `host` — `nvim` against `nvim.exe`.

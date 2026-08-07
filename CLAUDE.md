@@ -19,6 +19,7 @@ The `docs/` directory is the Kimün user-facing documentation site. Only end-use
 - All direct filesystem operations (`std::fs`, `tokio::fs`) in core must live inside one of two modules, never in `lib.rs` or elsewhere:
   - `nfs` — vault-scoped: notes, attachments, backups inside a workspace, addressed by `VaultPath`
   - `system` — host-scoped: the app's own directories, path resolution, cross-volume moves, atomic replace. Every OS-specific rule (verbatim Windows paths, `EXDEV` vs `ERROR_NOT_SAME_DEVICE`, `HOME`/`USERPROFILE`) belongs here and nowhere else
+- A workspace's index is `kimun_core::IndexFile`, never a hand-built path: it owns the `.kimuncache` naming and moves/removes its `-wal`/`-shm` siblings with it
 - The `NoteVault` abstraction sits on top of the OS filesystem and must work on Windows, macOS, and Linux
   - Only accept characters valid on all three major filesystems
   - Paths are case-insensitive; default to lowercase

@@ -314,7 +314,7 @@ current_workspace = "notes"
 }
 
 #[test]
-fn cache_path_for_uses_workspace_name_and_kimuncache_extension() {
+fn index_for_sits_in_the_cache_dir_under_the_workspace_name() {
     let tmp = tempfile::TempDir::new().unwrap();
     let cfg_path = tmp.path().join("config.toml");
     std::fs::write(
@@ -329,9 +329,9 @@ theme = "gruvbox_dark"
     .unwrap();
 
     let settings = kimun_notes::settings::AppSettings::load_from_file(cfg_path.clone()).unwrap();
-    let cache = settings.cache_path_for("myvault");
+    let index = settings.index_for("myvault");
     assert_eq!(
-        cache.as_path(),
+        index.path().as_path(),
         tmp.path()
             .canonicalize()
             .unwrap()

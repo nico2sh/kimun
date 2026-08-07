@@ -57,6 +57,7 @@ pub(crate) mod sync;
 pub mod system;
 /// Small standalone helpers (path strings, diacritic folding).
 pub mod utilities;
+pub use index::file::IndexFile;
 pub use index::search_terms::{
     expand_bare_note_prefixes, query_has_unterminated_quote, query_token_spans, quote_query_term,
     strip_order_directive, with_order_directive, OrderBy, OrderField, QueryTokenClass,
@@ -141,9 +142,9 @@ impl IndexReport {
 pub struct VaultConfig {
     /// The vault's root directory on this machine.
     pub workspace_path: SystemPath,
-    /// Override for the SQLite cache location. When `None`, the cache lives at
+    /// Override for the index location. When `None`, the index lives at
     /// `<workspace_path>/kimun.sqlite` (legacy default).
-    pub db_path: Option<SystemPath>,
+    pub index: Option<IndexFile>,
     /// When `true`, destructive automated edits (overwrite, replace, delete, and
     /// the backlink rewrites of rename/move) copy a note's previous content into
     /// a hidden in-vault backup directory before mutating it. The TUI leaves this
@@ -163,15 +164,15 @@ impl VaultConfig {
     pub fn new(workspace_path: SystemPath) -> Self {
         Self {
             workspace_path,
-            db_path: None,
+            index: None,
             backup: false,
         }
     }
 
-    /// Overrides where the SQLite cache is stored, instead of the legacy
+    /// Overrides where the index is stored, instead of the legacy
     /// in-workspace default.
-    pub fn with_db_path(mut self, db_path: SystemPath) -> Self {
-        self.db_path = Some(db_path);
+    pub fn with_index(mut self, index: IndexFile) -> Self {
+        self.index = Some(index);
         self
     }
 
@@ -251,10 +252,10 @@ impl NoteVault {
             }));
         };
 
-        let db_path = config
-            .db_path
-            .unwrap_or_else(|| workspace_path.join(crate::index::DB_FILE));
-        let index = NoteIndex::open(&db_path).await?;
+        let index_file = config
+            .index
+            .unwrap_or_else(|| IndexFile::legacy_in_workspace(&workspace_path));
+        let index = NoteIndex::open(index_file.path()).await?;
         let note_vault = Self {
             workspace_path: Arc::from(workspace_path.as_path()),
             journal_path: VaultPath::new(DEFAULT_JOURNAL_PATH),
@@ -3075,17 +3076,21 @@ mod vault_config_tests {
     }
 
     #[test]
-    fn new_sets_workspace_and_no_db_path() {
+    fn new_sets_workspace_and_no_index_override() {
         let cfg = VaultConfig::new(sys(host("/tmp/ws")));
         assert_eq!(cfg.workspace_path.as_path(), host("/tmp/ws"));
-        assert!(cfg.db_path.is_none());
+        assert!(cfg.index.is_none());
     }
 
     #[test]
-    fn with_db_path_overrides_default() {
-        let cache = host("/var/cache/foo.kimuncache");
-        let cfg = VaultConfig::new(sys(host("/tmp/ws"))).with_db_path(sys(&cache));
-        assert_eq!(cfg.db_path.map(|p| p.into_path_buf()), Some(cache));
+    fn with_index_overrides_the_default_location() {
+        let cache_dir = sys(host("/var/cache"));
+        let cfg = VaultConfig::new(sys(host("/tmp/ws")))
+            .with_index(crate::IndexFile::in_dir(&cache_dir, "foo"));
+        assert_eq!(
+            cfg.index.map(|i| i.path().to_string()),
+            Some(cache_dir.join("foo.kimuncache").to_string())
+        );
     }
 
     #[tokio::test]
@@ -3104,18 +3109,17 @@ mod vault_config_tests {
     }
 
     #[tokio::test]
-    async fn note_vault_new_with_explicit_db_path_uses_override() {
-        use crate::{NoteVault, VaultConfig};
+    async fn note_vault_new_with_explicit_index_uses_override() {
+        use crate::{IndexFile, NoteVault, VaultConfig};
         let workspace = tempfile::TempDir::new().unwrap();
         let cache_dir = tempfile::TempDir::new().unwrap();
-        let custom_db = cache_dir.path().join("my-vault.kimuncache");
+        let index = IndexFile::in_dir(&crate::system::sys(cache_dir.path()), "my-vault");
         let vault = NoteVault::new(
-            VaultConfig::new(crate::system::sys(workspace.path()))
-                .with_db_path(crate::system::sys(&custom_db)),
+            VaultConfig::new(crate::system::sys(workspace.path())).with_index(index.clone()),
         )
         .await
         .unwrap();
-        assert!(custom_db.exists());
+        assert!(index.exists());
         assert!(!workspace.path().join("kimun.sqlite").exists());
         drop(vault);
     }

@@ -260,7 +260,7 @@ async fn rebuild_vault(
         let s = settings.read().unwrap();
         let wp = s.resolve_workspace_path();
         let name = s.current_workspace_name();
-        let cache = name.as_ref().map(|n| s.cache_path_for(n));
+        let cache = name.as_ref().map(|n| s.index_for(n));
         let ip = s
             .workspace_config
             .as_ref()
@@ -271,7 +271,7 @@ async fn rebuild_vault(
     let workspace = workspace_path?;
     let mut config = kimun_core::VaultConfig::new(workspace.clone());
     if let Some(cp) = cache_path {
-        config = config.with_db_path(cp);
+        config = config.with_index(cp);
     }
     match kimun_core::NoteVault::new(config).await {
         Ok(mut v) => {

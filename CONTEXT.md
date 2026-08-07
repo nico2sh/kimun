@@ -295,6 +295,10 @@ _Avoid_: exported answer (it is not an export format, it is a note), answer note
 The one core module owning the searchable index of the vault — search, suggestions, backlinks, and the index's own lifecycle (schema versioning, self-heal on open). Its interface speaks in notes, queries, and **note links**; SQLite, sqlx, transactions, and schema migrations are implementation and never cross the interface. Atomicity is carried by composite operations (apply an **IndexDiff**; rename a note together with its rewritten backlinks) rather than by exposing transactions.
 _Avoid_: db, VaultDB, database (they name the implementation, not the role)
 
+**Index file**:
+A workspace's index as an artifact on disk (`IndexFile`), as opposed to the open **NoteIndex** that reads it. It is not one file: SQLite keeps `-wal`/`-shm` siblings beside it whenever the index is open or was not closed cleanly, so moving or deleting the index means moving or deleting the set — all of it or none, never half. The naming rule (`<workspace>.kimuncache` in the cache directory) belongs to this type, so a workspace resolves to the same file from every caller. Moving one requires that no vault holds it open; on Windows the OS enforces that.
+_Avoid_: cache file, db file, sqlite file (they name the implementation), cache path (it is the artifact, not a path)
+
 **Index self-heal**:
 On open, the **NoteIndex** silently recreates its schema when the stored index is missing, outdated, or invalid — leaving a valid but empty index that the next sync pass fills. Callers get a single readiness probe (`index_ready`): false when the index was just healed (or never filled), so fast paths like the CLI `note` command can refuse to run against an empty index. There is no public status enum.
 _Avoid_: DBStatus (the superseded public enum), force rebuild (the deleted file-deletion variant)

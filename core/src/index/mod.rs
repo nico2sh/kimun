@@ -9,6 +9,8 @@ use std::time::Duration;
 use log::{debug, error};
 use search_terms::{OrderBy, SearchTerms};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
+
+pub(crate) mod file;
 use sqlx::{Row, Sqlite, Transaction};
 
 use crate::note::{ContentChunk, LinkType, NoteContentData, NoteDetails};
