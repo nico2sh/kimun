@@ -700,7 +700,7 @@ impl AppScreen for PreferencesScreen {
                     .read()
                     .unwrap()
                     .resolve_workspace_path()
-                    .or_else(|| kimun_core::system::home().ok())
+                    .or_else(|| kimun_core::system::browse_root().ok())
                     .map(|p| p.into_path_buf())
                     .unwrap_or_else(|| PathBuf::from("/"));
                 self.overlay = Overlay::FileBrowser(FileBrowserState::load(starting_dir));

@@ -222,33 +222,34 @@ impl ConfigMigration {
             .collect();
 
         for (name, ws_path, last_paths) in work {
-            let old_index = match SystemPath::try_absolute(&ws_path) {
-                Ok(path) => IndexFile::legacy_in_workspace(&path),
-                // A workspace path that is not absolute cannot name an index
-                // on this machine; the rest of this entry's migration (its
-                // history) still applies.
-                Err(e) => {
-                    tracing::warn!("skipping index migration for {name}: {e}");
-                    continue;
+            // A workspace path that is not absolute cannot name an index on
+            // this machine — but the rest of this entry's migration still
+            // applies, and `last_paths` is cleared below whatever happens
+            // here, so skipping the history write would destroy it.
+            match SystemPath::try_absolute(&ws_path) {
+                Ok(path) => {
+                    let old_index = IndexFile::legacy_in_workspace(&path);
+                    let new_index = IndexFile::in_dir(&cache_dir, &name);
+                    if old_index.exists() {
+                        if new_index.exists() {
+                            tracing::warn!(
+                                "destination index {new_index} already exists, leaving the old one at {old_index}"
+                            );
+                        } else {
+                            system::ensure_dir(&cache_dir).map_err(|e| {
+                                SettingsError::Migration(format!("failed to create cache dir: {e}"))
+                            })?;
+                            // Vault directory and cache directory are routinely
+                            // on different volumes, and the index brings its
+                            // sidecars.
+                            old_index.move_to(&new_index).map_err(|e| {
+                                SettingsError::Migration(format!("failed to move the index: {e}"))
+                            })?;
+                            tracing::info!("migrated {old_index} -> {new_index}");
+                        }
+                    }
                 }
-            };
-            let new_index = IndexFile::in_dir(&cache_dir, &name);
-            if old_index.exists() {
-                if new_index.exists() {
-                    tracing::warn!(
-                        "destination index {new_index} already exists, leaving the old one at {old_index}"
-                    );
-                } else {
-                    system::ensure_dir(&cache_dir).map_err(|e| {
-                        SettingsError::Migration(format!("failed to create cache dir: {e}"))
-                    })?;
-                    // Vault directory and cache directory are routinely on
-                    // different volumes, and the index brings its sidecars.
-                    old_index.move_to(&new_index).map_err(|e| {
-                        SettingsError::Migration(format!("failed to move the index: {e}"))
-                    })?;
-                    tracing::info!("migrated {old_index} -> {new_index}");
-                }
+                Err(e) => tracing::warn!("skipping index migration for {name}: {e}"),
             }
 
             if !last_paths.is_empty() {
@@ -411,6 +412,50 @@ mod tests {
         assert!(wc.workspaces.contains_key("default"));
         assert!(wc.workspaces.contains_key("production"));
         assert_eq!(wc.global.current_workspace, "production"); // unchanged
+    }
+
+    /// A workspace path this machine cannot turn into an index path must still
+    /// have its history extracted. `last_paths` is cleared for *every* entry
+    /// once the loop finishes, so skipping the rest of an entry's migration
+    /// does not postpone that work — it destroys it.
+    #[test]
+    fn v2_migration_keeps_the_history_of_a_workspace_with_an_unusable_path() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let base = kimun_core::system::SystemPath::try_absolute(dir.path()).unwrap();
+
+        let mut settings = AppSettings::default();
+        settings.config_version = 2;
+        settings.cache_dir_resolved = base.clone();
+        settings.history_dir_resolved = base.join("history");
+
+        let mut wc = WorkspaceConfig::new_empty();
+        wc.workspaces.insert(
+            "notes".to_string(),
+            WorkspaceEntry {
+                // Relative and unresolved — no index on this machine can be
+                // named from it, which is the branch under test.
+                path: PathBuf::from("relative/notes"),
+                last_paths: vec!["a.md".to_string(), "b.md".to_string()],
+                created: chrono::Utc::now(),
+                quick_note_path: None,
+                inbox_path: None,
+                resolved_path: None,
+            },
+        );
+        wc.global.current_workspace = "notes".to_string();
+        settings.workspace_config = Some(wc);
+
+        ConfigMigration::run(&mut settings).unwrap();
+
+        let body = std::fs::read_to_string(dir.path().join("history").join("notes.txt"))
+            .expect("the history file must be written even though the index was skipped");
+        assert_eq!(body.lines().collect::<Vec<_>>(), ["a.md", "b.md"]);
+
+        let wc = settings.workspace_config.as_ref().unwrap();
+        assert!(
+            wc.workspaces["notes"].last_paths.is_empty(),
+            "the in-memory copy is dropped once it lives in the history file"
+        );
     }
 
     #[test]

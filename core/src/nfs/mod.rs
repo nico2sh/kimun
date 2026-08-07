@@ -914,10 +914,15 @@ pub(crate) fn get_file_walker(
 mod tests {
     /// A workspace root for tests that do not care what is at it. Absolute,
     /// because `SystemPath` refuses anything else — and a relative root is how
-    /// a vault ends up wherever the process happened to be started. Returned
-    /// as a `PathBuf` so callers wrap it the same way they wrap a `TempDir`.
-    fn dummy_root() -> std::path::PathBuf {
-        std::env::temp_dir().join("kimun-testdata")
+    /// a vault ends up wherever the process happened to be started.
+    ///
+    /// A fresh `TempDir` per test rather than one fixed path under
+    /// `std::env::temp_dir`: that path is shared by every user and every run
+    /// on the machine, so two concurrent runs write the same filenames, a
+    /// directory another user created first fails with `EACCES`, and nothing
+    /// ever cleans it up. Callers hold the guard and use `.path()`.
+    fn dummy_root() -> tempfile::TempDir {
+        tempfile::TempDir::new().unwrap()
     }
 
     use std::path::Path;
@@ -1182,20 +1187,21 @@ mod tests {
 
     #[tokio::test]
     async fn test_vault_entry_new_with_note() {
-        let workspace_path = dummy_root();
+        let temp_dir = dummy_root();
+        let workspace_path = temp_dir.path();
         let note_path = VaultPath::new("test_note.md");
         let note_content = "# Test Note\n\nThis is a test.";
 
         // Create note first
         save_note(
-            &crate::system::sys(&workspace_path),
+            &crate::system::sys(workspace_path),
             &note_path,
             note_content,
         )
         .await
         .unwrap();
 
-        let result = VaultEntry::new(&crate::system::sys(&workspace_path), note_path.clone()).await;
+        let result = VaultEntry::new(&crate::system::sys(workspace_path), note_path.clone()).await;
         assert!(result.is_ok());
 
         let entry = result.unwrap();
@@ -1211,14 +1217,15 @@ mod tests {
         }
 
         // Cleanup
-        delete_note(&crate::system::sys(&workspace_path), &note_path)
+        delete_note(&crate::system::sys(workspace_path), &note_path)
             .await
             .ok();
     }
 
     #[tokio::test]
     async fn test_vault_entry_new_with_attachment() {
-        let workspace_path = dummy_root();
+        let temp_dir = dummy_root();
+        let workspace_path = temp_dir.path();
         let attachment_path = VaultPath::new("test.txt");
 
         // Create a text file (attachment)
@@ -1227,11 +1234,8 @@ mod tests {
             .await
             .unwrap();
 
-        let result = VaultEntry::new(
-            &crate::system::sys(&workspace_path),
-            attachment_path.clone(),
-        )
-        .await;
+        let result =
+            VaultEntry::new(&crate::system::sys(workspace_path), attachment_path.clone()).await;
         assert!(result.is_ok());
 
         let entry = result.unwrap();
@@ -1248,10 +1252,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_vault_entry_new_with_nonexistent_path() {
-        let workspace_path = dummy_root();
+        let temp_dir = dummy_root();
+        let workspace_path = temp_dir.path();
         let nonexistent_path = VaultPath::new("does_not_exist.md");
 
-        let result = VaultEntry::new(&crate::system::sys(&workspace_path), nonexistent_path).await;
+        let result = VaultEntry::new(&crate::system::sys(workspace_path), nonexistent_path).await;
         assert!(result.is_err());
 
         match result.unwrap_err() {
@@ -1262,13 +1267,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_vault_entry_from_path() {
-        let workspace_path = dummy_root();
+        let temp_dir = dummy_root();
+        let workspace_path = temp_dir.path();
         let note_path = VaultPath::new("from_path_test.md");
         let note_content = "Test content";
 
         // Create note
         save_note(
-            &crate::system::sys(&workspace_path),
+            &crate::system::sys(workspace_path),
             &note_path,
             note_content,
         )
@@ -1276,30 +1282,31 @@ mod tests {
         .unwrap();
 
         let full_path = workspace_path.join("from_path_test.md");
-        let result = VaultEntry::from_path(&crate::system::sys(&workspace_path), &full_path).await;
+        let result = VaultEntry::from_path(&crate::system::sys(workspace_path), &full_path).await;
         assert!(result.is_ok());
 
         let entry = result.unwrap();
         assert_eq!(entry.path, note_path.clone().absolute());
 
         // Cleanup
-        delete_note(&crate::system::sys(&workspace_path), &note_path)
+        delete_note(&crate::system::sys(workspace_path), &note_path)
             .await
             .ok();
     }
 
     #[tokio::test]
     async fn test_vault_entry_display() {
-        let workspace_path = dummy_root();
+        let temp_dir = dummy_root();
+        let workspace_path = temp_dir.path();
         let note_path = VaultPath::new("display_test.md");
         let dir_path = VaultPath::new("display_dir");
         let attachment_path = VaultPath::new("display.txt");
 
         // Test note display
-        save_note(&crate::system::sys(&workspace_path), &note_path, "content")
+        save_note(&crate::system::sys(workspace_path), &note_path, "content")
             .await
             .unwrap();
-        let note_entry = VaultEntry::new(&crate::system::sys(&workspace_path), note_path.clone())
+        let note_entry = VaultEntry::new(&crate::system::sys(workspace_path), note_path.clone())
             .await
             .unwrap();
         let note_display = format!("{}", note_entry);
@@ -1310,7 +1317,7 @@ mod tests {
         tokio::fs::create_dir_all(workspace_path.join("display_dir"))
             .await
             .ok();
-        let dir_entry = VaultEntry::new(&crate::system::sys(&workspace_path), dir_path.clone())
+        let dir_entry = VaultEntry::new(&crate::system::sys(workspace_path), dir_path.clone())
             .await
             .unwrap();
         let dir_display = format!("{}", dir_entry);
@@ -1321,17 +1328,15 @@ mod tests {
         tokio::fs::write(workspace_path.join("display.txt"), "content")
             .await
             .ok();
-        let attachment_entry = VaultEntry::new(
-            &crate::system::sys(&workspace_path),
-            attachment_path.clone(),
-        )
-        .await
-        .unwrap();
+        let attachment_entry =
+            VaultEntry::new(&crate::system::sys(workspace_path), attachment_path.clone())
+                .await
+                .unwrap();
         let attachment_display = format!("{}", attachment_entry);
         assert!(attachment_display.contains("[ATT]"));
 
         // Cleanup
-        delete_note(&crate::system::sys(&workspace_path), &note_path)
+        delete_note(&crate::system::sys(workspace_path), &note_path)
             .await
             .ok();
         tokio::fs::remove_dir_all(workspace_path.join("display_dir"))
@@ -1344,24 +1349,25 @@ mod tests {
 
     #[tokio::test]
     async fn test_note_entry_data_load_details() {
-        let workspace_path = dummy_root();
+        let temp_dir = dummy_root();
+        let workspace_path = temp_dir.path();
         let note_path = VaultPath::new("details_test.md");
         let note_content = "# Test\n\nContent here";
 
         save_note(
-            &crate::system::sys(&workspace_path),
+            &crate::system::sys(workspace_path),
             &note_path,
             note_content,
         )
         .await
         .unwrap();
-        let entry = VaultEntry::new(&crate::system::sys(&workspace_path), note_path.clone())
+        let entry = VaultEntry::new(&crate::system::sys(workspace_path), note_path.clone())
             .await
             .unwrap();
 
         if let EntryData::Note(note_data) = entry.data {
             let details_result = note_data
-                .load_details(&crate::system::sys(&workspace_path), &note_path)
+                .load_details(&crate::system::sys(workspace_path), &note_path)
                 .await;
             assert!(details_result.is_ok());
 
@@ -1373,7 +1379,7 @@ mod tests {
         }
 
         // Cleanup
-        delete_note(&crate::system::sys(&workspace_path), &note_path)
+        delete_note(&crate::system::sys(workspace_path), &note_path)
             .await
             .ok();
     }
@@ -1429,10 +1435,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_directory_with_note_path() {
-        let workspace_path = dummy_root();
+        let temp_dir = dummy_root();
+        let workspace_path = temp_dir.path();
         let note_path = VaultPath::new("invalid.md");
 
-        let result = create_directory(&crate::system::sys(&workspace_path), &note_path).await;
+        let result = create_directory(&crate::system::sys(workspace_path), &note_path).await;
         assert!(result.is_err());
 
         match result.unwrap_err() {
@@ -1463,11 +1470,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_save_note_with_directory_path() {
-        let workspace_path = dummy_root();
+        let temp_dir = dummy_root();
+        let workspace_path = temp_dir.path();
         let dir_path = VaultPath::new("directory");
         let content = "test content";
 
-        let result = save_note(&crate::system::sys(&workspace_path), &dir_path, content).await;
+        let result = save_note(&crate::system::sys(workspace_path), &dir_path, content).await;
         assert!(result.is_err());
 
         match result.unwrap_err() {
@@ -1480,33 +1488,35 @@ mod tests {
 
     #[tokio::test]
     async fn test_rename_note_with_invalid_paths() {
-        let workspace_path = dummy_root();
+        let temp_dir = dummy_root();
+        let workspace_path = temp_dir.path();
         let dir_path = VaultPath::new("directory");
         let note_path = VaultPath::new("note.md");
 
         // Test renaming from directory (should fail)
-        let result = rename_note(&crate::system::sys(&workspace_path), &dir_path, &note_path).await;
+        let result = rename_note(&crate::system::sys(workspace_path), &dir_path, &note_path).await;
         assert!(result.is_err());
 
         // Test renaming to directory (should fail)
-        let result = rename_note(&crate::system::sys(&workspace_path), &note_path, &dir_path).await;
+        let result = rename_note(&crate::system::sys(workspace_path), &note_path, &dir_path).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn test_rename_directory_with_invalid_paths() {
-        let workspace_path = dummy_root();
+        let temp_dir = dummy_root();
+        let workspace_path = temp_dir.path();
         let dir_path = VaultPath::new("directory");
         let note_path = VaultPath::new("note.md");
 
         // Test renaming from note (should fail)
         let result =
-            rename_directory(&crate::system::sys(&workspace_path), &note_path, &dir_path).await;
+            rename_directory(&crate::system::sys(workspace_path), &note_path, &dir_path).await;
         assert!(result.is_err());
 
         // Test renaming to note (should fail)
         let result =
-            rename_directory(&crate::system::sys(&workspace_path), &dir_path, &note_path).await;
+            rename_directory(&crate::system::sys(workspace_path), &dir_path, &note_path).await;
         assert!(result.is_err());
     }
 

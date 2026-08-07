@@ -17,9 +17,17 @@ pub struct FileBrowserState {
 impl FileBrowserState {
     pub fn load(path: PathBuf) -> Self {
         let has_parent = path.parent().is_some();
-        let mut entries: Vec<PathBuf> = kimun_core::SystemPath::try_absolute(&path)
+        // An unreadable — or unusable — directory renders as an empty one, so
+        // the browser stays navigable. It is logged rather than swallowed: a
+        // path Windows rejects as non-absolute (`/`, no drive prefix) looks
+        // exactly like a directory that happens to hold no subdirectories.
+        let listing = kimun_core::SystemPath::try_absolute(&path)
             .and_then(|dir| kimun_core::system::read_dir(&dir))
-            .unwrap_or_default()
+            .unwrap_or_else(|e| {
+                tracing::warn!("cannot browse {}: {e}", path.display());
+                Vec::new()
+            });
+        let mut entries: Vec<PathBuf> = listing
             .into_iter()
             .map(|p| p.into_path_buf())
             .filter(|p| p.is_dir())

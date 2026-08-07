@@ -616,7 +616,13 @@ impl AppSettings {
     }
 
     pub fn load_from_file(path: PathBuf) -> Result<Self, SettingsError> {
-        if let Some(parent) = path.parent() {
+        // A bare filename (`--config kimun.toml`) has an *empty* parent, not
+        // no parent. Creating it is a no-op the OS accepts, but canonicalizing
+        // "" fails, so the empty case has to be filtered out here — otherwise
+        // every such invocation aborts before the config is even read.
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
             system::create_dir(parent)?;
         }
         if !path.exists() {

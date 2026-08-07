@@ -44,6 +44,22 @@ fn normalize_keeps_leading_parent_dirs_of_relative_paths() {
     assert_same(normalize(Path::new("a/../../b")), PathBuf::from("../b"));
 }
 
+/// A bare drive prefix is not a root. `C:..\a` is drive-relative — it still
+/// has a parent to climb out of — so dropping the `..` retargets it at the
+/// current directory on `C:`, the same silent rebase relative paths are
+/// protected from above.
+#[test]
+#[cfg(windows)]
+fn normalize_keeps_parent_dirs_of_drive_relative_paths() {
+    assert_same(normalize(Path::new(r"C:..\a")), PathBuf::from(r"C:..\a"));
+    assert_same(
+        normalize(Path::new(r"C:a\..\..\b")),
+        PathBuf::from(r"C:..\b"),
+    );
+    // With the root present there *is* nothing above to climb to.
+    assert_same(normalize(Path::new(r"C:\..\a")), PathBuf::from(r"C:\a"));
+}
+
 #[test]
 fn normalize_of_an_empty_result_is_cur_dir() {
     assert_same(normalize(Path::new(".")), PathBuf::from("."));
@@ -258,6 +274,49 @@ fn log_dir_is_absolute_even_without_a_home() {
     assert!(log_dir().as_path().is_absolute());
 }
 
+/// The no-home branch, which the test above cannot reach (CI always has a
+/// home) and which takes `$TMPDIR` exactly as the OS reports it — including
+/// the two shapes a `SystemPath` must never hold.
+#[test]
+fn log_dir_in_temp_normalizes_a_dotted_tmpdir() {
+    let logs = log_dir_in_temp(&host_path("/var/tmp/."), &host_path("/irrelevant"));
+
+    assert_same(
+        &logs,
+        host_path("/var/tmp").join(APP_DIR_NAME).join(LOG_DIR_NAME),
+    );
+    assert!(
+        !logs.as_path().to_string_lossy().contains(&format!(
+            "{}.{}",
+            std::path::MAIN_SEPARATOR,
+            std::path::MAIN_SEPARATOR
+        )),
+        "a verbatim Windows path reads `.` as a directory named `.`, got {logs}"
+    );
+}
+
+#[test]
+fn log_dir_in_temp_anchors_a_relative_tmpdir_on_the_working_directory() {
+    // `std::env::temp_dir` hands back `$TMPDIR` verbatim, so it can be
+    // relative. Anywhere absolute beats a log path that moves with the cwd.
+    let logs = log_dir_in_temp(Path::new("./tmp"), &host_path("/work"));
+
+    assert!(logs.as_path().is_absolute(), "got {logs}");
+    assert_same(
+        &logs,
+        host_path("/work/tmp").join(APP_DIR_NAME).join(LOG_DIR_NAME),
+    );
+}
+
+/// The home directory when there is one, so the browser opens somewhere the
+/// user recognizes rather than at a root.
+#[test]
+fn browse_root_is_an_absolute_directory() {
+    let root = browse_root().expect("home or cwd must resolve");
+    assert!(root.as_path().is_absolute(), "got {root}");
+    assert!(root.is_dir(), "got {root}");
+}
+
 // ── operations ─────────────────────────────────────────────────────────
 
 /// Both codes, checked from either platform.
@@ -292,6 +351,24 @@ fn ensure_dir_creates_missing_parents_and_is_idempotent() {
     // what `ensure_app_dir` leans on at every startup.
     ensure_dir(&nested).unwrap();
     assert!(nested.is_dir());
+}
+
+/// A *file* where a directory was asked for is a failure, not an idempotent
+/// success — reporting it here is the difference between "cannot create that"
+/// at the prompt and an empty listing the user only understands next launch.
+#[test]
+fn a_file_where_a_directory_was_asked_for_is_an_error() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let occupied = dir.path().join("notes");
+    std::fs::write(&occupied, b"not a directory").unwrap();
+
+    let err = create_dir(&occupied).unwrap_err();
+    assert!(matches!(err, SystemError::Io { .. }), "got {err:?}");
+
+    let err = ensure_dir(&SystemPath::try_absolute(&occupied).unwrap()).unwrap_err();
+    assert!(matches!(err, SystemError::Io { .. }), "got {err:?}");
+
+    assert_eq!(std::fs::read(&occupied).unwrap(), b"not a directory");
 }
 
 #[test]
@@ -410,6 +487,44 @@ fn replace_atomically_writes_and_leaves_no_temp_file() {
         .filter(|n| n != "default.txt")
         .collect();
     assert!(leftovers.is_empty(), "temp file left behind: {leftovers:?}");
+}
+
+/// Two writers of the same file must not pick the same temp path: the second
+/// `File::create` would truncate the first's half-written file, and whichever
+/// renamed last would publish the interleaved result — the exact corruption
+/// this recipe exists to prevent.
+#[test]
+fn concurrent_writers_of_one_file_get_distinct_temp_paths() {
+    let target = Path::new("/config/kimun.toml");
+
+    let first = temp_name_for(target);
+    let second = temp_name_for(target);
+
+    assert_ne!(first, second);
+    assert_eq!(
+        first.parent(),
+        target.parent(),
+        "the temp file must be a sibling, or the rename crosses a volume"
+    );
+    assert!(
+        first
+            .to_string_lossy()
+            .contains(&std::process::id().to_string()),
+        "another process's writer must not collide either, got {first:?}"
+    );
+}
+
+/// The whole file is replaced, not merged into: a shorter payload must not
+/// leave the tail of the previous one behind.
+#[test]
+fn replace_atomically_truncates_a_longer_previous_file() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let target = dir.path().join("history.txt");
+
+    replace_atomically(&target, b"a long first line\nand a second\n").unwrap();
+    replace_atomically(&target, b"short\n").unwrap();
+
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "short\n");
 }
 
 #[test]
