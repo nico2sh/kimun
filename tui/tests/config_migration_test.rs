@@ -1,6 +1,9 @@
 use kimun_notes::settings::AppSettings;
 use tempfile::TempDir;
 
+mod common;
+use common::absolute_toml;
+
 #[test]
 fn migrate_phase1_to_phase2_config() {
     let temp_dir = TempDir::new().unwrap();
@@ -80,11 +83,17 @@ fn migrate_phase1_fails_when_workspace_dir_missing() {
     let temp_dir = TempDir::new().unwrap();
     let config_path = temp_dir.path().join("config.toml");
 
-    // Point to a non-existent workspace directory
-    let phase1_toml = r#"
-workspace_dir = "/nonexistent/path/that/does/not/exist"
+    // Point to a non-existent workspace directory. Host-absolute, not just
+    // `/`-rooted: on Windows the literal would be a *relative* path, which
+    // `expand_path` rebases onto the config directory — the test would then
+    // pass for the wrong reason, on a path it never named.
+    let phase1_toml = format!(
+        r#"
+workspace_dir = "{}"
 theme = "gruvbox_dark"
-"#;
+"#,
+        absolute_toml("/nonexistent/path/that/does/not/exist")
+    );
     std::fs::write(&config_path, phase1_toml).unwrap();
 
     let result = AppSettings::load_from_file(config_path.clone());

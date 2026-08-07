@@ -155,15 +155,23 @@ pub struct AppSettings {
     // Preserved fields
     #[serde(default)]
     pub theme: String,
+    /// As written in the config file — may be relative, may start with `~`.
     #[serde(default = "default_cache_dir")]
     pub cache_dir: PathBuf,
-    #[serde(skip)]
-    cache_dir_resolved: Option<PathBuf>,
+    /// [`Self::cache_dir`] made absolute. Never optional: an unresolved cache
+    /// dir means the index lands relative to the process's working directory,
+    /// so the type does not let that state exist. `resolve_paths` overwrites
+    /// it once the config file's directory is known; until then it is resolved
+    /// against the default config directory.
+    #[serde(skip, default = "default_cache_dir_resolved")]
+    cache_dir_resolved: PathBuf,
 
+    /// As written in the config file — see [`Self::cache_dir`].
     #[serde(default = "default_history_dir")]
     pub history_dir: PathBuf,
-    #[serde(skip)]
-    history_dir_resolved: Option<PathBuf>,
+    /// [`Self::history_dir`] made absolute — see [`Self::cache_dir_resolved`].
+    #[serde(skip, default = "default_history_dir_resolved")]
+    history_dir_resolved: PathBuf,
     #[serde(skip, default = "yes")]
     needs_indexing: bool,
     #[serde(default = "default_keybindings")]
@@ -365,6 +373,34 @@ fn default_history_dir() -> PathBuf {
     PathBuf::from("history")
 }
 
+/// What relative `cache_dir` / `history_dir` values resolve against when no
+/// config file anchors them: the default config directory, read *without*
+/// creating it (settings that were never loaded from a file must not
+/// materialise directories as a side effect of `Default`).
+///
+/// Anything absolute beats the alternative. The one thing these paths must
+/// never fall back to is the raw relative form, which anchors on the process's
+/// working directory: every kimün started from the same directory would then
+/// share one index, and a first run would drop its index wherever the binary
+/// happened to be launched. Hence the temp-dir fallback when even the home
+/// directory is unknown.
+fn default_settings_base_dir() -> PathBuf {
+    config_dir::get_config_dir_path(CONFIG_DIR)
+        .unwrap_or_else(|_| std::env::temp_dir().join(CONFIG_DIR))
+}
+
+/// Resolved form of [`default_cache_dir`] for settings with no config file.
+/// Also the `serde` default, so deserializing a config never yields an
+/// unresolved path even before `resolve_paths` runs.
+fn default_cache_dir_resolved() -> PathBuf {
+    AppSettings::expand_path(&default_cache_dir(), &default_settings_base_dir())
+}
+
+/// Resolved form of [`default_history_dir`] — see [`default_cache_dir_resolved`].
+fn default_history_dir_resolved() -> PathBuf {
+    AppSettings::expand_path(&default_history_dir(), &default_settings_base_dir())
+}
+
 fn default_use_nerd_fonts() -> bool {
     false
 }
@@ -394,9 +430,9 @@ impl Default for AppSettings {
             workspace_dir: None,
             theme: Default::default(),
             cache_dir: default_cache_dir(),
-            cache_dir_resolved: None,
+            cache_dir_resolved: default_cache_dir_resolved(),
             history_dir: default_history_dir(),
-            history_dir_resolved: None,
+            history_dir_resolved: default_history_dir_resolved(),
             needs_indexing: true,
             key_bindings: default_keybindings(),
             autosave_interval_secs: default_autosave_interval(),
@@ -719,8 +755,8 @@ impl AppSettings {
                 }
             }
         }
-        self.cache_dir_resolved = Some(Self::expand_path(&self.cache_dir, base));
-        self.history_dir_resolved = Some(Self::expand_path(&self.history_dir, base));
+        self.cache_dir_resolved = Self::expand_path(&self.cache_dir, base);
+        self.history_dir_resolved = Self::expand_path(&self.history_dir, base);
     }
 
     /// Freshly defaulted settings for a config file that could not be loaded —
@@ -728,13 +764,11 @@ impl AppSettings {
     /// `config_file` pointing at it and its relative paths resolved against
     /// its directory.
     ///
-    /// The resolve is the whole point: [`Self::cache_path_for`] and
-    /// [`Self::history_path_for`] fall back to the *raw* `cache_dir` /
-    /// `history_dir` when the resolved forms are `None`, and those default to
-    /// `.` and `history`. Unresolved, they anchor to the process's working
-    /// directory instead of the config file's — so every process launched from
-    /// the same directory shares one workspace index, and a first run drops
-    /// its index wherever the binary happened to be started.
+    /// The resolve is the whole point: `cache_dir` / `history_dir` default to
+    /// `.` and `history`, and [`Self::default`] can only anchor them on the
+    /// *default* config directory. A config file elsewhere (`--config`) must
+    /// re-anchor them on its own directory, or its workspaces' indexes land
+    /// next to somebody else's.
     fn defaults_for_config_file(path: PathBuf) -> Self {
         let base = Self::config_base_dir(&path);
         let mut settings = Self {
@@ -832,35 +866,27 @@ impl AppSettings {
             .filter(|s| !s.is_empty())
     }
 
-    pub fn cache_dir_resolved(&self) -> Option<&Path> {
-        self.cache_dir_resolved.as_deref()
+    /// The absolute directory workspace cache files live in.
+    pub fn cache_dir_resolved(&self) -> &Path {
+        &self.cache_dir_resolved
     }
 
-    pub fn history_dir_resolved(&self) -> Option<&Path> {
-        self.history_dir_resolved.as_deref()
+    /// The absolute directory workspace history files live in.
+    pub fn history_dir_resolved(&self) -> &Path {
+        &self.history_dir_resolved
     }
 
     /// Path to the SQLite cache file for the named workspace.
     /// Caller must have already validated `workspace_name` via
     /// `kimun_core::nfs::filename::validate_filename`.
     pub fn cache_path_for(&self, workspace_name: &str) -> PathBuf {
-        Self::workspace_file(
-            self.cache_dir_resolved.as_ref().unwrap_or(&self.cache_dir),
-            workspace_name,
-            CACHE_FILE_EXT,
-        )
+        Self::workspace_file(&self.cache_dir_resolved, workspace_name, CACHE_FILE_EXT)
     }
 
     /// Path to the history file for the named workspace.
     /// Caller must have already validated `workspace_name`.
     pub fn history_path_for(&self, workspace_name: &str) -> PathBuf {
-        Self::workspace_file(
-            self.history_dir_resolved
-                .as_ref()
-                .unwrap_or(&self.history_dir),
-            workspace_name,
-            HISTORY_FILE_EXT,
-        )
+        Self::workspace_file(&self.history_dir_resolved, workspace_name, HISTORY_FILE_EXT)
     }
 
     fn workspace_file(dir: &Path, workspace_name: &str, ext: &str) -> PathBuf {
@@ -917,9 +943,42 @@ impl AppSettings {
     }
 }
 
+/// Path helpers shared by this file's test modules.
+#[cfg(test)]
+mod test_paths {
+    use std::path::PathBuf;
+
+    /// Builds a genuinely absolute path for the host from `/`-separated
+    /// components.
+    ///
+    /// A literal like `"/config/dir"` is absolute on Unix but merely *rooted*
+    /// on Windows, where [`Path::is_absolute`] also wants a prefix (`C:\`).
+    /// Passing the literal straight in doesn't just weaken these tests there,
+    /// it inverts them: `expand_path` sees a relative path, rebases it onto
+    /// `base`, and the `is_absolute` assertion then fails on behavior that is
+    /// in fact correct.
+    ///
+    /// [`Path::is_absolute`]: std::path::Path::is_absolute
+    pub(super) fn absolute(unix_style: &str) -> PathBuf {
+        let trimmed = unix_style.trim_start_matches('/');
+        if cfg!(windows) {
+            PathBuf::from(format!("C:\\{}", trimmed.replace('/', "\\")))
+        } else {
+            PathBuf::from(format!("/{trimmed}"))
+        }
+    }
+
+    /// The same path as a TOML string literal's contents — Windows separators
+    /// have to survive TOML's own escaping.
+    pub(super) fn absolute_toml(unix_style: &str) -> String {
+        absolute(unix_style).to_string_lossy().replace('\\', "\\\\")
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
+    use super::test_paths::absolute;
     use super::*;
 
     #[test]
@@ -1038,7 +1097,7 @@ Quit = ["ctrl&Q"]
     #[test]
     fn clear_workspace_phase1_clears_workspace_dir() {
         let mut settings = AppSettings::default();
-        settings.workspace_dir = Some(PathBuf::from("/tmp/vault"));
+        settings.workspace_dir = Some(absolute("/tmp/vault"));
         settings.needs_indexing = false;
         settings.clear_workspace();
         assert!(
@@ -1055,7 +1114,7 @@ Quit = ["ctrl&Q"]
     fn clear_workspace_phase2_removes_current_workspace_entry() {
         let mut settings = AppSettings::default();
         let mut wc = WorkspaceConfig::new_empty();
-        wc.add_workspace("vault1".to_string(), PathBuf::from("/tmp/vault1"))
+        wc.add_workspace("vault1".to_string(), absolute("/tmp/vault1"))
             .unwrap();
         settings.workspace_config = Some(wc);
         // Assert precondition: add_workspace auto-selects the first workspace
@@ -1085,9 +1144,9 @@ Quit = ["ctrl&Q"]
         // When Phase 1 and Phase 2 fields are both populated (e.g. during migration),
         // clear_workspace must clear both independently.
         let mut settings = AppSettings::default();
-        settings.workspace_dir = Some(PathBuf::from("/tmp/vault"));
+        settings.workspace_dir = Some(absolute("/tmp/vault"));
         let mut wc = WorkspaceConfig::new_empty();
-        wc.add_workspace("vault1".to_string(), PathBuf::from("/tmp/vault1"))
+        wc.add_workspace("vault1".to_string(), absolute("/tmp/vault1"))
             .unwrap();
         settings.workspace_config = Some(wc);
         settings.clear_workspace();
@@ -1110,7 +1169,7 @@ Quit = ["ctrl&Q"]
     fn clear_workspace_phase2_preserves_other_workspaces() {
         let mut settings = AppSettings::default();
         let mut wc = WorkspaceConfig::new_empty();
-        wc.add_workspace("vault1".to_string(), PathBuf::from("/tmp/vault1"))
+        wc.add_workspace("vault1".to_string(), absolute("/tmp/vault1"))
             .unwrap();
         wc.add_workspace("vault2".to_string(), PathBuf::from("/tmp/vault2"))
             .unwrap();
@@ -1135,6 +1194,7 @@ Quit = ["ctrl&Q"]
 
 #[cfg(test)]
 mod backend_tests {
+    use super::test_paths::{absolute, absolute_toml};
     use super::*;
 
     #[test]
@@ -1190,27 +1250,28 @@ mod backend_tests {
         assert_eq!(back.editor_backend, EditorBackendSetting::Vim);
     }
 
-    // ── expand_path tests ──────────────────────────────────────────────
-
-    /// Builds a genuinely absolute path for the host from `/`-separated
-    /// components.
-    ///
-    /// A literal like `"/config/dir"` is absolute on Unix but merely *rooted*
-    /// on Windows, where [`Path::is_absolute`] also wants a prefix (`C:\`).
-    /// Passing the literal straight in doesn't just weaken these tests there,
-    /// it inverts them: `expand_path` sees a relative path, rebases it onto
-    /// `base`, and the `is_absolute` assertion then fails on behavior that is
-    /// in fact correct.
-    ///
-    /// [`Path::is_absolute`]: std::path::Path::is_absolute
-    fn absolute(unix_style: &str) -> PathBuf {
-        let trimmed = unix_style.trim_start_matches('/');
-        if cfg!(windows) {
-            PathBuf::from(format!("C:\\{}", trimmed.replace('/', "\\")))
-        } else {
-            PathBuf::from(format!("/{trimmed}"))
+    /// Workspace cache/history paths are absolute however the settings were
+    /// built — including the two constructions that never run `resolve_paths`:
+    /// a bare `default()` and a plain deserialize. A relative one anchors the
+    /// index on the process's working directory, so every kimün started from
+    /// the same place would share one index.
+    #[test]
+    fn workspace_paths_are_absolute_without_resolve_paths() {
+        for settings in [
+            AppSettings::default(),
+            toml::from_str::<AppSettings>("theme = \"gruvbox_dark\"\n").unwrap(),
+        ] {
+            let cache = settings.cache_path_for("w");
+            let history = settings.history_path_for("w");
+            assert!(cache.is_absolute(), "cache path not absolute: {cache:?}");
+            assert!(
+                history.is_absolute(),
+                "history path not absolute: {history:?}"
+            );
         }
     }
+
+    // ── expand_path tests ──────────────────────────────────────────────
 
     #[test]
     fn expand_path_absolute_unchanged() {
@@ -1444,23 +1505,29 @@ created = "2026-01-01T00:00:00Z"
 
     #[test]
     fn resolve_paths_absolute_no_resolved_path() {
-        let toml = r#"
+        // Host-absolute, not just `/`-rooted: on Windows `/absolute/notes` is
+        // a *relative* path, so it would pick up a resolved_path and invert
+        // both assertions below.
+        let toml = format!(
+            r#"
 config_version = 2
 [global]
 current_workspace = "test"
 [workspaces.test]
-path = "/absolute/notes"
+path = "{}"
 last_paths = []
 created = "2026-01-01T00:00:00Z"
-"#;
-        let mut settings: AppSettings = toml::from_str(toml).unwrap();
-        settings.resolve_paths(std::path::Path::new("/config"));
+"#,
+            absolute_toml("/absolute/notes")
+        );
+        let mut settings: AppSettings = toml::from_str(&toml).unwrap();
+        settings.resolve_paths(&absolute("/config"));
 
         let wc = settings.workspace_config.as_ref().unwrap();
         let entry = wc.workspaces.get("test").unwrap();
         // No resolved_path needed for already-absolute paths
         assert!(entry.resolved_path.is_none());
-        assert_eq!(*entry.effective_path(), PathBuf::from("/absolute/notes"));
+        assert_eq!(*entry.effective_path(), absolute("/absolute/notes"));
     }
 }
 

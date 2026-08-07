@@ -229,8 +229,8 @@ theme = "gruvbox_dark"
     .unwrap();
 
     let settings = kimun_notes::settings::AppSettings::load_from_file(cfg_path.clone()).unwrap();
-    let resolved_cache = settings.cache_dir_resolved().unwrap();
-    let resolved_hist = settings.history_dir_resolved().unwrap();
+    let resolved_cache = settings.cache_dir_resolved();
+    let resolved_hist = settings.history_dir_resolved();
     assert_eq!(resolved_cache, tmp.path().canonicalize().unwrap());
     assert_eq!(
         resolved_hist,
@@ -259,7 +259,7 @@ theme = "gruvbox_dark"
 
     let settings = kimun_notes::settings::AppSettings::load_from_file(cfg_path.clone()).unwrap();
     assert_eq!(
-        settings.cache_dir_resolved().unwrap(),
+        settings.cache_dir_resolved(),
         abs_cache.path().canonicalize().unwrap()
     );
 }
