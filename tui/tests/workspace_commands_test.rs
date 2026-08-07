@@ -6,7 +6,33 @@
 use kimun_notes::cli::commands::WorkspaceSubcommand;
 use kimun_notes::cli::{CliCommand, run_cli};
 use kimun_notes::settings::AppSettings;
+use std::path::{Path, PathBuf};
 use tempfile::TempDir;
+
+/// Where a workspace's index and history actually live.
+///
+/// A test has to ask rather than assume: files are named after an opaque key
+/// minted at creation, precisely so that nothing — not even a test — derives a
+/// filename from the workspace's name.
+fn artifacts(config_path: &Path, workspace: &str) -> (PathBuf, PathBuf) {
+    let settings =
+        AppSettings::load_from_file(config_path.to_path_buf()).expect("settings should load");
+    (
+        settings.index_for(workspace).path().as_path().to_path_buf(),
+        settings
+            .history_for(workspace)
+            .path()
+            .as_path()
+            .to_path_buf(),
+    )
+}
+
+/// A sibling of `index`, e.g. its `-wal`.
+fn sidecar(index: &Path, suffix: &str) -> PathBuf {
+    let mut name = index.as_os_str().to_os_string();
+    name.push(suffix);
+    PathBuf::from(name)
+}
 
 // ---------------------------------------------------------------------------
 // workspace init tests
@@ -395,11 +421,11 @@ async fn test_workspace_rename_succeeds() {
 /// A rename does not touch the index at all — not the `.kimuncache`, not
 /// SQLite's `-wal`/`-shm` siblings.
 ///
-/// The files keep the name they were created under, and the entry remembers
-/// it (`WorkspaceEntry::file_key`). Renaming used to move all three, which
-/// meant moving an open SQLite database: Windows refuses while any handle is
-/// on it, and that cost a workspace its whole index on roughly one CI run in
-/// three. The move is gone rather than retried.
+/// The files are named after the entry's `file_key`, which a rename does not
+/// change. Renaming used to move all three, which meant moving an open SQLite
+/// database: Windows refuses while any handle is on it, and that cost a
+/// workspace its whole index on roughly one CI run in three. The move is gone
+/// rather than retried.
 #[tokio::test]
 async fn test_workspace_rename_leaves_the_index_and_sidecars_alone() {
     let config_dir = TempDir::new().unwrap();
@@ -419,12 +445,12 @@ async fn test_workspace_rename_leaves_the_index_and_sidecars_alone() {
     .await
     .expect("init should succeed");
 
+    let (index, _) = artifacts(&config_path, "oldname");
     // Stand in for an index left open by a crashed process.
-    let cache_dir = config_dir.path().canonicalize().unwrap();
-    let old_wal = cache_dir.join("oldname.kimuncache-wal");
-    let old_shm = cache_dir.join("oldname.kimuncache-shm");
-    std::fs::write(&old_wal, b"wal").unwrap();
-    std::fs::write(&old_shm, b"shm").unwrap();
+    let wal = sidecar(&index, "-wal");
+    let shm = sidecar(&index, "-shm");
+    std::fs::write(&wal, b"wal").unwrap();
+    std::fs::write(&shm, b"shm").unwrap();
 
     run_cli(
         CliCommand::Workspace {
@@ -438,31 +464,34 @@ async fn test_workspace_rename_leaves_the_index_and_sidecars_alone() {
     .await
     .expect("rename should succeed");
 
-    assert!(
-        cache_dir.join("oldname.kimuncache").exists(),
-        "the index keeps the name it was created under"
-    );
-    assert_eq!(std::fs::read(&old_wal).unwrap(), b"wal");
-    assert_eq!(std::fs::read(&old_shm).unwrap(), b"shm");
-    assert!(
-        !cache_dir.join("newname.kimuncache").exists(),
-        "nothing is created under the new name"
+    assert!(index.exists(), "the index stays exactly where it was");
+    assert_eq!(std::fs::read(&wal).unwrap(), b"wal");
+    assert_eq!(std::fs::read(&shm).unwrap(), b"shm");
+
+    // Nothing new appeared: the cache directory holds the same three files.
+    let cache_dir = config_dir.path().canonicalize().unwrap();
+    let mut caches: Vec<_> = std::fs::read_dir(&cache_dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.contains("kimuncache"))
+        .collect();
+    caches.sort();
+    let stem = index.file_name().unwrap().to_string_lossy().into_owned();
+    assert_eq!(
+        caches,
+        [stem.clone(), format!("{stem}-shm"), format!("{stem}-wal")]
     );
 
-    // The renamed workspace still resolves to that index — the rename cost the
-    // user nothing, no reindex and no orphan.
-    let settings = AppSettings::load_from_file(config_path).unwrap();
-    assert_eq!(
-        settings.index_for("newname").path().as_path(),
-        cache_dir.join("oldname.kimuncache"),
-    );
+    // And the renamed workspace still resolves to that index — no reindex, no
+    // orphan.
+    let (after, _) = artifacts(&config_path, "newname");
+    assert_eq!(after, index);
 }
 
-/// Renaming twice must not drift: the key is pinned on the first rename and
-/// never follows an intermediate name, or the second rename would point the
-/// workspace at a file that was never created.
+/// Renaming twice must not drift the key, or the second rename would point
+/// the workspace at a file that was never created.
 #[tokio::test]
-async fn test_renaming_twice_keeps_the_original_file_key() {
+async fn test_renaming_twice_keeps_the_file_key() {
     let config_dir = TempDir::new().unwrap();
     let config_path = config_dir.path().join("config.toml");
     let workspace_dir = TempDir::new().unwrap();
@@ -480,6 +509,8 @@ async fn test_renaming_twice_keeps_the_original_file_key() {
     .await
     .expect("init should succeed");
 
+    let (index, history) = artifacts(&config_path, "first");
+
     for (old, new) in [("first", "second"), ("second", "third")] {
         run_cli(
             CliCommand::Workspace {
@@ -494,15 +525,21 @@ async fn test_renaming_twice_keeps_the_original_file_key() {
         .unwrap_or_else(|e| panic!("rename {old} -> {new} should succeed: {e:?}"));
     }
 
-    let cache_dir = config_dir.path().canonicalize().unwrap();
-    let settings = AppSettings::load_from_file(config_path).unwrap();
+    let (after_index, after_history) = artifacts(&config_path, "third");
     assert_eq!(
-        settings.index_for("third").path().as_path(),
-        cache_dir.join("first.kimuncache"),
-        "the key must stay at the name the file was created under"
+        after_index, index,
+        "the key must not follow an intermediate name"
     );
-    assert!(!cache_dir.join("second.kimuncache").exists());
-    assert!(!cache_dir.join("third.kimuncache").exists());
+    assert_eq!(after_history, history);
+    assert!(index.exists(), "and the file it names is still there");
+    // No name, at any point in the chain, ever became a filename.
+    let cache_dir = config_dir.path().canonicalize().unwrap();
+    for name in ["first", "second", "third"] {
+        assert!(
+            !cache_dir.join(format!("{name}.kimuncache")).exists(),
+            "a workspace name must never name a file"
+        );
+    }
 }
 
 /// Leftovers under the new name no longer block a rename.
@@ -531,12 +568,13 @@ async fn test_workspace_rename_ignores_leftovers_under_the_new_name() {
     .await
     .expect("init should succeed");
 
-    let cache_dir = config_dir.path().canonicalize().unwrap();
-    let history_dir = cache_dir.join("history");
+    let (_, history) = artifacts(&config_path, "oldname");
+    let history_dir = history.parent().unwrap().to_path_buf();
     std::fs::create_dir_all(&history_dir).unwrap();
-    std::fs::write(history_dir.join("oldname.txt"), "notes/a.md\n").unwrap();
-    // The leftover the rename has to notice before it moves anything.
-    std::fs::write(history_dir.join("newname.txt"), "someone else\n").unwrap();
+    std::fs::write(&history, "notes/a.md\n").unwrap();
+    // A stranger sitting under the name the workspace is about to take.
+    let leftover = history_dir.join("newname.txt");
+    std::fs::write(&leftover, "someone else\n").unwrap();
 
     let result = run_cli(
         CliCommand::Workspace {
@@ -554,28 +592,27 @@ async fn test_workspace_rename_ignores_leftovers_under_the_new_name() {
         "a leftover under the new name is irrelevant now: {result:?}"
     );
     assert_eq!(
-        std::fs::read_to_string(history_dir.join("newname.txt")).unwrap(),
+        std::fs::read_to_string(&leftover).unwrap(),
         "someone else\n",
         "the leftover must be neither overwritten nor adopted"
     );
 
-    let settings = AppSettings::load_from_file(config_path).unwrap();
+    let settings = AppSettings::load_from_file(config_path.clone()).unwrap();
     let ws_config = settings.workspace_config.as_ref().unwrap();
     assert!(ws_config.workspaces.contains_key("newname"));
     assert!(!ws_config.workspaces.contains_key("oldname"));
     // The renamed workspace reads its own history, not the stranger's.
-    assert_eq!(
-        settings.history_for("newname").path().as_path(),
-        history_dir.join("oldname.txt")
-    );
+    let (_, after) = artifacts(&config_path, "newname");
+    assert_eq!(after, history);
+    assert_eq!(settings.history_for("newname").load().len(), 1);
 }
 
 /// A renamed workspace keeps its recently-opened notes, and a removed one
 /// takes its history with it.
 ///
-/// The history file stays where it was written — like the index, it is named
-/// after the workspace's original name, not its current one — so the rename
-/// costs nothing and `remove` still has to find it under that name.
+/// The history file stays where it was written — like the index, its name
+/// comes from the entry's `file_key`, not from the workspace's name — so the
+/// rename costs nothing and `remove` still has to find it under that key.
 #[tokio::test]
 async fn test_workspace_rename_and_remove_carry_the_history_file() {
     let config_dir = TempDir::new().unwrap();
@@ -595,9 +632,9 @@ async fn test_workspace_rename_and_remove_carry_the_history_file() {
     .await
     .expect("init should succeed");
 
-    let history_dir = config_dir.path().canonicalize().unwrap().join("history");
-    std::fs::create_dir_all(&history_dir).unwrap();
-    std::fs::write(history_dir.join("oldname.txt"), "notes/a.md\n").unwrap();
+    let (_, history) = artifacts(&config_path, "oldname");
+    std::fs::create_dir_all(history.parent().unwrap()).unwrap();
+    std::fs::write(&history, "notes/a.md\n").unwrap();
 
     run_cli(
         CliCommand::Workspace {
@@ -612,13 +649,9 @@ async fn test_workspace_rename_and_remove_carry_the_history_file() {
     .expect("rename should succeed");
 
     assert_eq!(
-        std::fs::read_to_string(history_dir.join("oldname.txt")).unwrap(),
+        std::fs::read_to_string(&history).unwrap(),
         "notes/a.md\n",
         "the history stays where it was written"
-    );
-    assert!(
-        !history_dir.join("newname.txt").exists(),
-        "nothing is created under the new name"
     );
     assert_eq!(
         AppSettings::load_from_file(config_path.clone())
@@ -666,7 +699,7 @@ async fn test_workspace_rename_and_remove_carry_the_history_file() {
     .expect("remove should succeed");
 
     assert!(
-        !history_dir.join("oldname.txt").exists(),
+        !history.exists(),
         "a removed workspace must not leave its history behind, whatever it is called"
     );
 }
@@ -759,9 +792,10 @@ async fn test_workspace_remove_deletes_the_index_sidecars() {
         .unwrap_or_else(|e| panic!("init of '{name}' should succeed: {e:?}"));
     }
 
-    let cache_dir = config_dir.path().canonicalize().unwrap();
-    let wal = cache_dir.join("doomed.kimuncache-wal");
-    let shm = cache_dir.join("doomed.kimuncache-shm");
+    let (doomed_index, _) = artifacts(&config_path, "doomed");
+    let (kept_index, _) = artifacts(&config_path, "keep");
+    let wal = sidecar(&doomed_index, "-wal");
+    let shm = sidecar(&doomed_index, "-shm");
     std::fs::write(&wal, b"wal").unwrap();
     std::fs::write(&shm, b"shm").unwrap();
 
@@ -776,11 +810,11 @@ async fn test_workspace_remove_deletes_the_index_sidecars() {
     .await
     .expect("remove should succeed");
 
-    assert!(!cache_dir.join("doomed.kimuncache").exists());
+    assert!(!doomed_index.exists());
     assert!(!wal.exists(), "orphaned WAL left behind");
     assert!(!shm.exists(), "orphaned shm left behind");
     assert!(
-        cache_dir.join("keep.kimuncache").exists(),
+        kept_index.exists(),
         "the other workspace's index must be untouched"
     );
 }

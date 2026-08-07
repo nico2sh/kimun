@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use kimun_core::nfs::filename::{InvalidFilenameError, validate_filename};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub enum WorkspaceConfigError {
@@ -86,19 +86,20 @@ pub struct WorkspaceEntry {
     /// written to disk as the user configured it (relative, ~/..., or absolute).
     #[serde(skip)]
     pub resolved_path: Option<PathBuf>,
-    /// What this workspace's index and history files are named after, when that
-    /// is no longer its name.
+    /// What this workspace's index and history files are named after.
     ///
-    /// `None` means "my name", which is what every workspace starts as and
-    /// what keeps `work.kimuncache` readable in a directory listing. It is
-    /// pinned to the old name by [`rename_workspace`] and never changes again,
-    /// so a rename becomes a pure config edit.
+    /// A short opaque key ([`fresh_file_key`]) for anything created by a
+    /// current kimün, deliberately *not* the workspace's name: a name is a
+    /// label the user owns and can change, and letting it reach a filename is
+    /// what forced a rename to move an open SQLite database — which Windows
+    /// refuses while any handle is on it.
     ///
-    /// That is the point: deriving a *file name* from a *user-editable label*
-    /// is what forced a rename to move an open SQLite database, which Windows
-    /// refuses to do while any handle is on it — the failure this field exists
-    /// to make impossible rather than to retry.
+    /// `None` means "my name", and exists only for configs written before this
+    /// field did. Those workspaces keep resolving to `work.kimuncache` exactly
+    /// as they always have, so upgrading costs no migration and no reindex;
+    /// [`rename_workspace`] pins the name in before it can change.
     ///
+    /// [`fresh_file_key`]: WorkspaceConfig::fresh_file_key
     /// [`rename_workspace`]: WorkspaceConfig::rename_workspace
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_key: Option<String>,
@@ -170,14 +171,15 @@ impl WorkspaceConfig {
             });
         }
 
+        let created = Utc::now();
         let entry = WorkspaceEntry {
+            file_key: Some(self.fresh_file_key(&name, &path, created)),
             path,
             last_paths: Vec::new(),
-            created: Utc::now(),
+            created,
             quick_note_path: None,
             inbox_path: None,
             resolved_path: None,
-            file_key: self.free_file_key(&name),
         };
 
         self.workspaces.insert(name.clone(), entry);
@@ -191,28 +193,59 @@ impl WorkspaceConfig {
         Ok(())
     }
 
-    /// A file key no existing workspace is already using.
-    ///
-    /// `None` — meaning "my own name" — whenever the name is free, so a fresh
-    /// workspace's files stay readable as `work.kimuncache`. It is *not* always
-    /// free: renaming `work` to `job` leaves that workspace still using the
-    /// `work` files while freeing the name `work` for a new workspace, and
-    /// letting the newcomer take it too would point two workspaces at one
-    /// SQLite index — each reindexing over the other's notes.
-    ///
-    /// Terminates: `taken` is finite, so some suffix is always free.
-    fn free_file_key(&self, name: &str) -> Option<String> {
-        let taken: std::collections::HashSet<String> = self
-            .workspaces
+    /// Every file key currently spoken for.
+    fn file_keys_in_use(&self) -> std::collections::HashSet<String> {
+        self.workspaces
             .iter()
-            .map(|(key, entry)| entry.file_key_or(key))
-            .collect();
-        if !taken.contains(name) {
-            return None;
+            .map(|(name, entry)| entry.file_key_or(name))
+            .collect()
+    }
+
+    /// A short, unused key for a new workspace's index and history files.
+    ///
+    /// Not the workspace's name. A name is a label the user owns — it can be
+    /// renamed, freed and handed to a different workspace — and none of that
+    /// should reach a file on disk. Naming files after it made a rename move
+    /// an open SQLite database, and then made a reused name collide with the
+    /// files of the workspace that had been renamed away from it.
+    ///
+    /// Derived rather than random, so a config entry always explains its own
+    /// filename: SHA-256 over the name, path and creation instant, truncated
+    /// to twelve hex characters. The instant is in there so that removing a
+    /// workspace and recreating it identically does not land on the previous
+    /// key — and so inherit an index whose delete quietly failed.
+    ///
+    /// Twelve hex characters is 48 bits, far past what a handful of workspaces
+    /// needs, but the collision check is here regardless: `salt` bumps until
+    /// the key is free, which also covers the case of a key that survives in
+    /// the config from an older kimün.
+    fn fresh_file_key(&self, name: &str, path: &Path, created: DateTime<Utc>) -> String {
+        use sha2::{Digest, Sha256};
+
+        let taken = self.file_keys_in_use();
+        for salt in 0u32.. {
+            let mut hasher = Sha256::new();
+            // Length-delimited, so ("ab", "c") and ("a", "bc") cannot hash the
+            // same — a path and a name are both attacker-free here, but the
+            // habit costs nothing.
+            for part in [
+                name.as_bytes(),
+                path.to_string_lossy().as_bytes(),
+                created.to_rfc3339().as_bytes(),
+                &salt.to_le_bytes(),
+            ] {
+                hasher.update((part.len() as u64).to_le_bytes());
+                hasher.update(part);
+            }
+            let key: String = hasher.finalize()[..6]
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            if !taken.contains(&key) {
+                return key;
+            }
         }
-        (2..)
-            .map(|n| format!("{name}-{n}"))
-            .find(|candidate| !taken.contains(candidate))
+        unreachable!("a 48-bit key space is not exhausted by one config's workspaces")
     }
 
     /// Re-files the workspace at `old_name` under `new_name`, pinning what its
@@ -323,39 +356,68 @@ mod validate_tests {
         assert_eq!(wc.global.current_workspace, "first");
     }
 
-    /// A rename pins what the workspace's files are called, so nothing on disk
-    /// has to move — and so a later lookup still finds the index that already
-    /// exists rather than naming one that does not.
+    /// A new workspace's files are named after an opaque key, never after the
+    /// workspace — the name is the user's to change, and a filename is not.
     #[test]
-    fn rename_pins_the_file_key_to_the_original_name() {
+    fn a_new_workspace_gets_an_opaque_file_key() {
         let mut wc = WorkspaceConfig::new_empty();
         wc.add_workspace("work".to_string(), PathBuf::from("/tmp/a"))
             .unwrap();
-        // Until renamed, files are named after the workspace — `work.kimuncache`
-        // reads better in a directory listing than an opaque key.
-        assert_eq!(wc.workspaces["work"].file_key_or("work"), "work");
+
+        let key = wc.workspaces["work"].file_key_or("work");
+        assert_ne!(key, "work", "the name must not reach the filename");
+        assert_eq!(key.len(), 12, "twelve hex characters: {key}");
+        assert!(
+            key.chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()),
+            "must be a plain lowercase hex key, got {key}"
+        );
+    }
+
+    /// A rename does not change what the files are called, so nothing on disk
+    /// has to move and a later lookup still finds the index that exists.
+    #[test]
+    fn rename_keeps_the_file_key() {
+        let mut wc = WorkspaceConfig::new_empty();
+        wc.add_workspace("work".to_string(), PathBuf::from("/tmp/a"))
+            .unwrap();
+        let before = wc.workspaces["work"].file_key_or("work");
 
         assert!(wc.rename_workspace("work", "job".to_string()));
 
-        let entry = &wc.workspaces["job"];
-        assert_eq!(entry.file_key.as_deref(), Some("work"));
-        assert_eq!(entry.file_key_or("job"), "work");
+        assert_eq!(wc.workspaces["job"].file_key_or("job"), before);
         assert_eq!(wc.global.current_workspace, "job");
         assert!(!wc.workspaces.contains_key("work"));
     }
 
-    /// The key must not follow an intermediate name: after two renames the
-    /// files are still the ones created under the *first* name.
+    /// Two renames, still the same files.
     #[test]
-    fn renaming_twice_keeps_the_first_file_key() {
+    fn renaming_twice_keeps_the_file_key() {
         let mut wc = WorkspaceConfig::new_empty();
         wc.add_workspace("first".to_string(), PathBuf::from("/tmp/a"))
             .unwrap();
+        let before = wc.workspaces["first"].file_key_or("first");
 
         assert!(wc.rename_workspace("first", "second".to_string()));
         assert!(wc.rename_workspace("second", "third".to_string()));
 
-        assert_eq!(wc.workspaces["third"].file_key_or("third"), "first");
+        assert_eq!(wc.workspaces["third"].file_key_or("third"), before);
+    }
+
+    /// A config written before `file_key` existed has none, and must keep
+    /// resolving to its name — upgrading kimün must not orphan an index.
+    #[test]
+    fn a_legacy_entry_without_a_file_key_still_uses_its_name() {
+        let mut wc = WorkspaceConfig::new_empty();
+        wc.add_workspace("work".to_string(), PathBuf::from("/tmp/a"))
+            .unwrap();
+        wc.workspaces.get_mut("work").unwrap().file_key = None;
+
+        assert_eq!(wc.workspaces["work"].file_key_or("work"), "work");
+
+        // And renaming pins it before it can drift.
+        assert!(wc.rename_workspace("work", "job".to_string()));
+        assert_eq!(wc.workspaces["job"].file_key.as_deref(), Some("work"));
     }
 
     /// Renaming a workspace that is not the current one must not steal the
@@ -374,27 +436,11 @@ mod validate_tests {
         assert_eq!(wc.global.current_workspace, "first");
     }
 
-    /// Renaming frees the old *name* but not the old *files* — the renamed
-    /// workspace still uses them. A new workspace claiming that name must get
-    /// its own, or two workspaces share one SQLite index and each reindexes
-    /// over the other's notes.
+    /// Reusing a name that a rename freed must not hand the newcomer the
+    /// renamed workspace's files — two workspaces on one SQLite index would
+    /// each reindex over the other's notes.
     #[test]
-    fn a_new_workspace_reusing_a_freed_name_gets_its_own_files() {
-        let mut wc = WorkspaceConfig::new_empty();
-        wc.add_workspace("work".to_string(), PathBuf::from("/tmp/a"))
-            .unwrap();
-        wc.rename_workspace("work", "job".to_string());
-
-        wc.add_workspace("work".to_string(), PathBuf::from("/tmp/b"))
-            .unwrap();
-
-        assert_eq!(wc.workspaces["job"].file_key_or("job"), "work");
-        assert_eq!(wc.workspaces["work"].file_key_or("work"), "work-2");
-    }
-
-    /// The suffix keeps climbing rather than colliding a second time.
-    #[test]
-    fn repeated_reuse_of_a_name_keeps_finding_a_free_key() {
+    fn workspaces_never_share_a_file_key() {
         let mut wc = WorkspaceConfig::new_empty();
         wc.add_workspace("work".to_string(), PathBuf::from("/tmp/a"))
             .unwrap();
@@ -405,28 +451,30 @@ mod validate_tests {
         wc.add_workspace("work".to_string(), PathBuf::from("/tmp/c"))
             .unwrap();
 
-        let mut keys: Vec<String> = wc
+        let keys: Vec<String> = wc
             .workspaces
             .iter()
             .map(|(name, entry)| entry.file_key_or(name))
             .collect();
-        keys.sort();
-        assert_eq!(keys, ["work", "work-2", "work-3"]);
+        let unique: std::collections::HashSet<_> = keys.iter().collect();
+        assert_eq!(unique.len(), keys.len(), "duplicate file keys: {keys:?}");
+        assert_eq!(keys.len(), 3);
     }
 
-    /// An untouched name still gets the readable form — the suffix is only for
-    /// genuine collisions, not for every workspace after the first rename.
+    /// The collision check covers a legacy name-shaped key too, not just the
+    /// hashes it mints itself.
     #[test]
-    fn an_unclaimed_name_keeps_its_own_files() {
+    fn a_fresh_key_avoids_one_already_taken() {
         let mut wc = WorkspaceConfig::new_empty();
         wc.add_workspace("work".to_string(), PathBuf::from("/tmp/a"))
             .unwrap();
-        wc.rename_workspace("work", "job".to_string());
-        wc.add_workspace("other".to_string(), PathBuf::from("/tmp/b"))
-            .unwrap();
+        // Force the next mint to land on a taken key by claiming it first.
+        let colliding = wc.fresh_file_key("other", Path::new("/tmp/b"), Utc::now());
+        wc.workspaces.get_mut("work").unwrap().file_key = Some(colliding.clone());
 
-        assert_eq!(wc.workspaces["other"].file_key, None);
-        assert_eq!(wc.workspaces["other"].file_key_or("other"), "other");
+        let next = wc.fresh_file_key("other", Path::new("/tmp/b"), Utc::now());
+
+        assert_ne!(next, colliding);
     }
 
     #[test]
