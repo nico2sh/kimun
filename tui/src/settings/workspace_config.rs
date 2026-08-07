@@ -88,18 +88,17 @@ pub struct WorkspaceEntry {
     pub resolved_path: Option<PathBuf>,
     /// What this workspace's index and history files are named after.
     ///
-    /// A short opaque key ([`fresh_file_key`]) for anything created by a
-    /// current kimün, deliberately *not* the workspace's name: a name is a
-    /// label the user owns and can change, and letting it reach a filename is
-    /// what forced a rename to move an open SQLite database — which Windows
-    /// refuses while any handle is on it.
+    /// A short opaque key — twelve hex characters, minted at creation — for
+    /// anything a current kimün made, deliberately *not* the workspace's name:
+    /// a name is a label the user owns and can change, and letting it reach a
+    /// filename is what forced a rename to move an open SQLite database, which
+    /// Windows refuses while any handle is on it.
     ///
     /// `None` means "my name", and exists only for configs written before this
     /// field did. Those workspaces keep resolving to `work.kimuncache` exactly
     /// as they always have, so upgrading costs no migration and no reindex;
     /// [`rename_workspace`] pins the name in before it can change.
     ///
-    /// [`fresh_file_key`]: WorkspaceConfig::fresh_file_key
     /// [`rename_workspace`]: WorkspaceConfig::rename_workspace
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_key: Option<String>,

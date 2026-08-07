@@ -488,6 +488,75 @@ async fn test_workspace_rename_leaves_the_index_and_sidecars_alone() {
     assert_eq!(after, index);
 }
 
+/// A config written before `file_key` existed keeps its index.
+///
+/// Those workspaces' files are named after the workspace, and there is no
+/// migration to rename them — a migration would have to move an open SQLite
+/// database, which is the failure this whole design removes. So the absent
+/// field has to keep meaning "my name", including across a rename, which pins
+/// it before the name can change.
+#[tokio::test]
+async fn test_a_config_without_file_keys_keeps_its_index() {
+    let config_dir = TempDir::new().unwrap();
+    let config_path = config_dir.path().join("config.toml");
+    let workspace_dir = TempDir::new().unwrap();
+    let history_dir = config_dir.path().join("history");
+    std::fs::create_dir_all(&history_dir).unwrap();
+
+    // As an older kimün wrote it: no `file_key` anywhere.
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+config_version = 6
+cache_dir = "."
+history_dir = "history"
+
+[global]
+current_workspace = "work"
+
+[workspaces.work]
+path = '{}'
+created = "2026-01-01T00:00:00Z"
+"#,
+            workspace_dir.path().display()
+        ),
+    )
+    .unwrap();
+    let legacy_index = config_dir
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("work.kimuncache");
+    std::fs::write(&legacy_index, b"pre-existing index").unwrap();
+    std::fs::write(history_dir.join("work.txt"), "/notes/a.md\n").unwrap();
+
+    let (index, history) = artifacts(&config_path, "work");
+    assert_eq!(index, legacy_index, "an absent file_key means the name");
+    assert!(history.ends_with("work.txt"));
+
+    run_cli(
+        CliCommand::Workspace {
+            subcommand: WorkspaceSubcommand::Rename {
+                old_name: "work".to_string(),
+                new_name: "job".to_string(),
+            },
+        },
+        Some(config_path.clone()),
+    )
+    .await
+    .expect("renaming a legacy workspace should succeed");
+
+    let (after_index, after_history) = artifacts(&config_path, "job");
+    assert_eq!(after_index, index, "the rename must not orphan the index");
+    assert_eq!(after_history, history);
+    assert_eq!(
+        std::fs::read(&legacy_index).unwrap(),
+        b"pre-existing index",
+        "and must not have touched it"
+    );
+}
+
 /// Renaming twice must not drift the key, or the second rename would point
 /// the workspace at a file that was never created.
 #[tokio::test]
