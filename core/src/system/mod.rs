@@ -79,6 +79,26 @@ pub enum SystemError {
         /// The occupied path.
         path: String,
     },
+    /// A file could not be renamed or deleted because something still holds it
+    /// open. Windows only — unix does neither operation on the handle.
+    ///
+    /// Separate from [`SystemError::Io`] because the OS message ("the process
+    /// cannot access the file because it is being used by another process")
+    /// never says *which* process, which leaves both the user and a bug report
+    /// with nothing to act on. `holders` is what the Restart Manager reports,
+    /// or `"unknown"` when it will not say.
+    #[error("could not {action} {path}: held open by {holders}")]
+    Locked {
+        /// What was being attempted, e.g. `"move"`.
+        action: &'static str,
+        /// The path that is held open.
+        path: String,
+        /// Processes holding it, as `"name (pid N)"`, comma-separated.
+        holders: String,
+        /// The underlying OS error.
+        #[source]
+        source: std::io::Error,
+    },
     /// A filesystem call failed.
     #[error("could not {action} {path}: {source}")]
     Io {
@@ -98,6 +118,26 @@ impl SystemError {
             action,
             path: path_to_string(path),
             source,
+        }
+    }
+
+    /// [`SystemError::Locked`] when the failure is "somebody has it open",
+    /// [`SystemError::Io`] otherwise.
+    ///
+    /// For the operations that a held handle can block — rename and delete —
+    /// so the one failure a user can actually do something about says who to
+    /// close. Naming the holders costs a Restart Manager round trip, which is
+    /// why it happens here, on the failure path, rather than on every call.
+    fn locked_or_io(action: &'static str, path: &Path, source: std::io::Error) -> Self {
+        if is_locked_for(HOST, &source) {
+            Self::Locked {
+                action,
+                path: path_to_string(path),
+                holders: describe_holders(path),
+                source,
+            }
+        } else {
+            Self::io(action, path, source)
         }
     }
 }
@@ -523,9 +563,10 @@ fn retry_while_locked<T>(
         if !is_locked_for(HOST, error) || started.elapsed() >= LOCK_RETRY_TIMEOUT {
             if is_locked_for(HOST, error) {
                 log::warn!(
-                    "gave up after {:?} waiting for another handle to release {} to {what}",
+                    "gave up after {:?} waiting to {what} {}; held by: {}",
                     started.elapsed(),
-                    path.display()
+                    path.display(),
+                    describe_holders(path)
                 );
             }
             return result;
@@ -533,6 +574,113 @@ fn retry_while_locked<T>(
         std::thread::sleep(backoff);
         backoff = (backoff * 2).min(LOCK_RETRY_MAX_BACKOFF);
     }
+}
+
+/// The processes holding `path` open, as `"name (pid)"`, joined for a log line.
+///
+/// Windows says only "the process cannot access the file because it is being
+/// used by another process" and never says which — so a user whose workspace
+/// rename fails has nothing to act on, and neither does a bug report. This is
+/// the same API the shell's "file in use" dialog uses.
+///
+/// Empty on unix, which does not block a rename on an open handle and so never
+/// asks the question.
+fn describe_holders(path: &Path) -> String {
+    let holders = holders_of(path);
+    if holders.is_empty() {
+        "unknown".to_string()
+    } else {
+        holders.join(", ")
+    }
+}
+
+/// Best-effort: any failure of the query itself yields no names rather than an
+/// error, since this only ever runs to explain a failure that already happened.
+#[cfg(not(windows))]
+fn holders_of(_path: &Path) -> Vec<String> {
+    Vec::new()
+}
+
+#[cfg(windows)]
+fn holders_of(path: &Path) -> Vec<String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{ERROR_MORE_DATA, ERROR_SUCCESS};
+    use windows_sys::Win32::System::RestartManager::{
+        RmEndSession, RmGetList, RmRegisterResources, RmStartSession, CCH_RM_SESSION_KEY,
+        RM_PROCESS_INFO,
+    };
+
+    let wide: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    let mut session: u32 = 0;
+    let mut key = [0u16; CCH_RM_SESSION_KEY as usize + 1];
+    // SAFETY: `key` is the size the API documents, and `session` is written
+    // only on success, which is the only path that goes on to use it.
+    if unsafe { RmStartSession(&mut session, 0, key.as_mut_ptr()) } != ERROR_SUCCESS {
+        return Vec::new();
+    }
+
+    let mut names = Vec::new();
+    // SAFETY: one NUL-terminated path, counted as one; the pointer outlives
+    // the call. The session is ended below on every path.
+    let registered = unsafe {
+        RmRegisterResources(
+            session,
+            1,
+            &wide.as_ptr(),
+            0,
+            std::ptr::null(),
+            0,
+            std::ptr::null(),
+        )
+    };
+    if registered == ERROR_SUCCESS {
+        // Ask for the count first: `RmGetList` reports how many entries it
+        // wanted via `needed` when the buffer is too small.
+        let mut needed: u32 = 0;
+        let mut count: u32 = 0;
+        let mut reason: u32 = 0;
+        // SAFETY: a zero-length buffer is the documented way to size the call.
+        let sized = unsafe {
+            RmGetList(
+                session,
+                &mut needed,
+                &mut count,
+                std::ptr::null_mut(),
+                &mut reason,
+            )
+        };
+        if (sized == ERROR_MORE_DATA || sized == ERROR_SUCCESS) && needed > 0 {
+            let mut infos: Vec<RM_PROCESS_INFO> =
+                vec![unsafe { std::mem::zeroed() }; needed as usize];
+            count = needed;
+            // SAFETY: `infos` holds `count` entries, which is what is passed.
+            let got = unsafe {
+                RmGetList(
+                    session,
+                    &mut needed,
+                    &mut count,
+                    infos.as_mut_ptr(),
+                    &mut reason,
+                )
+            };
+            if got == ERROR_SUCCESS {
+                for info in infos.iter().take(count as usize) {
+                    let name = String::from_utf16_lossy(&info.strAppName);
+                    let name = name.trim_end_matches('\0');
+                    names.push(format!("{name} (pid {})", info.Process.dwProcessId));
+                }
+            }
+        }
+    }
+
+    // SAFETY: `session` came from a successful `RmStartSession`.
+    unsafe { RmEndSession(session) };
+    names
 }
 
 /// Moves a file, including across volumes.
@@ -552,7 +700,7 @@ pub fn move_file(from: &Path, to: &Path) -> Result<(), SystemError> {
             remove_file(from)?;
             Ok(())
         }
-        Err(e) => Err(SystemError::io("move", from, e)),
+        Err(e) => Err(SystemError::locked_or_io("move", from, e)),
     }
 }
 
@@ -622,7 +770,7 @@ pub fn replace_atomically(path: &Path, contents: &[u8]) -> Result<(), SystemErro
     // rewrites on every preference change, and a scanner holding it briefly
     // must not surface as "could not save your settings".
     retry_while_locked("replace", path, || std::fs::rename(&tmp, path))
-        .map_err(|e| SystemError::io("replace", path, e))?;
+        .map_err(|e| SystemError::locked_or_io("replace", path, e))?;
     sync_dir(parent.unwrap_or(Path::new(".")));
     Ok(())
 }
@@ -659,7 +807,7 @@ pub fn remove_file(path: &Path) -> Result<(), SystemError> {
     match retry_while_locked("remove", path, || std::fs::remove_file(path)) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(SystemError::io("remove", path, e)),
+        Err(e) => Err(SystemError::locked_or_io("remove", path, e)),
     }
 }
 
