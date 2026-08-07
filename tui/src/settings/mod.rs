@@ -554,10 +554,9 @@ impl AppSettings {
             match toml::from_str::<AppSettings>(toml.as_ref()) {
                 Ok(mut setting) => {
                     setting.config_file = Some(settings_file_path.clone());
-                    let config_dir = settings_file_path
-                        .parent()
-                        .unwrap_or(std::path::Path::new("."));
-                    setting.resolve_paths(config_dir);
+                    // Resolve ~ and relative paths against the config file's
+                    // directory (see `config_base_dir` for why it is canonicalized).
+                    setting.resolve_paths(&Self::config_base_dir(&settings_file_path));
                     if config_migration::ConfigMigration::run(&mut setting)? {
                         setting.save_to_disk()?;
                     }
@@ -599,9 +598,9 @@ impl AppSettings {
             Ok(mut setting) => {
                 setting.config_file = Some(path.clone());
 
-                // Resolve ~ and relative paths against the config file's directory.
-                let config_dir = path.parent().unwrap_or(std::path::Path::new("."));
-                setting.resolve_paths(config_dir);
+                // Resolve ~ and relative paths against the config file's
+                // directory (see `config_base_dir` for why it is canonicalized).
+                setting.resolve_paths(&Self::config_base_dir(&path));
 
                 // Run config migrations (e.g. Phase 1 → Phase 2 workspace_dir).
                 if config_migration::ConfigMigration::run(&mut setting)? {
@@ -728,6 +727,31 @@ impl AppSettings {
         }
         self.cache_dir_resolved = Some(Self::expand_path(&self.cache_dir, base));
         self.history_dir_resolved = Some(Self::expand_path(&self.history_dir, base));
+    }
+
+    /// The directory a config file's relative paths resolve against, in the
+    /// canonical form [`Self::resolve_paths`] expects as its `base`.
+    ///
+    /// Canonicalized up front (the directory exists — we only ever ask this of
+    /// a config file we just read): `expand_path` canonicalizes a relative
+    /// path's *result* only when that exact target already exists on disk (e.g.
+    /// `cache_dir = "."`), so an as-yet-uncreated one (e.g. `history_dir`
+    /// before its first write) would otherwise resolve against this
+    /// directory's raw form and silently disagree with the paths resolved once
+    /// the target does exist (`/var/...` vs macOS's real `/private/var/...`).
+    ///
+    /// [`Path::parent`] yields `Some("")` — not `None` — for a bare filename
+    /// (`--config kimun.toml`), so the empty parent falls back to `.` next to
+    /// the no-parent case; without that, `base` would be empty and relative
+    /// settings paths would never become absolute.
+    ///
+    /// [`Path::parent`]: std::path::Path::parent
+    fn config_base_dir(config_file: &std::path::Path) -> PathBuf {
+        let dir = config_file
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(std::path::Path::new("."));
+        dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf())
     }
 
     /// Expand `~` to the home directory and resolve relative paths against `base`.
@@ -1188,24 +1212,39 @@ mod backend_tests {
     #[test]
     #[cfg(unix)]
     fn expand_path_tilde_uses_home_unix() {
-        // `expand_path` canonicalizes when the target exists and returns the
-        // plain join when it does not, so which form comes back depends on
-        // whether this machine happens to have `~/Documents/notes` — and, if it
-        // does, on whether any component of `$HOME` is a symlink. macOS reaches
-        // both branches routinely (`/var`, `/tmp` and `/etc` are symlinks into
-        // `/private`, and relocated or network homes are ordinary), where Linux
-        // usually reaches neither. Accept either rooting rather than pin the one
-        // this machine happens to produce.
+        // `expand_path` canonicalizes when the target exists. Testing that
+        // against a real user's `~/Documents/notes` is unreliable: besides
+        // `$HOME` symlinks, a case-insensitive filesystem (the macOS default)
+        // will happily match an already-existing differently-cased directory
+        // (e.g. `~/Documents/Notes`) and canonicalize returns that casing, not
+        // the literal target string. So we create our own unique, disposable
+        // directory to exercise the exists-and-gets-canonicalized branch
+        // deterministically.
+        //
+        // It has to live under the *real* `$HOME`, not a tempdir: `~` expands
+        // via `config_dir::get_home_dir`, which reads the `HOME` env var, and
+        // env vars are process-global — pointing `HOME` at a tempdir would
+        // race every other test in this binary. Hence the PID-keyed name and
+        // the drop guard (which a SIGKILL would still outlive, leaving one
+        // stray `kimun-test-tilde-expand-*` directory behind).
         let home = PathBuf::from(std::env::var("HOME").expect("HOME must be set on Unix"));
-        let canonical_home = home.canonicalize().unwrap_or_else(|_| home.clone());
+        let unique = format!("kimun-test-tilde-expand-{}", std::process::id());
+        let target_dir = home.join(&unique).join("notes");
+        std::fs::create_dir_all(&target_dir).unwrap();
+
+        struct RemoveOnDrop(PathBuf);
+        impl Drop for RemoveOnDrop {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = RemoveOnDrop(home.join(&unique));
+
         let base = PathBuf::from("/irrelevant");
-        let result = AppSettings::expand_path(std::path::Path::new("~/Documents/notes"), &base);
-        assert!(result.is_absolute());
-        assert!(
-            result.starts_with(&home) || result.starts_with(&canonical_home),
-            "expected path under HOME={home:?} (canonically {canonical_home:?}), got {result:?}"
-        );
-        assert!(result.to_string_lossy().contains("Documents/notes"));
+        let result =
+            AppSettings::expand_path(std::path::Path::new(&format!("~/{unique}/notes")), &base);
+
+        assert_eq!(result, target_dir.canonicalize().unwrap());
     }
 
     /// The expansion itself, with the canonicalization taken out of the picture:

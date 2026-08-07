@@ -579,9 +579,9 @@ fn regenerate_rewinds_a_done_turn_keeping_sources() {
 - Create: `tui/src/ask/save.rs`
 
 **Interfaces:**
-- Core produces: `pub fn note_name_from_title(title: &str) -> String` — lowercase, disallowed chars (via existing `is_disallowed_char`) and whitespace → `-`, runs collapsed, trimmed of `-`, truncated to 60 chars on a char boundary, fallback `"answer"` when empty. Pure name, **no extension, no separators** — path assembly stays in `VaultPath`.
+- Core produces: `pub fn note_name_from_title(title: &str) -> String` — lowercase, disallowed chars (via existing `is_disallowed_char`) and whitespace → `-`, runs collapsed, trimmed of `-`, truncated to 30 chars on a char boundary, fallback `"answer"` when empty. Pure name, **no extension, no separators** — path assembly stays in `VaultPath`. (The cut was 60 as first written; shortened to 30 because a full question slugified reads as a wall of dashes in listings — a readability budget, not a filesystem one.)
 - TUI produces (`ask::save`):
-  - `pub fn suggested_path(question: &str) -> VaultPath` = `VaultPath::new("ask").append(&VaultPath::new(note_name_from_title(question)))` (extension is applied by the existing create-note flow, same as every other new note).
+  - `pub fn suggested_path(question: &str) -> VaultPath` = `VaultPath::new("ask").append(&VaultPath::note_path_from(note_name_from_title(question)))`. It must be `note_path_from`, not `VaultPath::new`: the create-note flow does **not** apply the extension, and a path that isn't a note path is rejected outright, so `VaultPath::new` here made every save fail.
   - `pub fn note_content(turn: &Turn) -> String` — `# {question}`, blank line, `citations::link_sources(answer, names)` where `names[i] = turn.sources[i].path.get_clean_name()`, then a `## Sources` footer listing each distinct `[[name]]`.
 
 - [ ] **Step 1: Failing tests**
@@ -593,7 +593,7 @@ Core (`filename.rs`):
 fn note_name_from_title_slugs_and_survives_garbage() {
     assert_eq!(note_name_from_title("How do I Ship v2?"), "how-do-i-ship-v2");
     assert_eq!(note_name_from_title("///???"), "answer");
-    assert!(note_name_from_title(&"x".repeat(200)).len() <= 60);
+    assert!(note_name_from_title(&"x".repeat(200)).len() <= 30);
 }
 ```
 

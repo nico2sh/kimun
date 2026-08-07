@@ -7,11 +7,9 @@ use kimun_core::nfs::filename::note_name_from_title;
 
 use super::{Turn, citations};
 
-/// The default path offered when saving `question` as a note: `ask/<slug>`,
-/// with no extension (the create-note flow applies it, same as any other new
-/// note).
+/// The default path offered when saving `question` as a note: `ask/<slug>.md`.
 pub fn suggested_path(question: &str) -> VaultPath {
-    VaultPath::new("ask").append(&VaultPath::new(note_name_from_title(question)))
+    VaultPath::new("ask").append(&VaultPath::note_path_from(note_name_from_title(question)))
 }
 
 /// The clean source names addressed by **citation number**: `names[n - 1]` is
@@ -221,6 +219,23 @@ mod tests {
     #[test]
     fn suggested_path_nests_under_ask_and_slugs_the_question() {
         let path = suggested_path("How do I Ship v2?");
-        assert_eq!(path.to_string(), "ask/how-do-i-ship-v2");
+        assert_eq!(path.to_string(), "ask/how-do-i-ship-v2.md");
+    }
+
+    /// Regression test for a real bug: `suggested_path` used to build the
+    /// slug with `VaultPath::new` instead of `VaultPath::note_path_from`, so
+    /// it never got the `.md` extension. `ensure_note()` then rejected every
+    /// save unconditionally (see `core::nfs::create_note_exclusive`), not
+    /// just for long or punctuation-heavy questions as it first appeared.
+    #[tokio::test]
+    async fn suggested_path_can_actually_be_saved_as_a_note() {
+        use kimun_core::{NoteVault, VaultConfig};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
+        vault.validate_and_init().await.unwrap();
+
+        let path = suggested_path("David Howell (sometimes refered as David H)?");
+        vault.create_note(&path, "content").await.unwrap();
     }
 }
