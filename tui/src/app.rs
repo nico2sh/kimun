@@ -68,7 +68,7 @@ impl App {
                 (path, cache, inbox)
             };
             if let Some(workspace) = workspace_path {
-                let mut config = VaultConfig::new(&workspace);
+                let mut config = VaultConfig::new(workspace.clone());
                 if let Some(cp) = cache_path {
                     config = config.with_db_path(cp);
                 }
@@ -83,7 +83,7 @@ impl App {
                     // (e.g. cache probe error) instead of silently starting
                     // as if no workspace were configured.
                     Err(e) => {
-                        tracing::error!("could not open vault at {}: {e}", workspace.display());
+                        tracing::error!("could not open vault at {}: {e}", workspace);
                         None
                     }
                 }

@@ -3,10 +3,11 @@
 //! Atomic writes (write to .tmp then rename) avoid partial writes
 //! corrupting the file on crash mid-edit.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 use kimun_core::nfs::VaultPath;
+use kimun_core::system::{self, SystemPath};
 
 pub const LAST_PATH_HISTORY_SIZE: usize = 50;
 
@@ -39,11 +40,11 @@ pub fn load_history(path: &Path) -> Vec<VaultPath> {
 /// Push `path` to the front of the history at `file_path`. Dedups, truncates
 /// to LAST_PATH_HISTORY_SIZE, atomic write. No-op if `path` is already at the
 /// front (common case: re-opening the same note).
-pub fn push_history(file_path: &Path, path: &VaultPath) -> std::io::Result<()> {
+pub fn push_history(file_path: &SystemPath, path: &VaultPath) -> Result<(), system::SystemError> {
     // Dedup with `is_like` (ignores relative/absolute form) so a note
     // reopened via different-form paths isn't stored twice; the entry is stored
     // in whatever form it arrived, to avoid rewriting existing history files.
-    let mut existing = load_history(file_path);
+    let mut existing = load_history(file_path.as_path());
     if existing.first().is_some_and(|f| f.is_like(path)) {
         return Ok(());
     }
@@ -55,21 +56,13 @@ pub fn push_history(file_path: &Path, path: &VaultPath) -> std::io::Result<()> {
     write_atomic(file_path, &existing)
 }
 
-fn write_atomic(file_path: &Path, paths: &[VaultPath]) -> std::io::Result<()> {
-    if let Some(parent) = file_path.parent() {
-        std::fs::create_dir_all(parent)?;
+fn write_atomic(file_path: &SystemPath, paths: &[VaultPath]) -> Result<(), system::SystemError> {
+    let mut body = String::new();
+    for p in paths {
+        body.push_str(&p.to_string());
+        body.push('\n');
     }
-    let tmp = file_path.with_extension("txt.tmp");
-    let result = (|| -> std::io::Result<()> {
-        let mut f = std::fs::File::create(&tmp)?;
-        for p in paths {
-            writeln!(f, "{}", p)?;
-        }
-        f.sync_all()
-    })();
-    if let Err(e) = result {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(e);
-    }
-    std::fs::rename(&tmp, file_path)
+    // The tmp-then-rename dance itself lives in `system`: it is the same
+    // recipe every host-scoped writer needs, and getting it wrong is silent.
+    system::replace_atomically(file_path.as_path(), body.as_bytes())
 }

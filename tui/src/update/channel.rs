@@ -107,7 +107,7 @@ fn channel_from_exe_path() -> InstallChannel {
     {
         return InstallChannel::Cargo;
     }
-    if let Ok(home) = crate::settings::get_home_dir()
+    if let Ok(home) = kimun_core::system::home()
         && exe.starts_with(home.join(".cargo").join("bin"))
     {
         return InstallChannel::Cargo;

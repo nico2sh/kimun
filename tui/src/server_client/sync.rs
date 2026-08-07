@@ -372,7 +372,9 @@ mod tests {
     }
 
     async fn vault(dir: &std::path::Path) -> NoteVault {
-        let vault = NoteVault::new(VaultConfig::new(dir)).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(crate::test_support::sys(dir)))
+            .await
+            .unwrap();
         // Fill the freshly-healed index so index_ready() holds — the state the
         // drain/reconcile gates require (mirrors the app's validate_and_init).
         vault.validate_and_init().await.unwrap();
@@ -461,7 +463,9 @@ mod tests {
         // No validate_and_init: the fresh index is healed-but-empty, exactly
         // the state where a reconcile would read "no local notes" and delete
         // the whole server collection.
-        let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(crate::test_support::sys(dir.path())))
+            .await
+            .unwrap();
         assert!(!vault.index_ready());
         let transport = FakeTransport::default();
         transport

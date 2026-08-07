@@ -7,6 +7,9 @@ use kimun_notes::cli::commands::{JournalArgs, NoteSubcommand};
 use kimun_notes::cli::{CliCommand, run_cli};
 use tempfile::TempDir;
 
+mod common;
+use common::sys;
+
 /// Helper: write a minimal v3 config and initialise the vault index at the
 /// configured cache path. The `note` CLI command only calls `validate()`
 /// (not `validate_and_init()`) for speed, so tests must pre-initialise the
@@ -31,7 +34,7 @@ created = "2026-01-01T00:00:00Z"
     std::fs::write(config_path, content).unwrap();
     let cache_path = config_dir.join("default.kimuncache");
     let vault = kimun_core::NoteVault::new(
-        kimun_core::VaultConfig::new(workspace_dir).with_db_path(cache_path),
+        kimun_core::VaultConfig::new(sys(workspace_dir)).with_db_path(sys(cache_path)),
     )
     .await
     .unwrap();
@@ -135,7 +138,7 @@ quick_note_path = "/inbox"
     std::fs::write(&config_path, content).unwrap();
     let cache_path = config_dir.path().join("default.kimuncache");
     let vault = kimun_core::NoteVault::new(
-        kimun_core::VaultConfig::new(workspace_dir.path()).with_db_path(cache_path),
+        kimun_core::VaultConfig::new(sys(workspace_dir.path())).with_db_path(sys(cache_path)),
     )
     .await
     .unwrap();
@@ -183,7 +186,7 @@ quick_note_path = "/inbox"
     std::fs::write(&config_path, content).unwrap();
     let cache_path = config_dir.path().join("default.kimuncache");
     let vault = kimun_core::NoteVault::new(
-        kimun_core::VaultConfig::new(workspace_dir.path()).with_db_path(cache_path),
+        kimun_core::VaultConfig::new(sys(workspace_dir.path())).with_db_path(sys(cache_path)),
     )
     .await
     .unwrap();
@@ -591,7 +594,7 @@ async fn test_note_show_format_paths_returns_error() {
     use kimun_core::nfs::VaultPath;
     use kimun_notes::cli::output::OutputFormat;
     let dir = TempDir::new().unwrap();
-    let vault = kimun_core::NoteVault::new(kimun_core::VaultConfig::new(dir.path()))
+    let vault = kimun_core::NoteVault::new(kimun_core::VaultConfig::new(sys(dir.path())))
         .await
         .unwrap();
     vault.validate_and_init().await.unwrap();

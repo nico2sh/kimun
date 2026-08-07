@@ -199,7 +199,9 @@ mod tests {
     #[tokio::test]
     async fn dedups_by_note_keeping_first_and_preserves_order() {
         let dir = TempDir::new().unwrap();
-        let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(crate::test_support::sys(dir.path())))
+            .await
+            .unwrap();
 
         // Two chunks of "/a.md" (best first) then one of "/b.md".
         let chunks = vec![

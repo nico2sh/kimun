@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use kimun_core::{NoteVault, VaultConfig};
+use kimun_core::{NoteVault, SystemPath, VaultConfig};
 
 /// Where test vaults keep their index, instead of the default
 /// `<workspace>/kimun.sqlite`.
@@ -19,10 +19,19 @@ use kimun_core::{NoteVault, VaultConfig};
 /// the vault walk.
 pub const TEST_INDEX_FILE: &str = ".test-index.kimuncache";
 
+/// A [`SystemPath`] for a path a test has already made absolute (a `TempDir`,
+/// a host literal). Panics rather than returning a `Result`: a test handing
+/// over a relative path is a broken test, not a failure case.
+pub fn sys<P: AsRef<Path>>(path: P) -> SystemPath {
+    SystemPath::try_absolute(&path).unwrap_or_else(|e| panic!("test path must be absolute: {e}"))
+}
+
 /// [`VaultConfig`] for a test vault rooted at `dir`, indexed at
 /// [`TEST_INDEX_FILE`].
 pub fn test_vault_config(dir: &Path) -> VaultConfig {
-    VaultConfig::new(dir).with_db_path(dir.join(TEST_INDEX_FILE))
+    let root = sys(dir);
+    let index = root.join(TEST_INDEX_FILE);
+    VaultConfig::new(root).with_db_path(index)
 }
 
 /// Opens a test vault at `dir` with its database initialised.

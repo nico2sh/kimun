@@ -14,6 +14,20 @@ _Avoid_: vault (that is core's view of the opened directory), profile.
 Core's view of a **Workspace**'s directory once opened — the notes, their index, and the file operations over them (`NoteVault`). The TUI selects a workspace; core opens its directory as a vault. One workspace ↔ one vault at a time.
 _Avoid_: workspace (the config entry that points here), folder/directory (the OS path, not the opened thing).
 
+### Host paths
+
+**System path**:
+An OS path kimün has made usable on this machine: absolute, and normalized so no `.` or `..` component survives (`SystemPath`, in `kimun_core::system`). The invariant is the type's, not the caller's — a path that cannot be one is rejected where it is built rather than where it is opened, because a `.` inside a Windows verbatim path (`\\?\C:\…\.`) names a literal file that no directory creation and no SQLite open can use. Everything outside a **Vault** is addressed this way: the app directory, a workspace's root, its index cache, history and log files.
+_Avoid_: absolute path (says less than the type guarantees), **Vault path** (that is the vault-internal one).
+
+**Host**:
+Which platform's rules apply — unix or Windows — as a *value*, not only a compile-time `cfg`. Directory layout, cross-volume error codes and executable naming are computation, so both hosts' answers are checked from whichever host runs the suite. Rules that need the OS itself (`std::path` parses separators for the build target) stay behind `cfg` and are verified on that platform's CI leg.
+_Avoid_: platform (used for update target triples), OS (fine in prose, not as the type).
+
+**App directory**:
+The one directory kimün owns on a machine — `~/.config/kimun` on unix, `%USERPROFILE%\kimun` on Windows, suffixed `kimun_debug` in debug builds. Config, per-workspace index caches, history and the `logs/` subdirectory all live under it. One directory with one rule: it used to be two, and the config and log locations disagreed on macOS.
+_Avoid_: config dir (it holds more than config), data dir.
+
 ### Onboarding
 
 **Onboarding**:

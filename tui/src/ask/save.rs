@@ -232,7 +232,9 @@ mod tests {
         use kimun_core::{NoteVault, VaultConfig};
 
         let dir = tempfile::TempDir::new().unwrap();
-        let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(crate::test_support::sys(dir.path())))
+            .await
+            .unwrap();
         vault.validate_and_init().await.unwrap();
 
         let path = suggested_path("David Howell (sometimes refered as David H)?");

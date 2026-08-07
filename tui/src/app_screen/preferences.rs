@@ -190,7 +190,7 @@ impl PreferencesScreen {
             self.pending_save_after_index = true;
             let tx2 = tx.clone();
             let handle = tokio::spawn(async move {
-                let mut config = VaultConfig::new(&workspace);
+                let mut config = VaultConfig::new(workspace);
                 if let Some(path) = cache_path {
                     config = config.with_db_path(path);
                 }
@@ -372,7 +372,7 @@ impl AppScreen for PreferencesScreen {
                             drop(s);
                             let tx2 = tx.clone();
                             let handle = tokio::spawn(async move {
-                                let mut config = VaultConfig::new(&workspace);
+                                let mut config = VaultConfig::new(workspace);
                                 if let Some(path) = cache_path {
                                     config = config.with_db_path(path);
                                 }
@@ -700,7 +700,8 @@ impl AppScreen for PreferencesScreen {
                     .read()
                     .unwrap()
                     .resolve_workspace_path()
-                    .or_else(|| crate::settings::get_home_dir().ok())
+                    .or_else(|| kimun_core::system::home().ok())
+                    .map(|p| p.into_path_buf())
                     .unwrap_or_else(|| PathBuf::from("/"));
                 self.overlay = Overlay::FileBrowser(FileBrowserState::load(starting_dir));
             }
@@ -724,7 +725,7 @@ impl AppScreen for PreferencesScreen {
                 let tx2 = tx.clone();
                 let handle = tokio::spawn(async move {
                     let result = async {
-                        let mut config = VaultConfig::new(&workspace);
+                        let mut config = VaultConfig::new(workspace);
                         if let Some(path) = cache_path {
                             config = config.with_db_path(path);
                         }
