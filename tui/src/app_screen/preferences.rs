@@ -115,10 +115,10 @@ impl PreferencesScreen {
             .unwrap_or_default()
             .adapt_to_terminal();
         let active_name = theme.name.clone();
-        let vault_available = s.workspace_dir.is_some()
-            || s.workspace_config
-                .as_ref()
-                .is_some_and(|wc| wc.get_current_workspace().is_some());
+        let vault_available = s
+            .workspace_config
+            .as_ref()
+            .is_some_and(|wc| wc.get_current_workspace().is_some());
         let autosave_interval_secs = s.autosave_interval_secs;
         let editor_backend = s.editor_backend;
         let use_nerd_fonts = s.use_nerd_fonts;
@@ -185,24 +185,31 @@ impl PreferencesScreen {
                 .as_ref()
                 .map(|wc| wc.global.current_workspace.clone())
                 .filter(|n| !n.is_empty());
-            let cache_path = workspace_name.as_ref().map(|n| s.cache_path_for(n));
+            let cache_path = workspace_name.as_ref().map(|n| s.index_for(n));
             drop(s);
             self.pending_save_after_index = true;
             let tx2 = tx.clone();
             let handle = tokio::spawn(async move {
-                let mut config = VaultConfig::new(&workspace);
+                let mut config = VaultConfig::new(workspace);
                 if let Some(path) = cache_path {
-                    config = config.with_db_path(path);
+                    config = config.with_index(path);
                 }
                 let event = match NoteVault::new(config).await {
                     Err(e) => AppEvent::IndexingDone(Err(e.to_string())),
-                    Ok(vault) => match vault.recreate_index().await {
-                        Ok(r) => AppEvent::IndexingDone(Ok(r.duration)),
-                        Err(e @ VaultError::CaseConflict { .. }) => {
-                            AppEvent::VaultConflict(e.to_string())
+                    Ok(vault) => {
+                        let result = vault.recreate_index().await;
+                        // Throwaway vault with its own pool — closing it does
+                        // not touch the app's vault, and leaving it to drop
+                        // keeps a second handle on the cache file open.
+                        vault.close().await;
+                        match result {
+                            Ok(r) => AppEvent::IndexingDone(Ok(r.duration)),
+                            Err(e @ VaultError::CaseConflict { .. }) => {
+                                AppEvent::VaultConflict(e.to_string())
+                            }
+                            Err(e) => AppEvent::IndexingDone(Err(e.to_string())),
                         }
-                        Err(e) => AppEvent::IndexingDone(Err(e.to_string())),
-                    },
+                    }
                 };
                 tx2.send(event).ok();
             });
@@ -223,15 +230,7 @@ impl PreferencesScreen {
             {
                 let mut s = self.settings.write().unwrap();
                 if s.workspace_config.is_none() {
-                    if let Some(ref legacy_path) = s.workspace_dir {
-                        let wc = WorkspaceConfig::from_phase1_migration(
-                            legacy_path.clone(),
-                            s.last_paths.iter().map(|p| p.to_string()).collect(),
-                        );
-                        s.workspace_config = Some(wc);
-                    } else {
-                        s.workspace_config = Some(WorkspaceConfig::new_empty());
-                    }
+                    s.workspace_config = Some(WorkspaceConfig::new_empty());
                     s.config_version = CURRENT_CONFIG_VERSION;
                 }
                 if let Some(ref mut wc) = s.workspace_config
@@ -247,17 +246,16 @@ impl PreferencesScreen {
             // Browsing path for the selected workspace.
             {
                 let mut s = self.settings.write().unwrap();
-                s.set_workspace(&chosen);
-                // Also update the workspace entry in workspace_config.
+                // Repoints the selected entry and flags a reindex when that
+                // actually moves the vault — one call, so the two cannot
+                // disagree the way they did when the reindex flag hung off a
+                // separate legacy field.
                 if let Some(name) = self
                     .workspaces_section
                     .selected_name()
                     .map(|s| s.to_string())
-                    && let Some(ref mut wc) = s.workspace_config
-                    && let Some(entry) = wc.workspaces.get_mut(&name)
                 {
-                    entry.path = chosen;
-                    entry.resolved_path = None;
+                    s.set_workspace_path(&name, chosen);
                 }
             }
             self.workspaces_section
@@ -361,23 +359,29 @@ impl AppScreen for PreferencesScreen {
                                 .as_ref()
                                 .map(|wc| wc.global.current_workspace.clone())
                                 .filter(|n| !n.is_empty());
-                            let cache_path = workspace_name.as_ref().map(|n| s.cache_path_for(n));
+                            let cache_path = workspace_name.as_ref().map(|n| s.index_for(n));
                             drop(s);
                             let tx2 = tx.clone();
                             let handle = tokio::spawn(async move {
-                                let mut config = VaultConfig::new(&workspace);
+                                let mut config = VaultConfig::new(workspace);
                                 if let Some(path) = cache_path {
-                                    config = config.with_db_path(path);
+                                    config = config.with_index(path);
                                 }
                                 let event = match NoteVault::new(config).await {
                                     Err(e) => AppEvent::IndexingDone(Err(e.to_string())),
-                                    Ok(vault) => match vault.recreate_index().await {
-                                        Ok(r) => AppEvent::IndexingDone(Ok(r.duration)),
-                                        Err(e @ VaultError::CaseConflict { .. }) => {
-                                            AppEvent::VaultConflict(e.to_string())
+                                    Ok(vault) => {
+                                        let result = vault.recreate_index().await;
+                                        // Throwaway vault with its own pool —
+                                        // see the reindex task above.
+                                        vault.close().await;
+                                        match result {
+                                            Ok(r) => AppEvent::IndexingDone(Ok(r.duration)),
+                                            Err(e @ VaultError::CaseConflict { .. }) => {
+                                                AppEvent::VaultConflict(e.to_string())
+                                            }
+                                            Err(e) => AppEvent::IndexingDone(Err(e.to_string())),
                                         }
-                                        Err(e) => AppEvent::IndexingDone(Err(e.to_string())),
-                                    },
+                                    }
                                 };
                                 tx2.send(event).ok();
                             });
@@ -616,13 +620,15 @@ impl AppScreen for PreferencesScreen {
                                     && new_name != old_name
                                 {
                                     let mut s = self.settings.write().unwrap();
-                                    if let Some(ref mut wc) = s.workspace_config
-                                        && let Some(entry) = wc.workspaces.remove(old_name)
-                                    {
-                                        wc.workspaces.insert(new_name.clone(), entry);
-                                        if wc.global.current_workspace == old_name {
-                                            wc.global.current_workspace = new_name.clone();
-                                        }
+                                    if let Some(ref mut wc) = s.workspace_config {
+                                        // Through `rename_workspace`, never by
+                                        // re-keying the map here: it also pins
+                                        // what the index and history files are
+                                        // called, and a rename that skips that
+                                        // step points the workspace at files
+                                        // that were never created — an empty
+                                        // index and a lost history, silently.
+                                        wc.rename_workspace(old_name, new_name.clone());
                                     }
                                 }
                                 self.workspaces_section.reset_mode();
@@ -636,11 +642,39 @@ impl AppScreen for PreferencesScreen {
                                 && key.code == KeyCode::Char('y')
                             {
                                 if let Some(name) = pre_selected.as_deref() {
-                                    let mut s = self.settings.write().unwrap();
-                                    if let Some(ref mut wc) = s.workspace_config
-                                        && name != wc.global.current_workspace
-                                    {
-                                        wc.workspaces.remove(name);
+                                    // Artifacts are read while the entry still
+                                    // exists — both file names come from its
+                                    // `file_key` — and deleted after the lock
+                                    // is released, since a delete can wait on a
+                                    // handle another process holds. This path
+                                    // used to drop the entry and leave the
+                                    // index and history behind under a key
+                                    // nothing could attribute to a workspace.
+                                    let artifacts = {
+                                        let mut s = self.settings.write().unwrap();
+                                        let removable =
+                                            s.workspace_config.as_ref().is_some_and(|wc| {
+                                                name != wc.global.current_workspace
+                                                    && wc.workspaces.contains_key(name)
+                                            });
+                                        removable.then(|| {
+                                            let artifacts = s.workspace_artifacts(name);
+                                            if let Some(ref mut wc) = s.workspace_config {
+                                                wc.workspaces.remove(name);
+                                            }
+                                            artifacts
+                                        })
+                                    };
+                                    if let Some((index, history)) = artifacts {
+                                        let leftovers =
+                                            crate::settings::delete_artifacts(&index, &history);
+                                        if !leftovers.is_empty() {
+                                            tracing::warn!(
+                                                "workspace '{name}' removed, but these files \
+                                                 stayed behind:\n{}",
+                                                leftovers.join("\n")
+                                            );
+                                        }
                                     }
                                 }
                                 self.workspaces_section.reset_mode();
@@ -687,7 +721,8 @@ impl AppScreen for PreferencesScreen {
                     .read()
                     .unwrap()
                     .resolve_workspace_path()
-                    .or_else(|| crate::settings::get_home_dir().ok())
+                    .or_else(|| kimun_core::system::browse_root().ok())
+                    .map(|p| p.into_path_buf())
                     .unwrap_or_else(|| PathBuf::from("/"));
                 self.overlay = Overlay::FileBrowser(FileBrowserState::load(starting_dir));
             }
@@ -706,21 +741,21 @@ impl AppScreen for PreferencesScreen {
                     .as_ref()
                     .map(|wc| wc.global.current_workspace.clone())
                     .filter(|n| !n.is_empty());
-                let cache_path = workspace_name.as_ref().map(|n| s.cache_path_for(n));
+                let cache_path = workspace_name.as_ref().map(|n| s.index_for(n));
                 drop(s);
                 let tx2 = tx.clone();
                 let handle = tokio::spawn(async move {
                     let result = async {
-                        let mut config = VaultConfig::new(&workspace);
+                        let mut config = VaultConfig::new(workspace);
                         if let Some(path) = cache_path {
-                            config = config.with_db_path(path);
+                            config = config.with_index(path);
                         }
                         let vault = NoteVault::new(config).await.map_err(|e| e.to_string())?;
-                        vault
-                            .index_notes(NotesValidation::Fast)
-                            .await
-                            .map_err(|e| e.to_string())
-                            .map(|r| r.duration)
+                        let result = vault.index_notes(NotesValidation::Fast).await;
+                        // Throwaway vault with its own pool — see the reindex
+                        // task above.
+                        vault.close().await;
+                        result.map_err(|e| e.to_string()).map(|r| r.duration)
                     }
                     .await;
                     tx2.send(AppEvent::IndexingDone(result)).ok();
@@ -1123,6 +1158,24 @@ mod settings_screen_tests {
         Arc::new(RwLock::new(AppSettings::default()))
     }
 
+    /// A host-absolute workspace path from a `/`-separated literal.
+    ///
+    /// `do_save` compares workspaces through `resolve_workspace_path`, which
+    /// drops anything `SystemPath` cannot make absolute — and `/original/path`
+    /// carries no drive prefix, so on Windows *both* sides resolve to `None`,
+    /// the save sees no change, and the test asserts on a branch it never
+    /// entered.
+    fn abs(unix_style: &str) -> PathBuf {
+        if cfg!(windows) {
+            PathBuf::from(format!(
+                "C:\\{}",
+                unix_style.trim_start_matches('/').replace('/', "\\")
+            ))
+        } else {
+            PathBuf::from(unix_style)
+        }
+    }
+
     fn make_screen() -> PreferencesScreen {
         PreferencesScreen::new(shared_defaults())
     }
@@ -1189,14 +1242,17 @@ mod settings_screen_tests {
     async fn confirm_save_vault_changed_sets_pending_and_shows_progress() {
         let (tx, _rx) = unbounded_channel();
         let mut settings = AppSettings::default();
-        settings.set_workspace(&PathBuf::from("/original/path"));
+        let mut wc = crate::settings::workspace_config::WorkspaceConfig::new_empty();
+        wc.add_workspace("main".to_string(), abs("/original/path"))
+            .unwrap();
+        settings.workspace_config = Some(wc);
         let shared = Arc::new(RwLock::new(settings));
         let mut screen = PreferencesScreen::new(shared);
         screen
             .settings
             .write()
             .unwrap()
-            .set_workspace(&PathBuf::from("/new/path"));
+            .set_workspace_path("main", abs("/new/path"));
         screen.overlay = Overlay::ConfirmSave {
             focused_button: SaveButton::Save,
         };

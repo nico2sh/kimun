@@ -4,20 +4,18 @@
 // These tests verify that --format json produces valid, well-structured JSON.
 
 use kimun_core::nfs::VaultPath;
-use kimun_core::{NoteVault, VaultConfig};
 use kimun_notes::cli::output::OutputFormat;
 use kimun_notes::cli::{CliCommand, run_cli};
 use tempfile::TempDir;
 
-/// Create a temporary vault with test notes indexed.
-async fn setup_json_test_vault(dir: &TempDir) -> NoteVault {
-    let vault = NoteVault::new(VaultConfig::new(dir.path()))
-        .await
-        .expect("failed to create vault");
-    vault
-        .validate_and_init()
-        .await
-        .expect("failed to init vault");
+mod common;
+use common::open_test_vault;
+
+/// Create a temporary vault with test notes indexed, then close it — every
+/// caller re-opens the vault or drives it through the CLI (see
+/// `common::open_test_vault`).
+async fn setup_json_test_vault(dir: &TempDir) {
+    let vault = open_test_vault(dir.path()).await;
 
     vault
         .create_note(
@@ -47,13 +45,25 @@ async fn setup_json_test_vault(dir: &TempDir) -> NoteVault {
         .recreate_index()
         .await
         .expect("failed to recreate index");
-    vault
+    vault.close().await;
 }
 
-/// Write a minimal config file pointing workspace at the given path.
+/// A config at the current version with a single workspace.
+///
+/// `cache_dir`/`history_dir` are left at their defaults, which resolve against
+/// the config file's own directory — so a test writing this into a `TempDir`
+/// keeps its index and history there rather than in the real installation.
 fn write_config(config_path: &std::path::Path, workspace: &std::path::Path) {
     let toml = format!(
-        "workspace_dir = {:?}\n",
+        r#"config_version = 6
+
+[global]
+current_workspace = "default"
+
+[workspaces.default]
+path = {:?}
+created = "2024-01-15T10:30:00Z"
+"#,
         workspace.to_string_lossy().as_ref()
     );
     std::fs::write(config_path, toml).expect("failed to write config file");
@@ -73,10 +83,7 @@ async fn test_search_json_output_is_valid() {
     write_config(&config_path, workspace_dir.path());
 
     // Capture stdout by using the vault directly
-    let vault = NoteVault::new(VaultConfig::new(workspace_dir.path()))
-        .await
-        .unwrap();
-    vault.validate_and_init().await.unwrap();
+    let vault = open_test_vault(workspace_dir.path()).await;
 
     let results = vault.search_notes("rust").await.unwrap();
 
@@ -133,6 +140,7 @@ async fn test_search_json_output_is_valid() {
         note["metadata"]["headers"].is_array(),
         "metadata should have headers"
     );
+    vault.close().await;
 }
 
 // ---------------------------------------------------------------------------
@@ -148,10 +156,7 @@ async fn test_notes_json_output_is_valid() {
     setup_json_test_vault(&workspace_dir).await;
     write_config(&config_path, workspace_dir.path());
 
-    let vault = NoteVault::new(VaultConfig::new(workspace_dir.path()))
-        .await
-        .unwrap();
-    vault.validate_and_init().await.unwrap();
+    let vault = open_test_vault(workspace_dir.path()).await;
 
     let results = vault.get_all_notes().await.unwrap();
     let json_str = kimun_notes::cli::json_output::format_notes_as_json(
@@ -183,6 +188,7 @@ async fn test_notes_json_output_is_valid() {
             note["path"]
         );
     }
+    vault.close().await;
 }
 
 // ---------------------------------------------------------------------------
@@ -198,10 +204,7 @@ async fn test_search_json_metadata_contains_tags_and_links() {
     setup_json_test_vault(&workspace_dir).await;
     write_config(&config_path, workspace_dir.path());
 
-    let vault = NoteVault::new(VaultConfig::new(workspace_dir.path()))
-        .await
-        .unwrap();
-    vault.validate_and_init().await.unwrap();
+    let vault = open_test_vault(workspace_dir.path()).await;
 
     let results = vault.search_notes("rust").await.unwrap();
 
@@ -247,6 +250,7 @@ async fn test_search_json_metadata_contains_tags_and_links() {
         "should extract wiki links from content; found: {:?}",
         links
     );
+    vault.close().await;
 }
 
 // ---------------------------------------------------------------------------
@@ -262,10 +266,7 @@ async fn test_notes_json_journal_date_field_present() {
     setup_json_test_vault(&workspace_dir).await;
     write_config(&config_path, workspace_dir.path());
 
-    let vault = NoteVault::new(VaultConfig::new(workspace_dir.path()))
-        .await
-        .unwrap();
-    vault.validate_and_init().await.unwrap();
+    let vault = open_test_vault(workspace_dir.path()).await;
 
     // Create a journal note
     let journal_path = VaultPath::note_path_from("journal/2024-01-15");
@@ -308,6 +309,7 @@ async fn test_notes_json_journal_date_field_present() {
         note["journal_date"]
     );
     assert_eq!(note["journal_date"], "2024-01-15");
+    vault.close().await;
 }
 
 // ---------------------------------------------------------------------------
@@ -320,10 +322,7 @@ async fn test_notes_json_created_field_present() {
 
     setup_json_test_vault(&workspace_dir).await;
 
-    let vault = NoteVault::new(VaultConfig::new(workspace_dir.path()))
-        .await
-        .unwrap();
-    vault.validate_and_init().await.unwrap();
+    let vault = open_test_vault(workspace_dir.path()).await;
 
     let results = vault.get_all_notes().await.unwrap();
 
@@ -344,6 +343,7 @@ async fn test_notes_json_created_field_present() {
             note["path"]
         );
     }
+    vault.close().await;
 }
 
 // ---------------------------------------------------------------------------

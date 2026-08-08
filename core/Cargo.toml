@@ -41,6 +41,16 @@ futures-util = "0.3"
 ## Async stuff
 tokio = { workspace = true }
 
+# Restart Manager, to name the process holding a file kimün cannot rename or
+# delete. Windows refuses those operations while any handle is open and its
+# error says only "another process" — this is the API the shell's "file in
+# use" dialog uses to turn that into a name the user can act on.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_System_RestartManager",
+] }
+
 [dev-dependencies]
 tempfile = "3.27"
 serde_json = "1.0"

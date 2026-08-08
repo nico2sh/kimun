@@ -5,30 +5,47 @@
 // tool names and that `prompts/list` returns all 6 expected prompt names.
 
 use std::io::Write;
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 use tempfile::TempDir;
 
-/// Locate the `kimun` binary relative to the test binary's directory.
-fn kimun_bin() -> std::path::PathBuf {
-    let mut p = std::env::current_exe().unwrap();
-    eprintln!("test binary: {:?}", p);
-    p.pop(); // remove test binary name
-    if p.ends_with("deps") {
-        p.pop();
-    }
-    let bin = p.join("kimun");
-    eprintln!("kimun binary path: {:?}", bin);
-    bin
+/// The `kimun` binary under test.
+///
+/// Cargo sets `CARGO_BIN_EXE_<name>` for integration tests and guarantees the
+/// binary is built before the test runs, so there is nothing to build here and
+/// nothing to locate: no walking up from `current_exe`, and no `EXE_SUFFIX`
+/// handling, since the path Cargo hands over already names `kimun.exe` on
+/// Windows.
+///
+/// These two tests used to shell out to `cargo build` in their own bodies.
+/// That cost ~110s each on a Windows CI runner and starved every test running
+/// beside them — which is how a `workspace rename` elsewhere in the suite came
+/// to lose a 9-second race against a file lock, and how both of these timed
+/// out against their own 15s deadline.
+fn kimun_bin() -> &'static Path {
+    Path::new(env!("CARGO_BIN_EXE_kimun"))
 }
 
-/// Write a minimal config file that points the workspace at `workspace`.
+/// A config at the current version that points the workspace at `workspace`.
+///
+/// `cache_dir`/`history_dir` are left at their defaults, which resolve against
+/// the config file's own directory — so this keeps the index and history in
+/// `dir` rather than in the real installation.
 fn write_config(dir: &std::path::Path, workspace: &std::path::Path) -> std::path::PathBuf {
     let config_path = dir.join("config.toml");
     std::fs::write(
         &config_path,
         format!(
-            "workspace_dir = {:?}\n",
+            r#"config_version = 6
+
+[global]
+current_workspace = "default"
+
+[workspaces.default]
+path = {:?}
+created = "2024-01-15T10:30:00Z"
+"#,
             workspace.to_string_lossy().as_ref()
         ),
     )
@@ -43,14 +60,6 @@ const TOOLS_LIST_MSG: &str = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","p
 
 #[test]
 fn mcp_smoke_tools_list() {
-    // Build the binary first so the path returned by kimun_bin() exists.
-    let build_status = Command::new("cargo")
-        .args(["build", "--package", "kimun-notes"])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .status()
-        .expect("failed to run cargo build");
-    assert!(build_status.success(), "cargo build failed");
-
     let config_dir = TempDir::new().unwrap();
     let workspace_dir = TempDir::new().unwrap();
     let config_path = write_config(config_dir.path(), workspace_dir.path());
@@ -58,7 +67,7 @@ fn mcp_smoke_tools_list() {
     let bin = kimun_bin();
     assert!(bin.exists(), "kimun binary not found at {:?}", bin);
 
-    let mut child = Command::new(&bin)
+    let mut child = Command::new(bin)
         .args(["--config", config_path.to_str().unwrap(), "mcp"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -137,14 +146,6 @@ const PROMPTS_LIST_MSG: &str = r#"{"jsonrpc":"2.0","id":3,"method":"prompts/list
 
 #[test]
 fn mcp_smoke_prompts_list() {
-    // Build the binary first
-    let build_status = Command::new("cargo")
-        .args(["build", "--package", "kimun-notes"])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .status()
-        .expect("failed to run cargo build");
-    assert!(build_status.success(), "cargo build failed");
-
     let config_dir = TempDir::new().unwrap();
     let workspace_dir = TempDir::new().unwrap();
     let config_path = write_config(config_dir.path(), workspace_dir.path());

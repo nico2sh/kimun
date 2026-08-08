@@ -1,0 +1,79 @@
+// tui/tests/common/mod.rs
+//
+// Helpers shared by the integration tests. Every test binary compiles this
+// module separately and uses a different subset of it, hence the blanket
+// dead-code allow.
+#![allow(dead_code)]
+
+use std::path::{Path, PathBuf};
+
+use kimun_core::{IndexFile, NoteVault, SystemPath, VaultConfig};
+
+/// The workspace name test vaults index under, instead of the default
+/// `<workspace>/kimun.sqlite`.
+///
+/// Both about not colliding with the code under test: `kimun.sqlite` is the
+/// name the vault-local index has always had, so a test vault using it would
+/// share a file with any code path that reaches for the default. The leading
+/// dot also keeps the file out of the vault walk.
+pub const TEST_INDEX_NAME: &str = ".test-index";
+
+/// A [`SystemPath`] for a path a test has already made absolute (a `TempDir`,
+/// a host literal). Panics rather than returning a `Result`: a test handing
+/// over a relative path is a broken test, not a failure case.
+pub fn sys<P: AsRef<Path>>(path: P) -> SystemPath {
+    SystemPath::try_absolute(&path).unwrap_or_else(|e| panic!("test path must be absolute: {e}"))
+}
+
+/// [`VaultConfig`] for a test vault rooted at `dir`, indexed under
+/// [`TEST_INDEX_NAME`].
+pub fn test_vault_config(dir: &Path) -> VaultConfig {
+    let root = sys(dir);
+    let index = IndexFile::in_dir(&root, TEST_INDEX_NAME);
+    VaultConfig::new(root).with_index(index)
+}
+
+/// Opens a test vault at `dir` with its database initialised.
+///
+/// Close it (`vault.close().await`) before the [`TempDir`] drops. The pool
+/// holds the index file open — plus its `-wal`/`-shm` sidecars — and dropping
+/// a pool only *schedules* the close; Windows then cannot `remove_dir_all` the
+/// directory, an error `tempfile` swallows, so the leaked temp directory is
+/// silent.
+///
+/// [`TempDir`]: tempfile::TempDir
+pub async fn open_test_vault(dir: &Path) -> NoteVault {
+    let vault = NoteVault::new(test_vault_config(dir))
+        .await
+        .expect("failed to create vault");
+    vault
+        .validate_and_init()
+        .await
+        .expect("failed to init vault");
+    vault
+}
+
+/// Builds a genuinely absolute path for the host from `/`-separated
+/// components.
+///
+/// A literal like `"/nonexistent/path"` is absolute on Unix but merely
+/// *rooted* on Windows, where [`Path::is_absolute`] also wants a prefix
+/// (`C:\`). Settings treat a rooted-but-prefixless path as relative and rebase
+/// it onto the config directory, so a test written with the literal stops
+/// testing what its name says.
+///
+/// [`Path::is_absolute`]: std::path::Path::is_absolute
+pub fn absolute(unix_style: &str) -> PathBuf {
+    let trimmed = unix_style.trim_start_matches('/');
+    if cfg!(windows) {
+        PathBuf::from(format!("C:\\{}", trimmed.replace('/', "\\")))
+    } else {
+        PathBuf::from(format!("/{trimmed}"))
+    }
+}
+
+/// [`absolute`] as the contents of a TOML string literal — Windows separators
+/// have to survive TOML's own escaping.
+pub fn absolute_toml(unix_style: &str) -> String {
+    absolute(unix_style).to_string_lossy().replace('\\', "\\\\")
+}

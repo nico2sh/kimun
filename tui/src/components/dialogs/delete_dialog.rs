@@ -190,9 +190,11 @@ mod tests {
         std::fs::create_dir_all(&tmp).unwrap();
 
         let vault = Arc::new(
-            NoteVault::new(VaultConfig::new(PathBuf::from(&tmp)))
-                .await
-                .expect("vault creation failed"),
+            NoteVault::new(VaultConfig::new(crate::test_support::sys(PathBuf::from(
+                &tmp,
+            ))))
+            .await
+            .expect("vault creation failed"),
         );
         let (_tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
         let dialog = DeleteConfirmDialog::new(VaultPath::root(), vault);
@@ -226,7 +228,8 @@ mod tests {
             std::fs::create_dir_all(&tmp).unwrap();
 
             // Attempt to open vault; if it fails (no DB), skip gracefully.
-            let vault_result = NoteVault::new(VaultConfig::new(tmp)).await;
+            let vault_result =
+                NoteVault::new(VaultConfig::new(crate::test_support::sys(tmp))).await;
             let Ok(vault) = vault_result else {
                 // No vault available in CI — skip.
                 return;

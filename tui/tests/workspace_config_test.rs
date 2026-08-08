@@ -26,6 +26,7 @@ fn workspace_config_serializes_to_toml() {
                 quick_note_path: None,
                 inbox_path: None,
                 resolved_path: None,
+                file_key: None,
             },
         )]),
     };
@@ -51,6 +52,7 @@ fn workspace_serialization_order_is_deterministic() {
         quick_note_path: None,
         inbox_path: None,
         resolved_path: None,
+        file_key: None,
     };
     let make = || WorkspaceConfig {
         global: GlobalConfig {
@@ -229,8 +231,8 @@ theme = "gruvbox_dark"
     .unwrap();
 
     let settings = kimun_notes::settings::AppSettings::load_from_file(cfg_path.clone()).unwrap();
-    let resolved_cache = settings.cache_dir_resolved().unwrap();
-    let resolved_hist = settings.history_dir_resolved().unwrap();
+    let resolved_cache = settings.cache_dir_resolved().as_path();
+    let resolved_hist = settings.history_dir_resolved().as_path();
     assert_eq!(resolved_cache, tmp.path().canonicalize().unwrap());
     assert_eq!(
         resolved_hist,
@@ -248,7 +250,7 @@ fn cache_dir_supports_absolute_path() {
         format!(
             r#"
 config_version = 3
-cache_dir = "{}"
+cache_dir = '{}'
 history_dir = "history"
 theme = "gruvbox_dark"
 "#,
@@ -259,7 +261,7 @@ theme = "gruvbox_dark"
 
     let settings = kimun_notes::settings::AppSettings::load_from_file(cfg_path.clone()).unwrap();
     assert_eq!(
-        settings.cache_dir_resolved().unwrap(),
+        settings.cache_dir_resolved().as_path(),
         abs_cache.path().canonicalize().unwrap()
     );
 }
@@ -279,7 +281,7 @@ history_dir = "history"
 theme = "gruvbox_dark"
 
 [workspaces.notes]
-path = "{}"
+path = '{}'
 last_paths = []
 created = "2026-01-01T00:00:00Z"
 
@@ -314,7 +316,7 @@ current_workspace = "notes"
 }
 
 #[test]
-fn cache_path_for_uses_workspace_name_and_kimuncache_extension() {
+fn index_for_sits_in_the_cache_dir_under_the_workspace_name() {
     let tmp = tempfile::TempDir::new().unwrap();
     let cfg_path = tmp.path().join("config.toml");
     std::fs::write(
@@ -329,17 +331,17 @@ theme = "gruvbox_dark"
     .unwrap();
 
     let settings = kimun_notes::settings::AppSettings::load_from_file(cfg_path.clone()).unwrap();
-    let cache = settings.cache_path_for("myvault");
+    let index = settings.index_for("myvault");
     assert_eq!(
-        cache,
+        index.path().as_path(),
         tmp.path()
             .canonicalize()
             .unwrap()
             .join("myvault.kimuncache")
     );
-    let hist = settings.history_path_for("myvault");
+    let hist = settings.history_for("myvault");
     assert_eq!(
-        hist,
+        hist.path().as_path(),
         tmp.path()
             .canonicalize()
             .unwrap()

@@ -80,7 +80,11 @@ fn channel_from_marker(config_dir: &Path) -> Option<InstallChannel> {
 }
 
 fn channel_from_exe_path() -> InstallChannel {
-    let exe = match env::current_exe().and_then(|p| p.canonicalize()) {
+    let exe = match env::current_exe().map_err(|e| e.to_string()).and_then(|p| {
+        kimun_core::SystemPath::canonical(&p)
+            .map(|p| p.into_path_buf())
+            .map_err(|e| e.to_string())
+    }) {
         Ok(p) => p,
         // No idea where we live — do not risk touching a managed binary.
         Err(_) => return InstallChannel::Unknown,
@@ -107,7 +111,7 @@ fn channel_from_exe_path() -> InstallChannel {
     {
         return InstallChannel::Cargo;
     }
-    if let Ok(home) = crate::settings::get_home_dir()
+    if let Ok(home) = kimun_core::system::home()
         && exe.starts_with(home.join(".cargo").join("bin"))
     {
         return InstallChannel::Cargo;
@@ -131,7 +135,7 @@ fn dir_is_writable(dir: &Path) -> bool {
     let probe = dir.join(format!(".kimun-write-probe-{}", std::process::id()));
     match std::fs::File::create(&probe) {
         Ok(_) => {
-            let _ = std::fs::remove_file(&probe);
+            let _ = kimun_core::system::remove_file(&probe);
             true
         }
         Err(_) => false,

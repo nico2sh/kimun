@@ -14,6 +14,8 @@ use crate::nfs::VaultPath;
 /// URL classification. The presentation layer uses these to drive WYSIWYG
 /// behaviour on text that is *being edited*; whole-note extraction (title,
 /// chunks, links) goes through [`NoteDetails`] instead.
+pub(crate) mod diacritics;
+
 pub mod scan {
     pub use super::content_extractor::{
         heading_section_range, is_inside_code_link_or_frontmatter, is_inside_exclusion_zone,

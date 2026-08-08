@@ -14,6 +14,24 @@ _Avoid_: vault (that is core's view of the opened directory), profile.
 Core's view of a **Workspace**'s directory once opened — the notes, their index, and the file operations over them (`NoteVault`). The TUI selects a workspace; core opens its directory as a vault. One workspace ↔ one vault at a time.
 _Avoid_: workspace (the config entry that points here), folder/directory (the OS path, not the opened thing).
 
+**History file**:
+A **Workspace**'s list of recently opened notes, newest first, one **Vault path** per line (`HistoryFile`). The other per-workspace artifact beside the **Index file**, and deliberately shaped the same way — the type owns its own naming, and renaming or removing a workspace goes through it, so the two cannot drift apart. Unlike the index it lives in the TUI: core has no notion of what you looked at last. Non-critical by design — a missing or truncated file costs an ordering, never a note — so reads never fail and writes are atomic.
+_Avoid_: recent files, MRU, last_paths (the superseded v2 config field it was migrated out of).
+
+### Host paths
+
+**System path**:
+An OS path kimün has made usable on this machine: absolute, and normalized so no `.` or `..` component survives (`SystemPath`, in `kimun_core::system`). The invariant is the type's, not the caller's — a path that cannot be one is rejected where it is built rather than where it is opened, because a `.` inside a Windows verbatim path (`\\?\C:\…\.`) names a literal file that no directory creation and no SQLite open can use. Everything outside a note is addressed this way: the app directory, a **Vault**'s own root, its **Index file**, history and log files. Inside a vault, notes are addressed by **Vault path** instead — that split is what separates core's `nfs` module (vault-scoped) from its `system` module (host-scoped). The dependency runs one way: `nfs` takes a **System path** for the vault root it works inside, and `system` knows nothing of vaults.
+_Avoid_: absolute path (says less than the type guarantees), **Vault path** (that is the vault-internal one).
+
+**Host**:
+Which platform's rules apply — unix or Windows — as a *value*, not only a compile-time `cfg`. Directory layout, cross-volume error codes and executable naming are computation, so both hosts' answers are checked from whichever host runs the suite. Rules that need the OS itself (`std::path` parses separators for the build target) stay behind `cfg` and are verified on that platform's CI leg.
+_Avoid_: platform (used for update target triples), OS (fine in prose, not as the type).
+
+**App directory**:
+The one directory kimün owns on a machine — `~/.config/kimun` on unix, `%USERPROFILE%\kimun` on Windows, suffixed `kimun_debug` in debug builds. Config, per-workspace index caches, history and the `logs/` subdirectory all live under it. One directory with one rule: it used to be two, and the config and log locations disagreed on macOS.
+_Avoid_: config dir (it holds more than config), data dir.
+
 ### Onboarding
 
 **Onboarding**:
@@ -280,6 +298,10 @@ _Avoid_: exported answer (it is not an export format, it is a note), answer note
 **NoteIndex**:
 The one core module owning the searchable index of the vault — search, suggestions, backlinks, and the index's own lifecycle (schema versioning, self-heal on open). Its interface speaks in notes, queries, and **note links**; SQLite, sqlx, transactions, and schema migrations are implementation and never cross the interface. Atomicity is carried by composite operations (apply an **IndexDiff**; rename a note together with its rewritten backlinks) rather than by exposing transactions.
 _Avoid_: db, VaultDB, database (they name the implementation, not the role)
+
+**Index file**:
+A workspace's index as an artifact on disk (`IndexFile`), as opposed to the open **NoteIndex** that reads it. It is not one file: SQLite keeps `-wal`/`-shm` siblings beside it whenever the index is open or was not closed cleanly, so moving or deleting the index means moving or deleting the set — all of it or none, never half. The naming rule (`<workspace>.kimuncache` in the cache directory) belongs to this type, so a workspace resolves to the same file from every caller. Moving one requires that no vault holds it open; on Windows the OS enforces that.
+_Avoid_: cache file, db file, sqlite file (they name the implementation), cache path (it is the artifact, not a path)
 
 **Index self-heal**:
 On open, the **NoteIndex** silently recreates its schema when the stored index is missing, outdated, or invalid — leaving a valid but empty index that the next sync pass fills. Callers get a single readiness probe (`index_ready`): false when the index was just healed (or never filled), so fast paths like the CLI `note` command can refuse to run against an empty index. There is no public status enum.

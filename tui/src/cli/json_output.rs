@@ -131,7 +131,7 @@ pub async fn format_notes_as_json(
     query: Option<&str>,
     is_listing: bool,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let workspace_path = vault.workspace_path().to_string_lossy().to_string();
+    let workspace_path = vault.workspace_path().to_string();
 
     // Fetch actual content for each note concurrently — bounded so a vault
     // with thousands of entries doesn't open thousands of file descriptors.
