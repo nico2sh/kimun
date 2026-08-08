@@ -869,8 +869,14 @@ async fn test_workspace_remove_reports_what_it_could_not_delete() {
     // A non-empty directory where the index file is: `remove_file` cannot
     // delete it. A stand-in for the Windows lock, which cannot be provoked on
     // demand — what is under test is the reporting, not the cause.
+    //
+    // Through `system::remove_file` rather than `std::fs`: the index was open
+    // moments ago, and Windows reports a handle that has not finished closing
+    // as ERROR_SHARING_VIOLATION. Production code never hits that because every
+    // delete goes through this wrapper, which waits the lock out; the raw call
+    // here gave the setup — not the behaviour under test — a race it could lose.
     let (index, _) = artifacts(&config_path, "doomed");
-    std::fs::remove_file(&index).unwrap();
+    kimun_core::system::remove_file(&index).unwrap();
     std::fs::create_dir(&index).unwrap();
     std::fs::write(index.join("occupied"), b"x").unwrap();
 
