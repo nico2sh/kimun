@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.0](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.23.0...kimun-notes-v0.24.0) - 2026-08-08
+
+### Added
+
+- name workspace files after an opaque key, not the workspace
+
+### Fixed
+
+- canonical path in test
+- small regression
+- bugs
+- report what remove could not delete, never fail a launch over the index
+- a reused workspace name must not claim another's index
+- rename a workspace without moving its index
+- wait out Windows file locks, unique test vault dirs
+- host-absolute paths in Windows-failing tests
+- small bugs
+- linux build in ci
+- fix test vault close, and unresolved cache fix
+- leftover bugs
+- winidows issues
+- winidows path resolution tests
+- helper for absolute path
+- issue resolving the home path on the first run
+- tests
+- expand path tests
+- save a llm ask with a proper file name
+
+### Other
+
+- drop a public doc link to a private item
+- *(test)* drop mcp_smoke's in-test cargo build
+- indeexfile
+- use system module for file operations
+- index as an artifact
+- one single lpace for filesystem operations
+
 ## [0.23.0](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.22.1...kimun-notes-v0.23.0) - 2026-08-06
 
 ### Added

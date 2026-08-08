@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/nico2sh/kimun/compare/kimun_core-v0.2.31...kimun_core-v0.3.0) - 2026-08-08
+
+### Added
+
+- *(system)* name the process holding a locked file
+
+### Fixed
+
+- small regression
+- bugs
+- cap the file-lock wait at 3s, not 60s
+- measure the file-lock wait instead of guessing its ceiling
+- raise the Windows file-lock wait to ~9s
+- wait out Windows file locks, unique test vault dirs
+- host-absolute paths in Windows-failing tests
+- small bugs
+- linux build in ci
+- leftover bugs
+- winidows issues
+- winidows path resolution tests
+- tests
+- expand path tests
+- save a llm ask with a proper file name
+
+### Other
+
+- moved utilities functions
+- indeexfile
+- use system module for file operations
+- index as an artifact
+- one single lpace for filesystem operations
+
 ## [0.2.31](https://github.com/nico2sh/kimun/compare/kimun_core-v0.2.30...kimun_core-v0.2.31) - 2026-08-02
 
 ### Fixed
