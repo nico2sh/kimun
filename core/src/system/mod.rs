@@ -341,10 +341,31 @@ fn normalize(path: &Path) -> PathBuf {
 
 /// The user's home directory (`HOME`, then `USERPROFILE`).
 pub fn home() -> Result<SystemPath, SystemError> {
-    let raw = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .map_err(|_| SystemError::NoHome)?;
-    SystemPath::try_absolute(PathBuf::from(raw))
+    home_from([std::env::var_os("HOME"), std::env::var_os("USERPROFILE")])
+}
+
+/// The first candidate that is a usable home directory.
+///
+/// Falls through on a candidate that is *set but unusable*, not only on one
+/// that is unset. `HOME` is set on Windows under Git Bash, MSYS2 and Cygwin —
+/// to a unix-shaped path (`/c/Users/bob`) that carries no drive prefix and so
+/// is not absolute there. Taking the first variable that merely *exists* meant
+/// that path went to [`SystemPath::try_absolute`], failed, and returned an
+/// error with `USERPROFILE` sitting right there unread: [`app_dir`] could not
+/// resolve, so `AppSettings::load` failed and the app would not start at all.
+/// An empty string falls through for the same reason.
+///
+/// Takes the candidates as an argument because the failure is unreachable on
+/// the CI runner, whose `HOME` is always absolute.
+fn home_from<const N: usize>(
+    candidates: [Option<std::ffi::OsString>; N],
+) -> Result<SystemPath, SystemError> {
+    candidates
+        .into_iter()
+        .flatten()
+        .filter(|raw| !raw.is_empty())
+        .find_map(|raw| SystemPath::try_absolute(PathBuf::from(raw)).ok())
+        .ok_or(SystemError::NoHome)
 }
 
 /// kimün's own directory under `home`, by `host`'s convention.
@@ -692,16 +713,37 @@ fn holders_of(path: &Path) -> Vec<String> {
 ///
 /// A destination still held open by another handle is waited out rather than
 /// reported; see [`is_locked_for`] for why that is a Windows-only wait.
+///
+/// The fallback is all-or-nothing like the rename it stands in for: if the
+/// unlink fails, the copy is undone. Leaving it meant a failed move reported an
+/// error while the file existed at *both* paths, which the caller cannot undo —
+/// [`crate::IndexFile`]'s rollback only walks the pairs that succeeded, so a
+/// v2 → v3 migration whose source index was still held open left an index at
+/// the new path too, and the next launch found it and opened the half-populated
+/// copy.
 pub fn move_file(from: &Path, to: &Path) -> Result<(), SystemError> {
     match retry_while_locked("move", from, || std::fs::rename(from, to)) {
         Ok(()) => Ok(()),
-        Err(e) if is_cross_device_for(HOST, &e) => {
-            std::fs::copy(from, to).map_err(|e| SystemError::io("copy", from, e))?;
-            remove_file(from)?;
-            Ok(())
-        }
+        Err(e) if is_cross_device_for(HOST, &e) => copy_then_unlink(from, to),
         Err(e) => Err(SystemError::locked_or_io("move", from, e)),
     }
+}
+
+/// [`move_file`]'s cross-volume fallback: copy, then unlink the source.
+///
+/// Split out because the branch is unreachable in a test run — provoking a real
+/// `EXDEV` needs two filesystems — while the half-done state it can leave is
+/// the part worth pinning.
+fn copy_then_unlink(from: &Path, to: &Path) -> Result<(), SystemError> {
+    std::fs::copy(from, to).map_err(|e| SystemError::io("copy", from, e))?;
+    if let Err(e) = remove_file(from) {
+        // Best-effort, and the plain call rather than `remove_file`: `to` was
+        // created moments ago by the copy above, so the lock wait that helps a
+        // caller's own file would only stall here.
+        let _ = std::fs::remove_file(to);
+        return Err(e);
+    }
+    Ok(())
 }
 
 /// Whether a failed rename means "source and destination are on different

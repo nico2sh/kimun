@@ -317,6 +317,39 @@ fn log_dir_in_temp_anchors_a_relative_tmpdir_on_the_working_directory() {
     );
 }
 
+/// Git Bash, MSYS2 and Cygwin all set `HOME` on Windows, to a unix-shaped path
+/// with no drive prefix — set, but not absolute there. Stopping at the first
+/// variable that merely exists meant `USERPROFILE` was never read and the app
+/// could not resolve its own directory, so it would not start at all.
+#[test]
+fn home_falls_through_a_set_but_unusable_candidate() {
+    let usable = host_path("/users/bob");
+
+    // Relative on every host, which is what `/c/Users/bob` is on Windows.
+    let relative = home_from([
+        Some(rel_path("c/Users/bob").into_os_string()),
+        Some(usable.clone().into_os_string()),
+    ]);
+    let empty = home_from([
+        Some(std::ffi::OsString::new()),
+        Some(usable.clone().into_os_string()),
+    ]);
+    let unset = home_from([None, Some(usable.clone().into_os_string())]);
+
+    for (case, result) in [("relative", relative), ("empty", empty), ("unset", unset)] {
+        assert_same(result.unwrap_or_else(|e| panic!("{case}: {e}")), &usable);
+    }
+}
+
+/// Only when nothing is usable is there no home. `NoHome` rather than
+/// `NotAbsolute`, because the answer the caller needs is "there isn't one",
+/// not which of the candidates was malformed.
+#[test]
+fn home_with_no_usable_candidate_is_no_home() {
+    let err = home_from([Some(rel_path("relative").into_os_string()), None]).unwrap_err();
+    assert!(matches!(err, SystemError::NoHome), "got {err:?}");
+}
+
 /// The home directory when there is one, so the browser opens somewhere the
 /// user recognizes rather than at a root.
 #[test]
@@ -559,6 +592,44 @@ fn move_file_reports_a_missing_source_rather_than_falling_back() {
     let dir = tempfile::TempDir::new().unwrap();
     let err = move_file(&dir.path().join("nope.txt"), &dir.path().join("out.txt")).unwrap_err();
     assert!(matches!(err, SystemError::Io { .. }), "got {err:?}");
+}
+
+/// The cross-volume fallback is all-or-nothing, like the rename it stands in
+/// for. Leaving the copy behind on a failed unlink put the file at *both*
+/// paths while still reporting an error, and [`crate::IndexFile`]'s rollback
+/// cannot reach it — the pair never counted as done. The next launch then found
+/// an index at the destination and opened that half-populated copy.
+///
+/// Unix-only because the failure needs an unlink that fails while the copy
+/// succeeds, and a directory without write permission is how that is arranged.
+/// Windows reaches the same code through a held handle, which cannot be
+/// provoked on demand.
+#[cfg(unix)]
+#[test]
+fn a_failed_unlink_undoes_the_copy() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let source_dir = dir.path().join("source");
+    std::fs::create_dir(&source_dir).unwrap();
+    let from = source_dir.join("index.kimuncache");
+    let to = dir.path().join("moved.kimuncache");
+    std::fs::write(&from, b"index").unwrap();
+    // Readable but not writable: the copy can still read the file, while its
+    // directory entry cannot be removed.
+    std::fs::set_permissions(&source_dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+    // Root ignores the mode bits, so there would be nothing to observe.
+    let enforced = std::fs::File::create(source_dir.join("probe")).is_err();
+
+    let result = copy_then_unlink(&from, &to);
+
+    std::fs::set_permissions(&source_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    if !enforced {
+        return;
+    }
+    assert!(result.is_err(), "the unlink must fail");
+    assert!(from.exists(), "the source must be left whole");
+    assert!(!to.exists(), "the copy must not survive a failed move");
 }
 
 #[test]
