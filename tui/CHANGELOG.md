@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.2](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.23.1...kimun-notes-v0.23.2) - 2026-08-08
+
+### Fixed
+
+- depend on `kimun_core` 0.4.0 with an exact (`=`) version requirement. 0.23.1 and
+  earlier used a caret requirement, which let them resolve forward onto a newer
+  core; that is why the 0.22.1 tarball stopped building once the breaking core
+  0.2.32 was published. No functional change to the app.
+
 ## [0.23.1](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.23.0...kimun-notes-v0.23.1) - 2026-08-08
 
 ### Added

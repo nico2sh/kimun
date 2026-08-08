@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/nico2sh/kimun/compare/kimun_core-v0.2.32...kimun_core-v0.4.0) - 2026-08-08
+
+### Changed
+
+- **BREAKING**: re-release of the 0.2.32 API under a correct semver version. 0.2.32
+  changed `VaultConfig::new` to take a `SystemPath`, and removed `ensure_dir_exists`
+  and `VaultConfig::with_db_path`, but shipped as a patch bump. Any 0.2.x consumer
+  with a caret requirement resolved onto it and stopped compiling. 0.2.32 is yanked;
+  use 0.4.0. (0.3.x is skipped: 0.3.1 was published and yanked earlier.)
+
 ## [0.2.32](https://github.com/nico2sh/kimun/compare/kimun_core-v0.2.31...kimun_core-v0.2.32) - 2026-08-08
 
 ### Added
