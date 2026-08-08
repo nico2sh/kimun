@@ -1,75 +1,8 @@
-use std::path::{Path, PathBuf};
-
-/// Converts an OS path to a `String`, losslessly when the path is valid UTF-8
-/// and lossily (replacing invalid sequences) otherwise, so it never fails.
-pub fn path_to_string<P: AsRef<Path>>(path: P) -> String {
-    path.as_ref()
-        .to_path_buf()
-        .into_os_string()
-        .into_string()
-        .unwrap_or_else(|os_string| os_string.to_string_lossy().into())
-}
-
-fn app_dir_name() -> &'static str {
-    #[cfg(debug_assertions)]
-    {
-        "kimun_debug"
-    }
-    #[cfg(not(debug_assertions))]
-    {
-        "kimun"
-    }
-}
-
-/// Returns the platform-specific directory where Kimün stores its log file.
-///
-/// Fallback chain per platform:
-///   preferred dir → `current_dir()` → `temp_dir()` (always available)
-/// Always returns an absolute path with the app-name suffix appended.
-pub fn app_log_dir() -> PathBuf {
-    let name = app_dir_name();
-    let fallback = || std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
-    #[cfg(target_os = "macos")]
-    {
-        std::env::var("HOME")
-            .map(|h| {
-                PathBuf::from(h)
-                    .join("Library/Application Support")
-                    .join(name)
-            })
-            .unwrap_or_else(|_| fallback().join(name))
-    }
-    #[cfg(target_os = "linux")]
-    {
-        std::env::var("XDG_DATA_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| {
-                std::env::var("HOME")
-                    .map(|h| PathBuf::from(h).join(".local/share"))
-                    .unwrap_or_else(|_| fallback())
-            })
-            .join(name)
-    }
-    #[cfg(target_os = "windows")]
-    {
-        std::env::var("APPDATA")
-            .map(|p| PathBuf::from(p).join(name))
-            .unwrap_or_else(|_| fallback().join(name))
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    {
-        fallback().join(name)
-    }
-}
-
-/// Creates the directory (and any missing parents) at `path` if it does not
-/// already exist. Returns the canonicalized path on success.
-pub fn ensure_dir_exists(path: &Path) -> std::io::Result<std::path::PathBuf> {
-    if !path.exists() {
-        std::fs::create_dir_all(path)?;
-    }
-    path.canonicalize()
-}
+//! Accent folding, for matching text the way a reader would read it.
+//!
+//! Used when a heading or a body span has to match a query that was typed
+//! without the accents (or with different ones): both sides are folded first,
+//! so `Café` matches `cafe`.
 
 /// Folds accented characters to their plain ASCII equivalents (e.g. `é` → `e`,
 /// `Æ` → `A`), dropping combining diacritical marks. Used to normalize names
@@ -234,20 +167,6 @@ fn escape_diacritic(acc: &mut String, current: char) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn app_log_dir_is_non_empty_and_has_correct_suffix() {
-        let dir = app_log_dir();
-        assert!(!dir.as_os_str().is_empty(), "log dir must not be empty");
-        let name = dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .expect("log dir must have a file name component");
-        // In test builds cfg(debug_assertions) is active, so the suffix is kimun_debug.
-        // The path must also be absolute — fallback chain ends at temp_dir(), never a relative dot.
-        assert!(dir.is_absolute(), "log dir must be an absolute path");
-        assert_eq!(name, "kimun_debug");
-    }
 
     #[test]
     fn test_uppercase() {

@@ -1,6 +1,7 @@
+use crate::system::SystemPath;
 use std::{
     collections::HashMap,
-    path::{Path, PathBuf},
+    path::Path,
     sync::{mpsc::Sender, Arc, Mutex},
 };
 
@@ -15,7 +16,7 @@ use crate::{
 };
 
 struct NoteListVisitor {
-    workspace_path: PathBuf,
+    workspace_path: SystemPath,
     validation: NotesValidation,
     notes_to_delete: Arc<Mutex<HashMap<VaultPath, (NoteEntryData, NoteContentData)>>>,
     notes_to_modify: Arc<Mutex<Vec<(NoteEntryData, String)>>>,
@@ -139,7 +140,7 @@ impl ParallelVisitor for NoteListVisitor {
 }
 
 pub struct NoteListVisitorBuilder {
-    workspace_path: PathBuf,
+    workspace_path: SystemPath,
     validation: NotesValidation,
     notes_to_delete: Arc<Mutex<HashMap<VaultPath, (NoteEntryData, NoteContentData)>>>,
     notes_to_modify: Arc<Mutex<Vec<(NoteEntryData, String)>>>,
@@ -148,8 +149,8 @@ pub struct NoteListVisitorBuilder {
 }
 
 impl NoteListVisitorBuilder {
-    pub fn new<P: AsRef<Path>>(
-        workspace_path: P,
+    pub fn new(
+        workspace_path: &SystemPath,
         validation: NotesValidation,
         cached_notes: Vec<(NoteEntryData, NoteContentData)>,
         sender: Option<Sender<SearchResult>>,
@@ -163,7 +164,7 @@ impl NoteListVisitorBuilder {
             notes_to_delete.insert(path, cached);
         }
         Self {
-            workspace_path: workspace_path.as_ref().to_path_buf(),
+            workspace_path: workspace_path.clone(),
             validation,
             notes_to_delete: Arc::new(Mutex::new(notes_to_delete)),
             notes_to_modify: Arc::new(Mutex::new(Vec::new())),
@@ -247,10 +248,14 @@ mod tests {
         let cached_notes = vec![];
         let (sender, _receiver) = mpsc::channel();
 
-        let builder =
-            NoteListVisitorBuilder::new(workspace_path, validation, cached_notes, Some(sender));
+        let builder = NoteListVisitorBuilder::new(
+            &crate::system::sys(workspace_path),
+            validation,
+            cached_notes,
+            Some(sender),
+        );
 
-        assert_eq!(builder.workspace_path, workspace_path);
+        assert_eq!(builder.workspace_path, crate::system::sys(workspace_path));
         assert_eq!(builder.validation, validation);
         assert!(builder.sender.is_some());
     }
@@ -262,9 +267,14 @@ mod tests {
         let validation = NotesValidation::Fast;
         let cached_notes = vec![];
 
-        let builder = NoteListVisitorBuilder::new(workspace_path, validation, cached_notes, None);
+        let builder = NoteListVisitorBuilder::new(
+            &crate::system::sys(workspace_path),
+            validation,
+            cached_notes,
+            None,
+        );
 
-        assert_eq!(builder.workspace_path, workspace_path);
+        assert_eq!(builder.workspace_path, crate::system::sys(workspace_path));
         assert_eq!(builder.validation, validation);
         assert!(builder.sender.is_none());
     }
@@ -285,7 +295,12 @@ mod tests {
         };
         let cached_notes = vec![(note_entry, note_content)];
 
-        let builder = NoteListVisitorBuilder::new(workspace_path, validation, cached_notes, None);
+        let builder = NoteListVisitorBuilder::new(
+            &crate::system::sys(workspace_path),
+            validation,
+            cached_notes,
+            None,
+        );
 
         // Test that notes are initially in the "to delete" list, keyed by their
         // canonical (vault-absolute) index identity.
@@ -305,7 +320,12 @@ mod tests {
         let validation = NotesValidation::None;
         let cached_notes = vec![];
 
-        let builder = NoteListVisitorBuilder::new(workspace_path, validation, cached_notes, None);
+        let builder = NoteListVisitorBuilder::new(
+            &crate::system::sys(workspace_path),
+            validation,
+            cached_notes,
+            None,
+        );
 
         // Test all getter methods return empty collections initially
         assert_eq!(builder.get_notes_to_delete().len(), 0);
@@ -320,8 +340,12 @@ mod tests {
         let validation = NotesValidation::None;
         let cached_notes = vec![];
 
-        let mut builder =
-            NoteListVisitorBuilder::new(workspace_path, validation, cached_notes, None);
+        let mut builder = NoteListVisitorBuilder::new(
+            &crate::system::sys(workspace_path),
+            validation,
+            cached_notes,
+            None,
+        );
 
         // Test that we can build a parallel visitor
         let _visitor = builder.build();
@@ -339,16 +363,26 @@ mod tests {
         let dir_path = VaultPath::new("test_directory");
         let note_content = "# Test Note\n\nThis is a test note.";
 
-        save_note(workspace_path, &note_path, note_content)
+        save_note(
+            &crate::system::sys(workspace_path),
+            &note_path,
+            note_content,
+        )
+        .await
+        .unwrap();
+        create_directory(&crate::system::sys(workspace_path), &dir_path)
             .await
             .unwrap();
-        create_directory(workspace_path, &dir_path).await.unwrap();
 
         let cached_notes = vec![];
         let (sender, _receiver) = mpsc::channel();
 
-        let mut builder =
-            NoteListVisitorBuilder::new(workspace_path, validation, cached_notes, Some(sender));
+        let mut builder = NoteListVisitorBuilder::new(
+            &crate::system::sys(workspace_path),
+            validation,
+            cached_notes,
+            Some(sender),
+        );
 
         // Create a visitor and simulate file discovery
         let _visitor = builder.build();
@@ -381,8 +415,12 @@ mod tests {
         ];
 
         for validation in validation_modes {
-            let builder =
-                NoteListVisitorBuilder::new(workspace_path, validation, cached_notes.clone(), None);
+            let builder = NoteListVisitorBuilder::new(
+                &crate::system::sys(workspace_path),
+                validation,
+                cached_notes.clone(),
+                None,
+            );
 
             assert_eq!(builder.validation, validation);
 
@@ -401,7 +439,7 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
 
         let _builder = NoteListVisitorBuilder::new(
-            workspace_path,
+            &crate::system::sys(workspace_path),
             validation,
             cached_notes,
             Some(sender.clone()),
@@ -431,28 +469,42 @@ mod tests {
         let sub_dir = VaultPath::new("subdir");
         let sub_notes = vec![("subdir/deep.md", "# Deep Note\n\nNested note.")];
 
-        create_directory(workspace_path, &sub_dir).await.unwrap();
+        create_directory(&crate::system::sys(workspace_path), &sub_dir)
+            .await
+            .unwrap();
         for (path, content) in &notes {
-            save_note(workspace_path, &VaultPath::new(*path), *content)
-                .await
-                .unwrap();
+            save_note(
+                &crate::system::sys(workspace_path),
+                &VaultPath::new(*path),
+                *content,
+            )
+            .await
+            .unwrap();
         }
         for (path, content) in &sub_notes {
-            save_note(workspace_path, &VaultPath::new(*path), *content)
-                .await
-                .unwrap();
+            save_note(
+                &crate::system::sys(workspace_path),
+                &VaultPath::new(*path),
+                *content,
+            )
+            .await
+            .unwrap();
         }
 
         // Scan with the visitor using a recursive walker (no cached notes)
         let (sender, receiver) = mpsc::channel();
         let mut builder = NoteListVisitorBuilder::new(
-            workspace_path,
+            &crate::system::sys(workspace_path),
             NotesValidation::None,
             vec![],
             Some(sender),
         );
 
-        let walker = crate::nfs::get_file_walker(workspace_path, &VaultPath::root(), true);
+        let walker = crate::nfs::get_file_walker(
+            &crate::system::sys(workspace_path),
+            &VaultPath::root(),
+            true,
+        );
         walker.visit(&mut builder);
 
         // Collect all SearchResults from the channel
@@ -522,18 +574,21 @@ mod tests {
 
         let note_path = VaultPath::new("changing.md");
         let original = "# Original\n\nOriginal content.";
-        save_note(workspace_path, &note_path, original)
+        save_note(&crate::system::sys(workspace_path), &note_path, original)
             .await
             .unwrap();
 
         // Get the entry as the walker would see it (absolute path via from_path)
         let full_path = workspace_path.join("changing.md");
-        let entry = VaultEntry::from_path(workspace_path, &full_path)
+        let entry = VaultEntry::from_path(&crate::system::sys(workspace_path), &full_path)
             .await
             .unwrap();
         let (note_data, content_data) = match entry.data {
             EntryData::Note(d) => {
-                let details = d.load_details(workspace_path, &d.path).await.unwrap();
+                let details = d
+                    .load_details(&crate::system::sys(workspace_path), &d.path)
+                    .await
+                    .unwrap();
                 let cd = details.get_content_data();
                 (d, cd)
             }
@@ -542,17 +597,25 @@ mod tests {
 
         // Overwrite with different content so the file size changes
         let updated = "# Updated\n\nThis content is deliberately much longer to change the file size on disk.";
-        save_note(workspace_path, &note_path, updated)
+        save_note(&crate::system::sys(workspace_path), &note_path, updated)
             .await
             .unwrap();
 
         // Supply the old cached entry (with the original size) to the builder
         let cached = vec![(note_data, content_data)];
 
-        let mut builder =
-            NoteListVisitorBuilder::new(workspace_path, NotesValidation::Fast, cached, None);
+        let mut builder = NoteListVisitorBuilder::new(
+            &crate::system::sys(workspace_path),
+            NotesValidation::Fast,
+            cached,
+            None,
+        );
 
-        let walker = crate::nfs::get_file_walker(workspace_path, &VaultPath::root(), true);
+        let walker = crate::nfs::get_file_walker(
+            &crate::system::sys(workspace_path),
+            &VaultPath::root(),
+            true,
+        );
         walker.visit(&mut builder);
 
         // The note should show up as modified (size changed)
@@ -577,17 +640,24 @@ mod tests {
 
         // Create a note, get its cached data, then delete it from disk
         let note_path = VaultPath::new("ephemeral.md");
-        save_note(workspace_path, &note_path, "# Gone soon")
-            .await
-            .unwrap();
+        save_note(
+            &crate::system::sys(workspace_path),
+            &note_path,
+            "# Gone soon",
+        )
+        .await
+        .unwrap();
 
         let full_path = workspace_path.join("ephemeral.md");
-        let entry = VaultEntry::from_path(workspace_path, &full_path)
+        let entry = VaultEntry::from_path(&crate::system::sys(workspace_path), &full_path)
             .await
             .unwrap();
         let cached = match entry.data {
             EntryData::Note(d) => {
-                let details = d.load_details(workspace_path, &d.path).await.unwrap();
+                let details = d
+                    .load_details(&crate::system::sys(workspace_path), &d.path)
+                    .await
+                    .unwrap();
                 vec![(d, details.get_content_data())]
             }
             _ => panic!("Expected note"),
@@ -598,10 +668,18 @@ mod tests {
             .await
             .unwrap();
 
-        let mut builder =
-            NoteListVisitorBuilder::new(workspace_path, NotesValidation::None, cached, None);
+        let mut builder = NoteListVisitorBuilder::new(
+            &crate::system::sys(workspace_path),
+            NotesValidation::None,
+            cached,
+            None,
+        );
 
-        let walker = crate::nfs::get_file_walker(workspace_path, &VaultPath::root(), true);
+        let walker = crate::nfs::get_file_walker(
+            &crate::system::sys(workspace_path),
+            &VaultPath::root(),
+            true,
+        );
         walker.visit(&mut builder);
 
         // The note should appear in the delete list (cached but not on disk)
@@ -627,18 +705,25 @@ mod tests {
         let workspace_path = temp_dir.path();
 
         let note_path = VaultPath::new("locked.md");
-        save_note(workspace_path, &note_path, "# Locked\n\nStill here.")
-            .await
-            .unwrap();
+        save_note(
+            &crate::system::sys(workspace_path),
+            &note_path,
+            "# Locked\n\nStill here.",
+        )
+        .await
+        .unwrap();
 
         // Capture the cached entry as a previous index pass would have.
         let full_path = workspace_path.join("locked.md");
-        let entry = VaultEntry::from_path(workspace_path, &full_path)
+        let entry = VaultEntry::from_path(&crate::system::sys(workspace_path), &full_path)
             .await
             .unwrap();
         let cached = match entry.data {
             EntryData::Note(d) => {
-                let details = d.load_details(workspace_path, &d.path).await.unwrap();
+                let details = d
+                    .load_details(&crate::system::sys(workspace_path), &d.path)
+                    .await
+                    .unwrap();
                 vec![(d, details.get_content_data())]
             }
             _ => panic!("Expected note"),
@@ -650,9 +735,17 @@ mod tests {
         perms.set_mode(0o000);
         std::fs::set_permissions(&full_path, perms).unwrap();
 
-        let mut builder =
-            NoteListVisitorBuilder::new(workspace_path, NotesValidation::Full, cached, None);
-        let walker = crate::nfs::get_file_walker(workspace_path, &VaultPath::root(), true);
+        let mut builder = NoteListVisitorBuilder::new(
+            &crate::system::sys(workspace_path),
+            NotesValidation::Full,
+            cached,
+            None,
+        );
+        let walker = crate::nfs::get_file_walker(
+            &crate::system::sys(workspace_path),
+            &VaultPath::root(),
+            true,
+        );
         walker.visit(&mut builder);
 
         // Restore permissions so TempDir cleanup works.

@@ -371,8 +371,15 @@ mod tests {
         dirty
     }
 
+    /// A vault root as a `SystemPath`. Built from `kimun_core` rather than the
+    /// crate's own test helper: this module must not name anything outside
+    /// itself, so it stays extractable as a crate (adr/0042).
+    fn sys(path: impl AsRef<std::path::Path>) -> kimun_core::SystemPath {
+        kimun_core::SystemPath::try_absolute(path).expect("test path must be absolute")
+    }
+
     async fn vault(dir: &std::path::Path) -> NoteVault {
-        let vault = NoteVault::new(VaultConfig::new(dir)).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(sys(dir))).await.unwrap();
         // Fill the freshly-healed index so index_ready() holds — the state the
         // drain/reconcile gates require (mirrors the app's validate_and_init).
         vault.validate_and_init().await.unwrap();
@@ -461,7 +468,9 @@ mod tests {
         // No validate_and_init: the fresh index is healed-but-empty, exactly
         // the state where a reconcile would read "no local notes" and delete
         // the whole server collection.
-        let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(sys(dir.path())))
+            .await
+            .unwrap();
         assert!(!vault.index_ready());
         let transport = FakeTransport::default();
         transport

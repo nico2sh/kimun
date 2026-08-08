@@ -59,7 +59,7 @@ impl App {
                     .as_ref()
                     .map(|wc| wc.global.current_workspace.clone())
                     .filter(|n| !n.is_empty());
-                let cache = name.as_ref().map(|n| s.cache_path_for(n));
+                let cache = name.as_ref().map(|n| s.index_for(n));
                 let inbox = s
                     .workspace_config
                     .as_ref()
@@ -68,9 +68,9 @@ impl App {
                 (path, cache, inbox)
             };
             if let Some(workspace) = workspace_path {
-                let mut config = VaultConfig::new(&workspace);
+                let mut config = VaultConfig::new(workspace.clone());
                 if let Some(cp) = cache_path {
-                    config = config.with_db_path(cp);
+                    config = config.with_index(cp);
                 }
                 match NoteVault::new(config).await {
                     Ok(mut v) => {
@@ -83,7 +83,7 @@ impl App {
                     // (e.g. cache probe error) instead of silently starting
                     // as if no workspace were configured.
                     Err(e) => {
-                        tracing::error!("could not open vault at {}: {e}", workspace.display());
+                        tracing::error!("could not open vault at {}: {e}", workspace);
                         None
                     }
                 }

@@ -2293,7 +2293,11 @@ mod tests {
         use std::sync::RwLock;
 
         let dir = tempfile::TempDir::new().unwrap();
-        let vault = Arc::new(NoteVault::new(VaultConfig::new(dir.path())).await.unwrap());
+        let vault = Arc::new(
+            NoteVault::new(VaultConfig::new(crate::test_support::sys(dir.path())))
+                .await
+                .unwrap(),
+        );
         let settings: SharedSettings = Arc::new(RwLock::new(AppSettings::default()));
         let screen = EditorScreen::new(vault.clone(), VaultPath::root(), settings.clone());
         (screen, vault, settings, dir)
@@ -2630,7 +2634,11 @@ mod tests {
         use std::sync::RwLock;
 
         let dir = tempfile::TempDir::new().unwrap();
-        let vault = Arc::new(NoteVault::new(VaultConfig::new(dir.path())).await.unwrap());
+        let vault = Arc::new(
+            NoteVault::new(VaultConfig::new(crate::test_support::sys(dir.path())))
+                .await
+                .unwrap(),
+        );
         let settings: SharedSettings = Arc::new(RwLock::new(AppSettings::default()));
         let mut screen = EditorScreen::new(vault, VaultPath::root(), settings);
 
@@ -2667,7 +2675,11 @@ mod tests {
         use std::sync::RwLock;
 
         let dir = tempfile::TempDir::new().unwrap();
-        let vault = Arc::new(NoteVault::new(VaultConfig::new(dir.path())).await.unwrap());
+        let vault = Arc::new(
+            NoteVault::new(VaultConfig::new(crate::test_support::sys(dir.path())))
+                .await
+                .unwrap(),
+        );
         let settings: SharedSettings = Arc::new(RwLock::new(AppSettings::default()));
         let mut screen = EditorScreen::new(vault.clone(), VaultPath::root(), settings.clone());
 
@@ -2728,7 +2740,11 @@ mod tests {
         use std::sync::RwLock;
 
         let dir = tempfile::TempDir::new().unwrap();
-        let vault = Arc::new(NoteVault::new(VaultConfig::new(dir.path())).await.unwrap());
+        let vault = Arc::new(
+            NoteVault::new(VaultConfig::new(crate::test_support::sys(dir.path())))
+                .await
+                .unwrap(),
+        );
         let settings: SharedSettings = Arc::new(RwLock::new(AppSettings::default()));
         let mut screen = EditorScreen::new(vault.clone(), VaultPath::root(), settings.clone());
 
@@ -2870,7 +2886,11 @@ mod tests {
         use std::sync::RwLock;
 
         let dir = tempfile::TempDir::new().unwrap();
-        let vault = Arc::new(NoteVault::new(VaultConfig::new(dir.path())).await.unwrap());
+        let vault = Arc::new(
+            NoteVault::new(VaultConfig::new(crate::test_support::sys(dir.path())))
+                .await
+                .unwrap(),
+        );
         let settings: SharedSettings = Arc::new(RwLock::new(AppSettings::default()));
         let mut screen = EditorScreen::new(vault.clone(), VaultPath::root(), settings.clone());
 

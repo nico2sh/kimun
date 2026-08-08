@@ -19,7 +19,6 @@ mod test_support;
 
 use clap::Parser;
 use color_eyre::Result;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use tracing_subscriber::Layer;
@@ -70,7 +69,7 @@ use crate::keys::key_event_to_combo;
 /// the guard alive for the duration of the program. Returns `None` and prints
 /// a warning to stderr on failure — startup is not aborted.
 fn init_logging(log_dir: &Path) -> Option<tracing_appender::non_blocking::WorkerGuard> {
-    if let Err(e) = fs::create_dir_all(log_dir) {
+    if let Err(e) = kimun_core::system::create_dir(log_dir) {
         eprintln!("kimun: could not create log directory: {e}");
         return None;
     }
@@ -130,7 +129,7 @@ async fn main() -> Result<()> {
     color_eyre::install()?;
 
     // Compute once, reuse for both init_logging and the panic hook.
-    let log_dir: PathBuf = kimun_core::app_log_dir();
+    let log_dir: PathBuf = kimun_core::system::log_dir().into_path_buf();
     // _guard declared early so it is dropped last (reverse declaration order).
     let _guard = init_logging(&log_dir);
 
@@ -150,7 +149,7 @@ async fn main() -> Result<()> {
 
         // Direct fallback write — independent of the tracing subscriber.
         let parent = log_path.parent().unwrap_or(std::path::Path::new("."));
-        let _ = fs::create_dir_all(parent);
+        let _ = kimun_core::system::create_dir(parent);
         match std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -260,7 +259,7 @@ async fn rebuild_vault(
         let s = settings.read().unwrap();
         let wp = s.resolve_workspace_path();
         let name = s.current_workspace_name();
-        let cache = name.as_ref().map(|n| s.cache_path_for(n));
+        let cache = name.as_ref().map(|n| s.index_for(n));
         let ip = s
             .workspace_config
             .as_ref()
@@ -269,9 +268,9 @@ async fn rebuild_vault(
         (wp, cache, ip)
     };
     let workspace = workspace_path?;
-    let mut config = kimun_core::VaultConfig::new(&workspace);
+    let mut config = kimun_core::VaultConfig::new(workspace.clone());
     if let Some(cp) = cache_path {
-        config = config.with_db_path(cp);
+        config = config.with_index(cp);
     }
     match kimun_core::NoteVault::new(config).await {
         Ok(mut v) => {
@@ -286,7 +285,7 @@ async fn rebuild_vault(
         // no-vault start screen either way, but the reason must reach the
         // log instead of looking like an unconfigured workspace.
         Err(e) => {
-            tracing::error!("could not open vault at {}: {e}", workspace.display());
+            tracing::error!("could not open vault at {}: {e}", workspace);
             None
         }
     }
@@ -689,10 +688,20 @@ mod tests {
     #[test]
     fn init_logging_returns_none_on_bad_path() {
         use crate::init_logging;
-        // /nonexistent/readonly/path cannot be created; init_logging must return None
-        // without panicking. This test exercises the early-return path before try_init
-        // is called, so the global subscriber singleton is not set by this test.
-        let result = init_logging(std::path::Path::new("/nonexistent/readonly/path"));
+        // A directory nested under a regular *file* cannot be created on any
+        // platform, so this reliably exercises the early return before
+        // `try_init` — leaving the global subscriber singleton unset.
+        //
+        // A literal like `/nonexistent/readonly/path` does not do that: on
+        // Windows it has no drive prefix, so it is merely rooted and resolves
+        // against the current drive, where `create_dir_all` cheerfully creates
+        // it (and litters the drive root) and `init_logging` returns `Some`.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let not_a_dir = tmp.path().join("regular-file");
+        std::fs::write(&not_a_dir, b"not a directory").unwrap();
+
+        let result = init_logging(&not_a_dir.join("logs"));
+
         assert!(result.is_none());
     }
 }

@@ -162,7 +162,7 @@ mod tests {
         std::fs::create_dir_all(&tmp).unwrap();
 
         let vault = Arc::new(
-            NoteVault::new(VaultConfig::new(tmp))
+            NoteVault::new(VaultConfig::new(crate::test_support::sys(tmp)))
                 .await
                 .expect("vault creation failed"),
         );
@@ -180,7 +180,8 @@ mod tests {
             let tmp = std::env::temp_dir().join("kimun_create_esc_test");
             std::fs::create_dir_all(&tmp).unwrap();
 
-            let vault_result = NoteVault::new(VaultConfig::new(tmp)).await;
+            let vault_result =
+                NoteVault::new(VaultConfig::new(crate::test_support::sys(tmp))).await;
             let Ok(vault) = vault_result else { return };
             let vault = Arc::new(vault);
 
@@ -205,7 +206,8 @@ mod tests {
             let tmp = std::env::temp_dir().join("kimun_create_enter_test");
             std::fs::create_dir_all(&tmp).unwrap();
 
-            let vault_result = NoteVault::new(VaultConfig::new(tmp)).await;
+            let vault_result =
+                NoteVault::new(VaultConfig::new(crate::test_support::sys(tmp))).await;
             let Ok(vault) = vault_result else { return };
             let vault = Arc::new(vault);
 

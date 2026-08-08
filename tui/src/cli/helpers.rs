@@ -5,7 +5,7 @@
 use crate::settings::AppSettings;
 use color_eyre::eyre::Result;
 use kimun_core::nfs::{PATH_SEPARATOR, VaultPath};
-use kimun_core::{NoteVault, VaultConfig};
+use kimun_core::{NoteVault, SystemPath, VaultConfig};
 use std::path::PathBuf;
 
 /// Load settings from either a specific config file path or the default location.
@@ -19,7 +19,7 @@ pub fn load_settings(config_path: Option<PathBuf>) -> Result<AppSettings> {
 /// Resolve workspace configuration from settings, returning the workspace path and name.
 ///
 /// Returns an error if no workspace is configured.
-pub fn resolve_workspace_config(settings: &AppSettings) -> Result<(PathBuf, String)> {
+pub fn resolve_workspace_config(settings: &AppSettings) -> Result<(SystemPath, String)> {
     let path = settings.resolve_workspace_path();
     let name = settings
         .workspace_config
@@ -41,21 +41,16 @@ pub fn resolve_workspace_config(settings: &AppSettings) -> Result<(PathBuf, Stri
 /// the workspace configuration, which is a common pattern in CLI commands.
 pub fn load_and_resolve_workspace(
     config_path: Option<PathBuf>,
-) -> Result<(AppSettings, PathBuf, String)> {
+) -> Result<(AppSettings, SystemPath, String)> {
     let settings = load_settings(config_path)?;
     let (workspace_path, workspace_name) = resolve_workspace_config(&settings)?;
     Ok((settings, workspace_path, workspace_name))
 }
 
-/// Returns the configured quick_note_path for the active workspace.
-/// Falls back to VaultPath::root() for Phase 1 workspaces (no WorkspaceEntry) or if not configured.
+/// Returns the configured quick_note_path for the active workspace, falling
+/// back to `VaultPath::root()` when there is none.
 pub fn resolve_quick_note_path(settings: &AppSettings) -> String {
     let root = kimun_core::nfs::VaultPath::root().to_string();
-    // Phase 1 legacy: workspace_dir only, no WorkspaceEntry
-    if settings.workspace_dir.is_some() {
-        return root;
-    }
-    // Phase 2: workspace_config
     if let Some(ref ws_config) = settings.workspace_config
         && let Some(entry) = ws_config.get_current_workspace()
     {
@@ -135,12 +130,12 @@ pub fn resolve_content(content: Option<String>) -> color_eyre::eyre::Result<Stri
 pub async fn create_and_init_vault(config_path: Option<PathBuf>) -> Result<(NoteVault, String)> {
     let (settings, workspace_path, workspace_name) = load_and_resolve_workspace(config_path)?;
 
-    let cache_path = settings.cache_path_for(&workspace_name);
+    let cache_path = settings.index_for(&workspace_name);
     // Backups on: every command built through this helper (search/notes/labels
     // are read-only no-ops, journal writes do get backed up) and the MCP server.
     let mut vault = NoteVault::new(
-        VaultConfig::new(&workspace_path)
-            .with_db_path(cache_path)
+        VaultConfig::new(workspace_path)
+            .with_index(cache_path)
             .with_backup(true),
     )
     .await?;

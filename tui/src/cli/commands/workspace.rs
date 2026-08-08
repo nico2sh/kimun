@@ -7,7 +7,9 @@ use std::path::PathBuf;
 use clap::Subcommand;
 use color_eyre::eyre::{Result, eyre};
 use kimun_core::error::VaultError;
-use kimun_core::{NoteVault, VaultConfig};
+use kimun_core::{NoteVault, SystemPath, VaultConfig};
+
+use kimun_core::system;
 
 use crate::settings::{
     AppSettings, config_migration::CURRENT_CONFIG_VERSION, workspace_config::WorkspaceConfig,
@@ -91,6 +93,14 @@ async fn run_init(settings: &mut AppSettings, name: Option<String>, path: PathBu
         }
     };
 
+    // Validate before anything derived from the name touches the filesystem.
+    // `add_workspace` validates too, but only after the cache file below has
+    // already been created at `<cache_dir>/<name>.kimuncache` — a name with
+    // `..` or a separator in it puts that file (plus its -wal/-shm sidecars
+    // and any parent directories) outside the cache directory entirely, and
+    // the command then aborts having already written them.
+    kimun_core::nfs::filename::validate_filename(&workspace_name).map_err(|e| eyre!("{}", e))?;
+
     if ws_config.workspaces.contains_key(&workspace_name) {
         let existing_path = &ws_config.workspaces[&workspace_name].path;
         return Err(eyre!(
@@ -103,7 +113,7 @@ async fn run_init(settings: &mut AppSettings, name: Option<String>, path: PathBu
 
     // Validate/create the target path
     let created = !path.exists();
-    let canonical_path = kimun_core::ensure_dir_exists(&path).map_err(|e| {
+    let canonical_path = system::create_dir(&path).map_err(|e| {
         eyre!(
             "Failed to create workspace directory {}: {}",
             path.display(),
@@ -114,37 +124,45 @@ async fn run_init(settings: &mut AppSettings, name: Option<String>, path: PathBu
         println!("Created directory: {}", path.display());
     }
 
-    println!("Initializing workspace database...");
-    let cache_path = settings.cache_path_for(&workspace_name);
-    let vault = NoteVault::new(VaultConfig::new(&canonical_path).with_db_path(cache_path))
-        .await
-        .map_err(|e| {
-            eyre!(
-                "Failed to create vault at {}: {}",
-                canonical_path.display(),
-                e
-            )
-        })?;
-    vault
-        .validate_and_init()
-        .await
-        .map_err(|e| eyre!("Failed to initialize vault database: {}", e))?;
-
+    // The entry goes in BEFORE the index is named. `add_workspace` is what
+    // mints the key the files are called after, so asking for the index first
+    // would create it under the workspace's *name* and then look for it under
+    // the key — a database written once and never found again. Nothing is
+    // persisted until `save_to_disk` below, so bailing out after this point
+    // leaves the config on disk untouched.
     let ws_config_mut = settings
         .workspace_config
         .as_mut()
         .expect("workspace_config must exist after init");
     ws_config_mut
-        .add_workspace(workspace_name.clone(), canonical_path.clone())
+        .add_workspace(
+            workspace_name.clone(),
+            canonical_path.clone().into_path_buf(),
+        )
         .map_err(|e| eyre!("{}", e))?;
+
+    println!("Initializing workspace database...");
+    let cache_path = settings.index_for(&workspace_name);
+    let vault = NoteVault::new(VaultConfig::new(canonical_path.clone()).with_index(cache_path))
+        .await
+        .map_err(|e| eyre!("Failed to create vault at {}: {}", canonical_path, e))?;
+    let init_result = vault.validate_and_init().await;
+    // This vault existed only to create the database; release its handle on the
+    // cache file rather than leaving that to pool drop, which merely schedules
+    // the close. A later `workspace remove` in the same process (the TUI, or a
+    // test driving several commands) has to delete that file, and Windows will
+    // not delete a file that is still open. Closed before the `?` too: a failed
+    // init leaves the cache file on disk, so bailing out with it still open is
+    // the same locked file with nobody left holding a handle to close it.
+    vault.close().await;
+    init_result.map_err(|e| eyre!("Failed to initialize vault database: {}", e))?;
 
     settings.config_version = CURRENT_CONFIG_VERSION;
     settings.save_to_disk()?;
 
     println!(
         "Workspace '{}' initialized at {}",
-        workspace_name,
-        canonical_path.display()
+        workspace_name, canonical_path
     );
 
     let ws_config = settings
@@ -248,61 +266,17 @@ fn run_rename(settings: &mut AppSettings, old_name: String, new_name: String) ->
         ));
     }
 
-    // Move cache and history files BEFORE mutating config so a failed
-    // file move doesn't leave the config pointing at a workspace whose
-    // cache is in the wrong place.
-    let old_cache = settings.cache_path_for(&old_name);
-    let new_cache = settings.cache_path_for(&new_name);
-    let old_history = settings.history_path_for(&old_name);
-    let new_history = settings.history_path_for(&new_name);
-
-    if new_cache.exists() {
-        return Err(eyre!(
-            "Destination cache already exists at {}. Refusing to overwrite.",
-            new_cache.display()
-        ));
-    }
-    if new_history.exists() {
-        return Err(eyre!(
-            "Destination history already exists at {}. Refusing to overwrite.",
-            new_history.display()
-        ));
-    }
-    if old_cache.exists() {
-        std::fs::rename(&old_cache, &new_cache).map_err(|e| {
-            eyre!(
-                "failed to move cache {} -> {}: {}",
-                old_cache.display(),
-                new_cache.display(),
-                e
-            )
-        })?;
-    }
-    if old_history.exists() {
-        std::fs::rename(&old_history, &new_history).map_err(|e| {
-            eyre!(
-                "failed to move history {} -> {}: {}",
-                old_history.display(),
-                new_history.display(),
-                e
-            )
-        })?;
-    }
-
+    // Nothing on disk moves. The index and history keep the name they were
+    // created under, which `rename_workspace` pins into the entry — see
+    // `WorkspaceEntry::file_key`. Renaming used to move an open SQLite
+    // database, and Windows will not move a file any handle still holds, so
+    // this is the one rename that cannot fail halfway.
     let ws_config_mut = settings
         .workspace_config
         .as_mut()
         .expect("workspace_config must exist after init");
-
-    let entry = ws_config_mut
-        .workspaces
-        .remove(&old_name)
-        .expect("entry must exist (checked above)");
-    ws_config_mut.workspaces.insert(new_name.clone(), entry);
-
-    if ws_config_mut.global.current_workspace == old_name {
-        ws_config_mut.global.current_workspace = new_name.clone();
-    }
+    let renamed = ws_config_mut.rename_workspace(&old_name, new_name.clone());
+    debug_assert!(renamed, "entry existence was checked above");
 
     settings.save_to_disk()?;
 
@@ -328,8 +302,9 @@ fn run_remove(settings: &mut AppSettings, name: String) -> Result<()> {
         ));
     }
 
-    let cache_path = settings.cache_path_for(&name);
-    let history_path = settings.history_path_for(&name);
+    // Read before the entry goes: the file names come from its `file_key`.
+    let (index, history) = settings.workspace_artifacts(&name);
+    let leftovers = crate::settings::delete_artifacts(&index, &history);
 
     settings
         .workspace_config
@@ -340,17 +315,25 @@ fn run_remove(settings: &mut AppSettings, name: String) -> Result<()> {
 
     settings.save_to_disk()?;
 
-    for path in [&cache_path, &history_path] {
-        if path.exists() {
-            match std::fs::remove_file(path) {
-                Ok(()) => tracing::info!("removed {}", path.display()),
-                Err(e) => tracing::warn!("failed to remove {}: {}", path.display(), e),
-            }
-        }
-    }
-
     println!("Workspace '{}' removed.", name);
+    if let Some(report) = leftover_report(&leftovers) {
+        // stderr, not stdout: the removal did happen, and a script reading
+        // stdout should not have to parse this out of the success line.
+        eprintln!("{report}");
+    }
     Ok(())
+}
+
+/// What to tell the user about files that would not delete, or `None` when
+/// everything went.
+fn leftover_report(leftovers: &[String]) -> Option<String> {
+    (!leftovers.is_empty()).then(|| {
+        format!(
+            "\nWarning: these files could not be deleted and are safe to \
+             delete by hand:\n{}",
+            leftovers.join("\n")
+        )
+    })
 }
 
 async fn run_reindex(settings: &AppSettings, name: Option<String>) -> Result<()> {
@@ -382,19 +365,20 @@ async fn run_reindex(settings: &AppSettings, name: Option<String>) -> Result<()>
 
     println!("Reindexing workspace '{}'...", workspace_name);
 
-    let cache_path = settings.cache_path_for(&workspace_name);
-    let workspace_path = entry.effective_path().clone();
-    let vault = NoteVault::new(VaultConfig::new(&workspace_path).with_db_path(cache_path))
+    let cache_path = settings.index_for(&workspace_name);
+    let workspace_path = SystemPath::try_absolute(entry.effective_path())
+        .map_err(|e| eyre!("Workspace '{}' has an unusable path: {}", workspace_name, e))?;
+    let vault = NoteVault::new(VaultConfig::new(workspace_path.clone()).with_index(cache_path))
         .await
-        .map_err(|e| {
-            eyre!(
-                "Failed to open vault at {}: {}",
-                workspace_path.display(),
-                e
-            )
-        })?;
+        .map_err(|e| eyre!("Failed to open vault at {}: {}", workspace_path, e))?;
 
-    let report = match vault.recreate_index().await {
+    let index_result = vault.recreate_index().await;
+    // Reindexing is done with the vault; close it (on the error paths too)
+    // instead of letting the process hold the cache file open, which blocks a
+    // later rename or remove of that workspace on Windows.
+    vault.close().await;
+
+    let report = match index_result {
         Ok(r) => r,
         Err(VaultError::CaseConflict { conflicts }) => {
             eprintln!(
@@ -426,4 +410,56 @@ async fn run_reindex(settings: &AppSettings, name: Option<String>) -> Result<()>
     println!("Reindex complete for workspace '{}'.", workspace_name);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::history::HistoryFile;
+    use kimun_core::IndexFile;
+    use kimun_core::system::SystemPath;
+
+    fn sys(path: &std::path::Path) -> SystemPath {
+        SystemPath::try_absolute(path).unwrap()
+    }
+
+    /// The whole point of returning the leftovers: a delete that fails has to
+    /// reach the user. It only ever went to `tracing::warn!` before, which in a
+    /// CLI with no subscriber attached is the same as silence — and the command
+    /// printed success over an index it had not deleted.
+    #[test]
+    fn a_file_that_will_not_delete_is_reported() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let index = IndexFile::in_dir(&sys(dir.path()), "stuck");
+        let history = HistoryFile::in_dir(&sys(dir.path()), "stuck");
+        // A non-empty directory where the index file should be: `remove_file`
+        // cannot delete it. A stand-in for the Windows lock, which cannot be
+        // provoked on demand — the reporting is what is under test.
+        std::fs::create_dir(index.path().as_path()).unwrap();
+        std::fs::write(index.path().as_path().join("occupied"), b"x").unwrap();
+
+        let leftovers = crate::settings::delete_artifacts(&index, &history);
+
+        assert_eq!(leftovers.len(), 1, "got {leftovers:?}");
+        assert!(leftovers[0].contains("stuck.kimuncache"), "{leftovers:?}");
+        let report = leftover_report(&leftovers).expect("a leftover must be reported");
+        assert!(report.contains("could not be deleted"), "{report}");
+        assert!(report.contains("stuck.kimuncache"), "{report}");
+    }
+
+    /// The ordinary case stays quiet: nothing left behind, nothing printed.
+    #[test]
+    fn a_clean_delete_reports_nothing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let index = IndexFile::in_dir(&sys(dir.path()), "gone");
+        let history = HistoryFile::in_dir(&sys(dir.path()), "gone");
+        std::fs::write(index.path().as_path(), b"index").unwrap();
+        std::fs::write(history.path().as_path(), b"a.md\n").unwrap();
+
+        let leftovers = crate::settings::delete_artifacts(&index, &history);
+
+        assert!(leftovers.is_empty(), "got {leftovers:?}");
+        assert!(leftover_report(&leftovers).is_none());
+        assert!(!index.exists());
+    }
 }

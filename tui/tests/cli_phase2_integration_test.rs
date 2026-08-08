@@ -1,25 +1,23 @@
 // tui/tests/cli_phase2_integration_test.rs
 //
-// Comprehensive integration tests for CLI Phase 2 functionality.
-// Tests multi-workspace workflows, JSON output validation, and Phase 1 migration.
+// Comprehensive integration tests for the multi-workspace CLI.
+// Tests multi-workspace workflows and JSON output validation.
 
 use kimun_core::nfs::VaultPath;
-use kimun_core::{NoteVault, VaultConfig};
 use kimun_notes::cli::commands::workspace::WorkspaceSubcommand;
 use kimun_notes::cli::output::OutputFormat;
 use kimun_notes::cli::{CliCommand, run_cli};
 use kimun_notes::settings::AppSettings;
 use tempfile::TempDir;
 
-/// Create a temporary workspace with test notes and return both the vault and its directory.
-async fn setup_test_workspace(name: &str, dir: &TempDir) -> NoteVault {
-    let vault = NoteVault::new(VaultConfig::new(dir.path()))
-        .await
-        .expect("failed to create vault");
-    vault
-        .validate_and_init()
-        .await
-        .expect("failed to init vault");
+mod common;
+use common::open_test_vault;
+
+/// Seed a temporary workspace with test notes, then close its vault — every
+/// caller drives the workspace through the CLI afterwards, and a workspace
+/// with an open index cannot be renamed or removed on Windows.
+async fn setup_test_workspace(name: &str, dir: &TempDir) {
+    let vault = open_test_vault(dir.path()).await;
 
     // Create test notes specific to this workspace
     vault
@@ -59,16 +57,7 @@ async fn setup_test_workspace(name: &str, dir: &TempDir) -> NoteVault {
         .recreate_index()
         .await
         .expect("failed to recreate index");
-    vault
-}
-
-/// Write a Phase 1 legacy config file (for migration testing).
-fn write_phase1_config(config_path: &std::path::Path, workspace: &std::path::Path) {
-    let toml = format!(
-        "workspace_dir = {:?}\n",
-        workspace.to_string_lossy().as_ref()
-    );
-    std::fs::write(config_path, toml).expect("failed to write config file");
+    vault.close().await;
 }
 
 // ---------------------------------------------------------------------------
@@ -333,10 +322,7 @@ async fn test_json_output_multi_workspace() {
     );
 
     // Verify JSON structure by directly calling the vault (since CLI output goes to stdout)
-    let vault = NoteVault::new(VaultConfig::new(workspace_dir.path()))
-        .await
-        .unwrap();
-    vault.validate_and_init().await.unwrap();
+    let vault = open_test_vault(workspace_dir.path()).await;
 
     let results = vault.search_notes("test").await.unwrap();
 
@@ -384,87 +370,8 @@ async fn test_json_output_multi_workspace() {
             "metadata should have headers array"
         );
     }
-}
 
-// ---------------------------------------------------------------------------
-// test_phase1_to_phase2_migration
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn test_phase1_to_phase2_migration() {
-    let config_dir = TempDir::new().unwrap();
-    let config_path = config_dir.path().join("config.toml");
-
-    let workspace_dir = TempDir::new().unwrap();
-    setup_test_workspace("legacy", &workspace_dir).await;
-
-    // Write Phase 1 config
-    write_phase1_config(&config_path, workspace_dir.path());
-
-    // Verify Phase 1 config loads and migrates correctly
-    let settings =
-        AppSettings::load_from_file(config_path.clone()).expect("should load Phase 1 config");
-    assert!(
-        settings.workspace_dir.is_none(),
-        "workspace_dir should be None after migration"
-    );
-    assert!(
-        settings.workspace_config.is_some(),
-        "should have migrated workspace_config"
-    );
-
-    let ws_config = settings.workspace_config.as_ref().unwrap();
-    assert_eq!(
-        ws_config.global.current_workspace, "default",
-        "should migrate to default workspace"
-    );
-    assert_eq!(
-        ws_config.workspaces.len(),
-        1,
-        "should have one workspace after migration"
-    );
-    let default_workspace = ws_config
-        .workspaces
-        .get("default")
-        .expect("should have default workspace");
-    // Migration resolves the workspace path (same canonicalize-if-exists
-    // behavior as `AppSettings::expand_path`), so on macOS this comes back as
-    // `/private/var/...` while the raw `TempDir` path is the `/var/...`
-    // symlink. Compare canonical forms on both sides.
-    assert_eq!(
-        default_workspace.path,
-        workspace_dir.path().canonicalize().unwrap(),
-        "migrated workspace should have correct path"
-    );
-
-    // Test that CLI commands work with migrated config
-    let result = run_cli(
-        CliCommand::Search {
-            query: "legacy".to_string(),
-            format: OutputFormat::Text,
-        },
-        Some(config_path.clone()),
-    )
-    .await;
-    assert!(
-        result.is_ok(),
-        "search should work with migrated config: {:?}",
-        result
-    );
-
-    let result = run_cli(
-        CliCommand::Notes {
-            path: None,
-            format: OutputFormat::Text,
-        },
-        Some(config_path.clone()),
-    )
-    .await;
-    assert!(
-        result.is_ok(),
-        "notes should work with migrated config: {:?}",
-        result
-    );
+    vault.close().await;
 }
 
 // ---------------------------------------------------------------------------

@@ -3,7 +3,7 @@
 //! All filesystem access lives here per the project rule that
 //! fs ops belong in `nfs`.
 
-use std::path::Path;
+use crate::system::SystemPath;
 
 use serde::{Deserialize, Serialize};
 
@@ -27,8 +27,11 @@ struct SavedSearchFile {
     search: Vec<SavedSearch>,
 }
 
-fn saved_searches_path(workspace_path: &Path) -> std::path::PathBuf {
-    workspace_path.join(".kimun").join("saved-searches.toml")
+fn saved_searches_path(workspace_path: &SystemPath) -> std::path::PathBuf {
+    workspace_path
+        .as_path()
+        .join(".kimun")
+        .join("saved-searches.toml")
 }
 
 /// The one name-match rule for saved searches: ASCII case-insensitive.
@@ -41,7 +44,7 @@ pub fn saved_search_name_matches(a: &str, b: &str) -> bool {
 
 /// Read all saved searches. Returns an empty list if the file does not
 /// exist yet (a fresh vault has none).
-pub async fn read_saved_searches(workspace_path: &Path) -> Result<Vec<SavedSearch>, FSError> {
+pub async fn read_saved_searches(workspace_path: &SystemPath) -> Result<Vec<SavedSearch>, FSError> {
     let path = saved_searches_path(workspace_path);
     match tokio::fs::read_to_string(&path).await {
         Ok(body) => {
@@ -56,7 +59,7 @@ pub async fn read_saved_searches(workspace_path: &Path) -> Result<Vec<SavedSearc
 
 /// Write the full saved-search list, creating `.kimun/` if needed.
 pub async fn write_saved_searches(
-    workspace_path: &Path,
+    workspace_path: &SystemPath,
     searches: &[SavedSearch],
 ) -> Result<(), FSError> {
     let path = saved_searches_path(workspace_path);
@@ -89,7 +92,9 @@ mod tests {
     #[tokio::test]
     async fn read_missing_file_returns_empty() {
         let dir = tempfile::TempDir::new().unwrap();
-        let got = read_saved_searches(dir.path()).await.unwrap();
+        let got = read_saved_searches(&crate::system::sys(dir.path()))
+            .await
+            .unwrap();
         assert!(got.is_empty());
     }
 
@@ -106,15 +111,21 @@ mod tests {
                 query: ">{note}".into(),
             },
         ];
-        write_saved_searches(dir.path(), &searches).await.unwrap();
-        let got = read_saved_searches(dir.path()).await.unwrap();
+        write_saved_searches(&crate::system::sys(dir.path()), &searches)
+            .await
+            .unwrap();
+        let got = read_saved_searches(&crate::system::sys(dir.path()))
+            .await
+            .unwrap();
         assert_eq!(got, searches);
     }
 
     #[tokio::test]
     async fn write_creates_kimun_dir() {
         let dir = tempfile::TempDir::new().unwrap();
-        write_saved_searches(dir.path(), &[]).await.unwrap();
+        write_saved_searches(&crate::system::sys(dir.path()), &[])
+            .await
+            .unwrap();
         assert!(dir
             .path()
             .join(".kimun")

@@ -1,10 +1,9 @@
 use crate::keys::action_shortcuts::{ActionShortcuts, TextAction};
 use crate::keys::key_strike::KeyStrike;
-use crate::settings::config_dir::get_or_create_config_dir;
 use crate::settings::themes::Theme;
 use crate::settings::workspace_config::WorkspaceConfig;
-use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::io::Read;
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use std::fs::{self, File};
@@ -22,15 +21,19 @@ pub enum SettingsError {
     CorruptTheme(toml::de::Error),
     #[error("config migration failed: {0}")]
     Migration(String),
+    #[error(transparent)]
+    System(#[from] kimun_core::system::SystemError),
 }
 
 /// Shared settings handle — all screens and components reference the same instance.
 pub type SharedSettings = Arc<RwLock<AppSettings>>;
+use kimun_core::IndexFile;
+
+use self::history::HistoryFile;
 use kimun_core::nfs::VaultPath;
+use kimun_core::system::{self, SystemPath};
 
 use crate::keys::KeyBindings;
-mod config_dir;
-pub(crate) use config_dir::get_home_dir;
 pub mod config_migration;
 pub mod history;
 pub mod icons;
@@ -73,23 +76,15 @@ pub enum EditorBackendSetting {
 
 // pub mod theme;
 
-#[cfg(debug_assertions)]
-const CONFIG_DIR: &str = "kimun_debug";
-#[cfg(not(debug_assertions))]
-const CONFIG_DIR: &str = "kimun";
-
-/// Path to kimün's config directory (`~/.config/kimun`, or `kimun_debug` in
-/// debug builds), creating it if needed. Single source of truth for the
-/// debug/release directory name — used by the update module for the install
-/// marker and update-state file.
-pub fn config_dir() -> std::io::Result<PathBuf> {
-    get_or_create_config_dir(CONFIG_DIR)
+/// Path to kimün's directory on this machine, creating it if needed — used by
+/// the update module for the install marker and update-state file. The layout
+/// (and the debug/release name) belongs to [`kimun_core::system`].
+pub fn config_dir() -> Result<PathBuf, system::SystemError> {
+    system::ensure_app_dir().map(SystemPath::into_path_buf)
 }
 
 const BASE_CONFIG_FILE: &str = "config.toml";
 const THEMES_DIR: &str = "themes";
-const CACHE_FILE_EXT: &str = "kimuncache";
-const HISTORY_FILE_EXT: &str = "txt";
 
 const CONFIG_HEADER: &str = "\
 # ─── Kimün configuration ────────────────────────────────────────────────────
@@ -138,32 +133,32 @@ const CONFIG_HEADER: &str = "\
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct AppSettings {
-    // Phase 2 config
+    // Workspace layout
     #[serde(default)]
     pub config_version: u32,
     #[serde(flatten, skip_serializing_if = "Option::is_none")]
     pub workspace_config: Option<WorkspaceConfig>,
 
-    // Legacy Phase 1 fields — only kept for migration detection/deserialization.
-    // Never written back: workspace_dir is taken by migration, last_paths is
-    // moved into workspace_config entries.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub workspace_dir: Option<PathBuf>,
-    #[serde(default, skip_serializing)]
-    pub last_paths: Vec<VaultPath>,
-
     // Preserved fields
     #[serde(default)]
     pub theme: String,
+    /// As written in the config file — may be relative, may start with `~`.
     #[serde(default = "default_cache_dir")]
     pub cache_dir: PathBuf,
-    #[serde(skip)]
-    cache_dir_resolved: Option<PathBuf>,
+    /// [`Self::cache_dir`] made absolute. Never optional: an unresolved cache
+    /// dir means the index lands relative to the process's working directory,
+    /// so the type does not let that state exist. `resolve_paths` overwrites
+    /// it once the config file's directory is known; until then it is resolved
+    /// against the default config directory.
+    #[serde(skip, default = "default_cache_dir_resolved")]
+    cache_dir_resolved: SystemPath,
 
+    /// As written in the config file — see [`Self::cache_dir`].
     #[serde(default = "default_history_dir")]
     pub history_dir: PathBuf,
-    #[serde(skip)]
-    history_dir_resolved: Option<PathBuf>,
+    /// [`Self::history_dir`] made absolute — see [`Self::cache_dir_resolved`].
+    #[serde(skip, default = "default_history_dir_resolved")]
+    history_dir_resolved: SystemPath,
     #[serde(skip, default = "yes")]
     needs_indexing: bool,
     #[serde(default = "default_keybindings")]
@@ -302,6 +297,41 @@ fn default_keybindings() -> KeyBindings {
     kb
 }
 
+/// Deletes a removed workspace's artifacts, returning the ones that would not
+/// go, each with the reason.
+///
+/// A free function rather than a method so the caller can pull the artifacts
+/// out with [`AppSettings::workspace_artifacts`], release the settings lock,
+/// and delete outside it: `system::remove_file` waits out a handle another
+/// process holds, and parking every settings reader for that wait is what the
+/// "filesystem work before the lock" rule exists to avoid.
+///
+/// Best-effort by design. Whoever calls this has already decided the workspace
+/// is going, so a stuck file is a leftover to report rather than a reason to
+/// fail — and it is *returned*, because `tracing::warn!` in a CLI with no
+/// subscriber attached goes nowhere.
+pub fn delete_artifacts(index: &IndexFile, history: &HistoryFile) -> Vec<String> {
+    let mut leftovers = Vec::new();
+    // Every file the index is made of, not just the first that failed: a held
+    // handle is normally on a sidecar, and naming only that one would send the
+    // user to delete one file out of three.
+    let stuck = index.remove();
+    if stuck.is_empty() {
+        tracing::info!("removed index {}", index);
+    }
+    for (path, e) in stuck {
+        tracing::warn!("failed to remove {}: {}", path, e);
+        leftovers.push(format!("  {path}\n    {e}"));
+    }
+    if let Err(e) = history.remove() {
+        tracing::warn!("failed to remove history {}: {}", history, e);
+        leftovers.push(format!("  {history}\n    {e}"));
+    } else {
+        tracing::info!("removed history {}", history);
+    }
+    leftovers
+}
+
 fn yes() -> bool {
     true
 }
@@ -331,9 +361,9 @@ impl AppSettings {
     /// Suggested directory for a first workspace (`~/kimun-notes`). `None`
     /// when the home directory cannot be determined.
     pub fn default_workspace_suggestion() -> Option<PathBuf> {
-        config_dir::get_home_dir()
+        system::home()
             .ok()
-            .map(|h| h.join("kimun-notes"))
+            .map(|h| h.join("kimun-notes").into_path_buf())
     }
 
     /// The leader tree with this config's `[leader]` overrides applied — the
@@ -365,6 +395,36 @@ fn default_history_dir() -> PathBuf {
     PathBuf::from("history")
 }
 
+/// What relative `cache_dir` / `history_dir` values resolve against when no
+/// config file anchors them: the default config directory, read *without*
+/// creating it (settings that were never loaded from a file must not
+/// materialise directories as a side effect of `Default`).
+///
+/// Anything absolute beats the alternative. The one thing these paths must
+/// never fall back to is the raw relative form, which anchors on the process's
+/// working directory: every kimün started from the same directory would then
+/// share one index, and a first run would drop its index wherever the binary
+/// happened to be launched. Hence the temp-dir fallback when even the home
+/// directory is unknown.
+fn default_settings_base_dir() -> SystemPath {
+    system::app_dir().unwrap_or_else(|_| {
+        let fallback = std::env::temp_dir().join("kimun");
+        SystemPath::try_absolute(&fallback).unwrap_or_else(|_| system::log_dir())
+    })
+}
+
+/// Resolved form of [`default_cache_dir`] for settings with no config file.
+/// Also the `serde` default, so deserializing a config never yields an
+/// unresolved path even before `resolve_paths` runs.
+fn default_cache_dir_resolved() -> SystemPath {
+    SystemPath::resolve(default_cache_dir(), &default_settings_base_dir())
+}
+
+/// Resolved form of [`default_history_dir`] — see [`default_cache_dir_resolved`].
+fn default_history_dir_resolved() -> SystemPath {
+    SystemPath::resolve(default_history_dir(), &default_settings_base_dir())
+}
+
 fn default_use_nerd_fonts() -> bool {
     false
 }
@@ -390,13 +450,11 @@ impl Default for AppSettings {
         Self {
             config_version: 0,
             workspace_config: None,
-            last_paths: vec![],
-            workspace_dir: None,
             theme: Default::default(),
             cache_dir: default_cache_dir(),
-            cache_dir_resolved: None,
+            cache_dir_resolved: default_cache_dir_resolved(),
             history_dir: default_history_dir(),
-            history_dir_resolved: None,
+            history_dir_resolved: default_history_dir_resolved(),
             needs_indexing: true,
             key_bindings: default_keybindings(),
             autosave_interval_secs: default_autosave_interval(),
@@ -428,8 +486,9 @@ impl AppSettings {
     }
 
     fn default_config_file_path() -> Result<PathBuf, SettingsError> {
-        let config_home = get_or_create_config_dir(CONFIG_DIR)?;
-        Ok(config_home.join(BASE_CONFIG_FILE))
+        Ok(system::ensure_app_dir()?
+            .join(BASE_CONFIG_FILE)
+            .into_path_buf())
     }
 
     fn get_config_file_path(&self) -> Result<PathBuf, SettingsError> {
@@ -441,8 +500,7 @@ impl AppSettings {
     }
 
     fn get_themes_path() -> Result<PathBuf, SettingsError> {
-        let config_home = get_or_create_config_dir(CONFIG_DIR)?;
-        Ok(config_home.join(THEMES_DIR))
+        Ok(system::ensure_app_dir()?.join(THEMES_DIR).into_path_buf())
     }
 
     fn load_theme_from_path(path: &std::path::Path) -> Result<Theme, SettingsError> {
@@ -473,14 +531,15 @@ impl AppSettings {
         };
 
         // Read directory entries, return empty vec if it fails
-        let entries = match fs::read_dir(&themes_path) {
-            Ok(entries) => entries,
-            Err(_) => return themes,
-        };
+        let entries =
+            match SystemPath::try_absolute(&themes_path).and_then(|dir| system::read_dir(&dir)) {
+                Ok(entries) => entries,
+                Err(_) => return themes,
+            };
 
         // Iterate through all entries in the themes directory
-        for entry in entries.flatten() {
-            let path = entry.path();
+        for entry in entries {
+            let path = entry.into_path_buf();
 
             // Skip if not a file
             if !path.is_file() {
@@ -531,10 +590,11 @@ impl AppSettings {
     pub fn save_to_disk(&self) -> Result<(), SettingsError> {
         tracing::debug!("Saving settings to disk");
         let settings_file_path = self.get_config_file_path()?;
-        let mut file = File::create(settings_file_path)?;
-        file.write_all(CONFIG_HEADER.as_bytes())?;
-        let toml = toml::to_string(&self)?;
-        file.write_all(toml.as_bytes())?;
+        // Atomic: the config is rewritten on every preference change and on
+        // every migration, and a truncated one is what the corrupt-config
+        // branch below exists to clean up after.
+        let body = format!("{CONFIG_HEADER}{}", toml::to_string(&self)?);
+        system::replace_atomically(&settings_file_path, body.as_bytes())?;
         Ok(())
     }
 
@@ -542,7 +602,7 @@ impl AppSettings {
         let settings_file_path = Self::default_config_file_path()?;
 
         if !settings_file_path.exists() {
-            let default_settings = Self::default();
+            let default_settings = Self::defaults_for_config_file(settings_file_path);
             default_settings.save_to_disk()?;
             Ok(default_settings)
         } else {
@@ -571,8 +631,8 @@ impl AppSettings {
                         e
                     );
                     let corrupt_path = settings_file_path.with_extension("toml.corrupt");
-                    let _ = fs::rename(&settings_file_path, &corrupt_path);
-                    let defaults = Self::default();
+                    let _ = system::move_file(&settings_file_path, &corrupt_path);
+                    let defaults = Self::defaults_for_config_file(settings_file_path);
                     defaults.save_to_disk()?;
                     Ok(defaults)
                 }
@@ -581,14 +641,17 @@ impl AppSettings {
     }
 
     pub fn load_from_file(path: PathBuf) -> Result<Self, SettingsError> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
+        // A bare filename (`--config kimun.toml`) has an *empty* parent, not
+        // no parent. Creating it is a no-op the OS accepts, but canonicalizing
+        // "" fails, so the empty case has to be filtered out here — otherwise
+        // every such invocation aborts before the config is even read.
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            system::create_dir(parent)?;
         }
         if !path.exists() {
-            let default_settings = Self {
-                config_file: Some(path),
-                ..Self::default()
-            };
+            let default_settings = Self::defaults_for_config_file(path);
             default_settings.save_to_disk()?;
             return Ok(default_settings);
         }
@@ -602,7 +665,7 @@ impl AppSettings {
                 // directory (see `config_base_dir` for why it is canonicalized).
                 setting.resolve_paths(&Self::config_base_dir(&path));
 
-                // Run config migrations (e.g. Phase 1 → Phase 2 workspace_dir).
+                // Run config migrations (keybinding moves, v3 onwards).
                 if config_migration::ConfigMigration::run(&mut setting)? {
                     setting.save_to_disk()?;
                 }
@@ -618,11 +681,8 @@ impl AppSettings {
                     e
                 );
                 let corrupt_path = path.with_extension("toml.corrupt");
-                let _ = fs::rename(&path, &corrupt_path);
-                let defaults = Self {
-                    config_file: Some(path),
-                    ..Self::default()
-                };
+                let _ = system::move_file(&path, &corrupt_path);
+                let defaults = Self::defaults_for_config_file(path);
                 defaults.save_to_disk()?;
                 Ok(defaults)
             }
@@ -663,31 +723,38 @@ impl AppSettings {
         self.key_bindings = KeyBindings::from_hashmap(current);
     }
 
-    // We set a new workspace to work with, remember to save the data
-    // to persist it in disk
-    pub fn set_workspace(&mut self, workspace_path: &PathBuf) {
-        if let Some(current_workspace_dir) = &self.workspace_dir
-            && workspace_path != current_workspace_dir
-        {
+    /// Points the *selected* workspace entry at `workspace_path`, flagging a
+    /// reindex when that actually changes where its notes are.
+    ///
+    /// `name` is the entry to repoint; a name with no entry is a no-op.
+    pub fn set_workspace_path(&mut self, name: &str, workspace_path: PathBuf) {
+        let Some(entry) = self
+            .workspace_config
+            .as_mut()
+            .and_then(|wc| wc.workspaces.get_mut(name))
+        else {
+            return;
+        };
+        if *entry.effective_path() != workspace_path {
             self.needs_indexing = true;
         }
-
-        self.workspace_dir = Some(workspace_path.to_owned());
+        entry.path = workspace_path;
+        entry.resolved_path = None;
     }
 
-    /// Removes the active workspace path so the user is prompted to choose a new one.
-    /// Handles both Phase 1 (workspace_dir) and Phase 2 (workspace_config) config formats.
+    /// Removes the active workspace entry so the user is prompted to choose a
+    /// new one.
     ///
-    /// For Phase 2: only the currently active workspace entry is removed; other workspace
-    /// entries in the config are preserved. After this call, `workspace_config` remains
-    /// `Some` but `get_current_workspace()` returns `None`.
+    /// Only the currently active entry is removed; other workspace entries are
+    /// preserved. After this call, `workspace_config` remains `Some` but
+    /// `get_current_workspace()` returns `None`.
+    ///
+    /// Deliberately leaves the index and history on disk: the caller for this
+    /// is a vault the app could not open (a case conflict it wants fixed), and
+    /// the user is expected to re-add the same workspace once they have. See
+    /// [`crate::settings::delete_artifacts`] for the deletion that goes with an
+    /// intentional "remove this workspace".
     pub fn clear_workspace(&mut self) {
-        // Phase 1
-        if self.workspace_dir.is_some() {
-            self.workspace_dir = None;
-            self.needs_indexing = true;
-        }
-        // Phase 2
         if let Some(wc) = &mut self.workspace_config {
             let key = wc.global.current_workspace.clone();
             if !key.is_empty() {
@@ -697,36 +764,62 @@ impl AppSettings {
         }
     }
 
-    /// Resolve the active workspace path from Phase 2 (workspace_config) or
-    /// Phase 1 (workspace_dir). Returns `None` if no workspace is configured.
-    pub fn resolve_workspace_path(&self) -> Option<PathBuf> {
-        self.workspace_config
+    /// Resolve the active workspace's path. Returns `None` if no workspace is
+    /// configured.
+    pub fn resolve_workspace_path(&self) -> Option<SystemPath> {
+        let raw = self
+            .workspace_config
             .as_ref()
             .and_then(|wc| wc.get_current_workspace())
-            .map(|entry| entry.effective_path().clone())
-            .or_else(|| self.workspace_dir.clone())
+            .map(|entry| entry.effective_path().clone())?;
+        // Config paths are made absolute by `resolve_paths` on load. One that
+        // still is not cannot name a vault on this machine, so it is reported
+        // as "no workspace" rather than opened relative to wherever the
+        // process happens to be running.
+        match SystemPath::try_absolute(&raw) {
+            Ok(path) => Some(path),
+            Err(e) => {
+                tracing::warn!("ignoring unusable workspace path {raw:?}: {e}");
+                None
+            }
+        }
     }
 
     /// Resolve `~` and relative paths in workspace entries.
     /// Relative paths are resolved against `base` (typically the config file's
     /// parent directory). Called once after deserialization.
-    fn resolve_paths(&mut self, base: &std::path::Path) {
-        // Legacy workspace_dir — resolve in place (it's a legacy field that
-        // gets consumed by migration anyway).
-        if let Some(ref mut p) = self.workspace_dir {
-            *p = Self::expand_path(p, base);
-        }
-        // Phase 2 workspace entries — populate resolved_path, keep original path intact.
+    fn resolve_paths(&mut self, base: &SystemPath) {
+        // Workspace entries — populate resolved_path, keep original path intact.
         if let Some(ref mut wc) = self.workspace_config {
             for entry in wc.workspaces.values_mut() {
-                let resolved = Self::expand_path(&entry.path, base);
+                let resolved = SystemPath::resolve(&entry.path, base).into_path_buf();
                 if resolved != entry.path {
                     entry.resolved_path = Some(resolved);
                 }
             }
         }
-        self.cache_dir_resolved = Some(Self::expand_path(&self.cache_dir, base));
-        self.history_dir_resolved = Some(Self::expand_path(&self.history_dir, base));
+        self.cache_dir_resolved = SystemPath::resolve(&self.cache_dir, base);
+        self.history_dir_resolved = SystemPath::resolve(&self.history_dir, base);
+    }
+
+    /// Freshly defaulted settings for a config file that could not be loaded —
+    /// one that does not exist yet, or one too corrupt to parse — with
+    /// `config_file` pointing at it and its relative paths resolved against
+    /// its directory.
+    ///
+    /// The resolve is the whole point: `cache_dir` / `history_dir` default to
+    /// `.` and `history`, and [`Self::default`] can only anchor them on the
+    /// *default* config directory. A config file elsewhere (`--config`) must
+    /// re-anchor them on its own directory, or its workspaces' indexes land
+    /// next to somebody else's.
+    fn defaults_for_config_file(path: PathBuf) -> Self {
+        let base = Self::config_base_dir(&path);
+        let mut settings = Self {
+            config_file: Some(path),
+            ..Self::default()
+        };
+        settings.resolve_paths(&base);
+        settings
     }
 
     /// The directory a config file's relative paths resolve against, in the
@@ -746,35 +839,20 @@ impl AppSettings {
     /// settings paths would never become absolute.
     ///
     /// [`Path::parent`]: std::path::Path::parent
-    fn config_base_dir(config_file: &std::path::Path) -> PathBuf {
+    fn config_base_dir(config_file: &std::path::Path) -> SystemPath {
         let dir = config_file
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or(std::path::Path::new("."));
-        dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf())
-    }
-
-    /// Expand `~` to the home directory and resolve relative paths against `base`.
-    /// Returns an absolute path. If the resolved path exists on disk, it is
-    /// canonicalized to remove `.` and `..` components.
-    fn expand_path(path: &std::path::Path, base: &std::path::Path) -> PathBuf {
-        let s = path.to_string_lossy();
-        let expanded = if s.starts_with("~/") || s == "~" {
-            if let Ok(home) = config_dir::get_home_dir() {
-                home.join(s.strip_prefix("~/").unwrap_or(""))
-            } else {
-                path.to_path_buf()
-            }
-        } else {
-            path.to_path_buf()
-        };
-        let absolute = if expanded.is_relative() {
-            base.join(expanded)
-        } else {
-            expanded
-        };
-        // Canonicalize if the path exists, otherwise return as-is.
-        absolute.canonicalize().unwrap_or(absolute)
+        // `.` (a bare `--config kimun.toml`) is the one place resolving
+        // against the working directory is what the user meant: they named
+        // the file from there moments ago.
+        SystemPath::canonical(dir)
+            .or_else(|_| {
+                let cwd = std::env::current_dir().unwrap_or_default();
+                SystemPath::try_absolute(cwd.join(dir))
+            })
+            .unwrap_or_else(|_| default_settings_base_dir())
     }
 
     pub fn set_theme(&mut self, theme: String) {
@@ -796,9 +874,9 @@ impl AppSettings {
         let Some(workspace_name) = self.current_workspace_name() else {
             return;
         };
-        let file_path = self.history_path_for(&workspace_name);
-        if let Err(e) = history::push_history(&file_path, note_path) {
-            tracing::warn!("failed to write history {:?}: {}", file_path, e);
+        let history = self.history_for(&workspace_name);
+        if let Err(e) = history.push(note_path) {
+            tracing::warn!("failed to write history {history}: {e}");
         }
     }
 
@@ -809,39 +887,66 @@ impl AppSettings {
             .filter(|s| !s.is_empty())
     }
 
-    pub fn cache_dir_resolved(&self) -> Option<&Path> {
-        self.cache_dir_resolved.as_deref()
+    /// The directory workspace cache files live in.
+    pub fn cache_dir_resolved(&self) -> &SystemPath {
+        &self.cache_dir_resolved
     }
 
-    pub fn history_dir_resolved(&self) -> Option<&Path> {
-        self.history_dir_resolved.as_deref()
+    /// The directory workspace history files live in.
+    pub fn history_dir_resolved(&self) -> &SystemPath {
+        &self.history_dir_resolved
     }
 
-    /// Path to the SQLite cache file for the named workspace.
-    /// Caller must have already validated `workspace_name` via
+    /// What the named workspace's files are called on disk.
+    ///
+    /// Its name, until the workspace is renamed — from then on the name it had
+    /// when its files were created (see [`WorkspaceEntry::file_key`]). Falling
+    /// back to the name when there is no entry is what lets `workspace init`
+    /// name the index before the entry exists.
+    ///
+    /// [`WorkspaceEntry::file_key`]: workspace_config::WorkspaceEntry::file_key
+    fn file_key_for(&self, workspace_name: &str) -> String {
+        self.workspace_config
+            .as_ref()
+            .and_then(|wc| wc.get_workspace(workspace_name))
+            .map(|entry| entry.file_key_or(workspace_name))
+            .unwrap_or_else(|| workspace_name.to_string())
+    }
+
+    /// The named workspace's index file.
+    ///
+    /// Returns the artifact, not a path: what the file is called, and that it
+    /// carries `-wal`/`-shm` siblings, is [`IndexFile`]'s business. Caller
+    /// must have already validated `workspace_name` via
     /// `kimun_core::nfs::filename::validate_filename`.
-    pub fn cache_path_for(&self, workspace_name: &str) -> PathBuf {
-        Self::workspace_file(
-            self.cache_dir_resolved.as_ref().unwrap_or(&self.cache_dir),
-            workspace_name,
-            CACHE_FILE_EXT,
+    pub fn index_for(&self, workspace_name: &str) -> IndexFile {
+        IndexFile::in_dir(&self.cache_dir_resolved, &self.file_key_for(workspace_name))
+    }
+
+    /// The named workspace's history file — the artifact, not a path, for the
+    /// same reason as [`Self::index_for`]. Caller must have already validated
+    /// `workspace_name`.
+    pub fn history_for(&self, workspace_name: &str) -> HistoryFile {
+        HistoryFile::in_dir(
+            &self.history_dir_resolved,
+            &self.file_key_for(workspace_name),
         )
     }
 
-    /// Path to the history file for the named workspace.
-    /// Caller must have already validated `workspace_name`.
-    pub fn history_path_for(&self, workspace_name: &str) -> PathBuf {
-        Self::workspace_file(
-            self.history_dir_resolved
-                .as_ref()
-                .unwrap_or(&self.history_dir),
-            workspace_name,
-            HISTORY_FILE_EXT,
+    /// Everything on disk that belongs to the named workspace.
+    ///
+    /// Must be read *before* the entry is dropped from `workspace_config`:
+    /// both file names come from its [`file_key`], so removing the entry first
+    /// strands them under a name nothing can map back to a workspace. Pure and
+    /// cheap, so the caller can take these, release the settings lock, and do
+    /// the deleting outside it — see [`delete_artifacts`].
+    ///
+    /// [`file_key`]: workspace_config::WorkspaceEntry::file_key
+    pub fn workspace_artifacts(&self, workspace_name: &str) -> (IndexFile, HistoryFile) {
+        (
+            self.index_for(workspace_name),
+            self.history_for(workspace_name),
         )
-    }
-
-    fn workspace_file(dir: &Path, workspace_name: &str, ext: &str) -> PathBuf {
-        dir.join(format!("{workspace_name}.{ext}"))
     }
 
     /// Returns the last-visited paths for the current workspace.
@@ -849,8 +954,7 @@ impl AppSettings {
         let Some(name) = self.current_workspace_name() else {
             return Vec::new();
         };
-        let file_path = self.history_path_for(&name);
-        history::load_history(&file_path)
+        self.history_for(&name).load()
     }
 
     /// Build the icon set for the current `use_nerd_fonts` setting.
@@ -894,9 +998,42 @@ impl AppSettings {
     }
 }
 
+/// Path helpers shared by this file's test modules.
+#[cfg(test)]
+mod test_paths {
+    use std::path::PathBuf;
+
+    /// Builds a genuinely absolute path for the host from `/`-separated
+    /// components.
+    ///
+    /// A literal like `"/config/dir"` is absolute on Unix but merely *rooted*
+    /// on Windows, where [`Path::is_absolute`] also wants a prefix (`C:\`).
+    /// Passing the literal straight in doesn't just weaken these tests there,
+    /// it inverts them: `expand_path` sees a relative path, rebases it onto
+    /// `base`, and the `is_absolute` assertion then fails on behavior that is
+    /// in fact correct.
+    ///
+    /// [`Path::is_absolute`]: std::path::Path::is_absolute
+    pub(super) fn absolute(unix_style: &str) -> PathBuf {
+        let trimmed = unix_style.trim_start_matches('/');
+        if cfg!(windows) {
+            PathBuf::from(format!("C:\\{}", trimmed.replace('/', "\\")))
+        } else {
+            PathBuf::from(format!("/{trimmed}"))
+        }
+    }
+
+    /// The same path as a TOML string literal's contents — Windows separators
+    /// have to survive TOML's own escaping.
+    pub(super) fn absolute_toml(unix_style: &str) -> String {
+        absolute(unix_style).to_string_lossy().replace('\\', "\\\\")
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
+    use super::test_paths::absolute;
     use super::*;
 
     #[test]
@@ -1013,26 +1150,10 @@ Quit = ["ctrl&Q"]
     }
 
     #[test]
-    fn clear_workspace_phase1_clears_workspace_dir() {
-        let mut settings = AppSettings::default();
-        settings.workspace_dir = Some(PathBuf::from("/tmp/vault"));
-        settings.needs_indexing = false;
-        settings.clear_workspace();
-        assert!(
-            settings.workspace_dir.is_none(),
-            "workspace_dir should be None"
-        );
-        assert!(
-            settings.needs_indexing,
-            "needs_indexing should be reset to true"
-        );
-    }
-
-    #[test]
-    fn clear_workspace_phase2_removes_current_workspace_entry() {
+    fn clear_workspace_removes_the_current_workspace_entry() {
         let mut settings = AppSettings::default();
         let mut wc = WorkspaceConfig::new_empty();
-        wc.add_workspace("vault1".to_string(), PathBuf::from("/tmp/vault1"))
+        wc.add_workspace("vault1".to_string(), absolute("/tmp/vault1"))
             .unwrap();
         settings.workspace_config = Some(wc);
         // Assert precondition: add_workspace auto-selects the first workspace
@@ -1058,36 +1179,10 @@ Quit = ["ctrl&Q"]
     }
 
     #[test]
-    fn clear_workspace_both_phases_active() {
-        // When Phase 1 and Phase 2 fields are both populated (e.g. during migration),
-        // clear_workspace must clear both independently.
-        let mut settings = AppSettings::default();
-        settings.workspace_dir = Some(PathBuf::from("/tmp/vault"));
-        let mut wc = WorkspaceConfig::new_empty();
-        wc.add_workspace("vault1".to_string(), PathBuf::from("/tmp/vault1"))
-            .unwrap();
-        settings.workspace_config = Some(wc);
-        settings.clear_workspace();
-        assert!(
-            settings.workspace_dir.is_none(),
-            "phase1 workspace_dir should be cleared"
-        );
-        let wc = settings.workspace_config.as_ref().unwrap();
-        assert!(
-            wc.workspaces.is_empty(),
-            "phase2 workspace entry should be removed"
-        );
-        assert!(
-            wc.global.current_workspace.is_empty(),
-            "phase2 current_workspace should be empty"
-        );
-    }
-
-    #[test]
-    fn clear_workspace_phase2_preserves_other_workspaces() {
+    fn clear_workspace_preserves_other_workspaces() {
         let mut settings = AppSettings::default();
         let mut wc = WorkspaceConfig::new_empty();
-        wc.add_workspace("vault1".to_string(), PathBuf::from("/tmp/vault1"))
+        wc.add_workspace("vault1".to_string(), absolute("/tmp/vault1"))
             .unwrap();
         wc.add_workspace("vault2".to_string(), PathBuf::from("/tmp/vault2"))
             .unwrap();
@@ -1112,6 +1207,7 @@ Quit = ["ctrl&Q"]
 
 #[cfg(test)]
 mod backend_tests {
+    use super::test_paths::{absolute, absolute_toml};
     use super::*;
 
     #[test]
@@ -1167,129 +1263,32 @@ mod backend_tests {
         assert_eq!(back.editor_backend, EditorBackendSetting::Vim);
     }
 
-    // ── expand_path tests ──────────────────────────────────────────────
-
+    /// Workspace cache/history paths are absolute however the settings were
+    /// built — including the two constructions that never run `resolve_paths`:
+    /// a bare `default()` and a plain deserialize. A relative one anchors the
+    /// index on the process's working directory, so every kimün started from
+    /// the same place would share one index.
     #[test]
-    fn expand_path_absolute_unchanged() {
-        let base = PathBuf::from("/config/dir");
-        let result = AppSettings::expand_path(std::path::Path::new("/absolute/path/notes"), &base);
-        assert!(result.is_absolute());
-        assert!(result.to_string_lossy().contains("absolute"));
-    }
-
-    #[test]
-    fn expand_path_relative_resolved_against_base() {
-        let base = tempfile::TempDir::new().unwrap();
-        let notes = base.path().join("notes");
-        std::fs::create_dir_all(&notes).unwrap();
-
-        let result = AppSettings::expand_path(std::path::Path::new("notes"), base.path());
-        assert!(result.is_absolute());
-        assert_eq!(result, notes.canonicalize().unwrap());
-    }
-
-    #[test]
-    fn expand_path_relative_with_dotdot() {
-        let base = tempfile::TempDir::new().unwrap();
-        let sibling = base.path().join("sibling");
-        std::fs::create_dir_all(&sibling).unwrap();
-        let sub = base.path().join("sub");
-        std::fs::create_dir_all(&sub).unwrap();
-
-        let result = AppSettings::expand_path(std::path::Path::new("../sibling"), &sub);
-        assert!(result.is_absolute());
-        assert_eq!(result, sibling.canonicalize().unwrap());
-    }
-
-    #[test]
-    fn expand_path_nonexistent_relative_still_absolute() {
-        let base = PathBuf::from("/some/config/dir");
-        let result = AppSettings::expand_path(std::path::Path::new("my-notes"), &base);
-        assert!(result.is_absolute());
-        assert_eq!(result, PathBuf::from("/some/config/dir/my-notes"));
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn expand_path_tilde_uses_home_unix() {
-        // `expand_path` canonicalizes when the target exists. Testing that
-        // against a real user's `~/Documents/notes` is unreliable: besides
-        // `$HOME` symlinks, a case-insensitive filesystem (the macOS default)
-        // will happily match an already-existing differently-cased directory
-        // (e.g. `~/Documents/Notes`) and canonicalize returns that casing, not
-        // the literal target string. So we create our own unique, disposable
-        // directory to exercise the exists-and-gets-canonicalized branch
-        // deterministically.
-        //
-        // It has to live under the *real* `$HOME`, not a tempdir: `~` expands
-        // via `config_dir::get_home_dir`, which reads the `HOME` env var, and
-        // env vars are process-global — pointing `HOME` at a tempdir would
-        // race every other test in this binary. Hence the PID-keyed name and
-        // the drop guard (which a SIGKILL would still outlive, leaving one
-        // stray `kimun-test-tilde-expand-*` directory behind).
-        let home = PathBuf::from(std::env::var("HOME").expect("HOME must be set on Unix"));
-        let unique = format!("kimun-test-tilde-expand-{}", std::process::id());
-        let target_dir = home.join(&unique).join("notes");
-        std::fs::create_dir_all(&target_dir).unwrap();
-
-        struct RemoveOnDrop(PathBuf);
-        impl Drop for RemoveOnDrop {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_dir_all(&self.0);
-            }
+    fn workspace_paths_are_absolute_without_resolve_paths() {
+        for settings in [
+            AppSettings::default(),
+            toml::from_str::<AppSettings>("theme = \"gruvbox_dark\"\n").unwrap(),
+        ] {
+            let cache = settings.index_for("w");
+            let history = settings.history_for("w");
+            assert!(
+                cache.path().as_path().is_absolute(),
+                "cache path not absolute: {cache}"
+            );
+            assert!(
+                history.path().as_path().is_absolute(),
+                "history path not absolute: {history}"
+            );
         }
-        let _cleanup = RemoveOnDrop(home.join(&unique));
-
-        let base = PathBuf::from("/irrelevant");
-        let result =
-            AppSettings::expand_path(std::path::Path::new(&format!("~/{unique}/notes")), &base);
-
-        assert_eq!(result, target_dir.canonicalize().unwrap());
     }
 
-    /// The expansion itself, with the canonicalization taken out of the picture:
-    /// a target that cannot exist always takes `expand_path`'s plain-join
-    /// branch, so this pins `~/` → `$HOME` on every machine.
-    #[test]
-    #[cfg(unix)]
-    fn expand_path_tilde_expands_to_home_even_when_the_target_is_missing_unix() {
-        let home = PathBuf::from(std::env::var("HOME").expect("HOME must be set on Unix"));
-        let base = PathBuf::from("/irrelevant");
-        let result = AppSettings::expand_path(
-            std::path::Path::new("~/kimun-no-such-directory-2f8a1c/notes"),
-            &base,
-        );
-        assert_eq!(result, home.join("kimun-no-such-directory-2f8a1c/notes"));
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn expand_path_tilde_alone_is_home_unix() {
-        let home = std::env::var("HOME").expect("HOME must be set on Unix");
-        let base = PathBuf::from("/irrelevant");
-        let result = AppSettings::expand_path(std::path::Path::new("~"), &base);
-        assert!(result.is_absolute());
-        // canonicalize may resolve symlinks, so compare canonicalized forms
-        let expected = PathBuf::from(&home)
-            .canonicalize()
-            .unwrap_or(PathBuf::from(&home));
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn expand_path_tilde_uses_userprofile_windows() {
-        let home = std::env::var("USERPROFILE").expect("USERPROFILE must be set on Windows");
-        let base = PathBuf::from("C:\\irrelevant");
-        let result = AppSettings::expand_path(std::path::Path::new("~/Documents/notes"), &base);
-        assert!(result.is_absolute());
-        assert!(
-            result.starts_with(&home),
-            "expected path to start with USERPROFILE={}, got {:?}",
-            home,
-            result
-        );
-    }
+    // `expand_path` and its tests moved to `kimun_core::system`, where the
+    // path rules now live; what stays here is how *settings* anchor them.
 
     #[test]
     fn resolve_paths_populates_resolved_path() {
@@ -1308,7 +1307,7 @@ created = "2026-01-01T00:00:00Z"
 "#
         .to_string();
         let mut settings: AppSettings = toml::from_str(&toml).unwrap();
-        settings.resolve_paths(base.path());
+        settings.resolve_paths(&SystemPath::try_absolute(base.path()).unwrap());
 
         let wc = settings.workspace_config.as_ref().unwrap();
         let entry = wc.workspaces.get("test").unwrap();
@@ -1319,25 +1318,77 @@ created = "2026-01-01T00:00:00Z"
         assert!(entry.effective_path().is_absolute());
     }
 
+    /// A config file that does not exist yet still has to yield paths anchored
+    /// to its own directory. `index_for`/`history_for` fall back to
+    /// the *raw* `cache_dir`/`history_dir` when nothing resolved them, and
+    /// those default to `.` and `history` — relative, so unresolved defaults
+    /// put the workspace index wherever the process happens to be running.
+    /// Every process sharing a working directory then shares one index file:
+    /// in CI that is several test binaries racing to create the same schema
+    /// ("table appData already exists"), and for a user it is a first-run
+    /// index dropped in whatever directory they launched from.
+    #[test]
+    fn load_from_file_resolves_paths_for_a_config_that_does_not_exist_yet() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config_dir = dir.path().canonicalize().unwrap();
+        let settings = AppSettings::load_from_file(config_dir.join("config.toml")).unwrap();
+
+        let cache = settings.index_for("work");
+        let history = settings.history_for("work");
+        assert!(
+            cache.path().as_path().starts_with(&config_dir),
+            "cache path must sit next to the config file, got {cache}"
+        );
+        assert!(
+            history.path().as_path().starts_with(&config_dir),
+            "history path must sit next to the config file, got {history}"
+        );
+    }
+
+    /// Same requirement on the other branch that hands back bare defaults: an
+    /// unparseable config is renamed aside and replaced, and those
+    /// replacements need resolving just as much.
+    #[test]
+    fn load_from_file_resolves_paths_when_the_config_is_corrupt() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config_dir = dir.path().canonicalize().unwrap();
+        let config_path = config_dir.join("config.toml");
+        std::fs::write(&config_path, "not = valid toml [[[").unwrap();
+
+        let settings = AppSettings::load_from_file(config_path).unwrap();
+
+        let cache = settings.index_for("work");
+        assert!(
+            cache.path().as_path().starts_with(&config_dir),
+            "cache path must sit next to the config file, got {cache}"
+        );
+    }
+
     #[test]
     fn resolve_paths_absolute_no_resolved_path() {
-        let toml = r#"
+        // Host-absolute, not just `/`-rooted: on Windows `/absolute/notes` is
+        // a *relative* path, so it would pick up a resolved_path and invert
+        // both assertions below.
+        let toml = format!(
+            r#"
 config_version = 2
 [global]
 current_workspace = "test"
 [workspaces.test]
-path = "/absolute/notes"
+path = "{}"
 last_paths = []
 created = "2026-01-01T00:00:00Z"
-"#;
-        let mut settings: AppSettings = toml::from_str(toml).unwrap();
-        settings.resolve_paths(std::path::Path::new("/config"));
+"#,
+            absolute_toml("/absolute/notes")
+        );
+        let mut settings: AppSettings = toml::from_str(&toml).unwrap();
+        settings.resolve_paths(&SystemPath::try_absolute(absolute("/config")).unwrap());
 
         let wc = settings.workspace_config.as_ref().unwrap();
         let entry = wc.workspaces.get("test").unwrap();
         // No resolved_path needed for already-absolute paths
         assert!(entry.resolved_path.is_none());
-        assert_eq!(*entry.effective_path(), PathBuf::from("/absolute/notes"));
+        assert_eq!(*entry.effective_path(), absolute("/absolute/notes"));
     }
 }
 

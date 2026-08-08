@@ -1,21 +1,18 @@
+use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
-use kimun_core::{NoteVault, VaultConfig};
 use kimun_notes::cli::output::OutputFormat;
 use kimun_notes::cli::{CliCommand, run_cli};
 use kimun_notes::settings::AppSettings;
 use tempfile::TempDir;
 
-/// Create a temporary vault with test notes indexed.
-async fn setup_test_vault(dir: &TempDir) -> NoteVault {
-    let vault = NoteVault::new(VaultConfig::new(dir.path()))
-        .await
-        .expect("failed to create vault");
+mod common;
+use common::open_test_vault;
 
-    // Initialize DB schema before creating notes
-    vault
-        .validate_and_init()
-        .await
-        .expect("failed to init vault");
+/// Create a temporary vault with test notes indexed, then close it — every
+/// caller drives the vault through the CLI afterwards, so leaving this one
+/// open would only pin the index file (see `common::open_test_vault`).
+async fn setup_test_vault(dir: &TempDir) {
+    let vault = open_test_vault(dir.path()).await;
 
     // Create a couple of test notes
     vault
@@ -40,13 +37,25 @@ async fn setup_test_vault(dir: &TempDir) -> NoteVault {
         .await
         .expect("failed to recreate index");
 
-    vault
+    vault.close().await;
 }
 
-/// Write a minimal config file that points workspace at the given path.
+/// A config at the current version with a single workspace.
+///
+/// `cache_dir`/`history_dir` are left at their defaults, which resolve against
+/// the config file's own directory — so a test writing this into a `TempDir`
+/// keeps its index and history there rather than in the real installation.
 fn write_config(config_path: &std::path::Path, workspace: &std::path::Path) {
     let toml = format!(
-        "workspace_dir = {:?}\n",
+        r#"config_version = 6
+
+[global]
+current_workspace = "default"
+
+[workspaces.default]
+path = {:?}
+created = "2024-01-15T10:30:00Z"
+"#,
         workspace.to_string_lossy().as_ref()
     );
     std::fs::write(config_path, toml).expect("failed to write config file");
@@ -140,16 +149,16 @@ async fn test_cli_no_workspace_error() {
     let config_dir = TempDir::new().unwrap();
     let config_path = config_dir.path().join("config.toml");
 
-    // Write a config with no workspace_dir set
+    // Write a config with no workspace configured at all
     std::fs::write(&config_path, "# empty config\n").unwrap();
 
     // The CLI exits the process when no workspace is configured; we verify
-    // the settings layer itself returns None for workspace_dir so the CLI
-    // would hit the error branch.
+    // the settings layer itself resolves no workspace path, so the CLI would
+    // hit the error branch.
     let settings = AppSettings::load_from_file(config_path).expect("settings should load");
     assert!(
-        settings.workspace_dir.is_none(),
-        "workspace_dir should be None when not set in config"
+        settings.resolve_workspace_path().is_none(),
+        "no workspace should resolve when none is set in config"
     );
 }
 
@@ -167,7 +176,7 @@ async fn test_cli_custom_config() {
     write_config(&config_path, workspace_dir.path());
 
     // Verify the config is honoured: settings loaded from the custom path
-    // should point to our temp workspace via Phase 2 workspace_config after migration.
+    // should point to our temp workspace via its workspace_config entry.
     let settings = AppSettings::load_from_file(config_path.clone()).expect("settings should load");
     let ws_config = settings
         .workspace_config
@@ -176,13 +185,15 @@ async fn test_cli_custom_config() {
     let default_ws = ws_config
         .workspaces
         .get("default")
-        .expect("should have 'default' workspace after migration");
-    // `resolve_paths` canonicalizes `workspace_dir` since it exists on disk
-    // (same as `AppSettings::expand_path`), so on macOS the loaded path comes
-    // back as `/private/var/...` while the raw `TempDir` path is `/var/...`
-    // (a symlink). Compare canonical forms on both sides.
+        .expect("should have the 'default' workspace");
+    // `effective_path`, not `path`: `resolve_paths` leaves `path` exactly as
+    // the config file wrote it and puts the canonicalized form in
+    // `resolved_path`. The two differ on any host where the temp directory is
+    // reached through a symlink or a short name — `/var/…` against
+    // `/private/var/…` on macOS, `RUNNER~1` against `\\?\C:\Users\runneradmin`
+    // on Windows — which is why comparing `path` passed on Linux alone.
     assert_eq!(
-        default_ws.path.as_path(),
+        default_ws.effective_path().as_path(),
         workspace_dir.path().canonicalize().unwrap().as_path(),
         "--config flag should load settings from the specified file"
     );
@@ -209,14 +220,11 @@ async fn test_cli_custom_config() {
 // ---------------------------------------------------------------------------
 
 /// Create a temporary vault with notes designed for exclusion testing.
+///
+/// Returned open, because these tests assert against the vault directly after
+/// running the CLI; each one closes it before its `TempDir` drops.
 async fn setup_exclusion_test_vault(dir: &TempDir) -> NoteVault {
-    let vault = NoteVault::new(VaultConfig::new(dir.path()))
-        .await
-        .expect("failed to create vault");
-    vault
-        .validate_and_init()
-        .await
-        .expect("failed to init vault");
+    let vault = open_test_vault(dir.path()).await;
 
     vault
         .create_note(
@@ -307,6 +315,8 @@ async fn test_cli_search_basic_exclusions() {
         "Should exclude cancelled-meeting note; found: {:?}",
         paths
     );
+
+    vault.close().await;
 }
 
 // ---------------------------------------------------------------------------
@@ -397,6 +407,8 @@ async fn test_cli_search_compound_exclusions() {
         "Should exclude project-draft note; found: {:?}",
         paths
     );
+
+    vault.close().await;
 }
 
 // ---------------------------------------------------------------------------
@@ -513,6 +525,8 @@ async fn test_cli_search_exclusion_only() {
         "Should find other notes when excluding draft title; found: {:?}",
         paths
     );
+
+    vault.close().await;
 }
 
 #[tokio::test]
@@ -557,8 +571,7 @@ async fn test_paths_format_empty_results() {
 #[tokio::test]
 async fn test_paths_format_path_with_spaces() {
     let dir = TempDir::new().unwrap();
-    let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
-    vault.validate_and_init().await.unwrap();
+    let vault = open_test_vault(dir.path()).await;
 
     // Create two notes whose paths contain spaces
     vault
@@ -576,6 +589,7 @@ async fn test_paths_format_path_with_spaces() {
         .await
         .unwrap();
     vault.recreate_index().await.unwrap();
+    vault.close().await;
 
     let config_path = dir.path().join("config.toml");
     write_config(&config_path, dir.path());

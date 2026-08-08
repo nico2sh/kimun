@@ -243,7 +243,11 @@ mod tests {
         std::fs::write(tmp.path().join("note.md"), "a").unwrap();
         std::fs::write(tmp.path().join("Note.md"), "b").unwrap();
 
-        let vault = Arc::new(NoteVault::new(VaultConfig::new(tmp.path())).await.unwrap());
+        let vault = Arc::new(
+            NoteVault::new(VaultConfig::new(crate::test_support::sys(tmp.path())))
+                .await
+                .unwrap(),
+        );
         let (tx, mut rx) = unbounded_channel::<AppEvent>();
         let mut screen = StartScreen::new(shared_defaults(), Some(vault));
         screen.on_enter(&tx).await;

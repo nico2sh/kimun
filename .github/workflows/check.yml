@@ -1,4 +1,5 @@
-# Test workflow: Run tests on Linux, compile-check on other platforms
+# Test workflow: Run tests on every platform Kimun ships for, plus a
+# compile-check for the one release target that has no runner to test on.
 # Triggered on pushes to main, pull requests, and manual dispatch
 on:
   push:
@@ -26,8 +27,32 @@ concurrency:
 
 jobs:
   test:
-    name: Test (Linux)
-    runs-on: ubuntu-latest
+    name: Test (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Every platform reports. A Windows-only failure must not hide whether
+      # macOS passed — with three OSes the first red one is rarely the whole
+      # story, and re-running to find out costs another full matrix.
+      fail-fast: false
+      matrix:
+        include:
+          # `lint` marks the one runner that also carries the
+          # platform-independent gates (fmt, clippy, benches, docs, the module
+          # boundary). Running them three times would triple the slowest steps
+          # to re-derive identical answers; what the other two are here for is
+          # the platform-*dependent* half — `#[cfg(windows)]` code that has
+          # never been compiled outside a lib-only `cargo check`, and the
+          # case-insensitive-filesystem paths (`CASE_INSENSITIVE_FS` in
+          # core/src/nfs) that Linux never exercises.
+          - name: Linux
+            os: ubuntu-latest
+            lint: true
+          - name: macOS ARM
+            os: macos-latest
+            lint: false
+          - name: Windows
+            os: windows-latest
+            lint: false
 
     steps:
       - name: Checkout repository
@@ -40,9 +65,10 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: test-linux
+          shared-key: test-${{ matrix.os }}
 
       - name: Format check
+        if: matrix.lint
         run: cargo fmt --all -- --check
 
       # `tui/src/ropetext` and `tui/src/server_client` were workspace crates,
@@ -53,6 +79,7 @@ jobs:
       # stopped enforcing it and this step took over. Keeping the rule keeps the
       # option of `git mv`-ing either one back out into a crate of its own.
       - name: Module boundary (ropetext, server_client stay extractable)
+        if: matrix.lint
         run: |
           # Comment lines are dropped first: the module docs state the rule, and
           # stating it means writing `crate::`. Only real paths are checked.
@@ -66,7 +93,17 @@ jobs:
             exit 1
           fi
 
+      # Filesystem operations live in `kimun_core::nfs` (vault-scoped) or
+      # `kimun_core::system` (host-scoped) — CLAUDE.md states the rule, this
+      # step keeps it true. Needs more than a grep: test code is exempt, and
+      # `#[cfg(test)]` blocks have to be stripped before matching. The script
+      # explains what it checks and what it deliberately does not.
+      - name: Filesystem operations stay in nfs and system
+        if: matrix.lint
+        run: python3 .github/scripts/check-host-fs.py
+
       - name: Clippy
+        if: matrix.lint
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       # Not redundant with the clippy step above, despite both saying
@@ -82,6 +119,7 @@ jobs:
       # apply to the whole dependency graph and none of that is needed to find a
       # compile error.
       - name: Check benches (bench profile — debug_assertions off)
+        if: matrix.lint
         run: cargo check --profile bench --workspace --all-targets
 
       # Neither clippy nor rustc sees rustdoc's lints, so broken intra-doc links
@@ -89,6 +127,7 @@ jobs:
       # -D warnings keeps them at zero: a link that stops resolving after a
       # rename fails here rather than rotting in the docs.
       - name: Docs
+        if: matrix.lint
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --no-deps --workspace
@@ -98,21 +137,25 @@ jobs:
         with:
           tool: cargo-nextest
 
+      # `--no-fail-fast`: nextest's default cancels the run on the first
+      # failure, which on a three-OS matrix turns one red platform into a
+      # partial answer — the report reads "2871 tests were not run" and the
+      # next failure only surfaces after another full round trip. Finishing
+      # the run costs a couple of minutes and states the whole problem once.
       - name: Run tests
-        run: cargo nextest run --workspace
+        run: cargo nextest run --workspace --no-fail-fast
 
+  # Release targets with no corresponding entry in the `test` matrix. macOS ARM
+  # and Windows used to be checked here; they run the full suite now, which
+  # compiles strictly more than `cargo check` does, so checking them again
+  # would only spend minutes to re-derive a subset of that answer.
   check:
     name: Check (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - name: macOS ARM
-            os: macos-latest
-            target: aarch64-apple-darwin
-          - name: Windows
-            os: windows-latest
-            target: x86_64-pc-windows-msvc
           # Covers the aarch64 linux release target — check runs build scripts,
           # so target-specific breakage (e.g. ort-sys prebuilt availability)
           # surfaces here instead of at release-tag time.

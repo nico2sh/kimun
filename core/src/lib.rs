@@ -15,21 +15,25 @@
 //! - **The index is a cache.** Search, backlinks, suggestions, and listings
 //!   are served from a SQLite index that mirrors the notes on disk. It can be
 //!   rebuilt at any time from the files, which remain the source of truth.
-//! - **`nfs` owns the filesystem.** Every direct `std::fs`/`tokio::fs` call
-//!   lives in the [`nfs`] module; the rest of the crate goes through it.
+//! - **`nfs` and `system` own the filesystem.** Every direct
+//!   `std::fs`/`tokio::fs` call lives in one of them: [`nfs`] for vault-scoped
+//!   work (notes, addressed by [`VaultPath`]) and [`system`]
+//!   for host-scoped work (the app's own directories, cross-volume moves).
+//!   The rest of the crate goes through them.
 //!
 //! # Example
 //!
 //! Create a vault in a temporary directory, write a note, and read it back:
 //!
 //! ```no_run
-//! use kimun_core::{NoteVault, VaultConfig};
+//! use kimun_core::{NoteVault, SystemPath, VaultConfig};
 //! use kimun_core::nfs::VaultPath;
 //!
 //! let dir = tempfile::tempdir().unwrap();
+//! let root = SystemPath::try_absolute(dir.path()).unwrap();
 //! let rt = tokio::runtime::Runtime::new().unwrap();
 //! rt.block_on(async {
-//!     let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
+//!     let vault = NoteVault::new(VaultConfig::new(root)).await.unwrap();
 //!     let path = VaultPath::new("/hello.md");
 //!     vault.create_note(&path, "# Hello\n").await.unwrap();
 //!     let text = vault.get_note_text(&path).await.unwrap();
@@ -41,14 +45,17 @@
 pub mod error;
 pub(crate) mod index;
 pub(crate) mod link_rewrite;
-/// Filesystem layer: the only place that touches the OS filesystem directly,
-/// plus the [`VaultPath`] vault-internal path type.
+/// Vault-scoped filesystem layer: notes, attachments and backups inside one
+/// workspace, addressed by the [`VaultPath`] vault-internal path type. Paired
+/// with [`system`], which owns host-scoped paths and operations.
 pub mod nfs;
 /// Note model: parsing Markdown into details, chunks, links, and tags.
 pub mod note;
 pub(crate) mod sync;
-/// Small standalone helpers (paths, log directory, diacritic folding).
-pub mod utilities;
+/// Host-scoped paths and file operations: the machine kimün runs on, its
+/// directories, and the file operations carrying OS-specific knowledge.
+pub mod system;
+pub use index::file::IndexFile;
 pub use index::search_terms::{
     expand_bare_note_prefixes, query_has_unterminated_quote, query_token_spans, quote_query_term,
     strip_order_directive, with_order_directive, OrderBy, OrderField, QueryTokenClass,
@@ -58,12 +65,12 @@ pub use index::{IndexDiff, IndexObserver, NoteChange, NoteSuggestion, TagSuggest
 pub use nfs::saved_searches::{saved_search_name_matches, SavedSearch};
 pub use nfs::vault_id::VaultId;
 pub use nfs::EntryKind;
-pub use utilities::{app_log_dir, ensure_dir_exists};
+pub use system::{Host, SystemPath};
 
 use std::{
     collections::HashMap,
     fmt::Display,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         mpsc::{Receiver, Sender},
         Arc,
@@ -79,7 +86,7 @@ use log::debug;
 use nfs::{NoteEntryData, VaultPath};
 use note::{ContentChunk, NoteContentData, NoteDetails};
 use sync::VaultSync;
-use utilities::path_to_string;
+use system::path_to_string;
 
 use crate::nfs::saved_searches;
 use crate::nfs::DirectoryEntryData;
@@ -131,11 +138,11 @@ impl IndexReport {
 /// the cache lives at `<workspace_path>/kimun.sqlite` (legacy default).
 #[derive(Debug, Clone)]
 pub struct VaultConfig {
-    /// OS path to the vault's root directory.
-    pub workspace_path: std::path::PathBuf,
-    /// Override for the SQLite cache location. When `None`, the cache lives at
+    /// The vault's root directory on this machine.
+    pub workspace_path: SystemPath,
+    /// Override for the index location. When `None`, the index lives at
     /// `<workspace_path>/kimun.sqlite` (legacy default).
-    pub db_path: Option<std::path::PathBuf>,
+    pub index: Option<IndexFile>,
     /// When `true`, destructive automated edits (overwrite, replace, delete, and
     /// the backlink rewrites of rename/move) copy a note's previous content into
     /// a hidden in-vault backup directory before mutating it. The TUI leaves this
@@ -146,18 +153,24 @@ pub struct VaultConfig {
 impl VaultConfig {
     /// Builds a config for the vault rooted at `workspace_path`, with the
     /// legacy default cache location and backups disabled.
-    pub fn new(workspace_path: impl Into<std::path::PathBuf>) -> Self {
+    ///
+    /// Takes a [`SystemPath`] rather than any `Into<PathBuf>` so a path that
+    /// the OS cannot use — relative, or carrying a `.` component that Windows
+    /// reads literally inside a verbatim path — cannot reach `create_dir_all`
+    /// or the SQLite open. Callers holding a raw path resolve it first, and
+    /// the failure lands where the path is built, not where it is opened.
+    pub fn new(workspace_path: SystemPath) -> Self {
         Self {
-            workspace_path: workspace_path.into(),
-            db_path: None,
+            workspace_path,
+            index: None,
             backup: false,
         }
     }
 
-    /// Overrides where the SQLite cache is stored, instead of the legacy
+    /// Overrides where the index is stored, instead of the legacy
     /// in-workspace default.
-    pub fn with_db_path(mut self, db_path: impl Into<std::path::PathBuf>) -> Self {
-        self.db_path = Some(db_path.into());
+    pub fn with_index(mut self, index: IndexFile) -> Self {
+        self.index = Some(index);
         self
     }
 
@@ -184,11 +197,14 @@ pub struct ReplacePreview {
 /// index. Cheap to clone — clones share the index pool and per-note locks.
 #[derive(Debug, Clone)]
 pub struct NoteVault {
-    /// Stored as `Arc<Path>` (not `Arc<PathBuf>`) because (a) it impls
-    /// `AsRef<Path>` directly so it can be passed to nfs helpers without
-    /// extra deref, (b) `Arc::clone` is a refcount bump for fan-out tasks
-    /// (backlink rewrites, indexing).
-    workspace_path: Arc<Path>,
+    /// A [`SystemPath`], so everything below this line knows the vault root is
+    /// absolute and normalized rather than taking the caller's word for it —
+    /// the same guarantee [`VaultConfig`] demands at construction, carried
+    /// inward instead of dropped at the door.
+    ///
+    /// Behind an `Arc` because `Arc::clone` is a refcount bump for the fan-out
+    /// tasks (backlink rewrites, indexing) that each need the root.
+    workspace_path: Arc<SystemPath>,
     journal_path: VaultPath,
     inbox_path: VaultPath,
     /// The vault's searchable note index. Crate-visible so the index module's
@@ -237,12 +253,12 @@ impl NoteVault {
             }));
         };
 
-        let db_path = config
-            .db_path
-            .unwrap_or_else(|| workspace_path.join(crate::index::DB_FILE));
-        let index = NoteIndex::open(&db_path).await?;
+        let index_file = config
+            .index
+            .unwrap_or_else(|| IndexFile::legacy_in_workspace(&workspace_path));
+        let index = NoteIndex::open(&index_file).await?;
         let note_vault = Self {
-            workspace_path: Arc::from(workspace_path.as_path()),
+            workspace_path: Arc::new(workspace_path),
             journal_path: VaultPath::new(DEFAULT_JOURNAL_PATH),
             inbox_path: VaultPath::new(DEFAULT_INBOX_PATH),
             index,
@@ -254,7 +270,7 @@ impl NoteVault {
     }
 
     /// OS path to the workspace root (filesystem root of this vault).
-    pub fn workspace_path(&self) -> &Path {
+    pub fn workspace_path(&self) -> &SystemPath {
         &self.workspace_path
     }
 
@@ -784,6 +800,38 @@ impl NoteVault {
         let note_details = NoteDetails::new(path, text);
         let content_data = self.index.save_note(&entry_data, &note_details).await?;
         Ok((entry_data, content_data))
+    }
+
+    /// The on-disk facts about one note — its size and modification time —
+    /// without reading it.
+    ///
+    /// Exists so callers that need a note's mtime (the CLI's JSON output) ask
+    /// the vault instead of stat-ing the path themselves: the vault is what
+    /// knows where a [`VaultPath`] really lives, including the
+    /// case-insensitive resolution behind it.
+    pub async fn note_entry(&self, path: &VaultPath) -> Result<NoteEntryData, VaultError> {
+        Ok(nfs::entry_data_at(self.workspace_path(), path).await?)
+    }
+
+    /// Ends this vault, releasing the index file's handles now instead of
+    /// leaving it to whenever the last clone of the connection pool drops.
+    ///
+    /// Call this before renaming, moving or deleting a workspace's index —
+    /// Windows refuses to touch a file that any handle still holds open, and
+    /// dropping a pool only *schedules* the close. A vault opened purely to
+    /// create or migrate a database should close it before the caller goes on
+    /// to move that file around.
+    ///
+    /// Takes `self` because this is not a per-handle release: clones share one
+    /// connection pool, so closing ends the index for *every* clone, which
+    /// then fails with a closed-pool error on its next query. Consuming the
+    /// receiver keeps that an explicit end-of-life for a vault the caller owns
+    /// rather than something a stray clone can do to everyone else — clone
+    /// first and close the clone and the same damage is back, so a vault
+    /// shared with live readers (the TUI's `Arc<NoteVault>`) must not be
+    /// closed at all.
+    pub async fn close(self) {
+        self.index.close().await;
     }
 
     /// The first note path at or after `path` that no note occupies: `path`
@@ -1503,7 +1551,9 @@ mod tests {
 
     // Helper: build a NoteVault pointing at a temp directory (no DB needed for pure-text tests).
     async fn make_vault(dir: &std::path::Path) -> NoteVault {
-        NoteVault::new(VaultConfig::new(dir)).await.unwrap()
+        NoteVault::new(VaultConfig::new(crate::system::sys(dir)))
+            .await
+            .unwrap()
     }
 
     // ---- index observer ----
@@ -2217,7 +2267,9 @@ mod tests {
     /// Create a small vault with a DB, write two notes, index them, then rename one
     /// and assert that the other note's content and DB links are updated.
     async fn setup_vault_with_notes(dir: &std::path::Path) -> NoteVault {
-        let vault = NoteVault::new(VaultConfig::new(dir)).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(crate::system::sys(dir)))
+            .await
+            .unwrap();
         vault.validate_and_init().await.unwrap();
         vault
     }
@@ -2250,9 +2302,12 @@ mod tests {
             .unwrap();
 
         // The referrer file on disk must now use [[renamed]]
-        let updated = nfs::load_note(dir.path(), &VaultPath::new("/referrer.md"))
-            .await
-            .unwrap();
+        let updated = nfs::load_note(
+            &crate::system::sys(dir.path()),
+            &VaultPath::new("/referrer.md"),
+        )
+        .await
+        .unwrap();
         assert!(
             updated.contains("[[renamed]]"),
             "expected [[renamed]] in: {updated}"
@@ -2288,9 +2343,12 @@ mod tests {
             .await
             .unwrap();
 
-        let updated = nfs::load_note(dir.path(), &VaultPath::new("/referrer.md"))
-            .await
-            .unwrap();
+        let updated = nfs::load_note(
+            &crate::system::sys(dir.path()),
+            &VaultPath::new("/referrer.md"),
+        )
+        .await
+        .unwrap();
         assert!(
             updated.contains("[link](/renamed.md)"),
             "expected updated link in: {updated}"
@@ -2326,9 +2384,12 @@ mod tests {
             .await
             .unwrap();
 
-        let unrelated = nfs::load_note(dir.path(), &VaultPath::new("/unrelated.md"))
-            .await
-            .unwrap();
+        let unrelated = nfs::load_note(
+            &crate::system::sys(dir.path()),
+            &VaultPath::new("/unrelated.md"),
+        )
+        .await
+        .unwrap();
         assert_eq!(unrelated, "# Unrelated\nNo links here.");
     }
 
@@ -2359,9 +2420,12 @@ mod tests {
             "old file should be gone"
         );
         // New file exists with the self-link rewritten.
-        let body = nfs::load_note(dir.path(), &VaultPath::new("/renamed.md"))
-            .await
-            .unwrap();
+        let body = nfs::load_note(
+            &crate::system::sys(dir.path()),
+            &VaultPath::new("/renamed.md"),
+        )
+        .await
+        .unwrap();
         assert!(
             body.contains("[[renamed]]"),
             "expected self-link rewritten in: {body}"
@@ -2392,8 +2456,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_note_vault_new_with_nonexistent_path() {
-        let nonexistent_path = "/this/path/does/not/exist";
-        let result = NoteVault::new(VaultConfig::new(nonexistent_path)).await;
+        // Host-absolute: `/this/…` carries no drive prefix, so on Windows it is
+        // not absolute, `sys` panics on it, and the test dies before it can
+        // assert anything about the vault.
+        let nonexistent_path = if cfg!(windows) {
+            r"C:\this\path\does\not\exist"
+        } else {
+            "/this/path/does/not/exist"
+        };
+        let result = NoteVault::new(VaultConfig::new(crate::system::sys(nonexistent_path))).await;
 
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -2410,7 +2481,7 @@ mod tests {
         let temp_file = tempfile::NamedTempFile::new().unwrap();
         let file_path = temp_file.path();
 
-        let result = NoteVault::new(VaultConfig::new(file_path)).await;
+        let result = NoteVault::new(VaultConfig::new(crate::system::sys(file_path))).await;
 
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -2426,18 +2497,18 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let dir_path = temp_dir.path();
 
-        let result = NoteVault::new(VaultConfig::new(dir_path)).await;
+        let result = NoteVault::new(VaultConfig::new(crate::system::sys(dir_path))).await;
 
         assert!(result.is_ok());
         let vault = result.unwrap();
-        assert_eq!(vault.workspace_path(), dir_path);
+        assert_eq!(vault.workspace_path().as_path(), dir_path);
         assert_eq!(vault.journal_path, VaultPath::new(DEFAULT_JOURNAL_PATH));
     }
 
     #[tokio::test]
     async fn test_get_todays_journal() {
         let temp_dir = TempDir::new().unwrap();
-        let vault = NoteVault::new(VaultConfig::new(temp_dir.path()))
+        let vault = NoteVault::new(VaultConfig::new(crate::system::sys(temp_dir.path())))
             .await
             .unwrap();
 
@@ -2459,7 +2530,7 @@ mod tests {
     #[tokio::test]
     async fn journal_entry_reports_creation_then_reuse() {
         let temp_dir = TempDir::new().unwrap();
-        let vault = NoteVault::new(VaultConfig::new(temp_dir.path()))
+        let vault = NoteVault::new(VaultConfig::new(crate::system::sys(temp_dir.path())))
             .await
             .unwrap();
 
@@ -2473,7 +2544,7 @@ mod tests {
     #[tokio::test]
     async fn load_or_create_note_reports_creation_then_reuse() {
         let temp_dir = TempDir::new().unwrap();
-        let vault = NoteVault::new(VaultConfig::new(temp_dir.path()))
+        let vault = NoteVault::new(VaultConfig::new(crate::system::sys(temp_dir.path())))
             .await
             .unwrap();
         let path = VaultPath::note_path_from("notes/fresh.md");
@@ -2491,7 +2562,7 @@ mod tests {
     #[tokio::test]
     async fn test_journal_date_with_valid_journal_note() {
         let temp_dir = TempDir::new().unwrap();
-        let vault = NoteVault::new(VaultConfig::new(temp_dir.path()))
+        let vault = NoteVault::new(VaultConfig::new(crate::system::sys(temp_dir.path())))
             .await
             .unwrap();
 
@@ -2511,7 +2582,7 @@ mod tests {
     #[tokio::test]
     async fn test_journal_date_with_invalid_date_format() {
         let temp_dir = TempDir::new().unwrap();
-        let vault = NoteVault::new(VaultConfig::new(temp_dir.path()))
+        let vault = NoteVault::new(VaultConfig::new(crate::system::sys(temp_dir.path())))
             .await
             .unwrap();
 
@@ -2528,7 +2599,7 @@ mod tests {
     #[tokio::test]
     async fn test_journal_date_with_non_journal_path() {
         let temp_dir = TempDir::new().unwrap();
-        let vault = NoteVault::new(VaultConfig::new(temp_dir.path()))
+        let vault = NoteVault::new(VaultConfig::new(crate::system::sys(temp_dir.path())))
             .await
             .unwrap();
 
@@ -2542,7 +2613,7 @@ mod tests {
     #[tokio::test]
     async fn test_journal_date_with_non_note_path() {
         let temp_dir = TempDir::new().unwrap();
-        let vault = NoteVault::new(VaultConfig::new(temp_dir.path()))
+        let vault = NoteVault::new(VaultConfig::new(crate::system::sys(temp_dir.path())))
             .await
             .unwrap();
 
@@ -2556,14 +2627,14 @@ mod tests {
     #[tokio::test]
     async fn test_path_to_pathbuf() {
         let temp_dir = TempDir::new().unwrap();
-        let vault = NoteVault::new(VaultConfig::new(temp_dir.path()))
+        let vault = NoteVault::new(VaultConfig::new(crate::system::sys(temp_dir.path())))
             .await
             .unwrap();
 
         let vault_path = VaultPath::new("/test/note.md");
         let result = vault.path_to_pathbuf(&vault_path);
 
-        let expected = vault_path.to_pathbuf(&vault.workspace_path);
+        let expected = vault_path.to_pathbuf(vault.workspace_path());
         assert_eq!(result, expected);
     }
 
@@ -2761,7 +2832,9 @@ mod tests {
         std::fs::create_dir(tmp.path().join("projects")).unwrap();
         std::fs::create_dir(tmp.path().join("Projects")).unwrap();
 
-        let vault = NoteVault::new(VaultConfig::new(tmp.path())).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(crate::system::sys(tmp.path())))
+            .await
+            .unwrap();
         let result = vault.validate_and_init().await;
 
         match result {
@@ -2797,7 +2870,9 @@ mod tests {
     #[tokio::test]
     async fn quick_note_creates_timestamped_note_in_inbox() {
         let dir = tempfile::TempDir::new().unwrap();
-        let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(crate::system::sys(dir.path())))
+            .await
+            .unwrap();
         vault.validate_and_init().await.unwrap();
 
         let details = vault.quick_note("my quick thought").await.unwrap();
@@ -2811,7 +2886,9 @@ mod tests {
     #[tokio::test]
     async fn quick_note_resolves_conflicts() {
         let dir = tempfile::TempDir::new().unwrap();
-        let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(crate::system::sys(dir.path())))
+            .await
+            .unwrap();
         vault.validate_and_init().await.unwrap();
 
         let d1 = vault.quick_note("first").await.unwrap();
@@ -2825,7 +2902,9 @@ mod tests {
     #[tokio::test]
     async fn quick_note_uses_custom_inbox_path() {
         let dir = tempfile::TempDir::new().unwrap();
-        let mut vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
+        let mut vault = NoteVault::new(VaultConfig::new(crate::system::sys(dir.path())))
+            .await
+            .unwrap();
         vault.validate_and_init().await.unwrap();
         vault.set_inbox_path(VaultPath::new("/capture"));
 
@@ -2837,7 +2916,9 @@ mod tests {
     #[tokio::test]
     async fn create_note_avoiding_conflicts_uses_requested_path_when_free() {
         let dir = tempfile::TempDir::new().unwrap();
-        let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(crate::system::sys(dir.path())))
+            .await
+            .unwrap();
         vault.validate_and_init().await.unwrap();
 
         let path = VaultPath::note_path_from("ask/my-question");
@@ -2853,7 +2934,9 @@ mod tests {
     #[tokio::test]
     async fn free_note_path_returns_the_requested_path_when_free() {
         let dir = tempfile::TempDir::new().unwrap();
-        let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(crate::system::sys(dir.path())))
+            .await
+            .unwrap();
         vault.validate_and_init().await.unwrap();
 
         let path = VaultPath::note_path_from("ask/my-question");
@@ -2866,7 +2949,9 @@ mod tests {
     #[tokio::test]
     async fn free_note_path_agrees_with_the_name_the_create_picks() {
         let dir = tempfile::TempDir::new().unwrap();
-        let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(crate::system::sys(dir.path())))
+            .await
+            .unwrap();
         vault.validate_and_init().await.unwrap();
 
         let path = VaultPath::note_path_from("ask/my-question");
@@ -2885,7 +2970,9 @@ mod tests {
     #[tokio::test]
     async fn create_note_avoiding_conflicts_retries_on_collision() {
         let dir = tempfile::TempDir::new().unwrap();
-        let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(crate::system::sys(dir.path())))
+            .await
+            .unwrap();
         vault.validate_and_init().await.unwrap();
 
         let path = VaultPath::note_path_from("ask/my-question");
@@ -2907,7 +2994,9 @@ mod tests {
     #[tokio::test]
     async fn create_note_errors_when_file_exists() {
         let dir = TempDir::new().unwrap();
-        let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(crate::system::sys(dir.path())))
+            .await
+            .unwrap();
         vault.validate_and_init().await.unwrap();
 
         let path = VaultPath::new("/already.md");
@@ -2926,7 +3015,9 @@ mod tests {
     #[tokio::test]
     async fn create_directory_errors_when_dir_exists() {
         let dir = TempDir::new().unwrap();
-        let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(crate::system::sys(dir.path())))
+            .await
+            .unwrap();
         vault.validate_and_init().await.unwrap();
 
         let path = VaultPath::new("/projects");
@@ -2941,7 +3032,9 @@ mod tests {
     #[tokio::test]
     async fn rename_note_errors_when_dest_exists() {
         let dir = TempDir::new().unwrap();
-        let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(crate::system::sys(dir.path())))
+            .await
+            .unwrap();
         vault.validate_and_init().await.unwrap();
 
         let from = VaultPath::new("/source.md");
@@ -2973,7 +3066,9 @@ mod tests {
         std::fs::write(root.join("dir1/b.md"), "# B").unwrap();
         std::fs::write(root.join("dir1/sub/c.md"), "# C").unwrap();
 
-        let vault = NoteVault::new(VaultConfig::new(root)).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(crate::system::sys(root)))
+            .await
+            .unwrap();
         vault.validate_and_init().await.unwrap();
 
         let all = vault.get_all_notes().await.unwrap();
@@ -2997,29 +3092,69 @@ mod tests {
 #[cfg(test)]
 mod vault_config_tests {
     use super::VaultConfig;
-    use std::path::PathBuf;
+    use crate::system::sys;
 
-    #[test]
-    fn new_sets_workspace_and_no_db_path() {
-        let cfg = VaultConfig::new("/tmp/ws");
-        assert_eq!(cfg.workspace_path, PathBuf::from("/tmp/ws"));
-        assert!(cfg.db_path.is_none());
+    /// A host-absolute path from a `/`-separated literal: `/tmp/ws` is
+    /// absolute on unix but merely rooted on Windows, where `SystemPath`
+    /// rejects it.
+    fn host(unix_style: &str) -> std::path::PathBuf {
+        let trimmed = unix_style.trim_start_matches('/');
+        if cfg!(windows) {
+            std::path::PathBuf::from(format!("C:\\{}", trimmed.replace('/', "\\")))
+        } else {
+            std::path::PathBuf::from(format!("/{trimmed}"))
+        }
     }
 
     #[test]
-    fn with_db_path_overrides_default() {
-        let cfg = VaultConfig::new("/tmp/ws").with_db_path("/var/cache/foo.kimuncache");
+    fn new_sets_workspace_and_no_index_override() {
+        let cfg = VaultConfig::new(sys(host("/tmp/ws")));
+        assert_eq!(cfg.workspace_path.as_path(), host("/tmp/ws"));
+        assert!(cfg.index.is_none());
+    }
+
+    #[test]
+    fn with_index_overrides_the_default_location() {
+        let cache_dir = sys(host("/var/cache"));
+        let cfg = VaultConfig::new(sys(host("/tmp/ws")))
+            .with_index(crate::IndexFile::in_dir(&cache_dir, "foo"));
         assert_eq!(
-            cfg.db_path.as_deref(),
-            Some(std::path::Path::new("/var/cache/foo.kimuncache"))
+            cfg.index.map(|i| i.path().to_string()),
+            Some(cache_dir.join("foo.kimuncache").to_string())
         );
+    }
+
+    /// The CLI's JSON output needs a note's size and mtime; it asks the vault
+    /// rather than stat-ing the path, because the vault is what knows where a
+    /// `VaultPath` really lives.
+    #[tokio::test]
+    async fn note_entry_reports_size_and_mtime() {
+        use crate::{nfs::VaultPath, NoteVault, VaultConfig};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let vault = NoteVault::new(VaultConfig::new(crate::system::sys(tmp.path())))
+            .await
+            .unwrap();
+        let path = VaultPath::note_path_from("note");
+        vault.create_note(&path, "# Note\n").await.unwrap();
+
+        let entry = vault.note_entry(&path).await.unwrap();
+
+        assert_eq!(entry.path, path);
+        assert_eq!(entry.size, "# Note\n".len() as u64);
+        assert!(entry.modified_secs > 0, "mtime should be populated");
+
+        let missing = vault.note_entry(&VaultPath::note_path_from("absent")).await;
+        assert!(missing.is_err(), "a missing note must not report an entry");
+        vault.close().await;
     }
 
     #[tokio::test]
     async fn note_vault_new_uses_vault_config_with_legacy_default() {
         use crate::{NoteVault, VaultConfig};
         let tmp = tempfile::TempDir::new().unwrap();
-        let vault = NoteVault::new(VaultConfig::new(tmp.path())).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(crate::system::sys(tmp.path())))
+            .await
+            .unwrap();
         let expected = tmp.path().join("kimun.sqlite");
         assert!(
             expected.exists(),
@@ -3029,15 +3164,17 @@ mod vault_config_tests {
     }
 
     #[tokio::test]
-    async fn note_vault_new_with_explicit_db_path_uses_override() {
-        use crate::{NoteVault, VaultConfig};
+    async fn note_vault_new_with_explicit_index_uses_override() {
+        use crate::{IndexFile, NoteVault, VaultConfig};
         let workspace = tempfile::TempDir::new().unwrap();
         let cache_dir = tempfile::TempDir::new().unwrap();
-        let custom_db = cache_dir.path().join("my-vault.kimuncache");
-        let vault = NoteVault::new(VaultConfig::new(workspace.path()).with_db_path(&custom_db))
-            .await
-            .unwrap();
-        assert!(custom_db.exists());
+        let index = IndexFile::in_dir(&crate::system::sys(cache_dir.path()), "my-vault");
+        let vault = NoteVault::new(
+            VaultConfig::new(crate::system::sys(workspace.path())).with_index(index.clone()),
+        )
+        .await
+        .unwrap();
+        assert!(index.exists());
         assert!(!workspace.path().join("kimun.sqlite").exists());
         drop(vault);
     }
@@ -3050,7 +3187,7 @@ mod label_api_tests {
 
     async fn new_vault() -> (tempfile::TempDir, NoteVault) {
         let tmp = tempfile::TempDir::new().unwrap();
-        let cfg = VaultConfig::new(tmp.path().to_path_buf());
+        let cfg = VaultConfig::new(crate::system::sys(tmp.path()));
         let vault = NoteVault::new(cfg).await.unwrap();
         vault.validate_and_init().await.unwrap();
         (tmp, vault)
@@ -3139,7 +3276,7 @@ mod suggest_api_tests {
 
     async fn new_vault() -> (tempfile::TempDir, NoteVault) {
         let tmp = tempfile::TempDir::new().unwrap();
-        let cfg = VaultConfig::new(tmp.path().to_path_buf());
+        let cfg = VaultConfig::new(crate::system::sys(tmp.path()));
         let vault = NoteVault::new(cfg).await.unwrap();
         vault.validate_and_init().await.unwrap();
         (tmp, vault)
@@ -3324,20 +3461,25 @@ mod modify_backup_tests {
     use super::{NoteVault, VaultConfig};
     use crate::error::VaultError;
     use crate::nfs::VaultPath;
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
     async fn backup_vault() -> (tempfile::TempDir, NoteVault) {
         let temp = tempfile::TempDir::new().unwrap();
-        let vault = NoteVault::new(VaultConfig::new(temp.path()).with_backup(true))
-            .await
-            .unwrap();
+        let vault =
+            NoteVault::new(VaultConfig::new(crate::system::sys(temp.path())).with_backup(true))
+                .await
+                .unwrap();
         vault.validate_and_init().await.unwrap();
         (temp, vault)
     }
 
-    fn backups_dir_today(workspace: &Path) -> PathBuf {
+    fn backups_dir_today(workspace: &crate::system::SystemPath) -> PathBuf {
         let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
-        workspace.join(".kimun").join("backups").join(date)
+        workspace
+            .as_path()
+            .join(".kimun")
+            .join("backups")
+            .join(date)
     }
 
     // ---- replace_in_note ----
@@ -3519,7 +3661,7 @@ mod modify_backup_tests {
 
         vault.save_note(&p, "updated").await.unwrap();
 
-        let backup = backups_dir_today(temp.path()).join("note.md");
+        let backup = backups_dir_today(&crate::system::sys(temp.path())).join("note.md");
         assert_eq!(std::fs::read_to_string(&backup).unwrap(), "original");
         assert_eq!(vault.get_note_text(&p).await.unwrap(), "updated");
     }
@@ -3527,7 +3669,9 @@ mod modify_backup_tests {
     #[tokio::test]
     async fn overwrite_does_not_back_up_when_disabled() {
         let temp = tempfile::TempDir::new().unwrap();
-        let vault = NoteVault::new(VaultConfig::new(temp.path())).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(crate::system::sys(temp.path())))
+            .await
+            .unwrap();
         vault.validate_and_init().await.unwrap();
         let p = VaultPath::new("note.md");
         vault.create_note(&p, "original").await.unwrap();
@@ -3545,7 +3689,7 @@ mod modify_backup_tests {
 
         vault.delete_note(&p).await.unwrap();
 
-        let backup = backups_dir_today(temp.path()).join("note.md");
+        let backup = backups_dir_today(&crate::system::sys(temp.path())).join("note.md");
         assert_eq!(std::fs::read_to_string(&backup).unwrap(), "content");
     }
 
@@ -3557,7 +3701,7 @@ mod modify_backup_tests {
         vault.save_note(&p, "v1").await.unwrap();
         vault.save_note(&p, "v2").await.unwrap();
 
-        let dir = backups_dir_today(temp.path());
+        let dir = backups_dir_today(&crate::system::sys(temp.path()));
         let count = std::fs::read_dir(&dir).unwrap().count();
         assert_eq!(count, 2, "both pre-images should be retained");
     }
@@ -3580,7 +3724,7 @@ mod modify_backup_tests {
 
         assert!(!old.exists(), "stale date-dir should be purged");
         assert!(
-            backups_dir_today(temp.path()).exists(),
+            backups_dir_today(&crate::system::sys(temp.path())).exists(),
             "today's backup is kept"
         );
     }
@@ -3631,7 +3775,7 @@ mod modify_backup_tests {
         // The rename rewrites a's link b -> c. a's pre-rewrite content (still
         // pointing at b) must be backed up, since the rewrite goes through nfs
         // directly rather than NoteVault::save_note.
-        let backup = backups_dir_today(temp.path()).join("a.md");
+        let backup = backups_dir_today(&crate::system::sys(temp.path())).join("a.md");
         let content = std::fs::read_to_string(&backup)
             .unwrap_or_else(|e| panic!("victim backup a.md should exist: {e}"));
         assert!(
@@ -3718,7 +3862,9 @@ mod crlf_index_tests {
             .await
             .unwrap();
 
-        let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(crate::system::sys(dir.path())))
+            .await
+            .unwrap();
         let path = VaultPath::note_path_from("note.md");
 
         // Saved the way the editor saves: its text can hold no carriage return.
@@ -3744,7 +3890,9 @@ mod saved_search_tests {
     use tempfile::TempDir;
 
     async fn make_vault(dir: &std::path::Path) -> NoteVault {
-        NoteVault::new(VaultConfig::new(dir)).await.unwrap()
+        NoteVault::new(VaultConfig::new(crate::system::sys(dir)))
+            .await
+            .unwrap()
     }
 
     #[tokio::test]
