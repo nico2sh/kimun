@@ -337,11 +337,16 @@ fn run_remove(settings: &mut AppSettings, name: String) -> Result<()> {
 /// had not deleted.
 fn delete_artifacts(index: &kimun_core::IndexFile, history: &HistoryFile) -> Vec<String> {
     let mut leftovers = Vec::new();
-    if let Err(e) = index.remove() {
-        tracing::warn!("failed to remove index {}: {}", index, e);
-        leftovers.push(format!("  {index}\n    {e}"));
-    } else {
+    // Every file the index is made of, not just the first one that failed: a
+    // held handle is normally on a sidecar, and naming only that one would send
+    // the user to delete one file out of three.
+    let stuck = index.remove();
+    if stuck.is_empty() {
         tracing::info!("removed index {}", index);
+    }
+    for (path, e) in stuck {
+        tracing::warn!("failed to remove {}: {}", path, e);
+        leftovers.push(format!("  {path}\n    {e}"));
     }
     if let Err(e) = history.remove() {
         tracing::warn!("failed to remove history {}: {}", history, e);

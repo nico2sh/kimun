@@ -135,16 +135,28 @@ impl IndexFile {
         move_all(&plan)
     }
 
-    /// Deletes this index and its sidecars. A missing file is not an error —
-    /// the point is that nothing is left behind.
-    pub fn remove(&self) -> Result<(), SystemError> {
+    /// Deletes this index and its sidecars, returning each file that would not
+    /// go along with the reason.
+    ///
+    /// A missing file is not an error — the point is that nothing is left
+    /// behind. Neither is a file that will not delete a reason to stop: every
+    /// remaining file is still attempted. Returning on the first failure left
+    /// the deletable files on disk and reported only the one that blocked, so
+    /// the usual Windows case — a handle still on the `-wal` — told the user
+    /// about one file while silently keeping three.
+    pub fn remove(&self) -> Vec<(SystemPath, SystemError)> {
+        let mut stuck = Vec::new();
         for (_, sidecar) in self.existing_sidecars() {
-            system::remove_file(sidecar.as_path())?;
+            if let Err(e) = system::remove_file(sidecar.as_path()) {
+                stuck.push((sidecar, e));
+            }
         }
         if self.exists() {
-            system::remove_file(self.path.as_path())?;
+            if let Err(e) = system::remove_file(self.path.as_path()) {
+                stuck.push((self.path.clone(), e));
+            }
         }
-        Ok(())
+        stuck
     }
 }
 
@@ -372,7 +384,7 @@ mod tests {
         write(&index.path().with_name_suffix("-wal"), "wal");
         write(&index.path().with_name_suffix("-shm"), "shm");
 
-        index.remove().unwrap();
+        assert!(index.remove().is_empty());
 
         assert!(!index.exists());
         assert!(!index.path().with_name_suffix("-wal").exists());
@@ -387,6 +399,32 @@ mod tests {
     #[test]
     fn remove_of_a_missing_index_is_a_no_op() {
         let dir = tempfile::TempDir::new().unwrap();
-        index_in(&dir, "absent").remove().unwrap();
+        assert!(index_in(&dir, "absent").remove().is_empty());
+    }
+
+    /// The Windows case that matters: the handle is normally on the WAL, not
+    /// on the index. Returning at the first failure left the `.kimuncache` and
+    /// the `-shm` on disk untouched even though both would have deleted, and
+    /// reported only the `-wal` — one file named out of three kept.
+    ///
+    /// A non-empty directory stands in for the lock, which cannot be provoked
+    /// on demand; what is under test is that one failure does not stop the rest.
+    #[test]
+    fn remove_attempts_every_file_and_reports_each_failure() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let index = index_in(&dir, "stuck");
+        let wal = index.path().with_name_suffix("-wal");
+        let shm = index.path().with_name_suffix("-shm");
+        write(index.path(), "index");
+        write(&shm, "shm");
+        std::fs::create_dir(wal.as_path()).unwrap();
+        std::fs::write(wal.as_path().join("occupied"), b"x").unwrap();
+
+        let stuck = index.remove();
+
+        assert!(!index.exists(), "the index itself was still deletable");
+        assert!(!shm.exists(), "the -shm was still deletable");
+        assert_eq!(stuck.len(), 1, "got {stuck:?}");
+        assert_eq!(stuck[0].0, wal);
     }
 }
