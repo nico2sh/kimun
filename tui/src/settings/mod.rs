@@ -133,19 +133,11 @@ const CONFIG_HEADER: &str = "\
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct AppSettings {
-    // Phase 2 config
+    // Workspace layout
     #[serde(default)]
     pub config_version: u32,
     #[serde(flatten, skip_serializing_if = "Option::is_none")]
     pub workspace_config: Option<WorkspaceConfig>,
-
-    // Legacy Phase 1 fields — only kept for migration detection/deserialization.
-    // Never written back: workspace_dir is taken by migration, last_paths is
-    // moved into workspace_config entries.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub workspace_dir: Option<PathBuf>,
-    #[serde(default, skip_serializing)]
-    pub last_paths: Vec<VaultPath>,
 
     // Preserved fields
     #[serde(default)]
@@ -305,6 +297,41 @@ fn default_keybindings() -> KeyBindings {
     kb
 }
 
+/// Deletes a removed workspace's artifacts, returning the ones that would not
+/// go, each with the reason.
+///
+/// A free function rather than a method so the caller can pull the artifacts
+/// out with [`AppSettings::workspace_artifacts`], release the settings lock,
+/// and delete outside it: `system::remove_file` waits out a handle another
+/// process holds, and parking every settings reader for that wait is what the
+/// "filesystem work before the lock" rule exists to avoid.
+///
+/// Best-effort by design. Whoever calls this has already decided the workspace
+/// is going, so a stuck file is a leftover to report rather than a reason to
+/// fail — and it is *returned*, because `tracing::warn!` in a CLI with no
+/// subscriber attached goes nowhere.
+pub fn delete_artifacts(index: &IndexFile, history: &HistoryFile) -> Vec<String> {
+    let mut leftovers = Vec::new();
+    // Every file the index is made of, not just the first that failed: a held
+    // handle is normally on a sidecar, and naming only that one would send the
+    // user to delete one file out of three.
+    let stuck = index.remove();
+    if stuck.is_empty() {
+        tracing::info!("removed index {}", index);
+    }
+    for (path, e) in stuck {
+        tracing::warn!("failed to remove {}: {}", path, e);
+        leftovers.push(format!("  {path}\n    {e}"));
+    }
+    if let Err(e) = history.remove() {
+        tracing::warn!("failed to remove history {}: {}", history, e);
+        leftovers.push(format!("  {history}\n    {e}"));
+    } else {
+        tracing::info!("removed history {}", history);
+    }
+    leftovers
+}
+
 fn yes() -> bool {
     true
 }
@@ -423,8 +450,6 @@ impl Default for AppSettings {
         Self {
             config_version: 0,
             workspace_config: None,
-            last_paths: vec![],
-            workspace_dir: None,
             theme: Default::default(),
             cache_dir: default_cache_dir(),
             cache_dir_resolved: default_cache_dir_resolved(),
@@ -640,7 +665,7 @@ impl AppSettings {
                 // directory (see `config_base_dir` for why it is canonicalized).
                 setting.resolve_paths(&Self::config_base_dir(&path));
 
-                // Run config migrations (e.g. Phase 1 → Phase 2 workspace_dir).
+                // Run config migrations (keybinding moves, v3 onwards).
                 if config_migration::ConfigMigration::run(&mut setting)? {
                     setting.save_to_disk()?;
                 }
@@ -698,31 +723,38 @@ impl AppSettings {
         self.key_bindings = KeyBindings::from_hashmap(current);
     }
 
-    // We set a new workspace to work with, remember to save the data
-    // to persist it in disk
-    pub fn set_workspace(&mut self, workspace_path: &PathBuf) {
-        if let Some(current_workspace_dir) = &self.workspace_dir
-            && workspace_path != current_workspace_dir
-        {
+    /// Points the *selected* workspace entry at `workspace_path`, flagging a
+    /// reindex when that actually changes where its notes are.
+    ///
+    /// `name` is the entry to repoint; a name with no entry is a no-op.
+    pub fn set_workspace_path(&mut self, name: &str, workspace_path: PathBuf) {
+        let Some(entry) = self
+            .workspace_config
+            .as_mut()
+            .and_then(|wc| wc.workspaces.get_mut(name))
+        else {
+            return;
+        };
+        if *entry.effective_path() != workspace_path {
             self.needs_indexing = true;
         }
-
-        self.workspace_dir = Some(workspace_path.to_owned());
+        entry.path = workspace_path;
+        entry.resolved_path = None;
     }
 
-    /// Removes the active workspace path so the user is prompted to choose a new one.
-    /// Handles both Phase 1 (workspace_dir) and Phase 2 (workspace_config) config formats.
+    /// Removes the active workspace entry so the user is prompted to choose a
+    /// new one.
     ///
-    /// For Phase 2: only the currently active workspace entry is removed; other workspace
-    /// entries in the config are preserved. After this call, `workspace_config` remains
-    /// `Some` but `get_current_workspace()` returns `None`.
+    /// Only the currently active entry is removed; other workspace entries are
+    /// preserved. After this call, `workspace_config` remains `Some` but
+    /// `get_current_workspace()` returns `None`.
+    ///
+    /// Deliberately leaves the index and history on disk: the caller for this
+    /// is a vault the app could not open (a case conflict it wants fixed), and
+    /// the user is expected to re-add the same workspace once they have. See
+    /// [`crate::settings::delete_artifacts`] for the deletion that goes with an
+    /// intentional "remove this workspace".
     pub fn clear_workspace(&mut self) {
-        // Phase 1
-        if self.workspace_dir.is_some() {
-            self.workspace_dir = None;
-            self.needs_indexing = true;
-        }
-        // Phase 2
         if let Some(wc) = &mut self.workspace_config {
             let key = wc.global.current_workspace.clone();
             if !key.is_empty() {
@@ -732,15 +764,14 @@ impl AppSettings {
         }
     }
 
-    /// Resolve the active workspace path from Phase 2 (workspace_config) or
-    /// Phase 1 (workspace_dir). Returns `None` if no workspace is configured.
+    /// Resolve the active workspace's path. Returns `None` if no workspace is
+    /// configured.
     pub fn resolve_workspace_path(&self) -> Option<SystemPath> {
         let raw = self
             .workspace_config
             .as_ref()
             .and_then(|wc| wc.get_current_workspace())
-            .map(|entry| entry.effective_path().clone())
-            .or_else(|| self.workspace_dir.clone())?;
+            .map(|entry| entry.effective_path().clone())?;
         // Config paths are made absolute by `resolve_paths` on load. One that
         // still is not cannot name a vault on this machine, so it is reported
         // as "no workspace" rather than opened relative to wherever the
@@ -758,12 +789,7 @@ impl AppSettings {
     /// Relative paths are resolved against `base` (typically the config file's
     /// parent directory). Called once after deserialization.
     fn resolve_paths(&mut self, base: &SystemPath) {
-        // Legacy workspace_dir — resolve in place (it's a legacy field that
-        // gets consumed by migration anyway).
-        if let Some(ref mut p) = self.workspace_dir {
-            *p = SystemPath::resolve(&*p, base).into_path_buf();
-        }
-        // Phase 2 workspace entries — populate resolved_path, keep original path intact.
+        // Workspace entries — populate resolved_path, keep original path intact.
         if let Some(ref mut wc) = self.workspace_config {
             for entry in wc.workspaces.values_mut() {
                 let resolved = SystemPath::resolve(&entry.path, base).into_path_buf();
@@ -904,6 +930,22 @@ impl AppSettings {
         HistoryFile::in_dir(
             &self.history_dir_resolved,
             &self.file_key_for(workspace_name),
+        )
+    }
+
+    /// Everything on disk that belongs to the named workspace.
+    ///
+    /// Must be read *before* the entry is dropped from `workspace_config`:
+    /// both file names come from its [`file_key`], so removing the entry first
+    /// strands them under a name nothing can map back to a workspace. Pure and
+    /// cheap, so the caller can take these, release the settings lock, and do
+    /// the deleting outside it — see [`delete_artifacts`].
+    ///
+    /// [`file_key`]: workspace_config::WorkspaceEntry::file_key
+    pub fn workspace_artifacts(&self, workspace_name: &str) -> (IndexFile, HistoryFile) {
+        (
+            self.index_for(workspace_name),
+            self.history_for(workspace_name),
         )
     }
 
@@ -1108,23 +1150,7 @@ Quit = ["ctrl&Q"]
     }
 
     #[test]
-    fn clear_workspace_phase1_clears_workspace_dir() {
-        let mut settings = AppSettings::default();
-        settings.workspace_dir = Some(absolute("/tmp/vault"));
-        settings.needs_indexing = false;
-        settings.clear_workspace();
-        assert!(
-            settings.workspace_dir.is_none(),
-            "workspace_dir should be None"
-        );
-        assert!(
-            settings.needs_indexing,
-            "needs_indexing should be reset to true"
-        );
-    }
-
-    #[test]
-    fn clear_workspace_phase2_removes_current_workspace_entry() {
+    fn clear_workspace_removes_the_current_workspace_entry() {
         let mut settings = AppSettings::default();
         let mut wc = WorkspaceConfig::new_empty();
         wc.add_workspace("vault1".to_string(), absolute("/tmp/vault1"))
@@ -1153,33 +1179,7 @@ Quit = ["ctrl&Q"]
     }
 
     #[test]
-    fn clear_workspace_both_phases_active() {
-        // When Phase 1 and Phase 2 fields are both populated (e.g. during migration),
-        // clear_workspace must clear both independently.
-        let mut settings = AppSettings::default();
-        settings.workspace_dir = Some(absolute("/tmp/vault"));
-        let mut wc = WorkspaceConfig::new_empty();
-        wc.add_workspace("vault1".to_string(), absolute("/tmp/vault1"))
-            .unwrap();
-        settings.workspace_config = Some(wc);
-        settings.clear_workspace();
-        assert!(
-            settings.workspace_dir.is_none(),
-            "phase1 workspace_dir should be cleared"
-        );
-        let wc = settings.workspace_config.as_ref().unwrap();
-        assert!(
-            wc.workspaces.is_empty(),
-            "phase2 workspace entry should be removed"
-        );
-        assert!(
-            wc.global.current_workspace.is_empty(),
-            "phase2 current_workspace should be empty"
-        );
-    }
-
-    #[test]
-    fn clear_workspace_phase2_preserves_other_workspaces() {
+    fn clear_workspace_preserves_other_workspaces() {
         let mut settings = AppSettings::default();
         let mut wc = WorkspaceConfig::new_empty();
         wc.add_workspace("vault1".to_string(), absolute("/tmp/vault1"))

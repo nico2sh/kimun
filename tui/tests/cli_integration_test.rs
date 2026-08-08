@@ -40,10 +40,22 @@ async fn setup_test_vault(dir: &TempDir) {
     vault.close().await;
 }
 
-/// Write a minimal config file that points workspace at the given path.
+/// A config at the current version with a single workspace.
+///
+/// `cache_dir`/`history_dir` are left at their defaults, which resolve against
+/// the config file's own directory — so a test writing this into a `TempDir`
+/// keeps its index and history there rather than in the real installation.
 fn write_config(config_path: &std::path::Path, workspace: &std::path::Path) {
     let toml = format!(
-        "workspace_dir = {:?}\n",
+        r#"config_version = 6
+
+[global]
+current_workspace = "default"
+
+[workspaces.default]
+path = {:?}
+created = "2024-01-15T10:30:00Z"
+"#,
         workspace.to_string_lossy().as_ref()
     );
     std::fs::write(config_path, toml).expect("failed to write config file");
@@ -137,16 +149,16 @@ async fn test_cli_no_workspace_error() {
     let config_dir = TempDir::new().unwrap();
     let config_path = config_dir.path().join("config.toml");
 
-    // Write a config with no workspace_dir set
+    // Write a config with no workspace configured at all
     std::fs::write(&config_path, "# empty config\n").unwrap();
 
     // The CLI exits the process when no workspace is configured; we verify
-    // the settings layer itself returns None for workspace_dir so the CLI
-    // would hit the error branch.
+    // the settings layer itself resolves no workspace path, so the CLI would
+    // hit the error branch.
     let settings = AppSettings::load_from_file(config_path).expect("settings should load");
     assert!(
-        settings.workspace_dir.is_none(),
-        "workspace_dir should be None when not set in config"
+        settings.resolve_workspace_path().is_none(),
+        "no workspace should resolve when none is set in config"
     );
 }
 
@@ -164,7 +176,7 @@ async fn test_cli_custom_config() {
     write_config(&config_path, workspace_dir.path());
 
     // Verify the config is honoured: settings loaded from the custom path
-    // should point to our temp workspace via Phase 2 workspace_config after migration.
+    // should point to our temp workspace via its workspace_config entry.
     let settings = AppSettings::load_from_file(config_path.clone()).expect("settings should load");
     let ws_config = settings
         .workspace_config
@@ -173,8 +185,8 @@ async fn test_cli_custom_config() {
     let default_ws = ws_config
         .workspaces
         .get("default")
-        .expect("should have 'default' workspace after migration");
-    // `resolve_paths` canonicalizes `workspace_dir` since it exists on disk
+        .expect("should have the 'default' workspace");
+    // `resolve_paths` canonicalizes the entry path since it exists on disk
     // (same as `AppSettings::expand_path`), so on macOS the loaded path comes
     // back as `/private/var/...` while the raw `TempDir` path is `/var/...`
     // (a symlink). Compare canonical forms on both sides.

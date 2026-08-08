@@ -282,25 +282,6 @@ impl WorkspaceConfig {
     pub fn get_workspace(&self, name: &str) -> Option<&WorkspaceEntry> {
         self.workspaces.get(name)
     }
-
-    pub fn from_phase1_migration(workspace_dir: PathBuf, last_paths: Vec<String>) -> Self {
-        let mut config = Self::new_empty();
-
-        let entry = WorkspaceEntry {
-            path: workspace_dir,
-            last_paths,
-            created: Utc::now(),
-            quick_note_path: None,
-            inbox_path: None,
-            resolved_path: None,
-            file_key: None,
-        };
-
-        config.workspaces.insert("default".to_string(), entry);
-        config.global.current_workspace = "default".to_string();
-
-        config
-    }
 }
 
 #[cfg(test)]

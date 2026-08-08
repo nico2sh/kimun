@@ -12,11 +12,10 @@ use kimun_core::{IndexFile, NoteVault, SystemPath, VaultConfig};
 /// The workspace name test vaults index under, instead of the default
 /// `<workspace>/kimun.sqlite`.
 ///
-/// Two reasons, both about not colliding with the code under test: loading a
-/// Phase 1 config migrates `kimun.sqlite` into the cache dir, and Windows
-/// refuses to move a file whose handle is still open — which a live test
-/// vault's connection pool holds. The leading dot also keeps the file out of
-/// the vault walk.
+/// Both about not colliding with the code under test: `kimun.sqlite` is the
+/// name the vault-local index has always had, so a test vault using it would
+/// share a file with any code path that reaches for the default. The leading
+/// dot also keeps the file out of the vault walk.
 pub const TEST_INDEX_NAME: &str = ".test-index";
 
 /// A [`SystemPath`] for a path a test has already made absolute (a `TempDir`,

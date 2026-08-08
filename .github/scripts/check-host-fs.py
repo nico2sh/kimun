@@ -51,6 +51,37 @@ CORE_ALLOWED = ("core/src/nfs/", "core/src/system/")
 
 COMMENT = re.compile(r"^\s*//")
 
+# Braces that are not code structure. Counting these desynced the depth
+# tracking below, and a `#[cfg(test)]` block that never appears to close
+# swallows the rest of the file — the gate failing open, silently.
+BRACE_NOISE = re.compile(
+    r'r#+"[^"]*"#+'  # raw string with hashes
+    r'|r"[^"]*"'  # raw string
+    r'|"(?:\\.|[^"\\])*"'  # string literal
+    r"|'(?:\\.|[^'\\])'"  # char literal
+    r"|//.*"  # line comment
+)
+
+
+def brace_delta(line: str) -> int:
+    """`{` minus `}`, ignoring literals and comments."""
+    code = BRACE_NOISE.sub("", line)
+    return code.count("{") - code.count("}")
+
+
+class UnterminatedTestBlock(Exception):
+    """A `#[cfg(test)]` block whose braces never balanced before EOF.
+
+    Raised rather than swallowed: the alternative is to keep stripping to the
+    end of the file, which exempts every line after the block from the check
+    and reports success. A gate that cannot tell where test code ends has to
+    say so.
+    """
+
+    def __init__(self, line: int) -> None:
+        super().__init__(f"unterminated #[cfg(test)] block opened at line {line}")
+        self.line = line
+
 
 def strip_test_code(source: str) -> list[tuple[int, str]]:
     """Lines outside `#[cfg(test)]` items, as (1-based line number, text).
@@ -79,7 +110,8 @@ def strip_test_code(source: str) -> list[tuple[int, str]]:
             continue
         # Scan for the token that terminates the item, starting after the
         # attribute itself so a one-line `#[cfg(test)] mod tests { … }` counts.
-        text = stripped[len("#[cfg(test)]") :]
+        opened_at = i + 1
+        text = BRACE_NOISE.sub("", stripped[len("#[cfg(test)]") :])
         braced = False
         while i < len(lines):
             brace, semi = text.find("{"), text.find(";")
@@ -90,15 +122,19 @@ def strip_test_code(source: str) -> list[tuple[int, str]]:
                 i += 1
                 break
             i += 1
-            text = lines[i] if i < len(lines) else ""
+            text = BRACE_NOISE.sub("", lines[i]) if i < len(lines) else ""
         if not braced:
             continue
         depth = 0
+        closed = False
         while i < len(lines):
-            depth += lines[i].count("{") - lines[i].count("}")
+            depth += brace_delta(lines[i])
             i += 1
             if depth <= 0:
+                closed = True
                 break
+        if not closed:
+            raise UnterminatedTestBlock(opened_at)
     return kept
 
 
@@ -112,7 +148,14 @@ def offenders(root: Path, pattern: re.Pattern[str], skip: tuple[str, ...] = ()) 
         # A whole module gated with an inner attribute is test code too.
         if "#![cfg(test)]" in source:
             continue
-        for number, line in strip_test_code(source):
+        try:
+            lines = strip_test_code(source)
+        except UnterminatedTestBlock as e:
+            # Reported as an offence rather than skipped: everything after the
+            # block would otherwise go unchecked and the run would still pass.
+            found.append(f"{rel}:{e.line}: {e}")
+            continue
+        for number, line in lines:
             if COMMENT.match(line):
                 continue
             if pattern.search(line):
