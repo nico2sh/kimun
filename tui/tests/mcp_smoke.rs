@@ -27,13 +27,25 @@ fn kimun_bin() -> &'static Path {
     Path::new(env!("CARGO_BIN_EXE_kimun"))
 }
 
-/// Write a minimal config file that points the workspace at `workspace`.
+/// A config at the current version that points the workspace at `workspace`.
+///
+/// `cache_dir`/`history_dir` are left at their defaults, which resolve against
+/// the config file's own directory — so this keeps the index and history in
+/// `dir` rather than in the real installation.
 fn write_config(dir: &std::path::Path, workspace: &std::path::Path) -> std::path::PathBuf {
     let config_path = dir.join("config.toml");
     std::fs::write(
         &config_path,
         format!(
-            "workspace_dir = {:?}\n",
+            r#"config_version = 6
+
+[global]
+current_workspace = "default"
+
+[workspaces.default]
+path = {:?}
+created = "2024-01-15T10:30:00Z"
+"#,
             workspace.to_string_lossy().as_ref()
         ),
     )

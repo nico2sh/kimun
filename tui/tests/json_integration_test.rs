@@ -48,10 +48,22 @@ async fn setup_json_test_vault(dir: &TempDir) {
     vault.close().await;
 }
 
-/// Write a minimal config file pointing workspace at the given path.
+/// A config at the current version with a single workspace.
+///
+/// `cache_dir`/`history_dir` are left at their defaults, which resolve against
+/// the config file's own directory — so a test writing this into a `TempDir`
+/// keeps its index and history there rather than in the real installation.
 fn write_config(config_path: &std::path::Path, workspace: &std::path::Path) {
     let toml = format!(
-        "workspace_dir = {:?}\n",
+        r#"config_version = 6
+
+[global]
+current_workspace = "default"
+
+[workspaces.default]
+path = {:?}
+created = "2024-01-15T10:30:00Z"
+"#,
         workspace.to_string_lossy().as_ref()
     );
     std::fs::write(config_path, toml).expect("failed to write config file");

@@ -632,6 +632,39 @@ fn a_failed_unlink_undoes_the_copy() {
     assert!(!to.exists(), "the copy must not survive a failed move");
 }
 
+/// The other half of that rollback: it may only remove a destination this call
+/// created. `fs::copy` overwrites, so deleting a `to` that was already there
+/// destroys a file the caller never asked to have touched — a worse outcome
+/// than the leftover the rollback exists to prevent.
+#[cfg(unix)]
+#[test]
+fn a_failed_unlink_leaves_a_destination_it_did_not_create() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let source_dir = dir.path().join("source");
+    std::fs::create_dir(&source_dir).unwrap();
+    let from = source_dir.join("index.kimuncache");
+    let to = dir.path().join("occupied.kimuncache");
+    std::fs::write(&from, b"index").unwrap();
+    std::fs::write(&to, b"someone else's file").unwrap();
+    std::fs::set_permissions(&source_dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let enforced = std::fs::File::create(source_dir.join("probe")).is_err();
+
+    let result = copy_then_unlink(&from, &to);
+
+    std::fs::set_permissions(&source_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    if !enforced {
+        return;
+    }
+    assert!(result.is_err(), "the unlink must fail");
+    assert!(from.exists(), "the source must be left whole");
+    assert!(
+        to.exists(),
+        "a destination this call did not create must survive"
+    );
+}
+
 #[test]
 fn replace_atomically_writes_and_leaves_no_temp_file() {
     let dir = tempfile::TempDir::new().unwrap();

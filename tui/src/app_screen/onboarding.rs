@@ -1075,6 +1075,13 @@ impl OnboardingScreen {
             };
             let existed = path.is_dir();
             if let Err(e) = kimun_core::system::create_dir(&path) {
+                // `create_dir` can fail *after* creating the directory — it
+                // canonicalizes as a second step — so this needs the same
+                // rollback as the `add_workspace` failure below. Non-recursive,
+                // so a pre-existing or non-empty directory is never touched.
+                if !existed {
+                    kimun_core::system::remove_empty_dir(&path).ok();
+                }
                 self.flash = Some(format!("cannot create {}: {e}", path.display()));
                 self.step = OnbStep::Workspace;
                 return;

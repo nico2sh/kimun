@@ -734,13 +734,23 @@ pub fn move_file(from: &Path, to: &Path) -> Result<(), SystemError> {
 /// Split out because the branch is unreachable in a test run — provoking a real
 /// `EXDEV` needs two filesystems — while the half-done state it can leave is
 /// the part worth pinning.
+///
+/// Undoes its own copy when the unlink fails, but only a copy that *created*
+/// the destination. `fs::copy` overwrites, and a rollback that deleted a
+/// destination which was already there would turn a failed move into the
+/// destruction of a file this call was never asked to touch — worse than the
+/// leftover it exists to prevent. A rename overwrites the destination too, so
+/// what the caller loses in that case is the same either way.
 fn copy_then_unlink(from: &Path, to: &Path) -> Result<(), SystemError> {
+    let created_destination = !to.exists();
     std::fs::copy(from, to).map_err(|e| SystemError::io("copy", from, e))?;
     if let Err(e) = remove_file(from) {
-        // Best-effort, and the plain call rather than `remove_file`: `to` was
-        // created moments ago by the copy above, so the lock wait that helps a
-        // caller's own file would only stall here.
-        let _ = std::fs::remove_file(to);
+        if created_destination {
+            // Best-effort, and the plain call rather than `remove_file`: `to`
+            // was created moments ago by the copy above, so the lock wait that
+            // helps a caller's own file would only stall here.
+            let _ = std::fs::remove_file(to);
+        }
         return Err(e);
     }
     Ok(())

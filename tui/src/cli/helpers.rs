@@ -47,15 +47,10 @@ pub fn load_and_resolve_workspace(
     Ok((settings, workspace_path, workspace_name))
 }
 
-/// Returns the configured quick_note_path for the active workspace.
-/// Falls back to VaultPath::root() for Phase 1 workspaces (no WorkspaceEntry) or if not configured.
+/// Returns the configured quick_note_path for the active workspace, falling
+/// back to `VaultPath::root()` when there is none.
 pub fn resolve_quick_note_path(settings: &AppSettings) -> String {
     let root = kimun_core::nfs::VaultPath::root().to_string();
-    // Phase 1 legacy: workspace_dir only, no WorkspaceEntry
-    if settings.workspace_dir.is_some() {
-        return root;
-    }
-    // Phase 2: workspace_config
     if let Some(ref ws_config) = settings.workspace_config
         && let Some(entry) = ws_config.get_current_workspace()
     {
