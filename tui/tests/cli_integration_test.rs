@@ -186,12 +186,14 @@ async fn test_cli_custom_config() {
         .workspaces
         .get("default")
         .expect("should have the 'default' workspace");
-    // `resolve_paths` canonicalizes the entry path since it exists on disk
-    // (same as `AppSettings::expand_path`), so on macOS the loaded path comes
-    // back as `/private/var/...` while the raw `TempDir` path is `/var/...`
-    // (a symlink). Compare canonical forms on both sides.
+    // `effective_path`, not `path`: `resolve_paths` leaves `path` exactly as
+    // the config file wrote it and puts the canonicalized form in
+    // `resolved_path`. The two differ on any host where the temp directory is
+    // reached through a symlink or a short name — `/var/…` against
+    // `/private/var/…` on macOS, `RUNNER~1` against `\\?\C:\Users\runneradmin`
+    // on Windows — which is why comparing `path` passed on Linux alone.
     assert_eq!(
-        default_ws.path.as_path(),
+        default_ws.effective_path().as_path(),
         workspace_dir.path().canonicalize().unwrap().as_path(),
         "--config flag should load settings from the specified file"
     );
