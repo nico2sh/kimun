@@ -5235,7 +5235,10 @@ cccccccc"
             "V must highlight the full line right away"
         );
         for _ in 0..5 {
-            editor.handle_input(&InputEvent::Key(key(KeyCode::Left, KeyModifiers::NONE)), &tx);
+            editor.handle_input(
+                &InputEvent::Key(key(KeyCode::Left, KeyModifiers::NONE)),
+                &tx,
+            );
         }
         assert_eq!(
             editor.selection,
