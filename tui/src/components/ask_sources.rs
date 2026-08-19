@@ -448,11 +448,9 @@ impl SourcesPanel {
             // List-focus verbs: `l`/`h` cycle the reveal, `o` opens, `y` yanks.
             KeyReaction::ListVerb(c) => {
                 match c {
-                    'l' => {
-                        if self.has_sources() {
-                            self.preview.toggle(self.selected_path());
-                            self.ensure_loaded(tx);
-                        }
+                    'l' if self.has_sources() => {
+                        self.preview.toggle(self.selected_path());
+                        self.ensure_loaded(tx);
                     }
                     'h' => self.preview.collapse_step(self.selected_path()),
                     'o' => self.open_selected(tx),
