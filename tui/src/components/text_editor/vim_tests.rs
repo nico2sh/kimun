@@ -203,6 +203,24 @@ fn visual_line_ctrl_x_on_the_last_line_leaves_no_blank_either() {
     assert_eq!(t.rows(), ["hello world"]);
 }
 
+/// `V` selects the whole line but, like real vim, must leave the cursor
+/// exactly where it was — not jump it to the end of the line.
+#[test]
+fn visual_line_does_not_move_the_cursor() {
+    let mut e = VimEngine::default();
+    let mut t = ta();
+    t.move_cursor(CursorMove::Jump(0, 3));
+    e.handle_key(&key('V'), &mut t);
+    assert_eq!(*e.mode(), EditorMode::VisualLine);
+    assert_eq!(t.cursor(), (0, 3), "V must not move the cursor");
+    assert_eq!(
+        t.selection_range(),
+        Some(((0, 3), (0, 3))),
+        "the live selection anchors at the cursor; the full-line highlight \
+         is derived from the row range, not from this column"
+    );
+}
+
 #[test]
 fn ctrl_v_in_normal_reaches_the_host() {
     let mut e = VimEngine::default();
