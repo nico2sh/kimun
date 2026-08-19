@@ -87,7 +87,7 @@ fn follows(previous: Stroke, next: Stroke) -> bool {
         (Stroke::Insert(before), Stroke::Insert(now)) => {
             // A new word begins a new group; whitespace stays with the word it
             // follows, so the break lands between `hello ` and `world`.
-            !(before.is_whitespace() && !now.is_whitespace())
+            !before.is_whitespace() || now.is_whitespace()
         }
         // Typing and deleting are different actions.
         _ => false,

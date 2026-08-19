@@ -1573,15 +1573,16 @@ impl VimEngine {
                 }
             },
             Command::EnterVisual { line } => {
-                if line {
-                    ta.move_cursor(CursorMove::Head);
-                    ta.start_selection();
-                    ta.move_cursor(CursorMove::End);
-                    self.mode = EditorMode::VisualLine;
+                // Anchor at the cursor's current position — vim leaves the
+                // cursor exactly where it was on `v`/`V`; the full-line
+                // highlight for VisualLine is derived from the row range
+                // downstream, not from jumping the cursor to Head/End here.
+                ta.start_selection();
+                self.mode = if line {
+                    EditorMode::VisualLine
                 } else {
-                    ta.start_selection();
-                    self.mode = EditorMode::Visual;
-                }
+                    EditorMode::Visual
+                };
                 VimKeyOutcome::CursorOnly
             }
             Command::Repeat => match self.last_change.clone() {
