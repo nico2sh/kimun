@@ -1994,8 +1994,6 @@ impl Component for TextEditorComponent {
                                 .and_then(|ta| ta.selection_range());
                             // Charwise Visual highlight: extend end col by 1 so the
                             // char under the cursor is visually included (vim inclusive).
-                            // VisualLine uses a separate rendering path (full-line) and
-                            // is left unchanged.
                             if self.backend.selection_includes_cursor()
                                 && let Some(((sr, sc), (er, ec))) = self.selection
                             {
@@ -2006,6 +2004,18 @@ impl Component for TextEditorComponent {
                                     .map(|l| l.chars().count())
                                     .unwrap_or(ec);
                                 self.selection = Some(((sr, sc), (er, (ec + 1).min(len))));
+                            }
+                            // Linewise Visual (`V`): the textarea's live selection is
+                            // still just charwise under the hood (Head..End at the
+                            // moment `V` was pressed), so its column only happens to
+                            // span the full line until the cursor moves. Vim's own
+                            // linewise Visual ignores column entirely — normalize to
+                            // full width so every selected row highlights whole,
+                            // no matter where the cursor sits within it.
+                            if self.backend.is_visual_line()
+                                && let Some(((sr, _), (er, _))) = self.selection
+                            {
+                                self.selection = Some(((sr, 0), (er, usize::MAX)));
                             }
                             self.refresh_autocomplete_if_open();
                             return EventState::Consumed;
@@ -5199,6 +5209,38 @@ cccccccc"
             get_ta(&mut editor).selection_range(),
             before,
             "copy must not move the cursor or grow the live selection"
+        );
+    }
+
+    /// Regression: `V` (linewise Visual) must keep the WHOLE line highlighted
+    /// no matter where the cursor moves within it afterwards — column position
+    /// is irrelevant to a linewise selection in vim. `self.selection` used to
+    /// mirror the textarea's raw (charwise) selection range verbatim, which
+    /// only looked like a full line right after `V` because it happens to run
+    /// Head..End; moving the cursor back then shrank the highlight to
+    /// "start of line .. cursor".
+    #[test]
+    fn vim_visual_line_selection_stays_full_width_after_cursor_moves_back() {
+        let mut editor = make_vim_editor();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        editor.set_text("hello world".to_string());
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('V'), KeyModifiers::NONE)),
+            &tx,
+        );
+        assert_eq!(vim_mode(&editor), EditorMode::VisualLine);
+        assert_eq!(
+            editor.selection,
+            Some(((0, 0), (0, usize::MAX))),
+            "V must highlight the full line right away"
+        );
+        for _ in 0..5 {
+            editor.handle_input(&InputEvent::Key(key(KeyCode::Left, KeyModifiers::NONE)), &tx);
+        }
+        assert_eq!(
+            editor.selection,
+            Some(((0, 0), (0, usize::MAX))),
+            "moving the cursor back must not shrink the linewise highlight"
         );
     }
 
