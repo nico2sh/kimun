@@ -245,6 +245,15 @@ impl BackendState {
             if *e.mode() == EditorMode::Visual)
     }
 
+    /// True when the vim interpreter is in linewise Visual (`V`). The
+    /// highlight there must always run the full width of every selected
+    /// row, regardless of the cursor's column.
+    pub fn is_visual_line(&self) -> bool {
+        matches!(self,
+            BackendState::Textarea(TextareaBackend { input: InputInterpreter::Vim(e), .. })
+            if *e.mode() == EditorMode::VisualLine)
+    }
+
     /// Reset any transient input-interpreter state for a freshly loaded note
     /// (the vim interpreter returns to Normal; the other backends carry no
     /// such state).
