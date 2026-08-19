@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.3](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.23.2...kimun-notes-v0.23.3) - 2026-08-19
+
+### Fixed
+
+- cursor stays in place when selecting line
+- visual full line selection doesn't change column selection
+
+### Other
+
+- Merge pull request #186 from nico2sh/visual_sel
+- fmt
+- clippy
+
 ## [0.23.2](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.23.1...kimun-notes-v0.23.2) - 2026-08-08
 
 ### Fixed
