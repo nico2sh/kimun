@@ -4906,7 +4906,7 @@ second row"
 
     #[test]
     fn an_arrow_against_a_stale_layout_falls_back_instead_of_panicking() {
-        // `main.rs` drains queued input without redrawing between events, so an
+        // The App loop (`app::run_app`) drains queued input without redrawing between events, so an
         // edit and an arrow can be processed in one batch. Shrinking a row does
         // not change the row COUNT, which is all the old guard compared — and the
         // layout's byte ranges then sliced past the end of the shortened row.

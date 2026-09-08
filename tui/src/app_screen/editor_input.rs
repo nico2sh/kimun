@@ -99,7 +99,7 @@ pub enum EditorIntent {
     EditorPaste,
     /// Ctrl+V in the editor: probe the clipboard for an image. When there
     /// is none, the executor reclassifies the tail of the ladder
-    /// ([`classify_tail`] with `cancel_leader = false` — the probe
+    /// (`classify_tail` with `cancel_leader = false` — the probe
     /// classification already owned any leader cancel) against fresh
     /// screen state. Lazy on purpose: the common with-image press must not
     /// pay for a discarded fallback classification.

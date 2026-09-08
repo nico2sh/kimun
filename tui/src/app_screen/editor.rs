@@ -1043,7 +1043,7 @@ impl EditorScreen {
 
     /// One owner for the self-update lifecycle's display half; the
     /// app-global half (persisting dismissals, seeding later screens) lives
-    /// in main.rs.
+    /// in the App loop (`app::handle_app_message`).
     fn handle_update(&mut self, flow: UpdateFlow, tx: &AppTx) {
         match flow {
             UpdateFlow::Available(status) => {
