@@ -73,14 +73,14 @@ fn terminal() -> Terminal<TestBackend> {
     Terminal::new(TestBackend::new(120, 40)).unwrap()
 }
 
-fn kind(app: &App) -> Option<ScreenKind> {
-    app.current_screen.as_ref().map(|s| s.get_kind())
+fn kind(app: &App) -> ScreenKind {
+    app.current_screen.get_kind()
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_exhausted_input_source_quits_the_loop() {
     let mut fx = fixture("exhausted").await;
-    fx.app.current_screen = Some(Box::new(PreferencesScreen::new(fx.settings.clone())));
+    fx.app.current_screen = Box::new(PreferencesScreen::new(fx.settings.clone()));
     let mut events = EventHandler::from_input(stream::empty());
     let mut term = terminal();
 
@@ -92,7 +92,7 @@ async fn an_exhausted_input_source_quits_the_loop() {
     .expect("the loop must return when input ends")
     .expect("the loop returns Ok when input ends");
 
-    assert_eq!(kind(&fx.app), Some(ScreenKind::Preferences));
+    assert_eq!(kind(&fx.app), ScreenKind::Preferences);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -101,11 +101,7 @@ async fn the_quit_shortcut_fires_before_the_screen_and_on_exit_saves_the_note() 
     let vault = fx.app.vault.clone().unwrap();
     let note = VaultPath::note_path_from("loop-note");
     vault.create_note(&note, "hello").await.unwrap();
-    fx.app.current_screen = Some(Box::new(EditorScreen::new(
-        vault,
-        note.clone(),
-        fx.settings.clone(),
-    )));
+    fx.app.current_screen = Box::new(EditorScreen::new(vault, note.clone(), fx.settings.clone()));
 
     // Precondition, so a rebinding shows up here and not as a mystery hang.
     let quit = press(KeyCode::Char('q'), KeyModifiers::CONTROL);
@@ -142,11 +138,7 @@ async fn the_preferences_shortcut_switches_screens_before_the_editor_sees_it() {
     let vault = fx.app.vault.clone().unwrap();
     let note = VaultPath::note_path_from("prefs-note");
     vault.create_note(&note, "hello").await.unwrap();
-    fx.app.current_screen = Some(Box::new(EditorScreen::new(
-        vault,
-        note.clone(),
-        fx.settings.clone(),
-    )));
+    fx.app.current_screen = Box::new(EditorScreen::new(vault, note.clone(), fx.settings.clone()));
 
     let prefs = press(KeyCode::Char(','), KeyModifiers::CONTROL);
     let combo = key_event_to_combo(&prefs).unwrap();
@@ -167,7 +159,7 @@ async fn the_preferences_shortcut_switches_screens_before_the_editor_sees_it() {
 
     run_app(&mut term, &mut fx.app, &mut events).await.unwrap();
 
-    assert_eq!(kind(&fx.app), Some(ScreenKind::Preferences));
+    assert_eq!(kind(&fx.app), ScreenKind::Preferences);
     assert_eq!(
         fx.app.screen_generation,
         gen_before + 1,
@@ -183,7 +175,7 @@ async fn the_preferences_shortcut_switches_screens_before_the_editor_sees_it() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_vault_conflict_clears_the_workspace_and_opens_preferences_with_the_error() {
     let mut fx = fixture("conflict").await;
-    fx.app.current_screen = Some(Box::new(PreferencesScreen::new(fx.settings.clone())));
+    fx.app.current_screen = Box::new(PreferencesScreen::new(fx.settings.clone()));
     let mut events = EventHandler::from_input(stream::empty());
     events
         .app_sender()
@@ -200,7 +192,7 @@ async fn a_vault_conflict_clears_the_workspace_and_opens_preferences_with_the_er
         "VaultConflict swapped the screen exactly once"
     );
     assert!(fx.app.vault.is_none(), "the unusable vault is dropped");
-    assert_eq!(kind(&fx.app), Some(ScreenKind::Preferences));
+    assert_eq!(kind(&fx.app), ScreenKind::Preferences);
     assert!(
         fx.settings
             .read()
@@ -232,7 +224,7 @@ async fn an_unhandled_note_path_switches_to_the_editor() {
     // this one to the editor. (Left to itself, the Start screen's own open
     // targets the last path or the vault root, neither of which is a note,
     // so that path would route to Browse instead.)
-    assert_eq!(kind(&fx.app), Some(ScreenKind::Start));
+    assert_eq!(kind(&fx.app), ScreenKind::Start);
 
     let mut events = EventHandler::from_input(stream::empty());
     events.app_sender().send(AppEvent::open(note)).unwrap();
@@ -240,5 +232,5 @@ async fn an_unhandled_note_path_switches_to_the_editor() {
 
     run_app(&mut term, &mut fx.app, &mut events).await.unwrap();
 
-    assert_eq!(kind(&fx.app), Some(ScreenKind::Editor));
+    assert_eq!(kind(&fx.app), ScreenKind::Editor);
 }

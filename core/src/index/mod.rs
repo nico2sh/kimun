@@ -534,9 +534,14 @@ impl NoteIndex {
     ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
         let path = path.canonical();
         let (where_clause, bind_value) = if recursive {
+            // The note's own `path`, not `basePath`: `basePath` is stored
+            // without a trailing separator, so a `<dir>/`-prefixed LIKE would
+            // miss the directory's direct children. Matching the full path
+            // against the same `dir_prefix` the rename/delete wrappers use
+            // keeps `/foo` from also matching a sibling `/foobar/`.
             (
-                "basePath LIKE (? || '%') ESCAPE '\\'".to_string(),
-                escape_like_pattern(&path.to_string()),
+                "path LIKE (? || '%') ESCAPE '\\'".to_string(),
+                escape_like_pattern(&dir_prefix(&path)),
             )
         } else {
             ("basePath = ?".to_string(), path.to_string())
@@ -603,7 +608,7 @@ impl NoteIndex {
             // All notes under this directory tree
             (
                 "SELECT path, breadcrumb, text FROM notesContent WHERE path LIKE (? || '%') ESCAPE '\\'".to_string(),
-                escape_like_pattern(&path.to_string()),
+                escape_like_pattern(&dir_prefix(&path)),
             )
         } else {
             // Only notes directly in this directory (basePath join)

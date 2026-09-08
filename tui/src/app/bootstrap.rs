@@ -3,7 +3,6 @@
 
 use std::path::{Path, PathBuf};
 
-use tracing_subscriber::Layer;
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::prelude::*;
 
@@ -39,21 +38,17 @@ pub fn init_logging(log_dir: &Path) -> Option<tracing_appender::non_blocking::Wo
     #[cfg(not(debug_assertions))]
     let file_level_filter = LevelFilter::WARN;
 
-    let file_layer: Box<dyn Layer<tracing_subscriber::Registry> + Send + Sync> =
-        tracing_subscriber::fmt::layer()
-            .compact()
-            .with_ansi(false)
-            .with_writer(writer)
-            .with_filter(file_level_filter)
-            .boxed();
-
-    // No stderr layer — writing to stderr corrupts the ratatui alternate
-    // screen. Debug logs are captured in the log file at DEBUG level instead.
-    let layers: Vec<Box<dyn Layer<tracing_subscriber::Registry> + Send + Sync>> = vec![file_layer];
+    // No stderr layer, deliberately: writing to stderr corrupts the ratatui
+    // alternate screen. Debug output goes to the file at DEBUG level instead.
+    let file_layer = tracing_subscriber::fmt::layer()
+        .compact()
+        .with_ansi(false)
+        .with_writer(writer)
+        .with_filter(file_level_filter);
 
     // try_init instead of init so tests can call this without panicking on the
     // global-subscriber-already-set error.
-    let _ = tracing_subscriber::registry().with(layers).try_init();
+    let _ = tracing_subscriber::registry().with(file_layer).try_init();
 
     // Forward log:: crate events into the tracing pipeline.
     tracing_log::LogTracer::init().ok();
@@ -61,14 +56,21 @@ pub fn init_logging(log_dir: &Path) -> Option<tracing_appender::non_blocking::Wo
     Some(guard)
 }
 
-/// Installs a panic hook that leaves the terminal session (so the panic
+/// Installs a panic hook that leaves a live terminal session (so the panic
 /// message is readable), records the panic through tracing, appends it with a
 /// backtrace to `log_path` directly (independent of the subscriber), then
 /// defers to the default hook.
 pub fn install_panic_hook(log_path: PathBuf) {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        super::terminal::leave(&mut std::io::stderr());
+        // Only a live session on the panicking main thread needs the
+        // terminal restored. A panic inside a spawned task is caught by the
+        // runtime and the app carries on — tearing the terminal down under
+        // it would leave the loop drawing into a cooked screen. And the CLI
+        // and MCP paths never enter a session at all.
+        if std::thread::current().name() == Some("main") {
+            super::terminal::leave_if_live(&mut std::io::stderr());
+        }
 
         // Emit through tracing first (subscriber may still be active).
         tracing::error!("panic: {info}");

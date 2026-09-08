@@ -8,6 +8,7 @@ pub mod events;
 pub(crate) mod terminal;
 
 use std::io;
+use std::process::ExitCode;
 use std::sync::{Arc, RwLock};
 
 use color_eyre::eyre;
@@ -45,7 +46,7 @@ pub struct Cli {
 /// backend uses `tokio::task::block_in_place` during construction, which
 /// requires the multi-thread flavor — that constraint lives here, next to the
 /// code that has it, not in the shim.
-pub fn main() -> Result<()> {
+pub fn main() -> Result<ExitCode> {
     color_eyre::install()?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -53,10 +54,10 @@ pub fn main() -> Result<()> {
     runtime.block_on(entry())
 }
 
-async fn entry() -> Result<()> {
+async fn entry() -> Result<ExitCode> {
     // Computed once, reused by logging and the panic hook. The guard is held
-    // to the end of this function so the log is flushed on every *returning*
-    // exit path (a `process::exit` skips destructors, and with them the flush).
+    // to the end of this function, and every exit path returns through here,
+    // so the log is always flushed.
     let log_dir: PathBuf = kimun_core::system::log_dir().into_path_buf();
     let _guard = bootstrap::init_logging(&log_dir);
     bootstrap::install_panic_hook(log_dir.join("kimun.log"));
@@ -64,7 +65,10 @@ async fn entry() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Some(command) => run_cli_command(command, cli.config).await,
-        None => run_tui(cli.config).await,
+        None => {
+            run_tui(cli.config).await?;
+            Ok(ExitCode::SUCCESS)
+        }
     }
 }
 
@@ -73,16 +77,22 @@ async fn entry() -> Result<()> {
 /// color_eyre report (exit 1). The recoverable/internal split is core's
 /// `VaultError::user_message`; the boundary lives here so every CLI command
 /// propagates the typed `VaultError` (via `?`) and renders identically.
-async fn run_cli_command(command: crate::cli::CliCommand, config: Option<PathBuf>) -> Result<()> {
+async fn run_cli_command(
+    command: crate::cli::CliCommand,
+    config: Option<PathBuf>,
+) -> Result<ExitCode> {
     match crate::cli::run_cli(command, config).await {
-        Ok(()) => Ok(()),
+        Ok(()) => Ok(ExitCode::SUCCESS),
         Err(report) => {
             if let Some(msg) = report
                 .downcast_ref::<kimun_core::error::VaultError>()
                 .and_then(|ve| ve.user_message())
             {
+                // Returned, not `process::exit`ed: the code unwinds back
+                // through `entry`, so the runtime and the log guard are
+                // dropped normally on the way out.
                 eprintln!("Error: {msg}");
-                std::process::exit(2);
+                return Ok(ExitCode::from(2));
             }
             Err(report)
         }
@@ -114,9 +124,10 @@ pub async fn run_tui(config_path: Option<PathBuf>) -> Result<()> {
 }
 
 pub struct App {
-    /// The currently active screen. Held as `Option` so we can temporarily
-    /// `take()` it when calling screen methods (avoids double-borrow of `App`).
-    pub current_screen: Option<Box<dyn AppScreen>>,
+    /// The live **Screen**. There is always exactly one: the app starts on
+    /// **Start** and every transition swaps the box whole in `switch_screen`,
+    /// so there is no in-between state to represent.
+    pub current_screen: Box<dyn AppScreen>,
 
     pub settings: SharedSettings,
 
@@ -163,7 +174,7 @@ impl App {
     pub async fn from_settings(settings: SharedSettings) -> Self {
         let vault = Self::open_vault(&settings).await;
         Self {
-            current_screen: Some(Box::new(StartScreen::new(settings.clone(), vault.clone()))),
+            current_screen: Box::new(StartScreen::new(settings.clone(), vault.clone())),
             settings,
             vault,
             screen_generation: 0,
@@ -230,9 +241,7 @@ fn respawn_rag(app: &mut App, tx: &crate::components::events::AppTx) {
 }
 
 async fn switch_screen(app: &mut App, tx: &AppTx, new_screen: ScreenEvent) {
-    if let Some(current) = app.current_screen.as_mut() {
-        current.on_exit(tx).await;
-    }
+    app.current_screen.on_exit(tx).await;
 
     let mut screen: Box<dyn AppScreen> = match new_screen {
         ScreenEvent::Start => Box::new(StartScreen::new(app.settings.clone(), app.vault.clone())),
@@ -265,7 +274,7 @@ async fn switch_screen(app: &mut App, tx: &AppTx, new_screen: ScreenEvent) {
     screen
         .handle_app_message(AppEvent::RagStatus(app.rag_status), tx)
         .await;
-    app.current_screen = Some(screen);
+    app.current_screen = screen;
     // Bumped here (not at every swap site) because every swap goes through
     // this function. The main loop watches this counter to break its inner
     // event drain whenever the screen identity changes, so the new screen is
@@ -324,17 +333,11 @@ where
 {
     let tx = events.app_sender();
 
-    if let Some(screen) = &mut app.current_screen {
-        screen.on_enter(&tx).await;
-    }
+    app.current_screen.on_enter(&tx).await;
 
     loop {
         terminal
-            .draw(|f| {
-                if let Some(screen) = &mut app.current_screen {
-                    screen.render(f);
-                }
-            })
+            .draw(|f| app.current_screen.render(f))
             // A `From` bound into `io::Error` would exclude `TestBackend`
             // (`Error = Infallible`), which the headless loop tests use.
             // Wrapping through `io::Error::other` keeps the source error and
@@ -352,9 +355,7 @@ where
         loop {
             match event {
                 AppEvent::Quit => {
-                    if let Some(screen) = app.current_screen.as_mut() {
-                        screen.on_exit(&tx).await;
-                    }
+                    app.current_screen.on_exit(&tx).await;
                     return Ok(());
                 }
                 AppEvent::Redraw => {
@@ -386,11 +387,8 @@ where
                                         true
                                     }
                                     Some(ActionShortcuts::OpenPreferences) => {
-                                        let already_on_settings = app
-                                            .current_screen
-                                            .as_ref()
-                                            .map(|s| s.get_kind() == ScreenKind::Preferences)
-                                            .unwrap_or(false);
+                                        let already_on_settings = app.current_screen.get_kind()
+                                            == ScreenKind::Preferences;
                                         if !already_on_settings {
                                             tx.send(AppEvent::OpenScreen(
                                                 ScreenEvent::OpenPreferences,
@@ -412,19 +410,15 @@ where
                                     }
                                 }
                             }
-                            if let Some(screen) = &mut app.current_screen {
-                                screen.handle_input(&InputEvent::Key(key), &tx);
-                            }
+                            app.current_screen.handle_input(&InputEvent::Key(key), &tx);
                         }
                         InputEvent::Mouse(mouse_event) => {
-                            if let Some(screen) = &mut app.current_screen {
-                                screen.handle_input(&InputEvent::Mouse(mouse_event), &tx);
-                            }
+                            app.current_screen
+                                .handle_input(&InputEvent::Mouse(mouse_event), &tx);
                         }
                         InputEvent::Paste(text) => {
-                            if let Some(screen) = &mut app.current_screen {
-                                screen.handle_input(&InputEvent::Paste(text), &tx);
-                            }
+                            app.current_screen
+                                .handle_input(&InputEvent::Paste(text), &tx);
                         }
                     }
                 }
@@ -463,11 +457,7 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
         }
         AppEvent::OpenPath { path, emphasis } => {
             // We either handle the new path within the current screen, or we switch to a new screen for this path
-            let unhandled = if let Some(screen) = app.current_screen.as_mut() {
-                screen.try_open_path(path, emphasis, tx).await
-            } else {
-                Some(path)
-            };
+            let unhandled = app.current_screen.try_open_path(path, emphasis, tx).await;
             if let Some(path) = unhandled {
                 if let Some(vault) = app.vault.clone() {
                     if path.is_note() {
@@ -490,11 +480,7 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
             // The editor screen shows it in its attachment view; any other
             // screen routes through OpenEditor first, then the attachment opens
             // there. (In practice this is sent from the editor's FILES drawer.)
-            let unhandled = if let Some(screen) = app.current_screen.as_mut() {
-                screen.try_open_attachment(path, tx).await
-            } else {
-                Some(path)
-            };
+            let unhandled = app.current_screen.try_open_attachment(path, tx).await;
             if let Some(path) = unhandled
                 && let Some(vault) = app.vault.clone()
             {
@@ -568,24 +554,20 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
                 UpdateFlow::Applied => app.update = None,
                 UpdateFlow::Apply | UpdateFlow::ShowDialog => {}
             }
-            if let Some(screen) = app.current_screen.as_mut() {
-                screen.handle_app_message(AppEvent::Update(flow), tx).await;
-            }
+            app.current_screen
+                .handle_app_message(AppEvent::Update(flow), tx)
+                .await;
         }
         AppEvent::RagStatus(status) => {
             // Same pattern as update: keep app-globally for screen seeding, and
             // forward for immediate display.
             app.rag_status = status;
-            if let Some(screen) = app.current_screen.as_mut() {
-                screen
-                    .handle_app_message(AppEvent::RagStatus(status), tx)
-                    .await;
-            }
+            app.current_screen
+                .handle_app_message(AppEvent::RagStatus(status), tx)
+                .await;
         }
         other => {
-            if let Some(screen) = app.current_screen.as_mut() {
-                screen.handle_app_message(other, tx).await;
-            }
+            app.current_screen.handle_app_message(other, tx).await;
         }
     }
     Ok(())
@@ -608,10 +590,7 @@ mod tests {
         let settings = Arc::new(RwLock::new(AppSettings::default()));
         let app = App::from_settings(settings).await;
         assert!(app.vault.is_none());
-        assert_eq!(
-            app.current_screen.as_ref().map(|s| s.get_kind()),
-            Some(ScreenKind::Start)
-        );
+        assert_eq!(app.current_screen.get_kind(), ScreenKind::Start);
         assert_eq!(app.screen_generation, 0);
     }
 

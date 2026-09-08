@@ -7,6 +7,7 @@
 //! returning `Err` went straight back to `main` in raw mode).
 
 use std::io::{self, Stdout, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crossterm::cursor::{SetCursorStyle, Show};
 use crossterm::event::{
@@ -21,6 +22,12 @@ use crossterm::terminal::{
 use ratatui::Terminal;
 use ratatui::prelude::CrosstermBackend;
 
+/// Whether a **Terminal session** is currently up. Process-global because the
+/// panic hook has no handle on the session — it only knows a session might
+/// exist. Set once the terminal state starts changing, cleared by whoever
+/// leaves first.
+static SESSION_LIVE: AtomicBool = AtomicBool::new(false);
+
 pub struct TerminalSession {
     terminal: Terminal<CrosstermBackend<Stdout>>,
 }
@@ -31,9 +38,11 @@ impl TerminalSession {
     /// the user has not opted out (ADR-0015) — mouse capture.
     pub fn enter(mouse_capture: bool) -> io::Result<Self> {
         enable_raw_mode()?;
+        // From here on the terminal is modified, so a panic must restore it.
+        SESSION_LIVE.store(true, Ordering::SeqCst);
         // Anything that fails past this point must undo raw mode, or the
         // error report prints into a terminal that no longer echoes.
-        Self::enter_after_raw_mode(mouse_capture).inspect_err(|_| leave(&mut io::stdout()))
+        Self::enter_after_raw_mode(mouse_capture).inspect_err(|_| leave_if_live(&mut io::stdout()))
     }
 
     fn enter_after_raw_mode(mouse_capture: bool) -> io::Result<Self> {
@@ -63,7 +72,17 @@ impl TerminalSession {
 
 impl Drop for TerminalSession {
     fn drop(&mut self) {
-        leave(self.terminal.backend_mut());
+        leave_if_live(self.terminal.backend_mut());
+    }
+}
+
+/// Leave once, whoever gets there first: the guard's `Drop` on a normal
+/// exit, the panic hook on an unwinding main thread. A second caller finds
+/// the flag already cleared and does nothing, so the teardown is never
+/// written twice.
+pub(crate) fn leave_if_live<W: Write>(w: &mut W) {
+    if SESSION_LIVE.swap(false, Ordering::SeqCst) {
+        leave(w);
     }
 }
 
@@ -73,9 +92,11 @@ impl Drop for TerminalSession {
 /// backend to hand.
 pub fn leave<W: Write>(w: &mut W) {
     let _ = disable_raw_mode();
+    // On its own: on Windows this command is unsupported and would
+    // short-circuit everything after it in one `execute!` chain.
+    let _ = execute!(w, PopKeyboardEnhancementFlags);
     let _ = execute!(
         w,
-        PopKeyboardEnhancementFlags,
         LeaveAlternateScreen,
         DisableMouseCapture,
         DisableBracketedPaste,
@@ -127,5 +148,15 @@ mod tests {
         let mut out: Vec<u8> = Vec::new();
         leave(&mut out);
         leave(&mut out); // idempotent
+    }
+
+    /// No session was ever entered — the CLI and MCP paths, and every test —
+    /// so the panic hook must write nothing. The flag is process-global, so
+    /// this test only ever reads it; nothing here sets it.
+    #[test]
+    fn leave_if_live_is_a_noop_when_no_session_was_entered() {
+        let mut out: Vec<u8> = Vec::new();
+        leave_if_live(&mut out);
+        assert!(out.is_empty(), "wrote teardown with no session: {out:?}");
     }
 }
