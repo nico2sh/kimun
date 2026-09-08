@@ -226,6 +226,24 @@ _Avoid_: capture (taken by the mouse-capture toggle), focus (collides with panel
 What following resolves to — a **link** (a note reference, an external URL, or an attachment, unresolved as written in the note) or a **label** (a `#tag`, whose query is run). Named for the action rather than the destination, because the destination is not known until the follow runs: only then is a link decided to be a note, a URL, or a file. Wider than **note link**, which is note→note only and excludes URLs and attachments. Reached by Ctrl-N or by a double-click; a single click only places the cursor.
 _Avoid_: link target (silent about labels), note target (a link is often not a note at all).
 
+### App shell
+
+**Screen**:
+The top-level surface the terminal shows — Start, Browse, Editor, Onboarding, Preferences — exactly one live at a time (`AppScreen`). It owns everything drawn and every input while it is up, and is swapped whole by the **App loop**, which calls `on_exit` on the old screen and `on_enter` on the new. A screen never constructs another: it sends an `OpenScreen` event and the loop builds the replacement, seeding it with the app-global facts (vault, update notice, server status).
+_Avoid_: view (collides with **drawer view**), page, window, mode.
+
+**App loop**:
+The one module that runs the TUI: draw the **Screen**, wait for the next event, drain what is already queued, draw again. It owns the rules no screen may — global shortcuts fire before the screen sees a key; a burst of queued events paints one frame; a screen swap mid-drain ends the drain (the *screen generation*), so the new screen is drawn before any event still queued is delivered to it. Generic over the terminal backend and fed by an **Input source**, so it runs headless in tests.
+_Avoid_: main loop / event loop (name the mechanism, not the module), run_app (the function, not the concept).
+
+**Input source**:
+The seam that supplies the **App loop** with terminal-originated events — key, mouse, paste, resize. Crossterm in the app; a scripted stream in tests, so a loop test drives real screens without a terminal. An input source ends only when the terminal is gone, and the loop treats its end as quit. Events raised by the app's own tasks (autosave, indexing, a server answer) are not input: they arrive on the app channel, which the loop drains first.
+_Avoid_: event stream (the crossterm type — one adapter), event handler (the superseded name of the module that merges both channels).
+
+**Terminal session**:
+The terminal state the TUI holds while a **Screen** is up — raw mode, the alternate screen, bracketed paste, keyboard-enhancement flags, mouse capture — entered once and left symmetrically, on normal exit and on panic alike. A guard, so the leave order cannot drift from the enter order and cannot be forgotten on one exit path.
+_Avoid_: terminal setup / teardown (two halves of one thing), raw mode (one of its parts).
+
 ### TUI surfaces
 
 **Panel**:
