@@ -167,7 +167,7 @@ mod tests {
 
     #[tokio::test]
     async fn esc_does_not_quit() {
-        // Quit is now handled globally in main.rs via Ctrl+Q; BrowseScreen ignores Esc.
+        // Quit is a global shortcut of the App loop (`app::run_app`); BrowseScreen ignores Esc.
         let vault = make_vault().await;
         let settings = make_settings_with_defaults();
         let (tx, mut rx) = unbounded_channel();

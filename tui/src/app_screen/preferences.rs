@@ -161,7 +161,7 @@ impl PreferencesScreen {
     /// Used when the vault was rejected due to structural conflicts.
     ///
     /// The `settings` passed in should already have the workspace cleared —
-    /// this is handled by the `VaultConflict` branch in `handle_app_message` (`main.rs`)
+    /// this is handled by the `VaultConflict` branch in `app::handle_app_message`
     /// before calling `switch_screen`.
     pub fn new_with_error(settings: SharedSettings, error: String) -> Self {
         let mut s = Self::new(settings);

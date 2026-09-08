@@ -30,7 +30,7 @@
 //!   two deliberate clicks on adjacent characters — nudging the cursor one
 //!   column over — follow a link, which is the accident this rule exists to
 //!   stop.
-//! - **Within [`WINDOW`].** A burst, not a pause. Without it, any two clicks
+//! - **Within `WINDOW`.** A burst, not a pause. Without it, any two clicks
 //!   on a cell would pair up however far apart, and a link cell gets clicked
 //!   repeatedly while its text is being edited.
 //!

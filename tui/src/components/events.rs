@@ -81,7 +81,7 @@ pub enum AppEvent {
     ExecuteLeaderAction(crate::keys::leader::LeaderAction),
     /// Show a transient footer flash — async tasks report results with it.
     FlashMessage(String),
-    /// The self-update lifecycle (one owner in main.rs for the app-global
+    /// The self-update lifecycle (one owner in `app::handle_app_message` for the app-global
     /// bookkeeping, one in the editor screen for display).
     Update(UpdateFlow),
     /// Apply (and optionally persist) a resolved theme — sent by the theme
@@ -109,7 +109,7 @@ pub enum AppEvent {
     /// reference already contains the updated values.
     PreferencesSaved,
     /// Sent by OnboardingScreen when the user confirms Finish on the summary
-    /// step. The shared settings already contain the committed draft; main.rs
+    /// step. The shared settings already contain the committed draft; the App loop
     /// rebuilds the vault and navigates to Start (same as PreferencesSaved).
     OnboardingFinished,
     /// Sent by PreferencesScreen when user discards or closes unchanged.
@@ -150,7 +150,7 @@ pub enum AppEvent {
     /// A vault was found to be structurally unusable (conflicts, invalid layout, etc.).
     /// Carries a formatted, human-readable error message.
     ///
-    /// Handled by `handle_app_message` in `main.rs`, which clears the workspace,
+    /// Handled by `app::handle_app_message`, which clears the workspace,
     /// saves settings, and opens the settings screen with an error overlay.
     /// To add a new conflict source: emit this event from the detection site; no
     /// other files need to change.
@@ -158,7 +158,7 @@ pub enum AppEvent {
 
     // ── Workspace messages ──────────────────────────────────────────────
     /// User switched to a different workspace. Carries the workspace name.
-    /// Handled by main.rs to rebuild the vault and navigate to StartScreen.
+    /// Handled by the App loop to rebuild the vault and navigate to StartScreen.
     WorkspaceSwitched(String),
 
     /// The saved-search save/select flow — owned by the editor screen's
@@ -195,7 +195,7 @@ pub enum AskData {
     },
 }
 
-/// The self-update lifecycle. Two owners by design: `main.rs` keeps the
+/// The self-update lifecycle. Two owners by design: the App loop (`app::handle_app_message`) keeps the
 /// app-global copy (seeding later-opened screens, persisting dismissals) and
 /// forwards; the editor screen owns display (footer indicator, dialog).
 #[derive(Debug, Clone)]
