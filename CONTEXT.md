@@ -314,7 +314,7 @@ _Avoid_: exported answer (it is not an export format, it is a note), answer note
 ### Indexing
 
 **NoteIndex**:
-The one core module owning the searchable index of the vault — search, suggestions, backlinks, and the index's own lifecycle (schema versioning, self-heal on open). Its interface speaks in notes, queries, and **note links**; SQLite, sqlx, transactions, and schema migrations are implementation and never cross the interface. Atomicity is carried by composite operations (apply an **IndexDiff**; rename a note together with its rewritten backlinks) rather than by exposing transactions.
+The one core module owning the searchable index of the vault — search, suggestions, backlinks, and the index's own lifecycle (schema versioning, self-heal on open). Its interface speaks in notes, queries, and **note links**; SQLite, sqlx, transactions, and schema migrations are implementation and never cross the interface. Atomicity is carried by composite operations (apply an **IndexDiff**; rename a note together with its rewritten backlinks) rather than by exposing transactions. Its own tests speak the same interface — an **IndexDiff** in, queries out; only the tests of the schema itself (versioning, self-heal, query plans) see SQLite.
 _Avoid_: db, VaultDB, database (they name the implementation, not the role)
 
 **Index file**:
