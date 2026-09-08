@@ -2,6 +2,6 @@
 //! the `kimun_notes` library so it compiles once and is testable from
 //! `tests/`. See `app::main` for the entry.
 
-fn main() -> color_eyre::Result<()> {
+fn main() -> color_eyre::Result<std::process::ExitCode> {
     kimun_notes::app::main()
 }

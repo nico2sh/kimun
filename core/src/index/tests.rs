@@ -1327,6 +1327,43 @@ async fn delete_directory_no_trailing_slash_does_not_match_sibling_prefix() {
 }
 
 #[tokio::test]
+async fn recursive_listing_does_not_match_sibling_directory_prefixes() {
+    let (_tmp, db) = open_temp().await;
+    db.apply(added(vec![
+        note("/foo/a.md", "# A\nbody"),
+        note("/foobar/b.md", "# B\nbody"),
+    ]))
+    .await
+    .unwrap();
+
+    let under_foo = db.get_notes(&VaultPath::new("/foo"), true).await.unwrap();
+    assert_eq!(
+        paths(&under_foo),
+        vec!["/foo/a.md"],
+        "/foobar is a sibling, not a child"
+    );
+
+    let mut keys: Vec<String> = db
+        .get_notes_sections(&VaultPath::new("/foo"), true)
+        .await
+        .unwrap()
+        .into_keys()
+        .map(|p| p.to_string())
+        .collect();
+    keys.sort();
+    assert_eq!(keys, vec!["/foo/a.md"]);
+
+    let everything = db.get_notes(&VaultPath::root(), true).await.unwrap();
+    assert_eq!(
+        paths(&everything),
+        vec!["/foo/a.md", "/foobar/b.md"],
+        "the root still lists all"
+    );
+
+    db.close().await;
+}
+
+#[tokio::test]
 async fn path_search_with_underscore_does_not_treat_as_wildcard() {
     let (_tmp, db) = open_temp().await;
     db.apply(added(vec![

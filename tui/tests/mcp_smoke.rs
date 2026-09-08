@@ -10,6 +10,8 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 use tempfile::TempDir;
 
+mod common;
+
 /// The `kimun` binary under test.
 ///
 /// Cargo sets `CARGO_BIN_EXE_<name>` for integration tests and guarantees the
@@ -34,22 +36,7 @@ fn kimun_bin() -> &'static Path {
 /// `dir` rather than in the real installation.
 fn write_config(dir: &std::path::Path, workspace: &std::path::Path) -> std::path::PathBuf {
     let config_path = dir.join("config.toml");
-    std::fs::write(
-        &config_path,
-        format!(
-            r#"config_version = 6
-
-[global]
-current_workspace = "default"
-
-[workspaces.default]
-path = {:?}
-created = "2024-01-15T10:30:00Z"
-"#,
-            workspace.to_string_lossy().as_ref()
-        ),
-    )
-    .unwrap();
+    common::write_config(&config_path, workspace);
     config_path
 }
 
