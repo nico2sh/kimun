@@ -25,6 +25,7 @@ pub mod config;
 pub mod handlers;
 pub mod logbuffer;
 pub mod server_state;
+pub mod startup;
 pub mod webui;
 
 /// A retrieved chunk with its relevance score (higher = better).

@@ -55,7 +55,7 @@ journal_sort_order = "descending"
 group_directories = false
 
 [global]
-current_workspace = "personal"
+current_workspace = "work"
 update_check = true
 mouse = true
 kimun_server_url = "http://localhost:7573"
