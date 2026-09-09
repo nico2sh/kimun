@@ -240,7 +240,7 @@ fn ctrl_c_in_normal_cancels_the_pending_sequence() {
     assert!(matches!(e.parse_normal(&ctrl('c')), Parsed::Cancel));
     // The count is gone: `l` now moves one column, not two.
     assert_eq!(e.handle_key(&key('l'), &mut t), VimKeyOutcome::CursorOnly);
-    assert_eq!(super::super::cursor_tuple(&t), (0, 1));
+    assert_eq!(t.cursor(), (0, 1));
 }
 
 #[test]
@@ -377,11 +377,11 @@ fn esc_returns_to_normal_and_steps_back() {
     e.handle_key(&key('i'), &mut t);
     t.move_cursor(crate::components::text_editor::rope_buffer::CursorMove::Forward);
     t.move_cursor(crate::components::text_editor::rope_buffer::CursorMove::Forward);
-    let col_before = super::super::cursor_tuple(&t).1;
+    let col_before = t.cursor().1;
     let out = e.handle_key(&esc(), &mut t);
     assert_eq!(*e.mode(), EditorMode::Normal);
     assert_eq!(out, VimKeyOutcome::CursorOnly);
-    assert_eq!(super::super::cursor_tuple(&t).1, col_before - 1);
+    assert_eq!(t.cursor().1, col_before - 1);
 }
 
 #[test]
@@ -399,7 +399,7 @@ fn l_moves_right_cursor_only() {
     let mut t = ta();
     let out = e.handle_key(&key('l'), &mut t);
     assert_eq!(out, VimKeyOutcome::CursorOnly);
-    assert_eq!(super::super::cursor_tuple(&t), (0, 1));
+    assert_eq!(t.cursor(), (0, 1));
     assert_eq!(*e.mode(), EditorMode::Normal);
 }
 
@@ -409,7 +409,7 @@ fn a_enters_insert_after_cursor() {
     let mut t = ta();
     e.handle_key(&key('a'), &mut t);
     assert_eq!(*e.mode(), EditorMode::Insert);
-    assert_eq!(super::super::cursor_tuple(&t), (0, 1));
+    assert_eq!(t.cursor(), (0, 1));
 }
 
 #[test]
@@ -420,7 +420,7 @@ fn o_opens_line_below_in_insert() {
     assert_eq!(*e.mode(), EditorMode::Insert);
     assert_eq!(out, VimKeyOutcome::TextMutated);
     assert_eq!(t.rows().len(), 3);
-    assert_eq!(super::super::cursor_tuple(&t).0, 1);
+    assert_eq!(t.cursor().0, 1);
 }
 
 #[test]
@@ -450,10 +450,10 @@ fn count_accumulates_then_moves() {
     let mut t = RopeBuffer::new(Text::from("abcdef"));
     e.handle_key(&key('3'), &mut t);
     e.handle_key(&key('l'), &mut t);
-    assert_eq!(super::super::cursor_tuple(&t), (0, 3));
+    assert_eq!(t.cursor(), (0, 3));
     // pending cleared after the motion
     e.handle_key(&key('l'), &mut t);
-    assert_eq!(super::super::cursor_tuple(&t), (0, 4));
+    assert_eq!(t.cursor(), (0, 4));
 }
 
 #[test]
@@ -463,7 +463,7 @@ fn zero_without_count_is_line_start() {
     e.handle_key(&key('l'), &mut t);
     e.handle_key(&key('l'), &mut t);
     e.handle_key(&key('0'), &mut t);
-    assert_eq!(super::super::cursor_tuple(&t), (0, 0));
+    assert_eq!(t.cursor(), (0, 0));
 }
 
 // ── gg/G motion tests ────────────────────────────────────────────────────
@@ -474,10 +474,10 @@ fn gg_and_G_jump_file_ends() {
     let mut e = VimEngine::default();
     let mut t = RopeBuffer::new(Text::from("one\ntwo\nthree"));
     e.handle_key(&key('G'), &mut t);
-    assert_eq!(super::super::cursor_tuple(&t).0, 2);
+    assert_eq!(t.cursor().0, 2);
     e.handle_key(&key('g'), &mut t);
     e.handle_key(&key('g'), &mut t);
-    assert_eq!(super::super::cursor_tuple(&t).0, 0);
+    assert_eq!(t.cursor().0, 0);
 }
 
 #[test]
@@ -485,12 +485,12 @@ fn pending_g_cancels_on_unmapped_key() {
     let mut e = VimEngine::default();
     let mut t = RopeBuffer::new(Text::from("one\ntwo\nthree"));
     e.handle_key(&key('G'), &mut t); // go to last line
-    assert_eq!(super::super::cursor_tuple(&t).0, 2);
+    assert_eq!(t.cursor().0, 2);
     e.handle_key(&key('g'), &mut t); // start gg
     e.handle_key(&key('z'), &mut t); // unmapped → should cancel pending g
     e.handle_key(&key('g'), &mut t); // lone g, NOT gg
     assert_eq!(
-        super::super::cursor_tuple(&t).0,
+        t.cursor().0,
         2,
         "stray g after cancelled prefix must not jump to file start"
     );
@@ -506,7 +506,7 @@ fn pending_g_cleared_through_insert() {
     e.handle_key(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &mut t);
     e.handle_key(&key('g'), &mut t); // lone g
     assert_eq!(
-        super::super::cursor_tuple(&t).0,
+        t.cursor().0,
         2,
         "g after insert must not complete a stale gg"
     );
@@ -683,7 +683,7 @@ fn f_moves_to_char() {
     let mut t = RopeBuffer::new(Text::from("hello, world"));
     e.handle_key(&key('f'), &mut t);
     e.handle_key(&key(','), &mut t);
-    assert_eq!(super::super::cursor_tuple(&t), (0, 5));
+    assert_eq!(t.cursor(), (0, 5));
 }
 
 #[test]
@@ -702,7 +702,7 @@ fn t_stops_before_char() {
     let mut t = RopeBuffer::new(Text::from("hello, world"));
     e.handle_key(&key('t'), &mut t);
     e.handle_key(&key(','), &mut t);
-    assert_eq!(super::super::cursor_tuple(&t), (0, 4)); // on 'o', before ','
+    assert_eq!(t.cursor(), (0, 4)); // on 'o', before ','
 }
 
 #[test]
@@ -711,9 +711,9 @@ fn semicolon_repeats_find() {
     let mut t = RopeBuffer::new(Text::from("a.b.c.d"));
     e.handle_key(&key('f'), &mut t);
     e.handle_key(&key('.'), &mut t);
-    assert_eq!(super::super::cursor_tuple(&t).1, 1);
+    assert_eq!(t.cursor().1, 1);
     e.handle_key(&key(';'), &mut t);
-    assert_eq!(super::super::cursor_tuple(&t).1, 3);
+    assert_eq!(t.cursor().1, 3);
 }
 
 // ── Text object tests ────────────────────────────────────────────────────
@@ -776,7 +776,7 @@ fn percent_jumps_to_matching_paren() {
     e.handle_key(&key('f'), &mut t);
     e.handle_key(&key('('), &mut t); // cursor on '('
     e.handle_key(&key('%'), &mut t);
-    assert_eq!(super::super::cursor_tuple(&t), (0, 7)); // matching ')'
+    assert_eq!(t.cursor(), (0, 7)); // matching ')'
 }
 
 #[test]
@@ -786,7 +786,7 @@ fn percent_jumps_back_from_close() {
     e.handle_key(&key('f'), &mut t);
     e.handle_key(&key(')'), &mut t); // cursor on ')'
     e.handle_key(&key('%'), &mut t);
-    assert_eq!(super::super::cursor_tuple(&t), (0, 3)); // back to '('
+    assert_eq!(t.cursor(), (0, 3)); // back to '('
 }
 
 #[test]
@@ -795,7 +795,7 @@ fn percent_handles_nested() {
     let mut t = RopeBuffer::new(Text::from("(a(b)c)"));
     // cursor on outer '(' at col 0
     e.handle_key(&key('%'), &mut t);
-    assert_eq!(super::super::cursor_tuple(&t), (0, 6)); // matching outer ')'
+    assert_eq!(t.cursor(), (0, 6)); // matching outer ')'
 }
 
 // ── Visual mode tests ────────────────────────────────────────────────────
@@ -918,12 +918,12 @@ fn indent_keeps_cursor_over_same_char() {
     e.handle_key(&key('l'), &mut t); // onto 'n' (col 1)
     e.handle_key(&key('>'), &mut t);
     e.handle_key(&key('>'), &mut t);
-    assert_eq!(super::super::cursor_tuple(&t), (0, 5)); // still on 'n'
+    assert_eq!(t.cursor(), (0, 5)); // still on 'n'
     // counted form too: cursor stays on the first line of the block
     e.handle_key(&key('2'), &mut t);
     e.handle_key(&key('>'), &mut t);
     e.handle_key(&key('>'), &mut t);
-    assert_eq!(super::super::cursor_tuple(&t).0, 0);
+    assert_eq!(t.cursor().0, 0);
 }
 
 #[test]
@@ -935,7 +935,7 @@ fn outdent_keeps_cursor_over_same_char() {
     e.handle_key(&key('<'), &mut t);
     e.handle_key(&key('<'), &mut t);
     assert_eq!(t.rows(), &["x"]);
-    assert_eq!(super::super::cursor_tuple(&t).1, 0); // still on 'x'
+    assert_eq!(t.cursor().1, 0); // still on 'x'
 }
 
 #[test]
@@ -945,6 +945,41 @@ fn outdent_removes_spaces() {
     e.handle_key(&key('<'), &mut t);
     e.handle_key(&key('<'), &mut t);
     assert_eq!(t.rows(), &["    x"]); // removed 4
+}
+
+/// `<<` takes back what Tab put in — and a tab already on the row, which a
+/// note written elsewhere may carry, counts as one step rather than being
+/// walked past.
+#[test]
+fn outdent_removes_a_leading_tab_as_one_step() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("\tx"));
+    e.handle_key(&key('<'), &mut t);
+    e.handle_key(&key('<'), &mut t);
+    assert_eq!(t.rows(), &["x"]);
+}
+
+/// `>>` inserts the step as spaces, whatever the row already uses.
+#[test]
+fn indent_always_inserts_spaces() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("\tx"));
+    e.handle_key(&key('>'), &mut t);
+    e.handle_key(&key('>'), &mut t);
+    assert_eq!(t.rows(), &["    \tx"]);
+}
+
+/// A counted indent past the last row indents what is there, once each, and
+/// leaves the cursor on the first row over the character it sat on.
+#[test]
+fn a_counted_indent_stops_at_the_last_row() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("a\nb"));
+    e.handle_key(&key('5'), &mut t);
+    e.handle_key(&key('>'), &mut t);
+    e.handle_key(&key('>'), &mut t);
+    assert_eq!(t.rows(), &["    a", "    b"]);
+    assert_eq!(t.cursor(), (0, 4));
 }
 
 #[test]
@@ -1115,15 +1150,11 @@ fn esc_clears_pending_g_in_normal() {
     let mut e = VimEngine::default();
     let mut t = RopeBuffer::new(Text::from("one\ntwo\nthree"));
     e.handle_key(&key('G'), &mut t); // last line
-    assert_eq!(super::super::cursor_tuple(&t).0, 2);
+    assert_eq!(t.cursor().0, 2);
     e.handle_key(&key('g'), &mut t); // start gg
     e.handle_key(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &mut t); // cancel
     e.handle_key(&key('g'), &mut t); // lone g
-    assert_eq!(
-        super::super::cursor_tuple(&t).0,
-        2,
-        "Esc must cancel pending g"
-    );
+    assert_eq!(t.cursor().0, 2, "Esc must cancel pending g");
 }
 
 #[test]
@@ -1180,7 +1211,7 @@ fn di_quote_in_gap_is_noop() {
     for _ in 0..5 {
         e.handle_key(&key('l'), &mut t);
     }
-    assert_eq!(super::super::cursor_tuple(&t).1, 5);
+    assert_eq!(t.cursor().1, 5);
     e.handle_key(&key('d'), &mut t);
     e.handle_key(&key('i'), &mut t);
     e.handle_key(&key('"'), &mut t);
@@ -1276,7 +1307,7 @@ fn e_lands_on_last_word_char() {
     let mut e = VimEngine::default();
     let mut t = RopeBuffer::new(Text::from("hello world"));
     e.handle_key(&key('e'), &mut t);
-    assert_eq!(super::super::cursor_tuple(&t), (0, 4)); // 'o', last char of "hello"
+    assert_eq!(t.cursor(), (0, 4)); // 'o', last char of "hello"
 }
 
 #[test]
@@ -1285,7 +1316,7 @@ fn e_twice_reaches_second_word_end() {
     let mut t = RopeBuffer::new(Text::from("hello world"));
     e.handle_key(&key('e'), &mut t);
     e.handle_key(&key('e'), &mut t);
-    assert_eq!(super::super::cursor_tuple(&t), (0, 10)); // 'd', last char of "world"
+    assert_eq!(t.cursor(), (0, 10)); // 'd', last char of "world"
 }
 
 #[test]
@@ -1309,7 +1340,7 @@ fn visual_y_leaves_cursor_at_selection_start() {
     e.handle_key(&key('v'), &mut t);
     e.handle_key(&key('e'), &mut t); // select "bar"
     e.handle_key(&key('y'), &mut t);
-    assert_eq!(super::super::cursor_tuple(&t), (0, 4)); // cursor at start of selection, not the end
+    assert_eq!(t.cursor(), (0, 4)); // cursor at start of selection, not the end
 }
 
 #[test]
@@ -1353,7 +1384,7 @@ fn visual_p_replaces_charwise_selection() {
     e.handle_key(&key('v'), &mut t);
     e.handle_key(&key('e'), &mut t);
     e.handle_key(&key('y'), &mut t);
-    assert_eq!(super::super::cursor_tuple(&t), (0, 0));
+    assert_eq!(t.cursor(), (0, 0));
     // select "bar" and paste over it
     for _ in 0..4 {
         e.handle_key(&key('l'), &mut t);
@@ -1395,7 +1426,7 @@ fn g_underscore_jumps_to_last_non_blank() {
     let mut t = RopeBuffer::new(Text::from("hi there   "));
     e.handle_key(&key('g'), &mut t);
     e.handle_key(&key('_'), &mut t);
-    assert_eq!(super::super::cursor_tuple(&t), (0, 7)); // the final 'e'
+    assert_eq!(t.cursor(), (0, 7)); // the final 'e'
 }
 
 #[test]
@@ -1415,11 +1446,11 @@ fn count_G_and_count_gg_go_to_line() {
     let mut t = RopeBuffer::new(Text::from("1\n2\n3\n4\n5\n6"));
     e.handle_key(&key('5'), &mut t);
     e.handle_key(&key('G'), &mut t);
-    assert_eq!(super::super::cursor_tuple(&t).0, 4); // line 5
+    assert_eq!(t.cursor().0, 4); // line 5
     e.handle_key(&key('2'), &mut t);
     e.handle_key(&key('g'), &mut t);
     e.handle_key(&key('g'), &mut t);
-    assert_eq!(super::super::cursor_tuple(&t).0, 1); // line 2
+    assert_eq!(t.cursor().0, 1); // line 2
 }
 
 #[test]
@@ -1440,7 +1471,7 @@ fn ge_jumps_to_previous_word_end() {
     e.handle_key(&key('$'), &mut t); // on 'r' (col 6)
     e.handle_key(&key('g'), &mut t);
     e.handle_key(&key('e'), &mut t);
-    assert_eq!(super::super::cursor_tuple(&t), (0, 2)); // 'o' of foo
+    assert_eq!(t.cursor(), (0, 2)); // 'o' of foo
 }
 
 #[test]
@@ -1450,7 +1481,7 @@ fn ge_stops_at_class_change() {
     e.handle_key(&key('$'), &mut t); // 'r' (col 6)
     e.handle_key(&key('g'), &mut t);
     e.handle_key(&key('e'), &mut t);
-    assert_eq!(super::super::cursor_tuple(&t), (0, 3)); // the '.'
+    assert_eq!(t.cursor(), (0, 3)); // the '.'
 }
 
 #[test]
@@ -1461,7 +1492,7 @@ fn gE_ignores_punctuation_boundaries() {
     e.handle_key(&key('$'), &mut t); // last 'd' (col 10)
     e.handle_key(&key('g'), &mut t);
     e.handle_key(&key('E'), &mut t);
-    assert_eq!(super::super::cursor_tuple(&t), (0, 7)); // end of "bb.cc"
+    assert_eq!(t.cursor(), (0, 7)); // end of "bb.cc"
 }
 
 #[test]
@@ -1470,7 +1501,7 @@ fn ge_at_buffer_start_is_noop() {
     let mut t = RopeBuffer::new(Text::from("foo"));
     e.handle_key(&key('g'), &mut t);
     e.handle_key(&key('e'), &mut t);
-    assert_eq!(super::super::cursor_tuple(&t), (0, 0));
+    assert_eq!(t.cursor(), (0, 0));
 }
 
 #[test]
@@ -1491,7 +1522,7 @@ fn W_treats_punctuated_run_as_one_word() {
     let mut e = VimEngine::default();
     let mut t = RopeBuffer::new(Text::from("foo.bar baz"));
     e.handle_key(&key('W'), &mut t);
-    assert_eq!(super::super::cursor_tuple(&t), (0, 8)); // 'b' of baz
+    assert_eq!(t.cursor(), (0, 8)); // 'b' of baz
 }
 
 #[test]
@@ -1500,7 +1531,7 @@ fn E_jumps_to_end_of_WORD() {
     let mut e = VimEngine::default();
     let mut t = RopeBuffer::new(Text::from("foo.bar baz"));
     e.handle_key(&key('E'), &mut t);
-    assert_eq!(super::super::cursor_tuple(&t), (0, 6)); // 'r' of foo.bar
+    assert_eq!(t.cursor(), (0, 6)); // 'r' of foo.bar
 }
 
 #[test]
@@ -1510,7 +1541,7 @@ fn B_jumps_to_WORD_start() {
     let mut t = RopeBuffer::new(Text::from("foo.bar baz"));
     e.handle_key(&key('W'), &mut t); // col 8
     e.handle_key(&key('B'), &mut t);
-    assert_eq!(super::super::cursor_tuple(&t), (0, 0));
+    assert_eq!(t.cursor(), (0, 0));
 }
 
 #[test]
@@ -1519,9 +1550,9 @@ fn W_crosses_lines_and_stops_at_empty_line() {
     let mut e = VimEngine::default();
     let mut t = RopeBuffer::new(Text::from("foo\n\nbar"));
     e.handle_key(&key('W'), &mut t);
-    assert_eq!(super::super::cursor_tuple(&t), (1, 0)); // empty line is a stop
+    assert_eq!(t.cursor(), (1, 0)); // empty line is a stop
     e.handle_key(&key('W'), &mut t);
-    assert_eq!(super::super::cursor_tuple(&t), (2, 0));
+    assert_eq!(t.cursor(), (2, 0));
 }
 
 #[test]
@@ -1607,7 +1638,7 @@ fn at_after(keys: &[char], lines: &[&str], from: (usize, usize)) -> (usize, usiz
     for key_char in keys {
         e.handle_key(&key(*key_char), &mut t);
     }
-    super::super::cursor_tuple(&t)
+    t.cursor()
 }
 
 #[test]
@@ -1813,7 +1844,7 @@ fn guw_lowercases_word() {
     e.handle_key(&key('u'), &mut t);
     e.handle_key(&key('w'), &mut t);
     assert_eq!(t.rows(), &["hello world"]);
-    assert_eq!(super::super::cursor_tuple(&t), (0, 0)); // cursor at start
+    assert_eq!(t.cursor(), (0, 0)); // cursor at start
 }
 
 #[test]
@@ -1902,7 +1933,7 @@ fn R_overwrites_chars() {
     e.handle_key(&esc(), &mut t);
     assert_eq!(t.rows(), &["XYcdef"]); // overwrote, didn't insert
     assert_eq!(*e.mode(), EditorMode::Normal);
-    assert_eq!(super::super::cursor_tuple(&t), (0, 1)); // stepped back onto 'Y'
+    assert_eq!(t.cursor(), (0, 1)); // stepped back onto 'Y'
 }
 
 #[test]
@@ -1967,7 +1998,7 @@ fn J_joins_with_single_space_stripping_indent() {
     e.handle_key(&key('J'), &mut t);
     assert_eq!(t.rows(), &["foo bar"]);
     // cursor on the join-point space (vim)
-    assert_eq!(super::super::cursor_tuple(&t), (0, 3));
+    assert_eq!(t.cursor(), (0, 3));
 }
 
 #[test]
@@ -2009,7 +2040,7 @@ fn I_inserts_at_first_non_blank() {
     e.handle_key(&key('$'), &mut t); // away from the start
     e.handle_key(&key('I'), &mut t);
     assert_eq!(*e.mode(), EditorMode::Insert);
-    assert_eq!(super::super::cursor_tuple(&t), (0, 4)); // on 'i', not col 0
+    assert_eq!(t.cursor(), (0, 4)); // on 'i', not col 0
 }
 
 // ── % across lines ───────────────────────────────────────────────────────
@@ -2021,9 +2052,9 @@ fn percent_matches_across_lines() {
     e.handle_key(&key('f'), &mut t);
     e.handle_key(&key('('), &mut t); // on '(' (0,4)
     e.handle_key(&key('%'), &mut t);
-    assert_eq!(super::super::cursor_tuple(&t), (1, 3)); // ')' on line 2
+    assert_eq!(t.cursor(), (1, 3)); // ')' on line 2
     e.handle_key(&key('%'), &mut t); // and back
-    assert_eq!(super::super::cursor_tuple(&t), (0, 4));
+    assert_eq!(t.cursor(), (0, 4));
 }
 
 #[test]
@@ -2031,7 +2062,7 @@ fn percent_nested_across_lines() {
     let mut e = VimEngine::default();
     let mut t = RopeBuffer::new(Text::from("{a {b\nc}\nd}"));
     e.handle_key(&key('%'), &mut t); // outer '{' at (0,0)
-    assert_eq!(super::super::cursor_tuple(&t), (2, 1)); // outer '}' line 3
+    assert_eq!(t.cursor(), (2, 1)); // outer '}' line 3
 }
 
 #[test]
@@ -2050,7 +2081,7 @@ fn percent_unmatched_across_buffer_is_noop() {
     let mut e = VimEngine::default();
     let mut t = RopeBuffer::new(Text::from("(a\nb"));
     e.handle_key(&key('%'), &mut t); // no closing paren anywhere
-    assert_eq!(super::super::cursor_tuple(&t), (0, 0));
+    assert_eq!(t.cursor(), (0, 0));
 }
 
 // ── Review fixes: failed-op no-ops, dot-register protection ─────────────
@@ -2079,13 +2110,13 @@ fn count_find_is_atomic() {
     e.handle_key(&key('2'), &mut t);
     e.handle_key(&key('f'), &mut t);
     e.handle_key(&key('x'), &mut t);
-    assert_eq!(super::super::cursor_tuple(&t), (0, 0)); // did not move
+    assert_eq!(t.cursor(), (0, 0)); // did not move
     // and with two: lands on the second
     let mut t2 = RopeBuffer::new(Text::from("axbx"));
     e.handle_key(&key('2'), &mut t2);
     e.handle_key(&key('f'), &mut t2);
     e.handle_key(&key('x'), &mut t2);
-    assert_eq!(super::super::cursor_tuple(&t2), (0, 3));
+    assert_eq!(t2.cursor(), (0, 3));
 }
 
 #[test]
@@ -2272,7 +2303,7 @@ fn visual_o_swaps_selection_ends() {
     e.handle_key(&key('v'), &mut t);
     e.handle_key(&key('l'), &mut t); // select c..d, cursor at 'd' (col 3)
     e.handle_key(&key('o'), &mut t); // cursor swaps to 'c' (col 2)
-    assert_eq!(super::super::cursor_tuple(&t), (0, 2));
+    assert_eq!(t.cursor(), (0, 2));
     e.handle_key(&key('h'), &mut t); // extend left from the anchor end
     e.handle_key(&key('d'), &mut t); // delete b..d inclusive
     assert_eq!(t.rows(), &["ae"]);

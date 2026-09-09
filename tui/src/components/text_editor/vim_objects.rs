@@ -64,7 +64,7 @@ pub(super) fn object_range_at_cursor(
     ta: &RopeBuffer,
     obj: TextObject,
 ) -> Option<(usize, usize, usize)> {
-    let (row, col) = super::cursor_tuple(ta);
+    let (row, col) = ta.cursor();
     let line = ta.row(row)?;
     let chars: Vec<char> = line.chars().collect();
     let (start, end) = object_range(&chars, col, obj)?;

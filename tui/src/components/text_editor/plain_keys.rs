@@ -12,9 +12,10 @@
 //! written here.
 //!
 //! What is deliberately *not* here: anything needing more than the buffer. The
-//! clipboard chords reach the OS, `Tab` indents whole rows, `Enter` may continue a
-//! markdown list, and an opening bracket typed over a selection wraps it — all of
-//! which the component owns and handles before a key reaches this table.
+//! clipboard chords reach the OS; `Tab` indents whole rows, `Enter` may continue
+//! a markdown list, and an opening bracket typed over a selection wraps it — the
+//! component routes those, ahead of this table, to the buffer's **indent step**
+//! and to `markdown_edits`.
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 

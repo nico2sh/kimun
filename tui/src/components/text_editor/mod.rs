@@ -3,6 +3,7 @@ pub mod backend;
 pub mod find_bar;
 pub mod find_replace;
 pub mod markdown;
+pub mod markdown_edits;
 pub mod nvim_decode;
 pub mod nvim_host;
 pub mod nvim_rpc;
@@ -26,13 +27,6 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use std::num::NonZeroU64;
 
-/// Convert `TextArea::cursor()` from the library's `DataCursor` newtype to a
-/// plain `(row, col)` tuple — the neutral interchange type shared with the
-/// Nvim backend (whose `NvimSnapshot::cursor` is already a tuple).
-pub(crate) fn cursor_tuple(ta: &rope_buffer::RopeBuffer) -> (usize, usize) {
-    ta.cursor()
-}
-
 /// Build an `EditorSnapshot` from the editor's backend + content
 /// revision. Free function (not a method on `TextEditorComponent`) so
 /// production callers that need to mutate other fields of
@@ -42,7 +36,7 @@ pub(crate) fn cursor_tuple(ta: &rope_buffer::RopeBuffer) -> (usize, usize) {
 fn snapshot_from_backend(backend: &BackendState, content_revision: NonZeroU64) -> EditorSnapshot {
     match backend {
         BackendState::Textarea(tb) => {
-            let cursor = cursor_tuple(&tb.ta);
+            let cursor = tb.ta.cursor();
             EditorSnapshot::of_buffer(tb.ta.text().clone(), cursor, content_revision)
         }
         BackendState::Nvim(nvim) => {
@@ -111,15 +105,6 @@ use self::snapshot::EditorSnapshot;
 use self::view::MarkdownEditorView;
 use crate::util::single_slot_task::SingleSlotTask;
 
-/// If `marker` is an ordered-list marker like `"3. "`, returns the next marker
-/// (`"4. "`). Returns `None` for unordered markers or unrecognized input.
-fn increment_ordered_marker(marker: &str) -> Option<String> {
-    let trimmed = marker.trim_end_matches(' ');
-    let dot = trimmed.strip_suffix('.')?;
-    let n: u32 = dot.parse().ok()?;
-    Some(format!("{}. ", n + 1))
-}
-
 /// Convert a 0-based character column into a byte offset within `line`.
 /// Out-of-range columns return `line.len()`.
 pub(super) fn char_col_to_byte(line: &str, char_col: usize) -> usize {
@@ -127,71 +112,6 @@ pub(super) fn char_col_to_byte(line: &str, char_col: usize) -> usize {
         .nth(char_col)
         .map(|(b, _)| b)
         .unwrap_or(line.len())
-}
-
-/// Returns the text covered by the textarea's current selection, or `None` if
-/// there is no selection or the range is empty.
-///
-/// `selection_range()` returns char-column coordinates, so they must be
-/// converted to byte offsets before slicing to support multi-byte UTF-8 text.
-fn selection_text(ta: &rope_buffer::RopeBuffer) -> Option<String> {
-    selection_text_in(ta, ta.selection_range()?)
-}
-
-/// Like [`selection_text`] but over an explicit char-column `range` rather than
-/// the textarea's live selection — lets read-only callers apply the vim
-/// charwise-Visual inclusive `+1` without mutating the live selection/cursor.
-fn selection_text_in(
-    ta: &rope_buffer::RopeBuffer,
-    range: ((usize, usize), (usize, usize)),
-) -> Option<String> {
-    let ((sr, sc), (er, ec)) = range;
-    if sr == er && sc == ec {
-        return None;
-    }
-    // The engine answers this directly, and checks the span against the text it
-    // came from — where the row-walk it replaces assumed every index was in range.
-    ta.span_between((sr, sc), (er, ec))
-        .and_then(|span| ta.text().slice(span))
-        .map(|text| text.into_owned())
-}
-
-/// Auto-surround pair for `c`: typing an opening pair character or a
-/// symmetric one while a selection is active wraps the selection instead of
-/// replacing it. Closing characters return `None` — they replace, like any
-/// other key. See CONTEXT.md "Auto-surround".
-fn surround_pair(c: char) -> Option<(&'static str, &'static str)> {
-    match c {
-        '(' => Some(("(", ")")),
-        '[' => Some(("[", "]")),
-        '{' => Some(("{", "}")),
-        '<' => Some(("<", ">")),
-        '"' => Some(("\"", "\"")),
-        '\'' => Some(("'", "'")),
-        '`' => Some(("`", "`")),
-        '*' => Some(("*", "*")),
-        '_' => Some(("_", "_")),
-        '~' => Some(("~", "~")),
-        _ => None,
-    }
-}
-
-/// Re-establishes the textarea selection over `start..end` (char-based data
-/// coordinates, as returned by `selection_range`).
-///
-/// Refuses rather than approximating: this used to saturate both endpoints at
-/// `u16::MAX`, which on a pathologically large buffer silently selected a
-/// *different* range — and callers then cut or overwrote it.
-fn set_selection(ta: &mut RopeBuffer, start: (usize, usize), end: (usize, usize)) -> bool {
-    let max = u16::MAX as usize;
-    if start.0 > max || start.1 > max || end.0 > max || end.1 > max {
-        return false;
-    }
-    ta.cancel_selection();
-    ta.jump_to(start.0, start.1);
-    ta.start_selection();
-    ta.jump_to(end.0, end.1);
-    true
 }
 
 /// Owned RGBA image data lifted from the system clipboard. Returned by
@@ -508,7 +428,7 @@ impl TextEditorComponent {
     /// whole buffer.
     fn textarea_cursor(&self) -> Option<(usize, usize)> {
         let ta = self.backend.as_textarea()?;
-        Some(cursor_tuple(ta))
+        Some(ta.cursor())
     }
 
     fn refresh_autocomplete_if_open(&mut self) {
@@ -556,7 +476,7 @@ impl TextEditorComponent {
             let Some(ta) = self.backend.as_textarea() else {
                 return;
             };
-            let (row, col) = cursor_tuple(ta);
+            let (row, col) = ta.cursor();
             let line = ta.row(row).unwrap_or_default();
             if !has_trigger_before_cursor(&line, col) {
                 return;
@@ -847,7 +767,7 @@ impl TextEditorComponent {
     pub fn follow_target_at_cursor(&self) -> Option<FollowTarget> {
         let (_row, col, line) = match &self.backend {
             BackendState::Textarea(tb) => {
-                let (row, col) = cursor_tuple(&tb.ta);
+                let (row, col) = tb.ta.cursor();
                 let line = tb.ta.row(row)?.into_owned();
                 (row, col, line)
             }
@@ -907,7 +827,7 @@ impl TextEditorComponent {
             let selected = self
                 .inclusive_visual_range()
                 .zip(self.backend.as_textarea())
-                .and_then(|(range, ta)| selection_text_in(ta, range));
+                .and_then(|(range, ta)| ta.text_between(range.0, range.1));
             match selected {
                 Some(t) if !t.is_empty() => t,
                 _ => {
@@ -985,7 +905,7 @@ impl TextEditorComponent {
         if let Some((start, end)) = self.inclusive_visual_range()
             && let Some(ta) = self.backend.as_textarea_mut()
         {
-            set_selection(ta, start, end);
+            ta.set_selection(start, end);
         }
     }
 
@@ -1011,7 +931,7 @@ impl TextEditorComponent {
         self.extend_visual_selection_inclusive();
         match &mut self.backend {
             BackendState::Textarea(tb) => {
-                let selection = linkable_url(text).and_then(|_| selection_text(&tb.ta));
+                let selection = linkable_url(text).and_then(|_| tb.ta.selection_text());
                 let wrapped = try_build_markdown_link(text, selection.as_deref());
                 let insert = wrapped.as_deref().unwrap_or(text).to_string();
                 // Replacing a selection is a cut plus an insert — one paste,
@@ -1055,8 +975,7 @@ impl TextEditorComponent {
         self.take_selection_for_external_paste();
         if let Some(ta) = self.backend.as_textarea_mut() {
             ta.insert_str(text);
-            self.selection = ta.selection_range();
-            self.apply_edit_outcome();
+            self.after_edit();
         }
         // See `paste_text` — out-of-band buffer mutation must
         // re-reconcile the popup state.
@@ -1107,49 +1026,32 @@ impl TextEditorComponent {
         self.backend.sync_mouse_selection(false);
     }
 
-    /// Wraps the active selection in `open`/`close` and re-selects the inner
-    /// text so wraps chain (see CONTEXT.md "Auto-surround"). Returns `false`
-    /// without touching the buffer when there is no (non-empty) selection or
-    /// on the Nvim backend. Callers on the key path don't reconcile the
-    /// autocomplete popup — `handle_input` re-syncs on any content bump.
+    /// Auto-surround: wrap the selection in `open`…`close`. A vim charwise
+    /// Visual selection is inclusive, so it is widened by one char first
+    /// (otherwise `ve` then Bold yields `**hell**o`). `false` — and nothing
+    /// touched — without a selection or on the Nvim backend.
     fn wrap_selection(&mut self, open: &str, close: &str) -> bool {
-        // Vim charwise Visual selections are inclusive; extend the half-open
-        // range so the char under the cursor is wrapped too (otherwise `ve`
-        // then Bold yields `**hell**o`). No-op outside charwise Visual.
         self.extend_visual_selection_inclusive();
         let Some(ta) = self.backend.as_textarea_mut() else {
             return false;
         };
-        let Some(((sr, sc), (er, ec))) = ta.selection_range() else {
+        if !markdown_edits::wrap_selection(ta, open, close) {
             return false;
-        };
-        let Some(text) = selection_text(ta) else {
-            return false;
-        };
-        ta.insert_str(format!("{open}{text}{close}"));
-        // Reselect the inner text. The open marker shifts cols on the first
-        // selected line only; coordinates are char-based, matching
-        // `selection_range`.
-        let shift = open.chars().count();
-        let inner_end_col = if sr == er { ec + shift } else { ec };
-        set_selection(ta, (sr, sc + shift), (er, inner_end_col));
-        self.selection = ta.selection_range();
+        }
         // Only here, past every `return false` above: this function is consulted
         // for each bare `( [ { < " ' ` * _ ~` keystroke, and the declining ones
         // fall through to ordinary typing, which must keep its run.
         self.interrupt_typing();
-        self.apply_edit_outcome();
+        self.after_edit();
         true
     }
 
-    /// Wrap a selection in (or insert at the cursor) markdown markers for
-    /// Bold/Italic/Strikethrough. No-op for other actions and on the Nvim backend.
+    /// Bold / Italic / Strikethrough: wrap the selection in the marker, or with
+    /// nothing selected insert a pair and leave the cursor between. No-op for
+    /// other actions and on the Nvim backend.
     pub fn apply_text_action(&mut self, action: TextAction) {
-        let marker = match action {
-            TextAction::Bold => "**",
-            TextAction::Italic => "*",
-            TextAction::Strikethrough => "~~",
-            _ => return,
+        let Some(marker) = markdown_edits::emphasis_marker(action) else {
+            return;
         };
         if self.wrap_selection(marker, marker) {
             return;
@@ -1158,249 +1060,52 @@ impl TextEditorComponent {
         let Some(ta) = self.backend.as_textarea_mut() else {
             return;
         };
-        ta.insert_str(format!("{marker}{marker}"));
-        for _ in 0..marker.len() {
-            ta.move_cursor(CursorMove::Back);
-        }
-        self.selection = ta.selection_range();
-        self.apply_edit_outcome();
+        markdown_edits::insert_pair(ta, marker, marker);
+        self.after_edit();
     }
 
-    /// Smart Enter: continue list markers, preserve indent, dedent on empty
-    /// indent-only lines, clear empty list markers. Returns `true` if handled
-    /// (caller should not insert a plain newline). Always `false` on Nvim
-    /// backend or when there is an active selection.
+    /// Smart Enter — [`markdown_edits::smart_enter`] on the live buffer. `true`
+    /// when handled, so the caller does not insert a plain newline; always
+    /// `false` on the Nvim backend.
     pub fn smart_enter(&mut self) -> bool {
-        enum Action {
-            ClearLine { chars: usize },
-            InsertPrefix(String),
-            Dedent,
-        }
-        let action = {
-            let Some(ta) = self.backend.as_textarea() else {
-                return false;
-            };
-            // A mouse click leaves a zero-width selection active (handle_mouse
-            // calls start_selection on Down), so only bail on a non-empty one.
-            if ta
-                .selection_range()
-                .is_some_and(|(start, end)| start != end)
-            {
-                return false;
-            }
-            let (row, col) = cursor_tuple(ta);
-            let Some(line) = ta.row(row) else {
-                return false;
-            };
-            let total_chars = line.chars().count();
-            if col != total_chars {
-                return false;
-            }
-            // ASCII whitespace, so byte index == char index here.
-            let ws_end = markdown::leading_ws_byte_len(&line);
-            let (ws, after_ws) = line.split_at(ws_end);
-            if let Some(marker_len) = markdown::list_marker_len(after_ws) {
-                if after_ws.len() == marker_len {
-                    // Empty list item: dedent first if indented, then clear
-                    // the marker once fully unindented.
-                    if ws_end > 0 {
-                        Action::Dedent
-                    } else {
-                        Action::ClearLine { chars: total_chars }
-                    }
-                } else {
-                    let marker_str = &after_ws[..marker_len];
-                    let next_marker = increment_ordered_marker(marker_str)
-                        .unwrap_or_else(|| marker_str.to_string());
-                    Action::InsertPrefix(format!("{ws}{next_marker}"))
-                }
-            } else if ws_end > 0 && total_chars == ws_end {
-                Action::Dedent
-            } else if ws_end > 0 {
-                Action::InsertPrefix(ws.to_string())
-            } else {
-                return false;
-            }
+        let Some(ta) = self.backend.as_textarea_mut() else {
+            return false;
         };
-
-        match action {
-            Action::Dedent => {
-                self.indent_lines(true);
-                return true;
-            }
-            Action::ClearLine { chars } => {
-                let Some(ta) = self.backend.as_textarea_mut() else {
-                    unreachable!()
-                };
-                ta.move_cursor(CursorMove::Head);
-                ta.delete_str(chars);
-            }
-            Action::InsertPrefix(prefix) => {
-                let Some(ta) = self.backend.as_textarea_mut() else {
-                    unreachable!()
-                };
-                // Newline plus prefix is two history entries; one `edit()`
-                // scope makes continuing a list one undo.
-                ta.edit(|ta| {
-                    ta.insert_newline();
-                    ta.insert_str(prefix);
-                });
-            }
+        if !markdown_edits::smart_enter(ta) {
+            return false;
         }
-        let Some(ta) = self.backend.as_textarea() else {
-            unreachable!()
-        };
-        self.selection = ta.selection_range();
-        self.apply_edit_outcome();
+        self.after_edit();
         true
     }
 
-    /// Move the cursor to the first markdown heading line whose text equals
-    /// `heading` (any level), e.g. for the OUTLINE drawer's jump. No-op when
-    /// the heading is not found, and on the Nvim backend (same policy as
-    /// [`Self::indent_lines`]).
+    /// The OUTLINE drawer's jump — [`markdown_edits::jump_to_heading`] on the
+    /// live buffer. No-op on the Nvim backend.
     pub fn jump_to_heading(&mut self, heading: &str) {
-        let Some(ta) = self.backend.as_textarea_mut() else {
-            return;
-        };
-        // The OUTLINE entries carry the extractor-rendered heading text
-        // (inline markup resolved, closing ATX `#` dropped), so normalise
-        // both sides before comparing: strip the ATX markers and the
-        // common inline-emphasis characters.
-        fn normalise(text: &str) -> String {
-            text.trim()
-                .trim_end_matches('#')
-                .trim()
-                .replace(['*', '_', '`'], "")
-        }
-        let wanted = normalise(heading);
-        let row = (0..ta.row_count()).find(|&row| {
-            let Some(line) = ta.row(row) else {
-                return false;
-            };
-            let t = line.trim_start();
-            let stripped = t.trim_start_matches('#');
-            stripped.len() != t.len() && normalise(stripped) == wanted
-        });
-        if let Some(row) = row {
-            ta.jump_to(row, 0);
+        if let Some(ta) = self.backend.as_textarea_mut() {
+            markdown_edits::jump_to_heading(ta, heading);
         }
     }
 
-    /// Indent or dedent whole lines. One step is `\t` if `hard_tab_indent` is
-    /// on, else `indent_width` spaces. Dedent counts a leading tab as one step.
-    /// No-op on Nvim backend.
+    /// Indent or dedent whole rows by one **indent step** — the cursor's row,
+    /// or every row a selection touches. A selection ending at column 0 of a
+    /// later row does not visually include that row, so it is left alone.
+    /// No-op on the Nvim backend.
     pub fn indent_lines(&mut self, dedent: bool) {
         let Some(ta) = self.backend.as_textarea_mut() else {
             return;
         };
-        let tab_len = ta.indent_width() as usize;
-        let hard_tab = ta.hard_tab_indent();
-        let indent: String = if hard_tab {
-            "\t".to_string()
-        } else {
-            " ".repeat(tab_len)
-        };
-        if indent.is_empty() {
-            return;
-        }
-        let indent_chars = indent.len();
-
-        let sel = ta.selection_range();
-        let saved_cursor = if sel.is_none() {
-            Some(cursor_tuple(ta))
-        } else {
-            None
-        };
-        let (start_row, end_row) = match sel {
+        let rows = match ta.selection_range() {
             Some(((sr, _), (er, ec))) => {
-                // A selection that ends at column 0 of a row visually doesn't
-                // include that row, so don't indent it.
                 let last = if ec == 0 && er > sr { er - 1 } else { er };
-                (sr, last)
+                sr..=last
             }
             None => {
-                let (r, _) = saved_cursor.unwrap();
-                (r, r)
+                let (row, _) = ta.cursor();
+                row..=row
             }
         };
-
-        let row_count = end_row.saturating_sub(start_row) + 1;
-        let mut row_deltas: Vec<isize> = Vec::with_capacity(row_count);
-        let mut any_change = false;
-
-        // Drop the live selection before mutating: with the anchor still set,
-        // `move_cursor(Jump(row, 0))` re-anchors the selection from the start
-        // column back to col 0, so `insert_str`/`delete_str` would replace the
-        // text before the selection. The selection is restored at the end.
-        ta.cancel_selection();
-
-        // Indenting N lines is 2N history entries; one `edit()` scope makes
-        // the whole block one undo instead of N.
-        ta.edit(|ta| {
-            for row in start_row..=end_row {
-                if dedent {
-                    let count = {
-                        let line = ta.row(row).unwrap_or_default();
-                        let max_remove = if hard_tab { 1 } else { tab_len };
-                        let mut count = 0usize;
-                        for (i, c) in line.chars().enumerate() {
-                            if i >= max_remove {
-                                break;
-                            }
-                            if c == '\t' {
-                                count += 1;
-                                break;
-                            } else if c == ' ' && !hard_tab {
-                                count += 1;
-                            } else {
-                                break;
-                            }
-                        }
-                        count
-                    };
-                    if count > 0 {
-                        ta.jump_to(row, 0);
-                        ta.delete_str(count);
-                        any_change = true;
-                    }
-                    row_deltas.push(-(count as isize));
-                } else {
-                    ta.jump_to(row, 0);
-                    ta.insert_str(&indent);
-                    row_deltas.push(indent_chars as isize);
-                    any_change = true;
-                }
-            }
-        });
-
-        let adj = |row: usize, col: usize| -> usize {
-            if row >= start_row && row <= end_row {
-                let d = row_deltas[row - start_row];
-                if d >= 0 {
-                    col + d as usize
-                } else {
-                    col.saturating_sub((-d) as usize)
-                }
-            } else {
-                col
-            }
-        };
-
-        match sel {
-            Some(((ssr, ssc), (ser, sec))) => {
-                set_selection(ta, (ssr, adj(ssr, ssc)), (ser, adj(ser, sec)));
-            }
-            None => {
-                let (cr, cc) = saved_cursor.expect("captured when sel is None");
-                let new_col = adj(cr, cc);
-                ta.jump_to(cr, new_col);
-            }
-        }
-
-        if any_change {
-            self.selection = ta.selection_range();
-            self.apply_edit_outcome();
+        if ta.indent_rows(rows, dedent) {
+            self.after_edit();
         }
     }
 }
@@ -1580,7 +1285,19 @@ impl TextEditorComponent {
         }
     }
 
-    /// Drain the **edit buffer**'s measured outcome and apply it.
+    /// What every edit made through the buffer owes the component: the
+    /// selection mirror the renderer reads, and the outcome drain that bumps
+    /// the revision and tells the view what to re-parse. Reports whether the
+    /// text changed.
+    fn after_edit(&mut self) -> bool {
+        self.selection = self
+            .backend
+            .as_textarea()
+            .and_then(|ta| ta.selection_range());
+        self.apply_edit_outcome()
+    }
+
+    /// Drain the **rope buffer**'s measured outcome and apply it.
     ///
     /// The one place a text change turns into a revision bump and a
     /// parse-damage signal. Both facts are derived by the buffer from the
@@ -1752,7 +1469,7 @@ impl TextEditorComponent {
         // sync legitimately opens the wikilink popup on the chained wrap.
         if let KeyCode::Char(c) = key.code
             && (key.modifiers & !KeyModifiers::SHIFT).is_empty()
-            && let Some((open, close)) = surround_pair(c)
+            && let Some((open, close)) = markdown_edits::surround_pair(c)
             && self.wrap_selection(open, close)
         {
             return EventState::Consumed;
@@ -2696,26 +2413,6 @@ mod tests {
     }
 
     #[test]
-    fn surround_pair_maps_open_and_symmetric_chars() {
-        assert_eq!(surround_pair('('), Some(("(", ")")));
-        assert_eq!(surround_pair('['), Some(("[", "]")));
-        assert_eq!(surround_pair('{'), Some(("{", "}")));
-        assert_eq!(surround_pair('<'), Some(("<", ">")));
-        assert_eq!(surround_pair('"'), Some(("\"", "\"")));
-        assert_eq!(surround_pair('\''), Some(("'", "'")));
-        assert_eq!(surround_pair('`'), Some(("`", "`")));
-        assert_eq!(surround_pair('*'), Some(("*", "*")));
-        assert_eq!(surround_pair('_'), Some(("_", "_")));
-        assert_eq!(surround_pair('~'), Some(("~", "~")));
-        // Closing chars and plain chars never wrap.
-        assert_eq!(surround_pair(')'), None);
-        assert_eq!(surround_pair(']'), None);
-        assert_eq!(surround_pair('}'), None);
-        assert_eq!(surround_pair('>'), None);
-        assert_eq!(surround_pair('a'), None);
-    }
-
-    #[test]
     fn typing_open_paren_with_selection_wraps_it() {
         let mut editor = make_editor();
         editor.set_text("hello world".to_string());
@@ -2778,38 +2475,6 @@ mod tests {
     }
 
     #[test]
-    fn wrap_spans_multiline_selection() {
-        let mut editor = make_editor();
-        editor.set_text("abc\ndef".to_string());
-        select_range(&mut editor, (0, 0), (1, 3));
-        send_char(&mut editor, '(');
-        assert_eq!(editor.get_text(), "(abc\ndef)");
-        // Inner selection: open char shifts only the first line.
-        assert_eq!(editor.selection, Some(((0, 1), (1, 3))));
-    }
-
-    #[test]
-    fn wrap_handles_multibyte_selection() {
-        let mut editor = make_editor();
-        editor.set_text("héllo🦀 x".to_string());
-        select_range(&mut editor, (0, 0), (0, 6)); // "héllo🦀" = 6 chars
-        send_char(&mut editor, '`');
-        assert_eq!(editor.get_text(), "`héllo🦀` x");
-        assert_eq!(editor.selection, Some(((0, 1), (0, 7))));
-    }
-
-    #[test]
-    fn wrap_with_reversed_selection_direction() {
-        // Selection made right-to-left must wrap the same way.
-        let mut editor = make_editor();
-        editor.set_text("hello world".to_string());
-        select_range(&mut editor, (0, 5), (0, 0));
-        send_char(&mut editor, '(');
-        assert_eq!(editor.get_text(), "(hello) world");
-        assert_eq!(editor.selection, Some(((0, 1), (0, 6))));
-    }
-
-    #[test]
     fn text_action_keeps_selection_on_inner_text() {
         // Bold/Italic/Strikethrough route through the same wrap mechanism as
         // auto-surround: the inner text stays selected so wraps chain.
@@ -2833,27 +2498,6 @@ mod tests {
         editor.apply_text_action(TextAction::Bold);
         assert_eq!(editor.get_text(), "**hello** world");
         assert!(get_ta(&mut editor).undo(), "the bold is one entry");
-        assert_eq!(editor.get_text(), "hello world");
-        assert!(
-            !get_ta(&mut editor).undo(),
-            "and has no second half left to take back"
-        );
-    }
-
-    #[test]
-    fn wrap_undo_is_one_step_back_to_original() {
-        // A wrap replaces the selection inside a single transaction, so the whole
-        // gesture is one history entry. Under the incumbent it was delete+insert
-        // and cost two, and this test asked for two undos — which proved nothing,
-        // since a second undo against a one-entry history is a no-op and lands on
-        // the same string. Asserting what each undo *returns* is what makes this a
-        // claim about grouping rather than about the final text.
-        let mut editor = make_editor();
-        editor.set_text("hello world".to_string());
-        select_range(&mut editor, (0, 0), (0, 5));
-        send_char(&mut editor, '(');
-        assert_eq!(editor.get_text(), "(hello) world");
-        assert!(get_ta(&mut editor).undo(), "the wrap is one entry");
         assert_eq!(editor.get_text(), "hello world");
         assert!(
             !get_ta(&mut editor).undo(),
@@ -2971,23 +2615,6 @@ mod tests {
         // An edit bumps the revision; the render-side guard would clear.
         ed.set_text("alpha beta gamma".to_string());
         assert!(ed.revs.needles_stale());
-    }
-
-    #[test]
-    fn jump_to_heading_moves_cursor_to_heading_line() {
-        let settings = crate::settings::AppSettings::default();
-        let mut ed = TextEditorComponent::new(settings.key_bindings.clone(), &settings);
-        ed.set_text("intro\n# Top\nbody\n## Sub One\nmore\n".to_string());
-
-        ed.jump_to_heading("Sub One");
-        assert_eq!(ed.view_snapshot().cursor.0, 3);
-
-        ed.jump_to_heading("Top");
-        assert_eq!(ed.view_snapshot().cursor.0, 1);
-
-        // Unknown heading: cursor stays.
-        ed.jump_to_heading("Nope");
-        assert_eq!(ed.view_snapshot().cursor.0, 1);
     }
 
     #[test]
@@ -3208,334 +2835,13 @@ mod tests {
     }
 
     #[test]
-    fn bold_action_with_no_selection_inserts_pair_and_centers_cursor() {
-        let mut editor = make_editor();
-        editor.set_text("hello".to_string());
-        {
-            let ta = get_ta(&mut editor);
-            ta.move_cursor(CursorMove::End);
-        }
-        editor.apply_text_action(TextAction::Bold);
-        assert_eq!(editor.get_text(), "hello****");
-        let ta = get_ta(&mut editor);
-        assert_eq!(ta.cursor(), (0, 7));
-    }
-
-    #[test]
-    fn italic_action_with_no_selection_inserts_single_pair() {
-        let mut editor = make_editor();
-        editor.set_text(String::new());
-        editor.apply_text_action(TextAction::Italic);
-        assert_eq!(editor.get_text(), "**");
-        let ta = get_ta(&mut editor);
-        assert_eq!(ta.cursor(), (0, 1));
-    }
-
-    #[test]
-    fn strikethrough_action_with_selection_wraps_text() {
-        let mut editor = make_editor();
-        editor.set_text("hello world".to_string());
-        {
-            let ta = get_ta(&mut editor);
-            ta.move_cursor(CursorMove::Head);
-            ta.start_selection();
-            ta.move_cursor(CursorMove::WordForward);
-        }
-        editor.apply_text_action(TextAction::Strikethrough);
-        assert_eq!(editor.get_text(), "~~hello ~~world");
-    }
-
-    #[test]
-    fn bold_action_wraps_non_ascii_selection() {
-        let mut editor = make_editor();
-        editor.set_text("hello 你好 world".to_string());
-        {
-            let ta = get_ta(&mut editor);
-            ta.move_cursor(CursorMove::Head);
-            ta.move_cursor(CursorMove::WordForward);
-            ta.start_selection();
-            ta.move_cursor(CursorMove::WordForward);
-        }
-        editor.apply_text_action(TextAction::Bold);
-        assert_eq!(editor.get_text(), "hello **你好 **world");
-    }
-
-    #[test]
-    fn bold_action_wraps_selected_text() {
-        let mut editor = make_editor();
-        editor.set_text("foo bar".to_string());
-        {
-            let ta = get_ta(&mut editor);
-            ta.move_cursor(CursorMove::Head);
-            ta.start_selection();
-            ta.move_cursor(CursorMove::WordForward);
-        }
-        editor.apply_text_action(TextAction::Bold);
-        assert_eq!(editor.get_text(), "**foo **bar");
-    }
-
-    #[test]
-    fn indent_no_selection_indents_current_line() {
-        let mut editor = make_editor();
-        editor.set_text("foo\nbar".to_string());
-        {
-            let ta = get_ta(&mut editor);
-            ta.move_cursor(CursorMove::Bottom);
-        }
-        editor.indent_lines(false);
-        let lines = get_ta(&mut editor).rows();
-        assert_eq!(lines[0], "foo");
-        assert!(lines[1].starts_with(' ') || lines[1].starts_with('\t'));
-        assert!(lines[1].trim_start() == "bar");
-    }
-
-    #[test]
-    fn indent_midline_selection_keeps_text_before_and_selection() {
-        let mut editor = make_editor();
-        editor.set_text("hello world".to_string());
-        {
-            let ta = get_ta(&mut editor);
-            ta.move_cursor(CursorMove::Jump(0, 6));
-            ta.start_selection();
-            ta.move_cursor(CursorMove::End);
-        }
-        editor.indent_lines(false);
-        let ta = get_ta(&mut editor);
-        // Text before the selection must survive; only a leading indent added.
-        assert_eq!(ta.rows()[0].trim_start(), "hello world");
-        // Selection preserved, shifted right by the inserted indent.
-        let indent = ta.rows()[0].len() - "hello world".len();
-        assert_eq!(
-            ta.selection_range(),
-            Some(((0, 6 + indent), (0, 11 + indent)))
-        );
-    }
-
-    #[test]
-    fn indent_with_selection_indents_all_touched_lines() {
+    fn a_selection_ending_at_column_zero_leaves_that_row_alone() {
         let mut editor = make_editor();
         editor.set_text("foo\nbar\nbaz".to_string());
-        {
-            let ta = get_ta(&mut editor);
-            ta.move_cursor(CursorMove::Top);
-            ta.start_selection();
-            ta.move_cursor(CursorMove::Down);
-            ta.move_cursor(CursorMove::End);
-        }
+        select_range(&mut editor, (0, 0), (2, 0));
         editor.indent_lines(false);
-        let lines: Vec<String> = get_ta(&mut editor).rows().to_vec();
-        assert_eq!(lines[0].trim_start(), "foo");
-        assert_eq!(lines[1].trim_start(), "bar");
-        assert_eq!(lines[2], "baz");
-        assert!(lines[0].len() > 3);
-        assert!(lines[1].len() > 3);
-    }
-
-    #[test]
-    fn dedent_removes_leading_indent() {
-        let mut editor = make_editor();
-        editor.set_text("    foo\n  bar\nbaz".to_string());
-        let tab_len = get_ta(&mut editor).indent_width() as usize;
-        {
-            let ta = get_ta(&mut editor);
-            ta.move_cursor(CursorMove::Top);
-            ta.start_selection();
-            ta.move_cursor(CursorMove::Bottom);
-            ta.move_cursor(CursorMove::End);
-        }
-        editor.indent_lines(true);
-        let lines: Vec<String> = get_ta(&mut editor).rows().to_vec();
-        // line 0 had 4 leading spaces; up to tab_len removed.
-        assert_eq!(lines[0], format!("{}foo", " ".repeat(4 - tab_len.min(4))));
-        // line 1 had 2 leading spaces; up to min(2, tab_len) removed.
-        assert_eq!(
-            lines[1],
-            format!("{}bar", " ".repeat(2usize.saturating_sub(tab_len)))
-        );
-        assert_eq!(lines[2], "baz");
-    }
-
-    #[test]
-    fn dedent_no_leading_whitespace_is_noop_for_that_line() {
-        let mut editor = make_editor();
-        editor.set_text("foo".to_string());
-        editor.indent_lines(true);
-        assert_eq!(editor.get_text(), "foo");
-    }
-
-    #[test]
-    fn smart_enter_continues_unordered_list() {
-        let mut editor = make_editor();
-        editor.set_text("- foo".to_string());
-        {
-            let ta = get_ta(&mut editor);
-            ta.move_cursor(CursorMove::End);
-        }
-        assert!(editor.smart_enter());
-        assert_eq!(editor.get_text(), "- foo\n- ");
-    }
-
-    #[test]
-    fn smart_enter_continues_ordered_list_increments() {
-        let mut editor = make_editor();
-        editor.set_text("1. foo".to_string());
-        {
-            let ta = get_ta(&mut editor);
-            ta.move_cursor(CursorMove::End);
-        }
-        assert!(editor.smart_enter());
-        assert_eq!(editor.get_text(), "1. foo\n2. ");
-    }
-
-    #[test]
-    fn smart_enter_on_empty_list_marker_clears_line() {
-        let mut editor = make_editor();
-        editor.set_text("- ".to_string());
-        {
-            let ta = get_ta(&mut editor);
-            ta.move_cursor(CursorMove::End);
-        }
-        assert!(editor.smart_enter());
-        assert_eq!(editor.get_text(), "");
-    }
-
-    #[test]
-    fn smart_enter_preserves_indent() {
-        let mut editor = make_editor();
-        editor.set_text("    body".to_string());
-        {
-            let ta = get_ta(&mut editor);
-            ta.move_cursor(CursorMove::End);
-        }
-        assert!(editor.smart_enter());
-        assert_eq!(editor.get_text(), "    body\n    ");
-    }
-
-    #[test]
-    fn smart_enter_on_empty_indent_dedents() {
-        let mut editor = make_editor();
-        editor.set_text("    ".to_string());
-        {
-            let ta = get_ta(&mut editor);
-            ta.move_cursor(CursorMove::End);
-        }
-        let tab_len = get_ta(&mut editor).indent_width() as usize;
-        assert!(editor.smart_enter());
-        assert_eq!(
-            editor.get_text(),
-            " ".repeat(4usize.saturating_sub(tab_len))
-        );
-    }
-
-    #[test]
-    fn smart_enter_no_indent_no_marker_returns_false() {
-        let mut editor = make_editor();
-        editor.set_text("plain".to_string());
-        {
-            let ta = get_ta(&mut editor);
-            ta.move_cursor(CursorMove::End);
-        }
-        assert!(!editor.smart_enter());
-        assert_eq!(editor.get_text(), "plain");
-    }
-
-    #[test]
-    fn smart_enter_mid_line_returns_false() {
-        let mut editor = make_editor();
-        editor.set_text("- foo".to_string());
-        {
-            let ta = get_ta(&mut editor);
-            ta.move_cursor(CursorMove::Head);
-            ta.move_cursor(CursorMove::Forward);
-            ta.move_cursor(CursorMove::Forward);
-        }
-        assert!(!editor.smart_enter());
-    }
-
-    #[test]
-    fn smart_enter_on_empty_indented_list_marker_dedents_keeping_marker() {
-        let mut editor = make_editor();
-        let tab_len = get_ta(&mut editor).indent_width() as usize;
-        let indent = " ".repeat(tab_len);
-        editor.set_text(format!("{indent}- "));
-        {
-            let ta = get_ta(&mut editor);
-            ta.move_cursor(CursorMove::End);
-        }
-        assert!(editor.smart_enter());
-        assert_eq!(editor.get_text(), "- ");
-    }
-
-    #[test]
-    fn smart_enter_on_empty_list_marker_clears_line_after_full_dedent() {
-        let mut editor = make_editor();
-        let tab_len = get_ta(&mut editor).indent_width() as usize;
-        let indent = " ".repeat(tab_len);
-        editor.set_text(format!("{indent}- "));
-        {
-            let ta = get_ta(&mut editor);
-            ta.move_cursor(CursorMove::End);
-        }
-        // First Enter: dedent to "- ".
-        assert!(editor.smart_enter());
-        assert_eq!(editor.get_text(), "- ");
-        // Second Enter at column == end-of-line: now cursor is at col 2 (end of "- ").
-        // Need to position cursor at end after the dedent.
-        {
-            let ta = get_ta(&mut editor);
-            ta.move_cursor(CursorMove::End);
-        }
-        assert!(editor.smart_enter());
-        assert_eq!(editor.get_text(), "");
-    }
-
-    #[test]
-    fn smart_enter_continues_list_with_non_ascii_content() {
-        let mut editor = make_editor();
-        editor.set_text("- 你好".to_string());
-        {
-            let ta = get_ta(&mut editor);
-            ta.move_cursor(CursorMove::End);
-        }
-        assert!(editor.smart_enter());
-        assert_eq!(editor.get_text(), "- 你好\n- ");
-    }
-
-    #[test]
-    fn smart_enter_preserves_tab_indent() {
-        let mut editor = make_editor();
-        editor.set_text("\tbody".to_string());
-        {
-            let ta = get_ta(&mut editor);
-            ta.move_cursor(CursorMove::End);
-        }
-        assert!(editor.smart_enter());
-        assert_eq!(editor.get_text(), "\tbody\n\t");
-    }
-
-    #[test]
-    fn smart_enter_on_tab_only_line_dedents() {
-        let mut editor = make_editor();
-        editor.set_text("\t\t".to_string());
-        {
-            let ta = get_ta(&mut editor);
-            ta.move_cursor(CursorMove::End);
-        }
-        assert!(editor.smart_enter());
-        // tab counts as one indent unit, regardless of indent_width spaces.
-        assert_eq!(editor.get_text(), "\t");
-    }
-
-    #[test]
-    fn smart_enter_continues_indented_list() {
-        let mut editor = make_editor();
-        editor.set_text("  - foo".to_string());
-        {
-            let ta = get_ta(&mut editor);
-            ta.move_cursor(CursorMove::End);
-        }
-        assert!(editor.smart_enter());
-        assert_eq!(editor.get_text(), "  - foo\n  - ");
+        assert_eq!(get_ta(&mut editor).rows(), &["    foo", "    bar", "baz"]);
+        assert_eq!(editor.selection, Some(((0, 4), (2, 0))));
     }
 
     #[test]
@@ -3544,6 +2850,68 @@ mod tests {
         editor.set_text("hello".to_string());
         editor.apply_text_action(TextAction::Underline);
         assert_eq!(editor.get_text(), "hello");
+    }
+
+    #[test]
+    fn bold_action_with_no_selection_inserts_a_pair_through_the_component() {
+        // The wrap declines without a selection, and the component falls
+        // through to the pair insert — the one branch the module tests cannot see.
+        let mut editor = make_editor();
+        editor.set_text("hello".to_string());
+        {
+            let ta = get_ta(&mut editor);
+            ta.move_cursor(CursorMove::End);
+        }
+        editor.apply_text_action(TextAction::Bold);
+        assert_eq!(editor.get_text(), "hello****");
+        assert_eq!(get_ta(&mut editor).cursor(), (0, 7));
+        assert!(editor.is_dirty(), "the insert is an edit");
+    }
+
+    #[test]
+    fn jump_to_heading_moves_the_view_cursor() {
+        // The OUTLINE drawer reads the position back through the view snapshot.
+        let mut ed = make_editor();
+        ed.set_text("intro\n# Top\nbody\n## Sub One\nmore\n".to_string());
+        ed.jump_to_heading("Sub One");
+        assert_eq!(ed.view_snapshot().cursor.0, 3);
+        ed.jump_to_heading("Top");
+        assert_eq!(ed.view_snapshot().cursor.0, 1);
+        ed.jump_to_heading("Nope");
+        assert_eq!(
+            ed.view_snapshot().cursor.0,
+            1,
+            "an unknown heading leaves the cursor"
+        );
+    }
+
+    #[test]
+    fn tab_indents_the_cursor_row_and_backtab_dedents_it() {
+        let mut editor = make_editor();
+        editor.set_text("foo".to_string());
+        let tx = dummy_tx();
+        let tab = key(KeyCode::Tab, KeyModifiers::NONE);
+        let _ = editor.handle_input(&InputEvent::Key(tab), &tx);
+        assert_eq!(editor.get_text(), "    foo");
+        assert!(editor.is_dirty(), "an indent is an edit");
+        let back = key(KeyCode::BackTab, KeyModifiers::SHIFT);
+        let _ = editor.handle_input(&InputEvent::Key(back), &tx);
+        assert_eq!(editor.get_text(), "foo");
+    }
+
+    #[test]
+    fn enter_at_the_end_of_a_list_item_continues_it() {
+        let mut editor = make_editor();
+        editor.set_text("- foo".to_string());
+        {
+            let ta = get_ta(&mut editor);
+            ta.move_cursor(CursorMove::End);
+        }
+        let tx = dummy_tx();
+        let enter = key(KeyCode::Enter, KeyModifiers::NONE);
+        let _ = editor.handle_input(&InputEvent::Key(enter), &tx);
+        assert_eq!(editor.get_text(), "- foo\n- ");
+        assert!(editor.is_dirty());
     }
 
     #[test]
@@ -4263,7 +3631,7 @@ mod tests {
         );
     }
 
-    /// Indenting N lines is 2N history entries, so before the **edit buffer**
+    /// Indenting N lines is 2N history entries, so before the **rope buffer**
     /// grouped it, one Ctrl+Z un-indented only the last line and the user had
     /// to press it N times. Same class as `guu`, and fixed by the same move.
     #[test]

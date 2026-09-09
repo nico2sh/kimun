@@ -229,7 +229,7 @@ pub struct MarkdownEditorView {
     /// lost permanently rather than borrowed. Cleared by any other cursor move —
     /// the component says when, because only it sees the other keys.
     visual_goal: Option<usize>,
-    /// Rows the last edits changed, as the **edit buffer** reported them.
+    /// Rows the last edits changed, as the **rope buffer** reported them.
     ///
     /// Consumed by the next `update`, which then has no reason to compare the
     /// buffer against a copy of its previous self. `None` means nobody told us —
