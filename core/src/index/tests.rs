@@ -1628,29 +1628,6 @@ async fn open_preserves_current_schema() {
 /// the index synced — the readiness probe reports true afterwards even
 /// though the schema was healed at open (regression for the
 /// browse-only path that previously left the probe stuck on false).
-#[tokio::test(flavor = "multi_thread")]
-async fn whole_vault_browse_marks_index_ready() {
-    use crate::{NoteVault, VaultBrowseOptionsBuilder, VaultConfig};
-
-    let dir = tempfile::TempDir::new().unwrap();
-    std::fs::write(dir.path().join("note.md"), "# Note\nbody").unwrap();
-
-    let vault = NoteVault::new(VaultConfig::new(crate::system::sys(dir.path())))
-        .await
-        .unwrap();
-    assert!(!vault.index_ready(), "fresh index is healed, not ready");
-
-    let options = VaultBrowseOptionsBuilder::new(&crate::nfs::VaultPath::root())
-        .recursive(true)
-        .build();
-    vault.browse_vault(options).await.unwrap();
-
-    assert!(
-        vault.index_ready(),
-        "recursive root browse is a whole-vault sync — probe must report ready"
-    );
-}
-
 /// Builds a vault holding two notes (one nested), one subdirectory and one
 /// attachment, for the browse tests below.
 async fn browse_fixture() -> (tempfile::TempDir, crate::NoteVault) {
@@ -1665,6 +1642,24 @@ async fn browse_fixture() -> (tempfile::TempDir, crate::NoteVault) {
         .await
         .unwrap();
     (dir, vault)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn whole_vault_browse_marks_index_ready() {
+    use crate::VaultBrowseOptionsBuilder;
+
+    let (_dir, vault) = browse_fixture().await;
+    assert!(!vault.index_ready(), "fresh index is healed, not ready");
+
+    let options = VaultBrowseOptionsBuilder::new(&crate::nfs::VaultPath::root())
+        .recursive(true)
+        .build();
+    vault.browse_vault(options).await.unwrap();
+
+    assert!(
+        vault.index_ready(),
+        "recursive root browse is a whole-vault sync — probe must report ready"
+    );
 }
 
 /// `browse_vault` hands back every entry of the walked subtree — notes,
@@ -1701,6 +1696,31 @@ async fn browse_vault_returns_every_entry() {
                 && e.path.is_like(&VaultPath::new("img.png"))),
         "attachment is returned: {entries:?}"
     );
+}
+
+/// Building the stream is free of side effects and runtime requirements: it
+/// can be constructed outside a runtime, and one that is dropped unpolled
+/// never walks the vault (so never marks it synced).
+#[test]
+fn browse_vault_stream_is_lazy_until_polled() {
+    use crate::nfs::VaultPath;
+    use crate::VaultBrowseOptionsBuilder;
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (_dir, vault) = rt.block_on(browse_fixture());
+    let options = VaultBrowseOptionsBuilder::new(&VaultPath::root())
+        .recursive(true)
+        .build();
+
+    // Outside any runtime context: must not panic.
+    let stream = vault.browse_vault_stream(options);
+    drop(stream);
+
+    assert!(
+        !vault.index_ready(),
+        "an unpolled stream must not have walked the vault"
+    );
+    rt.block_on(async move { drop(vault) });
 }
 
 /// `browse_vault_stream` yields the same entries one `Ok` item at a time,

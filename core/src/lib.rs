@@ -80,7 +80,7 @@ use error::{FSError, VaultError};
 use futures_util::{stream, Stream, StreamExt, TryStreamExt};
 use index::NoteIndex;
 use link_rewrite::LinkRewrite;
-use log::debug;
+use log::{debug, warn};
 use nfs::{NoteEntryData, VaultPath};
 use note::{ContentChunk, NoteContentData, NoteDetails};
 use sync::VaultSync;
@@ -616,10 +616,12 @@ impl NoteVault {
 
     /// Walks the vault per `options` and yields every entry it finds — note,
     /// directory or attachment — as a [`SearchResult`], in discovery order,
-    /// as soon as the walker has processed it. The walk runs on its own task;
-    /// a sync error surfaces as the stream's final `Err` item. A recursive
-    /// browse from the root doubles as a full index sync: by the time the
-    /// stream ends, the index reports ready.
+    /// as soon as the walker has processed it. Nothing happens until the
+    /// stream is first polled; from then on the walk runs on its own task to
+    /// completion, even if the stream is dropped early (the index sync must
+    /// not be left half-applied). A sync error surfaces as the stream's final
+    /// `Err` item. A recursive browse from the root doubles as a full index
+    /// sync: by the time the stream ends, the index reports ready.
     ///
     /// Use this when rows should appear while a slow (e.g. network) directory
     /// is still being read; [`browse_vault`](Self::browse_vault) collects the
@@ -628,25 +630,25 @@ impl NoteVault {
         &self,
         options: VaultBrowseOptions,
     ) -> impl Stream<Item = Result<SearchResult, VaultError>> + Send + 'static {
-        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
         let vault = self.clone();
-        // `sender` moves into the task and drops when the walk ends, which is
-        // what closes `entries` below and lets `outcome` be polled.
-        let walk = tokio::spawn(async move { vault.browse_into(options, sender).await });
-
-        let entries = stream::unfold(receiver, |mut rx| async move {
-            rx.recv().await.map(|entry| (entry, rx))
+        // `once(..).flatten()` defers the spawn to the first poll, so building
+        // the stream needs no runtime and an unpolled stream walks nothing.
+        stream::once(async move {
+            let (sender, receiver) = futures_channel::mpsc::unbounded();
+            // `sender` moves into the task and drops when the walk ends, which
+            // is what closes `receiver` and lets `outcome` be polled.
+            let walk = tokio::spawn(async move { vault.browse_into(options, sender).await });
+            let outcome = stream::once(async move {
+                match walk.await {
+                    Ok(Ok(())) => None,
+                    Ok(Err(e)) => Some(Err(e)),
+                    Err(e) => Some(Err(VaultError::TaskJoin(format!("vault browse: {}", e)))),
+                }
+            })
+            .filter_map(std::future::ready);
+            receiver.map(Ok).chain(outcome)
         })
-        .map(Ok);
-        let outcome = stream::once(async move {
-            match walk.await {
-                Ok(Ok(())) => None,
-                Ok(Err(e)) => Some(Err(e)),
-                Err(e) => Some(Err(VaultError::TaskJoin(format!("vault browse: {}", e)))),
-            }
-        })
-        .filter_map(std::future::ready);
-        entries.chain(outcome)
+        .flatten()
     }
 
     /// Walks the vault per `options` and returns every entry it finds — the
@@ -664,19 +666,26 @@ impl NoteVault {
     async fn browse_into(
         &self,
         options: VaultBrowseOptions,
-        sender: tokio::sync::mpsc::UnboundedSender<SearchResult>,
+        sender: futures_channel::mpsc::UnboundedSender<SearchResult>,
     ) -> Result<(), VaultError> {
         let start = std::time::SystemTime::now();
         debug!("> Start fetching files with Options:\n{}", options);
 
-        VaultSync::new(&self.index, self.workspace_path())
+        // Logged here as well as returned: when the consumer dropped the
+        // stream early nobody polls the outcome, and a failed sync must not
+        // vanish silently.
+        if let Err(e) = VaultSync::new(&self.index, self.workspace_path())
             .run(
                 &options.path,
                 options.recursive,
                 options.validation,
                 Some(sender),
             )
-            .await?;
+            .await
+        {
+            warn!("browse of {} failed to sync the index: {}", options.path, e);
+            return Err(e);
+        }
 
         // A recursive browse from the root is a whole-vault sync: the index
         // now mirrors the disk, so the readiness probe must report true —
@@ -1482,7 +1491,8 @@ pub enum AttachmentContent {
     Binary,
 }
 
-/// Builder for [`VaultBrowseOptions`]; see [`NoteVault::browse_vault`].
+/// Builder for [`VaultBrowseOptions`]; see [`NoteVault::browse_vault_stream`]
+/// and its collected form [`NoteVault::browse_vault`].
 pub struct VaultBrowseOptionsBuilder {
     path: VaultPath,
     validation: NotesValidation,
