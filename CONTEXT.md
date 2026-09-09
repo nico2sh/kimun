@@ -333,9 +333,13 @@ _Avoid_: DBStatus (the superseded public enum), force rebuild (the deleted file-
 The batch of note changes — to add, to modify, to delete — that a vault sync walk produces and `NoteIndex::apply` consumes in one atomic operation. Owned by the **NoteIndex** interface: it is the currency crossing that seam, not a walker by-product.
 _Avoid_: NoteListResults (the superseded visitor type), results
 
-**LinkRewrite**:
-The one core module that rewrites every **note link** pointing at a renamed note. Three compiler-enforced stages — *scout* (one index query for the linking notes), *prepare* (read each, rewrite links in memory, take fail-closed **backups**), *commit* (write the rewritten notes, rewrite the renamed note's self-links at its new path, return the entries for the index commit) — with the caller's filesystem rename sitting between prepare and commit. Each stage consumes the previous, so running them out of order is a compile error, not a broken vault.
-_Avoid_: backlink rewriting (names one half; self-links are the other), rename helper
+**NoteRename**:
+The one core module that renames a note: locks, the filesystem move, the rewrite of every **note link** pointing at it, and the index commit, in one call. The stages inside are compiler-enforced — *scout* (one index query for the linking notes), *lock* (source, destination and every linking note, in a stable order), *prepare* (read each, rewrite links in memory, take fail-closed **backups**), *move* (the source on disk), *commit* (write the rewritten notes, rewrite the renamed note's self-links at its new path), *index* (one atomic index operation). Each stage consumes the previous, so running them out of order is a compile error, not a broken vault. Nothing on disk changes before the move; after it, the vault is renamed and the rest converges. `NoteVault::rename_note` forwards to it.
+_Avoid_: LinkRewrite (the superseded module, which owned the rewrite but left the move, the locks and the index commit to its caller), backlink rewriting (names one half; self-links are the other), rename helper
+
+**NoteLocks**:
+The per-note in-process write locks a **Vault** hands to every content mutation — save, append, replace, and **NoteRename** — so a read-modify-write can't be interleaved by another in-process writer. Its own type so a module can be handed the locks without the vault. Cross-process writers are not covered.
+_Avoid_: note_locks map (the field), the mutex
 
 **VaultSync**:
 The one core module that brings the **NoteIndex** in step with the vault on disk. One call runs the whole pipeline — read the cached entries, walk the subtree in parallel, diff against the cache under a validation mode, apply the **IndexDiff**, optionally streaming discovered entries to the caller as they are found. The parallel walker, its thread-state plumbing, and the async/blocking bridge are implementation and never cross the interface.

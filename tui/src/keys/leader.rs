@@ -426,7 +426,7 @@ pub fn leader_tree() -> LeaderNode {
                         ('c', leaf("copy wikilink", A::NoteCopyWikilink)),
                         ('e', leaf("export (soon)", A::NoteExport)),
                         // Same dialog as `n r` — every rename rewrites
-                        // backlinks (core LinkRewrite), so the labels match.
+                        // backlinks (core NoteRename), so the labels match.
                         ('r', leaf("rename", A::NoteRename)),
                         ('y', leaf("yank note path", A::NoteYankPath)),
                     ],
