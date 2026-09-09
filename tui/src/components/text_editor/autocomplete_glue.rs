@@ -1,5 +1,5 @@
 //! Glue between the autocomplete controller (which works in byte offsets
-//! against a single joined buffer string) and the **edit buffer**
+//! against a single joined buffer string) and the **rope buffer**
 //! (which works in `(row, char_col)` per-line coordinates).
 //!
 //! The conversion between the two is [`crate::ropetext::Text::position_at_byte`]: the

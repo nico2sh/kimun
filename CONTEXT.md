@@ -49,8 +49,12 @@ Which engine drives the TUI text editor, chosen in config (`editor_backend`): **
 _Avoid_: editor engine, editor mode (collides with **editing mode**), textarea (the superseded name for **plain**, from the library that used to back it).
 
 **Edit buffer**:
-The open note's text, its cursor, its selection and its edit history as one thing, behind which every mutation on the **plain** and **vim** backends passes. Because it observes each edit from both sides, the facts that follow from one — did the content change, what range was damaged, which edits belong to one **undo group** — are *derived* there rather than predicted by each caller. It knows nothing about markdown, about the terminal, or about how it will be drawn: it is text and the operations on it. That ignorance is structural: it lives in `tui/src/ropetext`, a former workspace crate still forbidden from naming anything outside itself, so it can become one again. The **nvim** backend has none — neovim owns its own buffer and history.
+The open note's text, its cursor, its selection and its edit history as one value — the engine's buffer: three mutation primitives inside a transaction, and motions that return a **Position** rather than moving anything. It knows nothing about markdown, about the terminal, or about how it will be drawn: it is text and the operations on it. That ignorance is structural: it lives in `tui/src/ropetext`, a former workspace crate still forbidden from naming anything outside itself, so it can become one again. Everything kimün adds on top — grouping, damage, the **indent step**, the **find pattern** — lives one level up, in the **rope buffer**. The **nvim** backend has none — neovim owns its own buffer and history.
 _Avoid_: buffer (collides with ratatui's render buffer), document, model.
+
+**Rope buffer**:
+The editor's buffer: the **edit buffer** plus kimün's editing policy, and the one `&mut` the **vim** engine, the plain key table, the **find bar** and the editor component all take (`RopeBuffer`). Because every mutation on the **plain** and **vim** backends passes through it, the facts that follow from one — did the content change, what range was damaged, which edits belong to one **undo group** — are *derived* there rather than predicted by each caller. It also owns what the engine deliberately refuses: the **find pattern** and its row-wise wrapping search, the yank transport the **unnamed register** fills from, the goal column a vertical motion aims at, the **indent step**, and the `(row, col)` vocabulary every caller speaks. It knows text, not markdown: list continuation, **auto-surround** and emphasis markers are operations *over* it (`markdown_edits`), tested against a bare one.
+_Avoid_: compat shim, textarea shim (the name it grew up under — it owns policy, not a migration), buffer unqualified.
 
 **Editing mode**:
 The active modal state inside a vim-style backend — Normal, Insert, Replace, Visual, Visual-line, Command. Shared by the **nvim** and **vim** backends (the `EditorMode` enum); the **textarea** backend has none. Distinct from the **editor backend**, which selects the engine, not the state within it. Replace (`R`) is engine-owned in the **vim** backend: keys overwrite in place and never reach the textarea's insert features.
@@ -362,6 +366,10 @@ _Avoid_: span helpers / zone helpers (each names a part), parser utilities
 **Auto-surround**:
 Typing an opening pair character (`(` `[` `{` `<`) or a symmetric one (`"` `'` `` ` `` `*` `_` `~`) while a selection is active wraps the selection in the pair instead of replacing it. The selection stays on the inner text afterwards, so wraps chain — `[` `[` builds a wikilink, `*` `*` builds bold. Closing characters do not wrap; they replace, as any other key. Textarea backend only.
 _Avoid_: auto-pair, auto-close (those mean inserting the closing char while typing without a selection — a different feature kimün does not have)
+
+**Indent step**:
+The fixed run of spaces one indent puts at the start of a row — what Tab, `>>`, the visual `>` and a list continuation's dedent all move a row by, read from the **rope buffer** (`indent_width`, 4 by default) so every door agrees. Always spaces, never a tab. On the way back out, a dedent removes up to one step of leading spaces, or one existing leading tab, which counts as a whole step. Not a tab stop: that is how an existing `\t` *draws* (`Metrics::tab_width`), and the two are kept apart the way vim keeps `shiftwidth` from `tabstop`.
+_Avoid_: tab width, tab size (the drawing rule), hard tab (a setting kimün no longer has).
 
 **Automated edit**:
 A note mutation performed through the CLI or the MCP server rather than the TUI editor. Automated edits produce a **backup**; interactive TUI edits do not (the editor carries its own version history).

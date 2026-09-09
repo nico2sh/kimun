@@ -73,7 +73,7 @@ impl Handler for NvimHandler {
 // InputInterpreter + TextareaBackend
 // ---------------------------------------------------------------------------
 
-/// How key events are translated into edits on the **edit buffer**.
+/// How key events are translated into edits on the **rope buffer**.
 /// The engine is boxed so the `Direct` arm doesn't pay the engine's size
 /// (registers, dot-repeat state, replace stack — ~230 bytes).
 #[derive(Debug, Default)]
@@ -189,7 +189,7 @@ impl BackendState {
     /// lag the real cursor for a frame), matching the snapshot path.
     pub fn cursor(&self) -> (usize, usize) {
         match self {
-            BackendState::Textarea(tb) => super::cursor_tuple(&tb.ta),
+            BackendState::Textarea(tb) => tb.ta.cursor(),
             BackendState::Nvim(nvim) => {
                 let snap = nvim.snapshot();
                 let max_row = snap.lines.len().saturating_sub(1);
