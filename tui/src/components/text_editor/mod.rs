@@ -942,8 +942,7 @@ impl TextEditorComponent {
                     }
                     ta.insert_str(insert);
                 });
-                self.selection = tb.ta.selection_range();
-                self.apply_edit_outcome();
+                self.after_edit();
             }
             BackendState::Nvim(nvim) => {
                 nvim.paste(text, tx.clone());
@@ -1041,7 +1040,6 @@ impl TextEditorComponent {
         // Only here, past every `return false` above: this function is consulted
         // for each bare `( [ { < " ' ` * _ ~` keystroke, and the declining ones
         // fall through to ordinary typing, which must keep its run.
-        self.interrupt_typing();
         self.after_edit();
         true
     }
@@ -1056,7 +1054,6 @@ impl TextEditorComponent {
         if self.wrap_selection(marker, marker) {
             return;
         }
-        self.interrupt_typing();
         let Some(ta) = self.backend.as_textarea_mut() else {
             return;
         };
@@ -1081,8 +1078,14 @@ impl TextEditorComponent {
     /// The OUTLINE drawer's jump — [`markdown_edits::jump_to_heading`] on the
     /// live buffer. No-op on the Nvim backend.
     pub fn jump_to_heading(&mut self, heading: &str) {
-        if let Some(ta) = self.backend.as_textarea_mut() {
-            markdown_edits::jump_to_heading(ta, heading);
+        let Some(ta) = self.backend.as_textarea_mut() else {
+            return;
+        };
+        if markdown_edits::jump_to_heading(ta, heading) {
+            self.selection = self
+                .backend
+                .as_textarea()
+                .and_then(|ta| ta.selection_range());
         }
     }
 
@@ -1285,11 +1288,13 @@ impl TextEditorComponent {
         }
     }
 
-    /// What every edit made through the buffer owes the component: the
-    /// selection mirror the renderer reads, and the outcome drain that bumps
-    /// the revision and tells the view what to re-parse. Reports whether the
-    /// text changed.
+    /// What every edit made through the buffer owes the component: the typing
+    /// run ends (any non-typing action closes the open **undo group**), the
+    /// selection mirror the renderer reads is refreshed, and the outcome is
+    /// drained — bumping the revision and telling the view what to re-parse.
+    /// Reports whether the text changed.
     fn after_edit(&mut self) -> bool {
+        self.interrupt_typing();
         self.selection = self
             .backend
             .as_textarea()
@@ -1654,9 +1659,8 @@ impl Component for TextEditorComponent {
                             self.interrupt_typing();
                             if let Some(ta) = self.backend.as_textarea_mut() {
                                 ta.edit(|ta| apply_accept_to_textarea(ta, &action));
-                                self.selection = ta.selection_range();
                             }
-                            self.apply_edit_outcome();
+                            self.after_edit();
                             return EventState::Consumed;
                         }
                         HandleKeyOutcome::Dismissed | HandleKeyOutcome::Consumed => {
@@ -2877,6 +2881,12 @@ mod tests {
         assert_eq!(ed.view_snapshot().cursor.0, 3);
         ed.jump_to_heading("Top");
         assert_eq!(ed.view_snapshot().cursor.0, 1);
+        // A click's zero-width selection must not turn the jump into a span
+        // the next keystroke replaces.
+        select_range(&mut ed, (2, 1), (2, 1));
+        ed.jump_to_heading("Top");
+        assert_eq!(ed.selection, None);
+        assert_eq!(ed.view_snapshot().cursor.0, 1);
         ed.jump_to_heading("Nope");
         assert_eq!(
             ed.view_snapshot().cursor.0,
@@ -2912,6 +2922,26 @@ mod tests {
         let _ = editor.handle_input(&InputEvent::Key(enter), &tx);
         assert_eq!(editor.get_text(), "- foo\n- ");
         assert!(editor.is_dirty());
+    }
+
+    #[test]
+    fn a_letter_typed_after_smart_enter_starts_its_own_undo_group() {
+        let mut editor = make_editor();
+        editor.set_text(String::new());
+        for c in "- foo".chars() {
+            send_char(&mut editor, c);
+        }
+        let tx = dummy_tx();
+        let enter = key(KeyCode::Enter, KeyModifiers::NONE);
+        let _ = editor.handle_input(&InputEvent::Key(enter), &tx);
+        send_char(&mut editor, 'b');
+        assert_eq!(editor.get_text(), "- foo\n- b");
+        assert!(get_ta(&mut editor).undo());
+        assert_eq!(
+            editor.get_text(),
+            "- foo\n- ",
+            "the letter after a list continuation is its own undo group"
+        );
     }
 
     #[test]

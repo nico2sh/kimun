@@ -73,8 +73,8 @@ pub enum AppEvent {
     OpenDrawerView(crate::components::drawer::DrawerView),
     /// Run the query `#<label>` in the FIND drawer (sent by the TAGS drawer).
     RunTagQuery(String),
-    /// Jump the editor cursor to the first heading with this text (sent by
-    /// the OUTLINE drawer).
+    /// Jump the editor cursor to the first heading whose rendered text (as
+    /// the OUTLINE shows it) is this (sent by the OUTLINE drawer).
     JumpToHeading(String),
     /// Run a leader-tree action (sent by the command palette after it has
     /// closed itself, so the action sees no open overlay).

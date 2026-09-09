@@ -132,9 +132,8 @@ pub fn smart_enter(buf: &mut RopeBuffer) -> bool {
         (row, action)
     };
     match action {
-        // A dedent that removes nothing (a zero-width step) is not handled:
-        // declining lets Enter fall through to a plain newline instead of
-        // being swallowed.
+        // Reports what the dedent did — always a change here, since the row
+        // has leading whitespace and a step is never zero.
         Action::Dedent => return buf.indent_rows(row..=row, true),
         Action::ClearRow { chars } => {
             buf.move_cursor(CursorMove::Head);
@@ -152,32 +151,30 @@ pub fn smart_enter(buf: &mut RopeBuffer) -> bool {
     true
 }
 
-/// Move the cursor to the first heading whose text equals `heading`, at any
-/// level — the OUTLINE drawer's jump. `false`, cursor untouched, when none
-/// matches.
+/// Move the cursor to the first heading row whose rendered text equals
+/// `heading`, at any level — the OUTLINE drawer's jump. `false`, cursor
+/// untouched, when none matches.
 ///
-/// OUTLINE entries carry the extractor-rendered heading text (inline markup
-/// resolved, closing ATX `#` dropped), so both sides are normalised before
-/// comparing: ATX markers stripped, the common inline-emphasis characters
-/// removed.
+/// "Rendered" is what the OUTLINE shows, and the row is rendered by the same
+/// core function that produced the entry (`scan::heading_display_text`:
+/// wikilinks and links to their text, hashtag markers dropped, emphasis and
+/// ATX markers gone), so the two agree wherever a line can be rendered alone —
+/// `heading_display_text` names the limits (setext headings, reference-style
+/// links, a `#` line inside a fence). A normaliser of our own once lived here
+/// and missed every heading holding a link or a tag.
 pub fn jump_to_heading(buf: &mut RopeBuffer, heading: &str) -> bool {
-    fn normalise(text: &str) -> String {
-        text.trim()
-            .trim_end_matches('#')
-            .trim()
-            .replace(['*', '_', '`'], "")
-    }
-    let wanted = normalise(heading);
     let row = (0..buf.row_count()).find(|&row| {
-        let Some(line) = buf.row(row) else {
-            return false;
-        };
-        let t = line.trim_start();
-        let stripped = t.trim_start_matches('#');
-        stripped.len() != t.len() && normalise(stripped) == wanted
+        buf.row(row).is_some_and(|line| {
+            kimun_core::note::scan::heading_display_text(&line).as_deref() == Some(heading)
+        })
     });
     match row {
-        Some(row) => buf.jump_to(row, 0),
+        Some(row) => {
+            // A jump is a cursor move, not a selection gesture: drop any live
+            // selection (a mouse click leaves a zero-width one) before moving.
+            buf.cancel_selection();
+            buf.jump_to(row, 0)
+        }
         None => false,
     }
 }
@@ -439,14 +436,6 @@ mod tests {
     }
 
     #[test]
-    fn a_zero_width_step_makes_smart_enter_decline_rather_than_swallow_enter() {
-        let mut buf = at_end("    ");
-        buf.set_indent_width(0);
-        assert!(!smart_enter(&mut buf));
-        assert_eq!(text(&buf), "    ");
-    }
-
-    #[test]
     fn smart_enter_declines_a_plain_row() {
         let mut buf = at_end("plain");
         assert!(!smart_enter(&mut buf));
@@ -507,10 +496,37 @@ mod tests {
     }
 
     #[test]
+    fn jump_to_heading_drops_a_live_selection_instead_of_extending_it() {
+        let mut buf = buffer("intro\n# Top\nbody");
+        assert!(buf.jump_to(2, 1));
+        buf.start_selection(); // the zero-width anchor a mouse click leaves
+        assert!(jump_to_heading(&mut buf, "Top"));
+        assert_eq!(buf.cursor(), (1, 0));
+        assert_eq!(buf.selection_range(), None);
+    }
+
+    #[test]
     fn a_hash_inside_a_row_is_not_a_heading() {
         let mut buf = buffer("see #tag here\n# Real");
         assert!(jump_to_heading(&mut buf, "Real"));
         assert_eq!(buf.cursor(), (1, 0));
         assert!(!jump_to_heading(&mut buf, "tag here"));
+    }
+
+    #[test]
+    fn jump_to_heading_finds_headings_holding_links_and_tags() {
+        // What the OUTLINE lists for these rows, per core's chunker.
+        let mut buf =
+            buffer("# See [[other note]]\na\n# Sprint #42\nb\n# Docs [here](https://x.y)\nc\n");
+        assert!(jump_to_heading(&mut buf, "Docs here"));
+        assert_eq!(buf.cursor(), (4, 0));
+        assert!(jump_to_heading(&mut buf, "Sprint 42"));
+        assert_eq!(buf.cursor(), (2, 0));
+        assert!(jump_to_heading(&mut buf, "See other note"));
+        assert_eq!(buf.cursor(), (0, 0));
+        assert!(
+            !jump_to_heading(&mut buf, "See [[other note]]"),
+            "raw source is not what the OUTLINE shows"
+        );
     }
 }
