@@ -75,6 +75,11 @@ pub enum Loaded<R> {
 /// query string, returns display indices in preferred order (absent = hidden).
 pub type RankFn<R> = std::sync::Arc<dyn Fn(&[R], &str) -> Vec<usize> + Send + Sync>;
 
+/// Total order over rows for `SearchListBuilder::order_by`: applied to the
+/// row set before any local filter, so streamed rows land in place as they
+/// arrive and a sort change is a recompute, not a reload.
+pub type OrderFn<R> = std::sync::Arc<dyn Fn(&R, &R) -> std::cmp::Ordering + Send + Sync>;
+
 /// How a loaded row set is narrowed/ordered for display. Three known
 /// strategies; none need test substitution, so folded in here.
 pub enum Filter<R: SearchRow> {

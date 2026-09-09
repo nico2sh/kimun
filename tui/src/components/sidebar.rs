@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::settings::themes::Theme;
 use async_trait::async_trait;
@@ -17,7 +17,7 @@ use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, AppTxExt, FileOp, InputEvent, redraw_callback};
 use crate::components::file_list::{FileListEntry, SortField, SortOrder};
 use crate::components::search_list::{
-    Emit, Filter, KeyReaction, RowSource, SearchList, SearchMouse,
+    Emit, Filter, KeyReaction, OrderFn, RowSource, SearchList, SearchMouse,
 };
 use crate::keys::KeyBindings;
 use crate::settings::AppSettings;
@@ -25,63 +25,45 @@ use crate::settings::icons::Icons;
 
 /// Streamed `RowSource` over one directory's listing. Pushes an `Up` row first
 /// (when not at root) so it is always present, then forwards each entry the
-/// moment `browse_vault_stream` yields it — rows show up while a slow drive
-/// is still being read — and, once the walk is done, re-delivers the whole
-/// set in sort order. Loads once; a local `Filter::Fuzzy` narrows the set and
-/// `leading_row` provides the "Create: …" affordance.
+/// moment `browse_vault_stream` yields it — rows show up while a slow drive is
+/// still being read. Ordering is the engine's job (`order_by`, see
+/// [`listing_order`]), so nothing is re-delivered at the end. Loads once; a
+/// local `Filter::Fuzzy` narrows the set and `leading_row` provides the
+/// "Create: …" affordance.
 struct DirListingSource {
     vault: Arc<NoteVault>,
     dir: VaultPath,
-    /// Shared sort field/order. `load` reads it so the sidebar's interactive
-    /// sort shortcuts (cycle field / reverse order) re-order the listing on
-    /// reload; initialised per-directory from the default/journal settings.
-    sort: Arc<Mutex<(SortField, SortOrder)>>,
-    /// Shared "group directories first" flag, read by `load`.
-    group_dirs: Arc<Mutex<bool>>,
 }
 
-impl DirListingSource {
-    /// Orders `entries` by `(field, order)`, directories first when
-    /// `group_dirs` is set.
-    fn sorted(
-        mut entries: Vec<FileListEntry>,
-        field: SortField,
-        order: SortOrder,
-        group_dirs: bool,
-    ) -> Vec<FileListEntry> {
-        let cmp = |a: &FileListEntry, b: &FileListEntry| {
+/// The listing's row order for `(field, order)`, directories first when
+/// `group_dirs` is set. `Up` sorts before everything (it is filter-exempt and
+/// pinned by the engine anyway, but a total order must place it).
+fn listing_order(field: SortField, order: SortOrder, group_dirs: bool) -> OrderFn<FileListEntry> {
+    Arc::new(move |a: &FileListEntry, b: &FileListEntry| {
+        let rank = |e: &FileListEntry| match e {
+            FileListEntry::Up { .. } => 0,
+            FileListEntry::Directory { .. } if group_dirs => 1,
+            _ => 2,
+        };
+        rank(a).cmp(&rank(b)).then_with(|| {
             let ka = a.sort_key(field);
             let kb = b.sort_key(field);
             match order {
                 SortOrder::Ascending => ka.cmp(&kb),
                 SortOrder::Descending => kb.cmp(&ka),
             }
-        };
-        if group_dirs {
-            let (mut dirs, mut rest): (Vec<_>, Vec<_>) = entries
-                .into_iter()
-                .partition(|e| matches!(e, FileListEntry::Directory { .. }));
-            dirs.sort_by(&cmp);
-            rest.sort_by(&cmp);
-            dirs.extend(rest);
-            dirs
-        } else {
-            entries.sort_by(&cmp);
-            entries
-        }
-    }
+        })
+    })
 }
 
 #[async_trait]
 impl RowSource<FileListEntry> for DirListingSource {
     async fn load(&self, _query: &str, emit: Emit<FileListEntry>) {
-        // Up row first (if not root) — pushed so it's always present, and kept
-        // out of the sorted set so it stays on top of the final delivery.
-        let up = (!self.dir.is_root_or_empty()).then(|| FileListEntry::Up {
-            parent: self.dir.get_parent_path().0,
-        });
-        if let Some(up) = &up {
-            emit.push(up.clone());
+        // Up row first (if not root) — pushed so it's always present.
+        if !self.dir.is_root_or_empty() {
+            emit.push(FileListEntry::Up {
+                parent: self.dir.get_parent_path().0,
+            });
         }
 
         let options = VaultBrowseOptionsBuilder::new(&self.dir)
@@ -89,7 +71,6 @@ impl RowSource<FileListEntry> for DirListingSource {
             .validation(NotesValidation::Full)
             .build();
 
-        let mut entries: Vec<FileListEntry> = Vec::new();
         let mut stream = std::pin::pin!(self.vault.browse_vault_stream(options));
         while let Some(item) = stream.next().await {
             let result = match item {
@@ -108,17 +89,8 @@ impl RowSource<FileListEntry> for DirListingSource {
                 .vault
                 .journal_date(&result.path)
                 .map(format_journal_date);
-            let entry = FileListEntry::from_result(result, journal_date);
-            emit.push(entry.clone());
-            entries.push(entry);
+            emit.push(FileListEntry::from_result(result, journal_date));
         }
-
-        // Copy the active sort out of its lock; no await between here and the
-        // delivery below.
-        let (field, order) = *self.sort.lock().unwrap();
-        let group_dirs = *self.group_dirs.lock().unwrap();
-        let sorted = Self::sorted(entries, field, order, group_dirs);
-        emit.replace(up.into_iter().chain(sorted).collect());
         emit.done();
     }
 
@@ -154,13 +126,12 @@ pub struct SidebarComponent {
     default_sort_order: SortOrder,
     journal_sort_field: SortField,
     journal_sort_order: SortOrder,
-    /// Shared sort field/order for the active listing. `DirListingSource::load`
-    /// reads it; the sort shortcuts mutate it then reload. Re-created per
-    /// `navigate` from the per-dir defaults.
-    sort: Arc<Mutex<(SortField, SortOrder)>>,
-    /// Shared "group directories first" flag. `DirListingSource::load` reads it;
-    /// the sort dialog mutates it via `apply_sort`, then the listing reloads.
-    group_dirs: Arc<Mutex<bool>>,
+    /// Sort field/order of the active listing. Set per `navigate` from the
+    /// per-dir defaults; the sort shortcuts and dialog change it via
+    /// `apply_sort`, which hands the engine a new order.
+    sort: (SortField, SortOrder),
+    /// "Group directories first" for the active listing; see `sort`.
+    group_dirs: bool,
     rendered_rect: Rect,
     /// Screen cell each breadcrumb segment was drawn into on the last render,
     /// with the directory it navigates to — clickable breadcrumb hit-test.
@@ -199,8 +170,8 @@ impl SidebarComponent {
             default_sort_order,
             journal_sort_field: SortField::from(settings.journal_sort_field),
             journal_sort_order: SortOrder::from(settings.journal_sort_order),
-            sort: Arc::new(Mutex::new((default_sort_field, default_sort_order))),
-            group_dirs: Arc::new(Mutex::new(settings.group_directories)),
+            sort: (default_sort_field, default_sort_order),
+            group_dirs: settings.group_directories,
             rendered_rect: Rect::default(),
             breadcrumb_cells: Vec::new(),
             key_bindings,
@@ -240,16 +211,15 @@ impl SidebarComponent {
     pub fn navigate(&mut self, dir: VaultPath, tx: &AppTx) {
         self.current_dir = dir.clone();
         let (sort_field, sort_order) = self.sort_for(&dir);
-        self.sort = Arc::new(Mutex::new((sort_field, sort_order)));
+        self.sort = (sort_field, sort_order);
         let source = DirListingSource {
             vault: self.vault.clone(),
             dir,
-            sort: self.sort.clone(),
-            group_dirs: self.group_dirs.clone(),
         };
         self.list = Some(
             SearchList::builder(source, redraw_callback(tx.clone()))
                 .filter(Filter::Fuzzy)
+                .order_by(listing_order(sort_field, sort_order, self.group_dirs))
                 .yank_combos_from(&self.key_bindings)
                 .icons(self.icons.clone())
                 .build(),
@@ -352,21 +322,21 @@ impl SidebarComponent {
 
     /// Current sort field/order for the active listing.
     pub fn current_sort(&self) -> (SortField, SortOrder) {
-        *self.sort.lock().unwrap()
+        self.sort
     }
 
     /// Current "group directories first" flag.
     pub fn group_dirs(&self) -> bool {
-        *self.group_dirs.lock().unwrap()
+        self.group_dirs
     }
 
-    /// Apply a sort selection from the sort dialog and reload so the source
-    /// re-orders the listing.
+    /// Apply a sort selection from the sort dialog: the engine re-orders the
+    /// rows it already holds — no second walk of the directory.
     pub fn apply_sort(&mut self, field: SortField, order: SortOrder, group_dirs: bool) {
-        *self.sort.lock().unwrap() = (field, order);
-        *self.group_dirs.lock().unwrap() = group_dirs;
+        self.sort = (field, order);
+        self.group_dirs = group_dirs;
         if let Some(list) = &mut self.list {
-            list.reload();
+            list.set_order(Some(listing_order(field, order, group_dirs)));
         }
     }
 
@@ -939,19 +909,17 @@ mod tests {
             .collect()
     }
 
-    /// The directory listing streams each row the moment the walk yields it,
-    /// then re-delivers the whole set sorted once the walk is done — partial
-    /// results while a slow drive is read, final order on completion.
+    /// The directory listing streams each row the moment the walk yields it
+    /// and nothing else: ordering is the engine's job (`order_by`), so there
+    /// is no end-of-walk re-delivery to make rows jump.
     #[tokio::test(flavor = "multi_thread")]
-    async fn listing_streams_rows_then_replaces_with_sorted_set() {
+    async fn listing_streams_each_row_then_done() {
         use crate::components::search_list::Loaded;
 
         let sidebar = sidebar_with_notes("sidebar-stream", &["charlie", "alpha", "bravo"]).await;
         let source = DirListingSource {
             vault: sidebar.vault.clone(),
             dir: VaultPath::root(),
-            sort: sidebar.sort.clone(),
-            group_dirs: sidebar.group_dirs.clone(),
         };
         let (emit, rx) = Emit::capture();
 
@@ -963,31 +931,38 @@ mod tests {
             .filter(|e| matches!(e, Loaded::Push(FileListEntry::Note { .. })))
             .count();
         assert_eq!(pushed_notes, 3, "each note is streamed as its own row");
-        let n = events.len();
         assert!(
-            n >= 2,
-            "expected a sorted replace then done, got {n} events"
-        );
-        let Loaded::Replace(rows) = &events[n - 2] else {
-            panic!("second-to-last event must be the sorted replace");
-        };
-        let names: Vec<String> = rows
-            .iter()
-            .filter_map(|e| match e {
-                FileListEntry::Note { filename, .. } => Some(filename.clone()),
-                _ => None,
-            })
-            .collect();
-        let mut expected = names.clone();
-        expected.sort();
-        assert_eq!(names, expected, "final set is sorted by name ascending");
-        assert!(
-            names.first().is_some_and(|n| n.starts_with("alpha")),
-            "sorted set starts with alpha: {names:?}"
+            !events.iter().any(|e| matches!(e, Loaded::Replace(_))),
+            "no whole-set re-delivery"
         );
         assert!(
-            matches!(events[n - 1], Loaded::Done),
+            matches!(events.last(), Some(Loaded::Done)),
             "done closes the load"
+        );
+    }
+
+    /// A sort change re-orders the rows already loaded; it must not walk the
+    /// directory again.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn apply_sort_reorders_without_reloading() {
+        let mut sidebar =
+            sidebar_with_notes("sidebar-resort", &["alpha", "bravo", "charlie"]).await;
+        let (tx, _rx) = unbounded_channel();
+        navigate_to_root(&mut sidebar, &tx).await;
+        let before = note_names(&sidebar);
+        assert_eq!(before.len(), 3, "expected three notes, got {before:?}");
+
+        sidebar.apply_sort(SortField::Name, SortOrder::Descending, false);
+
+        let list = sidebar.list.as_ref().unwrap();
+        assert!(
+            !list.is_loading(),
+            "a sort change must not reload the listing"
+        );
+        assert_eq!(
+            note_names(&sidebar),
+            before.iter().rev().cloned().collect::<Vec<_>>(),
+            "rows re-ordered in place"
         );
     }
 

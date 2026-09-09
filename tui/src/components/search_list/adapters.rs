@@ -108,6 +108,23 @@ impl RowSource<TestRow> for ScriptedStreamSource {
     }
 }
 
+/// A streamed source that never finishes on its own: `load` parks its `Emit`
+/// in `slot` and returns, so a test can push rows (and `done`) at moments of
+/// its choosing and observe the engine between them.
+pub struct HeldEmitSource {
+    pub slot: std::sync::Arc<std::sync::Mutex<Option<Emit<TestRow>>>>,
+}
+
+#[async_trait]
+impl RowSource<TestRow> for HeldEmitSource {
+    async fn load(&self, _query: &str, emit: Emit<TestRow>) {
+        *self.slot.lock().unwrap() = Some(emit);
+    }
+    fn reload_on_query(&self) -> bool {
+        false
+    }
+}
+
 /// A reload-on-query source that also exposes a query-fresh leading row.
 /// Used to prove that the `reload_on_query == true` branch of `requery()`
 /// also rebuilds the leading row synchronously (Fix A regression guard).
