@@ -575,10 +575,14 @@ impl VimEngine {
             };
             ta.cancel_selection();
             ta.jump_to(start_row, 0);
-            self.indent_lines(outdent, line_count, ta);
+            let mutated = self.indent_lines(outdent, line_count, ta);
             self.mode = EditorMode::Normal;
             self.clear_pending();
-            return VimKeyOutcome::TextMutated;
+            return if mutated {
+                VimKeyOutcome::TextMutated
+            } else {
+                VimKeyOutcome::NoOp
+            };
         }
 
         // Pair chars: set Normal and return PassThrough so the host's existing
@@ -1483,8 +1487,11 @@ impl VimEngine {
                 Self::outcome_for(op)
             }
             Command::IndentLines { outdent, count } => {
-                self.indent_lines(outdent, count, ta);
-                VimKeyOutcome::TextMutated
+                if self.indent_lines(outdent, count, ta) {
+                    VimKeyOutcome::TextMutated
+                } else {
+                    VimKeyOutcome::NoOp
+                }
             }
             Command::DeleteChar { forward, count } => {
                 if self.delete_chars(forward, count, ta) {
@@ -2123,10 +2130,13 @@ impl VimEngine {
     /// The step, the dedent rule and the cursor rule are the buffer's
     /// (`RopeBuffer::indent_rows`), so `>>` and the plain backend's Tab move a
     /// line by the same amount and take the same thing back.
-    fn indent_lines(&self, outdent: bool, count: usize, ta: &mut RopeBuffer) {
+    ///
+    /// Reports whether any text changed — an outdent with nothing to remove
+    /// does not.
+    fn indent_lines(&self, outdent: bool, count: usize, ta: &mut RopeBuffer) -> bool {
         let (row, _) = ta.cursor();
         let last = row.saturating_add(count.max(1) - 1);
-        ta.indent_rows(row..=last, outdent);
+        ta.indent_rows(row..=last, outdent)
     }
 
     /// Capture the text the textarea just cut/copied (its yank buffer) into
@@ -2223,10 +2233,7 @@ impl VimEngine {
         if end <= start {
             return String::new();
         }
-        ta.span_between(start, end)
-            .and_then(|span| ta.text().slice(span))
-            .map(|text| text.into_owned())
-            .unwrap_or_default()
+        ta.text_between(start, end).unwrap_or_default()
     }
 
     // ── Dot-repeat recording ─────────────────────────────────────────────────

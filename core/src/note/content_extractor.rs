@@ -512,6 +512,38 @@ pub fn heading_section_range(text: &str, heading: &str) -> Option<Range<usize>> 
     start.map(|s| s..text.len())
 }
 
+/// The text the OUTLINE shows for `line` when it is an ATX heading — rendered
+/// exactly as `get_content_chunks` renders a chunk's breadcrumb (wikilinks
+/// and links collapsed to their text, hashtag markers dropped, emphasis and
+/// the ATX markers gone) — or `None` for any other line.
+///
+/// One line at a time, so a caller holding an editor buffer can find the row
+/// an OUTLINE entry came from without re-chunking the note. Rendering a line
+/// alone has limits the whole-note chunker does not, all of them fail-safe: a
+/// setext heading (`Title` over `=====`) has no `#` and renders to `None`; a
+/// reference-style link renders as written, its definition being on another
+/// line; and a `#` line inside a fenced block or frontmatter renders as a
+/// heading the chunker never lists, so it can only shadow a real heading with
+/// the same text. Leading indentation is dropped on purpose: the chunker
+/// lists a heading nested in a list item, whose own line is indented past
+/// what CommonMark allows at top level. A `#`-run not followed by whitespace
+/// is a hashtag, not a heading, and renders to `None`.
+pub fn heading_display_text(line: &str) -> Option<String> {
+    let line = line.trim_start();
+    if !line.starts_with('#') {
+        return None;
+    }
+    let text = process_wikilinks(line, |_link, _text| None);
+    let text = cleanup_hashtags(&text);
+    let mut parser = Parser::new(&text);
+    loop_events(&mut parser)
+        .into_iter()
+        .find_map(|text_line| match text_line {
+            TextLine::Header(_, text) => Some(text),
+            _ => None,
+        })
+}
+
 /// Recognizes one ATX heading line — 1 to 6 leading `#` characters, then a
 /// space/tab (or end of line), then the heading text — and returns its text
 /// with leading/trailing whitespace and an optional closing `#` run (e.g.
@@ -3052,7 +3084,7 @@ ls -la ./test
         assert!(!is_inside_exclusion_zone(text, text.len() + 5));
     }
 
-    use super::{atx_heading_text, heading_section_range};
+    use super::{atx_heading_text, heading_display_text, heading_section_range};
 
     #[test]
     fn heading_section_range_stops_at_the_next_heading() {
@@ -3125,5 +3157,55 @@ ls -la ./test
     #[test]
     fn atx_heading_text_rejects_more_than_six_hashes() {
         assert_eq!(atx_heading_text("####### Title"), None);
+    }
+
+    #[test]
+    fn heading_display_text_renders_like_the_chunker() {
+        let cases = [
+            ("# Top", "Top"),
+            ("## **Sub** One ##", "Sub One"),
+            ("# See [[other note]]", "See other note"),
+            ("# See [[other note|alias]]", "See alias"),
+            ("# Sprint #42", "Sprint 42"),
+            ("# Docs [here](https://example.com)", "Docs here"),
+            ("# Tags #planning", "Tags planning"),
+        ];
+        for (line, expected) in cases {
+            assert_eq!(
+                heading_display_text(line).as_deref(),
+                Some(expected),
+                "{line:?}"
+            );
+            // The same text the OUTLINE gets from the chunker for that line.
+            let chunks = get_content_chunks(format!("{line}\nbody\n"));
+            assert_eq!(
+                chunks[0].breadcrumb_last(),
+                Some(expected),
+                "chunker disagrees on {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn heading_display_text_is_none_off_a_heading() {
+        assert_eq!(heading_display_text("plain"), None);
+        assert_eq!(heading_display_text("#tag here"), None);
+        assert_eq!(heading_display_text("  see #tag"), None);
+        assert_eq!(heading_display_text(""), None);
+    }
+
+    #[test]
+    fn heading_display_text_drops_leading_indentation() {
+        // A heading nested in a list item is indented past the top-level ATX
+        // limit; the chunker lists it, so the line alone must render too.
+        assert_eq!(
+            heading_display_text("    # Nested").as_deref(),
+            Some("Nested")
+        );
+        let chunks = get_content_chunks("- item\n    # Nested\nbody\n");
+        assert!(
+            chunks.iter().any(|c| c.breadcrumb_last() == Some("Nested")),
+            "the chunker lists the nested heading: {chunks:?}"
+        );
     }
 }

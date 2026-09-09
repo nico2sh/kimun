@@ -982,6 +982,19 @@ fn a_counted_indent_stops_at_the_last_row() {
     assert_eq!(t.cursor(), (0, 4));
 }
 
+/// `<<` on a row with nothing to remove is not an edit: no history entry, and
+/// the engine says so rather than claiming a mutation.
+#[test]
+fn an_outdent_with_nothing_to_remove_reports_no_op() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("foo"));
+    e.handle_key(&key('<'), &mut t);
+    let outcome = e.handle_key(&key('<'), &mut t);
+    assert_eq!(outcome, VimKeyOutcome::NoOp);
+    assert_eq!(t.rows(), &["foo"]);
+    assert!(!t.undo(), "nothing was recorded");
+}
+
 #[test]
 fn pending_hint_shows_operator_and_count() {
     let mut e = VimEngine::default();
