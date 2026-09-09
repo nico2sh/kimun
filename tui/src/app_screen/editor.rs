@@ -477,7 +477,7 @@ impl EditorScreen {
 
     fn navigate_sidebar(&mut self, dir: VaultPath, tx: &AppTx) {
         // The sidebar hosts a streamed `SearchList`; (re)building its engine for
-        // `dir` runs `browse_vault` inside the source and emits rows as they
+        // `dir` runs `browse_vault_stream` inside the source and emits rows as they
         // arrive (with a redraw on each).
         self.panels.sidebar_mut().navigate(dir, tx);
     }

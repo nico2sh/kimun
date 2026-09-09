@@ -1640,14 +1640,96 @@ async fn whole_vault_browse_marks_index_ready() {
         .unwrap();
     assert!(!vault.index_ready(), "fresh index is healed, not ready");
 
-    let (options, rx) = VaultBrowseOptionsBuilder::new(&crate::nfs::VaultPath::root())
+    let options = VaultBrowseOptionsBuilder::new(&crate::nfs::VaultPath::root())
         .recursive(true)
         .build();
     vault.browse_vault(options).await.unwrap();
-    drop(rx);
 
     assert!(
         vault.index_ready(),
         "recursive root browse is a whole-vault sync — probe must report ready"
+    );
+}
+
+/// Builds a vault holding two notes (one nested), one subdirectory and one
+/// attachment, for the browse tests below.
+async fn browse_fixture() -> (tempfile::TempDir, crate::NoteVault) {
+    use crate::{NoteVault, VaultConfig};
+
+    let dir = tempfile::TempDir::new().unwrap();
+    std::fs::write(dir.path().join("a.md"), "# A\nbody").unwrap();
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    std::fs::write(dir.path().join("sub").join("b.md"), "# B\nbody").unwrap();
+    std::fs::write(dir.path().join("img.png"), [0u8, 1, 2]).unwrap();
+    let vault = NoteVault::new(VaultConfig::new(crate::system::sys(dir.path())))
+        .await
+        .unwrap();
+    (dir, vault)
+}
+
+/// `browse_vault` hands back every entry of the walked subtree — notes,
+/// directories, attachments — as one `Vec`; there is no channel for the
+/// caller to drain.
+#[tokio::test(flavor = "multi_thread")]
+async fn browse_vault_returns_every_entry() {
+    use crate::nfs::VaultPath;
+    use crate::{ResultType, VaultBrowseOptionsBuilder};
+
+    let (_dir, vault) = browse_fixture().await;
+    let options = VaultBrowseOptionsBuilder::new(&VaultPath::root())
+        .recursive(true)
+        .build();
+
+    let entries = vault.browse_vault(options).await.unwrap();
+
+    let notes = entries
+        .iter()
+        .filter(|e| matches!(e.rtype, ResultType::Note(_)))
+        .count();
+    assert_eq!(notes, 2, "both notes are returned: {entries:?}");
+    assert!(
+        entries
+            .iter()
+            .any(|e| matches!(e.rtype, ResultType::Directory)
+                && e.path.is_like(&VaultPath::new("sub"))),
+        "subdirectory is returned: {entries:?}"
+    );
+    assert!(
+        entries
+            .iter()
+            .any(|e| matches!(e.rtype, ResultType::Attachment)
+                && e.path.is_like(&VaultPath::new("img.png"))),
+        "attachment is returned: {entries:?}"
+    );
+}
+
+/// `browse_vault_stream` yields the same entries one `Ok` item at a time,
+/// and a whole-vault browse has marked the index synced by the time the
+/// stream ends.
+#[tokio::test(flavor = "multi_thread")]
+async fn browse_vault_stream_yields_entries_then_marks_synced() {
+    use crate::nfs::VaultPath;
+    use crate::{ResultType, VaultBrowseOptionsBuilder};
+    use futures_util::StreamExt;
+
+    let (_dir, vault) = browse_fixture().await;
+    assert!(!vault.index_ready(), "fresh index is healed, not ready");
+    let options = VaultBrowseOptionsBuilder::new(&VaultPath::root())
+        .recursive(true)
+        .build();
+
+    let mut stream = std::pin::pin!(vault.browse_vault_stream(options));
+    let mut notes = 0;
+    while let Some(item) = stream.next().await {
+        let entry = item.expect("browse stream item");
+        if matches!(entry.rtype, ResultType::Note(_)) {
+            notes += 1;
+        }
+    }
+
+    assert_eq!(notes, 2, "both notes are streamed");
+    assert!(
+        vault.index_ready(),
+        "stream drained — the whole-vault browse has marked the index synced"
     );
 }

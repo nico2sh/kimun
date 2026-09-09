@@ -10,7 +10,7 @@
 mod visitor;
 
 use crate::system::SystemPath;
-use std::sync::mpsc::Sender;
+use tokio::sync::mpsc::UnboundedSender as Sender;
 
 use log::debug;
 

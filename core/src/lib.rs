@@ -71,15 +71,13 @@ use std::{
     collections::HashMap,
     fmt::Display,
     path::PathBuf,
-    sync::{
-        mpsc::{Receiver, Sender},
-        Arc,
-    },
+    sync::Arc,
     time::{Duration, SystemTime},
 };
 
 use chrono::{NaiveDate, Utc};
 use error::{FSError, VaultError};
+use futures_util::{stream, Stream, StreamExt, TryStreamExt};
 use index::NoteIndex;
 use link_rewrite::LinkRewrite;
 use log::debug;
@@ -616,11 +614,58 @@ impl NoteVault {
         path.to_pathbuf(self.workspace_path())
     }
 
-    /// Walks the vault per `options`, streaming each entry as a
-    /// [`SearchResult`] through the channel set up by
-    /// [`VaultBrowseOptionsBuilder::build`]. A recursive browse from the root
-    /// doubles as a full index sync.
-    pub async fn browse_vault(&self, options: VaultBrowseOptions) -> Result<(), VaultError> {
+    /// Walks the vault per `options` and yields every entry it finds — note,
+    /// directory or attachment — as a [`SearchResult`], in discovery order,
+    /// as soon as the walker has processed it. The walk runs on its own task;
+    /// a sync error surfaces as the stream's final `Err` item. A recursive
+    /// browse from the root doubles as a full index sync: by the time the
+    /// stream ends, the index reports ready.
+    ///
+    /// Use this when rows should appear while a slow (e.g. network) directory
+    /// is still being read; [`browse_vault`](Self::browse_vault) collects the
+    /// same walk into one `Vec`.
+    pub fn browse_vault_stream(
+        &self,
+        options: VaultBrowseOptions,
+    ) -> impl Stream<Item = Result<SearchResult, VaultError>> + Send + 'static {
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let vault = self.clone();
+        // `sender` moves into the task and drops when the walk ends, which is
+        // what closes `entries` below and lets `outcome` be polled.
+        let walk = tokio::spawn(async move { vault.browse_into(options, sender).await });
+
+        let entries = stream::unfold(receiver, |mut rx| async move {
+            rx.recv().await.map(|entry| (entry, rx))
+        })
+        .map(Ok);
+        let outcome = stream::once(async move {
+            match walk.await {
+                Ok(Ok(())) => None,
+                Ok(Err(e)) => Some(Err(e)),
+                Err(e) => Some(Err(VaultError::TaskJoin(format!("vault browse: {}", e)))),
+            }
+        })
+        .filter_map(std::future::ready);
+        entries.chain(outcome)
+    }
+
+    /// Walks the vault per `options` and returns every entry it finds — the
+    /// collected form of [`browse_vault_stream`](Self::browse_vault_stream),
+    /// same sync side effect included.
+    pub async fn browse_vault(
+        &self,
+        options: VaultBrowseOptions,
+    ) -> Result<Vec<SearchResult>, VaultError> {
+        self.browse_vault_stream(options).try_collect().await
+    }
+
+    /// The browse walk itself: syncs the subtree into the index while sending
+    /// each discovered entry to `sender`, then marks a whole-vault walk synced.
+    async fn browse_into(
+        &self,
+        options: VaultBrowseOptions,
+        sender: tokio::sync::mpsc::UnboundedSender<SearchResult>,
+    ) -> Result<(), VaultError> {
         let start = std::time::SystemTime::now();
         debug!("> Start fetching files with Options:\n{}", options);
 
@@ -629,7 +674,7 @@ impl NoteVault {
                 &options.path,
                 options.recursive,
                 options.validation,
-                Some(options.sender.clone()),
+                Some(sender),
             )
             .await?;
 
@@ -1450,19 +1495,13 @@ impl VaultBrowseOptionsBuilder {
         Self::default().path(path.clone())
     }
 
-    /// Finalizes the options and creates the channel browse results are sent
-    /// through; returns the options and the receiving end.
-    pub fn build(self) -> (VaultBrowseOptions, Receiver<SearchResult>) {
-        let (sender, receiver) = std::sync::mpsc::channel();
-        (
-            VaultBrowseOptions {
-                path: self.path,
-                validation: self.validation,
-                recursive: self.recursive,
-                sender,
-            },
-            receiver,
-        )
+    /// Finalizes the options.
+    pub fn build(self) -> VaultBrowseOptions {
+        VaultBrowseOptions {
+            path: self.path,
+            validation: self.validation,
+            recursive: self.recursive,
+        }
     }
 
     /// Sets the path to browse from.
@@ -1495,14 +1534,14 @@ impl Default for VaultBrowseOptionsBuilder {
     }
 }
 
-#[derive(Debug, Clone)]
-/// Options to traverse the Notes
-/// You need a sync::mpsc::Sender to use a channel to receive the entries
+/// What a browse walks: the subtree root, how deep, and how strictly each
+/// note is re-validated against the index on the way. See
+/// [`NoteVault::browse_vault`] and [`NoteVault::browse_vault_stream`].
+#[derive(Debug, Clone, PartialEq)]
 pub struct VaultBrowseOptions {
     path: VaultPath,
     validation: NotesValidation,
     recursive: bool,
-    sender: Sender<SearchResult>,
 }
 
 impl Display for VaultBrowseOptions {
@@ -2701,8 +2740,7 @@ mod tests {
     fn test_vault_browse_options_builder_default() {
         let builder = VaultBrowseOptionsBuilder::default();
 
-        // We can't directly inspect private fields, but we can test the build result
-        let (options, _receiver) = builder.build();
+        let options = builder.build();
 
         assert_eq!(options.path, VaultPath::root());
         assert_eq!(options.validation, NotesValidation::None);
@@ -2714,7 +2752,7 @@ mod tests {
         let test_path = VaultPath::new("/test/path");
         let builder = VaultBrowseOptionsBuilder::new(&test_path);
 
-        let (options, _receiver) = builder.build();
+        let options = builder.build();
 
         assert_eq!(options.path, test_path);
         assert_eq!(options.validation, NotesValidation::None);
@@ -2728,7 +2766,7 @@ mod tests {
 
         let builder = VaultBrowseOptionsBuilder::new(&initial_path).path(new_path.clone());
 
-        let (options, _receiver) = builder.build();
+        let options = builder.build();
 
         assert_eq!(options.path, new_path);
     }
@@ -2738,11 +2776,11 @@ mod tests {
         let path = VaultPath::new("/test");
 
         let builder = VaultBrowseOptionsBuilder::new(&path).recursive(true);
-        let (options, _receiver) = builder.build();
+        let options = builder.build();
         assert!(options.recursive);
 
         let builder = VaultBrowseOptionsBuilder::new(&path).recursive(false);
-        let (options, _receiver) = builder.build();
+        let options = builder.build();
         assert!(!options.recursive);
     }
 
@@ -2756,7 +2794,7 @@ mod tests {
             NotesValidation::None,
         ] {
             let builder = VaultBrowseOptionsBuilder::new(&path).validation(v);
-            let (options, _receiver) = builder.build();
+            let options = builder.build();
             assert_eq!(options.validation, v);
         }
     }
@@ -2771,23 +2809,11 @@ mod tests {
             .recursive(true)
             .validation(NotesValidation::Full);
 
-        let (options, _receiver) = builder.build();
+        let options = builder.build();
 
         assert_eq!(options.path, new_path);
         assert!(options.recursive);
         assert_eq!(options.validation, NotesValidation::Full);
-    }
-
-    #[test]
-    fn test_vault_browse_options_build_returns_channel() {
-        let path = VaultPath::new("/test");
-        let builder = VaultBrowseOptionsBuilder::new(&path);
-
-        let (_options, receiver) = builder.build();
-
-        // Test that the receiver is valid by checking if it's ready to receive
-        // (it should be empty initially)
-        assert!(receiver.try_recv().is_err());
     }
 
     #[test]
@@ -2804,7 +2830,7 @@ mod tests {
             .recursive(true)
             .validation(NotesValidation::Full);
 
-        let (options, _receiver) = builder.build();
+        let options = builder.build();
         let display_string = format!("{}", options);
 
         assert!(display_string.contains("Path: `/test/path`"));

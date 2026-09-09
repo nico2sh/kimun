@@ -125,6 +125,14 @@ impl<R> Emit<R> {
         let _ = self.tx.send((self.generation, Loaded::Done));
         (self.redraw)();
     }
+
+    /// Test sink: an `Emit` whose every event lands on the returned receiver,
+    /// so a source's delivery sequence can be asserted without an engine.
+    #[cfg(test)]
+    pub(crate) fn capture() -> (Self, std::sync::mpsc::Receiver<(u64, Loaded<R>)>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        (Self::new(tx, 0, Arc::new(|| {})), rx)
+    }
 }
 
 /// One autocomplete candidate: the inserted/display text plus an optional
