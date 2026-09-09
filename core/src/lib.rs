@@ -44,13 +44,14 @@
 /// Error types returned across the crate's public API.
 pub mod error;
 pub(crate) mod index;
-pub(crate) mod link_rewrite;
 /// Vault-scoped filesystem layer: notes, attachments and backups inside one
 /// workspace, addressed by the [`VaultPath`] vault-internal path type. Paired
 /// with [`system`], which owns host-scoped paths and operations.
 pub mod nfs;
 /// Note model: parsing Markdown into details, chunks, links, and tags.
 pub mod note;
+pub(crate) mod note_locks;
+pub(crate) mod note_rename;
 pub(crate) mod sync;
 /// Host-scoped paths and file operations: the machine kimün runs on, its
 /// directories, and the file operations carrying OS-specific knowledge.
@@ -79,10 +80,11 @@ use chrono::{NaiveDate, Utc};
 use error::{FSError, VaultError};
 use futures_util::{stream, Stream, StreamExt, TryStreamExt};
 use index::NoteIndex;
-use link_rewrite::LinkRewrite;
 use log::{debug, warn};
 use nfs::{NoteEntryData, VaultPath};
 use note::{ContentChunk, NoteContentData, NoteDetails};
+use note_locks::NoteLocks;
+use note_rename::{rename_dest_err, NoteRename};
 use sync::VaultSync;
 use system::path_to_string;
 
@@ -211,12 +213,9 @@ pub struct NoteVault {
     /// Whether destructive writes back up the previous content first. Mirrors
     /// [`VaultConfig::backup`]; see its docs.
     backup: bool,
-    /// Per-note in-process write locks. Concurrent content mutations to the same
-    /// note (e.g. parallel MCP tool calls) serialize on these so a read-modify-
-    /// write like `replace` can't lose an update. Shared across clones via `Arc`.
-    /// Grows with the number of distinct notes mutated this process; entries are
-    /// tiny.
-    note_locks: Arc<std::sync::Mutex<HashMap<VaultPath, Arc<tokio::sync::Mutex<()>>>>>,
+    /// Per-note in-process write locks; see [`NoteLocks`]. Shared across
+    /// clones.
+    note_locks: NoteLocks,
     /// The vault id, read from disk once and then served from memory — every
     /// RAG query surface asks for it. Shared across clones; the id is stable
     /// for the life of the vault, so caching cannot go stale.
@@ -261,7 +260,7 @@ impl NoteVault {
             inbox_path: VaultPath::new(DEFAULT_INBOX_PATH),
             index,
             backup,
-            note_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            note_locks: NoteLocks::default(),
             vault_id: Arc::new(tokio::sync::OnceCell::new()),
         };
         Ok(note_vault)
@@ -964,38 +963,9 @@ impl NoteVault {
         Ok(())
     }
 
-    /// Acquires the per-note write lock, serializing content mutations to `path`
-    /// within this process so a read-modify-write (e.g. `replace`) can't be
-    /// interleaved by another in-process writer. Cross-process writers are not
-    /// covered — a local single-user vault rarely sees that, and backups make any
-    /// clobbered version recoverable.
+    /// Acquires the per-note write lock for `path`; see [`NoteLocks::lock_note`].
     async fn lock_note(&self, path: &VaultPath) -> tokio::sync::OwnedMutexGuard<()> {
-        let key = path.flatten();
-        let lock = {
-            let mut map = self.note_locks.lock().unwrap();
-            map.entry(key)
-                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-                .clone()
-        };
-        lock.lock_owned().await
-    }
-
-    /// Acquires the per-note locks for several notes at once, in a stable
-    /// (sorted, deduped) order so concurrent multi-note operations (e.g. two
-    /// renames with overlapping victims) can't deadlock. Hold the returned
-    /// guards for the duration of the operation.
-    async fn lock_notes<'a>(
-        &self,
-        paths: impl IntoIterator<Item = &'a VaultPath>,
-    ) -> Vec<tokio::sync::OwnedMutexGuard<()>> {
-        let mut keys: Vec<VaultPath> = paths.into_iter().map(|p| p.flatten()).collect();
-        keys.sort();
-        keys.dedup();
-        let mut guards = Vec::with_capacity(keys.len());
-        for key in &keys {
-            guards.push(self.lock_note(key).await);
-        }
-        guards
+        self.note_locks.lock_note(path).await
     }
 
     /// Appends `text` to the note at `path`, creating it (with `default`
@@ -1240,47 +1210,18 @@ impl NoteVault {
     /// Renames the note `from` to `to`, rewriting links to it (wikilinks,
     /// Markdown links, and the note's own self-links) in every backlinking note
     /// so they keep pointing at the renamed note. Fails if `to` already exists.
-    /// Source, destination, and all link victims are locked for the whole
-    /// operation so a concurrent in-process write can't interleave.
+    /// The whole operation — locks, filesystem move, link rewrites, index
+    /// commit — is `NoteRename`'s (`note_rename.rs`); see its docs for the stage order and
+    /// failure atomicity.
     pub async fn rename_note(&self, from: &VaultPath, to: &VaultPath) -> Result<(), VaultError> {
-        let from = from.flatten();
-        let to = to.flatten();
-
-        // Scout the linking notes, then lock the source, the destination, and
-        // every victim for the whole rename, so a concurrent in-process write
-        // to any of them can't interleave with the prepare → rename → commit
-        // below (lost update / stale backup). Locks are taken in a stable
-        // order to stay deadlock-free.
-        let scouted = LinkRewrite::new(&self.index, self.workspace_path(), self.backup)
-            .scout(&from, &to)
-            .await?;
-        let _guards = self
-            .lock_notes(
-                std::iter::once(&from)
-                    .chain(std::iter::once(&to))
-                    .chain(scouted.victims().iter()),
-            )
-            .await;
-
-        // Rewrite every victim's links in memory and back them up — no FS
-        // mutation yet, so a failure here aborts cleanly.
-        let prepared = scouted.prepare().await?;
-
-        // Rename the source note on disk. If this fails, victims remain
-        // untouched and the index is unchanged — clean abort.
-        nfs::rename_note(self.workspace_path(), &from, &to)
-            .await
-            .map_err(rename_dest_err)?;
-
-        // Write the rewritten victims and the renamed note's self-links.
-        let notes_with_text = prepared.commit().await?;
-
-        // One atomic index operation: rename the source rows + update each
-        // victim's chunks/links. If this fails, FS is consistent with the
-        // rename but the index is stale — next sync pass corrects.
-        self.index.rename_note(&from, &to, &notes_with_text).await?;
-
-        Ok(())
+        NoteRename::new(
+            &self.index,
+            self.workspace_path(),
+            self.backup,
+            &self.note_locks,
+        )
+        .rename(from, to)
+        .await
     }
 
     /// Renames the directory `from` to `to`, updating the index paths of all
@@ -1394,16 +1335,6 @@ fn attachment_extension(path: &VaultPath) -> Option<String> {
     std::path::Path::new(&name)
         .extension()
         .map(|e| e.to_string_lossy().to_lowercase())
-}
-
-fn rename_dest_err(e: FSError) -> VaultError {
-    match e {
-        FSError::AlreadyExists { path } => VaultError::FSError(FSError::InvalidPath {
-            path: path.to_string(),
-            message: "Destination path already exists".to_string(),
-        }),
-        other => VaultError::FSError(other),
-    }
 }
 
 /// A directory entry within the vault.
