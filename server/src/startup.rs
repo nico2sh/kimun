@@ -51,6 +51,18 @@ pub struct Parts {
 /// unconfigured, so the web UI stays reachable to show the error and fix the
 /// config.
 pub async fn build(config: &RagConfig) -> Parts {
+    build_with(config, build_embedder).await
+}
+
+/// [`build`] with the embedder factory injected. The embedder is the one part
+/// of the pipeline that must reach the network (or download a model) to come
+/// up; tests pass a factory yielding a fake and drive everything else — store,
+/// key gate, reranker, fingerprint, the `Parts` wrapping — for real.
+pub(crate) async fn build_with(
+    config: &RagConfig,
+    make_embedder: impl AsyncFnOnce(&EmbedderConfig) -> anyhow::Result<Arc<dyn Embedder>>,
+) -> Parts {
+    tracing::info!("Initializing RAG system...");
     // No embedder → unconfigured: no vector store either (its dimension comes
     // from the embedder), so there is nothing to build.
     let Some(embedder_cfg) = &config.embedder else {
@@ -67,9 +79,8 @@ pub async fn build(config: &RagConfig) -> Parts {
         };
     };
 
-    tracing::info!("Initializing RAG system...");
     let built = async {
-        let embedder = build_embedder(embedder_cfg).await?;
+        let embedder = make_embedder(embedder_cfg).await?;
         assemble(config, embedder_cfg, embedder).await
     }
     .await;
@@ -99,9 +110,8 @@ pub async fn build(config: &RagConfig) -> Parts {
     }
 }
 
-/// The embedder, shared by every collection on this server. The one part of
-/// the pipeline that must reach the network (or download a model) to come
-/// up, so it is built apart from [`assemble`], which takes it ready-made.
+/// The embedder, shared by every collection on this server — the factory
+/// [`build`] hands to [`build_with`].
 async fn build_embedder(cfg: &EmbedderConfig) -> anyhow::Result<Arc<dyn Embedder>> {
     let embedder: Arc<dyn Embedder> = match cfg {
         EmbedderConfig::FastEmbed { model } => {
@@ -165,7 +175,7 @@ async fn build_embedder(cfg: &EmbedderConfig) -> anyhow::Result<Arc<dyn Embedder
 /// check. Returns the pipeline and why the reranker failed to initialize, if
 /// it did. `embedder_cfg` is the `[embedder]` section `embedder` was built
 /// from; it names the fingerprint.
-pub(crate) async fn assemble(
+async fn assemble(
     config: &RagConfig,
     embedder_cfg: &EmbedderConfig,
     embedder: Arc<dyn Embedder>,
@@ -289,6 +299,15 @@ fn resolve_api_key(
 /// probes and the client's capability probe), the `/api` data routes behind
 /// the bearer token when one is configured, and the web UI.
 pub fn router(state: Arc<AppState>) -> Router {
+    if state.config.auth.token.is_some() {
+        tracing::info!("Bearer-token auth enabled on /api routes");
+    } else if !state.config.server.binds_loopback() {
+        tracing::warn!(
+            "No [auth] token set and bound to {} — the API is OPEN to the network",
+            state.config.server.host
+        );
+    }
+
     let api = Router::new()
         .route("/api/index/docs", post(index_docs_handler))
         .route("/api/index/delete", post(index_delete_handler))
@@ -390,53 +409,56 @@ mod tests {
 
     #[tokio::test]
     async fn an_embedder_that_cannot_come_up_degrades_instead_of_aborting() {
-        // An OpenAI-compatible embedder at an unparseable URL fails its
-        // startup probe before touching the network.
-        let parts = build(&config(
-            "[server]\n[vector_db]\ntype = \"sqlite\"\n[embedder]\ntype = \"openai\"\nurl = \"not a url\"\nmodel = \"m\"\n[reranker]\n",
-        ))
+        let parts = build_with(&config(SEMANTIC_ONLY), async |_| {
+            anyhow::bail!("model download failed: connection refused")
+        })
         .await;
         assert!(parts.rag.is_none());
-        assert!(
-            parts.startup_error.is_some(),
-            "degraded must carry the cause"
+        assert_eq!(
+            parts.startup_error.as_deref(),
+            Some("model download failed: connection refused"),
+            "degraded carries the cause verbatim"
         );
         assert!(parts.reranker_error.is_none());
     }
 
-    /// `assemble` with the fake embedder and an embedded store in `dir`.
-    async fn assembled(
-        toml: &str,
-        dir: &std::path::Path,
-    ) -> anyhow::Result<(KimunRag, Option<String>)> {
+    /// `build` with the fake embedder and an embedded store in `dir`.
+    async fn built(toml: &str, dir: &std::path::Path) -> Parts {
         let mut cfg = config(toml);
         cfg.vector_db = VectorDbConfig::Sqlite {
             path: dir.join("vectors"),
         };
-        let embedder_cfg = cfg.embedder.clone().expect("test config names an embedder");
-        assemble(&cfg, &embedder_cfg, Arc::new(FakeEmbedder)).await
+        build_with(&cfg, async |_| {
+            Ok(Arc::new(FakeEmbedder) as Arc<dyn Embedder>)
+        })
+        .await
     }
 
     #[tokio::test]
     async fn embedder_without_llm_is_semantic_only() {
         let dir = tempfile::tempdir().unwrap();
-        let (rag, reranker_error) = assembled(SEMANTIC_ONLY, dir.path()).await.unwrap();
+        let parts = built(SEMANTIC_ONLY, dir.path()).await;
+        let rag = parts.rag.expect("configured");
         assert!(!rag.can_answer());
         assert!(!rag.has_reranker(), "reranker is off by config");
-        assert!(reranker_error.is_none());
+        assert!(parts.startup_error.is_none());
+        assert!(parts.reranker_error.is_none());
     }
 
     #[tokio::test]
     async fn embedder_and_keyed_llm_is_full() {
         let dir = tempfile::tempdir().unwrap();
-        let (rag, _) = assembled(FULL, dir.path()).await.unwrap();
-        assert!(rag.can_answer());
+        let parts = built(FULL, dir.path()).await;
+        assert!(parts.rag.expect("configured").can_answer());
     }
 
     #[tokio::test]
     async fn the_fingerprint_is_recorded_at_boot() {
         let dir = tempfile::tempdir().unwrap();
-        assembled(SEMANTIC_ONLY, dir.path()).await.unwrap();
+        built(SEMANTIC_ONLY, dir.path())
+            .await
+            .rag
+            .expect("configured");
         let store = VecSqlite::new(dir.path().join("vectors"), FakeEmbedder.dimension())
             .await
             .unwrap();
@@ -450,27 +472,38 @@ mod tests {
     #[tokio::test]
     async fn a_reranker_that_cannot_come_up_is_non_fatal() {
         let dir = tempfile::tempdir().unwrap();
-        let (rag, reranker_error) = assembled(
+        // An HTTP reranker at an unparseable URL: its startup probe fails on
+        // the URL itself, before any network — asserted below so a future
+        // URL normalization can't silently turn this into a real request.
+        let parts = built(
             "[server]\n[vector_db]\ntype = \"sqlite\"\n[embedder]\ntype = \"fastembed\"\n[reranker]\nenabled = true\ntype = \"http\"\nurl = \"not a url\"\n",
             dir.path(),
         )
-        .await
-        .expect("the pipeline still builds");
+        .await;
+        let rag = parts.rag.expect("the pipeline still builds");
         assert!(!rag.has_reranker());
+        assert!(parts.startup_error.is_none());
+        let why = parts
+            .reranker_error
+            .expect("/health must be able to say why reranker is false");
         assert!(
-            reranker_error.is_some(),
-            "/health must be able to say why reranker is false"
+            why.contains("relative URL"),
+            "URL parse error, not a request: {why}"
         );
     }
 
     #[tokio::test]
-    async fn an_unwritable_store_path_fails_the_build() {
+    async fn an_unwritable_store_path_degrades_the_server() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("a-file");
         std::fs::write(&file, b"").unwrap();
         // A directory cannot be created under a regular file.
-        let err = assembled(SEMANTIC_ONLY, &file).await.err();
-        assert!(err.is_some(), "store creation failure must surface");
+        let parts = built(SEMANTIC_ONLY, &file).await;
+        assert!(parts.rag.is_none());
+        assert!(
+            parts.startup_error.is_some(),
+            "store creation failure must surface"
+        );
     }
 
     #[test]
@@ -626,11 +659,13 @@ mod tests {
         assert_eq!(status, StatusCode::UNAUTHORIZED, "no token");
         let (status, _) = get(router(state.clone()), &job, Some("nope")).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "wrong token");
-        let (status, _) = get(router(state.clone()), &job, Some("secret")).await;
-        assert_eq!(
-            status,
-            StatusCode::NOT_FOUND,
-            "right token reaches the handler (unknown job)"
+        let (status, body) = get(router(state.clone()), &job, Some("secret")).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(
+            body["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("not found")),
+            "right token reaches the handler (unknown job), not the route fallback: {body}"
         );
 
         let (status, body) = get(router(state.clone()), "/health", None).await;
@@ -645,7 +680,13 @@ mod tests {
     async fn without_a_token_the_api_is_open() {
         let state = Arc::new(AppState::new(None, config(UNCONFIGURED)));
         let job = format!("/api/job/{}", uuid::Uuid::new_v4());
-        let (status, _) = get(router(state), &job, None).await;
+        let (status, body) = get(router(state), &job, None).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(
+            body["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("not found")),
+            "the handler answered, not the route fallback: {body}"
+        );
     }
 }

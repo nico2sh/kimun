@@ -110,15 +110,6 @@ async fn run_server(cli: &Cli, first_run: bool, log_buffer: LogBuffer) -> anyhow
     );
     startup::spawn_job_sweep(&state);
 
-    if state.config.auth.token.is_some() {
-        tracing::info!("Bearer-token auth enabled on /api routes");
-    } else if config.server.host != "127.0.0.1" && config.server.host != "localhost" {
-        tracing::warn!(
-            "No [auth] token set and bound to {} — the API is OPEN to the network",
-            config.server.host
-        );
-    }
-
     let app = startup::router(state);
 
     // Start server
