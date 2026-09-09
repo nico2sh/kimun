@@ -57,6 +57,15 @@ impl AppState {
         }
     }
 
+    /// The state for a pipeline built from config: what
+    /// [`startup::build`](crate::startup::build) yielded, and the config it
+    /// was built from.
+    pub fn from_parts(parts: crate::startup::Parts, config: RagConfig) -> Self {
+        Self::new(parts.rag, config)
+            .with_startup_error(parts.startup_error)
+            .with_reranker_error(parts.reranker_error)
+    }
+
     /// The pipeline, or the typed unconfigured rejection — the one gate every
     /// data handler runs before touching a request.
     pub fn rag(&self) -> Result<&Arc<KimunRag>, RagError> {
