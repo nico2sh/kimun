@@ -2,8 +2,10 @@ use crate::system::SystemPath;
 use std::{
     collections::HashMap,
     path::Path,
-    sync::{mpsc::Sender, Arc, Mutex},
+    sync::{Arc, Mutex},
 };
+
+use tokio::sync::mpsc::UnboundedSender as Sender;
 
 use ignore::{ParallelVisitor, ParallelVisitorBuilder};
 use log::{error, warn};
@@ -237,8 +239,8 @@ impl<'s> ParallelVisitorBuilder<'s> for NoteListVisitorBuilder {
 mod tests {
     use super::*;
     use crate::nfs::{create_directory, save_note};
-    use std::sync::mpsc;
     use tempfile::TempDir;
+    use tokio::sync::mpsc;
 
     #[tokio::test]
     async fn test_note_list_visitor_builder_new() {
@@ -246,7 +248,7 @@ mod tests {
         let workspace_path = temp_dir.path();
         let validation = NotesValidation::None;
         let cached_notes = vec![];
-        let (sender, _receiver) = mpsc::channel();
+        let (sender, _receiver) = mpsc::unbounded_channel();
 
         let builder = NoteListVisitorBuilder::new(
             &crate::system::sys(workspace_path),
@@ -375,7 +377,7 @@ mod tests {
             .unwrap();
 
         let cached_notes = vec![];
-        let (sender, _receiver) = mpsc::channel();
+        let (sender, _receiver) = mpsc::unbounded_channel();
 
         let mut builder = NoteListVisitorBuilder::new(
             &crate::system::sys(workspace_path),
@@ -436,7 +438,7 @@ mod tests {
         let workspace_path = temp_dir.path();
         let validation = NotesValidation::None;
         let cached_notes = vec![];
-        let (sender, receiver) = mpsc::channel();
+        let (sender, mut receiver) = mpsc::unbounded_channel();
 
         let _builder = NoteListVisitorBuilder::new(
             &crate::system::sys(workspace_path),
@@ -450,7 +452,7 @@ mod tests {
         let test_result = SearchResult::directory(&test_path);
 
         sender.send(test_result.clone()).unwrap();
-        let received = receiver.recv().unwrap();
+        let received = receiver.try_recv().unwrap();
 
         assert_eq!(received.path, test_result.path);
     }
@@ -492,7 +494,7 @@ mod tests {
         }
 
         // Scan with the visitor using a recursive walker (no cached notes)
-        let (sender, receiver) = mpsc::channel();
+        let (sender, mut receiver) = mpsc::unbounded_channel();
         let mut builder = NoteListVisitorBuilder::new(
             &crate::system::sys(workspace_path),
             NotesValidation::None,

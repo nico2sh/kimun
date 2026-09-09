@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use crate::settings::themes::Theme;
 use async_trait::async_trait;
 use chrono::NaiveDate;
+use futures::StreamExt;
 use kimun_core::nfs::VaultPath;
 use kimun_core::{NoteVault, NotesValidation, ResultType, VaultBrowseOptionsBuilder};
 use ratatui::Frame;
@@ -23,9 +24,11 @@ use crate::settings::AppSettings;
 use crate::settings::icons::Icons;
 
 /// Streamed `RowSource` over one directory's listing. Pushes an `Up` row first
-/// (when not at root) so it is always present, then forwards each
-/// `browse_vault` result. Loads once; a local `Filter::Fuzzy` narrows the set
-/// and `leading_row` provides the "Create: …" affordance.
+/// (when not at root) so it is always present, then forwards each entry the
+/// moment `browse_vault_stream` yields it — rows show up while a slow drive
+/// is still being read — and, once the walk is done, re-delivers the whole
+/// set in sort order. Loads once; a local `Filter::Fuzzy` narrows the set and
+/// `leading_row` provides the "Create: …" affordance.
 struct DirListingSource {
     vault: Arc<NoteVault>,
     dir: VaultPath,
@@ -37,77 +40,85 @@ struct DirListingSource {
     group_dirs: Arc<Mutex<bool>>,
 }
 
+impl DirListingSource {
+    /// Orders `entries` by `(field, order)`, directories first when
+    /// `group_dirs` is set.
+    fn sorted(
+        mut entries: Vec<FileListEntry>,
+        field: SortField,
+        order: SortOrder,
+        group_dirs: bool,
+    ) -> Vec<FileListEntry> {
+        let cmp = |a: &FileListEntry, b: &FileListEntry| {
+            let ka = a.sort_key(field);
+            let kb = b.sort_key(field);
+            match order {
+                SortOrder::Ascending => ka.cmp(&kb),
+                SortOrder::Descending => kb.cmp(&ka),
+            }
+        };
+        if group_dirs {
+            let (mut dirs, mut rest): (Vec<_>, Vec<_>) = entries
+                .into_iter()
+                .partition(|e| matches!(e, FileListEntry::Directory { .. }));
+            dirs.sort_by(&cmp);
+            rest.sort_by(&cmp);
+            dirs.extend(rest);
+            dirs
+        } else {
+            entries.sort_by(&cmp);
+            entries
+        }
+    }
+}
+
 #[async_trait]
 impl RowSource<FileListEntry> for DirListingSource {
     async fn load(&self, _query: &str, emit: Emit<FileListEntry>) {
-        // Up row first (if not root) — pushed so it's always present.
-        if !self.dir.is_root_or_empty() {
-            emit.push(FileListEntry::Up {
-                parent: self.dir.get_parent_path().0,
-            });
+        // Up row first (if not root) — pushed so it's always present, and kept
+        // out of the sorted set so it stays on top of the final delivery.
+        let up = (!self.dir.is_root_or_empty()).then(|| FileListEntry::Up {
+            parent: self.dir.get_parent_path().0,
+        });
+        if let Some(up) = &up {
+            emit.push(up.clone());
         }
 
-        let (options, rx) = VaultBrowseOptionsBuilder::new(&self.dir)
+        let options = VaultBrowseOptionsBuilder::new(&self.dir)
             .recursive(false)
             .validation(NotesValidation::Full)
             .build();
 
-        let vault = self.vault.clone();
-        // browse_vault fills `rx`; spawn it so we can drain concurrently.
-        let browse = tokio::spawn(async move { vault.browse_vault(options).await });
-
-        // `rx` is a std mpsc Receiver; `recv` blocks, so drain it on a blocking
-        // thread, sort the gathered entries, then push them in display order.
-        let vault = self.vault.clone();
-        let dir = self.dir.clone();
-        // Read the active sort out of the lock, then drop the guard before the
-        // await on the blocking task.
-        let (field, order) = *self.sort.lock().unwrap();
-        let group_dirs = *self.group_dirs.lock().unwrap();
-        let drain = tokio::task::spawn_blocking(move || {
-            let mut entries: Vec<FileListEntry> = Vec::new();
-            while let Ok(result) = rx.recv() {
-                // `is_like` ignores relative/absolute form: skip the
-                // current dir's own "." entry whichever form each side carries.
-                if matches!(result.rtype, ResultType::Directory) && result.path.is_like(&dir) {
-                    continue;
-                }
-                let journal_date = vault.journal_date(&result.path).map(format_journal_date);
-                entries.push(FileListEntry::from_result(result, journal_date));
-            }
-            let cmp = |a: &FileListEntry, b: &FileListEntry| {
-                let ka = a.sort_key(field);
-                let kb = b.sort_key(field);
-                match order {
-                    SortOrder::Ascending => ka.cmp(&kb),
-                    SortOrder::Descending => kb.cmp(&ka),
+        let mut entries: Vec<FileListEntry> = Vec::new();
+        let mut stream = std::pin::pin!(self.vault.browse_vault_stream(options));
+        while let Some(item) = stream.next().await {
+            let result = match item {
+                Ok(result) => result,
+                Err(e) => {
+                    tracing::warn!("sidebar directory listing failed: {e}");
+                    break;
                 }
             };
-            if group_dirs {
-                let (mut dirs, mut rest): (Vec<_>, Vec<_>) = entries
-                    .into_iter()
-                    .partition(|e| matches!(e, FileListEntry::Directory { .. }));
-                dirs.sort_by(&cmp);
-                rest.sort_by(&cmp);
-                dirs.extend(rest);
-                dirs
-            } else {
-                entries.sort_by(&cmp);
-                entries
+            // `is_like` ignores relative/absolute form: skip the current dir's
+            // own "." entry whichever form each side carries.
+            if matches!(result.rtype, ResultType::Directory) && result.path.is_like(&self.dir) {
+                continue;
             }
-        });
+            let journal_date = self
+                .vault
+                .journal_date(&result.path)
+                .map(format_journal_date);
+            let entry = FileListEntry::from_result(result, journal_date);
+            emit.push(entry.clone());
+            entries.push(entry);
+        }
 
-        match drain.await {
-            Ok(entries) => {
-                for entry in entries {
-                    emit.push(entry);
-                }
-            }
-            Err(e) => tracing::warn!("sidebar directory listing drain failed: {e}"),
-        }
-        if let Err(e) = browse.await {
-            tracing::warn!("sidebar browse_vault task failed: {e}");
-        }
+        // Copy the active sort out of its lock; no await between here and the
+        // delivery below.
+        let (field, order) = *self.sort.lock().unwrap();
+        let group_dirs = *self.group_dirs.lock().unwrap();
+        let sorted = Self::sorted(entries, field, order, group_dirs);
+        emit.replace(up.into_iter().chain(sorted).collect());
         emit.done();
     }
 
@@ -754,8 +765,8 @@ mod tests {
     /// streamed rows have arrived.
     async fn navigate_to_root(sidebar: &mut SidebarComponent, tx: &AppTx) {
         sidebar.navigate(VaultPath::root(), tx);
-        // The streamed source spawns `browse_vault` + a blocking drain; give the
-        // background work real time to land, polling the engine between waits.
+        // The streamed source awaits `browse_vault_stream`; give the background
+        // work real time to land, polling the engine between waits.
         for _ in 0..50 {
             if let Some(list) = &mut sidebar.list {
                 list.poll();
@@ -926,6 +937,58 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// The directory listing streams each row the moment the walk yields it,
+    /// then re-delivers the whole set sorted once the walk is done — partial
+    /// results while a slow drive is read, final order on completion.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn listing_streams_rows_then_replaces_with_sorted_set() {
+        use crate::components::search_list::Loaded;
+
+        let sidebar = sidebar_with_notes("sidebar-stream", &["charlie", "alpha", "bravo"]).await;
+        let source = DirListingSource {
+            vault: sidebar.vault.clone(),
+            dir: VaultPath::root(),
+            sort: sidebar.sort.clone(),
+            group_dirs: sidebar.group_dirs.clone(),
+        };
+        let (emit, rx) = Emit::capture();
+
+        source.load("", emit).await;
+
+        let events: Vec<Loaded<FileListEntry>> = rx.try_iter().map(|(_, ev)| ev).collect();
+        let pushed_notes = events
+            .iter()
+            .filter(|e| matches!(e, Loaded::Push(FileListEntry::Note { .. })))
+            .count();
+        assert_eq!(pushed_notes, 3, "each note is streamed as its own row");
+        let n = events.len();
+        assert!(
+            n >= 2,
+            "expected a sorted replace then done, got {n} events"
+        );
+        let Loaded::Replace(rows) = &events[n - 2] else {
+            panic!("second-to-last event must be the sorted replace");
+        };
+        let names: Vec<String> = rows
+            .iter()
+            .filter_map(|e| match e {
+                FileListEntry::Note { filename, .. } => Some(filename.clone()),
+                _ => None,
+            })
+            .collect();
+        let mut expected = names.clone();
+        expected.sort();
+        assert_eq!(names, expected, "final set is sorted by name ascending");
+        assert!(
+            names.first().is_some_and(|n| n.starts_with("alpha")),
+            "sorted set starts with alpha: {names:?}"
+        );
+        assert!(
+            matches!(events[n - 1], Loaded::Done),
+            "done closes the load"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
