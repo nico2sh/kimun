@@ -10,8 +10,8 @@ mod seams;
 
 pub use resolving::{ResolvingRowSource, Unresolvable};
 pub use seams::{
-    Emit, Filter, Loaded, RowSource, SearchRow, StaticRowSource, SuggestionItem, SuggestionSource,
-    VaultSuggestions, YankTarget,
+    Emit, Filter, Loaded, OrderFn, RowSource, SearchRow, StaticRowSource, SuggestionItem,
+    SuggestionSource, VaultSuggestions, YankTarget,
 };
 
 use crate::components::autocomplete::{
@@ -32,21 +32,24 @@ use ratatui::{
 use seams::Loaded as LoadedInner;
 use std::sync::Arc;
 
-fn fuzzy_indices<R: SearchRow>(rows: &[R], query: &str) -> Vec<usize> {
+/// Fuzzy-ranks the rows named by `base` (indices into `rows`, in the order
+/// ties should keep) against `query`; absent = no match.
+fn fuzzy_indices<R: SearchRow>(rows: &[R], base: &[usize], query: &str) -> Vec<usize> {
     use nucleo::pattern::{CaseMatching, Normalization, Pattern};
     use nucleo::{Matcher, Utf32Str};
     let mut matcher = Matcher::new(nucleo::Config::DEFAULT);
     let pat = Pattern::parse(query, CaseMatching::Ignore, Normalization::Smart);
-    let mut scored: Vec<(usize, u32)> = rows
+    let mut scored: Vec<(usize, u32)> = base
         .iter()
-        .enumerate()
-        .filter_map(|(i, r)| {
-            let hay = r.match_text()?;
+        .filter_map(|&i| {
+            let hay = rows[i].match_text()?;
             let mut buf = Vec::new();
             let h = Utf32Str::new(hay, &mut buf);
             pat.score(h, &mut matcher).map(|s| (i, s))
         })
         .collect();
+    // Stable: equal scores keep `base` order, so an `order_by` still decides
+    // among ties.
     scored.sort_by_key(|&(_, s)| std::cmp::Reverse(s));
     scored.into_iter().map(|(i, _)| i).collect()
 }
@@ -103,6 +106,9 @@ pub struct SearchList<R: SearchRow> {
     /// to keep the selection visible.
     offset: usize,
     filter: Filter<R>,
+    /// Optional total order applied before the local filter; see
+    /// [`SearchListBuilder::order_by`].
+    order: Option<OrderFn<R>>,
     query: String,
     loader: LoadEngine<R>,
     input: SingleLineInput,
@@ -182,6 +188,7 @@ pub struct SearchListBuilder<R: SearchRow> {
     redraw: Arc<dyn Fn() + Send + Sync>,
     initial_query: String,
     filter: Filter<R>,
+    order: Option<OrderFn<R>>,
     autocomplete: Option<(Arc<dyn SuggestionSource>, AutocompleteMode)>,
     intercept: Vec<KeyCombo>,
     yank_combos: Vec<KeyCombo>,
@@ -202,6 +209,7 @@ impl<R: SearchRow> SearchList<R> {
             redraw,
             initial_query: String::new(),
             filter: Filter::SourceOrder,
+            order: None,
             autocomplete: None,
             intercept: Vec::new(),
             yank_combos: vec![crate::keys::default_yank_combo()],
@@ -266,6 +274,7 @@ impl<R: SearchRow> SearchList<R> {
             selected: None,
             offset: 0,
             filter: b.filter,
+            order: b.order,
             query: b.initial_query,
             loader,
             input,
@@ -306,6 +315,17 @@ impl<R: SearchRow> SearchList<R> {
                 self.offset = 0;
                 self.applied_generation = current_gen;
             }
+            // Pushes only append, so row indices stay valid across the drain
+            // and the selection can follow its row wherever `order` puts it.
+            // A `Replace` swaps the whole set; indices mean nothing after it.
+            let keep = if drained
+                .iter()
+                .any(|ev| matches!(ev, LoadedInner::Replace(_)))
+            {
+                None
+            } else {
+                self.selected_row_index()
+            };
             for ev in drained {
                 match ev {
                     LoadedInner::Replace(rows) => {
@@ -318,6 +338,7 @@ impl<R: SearchRow> SearchList<R> {
                 }
             }
             self.recompute_and_seed();
+            self.reselect(keep);
         }
         if let Some(ac) = &mut self.autocomplete {
             ac.poll_results();
@@ -463,15 +484,44 @@ impl<R: SearchRow> SearchList<R> {
         self.loader.start(self.source.clone(), self.query.clone());
     }
 
+    /// Replace (or clear) the row order and re-sort the rows already loaded.
+    /// A recompute, not a reload: the source is not consulted. The selection
+    /// stays on the row it was on.
+    pub fn set_order(&mut self, cmp: Option<OrderFn<R>>) {
+        let keep = self.selected_row_index();
+        self.order = cmp;
+        self.recompute_display();
+        self.reselect(keep);
+    }
+
+    /// Index into `rows` of the selected row, if the selection is on a real
+    /// (non-leading) row.
+    fn selected_row_index(&self) -> Option<usize> {
+        let pos = self.selected?.checked_sub(self.leading_offset())?;
+        self.display.get(pos).copied()
+    }
+
+    /// Move the selection back onto the row at `rows[row]` after the display
+    /// was recomputed, if that row is still visible; otherwise leave it where
+    /// the recompute clamped it.
+    fn reselect(&mut self, row: Option<usize>) {
+        if let Some(row) = row
+            && let Some(pos) = self.display.iter().position(|&i| i == row)
+        {
+            self.selected = Some(pos + self.leading_offset());
+        }
+    }
+
     /// Mutate rows in place. `mutate` is called for each row and returns `true`
     /// for each row it changed; if any did, the display order is recomputed
     /// (re-filter, no re-sort) so an active filter stays correct. Returns
     /// whether anything changed.
     ///
     /// This is the one seam that touches rows outside the [`RowSource`]; every
-    /// other change rebuilds from the source. Structural changes (add/remove/
-    /// reorder) must still reload. `SearchList` stays ignorant of the row type;
-    /// callers layer the path-matched operations on top.
+    /// other change rebuilds from the source. Structural changes (add/remove)
+    /// must still reload; a reorder is [`set_order`](Self::set_order).
+    /// `SearchList` stays ignorant of the row type; callers layer the
+    /// path-matched operations on top.
     pub fn update_rows(&mut self, mut mutate: impl FnMut(&mut R) -> bool) -> bool {
         let mut changed = false;
         for row in &mut self.rows {
@@ -918,11 +968,17 @@ impl<R: SearchRow> SearchList<R> {
         // The leading row is query-fresh: rebuilt on every poll AND on every
         // local-filter `set_query`, so it never goes stale.
         self.leading = self.source.leading_row(q);
+        // Source order, or `order_by` order when one is set.
+        let mut base: Vec<usize> = (0..self.rows.len()).collect();
+        if let Some(cmp) = &self.order {
+            let rows = &self.rows;
+            base.sort_by(|&a, &b| cmp(&rows[a], &rows[b]));
+        }
         let mut idx: Vec<usize> = match &self.filter {
-            Filter::SourceOrder => (0..self.rows.len()).collect(),
-            Filter::Fuzzy if q.is_empty() => (0..self.rows.len()).collect(),
-            Filter::Fuzzy => fuzzy_indices(&self.rows, q),
-            Filter::Rank(_) if q.is_empty() => (0..self.rows.len()).collect(),
+            Filter::SourceOrder => base,
+            Filter::Fuzzy if q.is_empty() => base,
+            Filter::Fuzzy => fuzzy_indices(&self.rows, &base, q),
+            Filter::Rank(_) if q.is_empty() => base,
             Filter::Rank(f) => {
                 let f = f.clone();
                 f(&self.rows, q)
@@ -965,6 +1021,14 @@ impl<R: SearchRow> SearchListBuilder<R> {
     }
     pub fn filter(mut self, f: Filter<R>) -> Self {
         self.filter = f;
+        self
+    }
+    /// Keep the rows in this order regardless of arrival order. Composes with
+    /// any [`Filter`]: with an empty query the order is the display order;
+    /// under `Fuzzy` it decides ties between equally-scored matches. Change it
+    /// later with [`SearchList::set_order`].
+    pub fn order_by(mut self, cmp: OrderFn<R>) -> Self {
+        self.order = Some(cmp);
         self
     }
     pub fn autocomplete(
@@ -2157,5 +2221,107 @@ mod tests {
             list.handle_key(&key(KeyCode::Enter)),
             KeyReaction::Intercepted(combo)
         );
+    }
+}
+
+#[cfg(test)]
+mod order_tests {
+    use super::adapters::{HeldEmitSource, ScriptedStreamSource, TestRow};
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    fn noop_redraw() -> Arc<dyn Fn() + Send + Sync> {
+        Arc::new(|| {})
+    }
+
+    fn by_name_asc() -> OrderFn<TestRow> {
+        Arc::new(|a: &TestRow, b: &TestRow| a.name.cmp(&b.name))
+    }
+
+    fn by_name_desc() -> OrderFn<TestRow> {
+        Arc::new(|a: &TestRow, b: &TestRow| b.name.cmp(&a.name))
+    }
+
+    fn names(list: &SearchList<TestRow>) -> Vec<String> {
+        list.visible_rows().iter().map(|r| r.name.clone()).collect()
+    }
+
+    /// Rows pushed out of order land in `order_by` order, so a streamed
+    /// listing is sorted at every frame, not only once the stream ends.
+    #[tokio::test]
+    async fn order_by_sorts_pushed_rows_as_they_arrive() {
+        let source = ScriptedStreamSource {
+            batches: vec![
+                vec![TestRow::new("charlie")],
+                vec![TestRow::new("alpha")],
+                vec![TestRow::new("bravo")],
+            ],
+        };
+        let mut list = SearchList::builder(source, noop_redraw())
+            .filter(Filter::Fuzzy)
+            .order_by(by_name_asc())
+            .build();
+        list.poll_until_idle().await;
+        assert_eq!(names(&list), ["alpha", "bravo", "charlie"]);
+    }
+
+    /// Changing the order re-sorts the rows already in memory; no reload, no
+    /// second trip to the source.
+    #[tokio::test]
+    async fn set_order_reorders_in_place_without_reload() {
+        let source = ScriptedStreamSource {
+            batches: vec![vec![
+                TestRow::new("bravo"),
+                TestRow::new("alpha"),
+                TestRow::new("charlie"),
+            ]],
+        };
+        let mut list = SearchList::builder(source, noop_redraw())
+            .order_by(by_name_asc())
+            .build();
+        list.poll_until_idle().await;
+        assert_eq!(names(&list), ["alpha", "bravo", "charlie"]);
+
+        list.set_order(Some(by_name_desc()));
+
+        assert!(!list.is_loading(), "reordering must not start a load");
+        assert_eq!(names(&list), ["charlie", "bravo", "alpha"]);
+    }
+
+    /// A row the user selected while rows were still streaming stays selected
+    /// when a later row sorts in above it.
+    #[tokio::test]
+    async fn selection_follows_its_row_while_rows_stream_in() {
+        let slot = Arc::new(Mutex::new(None));
+        let source = HeldEmitSource { slot: slot.clone() };
+        let mut list = SearchList::builder(source, noop_redraw())
+            .order_by(by_name_asc())
+            .build();
+        let emit = loop {
+            if let Some(e) = slot.lock().unwrap().clone() {
+                break e;
+            }
+            tokio::task::yield_now().await;
+        };
+
+        emit.push(TestRow::new("bravo"));
+        emit.push(TestRow::new("charlie"));
+        list.poll();
+        list.select_next();
+        assert_eq!(
+            list.selected_row().map(|r| r.name.as_str()),
+            Some("charlie")
+        );
+
+        emit.push(TestRow::new("alpha"));
+        list.poll();
+
+        assert_eq!(names(&list), ["alpha", "bravo", "charlie"]);
+        assert_eq!(
+            list.selected_row().map(|r| r.name.as_str()),
+            Some("charlie"),
+            "selection tracks the row, not its old position"
+        );
+        emit.done();
     }
 }

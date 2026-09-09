@@ -183,7 +183,7 @@ _Avoid_: title (the Query panel already has a query-reflective title; the breadc
 ### TUI search surfaces
 
 **SearchList**:
-The one module behind every query-input-over-an-async-loaded-list surface in the TUI — the **note browser**, the **Query panel**, the **Saved Searches modal**, the directory sidebar, and (via **QueryListPanel**) the list-shaped drawer views. It owns the query input, keyboard navigation, the async-load lifecycle, the autocomplete host, selection, and the **list focus** below; it emits nothing on its own — callers read the selected row and decide the action. Rich presentation (the Query panel's expand/preview) composes on top rather than living inside it.
+The one module behind every query-input-over-an-async-loaded-list surface in the TUI — the **note browser**, the **Query panel**, the **Saved Searches modal**, the directory sidebar, and (via **QueryListPanel**) the list-shaped drawer views. It owns the query input, keyboard navigation, the async-load lifecycle, the autocomplete host, selection, the row order when a surface hands it one (`order_by`, so streamed rows land sorted and a sort change is a recompute, not a reload), and the **list focus** below; it emits nothing on its own — callers read the selected row and decide the action. Rich presentation (the Query panel's expand/preview) composes on top rather than living inside it.
 _Avoid_: list widget, search box (each names only a part)
 
 **List focus**:
