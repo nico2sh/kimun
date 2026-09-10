@@ -494,10 +494,15 @@ impl<R: SearchRow> SearchList<R> {
     }
 
     /// Replace (or clear) the row order and re-sort the rows already loaded.
-    /// A recompute, not a reload: the source is not consulted. The selection
-    /// stays on the row it was on.
+    /// A recompute, not a reload: the source is not consulted. A selection the
+    /// user chose stays on the row it was on; a seeded one keeps the top slot
+    /// of the NEW order — and stays a seed, so a still-streaming listing goes
+    /// on re-seeding it (the `selection_pinned` split, as in `poll`).
     pub fn set_order(&mut self, cmp: Option<OrderFn<R>>) {
-        let keep = self.selected_row_index();
+        let keep = self
+            .selection_pinned
+            .then(|| self.selected_row_index())
+            .flatten();
         self.order = cmp;
         self.recompute_display();
         self.reselect(keep);
@@ -552,6 +557,9 @@ impl<R: SearchRow> SearchList<R> {
     pub fn select(&mut self, pos: usize) {
         let n = self.visible_len();
         self.selected = if n == 0 { None } else { Some(pos.min(n - 1)) };
+        // Unconditional: aiming at a row IS the choice, even when it happens
+        // to be the row the seed already sat on. Only the blind nudges below
+        // have to prove they moved.
         self.selection_pinned = self.selected.is_some();
     }
 
@@ -560,16 +568,26 @@ impl<R: SearchRow> SearchList<R> {
         if n == 0 {
             return;
         }
-        self.selected = Some(self.selected.map_or(0, |i| (i + 1).min(n - 1)));
-        self.selection_pinned = true;
+        self.move_selection(Some(self.selected.map_or(0, |i| (i + 1).min(n - 1))));
     }
 
     pub fn select_prev(&mut self) {
         if self.visible_len() == 0 {
             return;
         }
-        self.selected = Some(self.selected.map_or(0, |i| i.saturating_sub(1)));
-        self.selection_pinned = true;
+        self.move_selection(Some(self.selected.map_or(0, |i| i.saturating_sub(1))));
+    }
+
+    /// Move the selection, marking it the user's own choice only when it
+    /// actually lands somewhere new. A nudge against either end of the list
+    /// changes nothing, so it must not turn a seed into a choice — one stray
+    /// `Up` on the first row of a streaming listing would otherwise freeze the
+    /// highlight at position 0 and let rows arriving above it walk underneath.
+    fn move_selection(&mut self, next: Option<usize>) {
+        if next != self.selected {
+            self.selected = next;
+            self.selection_pinned = next.is_some();
+        }
     }
 
     /// Largest useful viewport offset: the first visible position from which
@@ -607,8 +625,7 @@ impl<R: SearchRow> SearchList<R> {
             return;
         }
         self.offset += 1;
-        self.selected = self.selected.map(|i| (i + 1).min(n - 1));
-        self.selection_pinned = true;
+        self.move_selection(self.selected.map(|i| (i + 1).min(n - 1)));
     }
 
     /// Scroll the viewport one row up, carrying the selection along so the
@@ -618,8 +635,7 @@ impl<R: SearchRow> SearchList<R> {
             return;
         }
         self.offset -= 1;
-        self.selected = self.selected.map(|i| i.saturating_sub(1));
-        self.selection_pinned = true;
+        self.move_selection(self.selected.map(|i| i.saturating_sub(1)));
     }
 
     /// The current viewport offset. Test-only: lets scroll tests assert the
@@ -2304,6 +2320,117 @@ mod order_tests {
 
         assert!(!list.is_loading(), "reordering must not start a load");
         assert_eq!(names(&list), ["charlie", "bravo", "alpha"]);
+    }
+
+    /// Changing the sort must respect the same seeded/chosen split as a
+    /// streaming poll: an untouched selection keeps the TOP slot of the new
+    /// order, and stays a seed, so later-arriving rows still take it.
+    ///
+    /// Regression: `set_order` carried the selection by row index
+    /// unconditionally, so a sort change pushed an untouched seed off the top
+    /// row AND froze it at that numeric position — the highlight then walked
+    /// across a different row on every subsequent poll.
+    #[tokio::test]
+    async fn changing_the_order_keeps_a_seeded_selection_on_the_top_row() {
+        let slot = Arc::new(Mutex::new(None));
+        let source = HeldEmitSource { slot: slot.clone() };
+        let mut list = SearchList::builder(source, noop_redraw())
+            .order_by(by_name_asc())
+            .build();
+        let emit = loop {
+            if let Some(e) = slot.lock().unwrap().clone() {
+                break e;
+            }
+            tokio::task::yield_now().await;
+        };
+
+        emit.push(TestRow::new("bravo"));
+        emit.push(TestRow::new("charlie"));
+        list.poll();
+        assert_eq!(list.selected_row().map(|r| r.name.as_str()), Some("bravo"));
+
+        list.set_order(Some(by_name_desc()));
+        assert_eq!(names(&list), ["charlie", "bravo"]);
+        assert_eq!(
+            list.selected_row().map(|r| r.name.as_str()),
+            Some("charlie"),
+            "an untouched selection keeps the top slot of the new order"
+        );
+
+        // Still a seed, not a choice: the next row to sort above it takes it.
+        emit.push(TestRow::new("delta"));
+        list.poll();
+        assert_eq!(names(&list), ["delta", "charlie", "bravo"]);
+        assert_eq!(
+            list.selected_row().map(|r| r.name.as_str()),
+            Some("delta"),
+            "a sort change must not silently turn a seed into a choice"
+        );
+        emit.done();
+    }
+
+    /// The chosen half of that split: a row the user picked stays picked
+    /// across a sort change.
+    #[tokio::test]
+    async fn changing_the_order_keeps_a_chosen_selection_on_its_row() {
+        let source = ScriptedStreamSource {
+            batches: vec![vec![
+                TestRow::new("bravo"),
+                TestRow::new("alpha"),
+                TestRow::new("charlie"),
+            ]],
+        };
+        let mut list = SearchList::builder(source, noop_redraw())
+            .order_by(by_name_asc())
+            .build();
+        list.poll_until_idle().await;
+        list.select_next(); // "bravo", by the user's own keys
+        assert_eq!(list.selected_row().map(|r| r.name.as_str()), Some("bravo"));
+
+        list.set_order(Some(by_name_desc()));
+        assert_eq!(names(&list), ["charlie", "bravo", "alpha"]);
+        assert_eq!(
+            list.selected_row().map(|r| r.name.as_str()),
+            Some("bravo"),
+            "a chosen selection tracks its row through a re-sort"
+        );
+    }
+
+    /// A nudge that hits the end of the list moves nothing, so it must not
+    /// turn a seed into a choice — otherwise one stray `Up` on the first row
+    /// of a streaming listing freezes the highlight and lets it drift.
+    #[tokio::test]
+    async fn a_nudge_that_moves_nothing_leaves_the_seed_a_seed() {
+        let slot = Arc::new(Mutex::new(None));
+        let source = HeldEmitSource { slot: slot.clone() };
+        let mut list = SearchList::builder(source, noop_redraw())
+            .order_by(by_name_asc())
+            .build();
+        let emit = loop {
+            if let Some(e) = slot.lock().unwrap().clone() {
+                break e;
+            }
+            tokio::task::yield_now().await;
+        };
+
+        emit.push(TestRow::new("charlie"));
+        list.poll();
+        list.select_prev(); // already on the only (top) row: nothing moves
+        list.select_next(); // already on the only (last) row: nothing moves
+        assert_eq!(
+            list.selected_row().map(|r| r.name.as_str()),
+            Some("charlie")
+        );
+
+        emit.push(TestRow::new("alpha"));
+        list.poll();
+        assert_eq!(names(&list), ["alpha", "charlie"]);
+        assert_eq!(
+            list.selected_row().map(|r| r.name.as_str()),
+            Some("alpha"),
+            "a keypress that changed nothing must leave the selection seeded"
+        );
+        emit.done();
     }
 
     /// A row the user selected while rows were still streaming stays selected
