@@ -123,6 +123,7 @@ pub(crate) const DB_FILE: &str = "kimun.sqlite";
 /// The order of `to_add` and `to_modify` is non-deterministic: they are
 /// populated by parallel walker threads and entries land in the order each
 /// thread completes its file read.
+#[derive(Default)]
 pub struct IndexDiff {
     /// Notes present in the vault but absent from the index, each paired with
     /// its full text content for FTS insertion.
@@ -440,21 +441,90 @@ impl NoteIndex {
         &self,
         search_query: S,
     ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
-        search_terms(&self.pool, search_query).await
+        let search_query = search_query.as_ref();
+        let search_terms = SearchTerms::from_query_string(search_query);
+        let (query, params) = build_search_sql_query_inner(&search_terms);
+        let order_by = search_terms.order_by;
+
+        if query.is_empty() {
+            debug!("No query provided");
+            return Ok(vec![]);
+        }
+
+        debug!("QUERY: {}", query);
+
+        let mut sql_query = sqlx::query(&query);
+        for param in params {
+            sql_query = sql_query.bind(param);
+        }
+
+        let rows = sql_query.fetch_all(&self.pool).await?;
+
+        let mut result: Vec<(NoteEntryData, NoteContentData)> = rows
+            .iter()
+            .map(row_to_note_entry)
+            .collect::<Result<_, _>>()?;
+
+        if !order_by.is_empty() {
+            result.sort_by(|(a_entry, a_content), (b_entry, b_content)| {
+                for ob in &order_by {
+                    let ord = match ob {
+                        OrderBy::Title { asc } => {
+                            let cmp = a_content
+                                .title
+                                .to_lowercase()
+                                .cmp(&b_content.title.to_lowercase());
+                            if *asc {
+                                cmp
+                            } else {
+                                cmp.reverse()
+                            }
+                        }
+                        OrderBy::FileName { asc } => {
+                            let cmp = a_entry.path.to_string().cmp(&b_entry.path.to_string());
+                            if *asc {
+                                cmp
+                            } else {
+                                cmp.reverse()
+                            }
+                        }
+                    };
+                    if ord != std::cmp::Ordering::Equal {
+                        return ord;
+                    }
+                }
+                std::cmp::Ordering::Equal
+            });
+        }
+
+        Ok(result)
     }
 
     pub(crate) async fn search_note_by_name<S: AsRef<str>>(
         &self,
         name: S,
     ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
-        search_note_by_name(&self.pool, name).await
+        let name = name.as_ref().to_lowercase();
+        let sql = format!("SELECT {} FROM notes where noteName = ?", NOTE_COLUMNS);
+        let rows = sqlx::query(&sql).bind(&name).fetch_all(&self.pool).await?;
+
+        rows.iter().map(row_to_note_entry).collect()
     }
 
     pub(crate) async fn search_note_by_path(
         &self,
         path: &VaultPath,
     ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
-        search_note_by_path(&self.pool, &path.canonical()).await
+        let path = path.canonical();
+        let sql = format!("SELECT {} FROM notes where path = ?", NOTE_COLUMNS);
+        let path_string = path.to_string();
+        let rows = sqlx::query(&sql)
+            .bind(&path_string)
+            .fetch_all(&self.pool)
+            .await?;
+
+        // Should always return one or zero
+        rows.iter().map(row_to_note_entry).collect()
     }
 
     pub(crate) async fn get_notes(
@@ -462,20 +532,63 @@ impl NoteIndex {
         path: &VaultPath,
         recursive: bool,
     ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
-        get_notes(&self.pool, &path.canonical(), recursive).await
+        let path = path.canonical();
+        let (where_clause, bind_value) = if recursive {
+            // The note's own `path`, not `basePath`: `basePath` is stored
+            // without a trailing separator, so a `<dir>/`-prefixed LIKE would
+            // miss the directory's direct children. Matching the full path
+            // against the same `dir_prefix` the rename/delete wrappers use
+            // keeps `/foo` from also matching a sibling `/foobar/`.
+            (
+                "path LIKE (? || '%') ESCAPE '\\'".to_string(),
+                escape_like_pattern(&dir_prefix(&path)),
+            )
+        } else {
+            ("basePath = ?".to_string(), path.to_string())
+        };
+        let sql = format!("SELECT {} FROM notes where {}", NOTE_COLUMNS, where_clause);
+        let rows = sqlx::query(&sql)
+            .bind(bind_value)
+            .fetch_all(&self.pool)
+            .await?;
+
+        rows.iter().map(row_to_note_entry).collect()
     }
 
     pub(crate) async fn get_all_notes(
         &self,
     ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
-        get_all_notes(&self.pool).await
+        let query = format!("SELECT DISTINCT {} FROM notes", NOTE_COLUMNS);
+        let rows = sqlx::query(&query).fetch_all(&self.pool).await?;
+        rows.iter().map(row_to_note_entry).collect()
     }
 
+    /// Backlinks of a *specific* note: notes whose body links to exactly this note,
+    /// matched by its full path OR its bare filename (wikilinks stored without a
+    /// path). This is intentionally narrower than the `>`/`lk:` search filter
+    /// (see [`link_subquery`]), which matches a name in *any* folder; keep the two
+    /// in step on the stored-form invariant they share (lowercased, `.md`-suffixed
+    /// destinations, bare-relative or relative/absolute path).
     pub(crate) async fn get_backlinks(
         &self,
         path: &VaultPath,
     ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
-        get_backlinks(&self.pool, &path.canonical()).await
+        let path = path.canonical();
+        // Match notes that link to the full path OR by filename only (wikilinks stored without path)
+        let sql = format!(
+            "SELECT DISTINCT {cols} \
+             FROM notes n \
+             JOIN links l ON n.path = l.source \
+             WHERE l.destination = ? OR l.destination = ?",
+            cols = qualify_columns("n", NOTE_COLUMNS),
+        );
+        let rows = sqlx::query(&sql)
+            .bind(path.to_string())
+            .bind(path.get_name())
+            .fetch_all(&self.pool)
+            .await?;
+
+        rows.iter().map(row_to_note_entry).collect()
     }
 
     pub(crate) async fn get_notes_sections(
@@ -483,35 +596,142 @@ impl NoteIndex {
         path: &VaultPath,
         recursive: bool,
     ) -> Result<HashMap<VaultPath, Vec<ContentChunk>>, DBError> {
-        get_notes_sections(&self.pool, &path.canonical(), recursive).await
+        let path = path.canonical();
+        let mut result = HashMap::new();
+        let (sql, bind_value) = if path.is_note() {
+            // Exact note path
+            (
+                "SELECT path, breadcrumb, text FROM notesContent WHERE path = ?".to_string(),
+                path.to_string(),
+            )
+        } else if recursive {
+            // All notes under this directory tree
+            (
+                "SELECT path, breadcrumb, text FROM notesContent WHERE path LIKE (? || '%') ESCAPE '\\'".to_string(),
+                escape_like_pattern(&dir_prefix(&path)),
+            )
+        } else {
+            // Only notes directly in this directory (basePath join)
+            ("SELECT nc.path, nc.breadcrumb, nc.text FROM notesContent nc JOIN notes n ON nc.path = n.path WHERE n.basePath = ?".to_string(), path.to_string())
+        };
+
+        let rows = sqlx::query(&sql)
+            .bind(bind_value)
+            .fetch_all(&self.pool)
+            .await?;
+
+        for row in rows {
+            let path: String = row.try_get("path")?;
+            let breadcrumb: String = row.try_get("breadcrumb")?;
+            let text: String = row.try_get("text")?;
+
+            let path = VaultPath::new(path);
+            let chunk = ContentChunk { breadcrumb, text };
+            result.entry(path).or_insert_with(Vec::new).push(chunk);
+        }
+
+        Ok(result)
     }
 
     pub(crate) async fn list_labels(&self) -> Result<Vec<String>, DBError> {
-        list_labels(&self.pool).await
+        let rows: Vec<(String,)> = sqlx::query_as("SELECT DISTINCT name FROM labels")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.into_iter().map(|(n,)| n).collect())
     }
 
     pub(crate) async fn label_counts(&self) -> Result<Vec<(String, i64)>, DBError> {
-        label_counts(&self.pool).await
+        let rows: Vec<(String, i64)> =
+            sqlx::query_as("SELECT name, COUNT(*) as cnt FROM labels GROUP BY name ORDER BY name")
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows)
     }
 
     pub(crate) async fn notes_with_label(&self, name: &str) -> Result<Vec<VaultPath>, DBError> {
-        notes_with_label(&self.pool, name).await
+        let normalized = name.to_lowercase();
+        let rows: Vec<(String,)> = sqlx::query_as("SELECT path FROM labels WHERE name = ?")
+            .bind(&normalized)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.into_iter().map(|(p,)| VaultPath::new(p)).collect())
     }
 
+    /// Returns notes whose `noteName` starts with `prefix` (case-insensitive),
+    /// capped at `limit`. Empty prefix returns the top `limit` notes by name.
+    ///
+    /// Results are ordered alphabetically by name. Notes that share a name are
+    /// both returned as separate rows; callers (the autocomplete UI) are
+    /// responsible for disambiguating them via `path`.
+    ///
+    /// The returned `name` is the note's filename with the extension stripped
+    /// (via `VaultPath::get_clean_name`) — i.e. the exact text a wikilink
+    /// targets. Filenames in the index are already lowercased on insert
+    /// (see `VaultPathSlice::new`), so callers get lowercase names back.
     pub(crate) async fn suggest_notes_by_prefix(
         &self,
         prefix: &str,
         limit: usize,
     ) -> Result<Vec<NoteSuggestion>, DBError> {
-        suggest_notes_by_prefix(&self.pool, prefix, limit).await
+        let pattern = format!("{}%", escape_like_pattern(&prefix.to_lowercase()));
+        // `noteName` is lowercased on insert, so `LIKE` against a lowercased
+        // pattern is naturally case-insensitive; the explicit `LOWER()` is a
+        // defensive belt-and-braces against any future code path that might
+        // insert mixed case.
+        let sql = "SELECT path \
+                   FROM notes \
+                   WHERE LOWER(noteName) LIKE ?1 ESCAPE '\\' \
+                   ORDER BY noteName ASC, path ASC \
+                   LIMIT ?2";
+        let rows: Vec<(String,)> = sqlx::query_as(sql)
+            .bind(&pattern)
+            .bind(limit as i64)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(path,)| {
+                let vault_path = VaultPath::new(path);
+                let name = vault_path.get_clean_name();
+                NoteSuggestion {
+                    name,
+                    path: vault_path,
+                }
+            })
+            .collect())
     }
 
+    /// Returns tag labels whose name starts with `prefix` (case-insensitive),
+    /// each paired with how many notes carry the tag, capped at `limit`. Empty
+    /// prefix returns the top `limit` tags by usage.
+    ///
+    /// The `labels` table is stored lowercased, so prefix matching is naturally
+    /// case-insensitive once we lowercase the input. Ranking is `usage_count
+    /// DESC, label ASC` so the most-used tags surface first.
     pub(crate) async fn suggest_tags_by_prefix(
         &self,
         prefix: &str,
         limit: usize,
     ) -> Result<Vec<TagSuggestion>, DBError> {
-        suggest_tags_by_prefix(&self.pool, prefix, limit).await
+        let pattern = format!("{}%", escape_like_pattern(&prefix.to_lowercase()));
+        let sql = "SELECT name, COUNT(*) AS cnt \
+                   FROM labels \
+                   WHERE name LIKE ?1 ESCAPE '\\' \
+                   GROUP BY name \
+                   ORDER BY cnt DESC, name ASC \
+                   LIMIT ?2";
+        let rows: Vec<(String, i64)> = sqlx::query_as(sql)
+            .bind(&pattern)
+            .bind(limit as i64)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(label, cnt)| TagSuggestion {
+                label,
+                usage_count: cnt.max(0) as u32,
+            })
+            .collect())
     }
 }
 
@@ -530,8 +750,10 @@ impl NoteIndex {
 
 #[cfg(test)]
 impl NoteIndex {
-    /// Test-only pool accessor — index-internal tests exercise SQL and the
-    /// query builders directly through this internal seam.
+    /// The schema seam: for tests of the schema itself — the version stamp,
+    /// self-heal on open, query plans — which assert facts the interface
+    /// cannot observe. Behaviour tests never use it: they apply an
+    /// [`IndexDiff`] and query (CONTEXT.md, NoteIndex; ADR-0008 as amended).
     fn pool(&self) -> &SqlitePool {
         &self.pool
     }
@@ -1231,21 +1453,6 @@ fn build_search_sql_query<S: AsRef<str>>(query: S) -> (String, Vec<String>) {
     build_search_sql_query_inner(&search_terms)
 }
 
-async fn get_all_notes(
-    pool: &SqlitePool,
-) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
-    let query = format!("SELECT DISTINCT {} FROM notes", NOTE_COLUMNS);
-    let rows = sqlx::query(&query).fetch_all(pool).await?;
-    rows.iter().map(row_to_note_entry).collect()
-}
-
-async fn list_labels(pool: &SqlitePool) -> Result<Vec<String>, DBError> {
-    let rows: Vec<(String,)> = sqlx::query_as("SELECT DISTINCT name FROM labels")
-        .fetch_all(pool)
-        .await?;
-    Ok(rows.into_iter().map(|(n,)| n).collect())
-}
-
 /// A note suggestion for the autocomplete popup.
 ///
 /// `name` is the note's filename without extension — the string a wikilink
@@ -1272,270 +1479,6 @@ pub struct TagSuggestion {
     /// How many notes carry this label, computed per-query via
     /// `COUNT(*) GROUP BY name`, so the UI can rank common tags first.
     pub usage_count: u32,
-}
-
-/// Returns notes whose `noteName` starts with `prefix` (case-insensitive),
-/// capped at `limit`. Empty prefix returns the top `limit` notes by name.
-///
-/// Results are ordered alphabetically by name. Notes that share a name are
-/// both returned as separate rows; callers (the autocomplete UI) are
-/// responsible for disambiguating them via `path`.
-///
-/// The returned `name` is the note's filename with the extension stripped
-/// (via `VaultPath::get_clean_name`) — i.e. the exact text a wikilink
-/// targets. Filenames in the index are already lowercased on insert
-/// (see `VaultPathSlice::new`), so callers get lowercase names back.
-async fn suggest_notes_by_prefix(
-    pool: &SqlitePool,
-    prefix: &str,
-    limit: usize,
-) -> Result<Vec<NoteSuggestion>, DBError> {
-    let pattern = format!("{}%", escape_like_pattern(&prefix.to_lowercase()));
-    // `noteName` is lowercased on insert, so `LIKE` against a lowercased
-    // pattern is naturally case-insensitive; the explicit `LOWER()` is a
-    // defensive belt-and-braces against any future code path that might
-    // insert mixed case.
-    let sql = "SELECT path \
-               FROM notes \
-               WHERE LOWER(noteName) LIKE ?1 ESCAPE '\\' \
-               ORDER BY noteName ASC, path ASC \
-               LIMIT ?2";
-    let rows: Vec<(String,)> = sqlx::query_as(sql)
-        .bind(&pattern)
-        .bind(limit as i64)
-        .fetch_all(pool)
-        .await?;
-    Ok(rows
-        .into_iter()
-        .map(|(path,)| {
-            let vault_path = VaultPath::new(path);
-            let name = vault_path.get_clean_name();
-            NoteSuggestion {
-                name,
-                path: vault_path,
-            }
-        })
-        .collect())
-}
-
-/// Returns tag labels whose name starts with `prefix` (case-insensitive),
-/// each paired with how many notes carry the tag, capped at `limit`. Empty
-/// prefix returns the top `limit` tags by usage.
-///
-/// The `labels` table is stored lowercased, so prefix matching is naturally
-/// case-insensitive once we lowercase the input. Ranking is `usage_count
-/// DESC, label ASC` so the most-used tags surface first.
-async fn suggest_tags_by_prefix(
-    pool: &SqlitePool,
-    prefix: &str,
-    limit: usize,
-) -> Result<Vec<TagSuggestion>, DBError> {
-    let pattern = format!("{}%", escape_like_pattern(&prefix.to_lowercase()));
-    let sql = "SELECT name, COUNT(*) AS cnt \
-               FROM labels \
-               WHERE name LIKE ?1 ESCAPE '\\' \
-               GROUP BY name \
-               ORDER BY cnt DESC, name ASC \
-               LIMIT ?2";
-    let rows: Vec<(String, i64)> = sqlx::query_as(sql)
-        .bind(&pattern)
-        .bind(limit as i64)
-        .fetch_all(pool)
-        .await?;
-    Ok(rows
-        .into_iter()
-        .map(|(label, cnt)| TagSuggestion {
-            label,
-            usage_count: cnt.max(0) as u32,
-        })
-        .collect())
-}
-
-async fn label_counts(pool: &SqlitePool) -> Result<Vec<(String, i64)>, DBError> {
-    let rows: Vec<(String, i64)> =
-        sqlx::query_as("SELECT name, COUNT(*) as cnt FROM labels GROUP BY name ORDER BY name")
-            .fetch_all(pool)
-            .await?;
-    Ok(rows)
-}
-
-async fn notes_with_label(pool: &SqlitePool, name: &str) -> Result<Vec<VaultPath>, DBError> {
-    let normalized = name.to_lowercase();
-    let rows: Vec<(String,)> = sqlx::query_as("SELECT path FROM labels WHERE name = ?")
-        .bind(&normalized)
-        .fetch_all(pool)
-        .await?;
-    Ok(rows.into_iter().map(|(p,)| VaultPath::new(p)).collect())
-}
-
-async fn search_terms<S: AsRef<str>>(
-    pool: &SqlitePool,
-    search_query: S,
-) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
-    let search_query = search_query.as_ref();
-    let search_terms = SearchTerms::from_query_string(search_query);
-    let (query, params) = build_search_sql_query_inner(&search_terms);
-    let order_by = search_terms.order_by;
-
-    if query.is_empty() {
-        debug!("No query provided");
-        return Ok(vec![]);
-    }
-
-    debug!("QUERY: {}", query);
-
-    let mut sql_query = sqlx::query(&query);
-    for param in params {
-        sql_query = sql_query.bind(param);
-    }
-
-    let rows = sql_query.fetch_all(pool).await?;
-
-    let mut result: Vec<(NoteEntryData, NoteContentData)> = rows
-        .iter()
-        .map(row_to_note_entry)
-        .collect::<Result<_, _>>()?;
-
-    if !order_by.is_empty() {
-        result.sort_by(|(a_entry, a_content), (b_entry, b_content)| {
-            for ob in &order_by {
-                let ord = match ob {
-                    OrderBy::Title { asc } => {
-                        let cmp = a_content
-                            .title
-                            .to_lowercase()
-                            .cmp(&b_content.title.to_lowercase());
-                        if *asc {
-                            cmp
-                        } else {
-                            cmp.reverse()
-                        }
-                    }
-                    OrderBy::FileName { asc } => {
-                        let cmp = a_entry.path.to_string().cmp(&b_entry.path.to_string());
-                        if *asc {
-                            cmp
-                        } else {
-                            cmp.reverse()
-                        }
-                    }
-                };
-                if ord != std::cmp::Ordering::Equal {
-                    return ord;
-                }
-            }
-            std::cmp::Ordering::Equal
-        });
-    }
-
-    Ok(result)
-}
-
-async fn search_note_by_name<S: AsRef<str>>(
-    pool: &SqlitePool,
-    name: S,
-) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
-    let name = name.as_ref().to_lowercase();
-    let sql = format!("SELECT {} FROM notes where noteName = ?", NOTE_COLUMNS);
-    let rows = sqlx::query(&sql).bind(&name).fetch_all(pool).await?;
-
-    rows.iter().map(row_to_note_entry).collect()
-}
-
-async fn search_note_by_path(
-    pool: &SqlitePool,
-    path: &VaultPath,
-) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
-    let sql = format!("SELECT {} FROM notes where path = ?", NOTE_COLUMNS);
-    let path_string = path.to_string();
-    let rows = sqlx::query(&sql).bind(&path_string).fetch_all(pool).await?;
-
-    // Should always return one or zero
-    rows.iter().map(row_to_note_entry).collect()
-}
-
-async fn get_notes(
-    pool: &SqlitePool,
-    path: &VaultPath,
-    recursive: bool,
-) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
-    let (where_clause, bind_value) = if recursive {
-        (
-            "basePath LIKE (? || '%') ESCAPE '\\'".to_string(),
-            escape_like_pattern(&path.to_string()),
-        )
-    } else {
-        ("basePath = ?".to_string(), path.to_string())
-    };
-    let sql = format!("SELECT {} FROM notes where {}", NOTE_COLUMNS, where_clause);
-    let rows = sqlx::query(&sql).bind(bind_value).fetch_all(pool).await?;
-
-    rows.iter().map(row_to_note_entry).collect()
-}
-
-/// Backlinks of a *specific* note: notes whose body links to exactly this note,
-/// matched by its full path OR its bare filename (wikilinks stored without a
-/// path). This is intentionally narrower than the `>`/`lk:` search filter
-/// (see [`link_subquery`]), which matches a name in *any* folder; keep the two
-/// in step on the stored-form invariant they share (lowercased, `.md`-suffixed
-/// destinations, bare-relative or relative/absolute path).
-async fn get_backlinks(
-    pool: &SqlitePool,
-    path: &VaultPath,
-) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
-    // Match notes that link to the full path OR by filename only (wikilinks stored without path)
-    let sql = format!(
-        "SELECT DISTINCT {cols} \
-         FROM notes n \
-         JOIN links l ON n.path = l.source \
-         WHERE l.destination = ? OR l.destination = ?",
-        cols = qualify_columns("n", NOTE_COLUMNS),
-    );
-    let rows = sqlx::query(&sql)
-        .bind(path.to_string())
-        .bind(path.get_name())
-        .fetch_all(pool)
-        .await?;
-
-    rows.iter().map(row_to_note_entry).collect()
-}
-
-async fn get_notes_sections(
-    pool: &SqlitePool,
-    path: &VaultPath,
-    recursive: bool,
-) -> Result<HashMap<VaultPath, Vec<ContentChunk>>, DBError> {
-    let mut result = HashMap::new();
-    let (sql, bind_value) = if path.is_note() {
-        // Exact note path
-        (
-            "SELECT path, breadcrumb, text FROM notesContent WHERE path = ?".to_string(),
-            path.to_string(),
-        )
-    } else if recursive {
-        // All notes under this directory tree
-        (
-            "SELECT path, breadcrumb, text FROM notesContent WHERE path LIKE (? || '%') ESCAPE '\\'".to_string(),
-            escape_like_pattern(&path.to_string()),
-        )
-    } else {
-        // Only notes directly in this directory (basePath join)
-        ("SELECT nc.path, nc.breadcrumb, nc.text FROM notesContent nc JOIN notes n ON nc.path = n.path WHERE n.basePath = ?".to_string(), path.to_string())
-    };
-
-    let rows = sqlx::query(&sql).bind(bind_value).fetch_all(pool).await?;
-
-    for row in rows {
-        let path: String = row.try_get("path")?;
-        let breadcrumb: String = row.try_get("breadcrumb")?;
-        let text: String = row.try_get("text")?;
-
-        let path = VaultPath::new(path);
-        let chunk = ContentChunk { breadcrumb, text };
-        result.entry(path).or_insert_with(Vec::new).push(chunk);
-    }
-
-    Ok(result)
 }
 
 async fn insert_notes(
@@ -2153,2076 +2096,4 @@ async fn delete_directory(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn open_creates_parent_dir_for_db_path() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let nested = tmp.path().join("nested/dir/cache.kimuncache");
-        // Parent dir does not exist yet.
-        assert!(!nested.parent().unwrap().exists());
-
-        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&nested)))
-            .await
-            .unwrap();
-        assert!(nested.parent().unwrap().exists());
-        assert!(nested.exists());
-        // A fresh file has no schema — open must have healed it.
-        assert!(!db.ready());
-        db.close().await;
-    }
-
-    /// A db path is a path, not a URL. Splicing one into `sqlite:{}?mode=rwc`
-    /// means the first `?` *in the path* starts the query string, so SQLite is
-    /// handed a truncated filename and a garbage parameter. `?` is legal in a
-    /// directory name on Unix, so this reproduces it directly; the Windows
-    /// manifestation of the same bug is
-    /// [`open_accepts_a_canonicalized_db_path`].
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn open_accepts_a_db_path_containing_a_question_mark() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let awkward = tmp.path().join("why not?").join("cache.kimuncache");
-
-        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&awkward)))
-            .await
-            .unwrap();
-
-        assert!(awkward.exists(), "db must be created at {awkward:?}");
-        assert!(
-            !db.ready(),
-            "a fresh file has no schema — open must heal it"
-        );
-        db.close().await;
-    }
-
-    /// Every db path Kimun computes comes from a canonicalized directory
-    /// (`AppSettings::expand_path`, `ensure_dir_exists`). On Windows that means
-    /// the verbatim prefix `\\?\`, whose `?` broke the old URL-formatted
-    /// connection string on *every* open — the platform-specific face of
-    /// [`open_accepts_a_db_path_containing_a_question_mark`]. A no-op on Unix,
-    /// where canonicalize only resolves symlinks.
-    #[tokio::test]
-    async fn open_accepts_a_canonicalized_db_path() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let canonical = tmp.path().canonicalize().unwrap().join("cache.kimuncache");
-
-        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&canonical)))
-            .await
-            .unwrap();
-
-        assert!(canonical.exists(), "db must be created at {canonical:?}");
-        db.close().await;
-    }
-
-    #[test]
-    fn test_search_terms_query_empty() {
-        let (sql, params) = build_search_sql_query("");
-        assert_eq!(sql, "");
-        assert_eq!(params.len(), 0);
-    }
-
-    #[test]
-    fn test_search_terms_query_simple_terms() {
-        let (sql, params) = build_search_sql_query("foo bar");
-        assert_eq!(
-            sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
-        );
-        assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "\"foo\" \"bar\"");
-    }
-
-    #[test]
-    fn test_search_terms_query_single_term() {
-        let (sql, params) = build_search_sql_query("keyword");
-        assert_eq!(
-            sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
-        );
-        assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "\"keyword\"");
-    }
-
-    #[test]
-    fn test_search_terms_query_breadcrumb_only() {
-        let (sql, params) = build_search_sql_query("@heading");
-        assert_eq!(
-            sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?1"
-        );
-        assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "\"heading\"");
-    }
-
-    #[test]
-    fn test_search_terms_query_breadcrumb_with_in() {
-        let (sql, params) = build_search_sql_query("in:section");
-        assert_eq!(
-            sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?1"
-        );
-        assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "\"section\"");
-    }
-
-    #[test]
-    fn test_search_terms_query_multiple_breadcrumbs() {
-        let (sql, params) = build_search_sql_query("@heading1 in:heading2");
-        assert_eq!(
-            sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?1"
-        );
-        assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "\"heading1\" \"heading2\"");
-    }
-
-    #[test]
-    fn test_search_terms_query_path_only() {
-        let (sql, params) = build_search_sql_query("=filename");
-        assert_eq!(
-            sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ?1 ESCAPE '\\'"
-        );
-        assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "%filename%");
-    }
-
-    #[test]
-    fn test_search_terms_query_path_with_at() {
-        let (sql, params) = build_search_sql_query("name:directory");
-        assert_eq!(
-            sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ?1 ESCAPE '\\'"
-        );
-        assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "%directory%");
-    }
-
-    #[test]
-    fn test_search_terms_query_multiple_paths() {
-        let (sql, params) = build_search_sql_query("=file1 name:file2");
-        // Same-type operators AND together (consistent with #, <, >, and the
-        // documented "all terms are ANDed" precedence).
-        assert_eq!(
-            sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ?1 ESCAPE '\\' AND notes.noteName LIKE ?2 ESCAPE '\\'"
-        );
-        assert_eq!(params.len(), 2);
-        assert_eq!(params[0], "%file1%");
-        assert_eq!(params[1], "%file2%");
-    }
-
-    #[test]
-    fn test_search_terms_query_terms_and_breadcrumb() {
-        let (sql, params) = build_search_sql_query("keyword @section");
-        assert_eq!(
-            sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?2"
-        );
-        assert_eq!(params.len(), 2);
-        assert_eq!(params[0], "\"keyword\"");
-        assert_eq!(params[1], "\"section\"");
-    }
-
-    #[test]
-    fn test_search_terms_query_terms_and_path() {
-        let (sql, params) = build_search_sql_query("keyword =file");
-        assert_eq!(
-            sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ?2 ESCAPE '\\'"
-        );
-        assert_eq!(params.len(), 2);
-        assert_eq!(params[0], "\"keyword\"");
-        assert_eq!(params[1], "%file%");
-    }
-
-    #[test]
-    fn test_search_terms_query_breadcrumb_and_path() {
-        let (sql, params) = build_search_sql_query("@heading =file");
-        assert_eq!(
-            sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ?2 ESCAPE '\\'"
-        );
-        assert_eq!(params.len(), 2);
-        assert_eq!(params[0], "\"heading\"");
-        assert_eq!(params[1], "%file%");
-    }
-
-    #[test]
-    fn test_search_terms_query_all_combined() {
-        let (sql, params) = build_search_sql_query("keyword @heading =file");
-        assert_eq!(
-            sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?2 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ?3 ESCAPE '\\'"
-        );
-        assert_eq!(params.len(), 3);
-        assert_eq!(params[0], "\"keyword\"");
-        assert_eq!(params[1], "\"heading\"");
-        assert_eq!(params[2], "%file%");
-    }
-
-    #[test]
-    fn test_search_terms_query_quoted_terms() {
-        let (sql, params) = build_search_sql_query("\"exact phrase\" keyword");
-        assert_eq!(
-            sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
-        );
-        assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "\"exact phrase\" \"keyword\"");
-    }
-
-    #[test]
-    fn test_search_terms_query_order_by_title_asc() {
-        let (sql, params) = build_search_sql_query("keyword or:title");
-        assert_eq!(
-            sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
-        );
-        assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "\"keyword\"");
-    }
-
-    #[test]
-    fn test_search_terms_query_order_by_title_desc() {
-        let (sql, params) = build_search_sql_query("keyword -or:title");
-        assert_eq!(
-            sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
-        );
-        assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "\"keyword\"");
-    }
-
-    #[test]
-    fn test_search_terms_query_order_by_filename_asc() {
-        let (sql, params) = build_search_sql_query("keyword or:filename");
-        assert_eq!(
-            sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
-        );
-        assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "\"keyword\"");
-    }
-
-    #[test]
-    fn test_search_terms_query_order_by_file_shorthand() {
-        let (sql, params) = build_search_sql_query("keyword or:f");
-        assert_eq!(
-            sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
-        );
-        assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "\"keyword\"");
-    }
-
-    #[test]
-    fn test_search_terms_query_order_by_title_shorthand() {
-        let (sql, params) = build_search_sql_query("keyword or:t");
-        assert_eq!(
-            sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
-        );
-        assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "\"keyword\"");
-    }
-
-    #[test]
-    fn test_search_terms_query_multiple_order_by() {
-        let (sql, params) = build_search_sql_query("keyword ^title -^filename");
-        assert_eq!(
-            sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
-        );
-        assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "\"keyword\"");
-    }
-
-    #[test]
-    fn test_search_terms_query_complex_with_order() {
-        let (sql, params) = build_search_sql_query("keyword @section =file ^title");
-        assert_eq!(
-            sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?2 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ?3 ESCAPE '\\'"
-        );
-        assert_eq!(params.len(), 3);
-        assert_eq!(params[0], "\"keyword\"");
-        assert_eq!(params[1], "\"section\"");
-        assert_eq!(params[2], "%file%");
-    }
-
-    #[test]
-    fn test_search_terms_query_only_order_by() {
-        let (sql, params) = build_search_sql_query("^title");
-        assert_eq!(sql, "");
-        assert_eq!(params.len(), 0);
-    }
-
-    #[test]
-    fn test_search_terms_query_invalid_order_by_field() {
-        let (sql, params) = build_search_sql_query("keyword ^invalid");
-        assert_eq!(
-            sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
-        );
-        assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "\"keyword\"");
-    }
-
-    #[test]
-    fn test_search_terms_query_whitespace_handling() {
-        let (sql, params) = build_search_sql_query("  keyword   @section  ");
-        assert_eq!(
-            sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?2"
-        );
-        assert_eq!(params.len(), 2);
-        assert_eq!(params[0], "\"keyword\"");
-        assert_eq!(params[1], "\"section\"");
-    }
-
-    #[test]
-    fn test_fts4_mixed_exclusion_sql_generation() {
-        let (sql, params) = build_search_sql_query("meeting -cancelled");
-
-        // Should use NOT IN subquery approach instead of FTS4 native exclusion
-        assert!(sql.contains("notesContent MATCH"));
-        assert!(sql.contains("NOT IN"));
-        assert!(sql.contains(
-            "SELECT DISTINCT notesContent.path FROM notesContent WHERE notesContent MATCH"
-        ));
-        // params: first is the excluded term (NOT IN subquery), second is the positive term
-        assert_eq!(params.len(), 2);
-        assert!(params.contains(&"\"cancelled\"".to_string()));
-        assert!(params.contains(&"\"meeting\"".to_string()));
-
-        assert!(sql.contains("SELECT DISTINCT"));
-    }
-
-    #[test]
-    fn test_exclusion_only_sql_generation() {
-        // Critical test: exclusion-only queries MUST use NOT IN, not pure FTS4 MATCH
-        let (sql, params) = build_search_sql_query("-cancelled");
-
-        // Should NOT contain pure FTS4 exclusion (which is invalid)
-        assert!(!sql.contains("MATCH \"-cancelled\""));
-        // Should use NOT IN subquery approach
-        assert!(sql.contains("NOT IN"));
-        assert!(sql.contains(
-            "SELECT DISTINCT notesContent.path FROM notesContent WHERE notesContent MATCH"
-        ));
-        assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "\"cancelled\"");
-    }
-
-    #[test]
-    fn test_breadcrumb_exclusion_sql_generation() {
-        let (sql, params) = build_search_sql_query("@project -@draft");
-
-        // Positive breadcrumb is a column-scoped MATCH; the exclusion is a
-        // robust NOT IN subquery (not the old, broken inline `breadcrumb: -term`).
-        assert!(sql.contains("notesContent.breadcrumb MATCH ?1"));
-        assert!(sql.contains(
-            "notes.path NOT IN (SELECT DISTINCT notesContent.path FROM notesContent WHERE notesContent.breadcrumb MATCH ?2)"
-        ));
-        assert_eq!(
-            params,
-            vec!["\"project\"".to_string(), "\"draft\"".to_string()]
-        );
-    }
-
-    #[test]
-    fn test_like_exclusion_sql_generation() {
-        let (sql, params) = build_search_sql_query("=2024 -=draft");
-
-        // Should generate filename query with positive and negative conditions
-        assert!(sql.contains("notes.noteName LIKE"));
-        assert!(sql.contains("notes.noteName NOT LIKE"));
-        assert!(params.contains(&"%2024%".to_string()));
-        assert!(params.contains(&"%draft%".to_string()));
-    }
-
-    #[test]
-    fn test_exclusion_only_like_query() {
-        let (sql, params) = build_search_sql_query("-=draft -=temp");
-
-        // Exclusion-only should still generate valid WHERE clause
-        assert!(sql.contains("notes.noteName NOT LIKE"));
-        // The new format embeds % in the param, not in the SQL template
-        assert!(!sql.contains("NOT LIKE ('%'"));
-        assert_eq!(params.len(), 2);
-    }
-
-    #[test]
-    fn test_path_exclusion_sql_generation() {
-        let (sql, params) = build_search_sql_query("/projects -/archive");
-
-        assert!(sql.contains("notes.basePath LIKE"));
-        assert!(sql.contains("notes.basePath NOT LIKE"));
-        assert!(params.contains(&"projects".to_string()));
-        assert!(params.contains(&"archive".to_string()));
-    }
-
-    #[test]
-    fn test_exclusion_only_path_query() {
-        let (sql, params) = build_search_sql_query("-/draft -/temp");
-
-        assert!(sql.contains("notes.basePath NOT LIKE"));
-        assert!(!sql.contains("notes.basePath LIKE ('/'"));
-        assert_eq!(params.len(), 2);
-    }
-
-    #[tokio::test]
-    async fn labels_table_exists_after_create_tables() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&path)))
-            .await
-            .unwrap();
-
-        let row: (i64,) = sqlx::query_as(
-            "SELECT count(*) FROM sqlite_master \
-             WHERE type='table' AND name='labels'",
-        )
-        .fetch_one(db.pool())
-        .await
-        .unwrap();
-        assert_eq!(row.0, 1, "labels table should exist");
-
-        // labels_by_name was removed in 0.7; the PK autoindex covers it.
-        let idx_name: (i64,) = sqlx::query_as(
-            "SELECT count(*) FROM sqlite_master \
-             WHERE type='index' AND name='labels_by_name'",
-        )
-        .fetch_one(db.pool())
-        .await
-        .unwrap();
-        assert_eq!(
-            idx_name.0, 0,
-            "labels_by_name index must not exist (dropped in 0.7)"
-        );
-
-        let idx_path: (i64,) = sqlx::query_as(
-            "SELECT count(*) FROM sqlite_master \
-             WHERE type='index' AND name='labels_by_path'",
-        )
-        .fetch_one(db.pool())
-        .await
-        .unwrap();
-        assert_eq!(idx_path.0, 1, "labels_by_path index should exist");
-
-        db.close().await;
-    }
-
-    #[tokio::test]
-    async fn labels_are_persisted_on_note_insert() {
-        use crate::nfs::{NoteEntryData, VaultPath};
-
-        let tmp = tempfile::TempDir::new().unwrap();
-        let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
-            .await
-            .unwrap();
-
-        let path = VaultPath::note_path_from("/n.md");
-        let body = "Title\n\nbody with #foo and #Foo and #bar".to_string();
-        let entry = NoteEntryData {
-            path: path.clone(),
-            size: body.len() as u64,
-            modified_secs: 0,
-        };
-
-        let mut tx = db.pool().begin().await.unwrap();
-        super::insert_notes(&mut tx, &[(entry, body)])
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-
-        let rows: Vec<(String, String)> =
-            sqlx::query_as("SELECT name, path FROM labels ORDER BY name")
-                .fetch_all(db.pool())
-                .await
-                .unwrap();
-        assert_eq!(
-            rows,
-            vec![
-                ("bar".to_string(), path.to_string()),
-                ("foo".to_string(), path.to_string()),
-            ],
-            "labels stored deduped + lowercased"
-        );
-
-        db.close().await;
-    }
-
-    #[tokio::test]
-    async fn reindexing_a_note_drops_removed_labels() {
-        use crate::nfs::{NoteEntryData, VaultPath};
-
-        let tmp = tempfile::TempDir::new().unwrap();
-        let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
-            .await
-            .unwrap();
-
-        let path = VaultPath::note_path_from("/n.md");
-        let body_v1 = "before #draft #keep".to_string();
-        let entry_v1 = NoteEntryData {
-            path: path.clone(),
-            size: body_v1.len() as u64,
-            modified_secs: 0,
-        };
-
-        let mut tx = db.pool().begin().await.unwrap();
-        super::insert_notes(&mut tx, &[(entry_v1, body_v1)])
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-
-        let body_v2 = "after #keep only".to_string();
-        let entry_v2 = NoteEntryData {
-            path: path.clone(),
-            size: body_v2.len() as u64,
-            modified_secs: 1,
-        };
-
-        let mut tx = db.pool().begin().await.unwrap();
-        super::update_notes(&mut tx, &[(entry_v2, body_v2)])
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-
-        let rows: Vec<(String,)> =
-            sqlx::query_as("SELECT name FROM labels WHERE path = ? ORDER BY name")
-                .bind(path.to_string())
-                .fetch_all(db.pool())
-                .await
-                .unwrap();
-        assert_eq!(
-            rows.into_iter().map(|(n,)| n).collect::<Vec<_>>(),
-            vec!["keep".to_string()],
-            "reindex must drop labels no longer present"
-        );
-
-        db.close().await;
-    }
-
-    #[tokio::test]
-    async fn labels_are_removed_on_note_delete() {
-        use crate::nfs::{NoteEntryData, VaultPath};
-
-        let tmp = tempfile::TempDir::new().unwrap();
-        let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
-            .await
-            .unwrap();
-
-        let path = VaultPath::note_path_from("/n.md");
-        let body = "x #drop".to_string();
-        let entry = NoteEntryData {
-            path: path.clone(),
-            size: body.len() as u64,
-            modified_secs: 0,
-        };
-
-        let mut tx = db.pool().begin().await.unwrap();
-        super::insert_notes(&mut tx, &[(entry, body)])
-            .await
-            .unwrap();
-        super::delete_notes(&mut tx, std::slice::from_ref(&path))
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-
-        let count: (i64,) = sqlx::query_as("SELECT count(*) FROM labels WHERE path = ?")
-            .bind(path.to_string())
-            .fetch_one(db.pool())
-            .await
-            .unwrap();
-        assert_eq!(count.0, 0);
-
-        db.close().await;
-    }
-
-    #[test]
-    fn test_search_terms_query_label_only() {
-        let (sql, params) = build_search_sql_query("#important");
-        assert_eq!(params, vec!["important".to_string()]);
-        assert!(
-            sql.contains("FROM notes") && sql.contains("labels"),
-            "query should join notes with labels: {}",
-            sql
-        );
-    }
-
-    #[test]
-    fn test_search_terms_query_two_labels_intersect() {
-        let (sql, params) = build_search_sql_query("#a #b");
-        assert_eq!(params.len(), 2);
-        assert!(
-            sql.contains("INTERSECT"),
-            "two labels should INTERSECT: {}",
-            sql
-        );
-    }
-
-    #[test]
-    fn test_search_terms_query_links_only() {
-        let (sql, params) = build_search_sql_query("<projects");
-        assert_eq!(params, vec!["projects.md".to_string()]);
-        assert!(
-            sql.contains("FROM notes")
-                && sql.contains("SELECT source FROM links")
-                && sql.contains("notes.path IN"),
-            "backlinks query should select sources from links: {}",
-            sql
-        );
-        // Bare name (no wildcard) matches the indexed dest_name column with
-        // plain equality — no leading-`%` scan.
-        assert!(
-            sql.contains("dest_name = ?1"),
-            "expected indexed dest_name equality: {}",
-            sql
-        );
-    }
-
-    #[test]
-    fn test_search_terms_query_links_long_form() {
-        let (_sql, params) = build_search_sql_query("lk:projects");
-        assert_eq!(params, vec!["projects.md".to_string()]);
-    }
-
-    #[test]
-    fn test_search_terms_query_links_path_qualified() {
-        let (sql, params) = build_search_sql_query("<work/projects");
-        assert_eq!(params, vec!["work/projects.md".to_string()]);
-        // Path-qualified anchors to the full path (relative or absolute) via
-        // indexed equality on `destination`, not the bare-name column.
-        assert!(
-            sql.contains("destination = ?1 OR destination = ('/' || ?1)"),
-            "expected path-anchored equality: {}",
-            sql
-        );
-        assert!(!sql.contains("dest_name"));
-    }
-
-    #[test]
-    fn test_search_terms_query_links_wildcard() {
-        let (sql, params) = build_search_sql_query("<proj*");
-        assert_eq!(params, vec!["proj%.md".to_string()]);
-        // Wildcard bare name uses a prefix LIKE on the indexed dest_name column.
-        assert!(
-            sql.contains("dest_name LIKE ?1 ESCAPE '\\'"),
-            "expected dest_name LIKE for wildcard: {}",
-            sql
-        );
-    }
-
-    #[test]
-    fn test_search_terms_query_links_extension_optional() {
-        let (_sql, params) = build_search_sql_query("<projects.md");
-        assert_eq!(params, vec!["projects.md".to_string()]);
-    }
-
-    #[test]
-    fn test_search_terms_query_excluded_links() {
-        let (sql, params) = build_search_sql_query("-<draft");
-        assert_eq!(params, vec!["draft.md".to_string()]);
-        assert!(
-            sql.contains("notes.path NOT IN (SELECT source FROM links"),
-            "excluded backlinks should use NOT IN: {}",
-            sql
-        );
-    }
-
-    #[test]
-    fn test_search_terms_query_two_links_intersect() {
-        let (sql, params) = build_search_sql_query("<a <b");
-        assert_eq!(params.len(), 2);
-        assert!(
-            sql.contains("INTERSECT"),
-            "two backlinks should INTERSECT: {}",
-            sql
-        );
-    }
-
-    #[test]
-    fn test_search_terms_query_links_combined_with_operators() {
-        // Free-text term + backlink + label all compose via INTERSECT.
-        let (sql, params) = build_search_sql_query("meeting <spec #urgent");
-        assert_eq!(sql.matches("INTERSECT").count(), 2);
-        assert!(sql.contains("notesContent MATCH"));
-        assert!(sql.contains("SELECT source FROM links"));
-        assert!(sql.contains("FROM labels WHERE name"));
-        // Params follow the fan-out order: content term, label, then backlink.
-        assert_eq!(
-            params,
-            vec![
-                "\"meeting\"".to_string(),
-                "urgent".to_string(),
-                "spec.md".to_string()
-            ]
-        );
-    }
-
-    #[tokio::test]
-    async fn search_combining_links_with_other_operators() {
-        use crate::nfs::{NoteEntryData, VaultPath};
-        let tmp = tempfile::TempDir::new().unwrap();
-        let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
-            .await
-            .unwrap();
-
-        let entries: Vec<(NoteEntryData, String)> = vec![
-            (
-                NoteEntryData {
-                    path: VaultPath::note_path_from("/work/a.md"),
-                    size: 10,
-                    modified_secs: 0,
-                },
-                "# Tasks\n[[spec]] meeting #urgent".to_string(),
-            ),
-            (
-                NoteEntryData {
-                    path: VaultPath::note_path_from("/b.md"),
-                    size: 10,
-                    modified_secs: 0,
-                },
-                "[[spec]] casual".to_string(),
-            ),
-            (
-                NoteEntryData {
-                    path: VaultPath::note_path_from("/c.md"),
-                    size: 10,
-                    modified_secs: 0,
-                },
-                "#urgent only, no link".to_string(),
-            ),
-        ];
-
-        let mut tx = db.pool().begin().await.unwrap();
-        super::insert_notes(&mut tx, &entries).await.unwrap();
-        tx.commit().await.unwrap();
-
-        let paths = |results: &[(NoteEntryData, NoteContentData)]| {
-            let mut p: Vec<String> = results.iter().map(|(e, _)| e.path.to_string()).collect();
-            p.sort();
-            p
-        };
-
-        // backlink + free-text term.
-        let r = super::search_terms(db.pool(), "<spec meeting")
-            .await
-            .unwrap();
-        assert_eq!(paths(&r), vec!["/work/a.md".to_string()]);
-
-        // backlink + label.
-        let r = super::search_terms(db.pool(), "<spec #urgent")
-            .await
-            .unwrap();
-        assert_eq!(paths(&r), vec!["/work/a.md".to_string()]);
-
-        // backlink + excluded label.
-        let r = super::search_terms(db.pool(), "<spec -#urgent")
-            .await
-            .unwrap();
-        assert_eq!(paths(&r), vec!["/b.md".to_string()]);
-
-        // backlink + path filter.
-        let r = super::search_terms(db.pool(), "<spec /work").await.unwrap();
-        assert_eq!(paths(&r), vec!["/work/a.md".to_string()]);
-
-        // backlink + section (breadcrumb) filter.
-        let r = super::search_terms(db.pool(), "<spec @tasks")
-            .await
-            .unwrap();
-        assert_eq!(paths(&r), vec!["/work/a.md".to_string()]);
-
-        // backlink + filename filter.
-        let r = super::search_terms(db.pool(), "<spec =b").await.unwrap();
-        assert_eq!(paths(&r), vec!["/b.md".to_string()]);
-
-        // label without link still matches the non-linking note.
-        let r = super::search_terms(db.pool(), "#urgent -spec")
-            .await
-            .unwrap();
-        assert!(paths(&r).contains(&"/c.md".to_string()));
-
-        db.close().await;
-    }
-
-    #[tokio::test]
-    async fn multiple_filename_terms_are_anded() {
-        use crate::nfs::{NoteEntryData, VaultPath};
-        let tmp = tempfile::TempDir::new().unwrap();
-        let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
-            .await
-            .unwrap();
-
-        let entries: Vec<(NoteEntryData, String)> = vec![
-            (
-                NoteEntryData {
-                    path: VaultPath::note_path_from("/report-2024.md"),
-                    size: 10,
-                    modified_secs: 0,
-                },
-                "x".to_string(),
-            ),
-            (
-                NoteEntryData {
-                    path: VaultPath::note_path_from("/report-2023.md"),
-                    size: 10,
-                    modified_secs: 0,
-                },
-                "y".to_string(),
-            ),
-        ];
-        let mut tx = db.pool().begin().await.unwrap();
-        super::insert_notes(&mut tx, &entries).await.unwrap();
-        tx.commit().await.unwrap();
-
-        // =report =2024 must match ONLY the file containing both, not either.
-        let r = super::search_terms(db.pool(), "=report =2024")
-            .await
-            .unwrap();
-        let paths: Vec<String> = r.iter().map(|(e, _)| e.path.to_string()).collect();
-        assert_eq!(paths, vec!["/report-2024.md".to_string()]);
-
-        db.close().await;
-    }
-
-    #[tokio::test]
-    async fn link_search_follows_rename() {
-        use crate::nfs::{NoteEntryData, VaultPath};
-        let tmp = tempfile::TempDir::new().unwrap();
-        let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
-            .await
-            .unwrap();
-
-        let entry = NoteEntryData {
-            path: VaultPath::note_path_from("/a.md"),
-            size: 10,
-            modified_secs: 0,
-        };
-
-        let mut tx = db.pool().begin().await.unwrap();
-        super::insert_notes(&mut tx, &[(entry, "see [[target]]".to_string())])
-            .await
-            .unwrap();
-        // Rename the linked-to note; links (destination + dest_name) must follow.
-        super::rename_note(
-            &mut tx,
-            &VaultPath::note_path_from("/target.md"),
-            &VaultPath::note_path_from("/renamed.md"),
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-
-        let r = super::search_terms(db.pool(), "<renamed").await.unwrap();
-        let paths: Vec<String> = r.iter().map(|(e, _)| e.path.to_string()).collect();
-        assert_eq!(paths, vec!["/a.md".to_string()]);
-
-        // The old name no longer matches.
-        let r = super::search_terms(db.pool(), "<target").await.unwrap();
-        assert!(r.is_empty());
-
-        db.close().await;
-    }
-
-    #[tokio::test]
-    async fn search_by_link_returns_linking_notes() {
-        use crate::nfs::{NoteEntryData, VaultPath};
-        let tmp = tempfile::TempDir::new().unwrap();
-        let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
-            .await
-            .unwrap();
-
-        let entries: Vec<(NoteEntryData, String)> = vec![
-            (
-                NoteEntryData {
-                    path: VaultPath::note_path_from("/index.md"),
-                    size: 10,
-                    modified_secs: 0,
-                },
-                "links [[projects]] and [[work/spec]]".to_string(),
-            ),
-            (
-                NoteEntryData {
-                    path: VaultPath::note_path_from("/b.md"),
-                    size: 10,
-                    modified_secs: 0,
-                },
-                "see [[projects]]".to_string(),
-            ),
-            (
-                NoteEntryData {
-                    path: VaultPath::note_path_from("/c.md"),
-                    size: 10,
-                    modified_secs: 0,
-                },
-                "no links here".to_string(),
-            ),
-        ];
-
-        let mut tx = db.pool().begin().await.unwrap();
-        super::insert_notes(&mut tx, &entries).await.unwrap();
-        tx.commit().await.unwrap();
-
-        let paths = |results: &[(NoteEntryData, NoteContentData)]| {
-            let mut p: Vec<String> = results.iter().map(|(e, _)| e.path.to_string()).collect();
-            p.sort();
-            p
-        };
-
-        // Notes that link to "projects" (backlinks).
-        let r = super::search_terms(db.pool(), "<projects").await.unwrap();
-        assert_eq!(
-            paths(&r),
-            vec!["/b.md".to_string(), "/index.md".to_string()]
-        );
-
-        // Extension optional.
-        let r = super::search_terms(db.pool(), "<projects.md")
-            .await
-            .unwrap();
-        assert_eq!(
-            paths(&r),
-            vec!["/b.md".to_string(), "/index.md".to_string()]
-        );
-
-        // Bare name matches a note in a subfolder (name-anywhere).
-        let r = super::search_terms(db.pool(), "<spec").await.unwrap();
-        assert_eq!(paths(&r), vec!["/index.md".to_string()]);
-
-        // Path-qualified match.
-        let r = super::search_terms(db.pool(), "<work/spec").await.unwrap();
-        assert_eq!(paths(&r), vec!["/index.md".to_string()]);
-
-        // Wildcard.
-        let r = super::search_terms(db.pool(), "<proj*").await.unwrap();
-        assert_eq!(
-            paths(&r),
-            vec!["/b.md".to_string(), "/index.md".to_string()]
-        );
-
-        // Exclusion: all notes that do NOT link to projects (index and b both link it).
-        let r = super::search_terms(db.pool(), "-<projects").await.unwrap();
-        assert_eq!(paths(&r), vec!["/c.md".to_string()]);
-
-        // Unknown target → no results.
-        let r = super::search_terms(db.pool(), "<nonexistent")
-            .await
-            .unwrap();
-        assert!(r.is_empty());
-
-        db.close().await;
-    }
-
-    #[tokio::test]
-    async fn search_by_forward_link_returns_targets() {
-        use crate::nfs::{NoteEntryData, VaultPath};
-        let tmp = tempfile::TempDir::new().unwrap();
-        let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
-            .await
-            .unwrap();
-
-        // A links to B and C; B and C link nowhere; D links to A.
-        let entries: Vec<(NoteEntryData, String)> = vec![
-            (
-                NoteEntryData {
-                    path: VaultPath::note_path_from("/a.md"),
-                    size: 10,
-                    modified_secs: 0,
-                },
-                "see [[b]] and [[c]]".to_string(),
-            ),
-            (
-                NoteEntryData {
-                    path: VaultPath::note_path_from("/b.md"),
-                    size: 10,
-                    modified_secs: 0,
-                },
-                "b body".to_string(),
-            ),
-            (
-                NoteEntryData {
-                    path: VaultPath::note_path_from("/c.md"),
-                    size: 10,
-                    modified_secs: 0,
-                },
-                "c body".to_string(),
-            ),
-            (
-                NoteEntryData {
-                    path: VaultPath::note_path_from("/d.md"),
-                    size: 10,
-                    modified_secs: 0,
-                },
-                "points to [[a]]".to_string(),
-            ),
-        ];
-
-        let mut tx = db.pool().begin().await.unwrap();
-        super::insert_notes(&mut tx, &entries).await.unwrap();
-        tx.commit().await.unwrap();
-
-        let paths = |results: &[(NoteEntryData, NoteContentData)]| {
-            let mut p: Vec<String> = results.iter().map(|(e, _)| e.path.to_string()).collect();
-            p.sort();
-            p
-        };
-
-        // Forward links of A: the notes A links *to* (B and C).
-        let r = super::search_terms(db.pool(), ">a").await.unwrap();
-        assert_eq!(paths(&r), vec!["/b.md".to_string(), "/c.md".to_string()]);
-
-        // Long form.
-        let r = super::search_terms(db.pool(), "fwd:a").await.unwrap();
-        assert_eq!(paths(&r), vec!["/b.md".to_string(), "/c.md".to_string()]);
-
-        // Backlinks of B: the notes that link *to* B (A).
-        let r = super::search_terms(db.pool(), "<b").await.unwrap();
-        assert_eq!(paths(&r), vec!["/a.md".to_string()]);
-
-        // Forward links of D: A.
-        let r = super::search_terms(db.pool(), ">d").await.unwrap();
-        assert_eq!(paths(&r), vec!["/a.md".to_string()]);
-
-        // Exclusion: notes that are NOT forward links of A (everything but B and C).
-        let r = super::search_terms(db.pool(), "->a").await.unwrap();
-        assert_eq!(paths(&r), vec!["/a.md".to_string(), "/d.md".to_string()]);
-
-        // A note with no outgoing links has no forward links.
-        let r = super::search_terms(db.pool(), ">b").await.unwrap();
-        assert!(r.is_empty());
-
-        db.close().await;
-    }
-
-    #[tokio::test]
-    async fn fts_content_and_breadcrumb_combinations() {
-        use crate::nfs::{NoteEntryData, VaultPath};
-        let tmp = tempfile::TempDir::new().unwrap();
-        let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
-            .await
-            .unwrap();
-
-        let mk = |p: &str, body: &str| {
-            (
-                NoteEntryData {
-                    path: VaultPath::note_path_from(p),
-                    size: 10,
-                    modified_secs: 0,
-                },
-                body.to_string(),
-            )
-        };
-        let entries = vec![
-            // "meeting" under a "Work" heading, also says "done".
-            mk("/a.md", "# Work\nmeeting notes, all done"),
-            // "meeting" but under "Personal", not "Work".
-            mk("/b.md", "# Personal\nmeeting with a friend"),
-            // "Work" heading but no "meeting".
-            mk("/c.md", "# Work\nbudget review"),
-        ];
-        let mut tx = db.pool().begin().await.unwrap();
-        super::insert_notes(&mut tx, &entries).await.unwrap();
-        tx.commit().await.unwrap();
-
-        let paths = |r: &[(NoteEntryData, NoteContentData)]| {
-            let mut p: Vec<String> = r.iter().map(|(e, _)| e.path.to_string()).collect();
-            p.sort();
-            p
-        };
-
-        // content AND breadcrumb (both must hold).
-        let r = super::search_terms(db.pool(), "meeting @work")
-            .await
-            .unwrap();
-        assert_eq!(paths(&r), vec!["/a.md".to_string()]);
-
-        // two content terms AND (only /a.md has both "meeting" and "notes").
-        let r = super::search_terms(db.pool(), "meeting notes")
-            .await
-            .unwrap();
-        assert_eq!(paths(&r), vec!["/a.md".to_string()]);
-
-        // content positive + content exclusion.
-        let r = super::search_terms(db.pool(), "meeting -done")
-            .await
-            .unwrap();
-        assert_eq!(paths(&r), vec!["/b.md".to_string()]);
-
-        // breadcrumb positive + content exclusion.
-        let r = super::search_terms(db.pool(), "@work -budget")
-            .await
-            .unwrap();
-        assert_eq!(paths(&r), vec!["/a.md".to_string()]);
-
-        // breadcrumb positive + breadcrumb exclusion.
-        let r = super::search_terms(db.pool(), "@work -@personal")
-            .await
-            .unwrap();
-        assert_eq!(paths(&r), vec!["/a.md".to_string(), "/c.md".to_string()]);
-
-        // pure content exclusion (no positives anywhere).
-        let r = super::search_terms(db.pool(), "-meeting").await.unwrap();
-        assert_eq!(paths(&r), vec!["/c.md".to_string()]);
-
-        // pure breadcrumb exclusion.
-        let r = super::search_terms(db.pool(), "-@work").await.unwrap();
-        assert_eq!(paths(&r), vec!["/b.md".to_string()]);
-
-        db.close().await;
-    }
-
-    #[tokio::test]
-    async fn search_by_label_returns_matching_notes() {
-        use crate::nfs::{NoteEntryData, VaultPath};
-        let tmp = tempfile::TempDir::new().unwrap();
-        let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
-            .await
-            .unwrap();
-
-        let entries: Vec<(NoteEntryData, String)> = vec![
-            (
-                NoteEntryData {
-                    path: VaultPath::note_path_from("/a.md"),
-                    size: 10,
-                    modified_secs: 0,
-                },
-                "a #important #todo".to_string(),
-            ),
-            (
-                NoteEntryData {
-                    path: VaultPath::note_path_from("/b.md"),
-                    size: 10,
-                    modified_secs: 0,
-                },
-                "b #todo".to_string(),
-            ),
-            (
-                NoteEntryData {
-                    path: VaultPath::note_path_from("/c.md"),
-                    size: 10,
-                    modified_secs: 0,
-                },
-                "c plain".to_string(),
-            ),
-        ];
-
-        let mut tx = db.pool().begin().await.unwrap();
-        super::insert_notes(&mut tx, &entries).await.unwrap();
-        tx.commit().await.unwrap();
-
-        let results = super::search_terms(db.pool(), "#important").await.unwrap();
-        let paths: Vec<String> = results.iter().map(|(e, _)| e.path.to_string()).collect();
-        assert_eq!(paths, vec!["/a.md".to_string()]);
-
-        let results = super::search_terms(db.pool(), "#important #todo")
-            .await
-            .unwrap();
-        let paths: Vec<String> = results.iter().map(|(e, _)| e.path.to_string()).collect();
-        assert_eq!(paths, vec!["/a.md".to_string()]);
-
-        let results = super::search_terms(db.pool(), "#nope").await.unwrap();
-        assert!(results.is_empty());
-
-        db.close().await;
-    }
-
-    #[tokio::test]
-    async fn label_search_uses_index() {
-        // Confirms the PK autoindex (sqlite_autoindex_labels_1) is used for
-        // label lookups after the explicit labels_by_name index was dropped in
-        // 0.7. A hashtag filter must not degrade to a full table scan.
-        use crate::nfs::{NoteEntryData, VaultPath};
-        let tmp = tempfile::TempDir::new().unwrap();
-        let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
-            .await
-            .unwrap();
-
-        let entry = NoteEntryData {
-            path: VaultPath::note_path_from("/a.md"),
-            size: 10,
-            modified_secs: 0,
-        };
-        let mut tx = db.pool().begin().await.unwrap();
-        super::insert_notes(&mut tx, &[(entry, "x #important".to_string())])
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-
-        let (sql, _) = super::build_search_sql_query("#important");
-        let plan_sql = format!("EXPLAIN QUERY PLAN {}", sql);
-        let rows: Vec<(i64, i64, i64, String)> = sqlx::query_as(&plan_sql)
-            .bind("important")
-            .fetch_all(db.pool())
-            .await
-            .unwrap();
-        let plan_text = rows
-            .iter()
-            .map(|(_, _, _, detail)| detail.as_str())
-            .collect::<Vec<_>>()
-            .join(" | ");
-        // The PK autoindex covers WHERE name = ? lookups on (name, path).
-        // No explicit labels_by_name index any more (removed in 0.7).
-        // Accept any sqlite_autoindex_labels_ suffix to tolerate DROP+CREATE migration changes.
-        assert!(
-            plan_text.contains("sqlite_autoindex_labels_"),
-            "expected PK autoindex on labels in plan: {}",
-            plan_text
-        );
-
-        db.close().await;
-    }
-
-    #[tokio::test]
-    async fn rename_note_updates_labels() {
-        use crate::nfs::{NoteEntryData, VaultPath};
-        let tmp = tempfile::TempDir::new().unwrap();
-        let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
-            .await
-            .unwrap();
-
-        let from = VaultPath::note_path_from("/old.md");
-        let to = VaultPath::note_path_from("/new.md");
-        let entry = NoteEntryData {
-            path: from.clone(),
-            size: 10,
-            modified_secs: 0,
-        };
-        let mut tx = db.pool().begin().await.unwrap();
-        super::insert_notes(&mut tx, &[(entry, "x #foo".to_string())])
-            .await
-            .unwrap();
-        super::rename_note(&mut tx, &from, &to).await.unwrap();
-        tx.commit().await.unwrap();
-
-        let old_rows: (i64,) = sqlx::query_as("SELECT count(*) FROM labels WHERE path = ?")
-            .bind(from.to_string())
-            .fetch_one(db.pool())
-            .await
-            .unwrap();
-        assert_eq!(old_rows.0, 0, "no label rows should remain at old path");
-
-        let new_rows: Vec<(String,)> =
-            sqlx::query_as("SELECT name FROM labels WHERE path = ? ORDER BY name")
-                .bind(to.to_string())
-                .fetch_all(db.pool())
-                .await
-                .unwrap();
-        assert_eq!(
-            new_rows.into_iter().map(|(n,)| n).collect::<Vec<_>>(),
-            vec!["foo".to_string()],
-        );
-
-        db.close().await;
-    }
-
-    #[tokio::test]
-    async fn rename_directory_renames_direct_children_note_rows() {
-        use crate::nfs::{NoteEntryData, VaultPath};
-        let tmp = tempfile::TempDir::new().unwrap();
-        let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
-            .await
-            .unwrap();
-
-        // One note directly in the renamed directory, one nested deeper.
-        let mut tx = db.pool().begin().await.unwrap();
-        for path in ["/old_dir/note.md", "/old_dir/sub/deep.md"] {
-            let entry = NoteEntryData {
-                path: VaultPath::note_path_from(path),
-                size: 10,
-                modified_secs: 0,
-            };
-            super::insert_notes(&mut tx, &[(entry, "content".to_string())])
-                .await
-                .unwrap();
-        }
-        super::rename_directory(
-            &mut tx,
-            &VaultPath::new("/old_dir"),
-            &VaultPath::new("/new_dir"),
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-
-        let rows: Vec<(String, String)> =
-            sqlx::query_as("SELECT path, basePath FROM notes ORDER BY path")
-                .fetch_all(db.pool())
-                .await
-                .unwrap();
-        assert_eq!(
-            rows,
-            vec![
-                ("/new_dir/note.md".to_string(), "/new_dir".to_string()),
-                (
-                    "/new_dir/sub/deep.md".to_string(),
-                    "/new_dir/sub".to_string()
-                ),
-            ],
-        );
-
-        db.close().await;
-    }
-
-    #[tokio::test]
-    async fn rename_directory_updates_labels() {
-        use crate::nfs::{NoteEntryData, VaultPath};
-        let tmp = tempfile::TempDir::new().unwrap();
-        let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
-            .await
-            .unwrap();
-
-        let note_path = VaultPath::note_path_from("/old_dir/note.md");
-        let entry = NoteEntryData {
-            path: note_path.clone(),
-            size: 10,
-            modified_secs: 0,
-        };
-        let mut tx = db.pool().begin().await.unwrap();
-        super::insert_notes(&mut tx, &[(entry, "x #moved".to_string())])
-            .await
-            .unwrap();
-        super::rename_directory(
-            &mut tx,
-            &VaultPath::new("/old_dir"),
-            &VaultPath::new("/new_dir"),
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-
-        let rows: Vec<(String, String)> = sqlx::query_as("SELECT name, path FROM labels")
-            .fetch_all(db.pool())
-            .await
-            .unwrap();
-        assert_eq!(
-            rows,
-            vec![("moved".to_string(), "/new_dir/note.md".to_string())],
-        );
-
-        db.close().await;
-    }
-
-    #[tokio::test]
-    async fn delete_directory_removes_labels() {
-        use crate::nfs::{NoteEntryData, VaultPath};
-        let tmp = tempfile::TempDir::new().unwrap();
-        let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
-            .await
-            .unwrap();
-
-        let note_path = VaultPath::note_path_from("/sub/note.md");
-        let entry = NoteEntryData {
-            path: note_path.clone(),
-            size: 10,
-            modified_secs: 0,
-        };
-        let mut tx = db.pool().begin().await.unwrap();
-        super::insert_notes(&mut tx, &[(entry, "x #gone".to_string())])
-            .await
-            .unwrap();
-        super::delete_directories(&mut tx, &[VaultPath::new("/sub")])
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-
-        let count: (i64,) = sqlx::query_as("SELECT count(*) FROM labels")
-            .fetch_one(db.pool())
-            .await
-            .unwrap();
-        assert_eq!(count.0, 0);
-
-        db.close().await;
-    }
-
-    #[tokio::test]
-    async fn delete_directory_with_underscore_does_not_touch_siblings() {
-        use crate::nfs::{NoteEntryData, VaultPath};
-        let tmp = tempfile::TempDir::new().unwrap();
-        let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
-            .await
-            .unwrap();
-
-        let target = VaultPath::note_path_from("/my_dir/a.md");
-        let sibling = VaultPath::note_path_from("/myXdir/b.md");
-        let entries = vec![
-            (
-                NoteEntryData {
-                    path: target.clone(),
-                    size: 10,
-                    modified_secs: 0,
-                },
-                "x #t".to_string(),
-            ),
-            (
-                NoteEntryData {
-                    path: sibling.clone(),
-                    size: 10,
-                    modified_secs: 0,
-                },
-                "y #s".to_string(),
-            ),
-        ];
-        let mut tx = db.pool().begin().await.unwrap();
-        super::insert_notes(&mut tx, &entries).await.unwrap();
-        super::delete_directories(&mut tx, &[VaultPath::new("/my_dir")])
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-
-        let remaining: Vec<(String,)> = sqlx::query_as("SELECT path FROM notes ORDER BY path")
-            .fetch_all(db.pool())
-            .await
-            .unwrap();
-        assert_eq!(
-            remaining.into_iter().map(|(p,)| p).collect::<Vec<_>>(),
-            vec![sibling.to_string()],
-            "sibling /myXdir/b.md must be untouched"
-        );
-
-        let sibling_label: (i64,) = sqlx::query_as("SELECT count(*) FROM labels WHERE path = ?")
-            .bind(sibling.to_string())
-            .fetch_one(db.pool())
-            .await
-            .unwrap();
-        assert_eq!(sibling_label.0, 1, "sibling label preserved");
-
-        db.close().await;
-    }
-
-    #[test]
-    fn escape_like_pattern_escapes_metacharacters() {
-        assert_eq!(super::escape_like_pattern("/my_dir/"), "/my\\_dir/");
-        assert_eq!(super::escape_like_pattern("/a%b/"), "/a\\%b/");
-        assert_eq!(super::escape_like_pattern("/a\\b/"), "/a\\\\b/");
-        assert_eq!(super::escape_like_pattern("/normal/"), "/normal/");
-    }
-
-    /// Verify that `escape_like_pattern` leaves `*` and `.` untouched — a
-    /// prerequisite for the escape-then-replace order in the wildcard branch.
-    #[test]
-    fn escape_like_pattern_leaves_star_and_dot_untouched() {
-        assert_eq!(super::escape_like_pattern("task*"), "task*");
-        assert_eq!(super::escape_like_pattern("task*.md"), "task*.md");
-        assert_eq!(super::escape_like_pattern("*report.md"), "*report.md");
-    }
-
-    /// SQL-shape unit test: confirm the bound parameter produced for `=task*`
-    /// is `task%.md` and for plain `=task` is `%task%`.
-    #[test]
-    fn filename_wildcard_produces_correct_pattern_param() {
-        // Wildcard term: =task*  → param should be "task%.md"
-        let (_, params) = build_search_sql_query("=task*");
-        assert_eq!(
-            params,
-            vec!["task%.md".to_string()],
-            "=task* must produce bound param 'task%.md'"
-        );
-
-        // Non-wildcard term: =task  → param should be "%task%"
-        let (_, params) = build_search_sql_query("=task");
-        assert_eq!(
-            params,
-            vec!["%task%".to_string()],
-            "=task must produce bound param '%task%'"
-        );
-
-        // Suffix wildcard: =*report → param should be "%report.md"
-        let (_, params) = build_search_sql_query("=*report");
-        assert_eq!(
-            params,
-            vec!["%report.md".to_string()],
-            "=*report must produce bound param '%report.md'"
-        );
-
-        // Mid wildcard: =ta*sk → param should be "ta%sk.md"
-        let (_, params) = build_search_sql_query("=ta*sk");
-        assert_eq!(
-            params,
-            vec!["ta%sk.md".to_string()],
-            "=ta*sk must produce bound param 'ta%sk.md'"
-        );
-    }
-
-    #[tokio::test]
-    async fn search_by_filename_wildcard() {
-        use crate::nfs::{NoteEntryData, VaultPath};
-        let tmp = tempfile::TempDir::new().unwrap();
-        let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
-            .await
-            .unwrap();
-
-        let entries: Vec<(NoteEntryData, String)> = vec![
-            (
-                NoteEntryData {
-                    path: VaultPath::note_path_from("/task.md"),
-                    size: 10,
-                    modified_secs: 0,
-                },
-                "x".to_string(),
-            ),
-            (
-                NoteEntryData {
-                    path: VaultPath::note_path_from("/tasks.md"),
-                    size: 10,
-                    modified_secs: 0,
-                },
-                "y".to_string(),
-            ),
-            (
-                NoteEntryData {
-                    path: VaultPath::note_path_from("/weekly-report.md"),
-                    size: 10,
-                    modified_secs: 0,
-                },
-                "z".to_string(),
-            ),
-            (
-                NoteEntryData {
-                    path: VaultPath::note_path_from("/other.md"),
-                    size: 10,
-                    modified_secs: 0,
-                },
-                "w".to_string(),
-            ),
-        ];
-        let mut tx = db.pool().begin().await.unwrap();
-        super::insert_notes(&mut tx, &entries).await.unwrap();
-        tx.commit().await.unwrap();
-
-        let paths = |results: &[(NoteEntryData, NoteContentData)]| {
-            let mut p: Vec<String> = results.iter().map(|(e, _)| e.path.to_string()).collect();
-            p.sort();
-            p
-        };
-
-        // Substring (non-wildcard): =task → task.md and tasks.md
-        let r = super::search_terms(db.pool(), "=task").await.unwrap();
-        assert_eq!(
-            paths(&r),
-            vec!["/task.md".to_string(), "/tasks.md".to_string()],
-            "=task must match task.md and tasks.md as substrings"
-        );
-
-        // Prefix wildcard: =task* → task.md and tasks.md, NOT weekly-report.md
-        let r = super::search_terms(db.pool(), "=task*").await.unwrap();
-        assert_eq!(
-            paths(&r),
-            vec!["/task.md".to_string(), "/tasks.md".to_string()],
-            "=task* must match task.md and tasks.md, not weekly-report.md"
-        );
-
-        // Suffix wildcard: =*report → weekly-report.md only
-        let r = super::search_terms(db.pool(), "=*report").await.unwrap();
-        assert_eq!(
-            paths(&r),
-            vec!["/weekly-report.md".to_string()],
-            "=*report must match only weekly-report.md"
-        );
-
-        // Exclusion with wildcard: -=task* → other.md and weekly-report.md
-        let r = super::search_terms(db.pool(), "-=task*").await.unwrap();
-        assert_eq!(
-            paths(&r),
-            vec!["/other.md".to_string(), "/weekly-report.md".to_string()],
-            "-=task* must exclude task.md and tasks.md"
-        );
-
-        db.close().await;
-    }
-
-    #[tokio::test]
-    async fn search_by_path_wildcard() {
-        use crate::nfs::{NoteEntryData, VaultPath};
-        let tmp = tempfile::TempDir::new().unwrap();
-        let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
-            .await
-            .unwrap();
-
-        let mk = |p: &str| NoteEntryData {
-            path: VaultPath::note_path_from(p),
-            size: 10,
-            modified_secs: 0,
-        };
-        let entries: Vec<(NoteEntryData, String)> = vec![
-            (mk("/work/a.md"), "a".to_string()),
-            (mk("/work/sub/b.md"), "b".to_string()),
-            (mk("/personal/c.md"), "c".to_string()),
-            (mk("/d.md"), "d".to_string()),
-        ];
-        let mut tx = db.pool().begin().await.unwrap();
-        super::insert_notes(&mut tx, &entries).await.unwrap();
-        tx.commit().await.unwrap();
-
-        let paths = |results: &[(NoteEntryData, NoteContentData)]| {
-            let mut p: Vec<String> = results.iter().map(|(e, _)| e.path.to_string()).collect();
-            p.sort();
-            p
-        };
-
-        // Prefix (non-wildcard) is unchanged: /work matches the folder + subfolders.
-        let r = super::search_terms(db.pool(), "/work").await.unwrap();
-        assert_eq!(
-            paths(&r),
-            vec!["/work/a.md".to_string(), "/work/sub/b.md".to_string()],
-        );
-
-        // Wildcard prefix: /wo* behaves like the prefix form.
-        let r = super::search_terms(db.pool(), "/wo*").await.unwrap();
-        assert_eq!(
-            paths(&r),
-            vec!["/work/a.md".to_string(), "/work/sub/b.md".to_string()],
-        );
-
-        // Suffix wildcard on the folder path: /*sub → only notes whose folder ends in "sub".
-        let r = super::search_terms(db.pool(), "/*sub").await.unwrap();
-        assert_eq!(paths(&r), vec!["/work/sub/b.md".to_string()]);
-
-        // Subfolder wildcard: /work/* → only notes strictly under /work/.
-        let r = super::search_terms(db.pool(), "/work/*").await.unwrap();
-        assert_eq!(paths(&r), vec!["/work/sub/b.md".to_string()]);
-
-        // Excluded wildcard: -/wo* drops everything under /work.
-        let r = super::search_terms(db.pool(), "-/wo*").await.unwrap();
-        assert_eq!(
-            paths(&r),
-            vec!["/d.md".to_string(), "/personal/c.md".to_string()],
-        );
-
-        db.close().await;
-    }
-
-    #[tokio::test]
-    async fn delete_directory_no_trailing_slash_does_not_match_sibling_prefix() {
-        use crate::nfs::{NoteEntryData, VaultPath};
-        let tmp = tempfile::TempDir::new().unwrap();
-        let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
-            .await
-            .unwrap();
-
-        let target = VaultPath::note_path_from("/notes/a.md");
-        let sibling = VaultPath::note_path_from("/notes_archive/b.md");
-        let entries = vec![
-            (
-                NoteEntryData {
-                    path: target.clone(),
-                    size: 10,
-                    modified_secs: 0,
-                },
-                "x".to_string(),
-            ),
-            (
-                NoteEntryData {
-                    path: sibling.clone(),
-                    size: 10,
-                    modified_secs: 0,
-                },
-                "y".to_string(),
-            ),
-        ];
-        let mut tx = db.pool().begin().await.unwrap();
-        super::insert_notes(&mut tx, &entries).await.unwrap();
-        super::delete_directories(&mut tx, &[VaultPath::new("/notes")])
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-
-        let rows: Vec<(String,)> = sqlx::query_as("SELECT path FROM notes ORDER BY path")
-            .fetch_all(db.pool())
-            .await
-            .unwrap();
-        let paths: Vec<String> = rows.into_iter().map(|(p,)| p).collect();
-        assert_eq!(
-            paths,
-            vec![sibling.to_string()],
-            "sibling /notes_archive/ must not be deleted"
-        );
-        db.close().await;
-    }
-
-    #[tokio::test]
-    async fn path_search_with_underscore_does_not_treat_as_wildcard() {
-        use crate::nfs::{NoteEntryData, VaultPath};
-        let tmp = tempfile::TempDir::new().unwrap();
-        let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
-            .await
-            .unwrap();
-
-        let target = VaultPath::note_path_from("/my_notes/a.md");
-        let sibling = VaultPath::note_path_from("/myXnotes/b.md");
-        let entries = vec![
-            (
-                NoteEntryData {
-                    path: target.clone(),
-                    size: 10,
-                    modified_secs: 0,
-                },
-                "x".to_string(),
-            ),
-            (
-                NoteEntryData {
-                    path: sibling.clone(),
-                    size: 10,
-                    modified_secs: 0,
-                },
-                "y".to_string(),
-            ),
-        ];
-        let mut tx = db.pool().begin().await.unwrap();
-        super::insert_notes(&mut tx, &entries).await.unwrap();
-        tx.commit().await.unwrap();
-
-        // pt:my_notes search must only match /my_notes/, not /myXnotes/.
-        let results = super::search_terms(db.pool(), "pt:my_notes").await.unwrap();
-        let paths: Vec<String> = results.iter().map(|(e, _)| e.path.to_string()).collect();
-        assert_eq!(
-            paths,
-            vec![target.to_string()],
-            "underscore must be literal in path search"
-        );
-        db.close().await;
-    }
-
-    #[tokio::test]
-    async fn filename_search_with_underscore_does_not_treat_as_wildcard() {
-        use crate::nfs::{NoteEntryData, VaultPath};
-        let tmp = tempfile::TempDir::new().unwrap();
-        let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
-            .await
-            .unwrap();
-
-        let target = VaultPath::note_path_from("/my_note.md");
-        let sibling = VaultPath::note_path_from("/myXnote.md");
-        let entries = vec![
-            (
-                NoteEntryData {
-                    path: target.clone(),
-                    size: 10,
-                    modified_secs: 0,
-                },
-                "x".to_string(),
-            ),
-            (
-                NoteEntryData {
-                    path: sibling.clone(),
-                    size: 10,
-                    modified_secs: 0,
-                },
-                "y".to_string(),
-            ),
-        ];
-        let mut tx = db.pool().begin().await.unwrap();
-        super::insert_notes(&mut tx, &entries).await.unwrap();
-        tx.commit().await.unwrap();
-
-        let results = super::search_terms(db.pool(), "=my_note").await.unwrap();
-        let paths: Vec<String> = results.iter().map(|(e, _)| e.path.to_string()).collect();
-        assert_eq!(
-            paths,
-            vec![target.to_string()],
-            "underscore must be literal in filename search"
-        );
-        db.close().await;
-    }
-
-    #[tokio::test]
-    async fn fts_term_with_metachar_does_not_error() {
-        use crate::nfs::{NoteEntryData, VaultPath};
-        let tmp = tempfile::TempDir::new().unwrap();
-        let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
-            .await
-            .unwrap();
-
-        let entry = NoteEntryData {
-            path: VaultPath::note_path_from("/a.md"),
-            size: 10,
-            modified_secs: 0,
-        };
-        let mut tx = db.pool().begin().await.unwrap();
-        super::insert_notes(&mut tx, &[(entry, "some meeting note".to_string())])
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-
-        // Each of these would have produced an FTS4 syntax error before the fix.
-        for q in &[
-            "(meeting",
-            "*",
-            "meet*ing",
-            "title:value",
-            "a^b",
-            "<",
-            ">",
-            "=",
-            "@",
-            "-",
-            "-<",
-            "->",
-            "in:",
-            "name:",
-        ] {
-            let res = super::search_terms(db.pool(), q).await;
-            assert!(
-                res.is_ok(),
-                "query {:?} must not error; got {:?}",
-                q,
-                res.err()
-            );
-        }
-
-        db.close().await;
-    }
-
-    #[tokio::test]
-    async fn breadcrumb_term_with_metachar_does_not_error() {
-        use crate::nfs::{NoteEntryData, VaultPath};
-        let tmp = tempfile::TempDir::new().unwrap();
-        let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
-            .await
-            .unwrap();
-
-        let entry = NoteEntryData {
-            path: VaultPath::note_path_from("/a.md"),
-            size: 10,
-            modified_secs: 0,
-        };
-        let mut tx = db.pool().begin().await.unwrap();
-        super::insert_notes(&mut tx, &[(entry, "# Heading\n\ntext".to_string())])
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-
-        for q in &["@(heading", "@*", "in:title:", ">(heading", ">*"] {
-            let res = super::search_terms(db.pool(), q).await;
-            assert!(
-                res.is_ok(),
-                "breadcrumb query {:?} must not error; got {:?}",
-                q,
-                res.err()
-            );
-        }
-
-        db.close().await;
-    }
-
-    #[cfg(test)]
-    mod note_columns_consistency {
-        #[test]
-        fn note_columns_is_path_plus_rest() {
-            assert_eq!(
-                super::super::NOTE_COLUMNS,
-                format!("path, {}", super::super::NOTE_COLUMNS_REST),
-                "NOTE_COLUMNS must equal 'path, ' + NOTE_COLUMNS_REST"
-            );
-        }
-    }
-
-    /// On a stored DB version older than the current `VERSION`, reopening the
-    /// vault must self-heal the schema: the index comes back valid
-    /// but empty, `index_ready` reports `false`, and the next sync pass
-    /// (`validate_and_init`) refills it. After the heal, stale `>`-separated
-    /// breadcrumb rows are gone and the new `\x1f` separator is in place.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn reopen_self_heals_outdated_schema() {
-        use crate::{NoteVault, VaultConfig};
-        use sqlx::Row;
-
-        let dir = tempfile::TempDir::new().unwrap();
-        std::fs::write(dir.path().join("note.md"), "# Note\n## Sub\nbody text").unwrap();
-
-        // Bring the index up at the current version with one indexed note.
-        {
-            let vault = NoteVault::new(VaultConfig::new(crate::system::sys(dir.path())))
-                .await
-                .unwrap();
-            vault.validate_and_init().await.unwrap();
-            // A brand-new index is healed-on-open, hence not ready; reopening
-            // it below (current version) must report ready.
-
-            // Force the schema backwards: stamp version `0.4` and rewrite
-            // stored breadcrumbs in the legacy `>`-joined form to simulate a
-            // vault upgraded across the separator change.
-            let pool = vault.index.pool();
-            sqlx::query("UPDATE appData SET value = '0.4' WHERE name = 'version'")
-                .execute(pool)
-                .await
-                .unwrap();
-            sqlx::query("UPDATE notesContent SET breadcrumb = REPLACE(breadcrumb, x'1f', '>')")
-                .execute(pool)
-                .await
-                .unwrap();
-
-            // Sanity: the stale row really does contain `>`.
-            let stale: Vec<String> =
-                sqlx::query("SELECT breadcrumb FROM notesContent WHERE breadcrumb != ''")
-                    .fetch_all(pool)
-                    .await
-                    .unwrap()
-                    .into_iter()
-                    .map(|r| r.try_get("breadcrumb").unwrap())
-                    .collect();
-            assert!(
-                stale.iter().any(|b| b.contains('>')),
-                "expected legacy `>` separator in: {:?}",
-                stale
-            );
-            vault.index.close().await;
-        }
-
-        // Reopen: the outdated schema is healed silently; the probe reports
-        // not-ready until a sync pass fills the empty index.
-        let vault = NoteVault::new(VaultConfig::new(crate::system::sys(dir.path())))
-            .await
-            .unwrap();
-        assert!(!vault.index_ready(), "healed index must not report ready");
-        vault.validate_and_init().await.unwrap();
-        // The sync pass marks the index synced: the SAME instance now
-        // reports ready (regression: the old write-once flag kept lying).
-        assert!(
-            vault.index_ready(),
-            "synced index must report ready on the same instance"
-        );
-
-        // Post-heal: no row carries the legacy separator; non-empty
-        // breadcrumbs use `\x1f`.
-        let pool = vault.index.pool();
-        let after: Vec<String> =
-            sqlx::query("SELECT breadcrumb FROM notesContent WHERE breadcrumb != ''")
-                .fetch_all(pool)
-                .await
-                .unwrap()
-                .into_iter()
-                .map(|r| r.try_get("breadcrumb").unwrap())
-                .collect();
-        assert!(
-            !after.is_empty(),
-            "expected reindexed breadcrumb rows after heal"
-        );
-        assert!(
-            after.iter().all(|b| !b.contains('>')),
-            "stale `>` separator survived the heal: {:?}",
-            after
-        );
-
-        // End-to-end: the public chunk accessor exposes sane breadcrumb
-        // leaves after the heal (storage-level separator checks alone would
-        // miss an accessor-level splitting bug).
-        let chunks = vault
-            .get_note_chunks(&crate::nfs::VaultPath::new("/note.md"))
-            .await
-            .unwrap();
-        let leaves: Vec<&str> = chunks
-            .values()
-            .flatten()
-            .filter_map(|c| c.breadcrumb_last())
-            .collect();
-        assert!(
-            leaves.iter().any(|l| *l == "Note" || *l == "Sub"),
-            "expected Note/Sub breadcrumb leaves, got: {:?}",
-            leaves
-        );
-
-        // A second reopen with a current schema must report ready.
-        vault.index.close().await;
-        drop(vault);
-        let vault = NoteVault::new(VaultConfig::new(crate::system::sys(dir.path())))
-            .await
-            .unwrap();
-        assert!(vault.index_ready(), "current schema must report ready");
-
-        // recreate_index drops the tables and runs a full sync; the probe
-        // must still report ready on the same instance afterwards.
-        vault.recreate_index().await.unwrap();
-        assert!(
-            vault.index_ready(),
-            "recreated-and-synced index must report ready"
-        );
-    }
-
-    /// `open` on a current-version schema must not heal: `ready` is `true`
-    /// and existing rows survive.
-    #[tokio::test]
-    async fn open_preserves_current_schema() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let db_path = tmp.path().join("kimun.sqlite");
-
-        // First open heals the fresh file into a current schema.
-        let first = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
-            .await
-            .unwrap();
-        assert!(!first.ready());
-        sqlx::query("INSERT INTO appData (name, value) VALUES ('marker', 'kept')")
-            .execute(first.pool())
-            .await
-            .unwrap();
-        first.close().await;
-
-        // Second open sees a current schema: no heal, data intact.
-        let second = super::NoteIndex::open(&file::IndexFile::at(crate::system::sys(&db_path)))
-            .await
-            .unwrap();
-        assert!(second.ready());
-        let marker: Option<String> =
-            sqlx::query_scalar("SELECT value FROM appData WHERE name = 'marker'")
-                .fetch_optional(second.pool())
-                .await
-                .unwrap();
-        assert_eq!(marker.as_deref(), Some("kept"));
-        second.close().await;
-    }
-
-    /// A recursive browse from the root is a whole-vault sync and must mark
-    /// the index synced — the readiness probe reports true afterwards even
-    /// though the schema was healed at open (regression for the
-    /// browse-only path that previously left the probe stuck on false).
-    #[tokio::test(flavor = "multi_thread")]
-    async fn whole_vault_browse_marks_index_ready() {
-        use crate::{NoteVault, VaultBrowseOptionsBuilder, VaultConfig};
-
-        let dir = tempfile::TempDir::new().unwrap();
-        std::fs::write(dir.path().join("note.md"), "# Note\nbody").unwrap();
-
-        let vault = NoteVault::new(VaultConfig::new(crate::system::sys(dir.path())))
-            .await
-            .unwrap();
-        assert!(!vault.index_ready(), "fresh index is healed, not ready");
-
-        let (options, rx) = VaultBrowseOptionsBuilder::new(&crate::nfs::VaultPath::root())
-            .recursive(true)
-            .build();
-        vault.browse_vault(options).await.unwrap();
-        drop(rx);
-
-        assert!(
-            vault.index_ready(),
-            "recursive root browse is a whole-vault sync — probe must report ready"
-        );
-    }
-}
+mod tests;

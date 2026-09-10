@@ -477,7 +477,7 @@ impl EditorScreen {
 
     fn navigate_sidebar(&mut self, dir: VaultPath, tx: &AppTx) {
         // The sidebar hosts a streamed `SearchList`; (re)building its engine for
-        // `dir` runs `browse_vault` inside the source and emits rows as they
+        // `dir` runs `browse_vault_stream` inside the source and emits rows as they
         // arrive (with a redraw on each).
         self.panels.sidebar_mut().navigate(dir, tx);
     }
@@ -1043,7 +1043,7 @@ impl EditorScreen {
 
     /// One owner for the self-update lifecycle's display half; the
     /// app-global half (persisting dismissals, seeding later screens) lives
-    /// in main.rs.
+    /// in the App loop (`app::handle_app_message`).
     fn handle_update(&mut self, flow: UpdateFlow, tx: &AppTx) {
         match flow {
             UpdateFlow::Available(status) => {

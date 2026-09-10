@@ -49,8 +49,12 @@ Which engine drives the TUI text editor, chosen in config (`editor_backend`): **
 _Avoid_: editor engine, editor mode (collides with **editing mode**), textarea (the superseded name for **plain**, from the library that used to back it).
 
 **Edit buffer**:
-The open note's text, its cursor, its selection and its edit history as one thing, behind which every mutation on the **plain** and **vim** backends passes. Because it observes each edit from both sides, the facts that follow from one — did the content change, what range was damaged, which edits belong to one **undo group** — are *derived* there rather than predicted by each caller. It knows nothing about markdown, about the terminal, or about how it will be drawn: it is text and the operations on it. That ignorance is structural: it lives in `tui/src/ropetext`, a former workspace crate still forbidden from naming anything outside itself, so it can become one again. The **nvim** backend has none — neovim owns its own buffer and history.
+The open note's text, its cursor, its selection and its edit history as one value — the engine's buffer: three mutation primitives inside a transaction, and motions that return a **Position** rather than moving anything. It knows nothing about markdown, about the terminal, or about how it will be drawn: it is text and the operations on it. That ignorance is structural: it lives in `tui/src/ropetext`, a former workspace crate still forbidden from naming anything outside itself, so it can become one again. Everything kimün adds on top — grouping, damage, the **indent step**, the **find pattern** — lives one level up, in the **rope buffer**. The **nvim** backend has none — neovim owns its own buffer and history.
 _Avoid_: buffer (collides with ratatui's render buffer), document, model.
+
+**Rope buffer**:
+The editor's buffer: the **edit buffer** plus kimün's editing policy, and the one `&mut` the **vim** engine, the plain key table, the **find bar** and the editor component all take (`RopeBuffer`). Because every mutation on the **plain** and **vim** backends passes through it, the facts that follow from one — did the content change, what range was damaged, which edits belong to one **undo group** — are *derived* there rather than predicted by each caller. It also owns what the engine deliberately refuses: the **find pattern** and its row-wise wrapping search, the yank transport the **unnamed register** fills from, the goal column a vertical motion aims at, the **indent step**, and the `(row, col)` vocabulary every caller speaks. It knows text, not markdown: list continuation, **auto-surround** and emphasis markers are operations *over* it (`markdown_edits`), tested against a bare one.
+_Avoid_: compat shim, textarea shim (the name it grew up under — it owns policy, not a migration), buffer unqualified.
 
 **Editing mode**:
 The active modal state inside a vim-style backend — Normal, Insert, Replace, Visual, Visual-line, Command. Shared by the **nvim** and **vim** backends (the `EditorMode` enum); the **textarea** backend has none. Distinct from the **editor backend**, which selects the engine, not the state within it. Replace (`R`) is engine-owned in the **vim** backend: keys overwrite in place and never reach the textarea's insert features.
@@ -179,7 +183,7 @@ _Avoid_: title (the Query panel already has a query-reflective title; the breadc
 ### TUI search surfaces
 
 **SearchList**:
-The one module behind every query-input-over-an-async-loaded-list surface in the TUI — the **note browser**, the **Query panel**, the **Saved Searches modal**, the directory sidebar, and (via **QueryListPanel**) the list-shaped drawer views. It owns the query input, keyboard navigation, the async-load lifecycle, the autocomplete host, selection, and the **list focus** below; it emits nothing on its own — callers read the selected row and decide the action. Rich presentation (the Query panel's expand/preview) composes on top rather than living inside it.
+The one module behind every query-input-over-an-async-loaded-list surface in the TUI — the **note browser**, the **Query panel**, the **Saved Searches modal**, the directory sidebar, and (via **QueryListPanel**) the list-shaped drawer views. It owns the query input, keyboard navigation, the async-load lifecycle, the autocomplete host, selection, the row order when a surface hands it one (`order_by`, so streamed rows land sorted and a sort change is a recompute, not a reload), and the **list focus** below; it emits nothing on its own — callers read the selected row and decide the action. Rich presentation (the Query panel's expand/preview) composes on top rather than living inside it.
 _Avoid_: list widget, search box (each names only a part)
 
 **List focus**:
@@ -225,6 +229,24 @@ _Avoid_: capture (taken by the mouse-capture toggle), focus (collides with panel
 **Follow target**:
 What following resolves to — a **link** (a note reference, an external URL, or an attachment, unresolved as written in the note) or a **label** (a `#tag`, whose query is run). Named for the action rather than the destination, because the destination is not known until the follow runs: only then is a link decided to be a note, a URL, or a file. Wider than **note link**, which is note→note only and excludes URLs and attachments. Reached by Ctrl-N or by a double-click; a single click only places the cursor.
 _Avoid_: link target (silent about labels), note target (a link is often not a note at all).
+
+### App shell
+
+**Screen**:
+The top-level surface the terminal shows — Start, Browse, Editor, Onboarding, Preferences — exactly one live at a time (`AppScreen`). It owns everything drawn and every input while it is up, and is swapped whole by the **App loop**, which calls `on_exit` on the old screen and `on_enter` on the new. A screen never constructs another: it sends an `OpenScreen` event and the loop builds the replacement, seeding it with the app-global facts (vault, update notice, server status).
+_Avoid_: view (collides with **drawer view**), page, window, mode.
+
+**App loop**:
+The one module that runs the TUI: draw the **Screen**, wait for the next event, drain what is already queued, draw again. It owns the rules no screen may — global shortcuts fire before the screen sees a key; a burst of queued events paints one frame; a screen swap mid-drain ends the drain (the *screen generation*), so the new screen is drawn before any event still queued is delivered to it. Generic over the terminal backend and fed by an **Input source**, so it runs headless in tests.
+_Avoid_: main loop / event loop (name the mechanism, not the module), run_app (the function, not the concept).
+
+**Input source**:
+The seam that supplies the **App loop** with terminal-originated events — key, mouse, paste, resize. Crossterm in the app; a scripted stream in tests, so a loop test drives real screens without a terminal. An input source ends only when the terminal is gone, and the loop treats its end as quit. Events raised by the app's own tasks (autosave, indexing, a server answer) are not input: they arrive on the app channel, which the loop drains first.
+_Avoid_: event stream (the crossterm type — one adapter), event handler (the superseded name of the module that merges both channels).
+
+**Terminal session**:
+The terminal state the TUI holds while a **Screen** is up — raw mode, the alternate screen, bracketed paste, keyboard-enhancement flags, mouse capture — entered once and left symmetrically, on normal exit and on panic alike. A guard, so the leave order cannot drift from the enter order and cannot be forgotten on one exit path.
+_Avoid_: terminal setup / teardown (two halves of one thing), raw mode (one of its parts).
 
 ### TUI surfaces
 
@@ -296,7 +318,7 @@ _Avoid_: exported answer (it is not an export format, it is a note), answer note
 ### Indexing
 
 **NoteIndex**:
-The one core module owning the searchable index of the vault — search, suggestions, backlinks, and the index's own lifecycle (schema versioning, self-heal on open). Its interface speaks in notes, queries, and **note links**; SQLite, sqlx, transactions, and schema migrations are implementation and never cross the interface. Atomicity is carried by composite operations (apply an **IndexDiff**; rename a note together with its rewritten backlinks) rather than by exposing transactions.
+The one core module owning the searchable index of the vault — search, suggestions, backlinks, and the index's own lifecycle (schema versioning, self-heal on open). Its interface speaks in notes, queries, and **note links**; SQLite, sqlx, transactions, and schema migrations are implementation and never cross the interface. Atomicity is carried by composite operations (apply an **IndexDiff**; rename a note together with its rewritten backlinks) rather than by exposing transactions. Its own tests speak the same interface — an **IndexDiff** in, queries out; only the tests of the schema itself (versioning, self-heal, query plans) see SQLite.
 _Avoid_: db, VaultDB, database (they name the implementation, not the role)
 
 **Index file**:
@@ -311,9 +333,13 @@ _Avoid_: DBStatus (the superseded public enum), force rebuild (the deleted file-
 The batch of note changes — to add, to modify, to delete — that a vault sync walk produces and `NoteIndex::apply` consumes in one atomic operation. Owned by the **NoteIndex** interface: it is the currency crossing that seam, not a walker by-product.
 _Avoid_: NoteListResults (the superseded visitor type), results
 
-**LinkRewrite**:
-The one core module that rewrites every **note link** pointing at a renamed note. Three compiler-enforced stages — *scout* (one index query for the linking notes), *prepare* (read each, rewrite links in memory, take fail-closed **backups**), *commit* (write the rewritten notes, rewrite the renamed note's self-links at its new path, return the entries for the index commit) — with the caller's filesystem rename sitting between prepare and commit. Each stage consumes the previous, so running them out of order is a compile error, not a broken vault.
-_Avoid_: backlink rewriting (names one half; self-links are the other), rename helper
+**NoteRename**:
+The one core module that renames a note: locks, the filesystem move, the rewrite of every **note link** pointing at it, and the index commit, in one call. The stages inside are compiler-enforced — *scout* (one index query for the linking notes), *lock* (source, destination and every linking note, in a stable order), *prepare* (read each, rewrite links in memory, take fail-closed **backups**), *move* (the source on disk), *commit* (write the rewritten notes, rewrite the renamed note's self-links at its new path), *index* (one atomic index operation). Each stage consumes the previous, so running them out of order is a compile error, not a broken vault. Nothing on disk changes before the move; after it, the vault is renamed and the rest converges. `NoteVault::rename_note` forwards to it.
+_Avoid_: LinkRewrite (the superseded module, which owned the rewrite but left the move, the locks and the index commit to its caller), backlink rewriting (names one half; self-links are the other), rename helper
+
+**NoteLocks**:
+The per-note in-process write locks a **Vault** hands to every content mutation — save, append, replace, and **NoteRename** — so a read-modify-write can't be interleaved by another in-process writer. Its own type so a module can be handed the locks without the vault. Cross-process writers are not covered.
+_Avoid_: note_locks map (the field), the mutex
 
 **VaultSync**:
 The one core module that brings the **NoteIndex** in step with the vault on disk. One call runs the whole pipeline — read the cached entries, walk the subtree in parallel, diff against the cache under a validation mode, apply the **IndexDiff**, optionally streaming discovered entries to the caller as they are found. The parallel walker, its thread-state plumbing, and the async/blocking bridge are implementation and never cross the interface.
@@ -344,6 +370,10 @@ _Avoid_: span helpers / zone helpers (each names a part), parser utilities
 **Auto-surround**:
 Typing an opening pair character (`(` `[` `{` `<`) or a symmetric one (`"` `'` `` ` `` `*` `_` `~`) while a selection is active wraps the selection in the pair instead of replacing it. The selection stays on the inner text afterwards, so wraps chain — `[` `[` builds a wikilink, `*` `*` builds bold. Closing characters do not wrap; they replace, as any other key. Textarea backend only.
 _Avoid_: auto-pair, auto-close (those mean inserting the closing char while typing without a selection — a different feature kimün does not have)
+
+**Indent step**:
+The fixed run of spaces one indent puts at the start of a row — what Tab, `>>`, the visual `>` and a list continuation's dedent all move a row by, read from the **rope buffer** (`indent_width`, 4 by default) so every door agrees. Always spaces, never a tab. On the way back out, a dedent removes up to one step of leading spaces, or one existing leading tab, which counts as a whole step. Not a tab stop: that is how an existing `\t` *draws* (`Metrics::tab_width`), and the two are kept apart the way vim keeps `shiftwidth` from `tabstop`.
+_Avoid_: tab width, tab size (the drawing rule), hard tab (a setting kimün no longer has).
 
 **Automated edit**:
 A note mutation performed through the CLI or the MCP server rather than the TUI editor. Automated edits produce a **backup**; interactive TUI edits do not (the editor carries its own version history).

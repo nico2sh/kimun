@@ -31,6 +31,7 @@ tui/kimun_config.toml
 docs/public/
 .worktrees/
 example/*/kimun.sqlite
+example/*/.kimun
 example/history/
 openspec/
 adr/

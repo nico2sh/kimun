@@ -1,13 +1,26 @@
-//! The **edit buffer** over `ropetext`, presenting the surface the rest of the
-//! editor already calls.
+//! The **rope buffer**: the editor's buffer over the `ropetext` **edit buffer**.
 //!
-//! This exists so the engine swap does not have to happen everywhere at once.
-//! It keeps every method name and `(row, col)` signature the `TextArea`-backed
-//! buffer had, so `vim.rs`, `find_bar.rs` and the component compiled against it
-//! unchanged. A differential proptest held it to the incumbent's behaviour
-//! operation by operation until the migration landed; it found seven real
-//! defects, three of them kimün's own, and was removed with the dependency it
-//! needed.
+//! The engine owns the text, the cursor, the selection and the history, and
+//! deliberately nothing else (ADR-0041). This is the rest of an editor's buffer —
+//! what kimün adds, not what it adapts:
+//!
+//! - **undo groups**: [`RopeBuffer::edit`] scopes and [`RopeBuffer::continue_group`],
+//!   so a compound action or a typing run is one history entry;
+//! - the edit outcome: what a mutation did, measured — changed, bulk, the damage
+//!   hull in one numbering, the line delta — drained by the component through
+//!   [`RopeBuffer::take_outcome`];
+//! - the goal column a vertical motion aims at;
+//! - the **indent step** ([`RopeBuffer::indent_rows`]): the one place Tab, `>>` and
+//!   a list continuation's dedent move a row by;
+//! - the **find pattern** and its row-wise, wrapping search, which outlive the
+//!   find bar so vim's `n`/`N` can repeat them;
+//! - the yank transport the vim engine's **unnamed register** fills from;
+//! - the `(row, col)` vocabulary every caller speaks: the vim engine, the plain
+//!   key table, the find bar and the component all take `&mut RopeBuffer`.
+//!
+//! It knows text, not markdown. List continuation, **auto-surround** and the
+//! emphasis markers are operations *over* it, in `markdown_edits`, and are
+//! tested against a bare one.
 //!
 //! Nothing here mirrors the text into a second representation. Callers that want
 //! rows ask for them ([`RopeBuffer::rows`]) and pay for them there; the buffer
@@ -16,18 +29,17 @@
 use crate::ropetext::motion::{self, Goal, Words};
 use crate::ropetext::{Change, Column, EditBuffer as Rope, Position, Span, Text};
 
-/// How far one indent step moves a line, in spaces, when `hard_tab_indent` is
-/// off — what Tab, `>>` and the visual `>` add, and what their inverses remove.
+/// How far one **indent step** moves a row, in spaces — what Tab, `>>` and the
+/// visual `>` add, and what their inverses remove.
 ///
 /// Not a tab stop, and deliberately not derived from one. A tab stop is elastic
 /// (a `\t` advances to the next multiple of it, so its width depends on where it
 /// starts) and describes how an existing character *draws*; an indent step is a
-/// fixed amount of text an edit *inserts*. Vim keeps the two apart as `tabstop`
-/// and `shiftwidth`, EditorConfig as `tab_width` and `indent_size`, and
-/// `hard_tab_indent` is exactly the setting under which they must differ: insert
-/// one literal `\t`, still draw it [`crate::ropetext::Metrics::DEFAULT_TAB_WIDTH`]
-/// cells wide. That both are 4 today is a coincidence of defaults.
-const DEFAULT_INDENT_WIDTH: u8 = 4;
+/// fixed amount of text an edit *inserts*, and here it is always spaces. Vim
+/// keeps the two apart as `tabstop` and `shiftwidth`, EditorConfig as
+/// `tab_width` and `indent_size`. That both are 4 today
+/// ([`crate::ropetext::Metrics::DEFAULT_TAB_WIDTH`]) is a coincidence of defaults.
+const DEFAULT_INDENT_WIDTH: std::num::NonZeroU8 = std::num::NonZeroU8::new(4).unwrap();
 
 /// What one call to [`RopeBuffer::edit`] did, measured rather than predicted.
 ///
@@ -90,6 +102,14 @@ pub(super) fn shift_rows(
 enum Yank {
     Keep,
     Discard,
+}
+
+/// One row's share of an indent, addressed against the text before the block
+/// began; the transaction carries it across the rows edited before it.
+#[derive(Debug, Clone, Copy)]
+enum RowEdit {
+    Insert(Position),
+    Delete(Span),
 }
 
 /// A cursor movement, in the vocabulary the editor already speaks.
@@ -163,8 +183,7 @@ pub struct RopeBuffer {
     goal: Option<Column>,
     yank: String,
     search: Option<regex::Regex>,
-    indent_width: u8,
-    hard_tab_indent: bool,
+    indent_width: std::num::NonZeroU8,
 }
 
 impl Default for RopeBuffer {
@@ -185,7 +204,6 @@ impl RopeBuffer {
             yank: String::new(),
             search: None,
             indent_width: DEFAULT_INDENT_WIDTH,
-            hard_tab_indent: false,
         }
     }
 
@@ -200,22 +218,12 @@ impl RopeBuffer {
         self.inner.text()
     }
 
-    /// Spaces one indent step inserts. Both backends read this, so `>>` and Tab
-    /// move a line by the same amount.
-    pub fn indent_width(&self) -> u8 {
-        self.indent_width
-    }
-
+    /// Pin the **indent step** to a non-default width, so a test can catch a
+    /// reintroduced literal. Nothing configures the step in production yet.
+    #[cfg(test)]
     pub fn set_indent_width(&mut self, spaces: u8) {
-        self.indent_width = spaces;
-    }
-
-    pub fn hard_tab_indent(&self) -> bool {
-        self.hard_tab_indent
-    }
-
-    pub fn set_hard_tab_indent(&mut self, hard: bool) {
-        self.hard_tab_indent = hard;
+        self.indent_width =
+            std::num::NonZeroU8::new(spaces).expect("an indent step is at least one space");
     }
 
     pub fn snapshot(&self) -> crate::ropetext::Snapshot {
@@ -712,8 +720,129 @@ impl RopeBuffer {
         let Some(span) = text.span(from, to) else {
             return false;
         };
-        self.inner.select(span);
-        true
+        self.inner.select(span)
+    }
+
+    /// The text between two `(row, col)` pairs, in either order; `None` when the
+    /// range is empty or names a position the buffer cannot address.
+    pub fn text_between(&self, start: (usize, usize), end: (usize, usize)) -> Option<String> {
+        let span = self
+            .span_between(start, end)
+            .filter(|span| !span.is_empty())?;
+        self.inner.text().slice(span).map(|text| text.into_owned())
+    }
+
+    /// The selected text, or `None` when nothing — or nothing of width — is
+    /// selected.
+    pub fn selection_text(&self) -> Option<String> {
+        let (start, end) = self.selection_range()?;
+        self.text_between(start, end)
+    }
+
+    // ── Indent ───────────────────────────────────────────────────────────────
+
+    /// Indent or dedent `rows` by one **indent step**, as one **undo group** —
+    /// and one transaction.
+    ///
+    /// Indenting puts `indent_width` spaces at the start of every row — always
+    /// spaces, never a tab. Dedenting takes up to one step of leading spaces,
+    /// or the run up to and including a first tab, which counts as a whole
+    /// step: `"  \tfoo"` loses both spaces and the tab and stops there.
+    ///
+    /// The cursor keeps the character it sat on — its column moves by its own
+    /// row's change, so `>>` on the `n` of `one` leaves it on `n`, neovim's
+    /// rule — and a selection is put back the same way, endpoint by endpoint.
+    /// Both fall out of the engine's own mapping across the transaction, so the
+    /// history entry holds the cursor's real before and after, and an undo or
+    /// redo lands where the user was. Rows past the end are ignored. Reports
+    /// whether any text changed; a dedent that finds nothing to remove changes
+    /// nothing and says so.
+    pub fn indent_rows(&mut self, rows: std::ops::RangeInclusive<usize>, dedent: bool) -> bool {
+        let step = self.indent_width.get() as usize;
+        let first = *rows.start();
+        let last = (*rows.end()).min(self.row_count() - 1);
+        if first > last {
+            return false;
+        }
+        // Address every row's edit against the text as it stands; the
+        // transaction carries each later one across the earlier ones.
+        let text = self.inner.text();
+        let mut edits: Vec<RowEdit> = Vec::with_capacity(last - first + 1);
+        let mut deltas: Vec<isize> = Vec::with_capacity(last - first + 1);
+        for row in first..=last {
+            let at = text
+                .position(row, Column::new(0))
+                .expect("row is within the buffer");
+            if dedent {
+                let count = self.leading_step(row);
+                if count > 0
+                    && let Some(span) = text.span(at, self.forward_by(at, count))
+                {
+                    edits.push(RowEdit::Delete(span));
+                }
+                deltas.push(-(count as isize));
+            } else {
+                edits.push(RowEdit::Insert(at));
+                deltas.push(step as isize);
+            }
+        }
+        if edits.is_empty() {
+            return false;
+        }
+        let selection = self.selection_range();
+        let shifted = |(row, col): (usize, usize)| -> (usize, usize) {
+            if row < first || row > last {
+                return (row, col);
+            }
+            (row, col.saturating_add_signed(deltas[row - first]))
+        };
+        let spaces = " ".repeat(step);
+        self.goal = None;
+        self.mutate(|txn| {
+            for edit in &edits {
+                match *edit {
+                    RowEdit::Insert(at) => {
+                        txn.insert(at, &spaces);
+                    }
+                    RowEdit::Delete(span) => {
+                        txn.delete(span);
+                    }
+                }
+            }
+            // An edit drops the anchor; a selection that was live goes back,
+            // each endpoint shifted by its own row's change.
+            if let Some((start, end)) = selection {
+                let (start, end) = (shifted(start), shifted(end));
+                let text = txn.text();
+                if let Some(from) = text.position(start.0, Column::new(start.1))
+                    && let Some(to) = text.position(end.0, Column::new(end.1))
+                    && let Some(span) = text.span(from, to)
+                {
+                    txn.select(span);
+                }
+            }
+        })
+    }
+
+    /// What one dedent removes from the front of `row`: up to a step of spaces,
+    /// or the run up to and including a first tab. Counted in grapheme
+    /// clusters — the unit the delete steps — so a space that carries a
+    /// combining mark ends the run rather than being half-removed.
+    fn leading_step(&self, row: usize) -> usize {
+        use unicode_segmentation::UnicodeSegmentation;
+        let step = self.indent_width.get() as usize;
+        let Some(line) = self.row(row) else {
+            return 0;
+        };
+        let mut count = 0;
+        for cluster in line.graphemes(true).take(step) {
+            match cluster {
+                " " => count += 1,
+                "\t" => return count + 1,
+                _ => break,
+            }
+        }
+        count
     }
 
     // ── Search ───────────────────────────────────────────────────────────────
@@ -846,7 +975,7 @@ impl RopeBuffer {
 
     /// The span between two `(row, col)` pairs, for callers that still speak in
     /// them.
-    pub fn span_between(&self, start: (usize, usize), end: (usize, usize)) -> Option<Span> {
+    fn span_between(&self, start: (usize, usize), end: (usize, usize)) -> Option<Span> {
         let text = self.inner.text();
         let from = text.position(start.0, Column::new(start.1))?;
         let to = text.position(end.0, Column::new(end.1))?;
@@ -975,5 +1104,213 @@ mod damage_tests {
             "the row edited first is row 5 once the group ends, but the damage \
              reported was {damage:?} — a range in the older numbering"
         );
+    }
+}
+
+#[cfg(test)]
+mod read_tests {
+    use super::*;
+    use crate::ropetext::Text;
+
+    #[test]
+    fn text_between_slices_by_char_columns_across_rows_in_either_order() {
+        let buf = RopeBuffer::new(Text::from("héllo🦀\nworld"));
+        assert_eq!(
+            buf.text_between((0, 1), (1, 2)).as_deref(),
+            Some("éllo🦀\nwo")
+        );
+        assert_eq!(
+            buf.text_between((1, 2), (0, 1)).as_deref(),
+            Some("éllo🦀\nwo")
+        );
+    }
+
+    #[test]
+    fn an_empty_or_unaddressable_range_is_none() {
+        let buf = RopeBuffer::new(Text::from("abc"));
+        assert_eq!(buf.text_between((0, 1), (0, 1)), None);
+        assert_eq!(buf.text_between((0, 0), (7, 0)), None);
+    }
+
+    #[test]
+    fn selection_text_is_the_live_selection_or_none() {
+        let mut buf = RopeBuffer::new(Text::from("hello world"));
+        assert_eq!(buf.selection_text(), None);
+        assert!(buf.set_selection((0, 0), (0, 5)));
+        assert_eq!(buf.selection_text().as_deref(), Some("hello"));
+        buf.start_selection();
+        assert_eq!(
+            buf.selection_text(),
+            None,
+            "a zero-width selection is not text"
+        );
+    }
+}
+
+#[cfg(test)]
+mod indent_tests {
+    use super::*;
+    use crate::ropetext::Text;
+
+    fn buffer(text: &str) -> RopeBuffer {
+        RopeBuffer::new(Text::from(text))
+    }
+
+    #[test]
+    fn indent_inserts_one_step_of_spaces_never_a_tab() {
+        let mut buf = buffer("foo\nbar");
+        assert!(buf.indent_rows(0..=1, false));
+        assert_eq!(buf.rows(), &["    foo", "    bar"]);
+    }
+
+    #[test]
+    fn indent_follows_indent_width() {
+        let mut buf = buffer("x");
+        buf.set_indent_width(2);
+        assert!(buf.indent_rows(0..=0, false));
+        assert_eq!(buf.rows(), &["  x"]);
+    }
+
+    #[test]
+    fn dedent_removes_up_to_one_step_of_spaces() {
+        let mut buf = buffer("        x\n  y\nz");
+        assert!(buf.indent_rows(0..=2, true));
+        assert_eq!(buf.rows(), &["    x", "y", "z"]);
+    }
+
+    #[test]
+    fn dedent_counts_a_leading_tab_as_a_whole_step() {
+        let mut buf = buffer("\t\tx\n  \ty");
+        assert!(buf.indent_rows(0..=1, true));
+        // One tab is one step; the spaces before a tab go with it, and the
+        // step ends there.
+        assert_eq!(buf.rows(), &["\tx", "y"]);
+    }
+
+    #[test]
+    fn dedent_stops_at_a_space_that_carries_a_combining_mark() {
+        // "  \u{301}foo": the second space and the acute accent are one cluster.
+        let mut buf = buffer("  \u{301}foo");
+        assert!(buf.set_selection((0, 3), (0, 6)));
+        assert!(buf.indent_rows(0..=0, true));
+        assert_eq!(buf.rows(), &[" \u{301}foo"]);
+        assert_eq!(buf.selection_range(), Some(((0, 2), (0, 5))));
+    }
+
+    #[test]
+    fn dedent_with_nothing_to_remove_reports_no_change() {
+        let mut buf = buffer("foo");
+        assert!(!buf.indent_rows(0..=0, true));
+        assert_eq!(buf.rows(), &["foo"]);
+        assert!(!buf.take_outcome().changed);
+    }
+
+    #[test]
+    fn rows_past_the_end_are_ignored() {
+        let mut buf = buffer("a\nb");
+        assert!(buf.indent_rows(1..=9, false));
+        assert_eq!(buf.rows(), &["a", "    b"]);
+        assert!(!buf.indent_rows(5..=9, false));
+        assert_eq!(buf.rows(), &["a", "    b"]);
+    }
+
+    #[test]
+    fn the_cursor_keeps_its_character() {
+        let mut buf = buffer("one\ntwo");
+        assert!(buf.jump_to(0, 1)); // on 'n'
+        buf.indent_rows(0..=1, false);
+        assert_eq!(buf.cursor(), (0, 1 + 4));
+        buf.indent_rows(0..=1, true);
+        assert_eq!(buf.cursor(), (0, 1));
+    }
+
+    #[test]
+    fn a_cursor_outside_the_rows_does_not_move() {
+        let mut buf = buffer("a\nb\nc");
+        assert!(buf.jump_to(2, 1));
+        buf.indent_rows(0..=1, false);
+        assert_eq!(buf.cursor(), (2, 1));
+    }
+
+    #[test]
+    fn a_dedent_never_pushes_the_cursor_below_column_zero() {
+        let mut buf = buffer("    x");
+        assert!(buf.jump_to(0, 2));
+        buf.indent_rows(0..=0, true);
+        assert_eq!(buf.cursor(), (0, 0));
+    }
+
+    #[test]
+    fn the_selection_is_put_back_shifted_with_its_rows() {
+        let mut buf = buffer("hello world\nnext");
+        assert!(buf.set_selection((0, 6), (1, 2)));
+        buf.indent_rows(0..=1, false);
+        assert_eq!(buf.selection_range(), Some(((0, 10), (1, 6))));
+        assert_eq!(buf.rows()[0].trim_start(), "hello world");
+    }
+
+    #[test]
+    fn a_dedent_under_a_selection_shifts_each_endpoint_by_its_own_row() {
+        let mut buf = buffer("    foo\n  bar\nbaz");
+        assert!(buf.set_selection((0, 4), (2, 3)));
+        assert!(buf.indent_rows(0..=2, true));
+        assert_eq!(buf.rows(), &["foo", "bar", "baz"]);
+        assert_eq!(buf.selection_range(), Some(((0, 0), (2, 3))));
+    }
+
+    #[test]
+    fn a_block_indent_is_one_undo_group() {
+        let mut buf = buffer("a\nb\nc");
+        buf.indent_rows(0..=2, false);
+        assert!(buf.undo(), "the block is one entry");
+        assert_eq!(buf.rows(), &["a", "b", "c"]);
+        assert!(!buf.undo(), "and has nothing left to take back");
+    }
+
+    #[test]
+    fn undo_and_redo_of_an_indent_land_the_cursor_on_its_own_character() {
+        let mut buf = buffer("one\ntwo");
+        assert!(buf.jump_to(0, 1)); // on 'n'
+        buf.indent_rows(0..=1, false);
+        assert_eq!(buf.cursor(), (0, 5));
+        assert!(buf.undo());
+        assert_eq!(buf.cursor(), (0, 1), "undo returns to where the user was");
+        assert!(buf.redo());
+        assert_eq!(
+            buf.cursor(),
+            (0, 5),
+            "redo lands where the indent left them"
+        );
+    }
+
+    #[test]
+    fn a_block_indent_is_one_transaction() {
+        let mut buf = buffer("a\nb\nc");
+        buf.indent_rows(0..=2, false);
+        let outcome = buf.take_outcome();
+        assert!(outcome.changed);
+        assert!(outcome.bulk, "three rows in one change");
+        assert!(buf.undo());
+        assert_eq!(buf.rows(), &["a", "b", "c"]);
+        assert!(!buf.undo());
+    }
+
+    #[test]
+    fn a_dedent_does_not_fill_the_yank_transport() {
+        let mut buf = buffer("    x");
+        buf.set_yank_text("kept");
+        buf.indent_rows(0..=0, true);
+        assert_eq!(buf.yank_text(), "kept");
+    }
+
+    #[test]
+    fn damage_covers_every_touched_row() {
+        let mut buf = buffer("a\nb\nc\nd");
+        buf.indent_rows(1..=2, false);
+        let outcome = buf.take_outcome();
+        assert!(outcome.changed);
+        let damage = outcome.damage.expect("the edits were reported");
+        assert!(damage.contains(&1) && damage.contains(&2), "{damage:?}");
+        assert_eq!(outcome.line_delta, 0);
     }
 }

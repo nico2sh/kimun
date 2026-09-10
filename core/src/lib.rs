@@ -44,13 +44,14 @@
 /// Error types returned across the crate's public API.
 pub mod error;
 pub(crate) mod index;
-pub(crate) mod link_rewrite;
 /// Vault-scoped filesystem layer: notes, attachments and backups inside one
 /// workspace, addressed by the [`VaultPath`] vault-internal path type. Paired
 /// with [`system`], which owns host-scoped paths and operations.
 pub mod nfs;
 /// Note model: parsing Markdown into details, chunks, links, and tags.
 pub mod note;
+pub(crate) mod note_locks;
+pub(crate) mod note_rename;
 pub(crate) mod sync;
 /// Host-scoped paths and file operations: the machine kimün runs on, its
 /// directories, and the file operations carrying OS-specific knowledge.
@@ -71,20 +72,19 @@ use std::{
     collections::HashMap,
     fmt::Display,
     path::PathBuf,
-    sync::{
-        mpsc::{Receiver, Sender},
-        Arc,
-    },
+    sync::Arc,
     time::{Duration, SystemTime},
 };
 
 use chrono::{NaiveDate, Utc};
 use error::{FSError, VaultError};
+use futures_util::{stream, Stream, StreamExt, TryStreamExt};
 use index::NoteIndex;
-use link_rewrite::LinkRewrite;
-use log::debug;
+use log::{debug, warn};
 use nfs::{NoteEntryData, VaultPath};
 use note::{ContentChunk, NoteContentData, NoteDetails};
+use note_locks::NoteLocks;
+use note_rename::{rename_dest_err, NoteRename};
 use sync::VaultSync;
 use system::path_to_string;
 
@@ -213,12 +213,9 @@ pub struct NoteVault {
     /// Whether destructive writes back up the previous content first. Mirrors
     /// [`VaultConfig::backup`]; see its docs.
     backup: bool,
-    /// Per-note in-process write locks. Concurrent content mutations to the same
-    /// note (e.g. parallel MCP tool calls) serialize on these so a read-modify-
-    /// write like `replace` can't lose an update. Shared across clones via `Arc`.
-    /// Grows with the number of distinct notes mutated this process; entries are
-    /// tiny.
-    note_locks: Arc<std::sync::Mutex<HashMap<VaultPath, Arc<tokio::sync::Mutex<()>>>>>,
+    /// Per-note in-process write locks; see [`NoteLocks`]. Shared across
+    /// clones.
+    note_locks: NoteLocks,
     /// The vault id, read from disk once and then served from memory — every
     /// RAG query surface asks for it. Shared across clones; the id is stable
     /// for the life of the vault, so caching cannot go stale.
@@ -263,7 +260,7 @@ impl NoteVault {
             inbox_path: VaultPath::new(DEFAULT_INBOX_PATH),
             index,
             backup,
-            note_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            note_locks: NoteLocks::default(),
             vault_id: Arc::new(tokio::sync::OnceCell::new()),
         };
         Ok(note_vault)
@@ -616,22 +613,78 @@ impl NoteVault {
         path.to_pathbuf(self.workspace_path())
     }
 
-    /// Walks the vault per `options`, streaming each entry as a
-    /// [`SearchResult`] through the channel set up by
-    /// [`VaultBrowseOptionsBuilder::build`]. A recursive browse from the root
-    /// doubles as a full index sync.
-    pub async fn browse_vault(&self, options: VaultBrowseOptions) -> Result<(), VaultError> {
+    /// Walks the vault per `options` and yields every entry it finds — note,
+    /// directory or attachment — as a [`SearchResult`], in discovery order,
+    /// as soon as the walker has processed it. Nothing happens until the
+    /// stream is first polled; from then on the walk runs on its own task to
+    /// completion, even if the stream is dropped early (the index sync must
+    /// not be left half-applied). A sync error surfaces as the stream's final
+    /// `Err` item. A recursive browse from the root doubles as a full index
+    /// sync: by the time the stream ends, the index reports ready.
+    ///
+    /// Use this when rows should appear while a slow (e.g. network) directory
+    /// is still being read; [`browse_vault`](Self::browse_vault) collects the
+    /// same walk into one `Vec`.
+    pub fn browse_vault_stream(
+        &self,
+        options: VaultBrowseOptions,
+    ) -> impl Stream<Item = Result<SearchResult, VaultError>> + Send + 'static {
+        let vault = self.clone();
+        // `once(..).flatten()` defers the spawn to the first poll, so building
+        // the stream needs no runtime and an unpolled stream walks nothing.
+        stream::once(async move {
+            let (sender, receiver) = futures_channel::mpsc::unbounded();
+            // `sender` moves into the task and drops when the walk ends, which
+            // is what closes `receiver` and lets `outcome` be polled.
+            let walk = tokio::spawn(async move { vault.browse_into(options, sender).await });
+            let outcome = stream::once(async move {
+                match walk.await {
+                    Ok(Ok(())) => None,
+                    Ok(Err(e)) => Some(Err(e)),
+                    Err(e) => Some(Err(VaultError::TaskJoin(format!("vault browse: {}", e)))),
+                }
+            })
+            .filter_map(std::future::ready);
+            receiver.map(Ok).chain(outcome)
+        })
+        .flatten()
+    }
+
+    /// Walks the vault per `options` and returns every entry it finds — the
+    /// collected form of [`browse_vault_stream`](Self::browse_vault_stream),
+    /// same sync side effect included.
+    pub async fn browse_vault(
+        &self,
+        options: VaultBrowseOptions,
+    ) -> Result<Vec<SearchResult>, VaultError> {
+        self.browse_vault_stream(options).try_collect().await
+    }
+
+    /// The browse walk itself: syncs the subtree into the index while sending
+    /// each discovered entry to `sender`, then marks a whole-vault walk synced.
+    async fn browse_into(
+        &self,
+        options: VaultBrowseOptions,
+        sender: futures_channel::mpsc::UnboundedSender<SearchResult>,
+    ) -> Result<(), VaultError> {
         let start = std::time::SystemTime::now();
         debug!("> Start fetching files with Options:\n{}", options);
 
-        VaultSync::new(&self.index, self.workspace_path())
+        // Logged here as well as returned: when the consumer dropped the
+        // stream early nobody polls the outcome, and a failed sync must not
+        // vanish silently.
+        if let Err(e) = VaultSync::new(&self.index, self.workspace_path())
             .run(
                 &options.path,
                 options.recursive,
                 options.validation,
-                Some(options.sender.clone()),
+                Some(sender),
             )
-            .await?;
+            .await
+        {
+            warn!("browse of {} failed to sync the index: {}", options.path, e);
+            return Err(e);
+        }
 
         // A recursive browse from the root is a whole-vault sync: the index
         // now mirrors the disk, so the readiness probe must report true —
@@ -910,38 +963,9 @@ impl NoteVault {
         Ok(())
     }
 
-    /// Acquires the per-note write lock, serializing content mutations to `path`
-    /// within this process so a read-modify-write (e.g. `replace`) can't be
-    /// interleaved by another in-process writer. Cross-process writers are not
-    /// covered — a local single-user vault rarely sees that, and backups make any
-    /// clobbered version recoverable.
+    /// Acquires the per-note write lock for `path`; see [`NoteLocks::lock_note`].
     async fn lock_note(&self, path: &VaultPath) -> tokio::sync::OwnedMutexGuard<()> {
-        let key = path.flatten();
-        let lock = {
-            let mut map = self.note_locks.lock().unwrap();
-            map.entry(key)
-                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-                .clone()
-        };
-        lock.lock_owned().await
-    }
-
-    /// Acquires the per-note locks for several notes at once, in a stable
-    /// (sorted, deduped) order so concurrent multi-note operations (e.g. two
-    /// renames with overlapping victims) can't deadlock. Hold the returned
-    /// guards for the duration of the operation.
-    async fn lock_notes<'a>(
-        &self,
-        paths: impl IntoIterator<Item = &'a VaultPath>,
-    ) -> Vec<tokio::sync::OwnedMutexGuard<()>> {
-        let mut keys: Vec<VaultPath> = paths.into_iter().map(|p| p.flatten()).collect();
-        keys.sort();
-        keys.dedup();
-        let mut guards = Vec::with_capacity(keys.len());
-        for key in &keys {
-            guards.push(self.lock_note(key).await);
-        }
-        guards
+        self.note_locks.lock_note(path).await
     }
 
     /// Appends `text` to the note at `path`, creating it (with `default`
@@ -1081,8 +1105,7 @@ impl NoteVault {
         path: &VaultPath,
     ) -> Result<(usize, String), VaultError> {
         let count;
-        let updated;
-        if regex {
+        let updated = if regex {
             let re = regex::Regex::new(pattern).map_err(|e| VaultError::InvalidRegex {
                 pattern: pattern.to_string(),
                 message: e.to_string(),
@@ -1100,7 +1123,7 @@ impl NoteVault {
             }
             // regex `replacen` treats a limit of 0 as "replace all".
             let limit = if all { 0 } else { 1 };
-            updated = re.replacen(text, limit, replacement).into_owned();
+            re.replacen(text, limit, replacement).into_owned()
         } else {
             count = if pattern.is_empty() {
                 0
@@ -1117,12 +1140,12 @@ impl NoteVault {
                     path: path.flatten(),
                 });
             }
-            updated = if all {
+            if all {
                 text.replace(pattern, replacement)
             } else {
                 text.replacen(pattern, replacement, 1)
-            };
-        }
+            }
+        };
         Ok((count, updated))
     }
 
@@ -1186,47 +1209,18 @@ impl NoteVault {
     /// Renames the note `from` to `to`, rewriting links to it (wikilinks,
     /// Markdown links, and the note's own self-links) in every backlinking note
     /// so they keep pointing at the renamed note. Fails if `to` already exists.
-    /// Source, destination, and all link victims are locked for the whole
-    /// operation so a concurrent in-process write can't interleave.
+    /// The whole operation — locks, filesystem move, link rewrites, index
+    /// commit — is `NoteRename`'s (`note_rename.rs`); see its docs for the stage order and
+    /// failure atomicity.
     pub async fn rename_note(&self, from: &VaultPath, to: &VaultPath) -> Result<(), VaultError> {
-        let from = from.flatten();
-        let to = to.flatten();
-
-        // Scout the linking notes, then lock the source, the destination, and
-        // every victim for the whole rename, so a concurrent in-process write
-        // to any of them can't interleave with the prepare → rename → commit
-        // below (lost update / stale backup). Locks are taken in a stable
-        // order to stay deadlock-free.
-        let scouted = LinkRewrite::new(&self.index, self.workspace_path(), self.backup)
-            .scout(&from, &to)
-            .await?;
-        let _guards = self
-            .lock_notes(
-                std::iter::once(&from)
-                    .chain(std::iter::once(&to))
-                    .chain(scouted.victims().iter()),
-            )
-            .await;
-
-        // Rewrite every victim's links in memory and back them up — no FS
-        // mutation yet, so a failure here aborts cleanly.
-        let prepared = scouted.prepare().await?;
-
-        // Rename the source note on disk. If this fails, victims remain
-        // untouched and the index is unchanged — clean abort.
-        nfs::rename_note(self.workspace_path(), &from, &to)
-            .await
-            .map_err(rename_dest_err)?;
-
-        // Write the rewritten victims and the renamed note's self-links.
-        let notes_with_text = prepared.commit().await?;
-
-        // One atomic index operation: rename the source rows + update each
-        // victim's chunks/links. If this fails, FS is consistent with the
-        // rename but the index is stale — next sync pass corrects.
-        self.index.rename_note(&from, &to, &notes_with_text).await?;
-
-        Ok(())
+        NoteRename::new(
+            &self.index,
+            self.workspace_path(),
+            self.backup,
+            &self.note_locks,
+        )
+        .rename(from, to)
+        .await
     }
 
     /// Renames the directory `from` to `to`, updating the index paths of all
@@ -1342,16 +1336,6 @@ fn attachment_extension(path: &VaultPath) -> Option<String> {
         .map(|e| e.to_string_lossy().to_lowercase())
 }
 
-fn rename_dest_err(e: FSError) -> VaultError {
-    match e {
-        FSError::AlreadyExists { path } => VaultError::FSError(FSError::InvalidPath {
-            path: path.to_string(),
-            message: "Destination path already exists".to_string(),
-        }),
-        other => VaultError::FSError(other),
-    }
-}
-
 /// A directory entry within the vault.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct DirectoryDetails {
@@ -1437,7 +1421,8 @@ pub enum AttachmentContent {
     Binary,
 }
 
-/// Builder for [`VaultBrowseOptions`]; see [`NoteVault::browse_vault`].
+/// Builder for [`VaultBrowseOptions`]; see [`NoteVault::browse_vault_stream`]
+/// and its collected form [`NoteVault::browse_vault`].
 pub struct VaultBrowseOptionsBuilder {
     path: VaultPath,
     validation: NotesValidation,
@@ -1450,19 +1435,13 @@ impl VaultBrowseOptionsBuilder {
         Self::default().path(path.clone())
     }
 
-    /// Finalizes the options and creates the channel browse results are sent
-    /// through; returns the options and the receiving end.
-    pub fn build(self) -> (VaultBrowseOptions, Receiver<SearchResult>) {
-        let (sender, receiver) = std::sync::mpsc::channel();
-        (
-            VaultBrowseOptions {
-                path: self.path,
-                validation: self.validation,
-                recursive: self.recursive,
-                sender,
-            },
-            receiver,
-        )
+    /// Finalizes the options.
+    pub fn build(self) -> VaultBrowseOptions {
+        VaultBrowseOptions {
+            path: self.path,
+            validation: self.validation,
+            recursive: self.recursive,
+        }
     }
 
     /// Sets the path to browse from.
@@ -1495,14 +1474,14 @@ impl Default for VaultBrowseOptionsBuilder {
     }
 }
 
-#[derive(Debug, Clone)]
-/// Options to traverse the Notes
-/// You need a sync::mpsc::Sender to use a channel to receive the entries
+/// What a browse walks: the subtree root, how deep, and how strictly each
+/// note is re-validated against the index on the way. See
+/// [`NoteVault::browse_vault`] and [`NoteVault::browse_vault_stream`].
+#[derive(Debug, Clone, PartialEq)]
 pub struct VaultBrowseOptions {
     path: VaultPath,
     validation: NotesValidation,
     recursive: bool,
-    sender: Sender<SearchResult>,
 }
 
 impl Display for VaultBrowseOptions {
@@ -2701,8 +2680,7 @@ mod tests {
     fn test_vault_browse_options_builder_default() {
         let builder = VaultBrowseOptionsBuilder::default();
 
-        // We can't directly inspect private fields, but we can test the build result
-        let (options, _receiver) = builder.build();
+        let options = builder.build();
 
         assert_eq!(options.path, VaultPath::root());
         assert_eq!(options.validation, NotesValidation::None);
@@ -2714,7 +2692,7 @@ mod tests {
         let test_path = VaultPath::new("/test/path");
         let builder = VaultBrowseOptionsBuilder::new(&test_path);
 
-        let (options, _receiver) = builder.build();
+        let options = builder.build();
 
         assert_eq!(options.path, test_path);
         assert_eq!(options.validation, NotesValidation::None);
@@ -2728,7 +2706,7 @@ mod tests {
 
         let builder = VaultBrowseOptionsBuilder::new(&initial_path).path(new_path.clone());
 
-        let (options, _receiver) = builder.build();
+        let options = builder.build();
 
         assert_eq!(options.path, new_path);
     }
@@ -2738,11 +2716,11 @@ mod tests {
         let path = VaultPath::new("/test");
 
         let builder = VaultBrowseOptionsBuilder::new(&path).recursive(true);
-        let (options, _receiver) = builder.build();
+        let options = builder.build();
         assert!(options.recursive);
 
         let builder = VaultBrowseOptionsBuilder::new(&path).recursive(false);
-        let (options, _receiver) = builder.build();
+        let options = builder.build();
         assert!(!options.recursive);
     }
 
@@ -2756,7 +2734,7 @@ mod tests {
             NotesValidation::None,
         ] {
             let builder = VaultBrowseOptionsBuilder::new(&path).validation(v);
-            let (options, _receiver) = builder.build();
+            let options = builder.build();
             assert_eq!(options.validation, v);
         }
     }
@@ -2771,23 +2749,11 @@ mod tests {
             .recursive(true)
             .validation(NotesValidation::Full);
 
-        let (options, _receiver) = builder.build();
+        let options = builder.build();
 
         assert_eq!(options.path, new_path);
         assert!(options.recursive);
         assert_eq!(options.validation, NotesValidation::Full);
-    }
-
-    #[test]
-    fn test_vault_browse_options_build_returns_channel() {
-        let path = VaultPath::new("/test");
-        let builder = VaultBrowseOptionsBuilder::new(&path);
-
-        let (_options, receiver) = builder.build();
-
-        // Test that the receiver is valid by checking if it's ready to receive
-        // (it should be empty initially)
-        assert!(receiver.try_recv().is_err());
     }
 
     #[test]
@@ -2804,7 +2770,7 @@ mod tests {
             .recursive(true)
             .validation(NotesValidation::Full);
 
-        let (options, _receiver) = builder.build();
+        let options = builder.build();
         let display_string = format!("{}", options);
 
         assert!(display_string.contains("Path: `/test/path`"));

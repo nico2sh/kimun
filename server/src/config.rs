@@ -393,6 +393,22 @@ impl RerankerProvider {
 }
 
 // Default value functions
+impl ServerConfig {
+    /// Whether the bind address is loopback-only — an IP that is loopback
+    /// (`127.0.0.1`, `127.0.0.2`, `::1`) or the name `localhost`. Anything
+    /// else is reachable from the network, where an open (token-less) API
+    /// deserves a warning at startup.
+    pub fn binds_loopback(&self) -> bool {
+        // A bracketed IPv6 literal (`[::1]`) is how the host appears in a
+        // `host:port` bind string; the brackets are not part of the address.
+        let host = self.host.trim_start_matches('[').trim_end_matches(']');
+        match host.parse::<std::net::IpAddr>() {
+            Ok(ip) => ip.is_loopback(),
+            Err(_) => host.eq_ignore_ascii_case("localhost"),
+        }
+    }
+}
+
 fn default_host() -> String {
     "127.0.0.1".to_string()
 }
@@ -880,6 +896,28 @@ impl RagConfig {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn binds_loopback_recognizes_loopback_ips_and_localhost() {
+        let server = |host: &str| ServerConfig {
+            host: host.into(),
+            port: 7573,
+            max_concurrent_jobs: 1,
+        };
+        for host in [
+            "127.0.0.1",
+            "127.0.0.2",
+            "::1",
+            "[::1]",
+            "localhost",
+            "LOCALHOST",
+        ] {
+            assert!(server(host).binds_loopback(), "{host}");
+        }
+        for host in ["0.0.0.0", "::", "192.168.1.10", "example.com"] {
+            assert!(!server(host).binds_loopback(), "{host}");
+        }
+    }
+
     use super::*;
 
     #[test]
