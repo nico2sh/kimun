@@ -31,7 +31,12 @@ tui/kimun_config.toml
 docs/public/
 .worktrees/
 example/*/kimun.sqlite
-example/*/.kimun
+# Per-vault runtime state (vault-id, locks, caches) is machine-local.
+# `saved-searches.toml` is demo content, so the entries are ignored
+# rather than the directory — a file under an excluded directory
+# cannot be re-included.
+example/*/.kimun/*
+!example/*/.kimun/saved-searches.toml
 example/history/
 openspec/
 adr/
