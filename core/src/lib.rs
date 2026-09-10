@@ -1105,8 +1105,7 @@ impl NoteVault {
         path: &VaultPath,
     ) -> Result<(usize, String), VaultError> {
         let count;
-        let updated;
-        if regex {
+        let updated = if regex {
             let re = regex::Regex::new(pattern).map_err(|e| VaultError::InvalidRegex {
                 pattern: pattern.to_string(),
                 message: e.to_string(),
@@ -1124,7 +1123,7 @@ impl NoteVault {
             }
             // regex `replacen` treats a limit of 0 as "replace all".
             let limit = if all { 0 } else { 1 };
-            updated = re.replacen(text, limit, replacement).into_owned();
+            re.replacen(text, limit, replacement).into_owned()
         } else {
             count = if pattern.is_empty() {
                 0
@@ -1141,12 +1140,12 @@ impl NoteVault {
                     path: path.flatten(),
                 });
             }
-            updated = if all {
+            if all {
                 text.replace(pattern, replacement)
             } else {
                 text.replacen(pattern, replacement, 1)
-            };
-        }
+            }
+        };
         Ok((count, updated))
     }
 

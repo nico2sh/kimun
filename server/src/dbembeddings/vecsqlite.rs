@@ -110,8 +110,10 @@ impl VecSqlite {
     /// The dot product of the (normalized) stored blob against the
     /// (normalized) query — their cosine similarity, higher = better.
     fn score(blob: &[u8], query: &[f32]) -> f32 {
-        blob.chunks_exact(4)
-            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        blob.as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b))
             .zip(query)
             .map(|(a, b)| a * b)
             .sum()
@@ -250,8 +252,10 @@ impl VectorStore for VecSqlite {
                     // Stored normalized; renormalizing on a later store is a
                     // no-op, so the blob round-trips as-is.
                     vector: blob
-                        .chunks_exact(4)
-                        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .map(|b| f32::from_le_bytes(*b))
                         .collect(),
                 }
             })
