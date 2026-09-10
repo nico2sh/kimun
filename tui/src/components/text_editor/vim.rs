@@ -578,10 +578,14 @@ impl VimEngine {
             let mutated = self.indent_lines(outdent, line_count, ta);
             self.mode = EditorMode::Normal;
             self.clear_pending();
+            // Not `NoOp` when nothing moved: the selection was cancelled and
+            // the cursor jumped, so the host still has to re-mirror
+            // `selection_range()` (now `None`) and drop the visual highlight.
+            // `NoOp` returns without touching it and leaves the rows painted.
             return if mutated {
                 VimKeyOutcome::TextMutated
             } else {
-                VimKeyOutcome::NoOp
+                VimKeyOutcome::CursorOnly
             };
         }
 

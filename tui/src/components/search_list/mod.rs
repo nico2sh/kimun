@@ -100,6 +100,12 @@ pub struct SearchList<R: SearchRow> {
     /// Index into the VISIBLE sequence `[leading?] ++ display` of the selected
     /// item.
     selected: Option<usize>,
+    /// Whether `selected` is the user's own choice rather than the seed
+    /// `recompute_and_seed` puts on the first row. A chosen selection tracks
+    /// its row across a re-sort; a seeded one keeps the top slot, so a streamed
+    /// listing highlights the top of the `order_by` order at every frame
+    /// instead of whichever row the source happened to emit first.
+    selection_pinned: bool,
     /// Viewport offset: visible position of the first row on screen. Owned
     /// here (not by a per-frame `ListState`) so mouse-wheel scrolling can move
     /// the viewport directly; `render` writes it back after ratatui clamps it
@@ -272,6 +278,7 @@ impl<R: SearchRow> SearchList<R> {
             display: Vec::new(),
             leading: None,
             selected: None,
+            selection_pinned: false,
             offset: 0,
             filter: b.filter,
             order: b.order,
@@ -312,15 +319,17 @@ impl<R: SearchRow> SearchList<R> {
             if current_gen != self.applied_generation {
                 self.rows.clear();
                 self.selected = None;
+                self.selection_pinned = false;
                 self.offset = 0;
                 self.applied_generation = current_gen;
             }
             // Pushes only append, so row indices stay valid across the drain
             // and the selection can follow its row wherever `order` puts it.
             // A `Replace` swaps the whole set; indices mean nothing after it.
-            let keep = if drained
-                .iter()
-                .any(|ev| matches!(ev, LoadedInner::Replace(_)))
+            let keep = if !self.selection_pinned
+                || drained
+                    .iter()
+                    .any(|ev| matches!(ev, LoadedInner::Replace(_)))
             {
                 None
             } else {
@@ -543,6 +552,7 @@ impl<R: SearchRow> SearchList<R> {
     pub fn select(&mut self, pos: usize) {
         let n = self.visible_len();
         self.selected = if n == 0 { None } else { Some(pos.min(n - 1)) };
+        self.selection_pinned = self.selected.is_some();
     }
 
     pub fn select_next(&mut self) {
@@ -551,6 +561,7 @@ impl<R: SearchRow> SearchList<R> {
             return;
         }
         self.selected = Some(self.selected.map_or(0, |i| (i + 1).min(n - 1)));
+        self.selection_pinned = true;
     }
 
     pub fn select_prev(&mut self) {
@@ -558,6 +569,7 @@ impl<R: SearchRow> SearchList<R> {
             return;
         }
         self.selected = Some(self.selected.map_or(0, |i| i.saturating_sub(1)));
+        self.selection_pinned = true;
     }
 
     /// Largest useful viewport offset: the first visible position from which
@@ -596,6 +608,7 @@ impl<R: SearchRow> SearchList<R> {
         }
         self.offset += 1;
         self.selected = self.selected.map(|i| (i + 1).min(n - 1));
+        self.selection_pinned = true;
     }
 
     /// Scroll the viewport one row up, carrying the selection along so the
@@ -606,6 +619,7 @@ impl<R: SearchRow> SearchList<R> {
         }
         self.offset -= 1;
         self.selected = self.selected.map(|i| i.saturating_sub(1));
+        self.selection_pinned = true;
     }
 
     /// The current viewport offset. Test-only: lets scroll tests assert the
@@ -947,6 +961,7 @@ impl<R: SearchRow> SearchList<R> {
                     let prev = self.selected;
                     let prev_click = self.last_click_pos.replace(pos);
                     self.selected = Some(pos);
+                    self.selection_pinned = true;
                     return if right_click {
                         SearchMouse::Context(pos)
                     } else if prev == Some(pos) && prev_click == Some(pos) {
@@ -981,7 +996,7 @@ impl<R: SearchRow> SearchList<R> {
             Filter::Rank(_) if q.is_empty() => base,
             Filter::Rank(f) => {
                 let f = f.clone();
-                f(&self.rows, q)
+                f(&self.rows, &base, q)
             }
         };
         // Filter-exempt rows (match_text() == None: Up / Create / virtual pinned)
@@ -1563,8 +1578,10 @@ mod tests {
             ],
             reload: false,
         };
-        let rank = std::sync::Arc::new(|rows: &[TestRow], q: &str| -> Vec<usize> {
-            let mut idx: Vec<usize> = (0..rows.len())
+        let rank = std::sync::Arc::new(|rows: &[TestRow], base: &[usize], q: &str| -> Vec<usize> {
+            let mut idx: Vec<usize> = base
+                .iter()
+                .copied()
                 .filter(|&i| rows[i].name.contains(q))
                 .collect();
             idx.sort_by_key(|&i| if rows[i].name == q { 0 } else { 1 });
@@ -2227,6 +2244,7 @@ mod tests {
 #[cfg(test)]
 mod order_tests {
     use super::adapters::{HeldEmitSource, ScriptedStreamSource, TestRow};
+    use super::seams::RankFn;
     use super::*;
     use std::sync::{Arc, Mutex};
 
@@ -2321,6 +2339,114 @@ mod order_tests {
             list.selected_row().map(|r| r.name.as_str()),
             Some("charlie"),
             "selection tracks the row, not its old position"
+        );
+        emit.done();
+    }
+
+    /// `order_by` composes with a [`Filter::Rank`] surface: the ranker is
+    /// handed the candidate indices in `order_by` order, so rows it scores
+    /// equally keep the list's order.
+    ///
+    /// Regression: the `Rank` arm ranked `self.rows` directly and threw `base`
+    /// away, so pairing a rank filter with an order was a silent no-op.
+    #[tokio::test]
+    async fn order_by_composes_with_a_rank_filter() {
+        // Keeps every row containing the query, in the order it was handed.
+        let rank: RankFn<TestRow> = Arc::new(|rows: &[TestRow], base: &[usize], q: &str| {
+            base.iter()
+                .copied()
+                .filter(|&i| rows[i].name.contains(q))
+                .collect()
+        });
+        let source = ScriptedStreamSource {
+            batches: vec![vec![
+                TestRow::new("charlie"),
+                TestRow::new("alpha"),
+                TestRow::new("bravo"),
+            ]],
+        };
+        let mut list = SearchList::builder(source, noop_redraw())
+            .filter(Filter::Rank(rank))
+            .order_by(by_name_asc())
+            .build();
+        list.poll_until_idle().await;
+        list.set_query("a"); // every row matches, so only the order decides
+        assert_eq!(names(&list), ["alpha", "bravo", "charlie"]);
+    }
+
+    /// The other half of that contract: a selection the user has NEVER moved
+    /// is not a choice, it is a seed. It must stay on the top of the
+    /// `order_by` order as rows stream in.
+    ///
+    /// Regression: `poll` carried the seeded selection by row index like a
+    /// user-chosen one, so on a slow (streamed) directory the initial
+    /// highlight stuck to whichever entry the walker happened to emit first
+    /// and drifted down the list as better-sorting rows arrived above it.
+    #[tokio::test]
+    async fn a_seeded_selection_stays_on_the_top_row_as_rows_stream_in() {
+        let slot = Arc::new(Mutex::new(None));
+        let source = HeldEmitSource { slot: slot.clone() };
+        let mut list = SearchList::builder(source, noop_redraw())
+            .order_by(by_name_asc())
+            .build();
+        let emit = loop {
+            if let Some(e) = slot.lock().unwrap().clone() {
+                break e;
+            }
+            tokio::task::yield_now().await;
+        };
+
+        // First row to arrive seeds the selection.
+        emit.push(TestRow::new("charlie"));
+        list.poll();
+        assert_eq!(
+            list.selected_row().map(|r| r.name.as_str()),
+            Some("charlie")
+        );
+
+        // A row that sorts above it must take the highlight with the top slot.
+        emit.push(TestRow::new("alpha"));
+        list.poll();
+        assert_eq!(names(&list), ["alpha", "charlie"]);
+        assert_eq!(
+            list.selected_row().map(|r| r.name.as_str()),
+            Some("alpha"),
+            "an untouched selection seeds to the top of the order, not to the first-arrived row"
+        );
+        emit.done();
+    }
+
+    /// Moving the selection and landing back on the top row still counts as a
+    /// choice: from then on it tracks that row, exactly as any other
+    /// user-chosen selection does.
+    #[tokio::test]
+    async fn a_selection_moved_back_to_the_top_row_is_still_pinned_to_it() {
+        let slot = Arc::new(Mutex::new(None));
+        let source = HeldEmitSource { slot: slot.clone() };
+        let mut list = SearchList::builder(source, noop_redraw())
+            .order_by(by_name_asc())
+            .build();
+        let emit = loop {
+            if let Some(e) = slot.lock().unwrap().clone() {
+                break e;
+            }
+            tokio::task::yield_now().await;
+        };
+
+        emit.push(TestRow::new("bravo"));
+        emit.push(TestRow::new("charlie"));
+        list.poll();
+        list.select_next();
+        list.select_prev(); // back on "bravo", but by the user's own keys
+        assert_eq!(list.selected_row().map(|r| r.name.as_str()), Some("bravo"));
+
+        emit.push(TestRow::new("alpha"));
+        list.poll();
+        assert_eq!(names(&list), ["alpha", "bravo", "charlie"]);
+        assert_eq!(
+            list.selected_row().map(|r| r.name.as_str()),
+            Some("bravo"),
+            "a selection the user placed tracks its row even when it sits at the top"
         );
         emit.done();
     }
