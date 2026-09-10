@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1](https://github.com/nico2sh/kimun/compare/kimun_core-v0.4.0...kimun_core-v0.4.1) - 2026-09-10
+
+### Fixed
+
+- bugs on streaming notes
+- yank on dedent
+- correctness
+
+### Other
+
+- clippy
+- note lock on remname
+- streaming file reading
+- improve the search index
+
 ## [0.4.0](https://github.com/nico2sh/kimun/compare/kimun_core-v0.2.32...kimun_core-v0.4.0) - 2026-08-08
 
 ### Changed
