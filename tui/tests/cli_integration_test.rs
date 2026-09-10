@@ -6,7 +6,7 @@ use kimun_notes::settings::AppSettings;
 use tempfile::TempDir;
 
 mod common;
-use common::open_test_vault;
+use common::{open_test_vault, write_config};
 
 /// Create a temporary vault with test notes indexed, then close it — every
 /// caller drives the vault through the CLI afterwards, so leaving this one
@@ -38,27 +38,6 @@ async fn setup_test_vault(dir: &TempDir) {
         .expect("failed to recreate index");
 
     vault.close().await;
-}
-
-/// A config at the current version with a single workspace.
-///
-/// `cache_dir`/`history_dir` are left at their defaults, which resolve against
-/// the config file's own directory — so a test writing this into a `TempDir`
-/// keeps its index and history there rather than in the real installation.
-fn write_config(config_path: &std::path::Path, workspace: &std::path::Path) {
-    let toml = format!(
-        r#"config_version = 6
-
-[global]
-current_workspace = "default"
-
-[workspaces.default]
-path = {:?}
-created = "2024-01-15T10:30:00Z"
-"#,
-        workspace.to_string_lossy().as_ref()
-    );
-    std::fs::write(config_path, toml).expect("failed to write config file");
 }
 
 // ---------------------------------------------------------------------------

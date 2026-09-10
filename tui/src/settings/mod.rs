@@ -579,7 +579,7 @@ impl AppSettings {
     }
 
     /// Whether kimün captures the mouse for in-app use; defaults on when no
-    /// workspace config exists yet. Read at startup (main.rs) and in preferences.
+    /// workspace config exists yet. Read at startup (`app::run_tui`) and in preferences.
     pub fn mouse(&self) -> bool {
         self.workspace_config
             .as_ref()

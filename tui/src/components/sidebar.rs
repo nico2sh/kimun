@@ -1,8 +1,9 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::settings::themes::Theme;
 use async_trait::async_trait;
 use chrono::NaiveDate;
+use futures::StreamExt;
 use kimun_core::nfs::VaultPath;
 use kimun_core::{NoteVault, NotesValidation, ResultType, VaultBrowseOptionsBuilder};
 use ratatui::Frame;
@@ -16,25 +17,43 @@ use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, AppTxExt, FileOp, InputEvent, redraw_callback};
 use crate::components::file_list::{FileListEntry, SortField, SortOrder};
 use crate::components::search_list::{
-    Emit, Filter, KeyReaction, RowSource, SearchList, SearchMouse,
+    Emit, Filter, KeyReaction, OrderFn, RowSource, SearchList, SearchMouse,
 };
 use crate::keys::KeyBindings;
 use crate::settings::AppSettings;
 use crate::settings::icons::Icons;
 
 /// Streamed `RowSource` over one directory's listing. Pushes an `Up` row first
-/// (when not at root) so it is always present, then forwards each
-/// `browse_vault` result. Loads once; a local `Filter::Fuzzy` narrows the set
-/// and `leading_row` provides the "Create: …" affordance.
+/// (when not at root) so it is always present, then forwards each entry the
+/// moment `browse_vault_stream` yields it — rows show up while a slow drive is
+/// still being read. Ordering is the engine's job (`order_by`, see
+/// [`listing_order`]), so nothing is re-delivered at the end. Loads once; a
+/// local `Filter::Fuzzy` narrows the set and `leading_row` provides the
+/// "Create: …" affordance.
 struct DirListingSource {
     vault: Arc<NoteVault>,
     dir: VaultPath,
-    /// Shared sort field/order. `load` reads it so the sidebar's interactive
-    /// sort shortcuts (cycle field / reverse order) re-order the listing on
-    /// reload; initialised per-directory from the default/journal settings.
-    sort: Arc<Mutex<(SortField, SortOrder)>>,
-    /// Shared "group directories first" flag, read by `load`.
-    group_dirs: Arc<Mutex<bool>>,
+}
+
+/// The listing's row order for `(field, order)`, directories first when
+/// `group_dirs` is set. `Up` sorts before everything (it is filter-exempt and
+/// pinned by the engine anyway, but a total order must place it).
+fn listing_order(field: SortField, order: SortOrder, group_dirs: bool) -> OrderFn<FileListEntry> {
+    Arc::new(move |a: &FileListEntry, b: &FileListEntry| {
+        let rank = |e: &FileListEntry| match e {
+            FileListEntry::Up { .. } => 0,
+            FileListEntry::Directory { .. } if group_dirs => 1,
+            _ => 2,
+        };
+        rank(a).cmp(&rank(b)).then_with(|| {
+            let ka = a.sort_key(field);
+            let kb = b.sort_key(field);
+            match order {
+                SortOrder::Ascending => ka.cmp(&kb),
+                SortOrder::Descending => kb.cmp(&ka),
+            }
+        })
+    })
 }
 
 #[async_trait]
@@ -47,66 +66,30 @@ impl RowSource<FileListEntry> for DirListingSource {
             });
         }
 
-        let (options, rx) = VaultBrowseOptionsBuilder::new(&self.dir)
+        let options = VaultBrowseOptionsBuilder::new(&self.dir)
             .recursive(false)
             .validation(NotesValidation::Full)
             .build();
 
-        let vault = self.vault.clone();
-        // browse_vault fills `rx`; spawn it so we can drain concurrently.
-        let browse = tokio::spawn(async move { vault.browse_vault(options).await });
-
-        // `rx` is a std mpsc Receiver; `recv` blocks, so drain it on a blocking
-        // thread, sort the gathered entries, then push them in display order.
-        let vault = self.vault.clone();
-        let dir = self.dir.clone();
-        // Read the active sort out of the lock, then drop the guard before the
-        // await on the blocking task.
-        let (field, order) = *self.sort.lock().unwrap();
-        let group_dirs = *self.group_dirs.lock().unwrap();
-        let drain = tokio::task::spawn_blocking(move || {
-            let mut entries: Vec<FileListEntry> = Vec::new();
-            while let Ok(result) = rx.recv() {
-                // `is_like` ignores relative/absolute form: skip the
-                // current dir's own "." entry whichever form each side carries.
-                if matches!(result.rtype, ResultType::Directory) && result.path.is_like(&dir) {
-                    continue;
-                }
-                let journal_date = vault.journal_date(&result.path).map(format_journal_date);
-                entries.push(FileListEntry::from_result(result, journal_date));
-            }
-            let cmp = |a: &FileListEntry, b: &FileListEntry| {
-                let ka = a.sort_key(field);
-                let kb = b.sort_key(field);
-                match order {
-                    SortOrder::Ascending => ka.cmp(&kb),
-                    SortOrder::Descending => kb.cmp(&ka),
+        let mut stream = std::pin::pin!(self.vault.browse_vault_stream(options));
+        while let Some(item) = stream.next().await {
+            let result = match item {
+                Ok(result) => result,
+                Err(e) => {
+                    tracing::warn!("sidebar directory listing failed: {e}");
+                    break;
                 }
             };
-            if group_dirs {
-                let (mut dirs, mut rest): (Vec<_>, Vec<_>) = entries
-                    .into_iter()
-                    .partition(|e| matches!(e, FileListEntry::Directory { .. }));
-                dirs.sort_by(&cmp);
-                rest.sort_by(&cmp);
-                dirs.extend(rest);
-                dirs
-            } else {
-                entries.sort_by(&cmp);
-                entries
+            // `is_like` ignores relative/absolute form: skip the current dir's
+            // own "." entry whichever form each side carries.
+            if matches!(result.rtype, ResultType::Directory) && result.path.is_like(&self.dir) {
+                continue;
             }
-        });
-
-        match drain.await {
-            Ok(entries) => {
-                for entry in entries {
-                    emit.push(entry);
-                }
-            }
-            Err(e) => tracing::warn!("sidebar directory listing drain failed: {e}"),
-        }
-        if let Err(e) = browse.await {
-            tracing::warn!("sidebar browse_vault task failed: {e}");
+            let journal_date = self
+                .vault
+                .journal_date(&result.path)
+                .map(format_journal_date);
+            emit.push(FileListEntry::from_result(result, journal_date));
         }
         emit.done();
     }
@@ -143,13 +126,12 @@ pub struct SidebarComponent {
     default_sort_order: SortOrder,
     journal_sort_field: SortField,
     journal_sort_order: SortOrder,
-    /// Shared sort field/order for the active listing. `DirListingSource::load`
-    /// reads it; the sort shortcuts mutate it then reload. Re-created per
-    /// `navigate` from the per-dir defaults.
-    sort: Arc<Mutex<(SortField, SortOrder)>>,
-    /// Shared "group directories first" flag. `DirListingSource::load` reads it;
-    /// the sort dialog mutates it via `apply_sort`, then the listing reloads.
-    group_dirs: Arc<Mutex<bool>>,
+    /// Sort field/order of the active listing. Set per `navigate` from the
+    /// per-dir defaults; the sort shortcuts and dialog change it via
+    /// `apply_sort`, which hands the engine a new order.
+    sort: (SortField, SortOrder),
+    /// "Group directories first" for the active listing; see `sort`.
+    group_dirs: bool,
     rendered_rect: Rect,
     /// Screen cell each breadcrumb segment was drawn into on the last render,
     /// with the directory it navigates to — clickable breadcrumb hit-test.
@@ -188,8 +170,8 @@ impl SidebarComponent {
             default_sort_order,
             journal_sort_field: SortField::from(settings.journal_sort_field),
             journal_sort_order: SortOrder::from(settings.journal_sort_order),
-            sort: Arc::new(Mutex::new((default_sort_field, default_sort_order))),
-            group_dirs: Arc::new(Mutex::new(settings.group_directories)),
+            sort: (default_sort_field, default_sort_order),
+            group_dirs: settings.group_directories,
             rendered_rect: Rect::default(),
             breadcrumb_cells: Vec::new(),
             key_bindings,
@@ -229,16 +211,15 @@ impl SidebarComponent {
     pub fn navigate(&mut self, dir: VaultPath, tx: &AppTx) {
         self.current_dir = dir.clone();
         let (sort_field, sort_order) = self.sort_for(&dir);
-        self.sort = Arc::new(Mutex::new((sort_field, sort_order)));
+        self.sort = (sort_field, sort_order);
         let source = DirListingSource {
             vault: self.vault.clone(),
             dir,
-            sort: self.sort.clone(),
-            group_dirs: self.group_dirs.clone(),
         };
         self.list = Some(
             SearchList::builder(source, redraw_callback(tx.clone()))
                 .filter(Filter::Fuzzy)
+                .order_by(listing_order(sort_field, sort_order, self.group_dirs))
                 .yank_combos_from(&self.key_bindings)
                 .icons(self.icons.clone())
                 .build(),
@@ -305,8 +286,10 @@ impl SidebarComponent {
     }
 
     /// Move the row at `from` to `to` (path + filename + journal_date) in
-    /// place, for a same-directory note rename. Position is left unchanged
-    /// (no re-sort). `journal_date` is recomputed so a rename into/out of a
+    /// place, for a same-directory note rename. The row is re-sorted into its
+    /// new spot under the active `listing_order` (a Name sort reads the very
+    /// field this changes) and keeps the highlight if it had it.
+    /// `journal_date` is recomputed so a rename into/out of a
     /// `YYYY-MM-DD` name under the journal directory flips the glyph and the
     /// secondary date line correctly.
     pub fn rename_note_row(&mut self, from: &VaultPath, to: &VaultPath) {
@@ -341,21 +324,21 @@ impl SidebarComponent {
 
     /// Current sort field/order for the active listing.
     pub fn current_sort(&self) -> (SortField, SortOrder) {
-        *self.sort.lock().unwrap()
+        self.sort
     }
 
     /// Current "group directories first" flag.
     pub fn group_dirs(&self) -> bool {
-        *self.group_dirs.lock().unwrap()
+        self.group_dirs
     }
 
-    /// Apply a sort selection from the sort dialog and reload so the source
-    /// re-orders the listing.
+    /// Apply a sort selection from the sort dialog: the engine re-orders the
+    /// rows it already holds — no second walk of the directory.
     pub fn apply_sort(&mut self, field: SortField, order: SortOrder, group_dirs: bool) {
-        *self.sort.lock().unwrap() = (field, order);
-        *self.group_dirs.lock().unwrap() = group_dirs;
+        self.sort = (field, order);
+        self.group_dirs = group_dirs;
         if let Some(list) = &mut self.list {
-            list.reload();
+            list.set_order(Some(listing_order(field, order, group_dirs)));
         }
     }
 
@@ -754,8 +737,8 @@ mod tests {
     /// streamed rows have arrived.
     async fn navigate_to_root(sidebar: &mut SidebarComponent, tx: &AppTx) {
         sidebar.navigate(VaultPath::root(), tx);
-        // The streamed source spawns `browse_vault` + a blocking drain; give the
-        // background work real time to land, polling the engine between waits.
+        // The streamed source awaits `browse_vault_stream`; give the background
+        // work real time to land, polling the engine between waits.
         for _ in 0..50 {
             if let Some(list) = &mut sidebar.list {
                 list.poll();
@@ -926,6 +909,63 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// The directory listing streams each row the moment the walk yields it
+    /// and nothing else: ordering is the engine's job (`order_by`), so there
+    /// is no end-of-walk re-delivery to make rows jump.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn listing_streams_each_row_then_done() {
+        use crate::components::search_list::Loaded;
+
+        let sidebar = sidebar_with_notes("sidebar-stream", &["charlie", "alpha", "bravo"]).await;
+        let source = DirListingSource {
+            vault: sidebar.vault.clone(),
+            dir: VaultPath::root(),
+        };
+        let (emit, rx) = Emit::capture();
+
+        source.load("", emit).await;
+
+        let events: Vec<Loaded<FileListEntry>> = rx.try_iter().map(|(_, ev)| ev).collect();
+        let pushed_notes = events
+            .iter()
+            .filter(|e| matches!(e, Loaded::Push(FileListEntry::Note { .. })))
+            .count();
+        assert_eq!(pushed_notes, 3, "each note is streamed as its own row");
+        assert!(
+            !events.iter().any(|e| matches!(e, Loaded::Replace(_))),
+            "no whole-set re-delivery"
+        );
+        assert!(
+            matches!(events.last(), Some(Loaded::Done)),
+            "done closes the load"
+        );
+    }
+
+    /// A sort change re-orders the rows already loaded; it must not walk the
+    /// directory again.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn apply_sort_reorders_without_reloading() {
+        let mut sidebar =
+            sidebar_with_notes("sidebar-resort", &["alpha", "bravo", "charlie"]).await;
+        let (tx, _rx) = unbounded_channel();
+        navigate_to_root(&mut sidebar, &tx).await;
+        let before = note_names(&sidebar);
+        assert_eq!(before.len(), 3, "expected three notes, got {before:?}");
+
+        sidebar.apply_sort(SortField::Name, SortOrder::Descending, false);
+
+        let list = sidebar.list.as_ref().unwrap();
+        assert!(
+            !list.is_loading(),
+            "a sort change must not reload the listing"
+        );
+        assert_eq!(
+            note_names(&sidebar),
+            before.iter().rev().cloned().collect::<Vec<_>>(),
+            "rows re-ordered in place"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1172,5 +1212,344 @@ mod tests {
             (SortField::Title, SortOrder::Descending),
             "saved default must persist across navigation"
         );
+    }
+
+    // ── A slow filesystem: streamed rows on the test's schedule ──────────
+    //
+    // `DirListingSource` forwards each entry the moment `browse_vault_stream`
+    // yields it, so on a slow drive the sidebar shows a PARTIAL listing for
+    // many frames — and the user can sort, filter and select inside that
+    // window while more rows keep landing. A real vault settles on the first
+    // poll, so none of that window is reachable through `navigate_to_root`.
+    // This source parks its `Emit` instead and lets the test say when each row
+    // arrives, which is the only way to pin what the selection does across
+    // LATER polls.
+
+    struct SlowListingSource {
+        slot: Arc<std::sync::Mutex<Option<Emit<FileListEntry>>>>,
+    }
+
+    #[async_trait]
+    impl RowSource<FileListEntry> for SlowListingSource {
+        async fn load(&self, _query: &str, emit: Emit<FileListEntry>) {
+            *self.slot.lock().unwrap() = Some(emit);
+        }
+        fn reload_on_query(&self) -> bool {
+            false
+        }
+    }
+
+    /// The engine `navigate` builds — same filter and same `listing_order` —
+    /// over a listing the test drives row by row.
+    async fn slow_listing(
+        field: SortField,
+        order: SortOrder,
+        group_dirs: bool,
+    ) -> (SearchList<FileListEntry>, Emit<FileListEntry>) {
+        let slot = Arc::new(std::sync::Mutex::new(None));
+        let list = SearchList::builder(
+            SlowListingSource { slot: slot.clone() },
+            Arc::new(|| {}) as Arc<dyn Fn() + Send + Sync>,
+        )
+        .filter(Filter::Fuzzy)
+        .order_by(listing_order(field, order, group_dirs))
+        .build();
+        let emit = loop {
+            if let Some(e) = slot.lock().unwrap().clone() {
+                break e;
+            }
+            tokio::task::yield_now().await;
+        };
+        (list, emit)
+    }
+
+    fn note_row(title: &str) -> FileListEntry {
+        let path = VaultPath::note_path_from(title);
+        let filename = path.get_parent_path().1;
+        FileListEntry::Note {
+            path,
+            title: title.to_string(),
+            filename,
+            journal_date: None,
+            is_open: false,
+        }
+    }
+
+    fn dir_row(name: &str) -> FileListEntry {
+        FileListEntry::Directory {
+            path: VaultPath::new(name),
+            name: name.to_string(),
+        }
+    }
+
+    /// Row labels in display order. Avoids `sort_key`, which would put the
+    /// note extension into every assertion.
+    fn labels(list: &SearchList<FileListEntry>) -> Vec<String> {
+        list.visible_rows().iter().map(|r| label(r)).collect()
+    }
+
+    fn label(row: &FileListEntry) -> String {
+        match row {
+            FileListEntry::Up { .. } => "..".to_string(),
+            FileListEntry::Directory { name, .. } => format!("{name}/"),
+            FileListEntry::Note { title, .. } => title.clone(),
+            FileListEntry::Attachment { filename, .. } => filename.clone(),
+            FileListEntry::CreateNote { filename, .. } => format!("create:{filename}"),
+        }
+    }
+
+    fn highlighted(list: &SearchList<FileListEntry>) -> Option<String> {
+        list.selected_row().map(label)
+    }
+
+    /// The baseline for a slow drive: until the user touches it, the highlight
+    /// belongs to the TOP of the sort, not to whichever entry the walker
+    /// happened to reach first. Every later poll re-decides it.
+    #[tokio::test]
+    async fn a_slow_listing_keeps_the_untouched_highlight_on_the_top_row() {
+        let (mut list, emit) = slow_listing(SortField::Name, SortOrder::Ascending, false).await;
+
+        emit.push(note_row("mike"));
+        list.poll();
+        assert_eq!(highlighted(&list).as_deref(), Some("mike"));
+
+        emit.push(note_row("delta"));
+        list.poll();
+        assert_eq!(labels(&list), ["delta", "mike"]);
+        assert_eq!(highlighted(&list).as_deref(), Some("delta"));
+
+        emit.push(note_row("alpha"));
+        list.poll();
+        assert_eq!(labels(&list), ["alpha", "delta", "mike"]);
+        assert_eq!(
+            highlighted(&list).as_deref(),
+            Some("alpha"),
+            "the highlight follows the top of the sort, not the first row to arrive"
+        );
+        emit.done();
+    }
+
+    /// In a subdirectory the `Up` row is PUSHED (not a leading row) and is
+    /// filter-exempt, so it is both the first row to arrive and the first in
+    /// `listing_order`. The untouched highlight must sit on it and stay there
+    /// as the directory's own entries trickle in.
+    #[tokio::test]
+    async fn a_slow_subdirectory_listing_keeps_the_highlight_on_the_up_row() {
+        let (mut list, emit) = slow_listing(SortField::Name, SortOrder::Ascending, false).await;
+
+        emit.push(FileListEntry::Up {
+            parent: VaultPath::root(),
+        });
+        list.poll();
+        assert_eq!(highlighted(&list).as_deref(), Some(".."));
+
+        emit.push(note_row("alpha"));
+        list.poll();
+        emit.push(note_row("aaron")); // sorts above "alpha", but below `Up`
+        list.poll();
+        assert_eq!(labels(&list), ["..", "aaron", "alpha"]);
+        assert_eq!(
+            highlighted(&list).as_deref(),
+            Some(".."),
+            "`Up` outranks every arriving entry, so the seed never leaves it"
+        );
+        emit.done();
+    }
+
+    /// The sort dialog is reachable while the drive is still being read.
+    /// Re-sorting an untouched listing must leave the highlight on the top of
+    /// the NEW order — and must not silently promote the seed to a choice, so
+    /// rows arriving afterwards still take the top with it.
+    #[tokio::test]
+    async fn a_sort_change_mid_stream_keeps_the_untouched_highlight_on_top() {
+        let (mut list, emit) = slow_listing(SortField::Name, SortOrder::Ascending, false).await;
+
+        emit.push(note_row("bravo"));
+        emit.push(note_row("delta"));
+        list.poll();
+        assert_eq!(labels(&list), ["bravo", "delta"]);
+        assert_eq!(highlighted(&list).as_deref(), Some("bravo"));
+
+        // The user flips to descending while rows are still arriving.
+        list.set_order(Some(listing_order(
+            SortField::Name,
+            SortOrder::Descending,
+            false,
+        )));
+        assert_eq!(labels(&list), ["delta", "bravo"]);
+        assert_eq!(
+            highlighted(&list).as_deref(),
+            Some("delta"),
+            "a re-sort moves the untouched highlight to the new top row"
+        );
+
+        // ...and the rest of the slow listing keeps landing, still sorted,
+        // still carrying the highlight.
+        emit.push(note_row("echo"));
+        list.poll();
+        assert_eq!(labels(&list), ["echo", "delta", "bravo"]);
+        assert_eq!(
+            highlighted(&list).as_deref(),
+            Some("echo"),
+            "the sort change must not turn the seed into a user choice"
+        );
+        emit.done();
+    }
+
+    /// The chosen half of the same window: a row the user picked mid-stream is
+    /// theirs. A re-sort and every later arrival move it around the list, and
+    /// it stays highlighted throughout.
+    #[tokio::test]
+    async fn a_row_chosen_mid_stream_survives_a_sort_change_and_later_arrivals() {
+        let (mut list, emit) = slow_listing(SortField::Name, SortOrder::Ascending, false).await;
+
+        emit.push(note_row("bravo"));
+        emit.push(note_row("delta"));
+        list.poll();
+        list.select_next(); // "delta", by the user's own keys
+        assert_eq!(highlighted(&list).as_deref(), Some("delta"));
+
+        list.set_order(Some(listing_order(
+            SortField::Name,
+            SortOrder::Descending,
+            false,
+        )));
+        assert_eq!(labels(&list), ["delta", "bravo"]);
+        assert_eq!(highlighted(&list).as_deref(), Some("delta"));
+
+        emit.push(note_row("echo")); // sorts above it under the new order
+        list.poll();
+        assert_eq!(labels(&list), ["echo", "delta", "bravo"]);
+        assert_eq!(
+            highlighted(&list).as_deref(),
+            Some("delta"),
+            "a chosen row keeps the highlight through a re-sort and later arrivals"
+        );
+        emit.done();
+    }
+
+    /// `listing_order` ranks directories above notes when `group_dirs` is set,
+    /// so a directory the walker reaches LAST still lands at the top — and
+    /// takes an untouched highlight with it.
+    #[tokio::test]
+    async fn a_late_directory_takes_the_top_when_directories_are_grouped() {
+        let (mut list, emit) = slow_listing(SortField::Name, SortOrder::Ascending, true).await;
+
+        emit.push(note_row("alpha"));
+        emit.push(note_row("bravo"));
+        list.poll();
+        assert_eq!(highlighted(&list).as_deref(), Some("alpha"));
+
+        emit.push(dir_row("zeta"));
+        list.poll();
+        assert_eq!(labels(&list), ["zeta/", "alpha", "bravo"]);
+        assert_eq!(
+            highlighted(&list).as_deref(),
+            Some("zeta/"),
+            "grouped directories outrank notes whenever they arrive"
+        );
+        emit.done();
+    }
+
+    /// Typing narrows the partial listing locally (`reload_on_query` is false,
+    /// so no reload). A row the user picked stays picked while the rest of the
+    /// slow listing lands behind the filter.
+    #[tokio::test]
+    async fn filtering_mid_stream_keeps_a_chosen_row_while_more_rows_arrive() {
+        let (mut list, emit) = slow_listing(SortField::Name, SortOrder::Ascending, false).await;
+
+        emit.push(note_row("alpha"));
+        emit.push(note_row("albatross"));
+        emit.push(note_row("zebra"));
+        list.poll();
+        list.set_query("al");
+        assert_eq!(labels(&list), ["albatross", "alpha"]);
+        list.select_next(); // "alpha", chosen behind the filter
+        assert_eq!(highlighted(&list).as_deref(), Some("alpha"));
+
+        // More of the directory lands; one entry matches the filter and sorts
+        // above the chosen row, the other is filtered out entirely.
+        emit.push(note_row("alabama"));
+        emit.push(note_row("yankee"));
+        list.poll();
+        assert_eq!(labels(&list), ["alabama", "albatross", "alpha"]);
+        assert_eq!(
+            highlighted(&list).as_deref(),
+            Some("alpha"),
+            "the chosen row keeps the highlight behind an active filter"
+        );
+
+        // Clearing the filter reveals the rest without losing the choice.
+        list.set_query("");
+        assert_eq!(
+            labels(&list),
+            ["alabama", "albatross", "alpha", "yankee", "zebra"]
+        );
+        assert_eq!(highlighted(&list).as_deref(), Some("alpha"));
+        emit.done();
+    }
+
+    /// An in-place row update (the editor renaming the open note's title) is a
+    /// recompute, and a recompute re-applies `order_by` — so under a Title sort
+    /// the touched row MOVES. The highlight has to move with it: the user is
+    /// pointing at a note, not at a slot.
+    #[tokio::test]
+    async fn an_in_place_update_that_re_sorts_carries_the_highlight_with_the_row() {
+        let (mut list, emit) = slow_listing(SortField::Title, SortOrder::Ascending, false).await;
+        emit.push(note_row("alpha"));
+        emit.push(note_row("bravo"));
+        emit.push(note_row("charlie"));
+        list.poll();
+        list.select_next();
+        list.select_next();
+        assert_eq!(highlighted(&list).as_deref(), Some("charlie"));
+
+        // The editor retitles the selected note to something that sorts first.
+        list.update_rows(|row| {
+            if let FileListEntry::Note { title, .. } = row
+                && title == "charlie"
+            {
+                *title = "aaa".to_string();
+                return true;
+            }
+            false
+        });
+
+        assert_eq!(labels(&list), ["aaa", "alpha", "bravo"]);
+        assert_eq!(
+            highlighted(&list).as_deref(),
+            Some("aaa"),
+            "the highlight belongs to the row, not to the position it used to hold"
+        );
+        emit.done();
+    }
+
+    /// ...and the seeded half: an untouched highlight keeps the top slot when
+    /// an in-place update re-sorts the listing under it.
+    #[tokio::test]
+    async fn an_in_place_update_that_re_sorts_leaves_a_seed_on_the_top_row() {
+        let (mut list, emit) = slow_listing(SortField::Title, SortOrder::Ascending, false).await;
+        emit.push(note_row("bravo"));
+        emit.push(note_row("charlie"));
+        list.poll();
+        assert_eq!(highlighted(&list).as_deref(), Some("bravo"));
+
+        list.update_rows(|row| {
+            if let FileListEntry::Note { title, .. } = row
+                && title == "charlie"
+            {
+                *title = "aaa".to_string();
+                return true;
+            }
+            false
+        });
+
+        assert_eq!(labels(&list), ["aaa", "bravo"]);
+        assert_eq!(
+            highlighted(&list).as_deref(),
+            Some("aaa"),
+            "an untouched highlight belongs to the top of the order after any recompute"
+        );
+        emit.done();
     }
 }

@@ -1,4 +1,10 @@
-// Library entry-point exposing modules needed by integration tests.
+//! kimun-notes as a library: the TUI, the CLI and the MCP server.
+//!
+//! `src/main.rs` is a shim over [`app::main`]. Everything — the app loop and
+//! the screens included — lives here, so integration tests under `tests/` can
+//! drive any screen, or the loop itself, without a terminal.
+pub mod app;
+pub mod app_screen;
 pub mod ask;
 pub mod cli;
 pub mod components;

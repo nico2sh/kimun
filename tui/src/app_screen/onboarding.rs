@@ -4,7 +4,7 @@
 //! as a setup assistant running *for* the app rather than a screen *of* the
 //! app.
 //!
-//! Choices are staged in a local [`Draft`] and committed only when the user
+//! Choices are staged in a local `Draft` and committed only when the user
 //! finishes the summary step (`AppEvent::OnboardingFinished`); Esc discards.
 //! Theme and nerd-font selections preview live on the dialog itself.
 
@@ -1063,7 +1063,7 @@ impl OnboardingScreen {
     }
 
     /// Commit the draft: create + register the workspace (first run only),
-    /// apply fonts/theme/backend, persist, and hand off to main.rs.
+    /// apply fonts/theme/backend, persist, and hand off to the App loop, which rebuilds the vault.
     fn finish(&mut self, tx: &AppTx) {
         // Filesystem work happens before the settings lock is taken — a slow
         // mount must not stall settings readers for its duration.

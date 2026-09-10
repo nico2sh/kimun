@@ -556,7 +556,7 @@ impl PanelSet {
     /// Three conditions, and only the first is about geometry:
     ///
     /// - **Inside the editor component itself.** Asked of the component, not of
-    ///   [`Self::column_rects`], because the column is wider than the buffer: it
+    ///   `Self::column_rects`, because the column is wider than the buffer: it
     ///   also holds the frame `render` draws around the component (and, to its
     ///   left, the divider that [`Self::handle_mouse`] claims before any panel
     ///   sees it). A press on either is out of the component's bounds, so it

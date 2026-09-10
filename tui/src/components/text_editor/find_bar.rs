@@ -1,7 +1,7 @@
 //! The **find bar**: searching and replacing inside the open buffer.
 //!
 //! A module rather than a cluster of methods on the editor. The bar reaches
-//! outside itself for exactly one thing — the **edit buffer** — so it takes one
+//! outside itself for exactly one thing — the **rope buffer** — so it takes one
 //! as a parameter and the editor is left owning policy (which backend may open
 //! a bar), layout, and wiring the bar's overlay into the view.
 //!

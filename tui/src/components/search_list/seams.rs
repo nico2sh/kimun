@@ -71,9 +71,16 @@ pub enum Loaded<R> {
     Done,
 }
 
-/// Ranking function for `Filter::Rank`: takes the full row slice and the current
-/// query string, returns display indices in preferred order (absent = hidden).
-pub type RankFn<R> = std::sync::Arc<dyn Fn(&[R], &str) -> Vec<usize> + Send + Sync>;
+/// Ranking function for `Filter::Rank`: takes the full row slice, the candidate
+/// indices into it (`base` — already in `SearchListBuilder::order_by` order, so
+/// ranking may fall back on it for ties), and the current query string; returns
+/// display indices in preferred order (absent = hidden).
+pub type RankFn<R> = std::sync::Arc<dyn Fn(&[R], &[usize], &str) -> Vec<usize> + Send + Sync>;
+
+/// Total order over rows for `SearchListBuilder::order_by`: applied to the
+/// row set before any local filter, so streamed rows land in place as they
+/// arrive and a sort change is a recompute, not a reload.
+pub type OrderFn<R> = std::sync::Arc<dyn Fn(&R, &R) -> std::cmp::Ordering + Send + Sync>;
 
 /// How a loaded row set is narrowed/ordered for display. Three known
 /// strategies; none need test substitution, so folded in here.
@@ -82,7 +89,9 @@ pub enum Filter<R: SearchRow> {
     SourceOrder,
     /// Local nucleo fuzzy over `match_text`.
     Fuzzy,
-    /// Local rank: `(rows, query) -> display indices` (lower = better; absent = hidden).
+    /// Local rank: `(rows, base, query) -> display indices` (lower = better;
+    /// absent = hidden). `base` carries the `order_by` order, so honoring it
+    /// for equally-ranked rows is what makes the two compose.
     Rank(RankFn<R>),
 }
 
@@ -124,6 +133,14 @@ impl<R> Emit<R> {
     pub fn done(&self) {
         let _ = self.tx.send((self.generation, Loaded::Done));
         (self.redraw)();
+    }
+
+    /// Test sink: an `Emit` whose every event lands on the returned receiver,
+    /// so a source's delivery sequence can be asserted without an engine.
+    #[cfg(test)]
+    pub(crate) fn capture() -> (Self, std::sync::mpsc::Receiver<(u64, Loaded<R>)>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        (Self::new(tx, 0, Arc::new(|| {})), rx)
     }
 }
 

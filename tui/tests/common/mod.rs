@@ -8,6 +8,10 @@
 use std::path::{Path, PathBuf};
 
 use kimun_core::{IndexFile, NoteVault, SystemPath, VaultConfig};
+use kimun_notes::components::events::{AppEvent, InputEvent};
+use ratatui::Terminal;
+use ratatui::backend::TestBackend;
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 
 /// The workspace name test vaults index under, instead of the default
 /// `<workspace>/kimun.sqlite`.
@@ -76,4 +80,52 @@ pub fn absolute(unix_style: &str) -> PathBuf {
 /// have to survive TOML's own escaping.
 pub fn absolute_toml(unix_style: &str) -> String {
     absolute(unix_style).to_string_lossy().replace('\\', "\\\\")
+}
+
+/// A key press as crossterm reports it.
+pub fn press(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+    KeyEvent {
+        code,
+        modifiers,
+        kind: KeyEventKind::Press,
+        state: KeyEventState::NONE,
+    }
+}
+
+/// The same press as the loop's input event.
+pub fn input(key: KeyEvent) -> AppEvent {
+    AppEvent::Input(InputEvent::Key(key))
+}
+
+/// A config at the current version with a single workspace.
+///
+/// `cache_dir`/`history_dir` are left at their defaults, which resolve against
+/// the config file's own directory — so a test writing this into a temp dir
+/// keeps its index and history there rather than in the real installation.
+pub fn write_config(config_path: &Path, workspace: &Path) {
+    let toml = format!(
+        r#"config_version = 6
+
+[global]
+current_workspace = "default"
+
+[workspaces.default]
+path = {:?}
+created = "2024-01-15T10:30:00Z"
+"#,
+        workspace.to_string_lossy().as_ref()
+    );
+    std::fs::write(config_path, toml).expect("failed to write config file");
+}
+
+/// Every cell of the last drawn frame, row-major, as one string — enough to
+/// ask "does the frame show this text" without caring where.
+pub fn buffer_text(terminal: &Terminal<TestBackend>) -> String {
+    terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect()
 }

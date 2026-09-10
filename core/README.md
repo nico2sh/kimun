@@ -61,7 +61,7 @@ The main handle for all vault operations. Highlights:
 | Replace | `replace_in_note`, `preview_replace` — literal or regex, with dry-run |
 | Search | `search_notes` (query DSL with labels, ordering, quoting — see `SearchTerms`), `get_backlinks` |
 | Labels | `list_labels`, `label_counts`, `notes_with_label`, `suggest_tags_by_prefix` |
-| Browse | `get_notes`, `get_all_notes`, `get_directories`, `browse_vault` |
+| Browse | `get_notes`, `get_all_notes`, `get_directories`, `browse_vault_stream` (entries as the walk finds them), `browse_vault` (collected) |
 | Journal | `journal_entry`, `journal_path`, `inbox_path` |
 | Attachments | `save_attachment`, `generate_attachment_path`, `default_attachments_path` |
 | Saved searches | `list_saved_searches`, `save_search`, `delete_saved_search`, `rename_saved_search` |
