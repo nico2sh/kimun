@@ -130,21 +130,23 @@ impl SavedSearchesModel {
     }
 }
 
-/// Rank `rows` (USER rows only) by `filter`, returning DISPLAY INDICES into the
-/// slice. An exact leading-index match (filter parses to a u8 equal to a row's
-/// `index`) ranks that row first; otherwise a case-insensitive name substring
-/// match. Stable order preserves the source order within a rank. Empty filter →
-/// all indices in order. The engine re-adds any filter-exempt rows (the virtual
-/// backlinks row) that this closure omits, so it may ignore the virtual row.
-pub fn rank_to_indices(rows: &[SearchItem], filter: &str) -> Vec<usize> {
+/// Rank the rows named by `base` (indices into `rows`, USER rows only, already
+/// in list order), returning DISPLAY INDICES into `rows`. An exact leading-index
+/// match (filter parses to a u8 equal to a row's `index`) ranks that row first;
+/// otherwise a case-insensitive name substring match. Stable order preserves
+/// `base` order within a rank. Empty filter → `base` unchanged. The engine
+/// re-adds any filter-exempt rows (the virtual backlinks row) that this closure
+/// omits, so it may ignore the virtual row.
+pub fn rank_to_indices(rows: &[SearchItem], base: &[usize], filter: &str) -> Vec<usize> {
     let f = filter.trim();
     if f.is_empty() {
-        return (0..rows.len()).collect();
+        return base.to_vec();
     }
     let as_index: Option<u8> = f.parse().ok();
     let needle = f.to_lowercase();
     let mut ranked: Vec<(usize, u8)> = Vec::new(); // (index, rank: 0 = best)
-    for (i, it) in rows.iter().enumerate() {
+    for &i in base {
+        let it = &rows[i];
         let exact_index = as_index.is_some() && it.index == as_index;
         let name_match = it.name.to_lowercase().contains(&needle);
         if exact_index {
@@ -153,7 +155,7 @@ pub fn rank_to_indices(rows: &[SearchItem], filter: &str) -> Vec<usize> {
             ranked.push((i, 1));
         }
     }
-    // stable sort by rank keeps original relative order within a rank
+    // stable sort by rank keeps `base` relative order within a rank
     ranked.sort_by_key(|(_, r)| *r);
     ranked.into_iter().map(|(i, _)| i).collect()
 }
@@ -421,6 +423,12 @@ mod tests {
         assert_eq!(items[9].index, None); // 10th user search unnumbered
     }
 
+    /// Every index into `items`, in order — the `base` a list with no
+    /// `order_by` hands the ranker.
+    fn all(items: &[SearchItem]) -> Vec<usize> {
+        (0..items.len()).collect()
+    }
+
     #[test]
     fn rank_exact_index_first() {
         let items = vec![
@@ -428,9 +436,9 @@ mod tests {
             SearchItem::saved(2, "backlinks-ish", "<{note}"),
             SearchItem::saved(3, "two-things", "#a"),
         ];
-        let idx = rank_to_indices(&items, "2");
+        let idx = rank_to_indices(&items, &all(&items), "2");
         assert_eq!(items[idx[0]].name, "backlinks-ish"); // index 2 wins
-        let idx = rank_to_indices(&items, "tod");
+        let idx = rank_to_indices(&items, &all(&items), "tod");
         assert_eq!(items[idx[0]].name, "todo");
     }
 
@@ -440,8 +448,27 @@ mod tests {
             SearchItem::saved(1, "a", "#a"),
             SearchItem::saved(2, "b", "#b"),
         ];
-        let idx = rank_to_indices(&items, "");
+        let idx = rank_to_indices(&items, &all(&items), "");
         assert_eq!(idx, vec![0, 1]);
+    }
+
+    /// The ranker never re-derives the candidate set: it walks `base`, so a
+    /// list order (or a narrower candidate set) reaches the ranked output.
+    #[test]
+    fn rank_honors_the_base_order_within_a_rank() {
+        let items = vec![
+            SearchItem::saved(1, "todo-a", "#a"),
+            SearchItem::saved(2, "todo-b", "#b"),
+            SearchItem::saved(3, "todo-c", "#c"),
+        ];
+        // Same rank for all three (name substring), reversed base order.
+        let idx = rank_to_indices(&items, &[2, 1, 0], "todo");
+        assert_eq!(idx, vec![2, 1, 0]);
+        // A base that omits a row omits it from the result.
+        let idx = rank_to_indices(&items, &[0, 2], "todo");
+        assert_eq!(idx, vec![0, 2]);
+        // An empty filter passes `base` straight through.
+        assert_eq!(rank_to_indices(&items, &[1, 0], ""), vec![1, 0]);
     }
 
     #[test]
@@ -450,7 +477,7 @@ mod tests {
             SearchItem::saved(1, "todo", "#todo"),
             SearchItem::saved(2, "ideas", "#ideas"),
         ];
-        let idx = rank_to_indices(&items, "ide");
+        let idx = rank_to_indices(&items, &all(&items), "ide");
         assert_eq!(idx.len(), 1);
         assert_eq!(items[idx[0]].name, "ideas");
     }

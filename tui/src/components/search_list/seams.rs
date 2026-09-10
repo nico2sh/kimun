@@ -71,9 +71,11 @@ pub enum Loaded<R> {
     Done,
 }
 
-/// Ranking function for `Filter::Rank`: takes the full row slice and the current
-/// query string, returns display indices in preferred order (absent = hidden).
-pub type RankFn<R> = std::sync::Arc<dyn Fn(&[R], &str) -> Vec<usize> + Send + Sync>;
+/// Ranking function for `Filter::Rank`: takes the full row slice, the candidate
+/// indices into it (`base` — already in `SearchListBuilder::order_by` order, so
+/// ranking may fall back on it for ties), and the current query string; returns
+/// display indices in preferred order (absent = hidden).
+pub type RankFn<R> = std::sync::Arc<dyn Fn(&[R], &[usize], &str) -> Vec<usize> + Send + Sync>;
 
 /// Total order over rows for `SearchListBuilder::order_by`: applied to the
 /// row set before any local filter, so streamed rows land in place as they
@@ -87,7 +89,9 @@ pub enum Filter<R: SearchRow> {
     SourceOrder,
     /// Local nucleo fuzzy over `match_text`.
     Fuzzy,
-    /// Local rank: `(rows, query) -> display indices` (lower = better; absent = hidden).
+    /// Local rank: `(rows, base, query) -> display indices` (lower = better;
+    /// absent = hidden). `base` carries the `order_by` order, so honoring it
+    /// for equally-ranked rows is what makes the two compose.
     Rank(RankFn<R>),
 }
 

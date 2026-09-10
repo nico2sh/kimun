@@ -4645,6 +4645,45 @@ cccccccc"
         );
     }
 
+    /// Regression: a Visual `<` with nothing to remove (the lines are already
+    /// flush left) still cancels the buffer selection and drops to Normal, so
+    /// the painted highlight must go with it. The engine reported the
+    /// no-change case as `NoOp`, and the host's `NoOp` arm returns without
+    /// touching `self.selection` — leaving the rows painted as selected after
+    /// Visual mode had already ended.
+    #[test]
+    fn vim_visual_outdent_with_nothing_to_remove_clears_the_highlight() {
+        let mut editor = make_vim_editor();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        editor.set_text("alpha\nbeta".to_string());
+        for c in ['V', 'j'] {
+            editor.handle_input(
+                &InputEvent::Key(key(KeyCode::Char(c), KeyModifiers::NONE)),
+                &tx,
+            );
+        }
+        assert_eq!(vim_mode(&editor), EditorMode::VisualLine);
+        assert!(
+            editor.selection.is_some(),
+            "V over two rows must paint a highlight"
+        );
+
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('<'), KeyModifiers::NONE)),
+            &tx,
+        );
+        assert_eq!(
+            editor.get_text(),
+            "alpha\nbeta",
+            "there is no indentation to remove"
+        );
+        assert_eq!(vim_mode(&editor), EditorMode::Normal);
+        assert_eq!(
+            editor.selection, None,
+            "leaving Visual mode must clear the highlight even when the outdent changed nothing"
+        );
+    }
+
     /// Regression: a bare left click (Down with no Drag) must NOT flip
     /// vim Normal → Visual.  The textarea's Down arm calls `start_selection()`
     /// which leaves a collapsed (start==end) selection; the fix at ~line 2124
