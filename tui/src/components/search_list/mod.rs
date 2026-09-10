@@ -326,14 +326,13 @@ impl<R: SearchRow> SearchList<R> {
             // Pushes only append, so row indices stay valid across the drain
             // and the selection can follow its row wherever `order` puts it.
             // A `Replace` swaps the whole set; indices mean nothing after it.
-            let keep = if !self.selection_pinned
-                || drained
-                    .iter()
-                    .any(|ev| matches!(ev, LoadedInner::Replace(_)))
+            let keep = if drained
+                .iter()
+                .any(|ev| matches!(ev, LoadedInner::Replace(_)))
             {
                 None
             } else {
-                self.selected_row_index()
+                self.selection_to_carry()
             };
             for ev in drained {
                 match ev {
@@ -499,13 +498,20 @@ impl<R: SearchRow> SearchList<R> {
     /// of the NEW order — and stays a seed, so a still-streaming listing goes
     /// on re-seeding it (the `selection_pinned` split, as in `poll`).
     pub fn set_order(&mut self, cmp: Option<OrderFn<R>>) {
-        let keep = self
-            .selection_pinned
-            .then(|| self.selected_row_index())
-            .flatten();
+        let keep = self.selection_to_carry();
         self.order = cmp;
         self.recompute_display();
         self.reselect(keep);
+    }
+
+    /// The row a recompute has to put the selection back on: the row the user
+    /// chose, or `None` for a seed — a seed belongs to the top of the order,
+    /// wherever the recompute puts it. The one rule behind `poll`, `set_order`
+    /// and `update_rows`.
+    fn selection_to_carry(&self) -> Option<usize> {
+        self.selection_pinned
+            .then(|| self.selected_row_index())
+            .flatten()
     }
 
     /// Index into `rows` of the selected row, if the selection is on a real
@@ -527,9 +533,12 @@ impl<R: SearchRow> SearchList<R> {
     }
 
     /// Mutate rows in place. `mutate` is called for each row and returns `true`
-    /// for each row it changed; if any did, the display order is recomputed
-    /// (re-filter, no re-sort) so an active filter stays correct. Returns
-    /// whether anything changed.
+    /// for each row it changed; if any did, the display is recomputed — which
+    /// re-filters AND re-sorts, so an edit to a field the `order_by` reads
+    /// moves its row. Returns whether anything changed.
+    ///
+    /// The selection is carried the same way every other recompute carries it:
+    /// a chosen row stays chosen wherever it lands, a seed keeps the top slot.
     ///
     /// This is the one seam that touches rows outside the [`RowSource`]; every
     /// other change rebuilds from the source. Structural changes (add/remove)
@@ -544,7 +553,9 @@ impl<R: SearchRow> SearchList<R> {
             }
         }
         if changed {
+            let keep = self.selection_to_carry();
             self.recompute_display();
+            self.reselect(keep);
         }
         changed
     }
