@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.0](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.23.3...kimun-notes-v0.24.0) - 2026-09-10
+
+### Fixed
+
+- re-sort keeps index
+- visual regression
+- file list reorders on each refresh
+- yank on dedent
+- tab intents refactor
+- correctness
+
+### Other
+
+- added tests for sidebar
+- note lock on remname
+- streaming file reading
+- one app behind run()
+
 ## [0.23.3](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.23.2...kimun-notes-v0.23.3) - 2026-08-19
 
 ### Fixed
