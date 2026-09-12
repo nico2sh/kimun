@@ -1,6 +1,7 @@
 mod backup;
 pub mod filename;
 pub mod saved_searches;
+pub mod pinned_notes;
 pub mod vault_id;
 mod vault_path;
 use std::{
