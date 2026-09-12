@@ -266,7 +266,8 @@ impl Overlay for ActiveDialog {
                 OverlayMsg::Consumed
             }
             OverlayData::Error(text) => {
-                if matches!(self, ActiveDialog::PinnedNotes(_)) {
+                if let ActiveDialog::PinnedNotes(d) = self {
+                    d.handle_load_error();
                     tx.send(AppEvent::FlashMessage(text.clone())).ok();
                 } else {
                     self.set_error(text.clone());
@@ -413,5 +414,33 @@ mod tests {
             SortOrder::Ascending,
             false,
         );
+    }
+
+    /// Every dialog test for `PinnedNotesDialog` calls `set_rows` directly,
+    /// bypassing the routing this module owns. A regression here (e.g. the
+    /// `PinnedNotesLoaded` arm losing its `if let` guard, or matching the
+    /// wrong variant) would leave the dialog permanently empty with none of
+    /// those tests failing — so this drives the real `handle_data` path.
+    #[tokio::test]
+    async fn active_dialog_routes_pinned_notes_loaded_rows() {
+        use crate::components::events::PinnedRow;
+        use kimun_core::nfs::VaultPath;
+        use tokio::sync::mpsc::unbounded_channel;
+
+        let vault = crate::test_support::temp_vault("active-dialog-pinned").await;
+        let (tx, _rx) = unbounded_channel();
+        let mut active = ActiveDialog::pinned_notes(vault.clone(), &tx);
+
+        let rows = vec![PinnedRow {
+            path: VaultPath::new("a.md"),
+            missing: false,
+        }];
+        let msg = active.handle_data(&OverlayData::PinnedNotesLoaded(rows.clone()), &vault, &tx);
+        assert!(matches!(msg, OverlayMsg::Consumed));
+
+        match &active {
+            ActiveDialog::PinnedNotes(d) => assert_eq!(d.rows(), rows.as_slice()),
+            _ => panic!("expected ActiveDialog::PinnedNotes"),
+        }
     }
 }
