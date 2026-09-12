@@ -1122,6 +1122,10 @@ impl NoteVault {
 
         nfs::delete_note(self.workspace_path(), &path).await?;
 
+        // Best-effort: a pin-file failure never fails a delete that already
+        // succeeded on disk and in the index.
+        pinned_notes::on_note_deleted(self.workspace_path(), &path).await;
+
         Ok(())
     }
 
@@ -1246,6 +1250,10 @@ impl NoteVault {
 
         nfs::delete_directory(self.workspace_path(), &path).await?;
 
+        // Best-effort: a pin-file failure never fails a delete that already
+        // succeeded on disk and in the index.
+        pinned_notes::on_directory_deleted(self.workspace_path(), &path).await;
+
         Ok(())
     }
 
@@ -1279,6 +1287,11 @@ impl NoteVault {
         nfs::rename_directory(self.workspace_path(), &from, &to)
             .await
             .map_err(rename_dest_err)?;
+
+        // Best-effort: a pin-file failure never fails a rename that already
+        // succeeded on disk. Fine before the index call too — that step
+        // cannot roll back the filesystem move either.
+        pinned_notes::on_directory_renamed(self.workspace_path(), &from, &to).await;
 
         self.index.rename_directory(&from, &to).await?;
 
@@ -3192,6 +3205,65 @@ mod tests {
         assert!(
             !dir.path().join(".kimun").join("pinned-notes.toml").exists(),
             "a no-op unpin must not create the pin file"
+        );
+    }
+
+    #[tokio::test]
+    async fn deleting_a_note_unpins_it() {
+        let dir = TempDir::new().unwrap();
+        let vault = make_vault(dir.path()).await;
+        let a = VaultPath::new("a.md");
+        vault.create_note(&a, "hi").await.unwrap();
+        vault.toggle_pinned_note(&a).await.unwrap();
+        vault
+            .toggle_pinned_note(&VaultPath::new("keep.md"))
+            .await
+            .unwrap();
+
+        vault.delete_note(&a).await.unwrap();
+
+        assert_eq!(
+            vault.list_pinned_notes().await.unwrap(),
+            vec![VaultPath::new("/keep.md")]
+        );
+    }
+
+    #[tokio::test]
+    async fn renaming_a_directory_rewrites_pins_beneath_it() {
+        let dir = TempDir::new().unwrap();
+        let vault = make_vault(dir.path()).await;
+        let inside = VaultPath::new("proj/a.md");
+        vault.create_note(&inside, "hi").await.unwrap();
+        vault.toggle_pinned_note(&inside).await.unwrap();
+
+        vault
+            .rename_directory(&VaultPath::new("proj"), &VaultPath::new("work"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            vault.list_pinned_notes().await.unwrap(),
+            vec![VaultPath::new("/work/a.md")]
+        );
+    }
+
+    #[tokio::test]
+    async fn deleting_a_directory_unpins_everything_beneath_it() {
+        let dir = TempDir::new().unwrap();
+        let vault = make_vault(dir.path()).await;
+        let inside = VaultPath::new("proj/a.md");
+        vault.create_note(&inside, "hi").await.unwrap();
+        vault.toggle_pinned_note(&inside).await.unwrap();
+        vault
+            .toggle_pinned_note(&VaultPath::new("keep.md"))
+            .await
+            .unwrap();
+
+        vault.delete_directory(&VaultPath::new("proj")).await.unwrap();
+
+        assert_eq!(
+            vault.list_pinned_notes().await.unwrap(),
+            vec![VaultPath::new("/keep.md")]
         );
     }
 }
