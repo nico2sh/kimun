@@ -3259,7 +3259,10 @@ mod tests {
             .await
             .unwrap();
 
-        vault.delete_directory(&VaultPath::new("proj")).await.unwrap();
+        vault
+            .delete_directory(&VaultPath::new("proj"))
+            .await
+            .unwrap();
 
         assert_eq!(
             vault.list_pinned_notes().await.unwrap(),

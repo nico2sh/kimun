@@ -26,7 +26,9 @@ pub const PINNED_NOTES_CAP: usize = 9;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PinToggle {
     /// Appended; `position` is 0-based.
-    Pinned { position: usize },
+    Pinned {
+        position: usize,
+    },
     Unpinned,
     /// Not pinned and the list already holds [`PINNED_NOTES_CAP`] entries.
     Full,
@@ -159,11 +161,7 @@ fn dir_prefix(dir: &VaultPath) -> String {
 }
 
 /// A directory was renamed: rewrite every pin beneath it.
-pub fn rewrite_directory_rename(
-    notes: &mut [VaultPath],
-    from: &VaultPath,
-    to: &VaultPath,
-) -> bool {
+pub fn rewrite_directory_rename(notes: &mut [VaultPath], from: &VaultPath, to: &VaultPath) -> bool {
     let from = from.canonical();
     let to = to.canonical();
     let from_prefix = dir_prefix(&from);
@@ -219,11 +217,7 @@ pub async fn on_note_renamed(workspace_path: &SystemPath, from: &VaultPath, to: 
 }
 
 /// A directory was renamed: keep every pin beneath it.
-pub async fn on_directory_renamed(
-    workspace_path: &SystemPath,
-    from: &VaultPath,
-    to: &VaultPath,
-) {
+pub async fn on_directory_renamed(workspace_path: &SystemPath, from: &VaultPath, to: &VaultPath) {
     best_effort_edit(workspace_path, "renaming a directory", |all| {
         rewrite_directory_rename(all, from, to)
     })
@@ -289,7 +283,10 @@ mod tests {
     #[test]
     fn toggle_appends_then_removes() {
         let mut notes = vec![p("/a.md")];
-        assert_eq!(toggle(&mut notes, &p("b.md")), PinToggle::Pinned { position: 1 });
+        assert_eq!(
+            toggle(&mut notes, &p("b.md")),
+            PinToggle::Pinned { position: 1 }
+        );
         assert_eq!(notes, vec![p("/a.md"), p("/b.md")]);
         assert_eq!(toggle(&mut notes, &p("a.md")), PinToggle::Unpinned);
         assert_eq!(notes, vec![p("/b.md")]);
@@ -308,7 +305,10 @@ mod tests {
         // lookup, and a canonically-stored pin is found by a relative one.
         let mut relative_store = vec![p("a.md")];
         assert_eq!(position_of(&relative_store, &p("/a.md")), Some(0));
-        assert_eq!(toggle(&mut relative_store, &p("/a.md")), PinToggle::Unpinned);
+        assert_eq!(
+            toggle(&mut relative_store, &p("/a.md")),
+            PinToggle::Unpinned
+        );
         assert!(relative_store.is_empty());
 
         let mut absolute_store = vec![p("/b.md")];
@@ -360,7 +360,11 @@ mod tests {
     #[test]
     fn note_rename_rewrites_the_matching_entry_only() {
         let mut notes = vec![p("a.md"), p("dir/b.md")];
-        assert!(rewrite_note_rename(&mut notes, &p("dir/b.md"), &p("other/c.md")));
+        assert!(rewrite_note_rename(
+            &mut notes,
+            &p("dir/b.md"),
+            &p("other/c.md")
+        ));
         // The rewritten slot is stored canonical even though `to` was relative;
         // the untouched entry keeps whatever form it already had.
         assert_eq!(notes, vec![p("a.md"), p("/other/c.md")]);
@@ -369,20 +373,38 @@ mod tests {
 
     #[test]
     fn directory_rename_rewrites_entries_beneath_it() {
-        let mut notes = vec![p("proj/a.md"), p("proj/sub/b.md"), p("projx/c.md"), p("d.md")];
+        let mut notes = vec![
+            p("proj/a.md"),
+            p("proj/sub/b.md"),
+            p("projx/c.md"),
+            p("d.md"),
+        ];
         assert!(rewrite_directory_rename(&mut notes, &p("proj"), &p("work")));
         assert_eq!(
             notes,
-            vec![p("/work/a.md"), p("/work/sub/b.md"), p("projx/c.md"), p("d.md")]
+            vec![
+                p("/work/a.md"),
+                p("/work/sub/b.md"),
+                p("projx/c.md"),
+                p("d.md")
+            ]
         );
-        assert!(!rewrite_directory_rename(&mut notes, &p("missing"), &p("x")));
+        assert!(!rewrite_directory_rename(
+            &mut notes,
+            &p("missing"),
+            &p("x")
+        ));
     }
 
     #[test]
     fn directory_rename_matches_regardless_of_absoluteness() {
         // Stored relative, renamed with an absolute `from`.
         let mut notes = vec![p("proj/a.md")];
-        assert!(rewrite_directory_rename(&mut notes, &p("/proj"), &p("work")));
+        assert!(rewrite_directory_rename(
+            &mut notes,
+            &p("/proj"),
+            &p("work")
+        ));
         assert_eq!(notes, vec![p("/work/a.md")]);
 
         // Stored canonical (absolute), renamed with a relative `from`/`to`.
