@@ -5,7 +5,7 @@
 //! belong in `nfs`. The list edits are pure functions over a `Vec` so the
 //! rules (cap, dense order, rename rewrites) are tested without a disk.
 //!
-//! Every entry is stored and compared in [`VaultPath::canonical`] form —
+//! Every entry is stored and compared in `VaultPath::canonical` form —
 //! flattened and vault-*absolute* (`notes = ["/dir/a.md", "/b.md"]`) — the
 //! same identity rule the note index uses, so a pin has exactly one form
 //! whether the caller reached it as `a.md` or `/a.md`. Every function here
