@@ -33,6 +33,18 @@ pub struct PinnedNotesDialog {
     /// `false` until the first load lands, so an empty vault is not drawn
     /// as "no pinned notes" for the frame before the read completes.
     loaded: bool,
+    /// `true` while a reorder or unpin write started by this dialog is in
+    /// flight. `move_pinned_note`/`unpin_note` are a plain read-modify-write
+    /// with no locking, so two overlapping writes (ordinary key repeat is
+    /// enough to trigger this) can interleave: the second reads before the
+    /// first's write lands and computes its move from stale positions,
+    /// silently producing a third order that matches neither keypress. This
+    /// dialog is the only writer during a reorder session, so refusing to
+    /// start a second write while one is outstanding removes the race at
+    /// its source without needing locking in core. Cleared when the reload
+    /// that follows the write lands (success or failure — see
+    /// `handle_load_error`).
+    persist_pending: bool,
 }
 
 impl PinnedNotesDialog {
@@ -44,7 +56,13 @@ impl PinnedNotesDialog {
             rows: Vec::new(),
             selected: 0,
             loaded: false,
+            persist_pending: false,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn rows(&self) -> &[PinnedRow] {
+        &self.rows
     }
 
     /// Read the list and check each note's existence, then deliver it as
@@ -76,15 +94,28 @@ impl PinnedNotesDialog {
     }
 
     /// Replace the rows (a load landed). The cursor is clamped so it never
-    /// points past the end after an unpin.
+    /// points past the end after an unpin. Also clears `persist_pending`:
+    /// a reload is exactly what a pending write was waiting for.
     pub fn set_rows(&mut self, rows: Vec<PinnedRow>) {
         self.rows = rows;
         self.loaded = true;
+        self.persist_pending = false;
         if self.rows.is_empty() {
             self.selected = 0;
         } else {
             self.selected = self.selected.min(self.rows.len() - 1);
         }
+    }
+
+    /// A load or reload failed (`OverlayData::Error` routed here instead of
+    /// `set_rows`). The message itself reaches the user as a flash — this
+    /// only settles the dialog's own bookkeeping: `loaded` so a failed
+    /// *first* load renders the empty-state placeholder instead of a blank
+    /// body, and `persist_pending` so a failed *reload* after a write
+    /// doesn't leave `J`/`K`/`d` refusing forever.
+    pub fn handle_load_error(&mut self) {
+        self.loaded = true;
+        self.persist_pending = false;
     }
 
     /// Open the row at `index` (0-based): OpenPath + close, or a flash when
@@ -114,10 +145,36 @@ impl PinnedNotesDialog {
         tx.send(AppEvent::CloseOverlay).ok();
     }
 
+    /// Run a persisting write, then always reload — on success so the list
+    /// reflects the edit, on failure so the screen falls back to whatever
+    /// is actually on disk instead of leaving an optimistic edit standing
+    /// (the error itself still reaches the user, via `OverlayData::Error`
+    /// before the reload). Refuses to start while a previous write from
+    /// this dialog is still in flight (see `persist_pending`); callers
+    /// check this themselves so they can skip their own optimistic local
+    /// edit too, not just the write.
+    fn persist_and_reload(
+        &mut self,
+        tx: &AppTx,
+        op: impl std::future::Future<Output = Result<(), String>> + Send + 'static,
+    ) {
+        self.persist_pending = true;
+        let vault = self.vault.clone();
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            if let Err(msg) = op.await {
+                tx.send(AppEvent::OverlayData(OverlayData::Error(msg))).ok();
+            }
+            Self::spawn_load(vault, &tx);
+        });
+    }
+
     /// Move the selected row by `delta` (−1 up, +1 down), persist, reload.
-    /// The cursor follows the row so a second press keeps moving it.
+    /// The cursor follows the row so a second press keeps moving it — but
+    /// only once the previous move's write has landed; see
+    /// `persist_pending`.
     fn move_selected(&mut self, delta: isize, tx: &AppTx) {
-        if self.rows.is_empty() {
+        if self.persist_pending || self.rows.is_empty() {
             return;
         }
         let from = self.selected;
@@ -129,38 +186,32 @@ impl PinnedNotesDialog {
         self.rows.swap(from, to);
         self.selected = to;
         let vault = self.vault.clone();
-        let tx2 = tx.clone();
-        tokio::spawn(async move {
-            match vault.move_pinned_note(from, to).await {
-                Ok(_) => Self::spawn_load(vault, &tx2),
-                Err(e) => {
-                    tx2.send(AppEvent::OverlayData(OverlayData::Error(format!(
-                        "could not reorder pinned notes: {e}"
-                    ))))
-                    .ok();
-                }
-            }
+        self.persist_and_reload(tx, async move {
+            vault
+                .move_pinned_note(from, to)
+                .await
+                .map(|_| ())
+                .map_err(|e| format!("could not reorder pinned notes: {e}"))
         });
     }
 
-    /// Unpin the selected row, persist, reload.
+    /// Unpin the selected row, persist, reload. Refuses while a previous
+    /// write is still in flight; see `persist_pending`.
     fn unpin_selected(&mut self, tx: &AppTx) {
+        if self.persist_pending {
+            return;
+        }
         let Some(row) = self.rows.get(self.selected) else {
             return;
         };
         let path = row.path.clone();
         let vault = self.vault.clone();
-        let tx2 = tx.clone();
-        tokio::spawn(async move {
-            match vault.unpin_note(&path).await {
-                Ok(_) => Self::spawn_load(vault, &tx2),
-                Err(e) => {
-                    tx2.send(AppEvent::OverlayData(OverlayData::Error(format!(
-                        "could not unpin {path}: {e}"
-                    ))))
-                    .ok();
-                }
-            }
+        self.persist_and_reload(tx, async move {
+            vault
+                .unpin_note(&path)
+                .await
+                .map(|_| ())
+                .map_err(|e| format!("could not unpin {path}: {e}"))
         });
     }
 
@@ -360,6 +411,28 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, AppEvent::OpenPath { .. }))
         );
+        assert!(!events.iter().any(|e| matches!(e, AppEvent::CloseOverlay)));
+    }
+
+    #[tokio::test]
+    async fn digit_for_a_missing_note_flashes_instead_of_opening() {
+        // The digit path and the Enter path both funnel through `open_row`,
+        // but nothing stops a future refactor from special-casing the digit
+        // arm — so the refusal is exercised on both paths, not just Enter's.
+        let (mut d, _) = dialog_with(vec![row("a.md", false), row("gone.md", true)]).await;
+        let (tx, mut rx) = unbounded_channel();
+        d.handle_key(key(KeyCode::Char('2')), &tx);
+        let events = drain(&mut rx);
+        assert!(matches!(
+            &events[0],
+            AppEvent::FlashMessage(m) if m == "pinned note not found: gone.md"
+        ));
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, AppEvent::OpenPath { .. }))
+        );
+        assert!(!events.iter().any(|e| matches!(e, AppEvent::CloseOverlay)));
     }
 
     #[tokio::test]
@@ -420,6 +493,39 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn shift_k_moves_the_row_up_and_reloads() {
+        let (mut d, vault) = dialog_with(Vec::new()).await;
+        for n in ["a.md", "b.md"] {
+            vault.toggle_pinned_note(&VaultPath::new(n)).await.unwrap();
+        }
+        d.set_rows(vec![row("a.md", true), row("b.md", true)]);
+        d.selected = 1;
+        let (tx, mut rx) = unbounded_channel();
+        d.handle_key(shift('K'), &tx);
+        let loaded = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if let Some(AppEvent::OverlayData(OverlayData::PinnedNotesLoaded(rows))) =
+                    rx.recv().await
+                {
+                    break rows;
+                }
+            }
+        })
+        .await
+        .expect("reload event");
+        assert_eq!(
+            loaded.iter().map(|r| r.path.clone()).collect::<Vec<_>>(),
+            vec![VaultPath::new("/b.md"), VaultPath::new("/a.md")]
+        );
+        assert_eq!(
+            vault.list_pinned_notes().await.unwrap(),
+            vec![VaultPath::new("/b.md"), VaultPath::new("/a.md")]
+        );
+        d.set_rows(loaded);
+        assert_eq!(d.selected, 0, "the cursor follows the moved row");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn d_unpins_the_selected_row_and_reloads() {
         let (mut d, vault) = dialog_with(Vec::new()).await;
         for n in ["a.md", "b.md"] {
@@ -444,6 +550,72 @@ mod tests {
         assert_eq!(
             vault.list_pinned_notes().await.unwrap(),
             vec![VaultPath::new("/b.md")]
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_second_reorder_press_is_ignored_while_a_write_is_in_flight() {
+        // Without the `persist_pending` guard, the second `J` below would
+        // run its own optimistic swap immediately (both key presses happen
+        // synchronously, before the first press's spawned write has had a
+        // chance to run), moving `selected` to 2 and firing a second
+        // `move_pinned_note` call computed from positions the first write
+        // hadn't landed yet — exactly the interleave that can silently
+        // reorder the list a third way. With the guard, the second press is
+        // a no-op: the cursor stays where the first press left it, and only
+        // one write (and therefore one reload) happens.
+        let (mut d, vault) = dialog_with(Vec::new()).await;
+        for n in ["a.md", "b.md", "c.md"] {
+            vault.toggle_pinned_note(&VaultPath::new(n)).await.unwrap();
+        }
+        d.set_rows(vec![
+            row("a.md", true),
+            row("b.md", true),
+            row("c.md", true),
+        ]);
+        let (tx, mut rx) = unbounded_channel();
+
+        d.handle_key(shift('J'), &tx);
+        assert!(d.persist_pending, "the first press started a write");
+
+        d.handle_key(shift('J'), &tx);
+        assert_eq!(
+            d.selected, 1,
+            "the second press must not move the cursor again while the first write is pending"
+        );
+
+        let loaded = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if let Some(AppEvent::OverlayData(OverlayData::PinnedNotesLoaded(rows))) =
+                    rx.recv().await
+                {
+                    break rows;
+                }
+            }
+        })
+        .await
+        .expect("reload event");
+        assert_eq!(
+            loaded.iter().map(|r| r.path.clone()).collect::<Vec<_>>(),
+            vec![
+                VaultPath::new("/b.md"),
+                VaultPath::new("/a.md"),
+                VaultPath::new("/c.md")
+            ],
+            "only the first press's move should have been written"
+        );
+        // Deliver the reload, exactly as `dialogs/mod.rs` would: this is
+        // what clears the guard.
+        d.set_rows(loaded);
+        assert!(!d.persist_pending, "the reload cleared the guard");
+
+        // No second write means no second reload: nothing else should ever
+        // arrive on this channel.
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv())
+                .await
+                .is_err(),
+            "a second write must not have happened"
         );
     }
 
