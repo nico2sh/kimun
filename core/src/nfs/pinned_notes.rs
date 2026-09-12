@@ -50,13 +50,26 @@ fn pinned_notes_path(workspace_path: &SystemPath) -> std::path::PathBuf {
 
 /// Read the pinned list, in order. A vault with no file has none. Entries
 /// are canonicalized on read, so a hand-edited relative entry still matches.
+///
+/// The result is truncated to `PINNED_NOTES_CAP` (keeping the first entries
+/// in file order), so this function's own guarantee holds even when the file
+/// on disk holds more. Only `toggle` enforces the cap on the write path, and
+/// the file lives inside the vault by design: a hand-edit, or two machines
+/// each pinning independently and then three-way-merging `notes = [ … ]` as
+/// plain text (a union, not a cap), can both leave more than the cap on
+/// disk. Truncating here keeps the cap a single-sourced rule at the one seam
+/// every caller — including the TUI's fixed nine-row dialog — actually
+/// depends on.
 pub async fn read_pinned_notes(workspace_path: &SystemPath) -> Result<Vec<VaultPath>, FSError> {
     let path = pinned_notes_path(workspace_path);
     match tokio::fs::read_to_string(&path).await {
         Ok(body) => {
             let parsed: PinnedNotesFile =
                 toml::from_str(&body).map_err(|e| FSError::SerializationError(e.to_string()))?;
-            Ok(parsed.notes.into_iter().map(|n| n.canonical()).collect())
+            let mut notes: Vec<VaultPath> =
+                parsed.notes.into_iter().map(|n| n.canonical()).collect();
+            notes.truncate(PINNED_NOTES_CAP);
+            Ok(notes)
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(e) => Err(FSError::ReadFileError(e)),
@@ -265,6 +278,30 @@ mod tests {
         let want: Vec<VaultPath> = notes.iter().map(|n| n.canonical()).collect();
         assert_eq!(got, want);
         assert!(dir.path().join(".kimun").join("pinned-notes.toml").exists());
+    }
+
+    #[tokio::test]
+    async fn read_truncates_a_file_holding_more_than_the_cap() {
+        // Not producible through `write_pinned_notes` (only `toggle` guards
+        // the cap, and only on the write path) — this is what a hand-edit or
+        // a three-way merge of `notes = [ … ]` across two machines looks
+        // like: more entries than the cap, sitting on disk.
+        let dir = tempfile::TempDir::new().unwrap();
+        let ws = sys(dir.path());
+        let kimun_dir = dir.path().join(".kimun");
+        tokio::fs::create_dir_all(&kimun_dir).await.unwrap();
+        let extra = PINNED_NOTES_CAP + 3;
+        let entries: Vec<String> = (0..extra).map(|i| format!("\"/n{i}.md\"")).collect();
+        let body = format!("notes = [{}]\n", entries.join(", "));
+        tokio::fs::write(kimun_dir.join("pinned-notes.toml"), body)
+            .await
+            .unwrap();
+
+        let got = read_pinned_notes(&ws).await.unwrap();
+        let want: Vec<VaultPath> = (0..PINNED_NOTES_CAP)
+            .map(|i| p(&format!("/n{i}.md")))
+            .collect();
+        assert_eq!(got, want, "kept only the first entries, in file order");
     }
 
     #[tokio::test]
