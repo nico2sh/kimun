@@ -4,6 +4,13 @@
 //! filesystem access for it lives here per the project rule that fs ops
 //! belong in `nfs`. The list edits are pure functions over a `Vec` so the
 //! rules (cap, dense order, rename rewrites) are tested without a disk.
+//!
+//! Every entry is stored and compared in [`VaultPath::canonical`] form —
+//! flattened and vault-*absolute* (`notes = ["/dir/a.md", "/b.md"]`) — the
+//! same identity rule the note index uses, so a pin has exactly one form
+//! whether the caller reached it as `a.md` or `/a.md`. Every function here
+//! that takes a `VaultPath` argument canonicalizes it on entry, so callers
+//! never need to normalize first.
 
 use serde::{Deserialize, Serialize};
 
@@ -25,7 +32,7 @@ pub enum PinToggle {
     Full,
 }
 
-/// On-disk wrapper: `notes = ["a.md", "dir/b.md"]`.
+/// On-disk wrapper: `notes = ["/a.md", "/dir/b.md"]` (canonical form).
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct PinnedNotesFile {
     #[serde(default)]
@@ -39,21 +46,24 @@ fn pinned_notes_path(workspace_path: &SystemPath) -> std::path::PathBuf {
         .join("pinned-notes.toml")
 }
 
-/// Read the pinned list, in order. A vault with no file has none.
+/// Read the pinned list, in order. A vault with no file has none. Entries
+/// are canonicalized on read, so a hand-edited relative entry still matches.
 pub async fn read_pinned_notes(workspace_path: &SystemPath) -> Result<Vec<VaultPath>, FSError> {
     let path = pinned_notes_path(workspace_path);
     match tokio::fs::read_to_string(&path).await {
         Ok(body) => {
             let parsed: PinnedNotesFile =
                 toml::from_str(&body).map_err(|e| FSError::SerializationError(e.to_string()))?;
-            Ok(parsed.notes)
+            Ok(parsed.notes.into_iter().map(|n| n.canonical()).collect())
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(e) => Err(FSError::ReadFileError(e)),
     }
 }
 
-/// Write the whole list, creating `.kimun/` if needed.
+/// Write the whole list, creating `.kimun/` if needed. Entries are
+/// canonicalized before serializing, so the stored form is always canonical
+/// regardless of how the caller built the list.
 pub async fn write_pinned_notes(
     workspace_path: &SystemPath,
     notes: &[VaultPath],
@@ -63,7 +73,7 @@ pub async fn write_pinned_notes(
         tokio::fs::create_dir_all(parent).await?;
     }
     let file = PinnedNotesFile {
-        notes: notes.to_vec(),
+        notes: notes.iter().map(|n| n.canonical()).collect(),
     };
     let body =
         toml::to_string_pretty(&file).map_err(|e| FSError::SerializationError(e.to_string()))?;
@@ -72,22 +82,26 @@ pub async fn write_pinned_notes(
 }
 
 /// 0-based position of `path` in the list. The one match rule for pins:
-/// component-wise, case-insensitive (`VaultPath::is_like`).
+/// canonical, then component-wise (`VaultPath::is_like`), so an
+/// absolute-vs-relative mismatch between caller and stored form never
+/// matters.
 pub fn position_of(notes: &[VaultPath], path: &VaultPath) -> Option<usize> {
-    notes.iter().position(|n| n.is_like(path))
+    let path = path.canonical();
+    notes.iter().position(|n| n.is_like(&path))
 }
 
 /// Pin `path` (appending) or unpin it if already pinned. Unpinning always
 /// works; pinning is refused at the cap.
 pub fn toggle(notes: &mut Vec<VaultPath>, path: &VaultPath) -> PinToggle {
-    if let Some(i) = position_of(notes, path) {
+    let path = path.canonical();
+    if let Some(i) = position_of(notes, &path) {
         notes.remove(i);
         return PinToggle::Unpinned;
     }
     if notes.len() >= PINNED_NOTES_CAP {
         return PinToggle::Full;
     }
-    notes.push(path.clone());
+    notes.push(path);
     PinToggle::Pinned {
         position: notes.len() - 1,
     }
@@ -95,7 +109,8 @@ pub fn toggle(notes: &mut Vec<VaultPath>, path: &VaultPath) -> PinToggle {
 
 /// Remove `path` if pinned. Later entries move up (dense list).
 pub fn remove(notes: &mut Vec<VaultPath>, path: &VaultPath) -> bool {
-    match position_of(notes, path) {
+    let path = path.canonical();
+    match position_of(notes, &path) {
         Some(i) => {
             notes.remove(i);
             true
@@ -115,20 +130,27 @@ pub fn move_entry(notes: &mut Vec<VaultPath>, from: usize, to: usize) -> bool {
     true
 }
 
-/// A note was renamed/moved: point its pin at the new path.
+/// A note was renamed/moved: point its pin at the new path. `to` is stored
+/// canonical, so the entry stays in the on-disk form regardless of how the
+/// caller built `to`.
 pub fn rewrite_note_rename(notes: &mut [VaultPath], from: &VaultPath, to: &VaultPath) -> bool {
-    match notes.iter_mut().find(|n| n.is_like(from)) {
+    let from = from.canonical();
+    let to = to.canonical();
+    match notes.iter_mut().find(|n| n.is_like(&from)) {
         Some(slot) => {
-            *slot = to.clone();
+            *slot = to;
             true
         }
         None => false,
     }
 }
 
-/// `"dir"` → `"dir/"` so a prefix test cannot match `dirx/`.
+/// `"dir"` → `"/dir/"` so a prefix test cannot match `/dirx/`. Canonicalizes
+/// `dir` itself, so every caller of this prefix — and every note string it
+/// is compared against — shares one representation (absolute, flattened)
+/// regardless of the form either side started in.
 fn dir_prefix(dir: &VaultPath) -> String {
-    let s = dir.flatten().to_string();
+    let s = dir.canonical().to_string();
     if s.ends_with(PATH_SEPARATOR) {
         s
     } else {
@@ -142,11 +164,13 @@ pub fn rewrite_directory_rename(
     from: &VaultPath,
     to: &VaultPath,
 ) -> bool {
-    let from_prefix = dir_prefix(from);
-    let to_prefix = dir_prefix(to);
+    let from = from.canonical();
+    let to = to.canonical();
+    let from_prefix = dir_prefix(&from);
+    let to_prefix = dir_prefix(&to);
     let mut changed = false;
     for slot in notes.iter_mut() {
-        if let Some(rest) = slot.flatten().to_string().strip_prefix(&from_prefix) {
+        if let Some(rest) = slot.canonical().to_string().strip_prefix(&from_prefix) {
             *slot = VaultPath::new(format!("{to_prefix}{rest}"));
             changed = true;
         }
@@ -156,9 +180,10 @@ pub fn rewrite_directory_rename(
 
 /// A directory was deleted: drop every pin beneath it.
 pub fn remove_under_directory(notes: &mut Vec<VaultPath>, dir: &VaultPath) -> bool {
-    let prefix = dir_prefix(dir);
+    let dir = dir.canonical();
+    let prefix = dir_prefix(&dir);
     let before = notes.len();
-    notes.retain(|n| !n.flatten().to_string().starts_with(&prefix));
+    notes.retain(|n| !n.canonical().to_string().starts_with(&prefix));
     notes.len() != before
 }
 
@@ -182,20 +207,36 @@ mod tests {
     async fn write_then_read_round_trips_in_order() {
         let dir = tempfile::TempDir::new().unwrap();
         let ws = sys(dir.path());
-        let notes = vec![p("b.md"), p("dir/a.md"), p("c.md")];
+        // Mixed relative/absolute input; the round trip normalizes both to
+        // canonical (absolute) form.
+        let notes = vec![p("b.md"), p("/dir/a.md"), p("c.md")];
         write_pinned_notes(&ws, &notes).await.unwrap();
         let got = read_pinned_notes(&ws).await.unwrap();
-        assert_eq!(got, notes);
+        let want: Vec<VaultPath> = notes.iter().map(|n| n.canonical()).collect();
+        assert_eq!(got, want);
         assert!(dir.path().join(".kimun").join("pinned-notes.toml").exists());
+    }
+
+    #[tokio::test]
+    async fn write_stores_canonical_absolute_paths_on_disk() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let ws = sys(dir.path());
+        write_pinned_notes(&ws, &[p("dir/a.md"), p("b.md")])
+            .await
+            .unwrap();
+        let body = tokio::fs::read_to_string(dir.path().join(".kimun").join("pinned-notes.toml"))
+            .await
+            .unwrap();
+        assert_eq!(body, "notes = [\n    \"/dir/a.md\",\n    \"/b.md\",\n]\n");
     }
 
     #[test]
     fn toggle_appends_then_removes() {
-        let mut notes = vec![p("a.md")];
+        let mut notes = vec![p("/a.md")];
         assert_eq!(toggle(&mut notes, &p("b.md")), PinToggle::Pinned { position: 1 });
-        assert_eq!(notes, vec![p("a.md"), p("b.md")]);
+        assert_eq!(notes, vec![p("/a.md"), p("/b.md")]);
         assert_eq!(toggle(&mut notes, &p("a.md")), PinToggle::Unpinned);
-        assert_eq!(notes, vec![p("b.md")]);
+        assert_eq!(notes, vec![p("/b.md")]);
     }
 
     #[test]
@@ -203,6 +244,21 @@ mod tests {
         let mut notes = vec![p("Notes/Plan.md")];
         assert_eq!(toggle(&mut notes, &p("notes/plan.md")), PinToggle::Unpinned);
         assert!(notes.is_empty());
+    }
+
+    #[test]
+    fn toggle_and_position_of_match_regardless_of_absoluteness() {
+        // A relatively-stored pin (e.g. hand-edited) is found by an absolute
+        // lookup, and a canonically-stored pin is found by a relative one.
+        let mut relative_store = vec![p("a.md")];
+        assert_eq!(position_of(&relative_store, &p("/a.md")), Some(0));
+        assert_eq!(toggle(&mut relative_store, &p("/a.md")), PinToggle::Unpinned);
+        assert!(relative_store.is_empty());
+
+        let mut absolute_store = vec![p("/b.md")];
+        assert_eq!(position_of(&absolute_store, &p("b.md")), Some(0));
+        assert_eq!(toggle(&mut absolute_store, &p("b.md")), PinToggle::Unpinned);
+        assert!(absolute_store.is_empty());
     }
 
     #[test]
@@ -249,7 +305,9 @@ mod tests {
     fn note_rename_rewrites_the_matching_entry_only() {
         let mut notes = vec![p("a.md"), p("dir/b.md")];
         assert!(rewrite_note_rename(&mut notes, &p("dir/b.md"), &p("other/c.md")));
-        assert_eq!(notes, vec![p("a.md"), p("other/c.md")]);
+        // The rewritten slot is stored canonical even though `to` was relative;
+        // the untouched entry keeps whatever form it already had.
+        assert_eq!(notes, vec![p("a.md"), p("/other/c.md")]);
         assert!(!rewrite_note_rename(&mut notes, &p("nope.md"), &p("x.md")));
     }
 
@@ -259,9 +317,22 @@ mod tests {
         assert!(rewrite_directory_rename(&mut notes, &p("proj"), &p("work")));
         assert_eq!(
             notes,
-            vec![p("work/a.md"), p("work/sub/b.md"), p("projx/c.md"), p("d.md")]
+            vec![p("/work/a.md"), p("/work/sub/b.md"), p("projx/c.md"), p("d.md")]
         );
         assert!(!rewrite_directory_rename(&mut notes, &p("missing"), &p("x")));
+    }
+
+    #[test]
+    fn directory_rename_matches_regardless_of_absoluteness() {
+        // Stored relative, renamed with an absolute `from`.
+        let mut notes = vec![p("proj/a.md")];
+        assert!(rewrite_directory_rename(&mut notes, &p("/proj"), &p("work")));
+        assert_eq!(notes, vec![p("/work/a.md")]);
+
+        // Stored canonical (absolute), renamed with a relative `from`/`to`.
+        let mut notes = vec![p("/proj/a.md")];
+        assert!(rewrite_directory_rename(&mut notes, &p("proj"), &p("work")));
+        assert_eq!(notes, vec![p("/work/a.md")]);
     }
 
     #[test]
@@ -270,5 +341,12 @@ mod tests {
         assert!(remove_under_directory(&mut notes, &p("proj")));
         assert_eq!(notes, vec![p("projx/c.md")]);
         assert!(!remove_under_directory(&mut notes, &p("proj")));
+    }
+
+    #[test]
+    fn remove_under_directory_matches_regardless_of_absoluteness() {
+        let mut notes = vec![p("proj/a.md"), p("other.md")];
+        assert!(remove_under_directory(&mut notes, &p("/proj")));
+        assert_eq!(notes, vec![p("other.md")]);
     }
 }
