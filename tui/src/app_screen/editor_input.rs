@@ -156,6 +156,8 @@ pub enum OverlayOpen {
     SortQuery,
     SortSidebar,
     QuickNote,
+    /// The pinned-notes dialog (leader `f p`).
+    PinnedNotes,
 }
 
 /// Fallback applied when the focused panel does not consume the event.
