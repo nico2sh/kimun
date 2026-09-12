@@ -331,7 +331,11 @@ impl LeaderNode {
         }
     }
 
-    /// Children of a group node, for the which-key overlay. Empty for leaves.
+    /// Children of a group node, raw and uncollapsed — engine navigation,
+    /// the command palette's walk, and the cheatsheet's nested (non-root)
+    /// walk all read this directly. The which-key overlay and the
+    /// cheatsheet's root row use [`Self::display_children`] instead. Empty
+    /// for leaves.
     pub fn children(&self) -> &[(char, LeaderNode)] {
         match self {
             LeaderNode::Group { children, .. } => children,

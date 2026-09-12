@@ -136,22 +136,23 @@ mod tests {
     /// — `display_children()` — not the raw `children()` count. At the root
     /// the nine pinned-note digit leaves collapse to one row, so sizing off
     /// the raw count would reserve several rows nothing draws into.
+    ///
+    /// The `16` is a literal, hand-derived pin (not re-derived from
+    /// `display_children()`, or the assertion could pass even if the
+    /// collapse silently regressed): the root has 12 non-digit children
+    /// (`f n l o g v w m a p q ?`) plus the nine `1`-`9` pinned-note leaves,
+    /// which collapse to one row — 13 display rows. `CELL_WIDTH` is
+    /// narrower than `2 × CELL_WIDTH`, so `desired_height` computes a single
+    /// column and `grid_rows` equals the row count directly: 13 rows + 3
+    /// (top border + header + bottom border) = 16.
     #[test]
     fn desired_height_counts_collapsed_rows_not_raw_children() {
         let engine = LeaderEngine::new();
         let root = engine.current_node();
         let raw = root.children().len() as u16;
-        let collapsed = root.display_children().len() as u16;
-        assert!(
-            collapsed < raw,
-            "fixture assumption: the root's digit run should collapse"
-        );
 
-        // A single-column width (narrower than 2×CELL_WIDTH) makes grid_rows
-        // equal the row count directly, so the pinned expectation below is
-        // exact rather than derived through the same division it's checking.
         let width = CELL_WIDTH;
-        assert_eq!(desired_height(&engine, width), collapsed + 3);
+        assert_eq!(desired_height(&engine, width), 16); // 13 collapsed root rows + 3 chrome
         // Sizing off the raw, uncollapsed count would have asked for more.
         assert_ne!(desired_height(&engine, width), raw + 3);
     }
