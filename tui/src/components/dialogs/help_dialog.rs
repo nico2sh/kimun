@@ -131,21 +131,21 @@ impl HelpDialog {
             keys: "F1 in Find".to_string(),
             label: "search query syntax".to_string(),
         });
-        for (key, child) in tree.children() {
-            match child {
-                LeaderNode::Group { label, .. } => {
-                    rows.push(HelpRow::Blank);
-                    rows.push(HelpRow::Header(format!("{gateway} {key}  {label}")));
-                    rows.push(HelpRow::Separator);
-                    walk(child, &format!("{gateway} {key}"), &mut rows);
-                }
-                LeaderNode::Leaf { label, .. } => {
-                    rows.push(HelpRow::Blank);
-                    rows.push(HelpRow::Binding {
-                        keys: format!("{gateway} {key}"),
-                        label: (*label).to_string(),
-                    });
-                }
+        for row in tree.display_children() {
+            if row.is_group {
+                // Group: find the child node by its single key and walk it.
+                let key = row.keys.chars().next().expect("group keys are one char");
+                let child = tree.child(key).expect("display row names a real child");
+                rows.push(HelpRow::Blank);
+                rows.push(HelpRow::Header(format!("{gateway} {key}  {}", row.label)));
+                rows.push(HelpRow::Separator);
+                walk(child, &format!("{gateway} {key}"), &mut rows);
+            } else {
+                rows.push(HelpRow::Blank);
+                rows.push(HelpRow::Binding {
+                    keys: format!("{gateway} {}", row.keys),
+                    label: row.label,
+                });
             }
         }
 

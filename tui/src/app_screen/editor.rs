@@ -1969,6 +1969,14 @@ impl EditorScreen {
             LeaderAction::AppQuit => {
                 tx.send(AppEvent::Quit).ok();
             }
+
+            // Wired in the next task, once the pinned-notes dialog exists.
+            LeaderAction::FindPinned
+            | LeaderAction::NoteTogglePin
+            | LeaderAction::PinnedJump(_) => {
+                tx.send(AppEvent::FlashMessage("pinned notes: not wired yet".into()))
+                    .ok();
+            }
         }
     }
 

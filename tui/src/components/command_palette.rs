@@ -59,6 +59,13 @@ pub fn command_entries(tree: &LeaderNode, gateway: &str) -> Vec<CommandEntry> {
                 // The palette never lists itself — selecting it would just
                 // close and reopen the palette.
                 LeaderNode::Leaf { action, .. } if *action == LeaderAction::Palette => {}
+                // The nine jump leaves stay out of the palette: they're a
+                // single fuzzy-searchable concept ("pinned notes"), not nine
+                // near-identical rows differing only by digit.
+                LeaderNode::Leaf {
+                    action: LeaderAction::PinnedJump(_),
+                    ..
+                } => {}
                 LeaderNode::Leaf { label, action } => {
                     let label = if group.is_empty() {
                         (*label).to_string()
@@ -216,6 +223,18 @@ mod tests {
             entries
                 .iter()
                 .any(|e| e.action == LeaderAction::Help && e.keys == "Ctrl+G ?")
+        );
+        assert!(
+            !entries
+                .iter()
+                .any(|e| matches!(e.action, LeaderAction::PinnedJump(_))),
+            "the nine jump leaves stay out of the palette"
+        );
+        assert!(entries.iter().any(|e| e.action == LeaderAction::FindPinned));
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.action == LeaderAction::NoteTogglePin)
         );
     }
 
