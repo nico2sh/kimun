@@ -3,6 +3,7 @@ pub use delete_dialog::DeleteConfirmDialog;
 pub use file_ops_menu::FileOpsMenuDialog;
 pub use help_dialog::HelpDialog;
 pub use move_dialog::MoveDialog;
+pub use pinned_notes_dialog::PinnedNotesDialog;
 pub use quick_note_modal::QuickNoteModal;
 pub use rename_dialog::RenameDialog;
 pub use save_search_dialog::SaveSearchDialog;
@@ -48,6 +49,7 @@ pub mod delete_dialog;
 pub mod file_ops_menu;
 pub mod help_dialog;
 pub mod move_dialog;
+pub mod pinned_notes_dialog;
 pub mod quick_note_modal;
 pub mod rename_dialog;
 pub mod save_search_dialog;
@@ -67,6 +69,7 @@ pub enum ActiveDialog {
     WorkspaceSwitcher(WorkspaceSwitcherModal),
     SaveSearch(SaveSearchDialog),
     Sort(SortDialog),
+    PinnedNotes(PinnedNotesDialog),
     ThemePicker(ThemePickerDialog),
     UpdateAvailable(UpdateAvailableDialog),
 }
@@ -84,8 +87,9 @@ impl ActiveDialog {
             ActiveDialog::WorkspaceSwitcher(_) => {} // no error state
             ActiveDialog::SaveSearch(_) => {}        // no error state
             ActiveDialog::Sort(_) => {}              // no error state
-            ActiveDialog::ThemePicker(_) => {}       // no error state
-            ActiveDialog::UpdateAvailable(_) => {}   // no error state
+            ActiveDialog::PinnedNotes(_) => {} // errors flash via OverlayData::Error → set_error is a no-op; the dialog stays usable
+            ActiveDialog::ThemePicker(_) => {} // no error state
+            ActiveDialog::UpdateAvailable(_) => {} // no error state
         }
     }
 
@@ -161,6 +165,12 @@ impl ActiveDialog {
         group_directories: bool,
     ) -> Self {
         ActiveDialog::Sort(SortDialog::new(target, field, order, group_directories))
+    }
+
+    /// The pinned-notes dialog (leader `f p`). Loads in the background and
+    /// arrives via [`OverlayData::PinnedNotesLoaded`].
+    pub fn pinned_notes(vault: Arc<NoteVault>, tx: &AppTx) -> Self {
+        ActiveDialog::PinnedNotes(PinnedNotesDialog::new(vault, tx))
     }
 
     pub fn file_ops_menu(path: kimun_core::nfs::VaultPath) -> Self {
@@ -249,8 +259,18 @@ impl Overlay for ActiveDialog {
                 }
                 OverlayMsg::Consumed
             }
+            OverlayData::PinnedNotesLoaded(rows) => {
+                if let ActiveDialog::PinnedNotes(d) = self {
+                    d.set_rows(rows.clone());
+                }
+                OverlayMsg::Consumed
+            }
             OverlayData::Error(text) => {
-                self.set_error(text.clone());
+                if matches!(self, ActiveDialog::PinnedNotes(_)) {
+                    tx.send(AppEvent::FlashMessage(text.clone())).ok();
+                } else {
+                    self.set_error(text.clone());
+                }
                 OverlayMsg::Consumed
             }
         }
@@ -277,6 +297,7 @@ impl Component for ActiveDialog {
             ActiveDialog::WorkspaceSwitcher(d) => d.handle_key(*key, tx),
             ActiveDialog::SaveSearch(d) => d.handle_input(event, tx),
             ActiveDialog::Sort(d) => d.handle_input(event, tx),
+            ActiveDialog::PinnedNotes(d) => d.handle_input(event, tx),
             ActiveDialog::ThemePicker(d) => d.handle_key(*key, tx),
             ActiveDialog::UpdateAvailable(d) => d.handle_key(*key, tx),
         }
@@ -294,6 +315,7 @@ impl Component for ActiveDialog {
             ActiveDialog::WorkspaceSwitcher(d) => d.render(f, rect, theme, focused),
             ActiveDialog::SaveSearch(d) => d.render(f, rect, theme, focused),
             ActiveDialog::Sort(d) => d.render(f, rect, theme, focused),
+            ActiveDialog::PinnedNotes(d) => d.render(f, rect, theme, focused),
             ActiveDialog::ThemePicker(d) => d.render(f, rect, theme, focused),
             ActiveDialog::UpdateAvailable(d) => d.render(f, rect, theme, focused),
         }
