@@ -3098,7 +3098,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn toggle_pins_then_unpins_through_the_vault() {
+    async fn pin_toggle_pins_then_unpins_through_the_vault() {
         let dir = TempDir::new().unwrap();
         let vault = make_vault(dir.path()).await;
         vault.validate_and_init().await.unwrap();
@@ -3120,7 +3120,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn toggle_refuses_past_the_cap() {
+    async fn pin_toggle_refuses_past_the_cap() {
         let dir = TempDir::new().unwrap();
         let vault = make_vault(dir.path()).await;
         vault.validate_and_init().await.unwrap();
@@ -3141,7 +3141,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unpin_and_move_persist() {
+    async fn pin_unpin_and_move_persist() {
         let dir = TempDir::new().unwrap();
         let vault = make_vault(dir.path()).await;
         vault.validate_and_init().await.unwrap();
@@ -3158,11 +3158,40 @@ mod tests {
                 VaultPath::new("/b.md"),
             ]
         );
+        // No-op (from == to) and out-of-range moves report `false` and leave
+        // the order untouched.
+        assert!(!vault.move_pinned_note(0, 0).await.unwrap());
+        assert!(!vault.move_pinned_note(0, 99).await.unwrap());
+        assert_eq!(
+            vault.list_pinned_notes().await.unwrap(),
+            vec![
+                VaultPath::new("/c.md"),
+                VaultPath::new("/a.md"),
+                VaultPath::new("/b.md"),
+            ]
+        );
         assert!(vault.unpin_note(&VaultPath::new("a.md")).await.unwrap());
         assert!(!vault.unpin_note(&VaultPath::new("a.md")).await.unwrap());
         assert_eq!(
             vault.list_pinned_notes().await.unwrap(),
             vec![VaultPath::new("/c.md"), VaultPath::new("/b.md")]
+        );
+    }
+
+    /// A no-op write must not just report `false`: it must not touch the
+    /// filesystem at all. Proved by absence rather than an mtime comparison
+    /// (which filesystem timestamp granularity can make flaky) — on a vault
+    /// with no pin file yet, a no-op unpin must leave it absent.
+    #[tokio::test]
+    async fn pin_noop_unpin_does_not_create_the_pin_file() {
+        let dir = TempDir::new().unwrap();
+        let vault = make_vault(dir.path()).await;
+        vault.validate_and_init().await.unwrap();
+
+        assert!(!vault.unpin_note(&VaultPath::new("never.md")).await.unwrap());
+        assert!(
+            !dir.path().join(".kimun").join("pinned-notes.toml").exists(),
+            "a no-op unpin must not create the pin file"
         );
     }
 }
