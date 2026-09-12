@@ -69,7 +69,7 @@ impl PinnedNotesDialog {
     /// [`OverlayData::PinnedNotesLoaded`]. Used for the first load and
     /// after every edit; the overlay host drops the event if the dialog
     /// has closed meanwhile.
-    pub fn spawn_load(vault: Arc<NoteVault>, tx: &AppTx) {
+    pub(crate) fn spawn_load(vault: Arc<NoteVault>, tx: &AppTx) {
         let tx = tx.clone();
         tokio::spawn(async move {
             let paths = match vault.list_pinned_notes().await {
@@ -118,8 +118,11 @@ impl PinnedNotesDialog {
         self.persist_pending = false;
     }
 
-    /// Open the row at `index` (0-based): OpenPath + close, or a flash when
-    /// there is no such pin or its note is missing.
+    /// Open the row at `index` (0-based): OpenPath, or a flash when there is
+    /// no such pin or its note is missing. Does not send `CloseOverlay`
+    /// itself — the editor's `OpenPath` handler (`try_open_path`) already
+    /// dismisses the active overlay unconditionally, so sending it here
+    /// too would just be a redundant second close.
     fn open_row(&self, index: usize, tx: &AppTx) {
         let Some(row) = self.rows.get(index) else {
             tx.send(AppEvent::FlashMessage(format!(
@@ -142,7 +145,6 @@ impl PinnedNotesDialog {
             emphasis: None,
         })
         .ok();
-        tx.send(AppEvent::CloseOverlay).ok();
     }
 
     /// Run a persisting write, then always reload — on success so the list
@@ -196,7 +198,11 @@ impl PinnedNotesDialog {
     }
 
     /// Unpin the selected row, persist, reload. Refuses while a previous
-    /// write is still in flight; see `persist_pending`.
+    /// write is still in flight; see `persist_pending`. `unpin_note` returns
+    /// `Ok(false)` when the path was no longer in the list — the list
+    /// changed underneath (an external rename, another process) between the
+    /// row being drawn and the keypress landing — which is flashed rather
+    /// than left silent, since otherwise the keypress would just vanish.
     fn unpin_selected(&mut self, tx: &AppTx) {
         if self.persist_pending {
             return;
@@ -206,12 +212,18 @@ impl PinnedNotesDialog {
         };
         let path = row.path.clone();
         let vault = self.vault.clone();
+        let flash_tx = tx.clone();
         self.persist_and_reload(tx, async move {
-            vault
-                .unpin_note(&path)
-                .await
-                .map(|_| ())
-                .map_err(|e| format!("could not unpin {path}: {e}"))
+            match vault.unpin_note(&path).await {
+                Ok(true) => Ok(()),
+                Ok(false) => {
+                    flash_tx
+                        .send(AppEvent::FlashMessage(format!("not pinned: {path}")))
+                        .ok();
+                    Ok(())
+                }
+                Err(e) => Err(format!("could not unpin {path}: {e}")),
+            }
         });
     }
 
@@ -374,16 +386,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn digit_opens_that_note_and_closes() {
+    async fn digit_opens_that_note() {
         let (mut d, _) = dialog_with(vec![row("a.md", false), row("b.md", false)]).await;
         let (tx, mut rx) = unbounded_channel();
         d.handle_key(key(KeyCode::Char('2')), &tx);
         let events = drain(&mut rx);
-        assert!(matches!(
-            &events[0],
-            AppEvent::OpenPath { path, emphasis: None } if *path == VaultPath::new("b.md")
-        ));
-        assert!(matches!(events[1], AppEvent::CloseOverlay));
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                AppEvent::OpenPath { path, emphasis: None } if *path == VaultPath::new("b.md")
+            )),
+            "expected OpenPath, got {events:?}"
+        );
+        assert!(
+            !events.iter().any(|e| matches!(e, AppEvent::CloseOverlay)),
+            "open_row must not emit CloseOverlay; editor's OpenPath handler closes the overlay, got {events:?}"
+        );
     }
 
     #[tokio::test]
@@ -551,6 +569,39 @@ mod tests {
             vault.list_pinned_notes().await.unwrap(),
             vec![VaultPath::new("/b.md")]
         );
+    }
+
+    /// `unpin_note` returns `Ok(false)` when the row's path is no longer in
+    /// the stored list — e.g. the list changed underneath between the row
+    /// being drawn and the keypress landing. The dialog still reloads (there
+    /// is nothing to persist), but the keypress must not just vanish: it
+    /// flashes instead.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn unpin_selected_flashes_when_the_row_is_already_gone() {
+        // Nothing is pinned in the vault, so the dialog's row for "a.md" is
+        // stale by construction.
+        let (mut d, _vault) = dialog_with(vec![row("a.md", false)]).await;
+        let (tx, mut rx) = unbounded_channel();
+        d.handle_key(key(KeyCode::Char('d')), &tx);
+
+        let mut flashed = None;
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                match rx.recv().await {
+                    Some(AppEvent::FlashMessage(m)) => flashed = Some(m),
+                    Some(AppEvent::OverlayData(OverlayData::PinnedNotesLoaded(_))) => break,
+                    Some(AppEvent::OverlayData(OverlayData::Error(e))) => {
+                        panic!("unexpected error event: {e}")
+                    }
+                    Some(_) => {}
+                    None => panic!("channel closed before the reload landed"),
+                }
+            }
+        })
+        .await
+        .expect("reload event");
+
+        assert_eq!(flashed.as_deref(), Some("not pinned: a.md"));
     }
 
     #[tokio::test(flavor = "multi_thread")]

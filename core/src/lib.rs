@@ -847,8 +847,12 @@ impl NoteVault {
 
     /// Pin `path` (appended last) or unpin it if it is already pinned.
     /// Returns [`PinToggle::Full`] — and writes nothing — when the list is at
-    /// the cap and `path` is not in it.
+    /// the cap and `path` is not in it. Fails if `path` is not a note: a
+    /// pinned directory would be doubly orphaned by its own deletion (the
+    /// directory-delete rewrite only drops pins *beneath* the directory, not
+    /// a pin *at* it), so a pin is a note or nothing.
     pub async fn toggle_pinned_note(&self, path: &VaultPath) -> Result<PinToggle, VaultError> {
+        path.ensure_note()?;
         let mut all = pinned_notes::read_pinned_notes(self.workspace_path()).await?;
         let outcome = pinned_notes::toggle(&mut all, path);
         if outcome != PinToggle::Full {
@@ -3129,6 +3133,21 @@ mod tests {
             vault.toggle_pinned_note(&a).await.unwrap(),
             PinToggle::Unpinned
         );
+        assert!(vault.list_pinned_notes().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn pin_toggle_rejects_a_directory_path() {
+        let dir = TempDir::new().unwrap();
+        let vault = make_vault(dir.path()).await;
+        vault.validate_and_init().await.unwrap();
+
+        match vault.toggle_pinned_note(&VaultPath::new("dir")).await {
+            Err(VaultError::FSError(FSError::InvalidPath { message, .. })) => {
+                assert_eq!(message, "The path is not a note");
+            }
+            other => panic!("expected InvalidPath, got {:?}", other),
+        }
         assert!(vault.list_pinned_notes().await.unwrap().is_empty());
     }
 
