@@ -22,8 +22,11 @@ const CELL_WIDTH: u16 = 24;
 
 /// Rows the overlay needs for the current node (header + grid + borders).
 /// The caller carves this out of the area directly above the status bar.
+/// Counts `display_children()`, the same collapsed rows `render` lays out —
+/// counting raw `children()` here would reserve extra blank rows wherever a
+/// digit run (or any future collapse) shrinks the grid.
 pub fn desired_height(engine: &LeaderEngine, width: u16) -> u16 {
-    let n = engine.current_node().children().len() as u16;
+    let n = engine.current_node().display_children().len() as u16;
     let cols = (width.saturating_sub(2) / CELL_WIDTH).max(1);
     let grid_rows = n.div_ceil(cols);
     grid_rows + 3 // top border + header + grid + bottom border
@@ -122,5 +125,34 @@ pub fn render(
             ])),
             cell,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `desired_height` must size the grid off the same rows `render` draws
+    /// — `display_children()` — not the raw `children()` count. At the root
+    /// the nine pinned-note digit leaves collapse to one row, so sizing off
+    /// the raw count would reserve several rows nothing draws into.
+    #[test]
+    fn desired_height_counts_collapsed_rows_not_raw_children() {
+        let engine = LeaderEngine::new();
+        let root = engine.current_node();
+        let raw = root.children().len() as u16;
+        let collapsed = root.display_children().len() as u16;
+        assert!(
+            collapsed < raw,
+            "fixture assumption: the root's digit run should collapse"
+        );
+
+        // A single-column width (narrower than 2×CELL_WIDTH) makes grid_rows
+        // equal the row count directly, so the pinned expectation below is
+        // exact rather than derived through the same division it's checking.
+        let width = CELL_WIDTH;
+        assert_eq!(desired_height(&engine, width), collapsed + 3);
+        // Sizing off the raw, uncollapsed count would have asked for more.
+        assert_ne!(desired_height(&engine, width), raw + 3);
     }
 }
