@@ -187,6 +187,62 @@ pub fn remove_under_directory(notes: &mut Vec<VaultPath>, dir: &VaultPath) -> bo
     notes.len() != before
 }
 
+/// Apply `edit` to the stored list and write it back if it changed. Pins are
+/// non-critical bookkeeping beside a note operation that already succeeded,
+/// so any failure is logged and swallowed — the caller's operation stands.
+async fn best_effort_edit(
+    workspace_path: &SystemPath,
+    what: &str,
+    edit: impl FnOnce(&mut Vec<VaultPath>) -> bool,
+) {
+    let mut all = match read_pinned_notes(workspace_path).await {
+        Ok(all) => all,
+        Err(e) => {
+            log::warn!("pinned notes: could not read list while {what}: {e}");
+            return;
+        }
+    };
+    if !edit(&mut all) {
+        return;
+    }
+    if let Err(e) = write_pinned_notes(workspace_path, &all).await {
+        log::warn!("pinned notes: could not write list while {what}: {e}");
+    }
+}
+
+/// A note was renamed or moved: keep its pin.
+pub async fn on_note_renamed(workspace_path: &SystemPath, from: &VaultPath, to: &VaultPath) {
+    best_effort_edit(workspace_path, "renaming a note", |all| {
+        rewrite_note_rename(all, from, to)
+    })
+    .await;
+}
+
+/// A directory was renamed: keep every pin beneath it.
+pub async fn on_directory_renamed(
+    workspace_path: &SystemPath,
+    from: &VaultPath,
+    to: &VaultPath,
+) {
+    best_effort_edit(workspace_path, "renaming a directory", |all| {
+        rewrite_directory_rename(all, from, to)
+    })
+    .await;
+}
+
+/// A note was deleted: drop its pin.
+pub async fn on_note_deleted(workspace_path: &SystemPath, path: &VaultPath) {
+    best_effort_edit(workspace_path, "deleting a note", |all| remove(all, path)).await;
+}
+
+/// A directory was deleted: drop every pin beneath it.
+pub async fn on_directory_deleted(workspace_path: &SystemPath, dir: &VaultPath) {
+    best_effort_edit(workspace_path, "deleting a directory", |all| {
+        remove_under_directory(all, dir)
+    })
+    .await;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
