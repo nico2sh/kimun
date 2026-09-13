@@ -536,11 +536,23 @@ pub fn is_locked_for(host: Host, err: &std::io::Error) -> bool {
 /// promptly on the ones that never will.
 ///
 /// The permanent case is a separate, unsolved bug — something on Windows keeps
-/// a handle on a closed SQLite index. It is not a descriptor kimün holds: the
-/// pool close is synchronous (sqlx drops the connection before acking
-/// shutdown), and probing `/proc/self/fd` after `close()` across 25 rounds
-/// found nothing open. [`retry_while_locked`] logs the waits so the next
-/// investigation starts from data.
+/// a handle on a closed SQLite index, and the Restart Manager names kimün's own
+/// process as the holder. Three dead ends, recorded so the next investigation
+/// does not walk them again:
+///
+/// - sqlx's close *is* synchronous — `SqliteConnection::close` drops the
+///   connection state and awaits the worker thread's ack, so `sqlite3_close`
+///   has run by the time `Pool::close` returns (read from sqlx 0.8.6's source,
+///   not measured on Windows).
+/// - the `/proc/self/fd` probe that found nothing open across 25 rounds ran on
+///   Linux — the platform this function never even waits on (see
+///   [`is_locked_for`]). It says nothing about the one with the bug.
+/// - it is not WAL, whose Windows locking is a known trap: the index asks for
+///   no `journal_mode`, and sqlx leaves the pragma unset, so a fresh index is
+///   in SQLite's default rollback mode.
+///
+/// Evidence has to come from Windows itself: [`retry_while_locked`] logs every
+/// wait and names the holder, so the next attempt starts from data.
 const LOCK_RETRY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// The gap between attempts, doubling from a millisecond up to this ceiling —

@@ -1,11 +1,18 @@
 //! The index as a *file on the host*, rather than as an open connection pool.
 //!
-//! An index is not one file. SQLite runs in WAL mode here, so a live (or
-//! uncleanly closed) index is `<name>.kimuncache` plus `-wal` and `-shm`
-//! siblings, and moving or deleting only the first one either orphans the rest
-//! or throws away the transactions the WAL still holds. That is knowledge
-//! about *this* artifact, so it lives next to the index rather than in
-//! whichever caller happens to be renaming a workspace.
+//! An index is not one file. A live (or uncleanly closed) index is
+//! `<name>.kimuncache` plus whichever journal sibling its mode calls for, and
+//! moving or deleting only the first one either orphans the rest or throws
+//! away the transactions the journal still holds. That is knowledge about
+//! *this* artifact, so it lives next to the index rather than in whichever
+//! caller happens to be renaming a workspace.
+//!
+//! Which sibling that is depends on the journal mode, and nothing here sets
+//! one: the index asks sqlx for no `journal_mode` pragma and sqlx leaves it
+//! unset, so an index this version creates runs in SQLite's default rollback
+//! mode and its sibling is `-journal`. WAL's `-wal`/`-shm` pair is carried
+//! along regardless — an index that arrived in WAL mode is not a reason to
+//! strand two files.
 
 use crate::system::{self, SystemError, SystemPath};
 
@@ -15,9 +22,10 @@ use crate::system::{self, SystemError, SystemPath};
 /// should say so to anyone who finds one in a directory listing.
 const INDEX_FILE_EXT: &str = "kimuncache";
 
-/// Suffixes SQLite may keep beside an index file. `-wal` and `-shm` are the
-/// WAL-mode pair; `-journal` is the rollback-mode equivalent, kept here so a
-/// future change of journal mode cannot silently strand a file.
+/// Suffixes SQLite may keep beside an index file. `-journal` is the one this
+/// version produces (rollback mode — see the module docs); `-wal` and `-shm`
+/// are WAL's pair, kept here so an index that arrived in WAL mode, or a future
+/// change of journal mode, cannot silently strand a file.
 const SIDECAR_SUFFIXES: [&str; 3] = ["-wal", "-shm", "-journal"];
 
 /// A workspace's index file on this machine — the whole artifact, sidecars
