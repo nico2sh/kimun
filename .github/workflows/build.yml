@@ -175,6 +175,9 @@ jobs:
           tag_name: ${{ github.ref_name }}
           draft: false
           prerelease: ${{ contains(steps.extract_version.outputs.version, '-') }}
+          # Reclaim the "Latest" badge for the app on every stable release.
+          # Prereleases can't be latest, so mirror the `prerelease` condition.
+          make_latest: ${{ !contains(steps.extract_version.outputs.version, '-') }}
           append_body: false
           files: |
             release-artifacts/kimun-*.zip

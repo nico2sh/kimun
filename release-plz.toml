@@ -7,13 +7,39 @@
 # pre-releases are tagged with a hyphenated version (…-beta.N) outside release-plz.
 git_release_type = "prod"
 
+# The repo publishes three release series from one tag namespace, and GitHub's
+# "Latest" badge is whichever release was published (or last updated) most
+# recently. Only the app should ever wear it: `git_release_latest = false` keeps
+# kimun_core and kimun_server out of the running. build.yml / build-server.yml
+# set `make_latest` on their asset-attach step for the same reason — updating a
+# release re-claims the badge unless told otherwise.
 [[package]]
 name = "kimun_core"
 git_tag_name = "kimun_core-v{{ version }}"
+git_release_latest = false
 
+# `semver_check = false` because this crate's `[lib]` is not an API anyone
+# depends on: it exists so the `kimun` binary and the integration tests in
+# `tui/tests` can share the app's internals, and it re-exports them wholesale.
+# cargo-semver-checks reads that as a public contract, so an ordinary internal
+# refactor counts as a breaking change — and below 1.0 a breaking change is the
+# *only* thing that bumps the minor (`features_always_increment_minor` is off by
+# default, so even `feat` commits bump the patch). That is how a release of nine
+# fixes and four refactors, with no `feat` and no `!` in it, proposed 0.24.0.
+# Worse, it only happened in CI: release-plz skips the check silently when
+# cargo-semver-checks is absent, which it is on a normal dev machine, so local
+# dry runs said patch and CI said minor. The app crate now bumps off its commits
+# alone — a minor means someone wrote `!` or `BREAKING CHANGE`.
+#
+# Deliberately NOT set on kimun_core: that one is a real library with real
+# dependents (this crate pins it with `=`), and the check is what catches the
+# mistake that already bit once — core 0.2.32 shipped an API break as a patch,
+# which broke `cargo package` of the 0.22.1 tarball and stalled release-plz (see
+# the comment on the `kimun_core` dependency in tui/Cargo.toml).
 [[package]]
 name = "kimun-notes"
 git_tag_name = "kimun-notes-v{{ version }}"
+semver_check = false
 
 # Server ships as GitHub release binaries only (build-server.yml triggers on the
 # tag); it is a binary, not a library, so no crates.io publish. `publish = false`
@@ -23,6 +49,7 @@ git_tag_name = "kimun-notes-v{{ version }}"
 [[package]]
 name = "kimun_server"
 git_tag_name = "kimun_server-v{{ version }}"
+git_release_latest = false
 publish = false
 git_only = true
 

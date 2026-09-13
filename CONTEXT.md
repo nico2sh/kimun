@@ -18,6 +18,14 @@ _Avoid_: workspace (the config entry that points here), folder/directory (the OS
 A **Workspace**'s list of recently opened notes, newest first, one **Vault path** per line (`HistoryFile`). The other per-workspace artifact beside the **Index file**, and deliberately shaped the same way — the type owns its own naming, and renaming or removing a workspace goes through it, so the two cannot drift apart. Unlike the index it lives in the TUI: core has no notion of what you looked at last. Non-critical by design — a missing or truncated file costs an ordering, never a note — so reads never fail and writes are atomic.
 _Avoid_: recent files, MRU, last_paths (the superseded v2 config field it was migrated out of).
 
+**Pinned note**:
+A note the user has deliberately kept within reach — at most nine per **Vault**, each holding a numbered position the user can reorder, and each reachable by that number. The cap is the point: every pinned note has a shortcut, so a tenth pin is refused rather than silently unreachable. Unlike the **History file**, which records what happened to be opened last, pinning is an explicit act and the order is the user's, not recency's. Persisted in the vault beside the **saved searches** (same rationale: it travels with the notes), and core owns it — so a rename or move, of the note or of a directory above it, keeps its pin, and deleting the note unpins it. A pin whose note has vanished outside kimün is kept and shown as missing rather than pruned: the pin was an explicit act, and only an explicit unpin undoes it.
+_Avoid_: favorite (implies preference, not position), bookmark, starred, shortcut (that is the key that reaches a pinned note, not the note).
+
+**Pinned notes dialog**:
+The **Overlay** that lists the vault's **pinned notes** by number and is where they are managed. A digit opens that note at once — there is no query input to type into, nine rows never need filtering — and the list's verbs reorder or unpin the selected row, each change taking effect as it is made, with no commit or cancel step. Distinct from the **Saved Searches modal**, whose digits rank a filter rather than act.
+_Avoid_: pin picker (it manages as well as picks), favorites list.
+
 ### Host paths
 
 **System path**:

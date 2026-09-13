@@ -3,6 +3,7 @@ pub use delete_dialog::DeleteConfirmDialog;
 pub use file_ops_menu::FileOpsMenuDialog;
 pub use help_dialog::HelpDialog;
 pub use move_dialog::MoveDialog;
+pub use pinned_notes_dialog::PinnedNotesDialog;
 pub use quick_note_modal::QuickNoteModal;
 pub use rename_dialog::RenameDialog;
 pub use save_search_dialog::SaveSearchDialog;
@@ -48,6 +49,7 @@ pub mod delete_dialog;
 pub mod file_ops_menu;
 pub mod help_dialog;
 pub mod move_dialog;
+pub mod pinned_notes_dialog;
 pub mod quick_note_modal;
 pub mod rename_dialog;
 pub mod save_search_dialog;
@@ -67,6 +69,7 @@ pub enum ActiveDialog {
     WorkspaceSwitcher(WorkspaceSwitcherModal),
     SaveSearch(SaveSearchDialog),
     Sort(SortDialog),
+    PinnedNotes(PinnedNotesDialog),
     ThemePicker(ThemePickerDialog),
     UpdateAvailable(UpdateAvailableDialog),
 }
@@ -84,8 +87,9 @@ impl ActiveDialog {
             ActiveDialog::WorkspaceSwitcher(_) => {} // no error state
             ActiveDialog::SaveSearch(_) => {}        // no error state
             ActiveDialog::Sort(_) => {}              // no error state
-            ActiveDialog::ThemePicker(_) => {}       // no error state
-            ActiveDialog::UpdateAvailable(_) => {}   // no error state
+            ActiveDialog::PinnedNotes(_) => {} // no error state: its own failures arrive as PinnedNotesLoaded(Err) and flash
+            ActiveDialog::ThemePicker(_) => {} // no error state
+            ActiveDialog::UpdateAvailable(_) => {} // no error state
         }
     }
 
@@ -161,6 +165,12 @@ impl ActiveDialog {
         group_directories: bool,
     ) -> Self {
         ActiveDialog::Sort(SortDialog::new(target, field, order, group_directories))
+    }
+
+    /// The pinned-notes dialog (leader `f p`). Loads in the background and
+    /// arrives via [`OverlayData::PinnedNotesLoaded`].
+    pub fn pinned_notes(vault: Arc<NoteVault>, tx: &AppTx) -> Self {
+        ActiveDialog::PinnedNotes(PinnedNotesDialog::new(vault, tx))
     }
 
     pub fn file_ops_menu(path: kimun_core::nfs::VaultPath) -> Self {
@@ -249,6 +259,12 @@ impl Overlay for ActiveDialog {
                 }
                 OverlayMsg::Consumed
             }
+            OverlayData::PinnedNotesLoaded(result) => {
+                if let ActiveDialog::PinnedNotes(d) = self {
+                    d.handle_loaded(result, tx);
+                }
+                OverlayMsg::Consumed
+            }
             OverlayData::Error(text) => {
                 self.set_error(text.clone());
                 OverlayMsg::Consumed
@@ -277,6 +293,7 @@ impl Component for ActiveDialog {
             ActiveDialog::WorkspaceSwitcher(d) => d.handle_key(*key, tx),
             ActiveDialog::SaveSearch(d) => d.handle_input(event, tx),
             ActiveDialog::Sort(d) => d.handle_input(event, tx),
+            ActiveDialog::PinnedNotes(d) => d.handle_input(event, tx),
             ActiveDialog::ThemePicker(d) => d.handle_key(*key, tx),
             ActiveDialog::UpdateAvailable(d) => d.handle_key(*key, tx),
         }
@@ -294,6 +311,7 @@ impl Component for ActiveDialog {
             ActiveDialog::WorkspaceSwitcher(d) => d.render(f, rect, theme, focused),
             ActiveDialog::SaveSearch(d) => d.render(f, rect, theme, focused),
             ActiveDialog::Sort(d) => d.render(f, rect, theme, focused),
+            ActiveDialog::PinnedNotes(d) => d.render(f, rect, theme, focused),
             ActiveDialog::ThemePicker(d) => d.render(f, rect, theme, focused),
             ActiveDialog::UpdateAvailable(d) => d.render(f, rect, theme, focused),
         }
@@ -391,5 +409,68 @@ mod tests {
             SortOrder::Ascending,
             false,
         );
+    }
+
+    /// Every dialog test for `PinnedNotesDialog` calls `set_rows` directly,
+    /// bypassing the routing this module owns. A regression here (e.g. the
+    /// `PinnedNotesLoaded` arm losing its `if let` guard, or matching the
+    /// wrong variant) would leave the dialog permanently empty with none of
+    /// those tests failing — so this drives the real `handle_data` path.
+    #[tokio::test]
+    async fn active_dialog_routes_pinned_notes_loaded_rows() {
+        use crate::components::events::PinnedRow;
+        use kimun_core::nfs::VaultPath;
+        use tokio::sync::mpsc::unbounded_channel;
+
+        let vault = crate::test_support::temp_vault("active-dialog-pinned").await;
+        let (tx, _rx) = unbounded_channel();
+        let mut active = ActiveDialog::pinned_notes(vault.clone(), &tx);
+
+        let rows = vec![PinnedRow {
+            path: VaultPath::new("a.md"),
+            missing: false,
+        }];
+        let msg = active.handle_data(
+            &OverlayData::PinnedNotesLoaded(Ok(rows.clone())),
+            &vault,
+            &tx,
+        );
+        assert!(matches!(msg, OverlayMsg::Consumed));
+
+        match &active {
+            ActiveDialog::PinnedNotes(d) => assert_eq!(d.rows(), rows.as_slice()),
+            _ => panic!("expected ActiveDialog::PinnedNotes"),
+        }
+    }
+
+    /// A foreign `OverlayData::Error` — a rename or paste task failing after
+    /// its own dialog closed — must not be routed into the pinned-notes
+    /// dialog as if it were the reload it is waiting on: that would clear
+    /// its in-flight guard and reopen the overlapping-write race.
+    #[tokio::test]
+    async fn active_dialog_leaves_pinned_notes_alone_on_a_foreign_error() {
+        use tokio::sync::mpsc::unbounded_channel;
+
+        let vault = crate::test_support::temp_vault("active-dialog-pinned-err").await;
+        let (tx, mut rx) = unbounded_channel();
+        let mut active = ActiveDialog::pinned_notes(vault.clone(), &tx);
+
+        let msg = active.handle_data(
+            &OverlayData::Error("rename failed".to_string()),
+            &vault,
+            &tx,
+        );
+        assert!(matches!(msg, OverlayMsg::Consumed));
+        assert!(
+            rx.try_recv().is_err(),
+            "a foreign error must not be flashed as a pinned-notes failure"
+        );
+        match &active {
+            ActiveDialog::PinnedNotes(d) => assert!(
+                !d.is_loaded(),
+                "a foreign error must not settle the dialog's own load"
+            ),
+            _ => panic!("expected ActiveDialog::PinnedNotes"),
+        }
     }
 }

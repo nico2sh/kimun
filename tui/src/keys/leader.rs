@@ -57,6 +57,12 @@ pub enum LeaderAction {
     NoteCopyWikilink,
     NoteExport,
     NoteYankPath,
+    /// Jump to pinned note N (1..=9); leader root digits.
+    PinnedJump(u8),
+    /// Open the pinned-notes dialog (`f p`).
+    FindPinned,
+    /// Pin or unpin the open note (`m i`).
+    NoteTogglePin,
     // +ask (a) — the Ask workspace's conversation.
     AskFocus,
     AskNew,
@@ -127,6 +133,18 @@ impl LeaderAction {
             LeaderAction::NoteCopyWikilink => "this.copy-link",
             LeaderAction::NoteExport => "this.export",
             LeaderAction::NoteYankPath => "this.yank-path",
+            LeaderAction::PinnedJump(1) => "pinned.1",
+            LeaderAction::PinnedJump(2) => "pinned.2",
+            LeaderAction::PinnedJump(3) => "pinned.3",
+            LeaderAction::PinnedJump(4) => "pinned.4",
+            LeaderAction::PinnedJump(5) => "pinned.5",
+            LeaderAction::PinnedJump(6) => "pinned.6",
+            LeaderAction::PinnedJump(7) => "pinned.7",
+            LeaderAction::PinnedJump(8) => "pinned.8",
+            LeaderAction::PinnedJump(9) => "pinned.9",
+            LeaderAction::PinnedJump(_) => "pinned.invalid",
+            LeaderAction::FindPinned => "find.pinned",
+            LeaderAction::NoteTogglePin => "this.toggle-pin",
             LeaderAction::AskFocus => "ask.focus",
             LeaderAction::AskNew => "ask.new",
             LeaderAction::AskCopy => "ask.copy",
@@ -143,7 +161,7 @@ impl LeaderAction {
     }
 
     /// Every action, for id lookup and docs.
-    pub const ALL: [LeaderAction; 52] = [
+    pub const ALL: [LeaderAction; 63] = [
         LeaderAction::OpenDrawer(DrawerView::Files),
         LeaderAction::OpenDrawer(DrawerView::Find),
         LeaderAction::OpenDrawer(DrawerView::Tags),
@@ -185,6 +203,17 @@ impl LeaderAction {
         LeaderAction::NoteCopyWikilink,
         LeaderAction::NoteExport,
         LeaderAction::NoteYankPath,
+        LeaderAction::PinnedJump(1),
+        LeaderAction::PinnedJump(2),
+        LeaderAction::PinnedJump(3),
+        LeaderAction::PinnedJump(4),
+        LeaderAction::PinnedJump(5),
+        LeaderAction::PinnedJump(6),
+        LeaderAction::PinnedJump(7),
+        LeaderAction::PinnedJump(8),
+        LeaderAction::PinnedJump(9),
+        LeaderAction::FindPinned,
+        LeaderAction::NoteTogglePin,
         LeaderAction::AskFocus,
         LeaderAction::AskNew,
         LeaderAction::AskCopy,
@@ -251,6 +280,9 @@ impl LeaderAction {
             LeaderAction::NoteCopyWikilink => "copy wikilink",
             LeaderAction::NoteExport => "export",
             LeaderAction::NoteYankPath => "yank note path",
+            LeaderAction::PinnedJump(_) => "pinned note",
+            LeaderAction::FindPinned => "pinned notes",
+            LeaderAction::NoteTogglePin => "pin / unpin",
             LeaderAction::AskFocus => "focus composer",
             LeaderAction::AskNew => "new conversation",
             LeaderAction::AskCopy => "copy answer",
@@ -281,7 +313,7 @@ pub enum LeaderNode {
 }
 
 impl LeaderNode {
-    fn child(&self, key: char) -> Option<&LeaderNode> {
+    pub fn child(&self, key: char) -> Option<&LeaderNode> {
         match self {
             LeaderNode::Group { children, .. } => children
                 .iter()
@@ -299,17 +331,68 @@ impl LeaderNode {
         }
     }
 
-    /// Children of a group node, for the which-key overlay. Empty for leaves.
+    /// Children of a group node, raw and uncollapsed — engine navigation,
+    /// the command palette's walk, and the cheatsheet's nested (non-root)
+    /// walk all read this directly. The which-key overlay and the
+    /// cheatsheet's root row use [`Self::display_children`] instead. Empty
+    /// for leaves.
     pub fn children(&self) -> &[(char, LeaderNode)] {
         match self {
             LeaderNode::Group { children, .. } => children,
             LeaderNode::Leaf { .. } => &[],
         }
     }
+
+    /// The rows a which-key panel or cheatsheet shows for this node's
+    /// children: one per child, except that a run of consecutive
+    /// [`LeaderAction::PinnedJump`] leaves becomes one `1–9 → pinned note`
+    /// row. The engine still accepts each digit separately.
+    pub fn display_children(&self) -> Vec<DisplayChild> {
+        let mut rows = Vec::new();
+        let mut in_pinned_run = false;
+        for (key, child) in self.children() {
+            let is_pinned_jump = matches!(
+                child,
+                LeaderNode::Leaf {
+                    action: LeaderAction::PinnedJump(_),
+                    ..
+                }
+            );
+            if is_pinned_jump {
+                if !in_pinned_run {
+                    rows.push(DisplayChild {
+                        keys: "1–9".to_string(),
+                        label: "pinned note".to_string(),
+                        is_group: false,
+                    });
+                    in_pinned_run = true;
+                }
+                continue;
+            }
+            in_pinned_run = false;
+            rows.push(DisplayChild {
+                keys: key.to_string(),
+                label: child.label().to_string(),
+                is_group: matches!(child, LeaderNode::Group { .. }),
+            });
+        }
+        rows
+    }
+}
+
+/// One row of a which-key panel or cheatsheet. Usually one child; the nine
+/// pinned-note digit leaves collapse into a single `1–9` row so the root
+/// stays readable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DisplayChild {
+    pub keys: String,
+    pub label: String,
+    pub is_group: bool,
 }
 
 /// The leader tree per spec §8c (gateway key deviations noted in the module
-/// docs). Group letters: f n l o g v w m, plus `?` for help.
+/// docs). Group letters: f n l o g v w m a, plus `p` `q` `?` and the digits
+/// `1`–`9` (pinned-note jumps).
 pub fn leader_tree() -> LeaderNode {
     use DrawerView as DV;
     use LeaderAction as A;
@@ -334,6 +417,7 @@ pub fn leader_tree() -> LeaderNode {
                         ('r', leaf("recent", A::FindRecent)),
                         ('s', leaf("saved searches", A::FindSaved)),
                         ('h', leaf("headings", A::FindHeadings)),
+                        ('p', leaf("pinned notes", A::FindPinned)),
                     ],
                 },
             ),
@@ -429,6 +513,7 @@ pub fn leader_tree() -> LeaderNode {
                         // backlinks (core NoteRename), so the labels match.
                         ('r', leaf("rename", A::NoteRename)),
                         ('y', leaf("yank note path", A::NoteYankPath)),
+                        ('i', leaf("pin / unpin", A::NoteTogglePin)),
                     ],
                 },
             ),
@@ -449,6 +534,15 @@ pub fn leader_tree() -> LeaderNode {
             ('p', leaf("command palette", A::Palette)),
             ('q', leaf("quit kimün", A::AppQuit)),
             ('?', leaf("help / cheatsheet", A::Help)),
+            ('1', leaf("pinned note 1", A::PinnedJump(1))),
+            ('2', leaf("pinned note 2", A::PinnedJump(2))),
+            ('3', leaf("pinned note 3", A::PinnedJump(3))),
+            ('4', leaf("pinned note 4", A::PinnedJump(4))),
+            ('5', leaf("pinned note 5", A::PinnedJump(5))),
+            ('6', leaf("pinned note 6", A::PinnedJump(6))),
+            ('7', leaf("pinned note 7", A::PinnedJump(7))),
+            ('8', leaf("pinned note 8", A::PinnedJump(8))),
+            ('9', leaf("pinned note 9", A::PinnedJump(9))),
         ],
     }
 }
@@ -780,7 +874,10 @@ mod tests {
         let groups: Vec<char> = tree.children().iter().map(|(k, _)| *k).collect();
         assert_eq!(
             groups,
-            vec!['f', 'n', 'l', 'o', 'g', 'v', 'w', 'm', 'a', 'p', 'q', '?']
+            vec![
+                'f', 'n', 'l', 'o', 'g', 'v', 'w', 'm', 'a', 'p', 'q', '?', '1', '2', '3', '4',
+                '5', '6', '7', '8', '9'
+            ]
         );
         // Doubled letters fire the group's most-common action.
         let mut e = LeaderEngine::new();
@@ -918,5 +1015,62 @@ mod tests {
         );
         assert_eq!(LeaderAction::NoteSave.id(), "note.save");
         assert_eq!(LeaderAction::AppQuit.id(), "app.quit");
+    }
+
+    #[test]
+    fn root_digits_jump_to_pinned_notes() {
+        let mut e = LeaderEngine::new();
+        for n in 1..=9u8 {
+            e.start();
+            let key = char::from(b'0' + n);
+            assert_eq!(
+                e.feed(key),
+                LeaderOutcome::Fired(LeaderAction::PinnedJump(n))
+            );
+        }
+        e.start();
+        e.feed('f');
+        assert_eq!(e.feed('p'), LeaderOutcome::Fired(LeaderAction::FindPinned));
+        e.start();
+        e.feed('m');
+        assert_eq!(
+            e.feed('i'),
+            LeaderOutcome::Fired(LeaderAction::NoteTogglePin)
+        );
+    }
+
+    #[test]
+    fn pinned_ids_round_trip() {
+        assert_eq!(LeaderAction::PinnedJump(3).id(), "pinned.3");
+        assert_eq!(
+            LeaderAction::from_id("pinned.9"),
+            Some(LeaderAction::PinnedJump(9))
+        );
+        assert_eq!(LeaderAction::from_id("pinned.0"), None);
+        assert_eq!(
+            LeaderAction::from_id("find.pinned"),
+            Some(LeaderAction::FindPinned)
+        );
+        assert_eq!(
+            LeaderAction::from_id("this.toggle-pin"),
+            Some(LeaderAction::NoteTogglePin)
+        );
+    }
+
+    #[test]
+    fn display_children_collapse_the_digit_run() {
+        let tree = leader_tree();
+        let rows = tree.display_children();
+        let digits: Vec<&DisplayChild> = rows.iter().filter(|r| r.keys == "1–9").collect();
+        assert_eq!(digits.len(), 1, "nine digit leaves collapse to one row");
+        assert_eq!(digits[0].label, "pinned note");
+        assert!(!digits[0].is_group);
+        assert!(!rows.iter().any(|r| r.keys == "2"), "no per-digit rows");
+        // Non-digit rows are untouched.
+        assert!(rows.iter().any(|r| r.keys == "f" && r.is_group));
+        assert!(rows.iter().any(|r| r.keys == "p" && !r.is_group));
+        // A group without the run passes through one row per child.
+        let find = tree.child('f').unwrap();
+        assert_eq!(find.display_children().len(), find.children().len());
     }
 }

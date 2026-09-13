@@ -96,6 +96,10 @@ impl<'a> NoteRename<'a> {
             .await
             .map_err(rename_dest_err)?;
 
+        // Stage 4b: the note moved on disk — keep its pin pointing at it.
+        // Best-effort: a pin-file failure never fails the rename.
+        crate::nfs::pinned_notes::on_note_renamed(workspace_path, &from, &to).await;
+
         let notes_with_text = prepared.commit().await?;
 
         index.rename_note(&from, &to, &notes_with_text).await?;
@@ -498,6 +502,26 @@ mod tests {
             vec![VaultPath::new("/referrer.md")]
         );
         assert!(f.backlinks("/renamed.md").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn rename_keeps_the_pin_on_the_note() {
+        let fx = Fixture::new().await;
+        let from = fx.note("old.md", "body").await;
+        crate::nfs::pinned_notes::write_pinned_notes(&fx.ws, std::slice::from_ref(&from))
+            .await
+            .unwrap();
+        let to = VaultPath::new("new.md");
+        NoteRename::new(&fx.index, &fx.ws, false, &fx.locks)
+            .rename(&from, &to)
+            .await
+            .unwrap();
+        let pins = crate::nfs::pinned_notes::read_pinned_notes(&fx.ws)
+            .await
+            .unwrap();
+        // Pins are stored canonical (vault-absolute), regardless of the
+        // relative form `to` was built with.
+        assert_eq!(pins, vec![VaultPath::new("/new.md")]);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
