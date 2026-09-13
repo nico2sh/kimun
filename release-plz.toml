@@ -7,9 +7,16 @@
 # pre-releases are tagged with a hyphenated version (…-beta.N) outside release-plz.
 git_release_type = "prod"
 
+# The repo publishes three release series from one tag namespace, and GitHub's
+# "Latest" badge is whichever release was published (or last updated) most
+# recently. Only the app should ever wear it: `git_release_latest = false` keeps
+# kimun_core and kimun_server out of the running. build.yml / build-server.yml
+# set `make_latest` on their asset-attach step for the same reason — updating a
+# release re-claims the badge unless told otherwise.
 [[package]]
 name = "kimun_core"
 git_tag_name = "kimun_core-v{{ version }}"
+git_release_latest = false
 
 [[package]]
 name = "kimun-notes"
@@ -23,6 +30,7 @@ git_tag_name = "kimun-notes-v{{ version }}"
 [[package]]
 name = "kimun_server"
 git_tag_name = "kimun_server-v{{ version }}"
+git_release_latest = false
 publish = false
 git_only = true
 
