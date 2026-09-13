@@ -87,7 +87,7 @@ impl ActiveDialog {
             ActiveDialog::WorkspaceSwitcher(_) => {} // no error state
             ActiveDialog::SaveSearch(_) => {}        // no error state
             ActiveDialog::Sort(_) => {}              // no error state
-            ActiveDialog::PinnedNotes(_) => {} // errors flash via OverlayData::Error → set_error is a no-op; the dialog stays usable
+            ActiveDialog::PinnedNotes(_) => {} // no error state: its own failures arrive as PinnedNotesLoaded(Err) and flash
             ActiveDialog::ThemePicker(_) => {} // no error state
             ActiveDialog::UpdateAvailable(_) => {} // no error state
         }
@@ -259,19 +259,14 @@ impl Overlay for ActiveDialog {
                 }
                 OverlayMsg::Consumed
             }
-            OverlayData::PinnedNotesLoaded(rows) => {
+            OverlayData::PinnedNotesLoaded(result) => {
                 if let ActiveDialog::PinnedNotes(d) = self {
-                    d.set_rows(rows.clone());
+                    d.handle_loaded(result, tx);
                 }
                 OverlayMsg::Consumed
             }
             OverlayData::Error(text) => {
-                if let ActiveDialog::PinnedNotes(d) = self {
-                    d.handle_load_error();
-                    tx.send(AppEvent::FlashMessage(text.clone())).ok();
-                } else {
-                    self.set_error(text.clone());
-                }
+                self.set_error(text.clone());
                 OverlayMsg::Consumed
             }
         }
@@ -435,11 +430,46 @@ mod tests {
             path: VaultPath::new("a.md"),
             missing: false,
         }];
-        let msg = active.handle_data(&OverlayData::PinnedNotesLoaded(rows.clone()), &vault, &tx);
+        let msg = active.handle_data(
+            &OverlayData::PinnedNotesLoaded(Ok(rows.clone())),
+            &vault,
+            &tx,
+        );
         assert!(matches!(msg, OverlayMsg::Consumed));
 
         match &active {
             ActiveDialog::PinnedNotes(d) => assert_eq!(d.rows(), rows.as_slice()),
+            _ => panic!("expected ActiveDialog::PinnedNotes"),
+        }
+    }
+
+    /// A foreign `OverlayData::Error` — a rename or paste task failing after
+    /// its own dialog closed — must not be routed into the pinned-notes
+    /// dialog as if it were the reload it is waiting on: that would clear
+    /// its in-flight guard and reopen the overlapping-write race.
+    #[tokio::test]
+    async fn active_dialog_leaves_pinned_notes_alone_on_a_foreign_error() {
+        use tokio::sync::mpsc::unbounded_channel;
+
+        let vault = crate::test_support::temp_vault("active-dialog-pinned-err").await;
+        let (tx, mut rx) = unbounded_channel();
+        let mut active = ActiveDialog::pinned_notes(vault.clone(), &tx);
+
+        let msg = active.handle_data(
+            &OverlayData::Error("rename failed".to_string()),
+            &vault,
+            &tx,
+        );
+        assert!(matches!(msg, OverlayMsg::Consumed));
+        assert!(
+            rx.try_recv().is_err(),
+            "a foreign error must not be flashed as a pinned-notes failure"
+        );
+        match &active {
+            ActiveDialog::PinnedNotes(d) => assert!(
+                !d.is_loaded(),
+                "a foreign error must not settle the dialog's own load"
+            ),
             _ => panic!("expected ActiveDialog::PinnedNotes"),
         }
     }

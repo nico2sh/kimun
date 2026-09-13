@@ -11,12 +11,21 @@
 //! whether the caller reached it as `a.md` or `/a.md`. Every function here
 //! that takes a `VaultPath` argument canonicalizes it on entry, so callers
 //! never need to normalize first.
+//!
+//! Every writer goes through [`edit`]: one in-process lock per pin file
+//! around the read-modify-write, and an atomic replace for the write
+//! itself, so neither two overlapping edits (a rename hook racing a
+//! toggle) nor a crash mid-write can lose or corrupt the list.
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::FSError;
 use crate::nfs::{VaultPath, PATH_SEPARATOR};
-use crate::system::SystemPath;
+use crate::system::{self, SystemPath};
 
 /// The most notes a vault can pin. The cap is the feature: every pinned
 /// note has a one-digit shortcut, so a tenth is refused, never unreachable.
@@ -41,35 +50,45 @@ struct PinnedNotesFile {
     notes: Vec<VaultPath>,
 }
 
-fn pinned_notes_path(workspace_path: &SystemPath) -> std::path::PathBuf {
+fn pinned_notes_path(workspace_path: &SystemPath) -> PathBuf {
     workspace_path
         .as_path()
         .join(".kimun")
         .join("pinned-notes.toml")
 }
 
-/// Read the pinned list, in order. A vault with no file has none. Entries
-/// are canonicalized on read, so a hand-edited relative entry still matches.
+/// The in-process lock for one pin file, keyed by its path so every writer
+/// in this process — each `NoteVault` clone's toggle/unpin/move and the
+/// rename/delete hooks — serializes on the same lock. Cross-process writers
+/// are not covered, the same stance `NoteLocks` takes for note content.
+fn file_lock(path: &Path) -> Arc<tokio::sync::Mutex<()>> {
+    static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>> = OnceLock::new();
+    let map = LOCKS.get_or_init(Default::default);
+    map.lock()
+        .unwrap()
+        .entry(path.to_path_buf())
+        .or_default()
+        .clone()
+}
+
+/// Read the pinned list, in order, exactly as stored. A vault with no file
+/// has none. Entries are canonicalized on read, so a hand-edited relative
+/// entry still matches.
 ///
-/// The result is truncated to `PINNED_NOTES_CAP` (keeping the first entries
-/// in file order), so this function's own guarantee holds even when the file
-/// on disk holds more. Only `toggle` enforces the cap on the write path, and
-/// the file lives inside the vault by design: a hand-edit, or two machines
-/// each pinning independently and then three-way-merging `notes = [ … ]` as
-/// plain text (a union, not a cap), can both leave more than the cap on
-/// disk. Truncating here keeps the cap a single-sourced rule at the one seam
-/// every caller — including the TUI's fixed nine-row dialog — actually
-/// depends on.
+/// Not truncated to `PINNED_NOTES_CAP`: only `toggle` guards the cap, and
+/// the file lives inside the vault by design, so a hand-edit or a three-way
+/// text merge of `notes = [ … ]` across two synced machines (a union, not a
+/// cap) can leave more on disk. Every writer writes back what it read, so
+/// truncating here would make the next unrelated edit silently delete the
+/// entries past the cap. `NoteVault::list_pinned_notes` truncates for
+/// display instead.
 pub async fn read_pinned_notes(workspace_path: &SystemPath) -> Result<Vec<VaultPath>, FSError> {
     let path = pinned_notes_path(workspace_path);
     match tokio::fs::read_to_string(&path).await {
         Ok(body) => {
             let parsed: PinnedNotesFile =
                 toml::from_str(&body).map_err(|e| FSError::SerializationError(e.to_string()))?;
-            let mut notes: Vec<VaultPath> =
-                parsed.notes.into_iter().map(|n| n.canonical()).collect();
-            notes.truncate(PINNED_NOTES_CAP);
-            Ok(notes)
+            Ok(parsed.notes.into_iter().map(|n| n.canonical()).collect())
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(e) => Err(FSError::ReadFileError(e)),
@@ -78,22 +97,41 @@ pub async fn read_pinned_notes(workspace_path: &SystemPath) -> Result<Vec<VaultP
 
 /// Write the whole list, creating `.kimun/` if needed. Entries are
 /// canonicalized before serializing, so the stored form is always canonical
-/// regardless of how the caller built the list.
+/// regardless of how the caller built the list. The write is an atomic
+/// replace (`system::replace_atomically`): the file is rewritten by every
+/// rename and delete hook, and a truncating write interrupted mid-way would
+/// leave unparsable TOML that fails every pin operation until hand-edited.
 pub async fn write_pinned_notes(
     workspace_path: &SystemPath,
     notes: &[VaultPath],
 ) -> Result<(), FSError> {
     let path = pinned_notes_path(workspace_path);
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
     let file = PinnedNotesFile {
         notes: notes.iter().map(|n| n.canonical()).collect(),
     };
     let body =
         toml::to_string_pretty(&file).map_err(|e| FSError::SerializationError(e.to_string()))?;
-    tokio::fs::write(&path, body).await?;
+    tokio::task::spawn_blocking(move || system::replace_atomically(&path, body.as_bytes()))
+        .await
+        .map_err(|e| FSError::ReadFileError(std::io::Error::other(e)))??;
     Ok(())
+}
+
+/// The one read-modify-write seam. Takes the pin file's lock, reads the
+/// list, applies `f`, and writes the list back when `f` reports a change.
+/// `f` returns `(result, changed)`; `result` is handed back untouched.
+pub async fn edit<R>(
+    workspace_path: &SystemPath,
+    f: impl FnOnce(&mut Vec<VaultPath>) -> (R, bool),
+) -> Result<R, FSError> {
+    let lock = file_lock(&pinned_notes_path(workspace_path));
+    let _guard = lock.lock().await;
+    let mut all = read_pinned_notes(workspace_path).await?;
+    let (out, changed) = f(&mut all);
+    if changed {
+        write_pinned_notes(workspace_path, &all).await?;
+    }
+    Ok(out)
 }
 
 /// 0-based position of `path` in the list. The one match rule for pins:
@@ -145,15 +183,52 @@ pub fn move_entry(notes: &mut Vec<VaultPath>, from: usize, to: usize) -> bool {
     true
 }
 
+/// Move the pin for `path` by `delta` slots (negative moves it up).
+/// Anchored on the path rather than an index so a caller working from a
+/// stale copy of the list (a dialog whose rows predate an external edit)
+/// moves the note it meant to, or nothing. `false` — and no change — when
+/// `path` is not pinned, `delta` is zero, or the move would leave the list.
+pub fn move_by(notes: &mut Vec<VaultPath>, path: &VaultPath, delta: isize) -> bool {
+    let Some(from) = position_of(notes, path) else {
+        return false;
+    };
+    let to = from as isize + delta;
+    if to < 0 || to as usize >= notes.len() {
+        return false;
+    }
+    move_entry(notes, from, to as usize)
+}
+
+/// Drop every later duplicate of an entry (canonical, component-wise
+/// match), keeping the first — the one holding the older, lower slot. A
+/// rename can land on a path that is already pinned: the destination's
+/// note vanished outside kimün, its pin was kept as missing by design, and
+/// `nfs::rename_path` only refuses a destination that exists on disk.
+fn dedup(notes: &mut Vec<VaultPath>) -> bool {
+    let before = notes.len();
+    let mut seen: Vec<VaultPath> = Vec::with_capacity(before);
+    notes.retain(|n| {
+        let c = n.canonical();
+        if seen.iter().any(|s| s.is_like(&c)) {
+            false
+        } else {
+            seen.push(c);
+            true
+        }
+    });
+    notes.len() != before
+}
+
 /// A note was renamed/moved: point its pin at the new path. `to` is stored
 /// canonical, so the entry stays in the on-disk form regardless of how the
-/// caller built `to`.
-pub fn rewrite_note_rename(notes: &mut [VaultPath], from: &VaultPath, to: &VaultPath) -> bool {
+/// caller built `to`. A stale pin already at `to` is dropped (see `dedup`).
+pub fn rewrite_note_rename(notes: &mut Vec<VaultPath>, from: &VaultPath, to: &VaultPath) -> bool {
     let from = from.canonical();
     let to = to.canonical();
     match notes.iter_mut().find(|n| n.is_like(&from)) {
         Some(slot) => {
             *slot = to;
+            dedup(notes);
             true
         }
         None => false,
@@ -173,8 +248,13 @@ fn dir_prefix(dir: &VaultPath) -> String {
     }
 }
 
-/// A directory was renamed: rewrite every pin beneath it.
-pub fn rewrite_directory_rename(notes: &mut [VaultPath], from: &VaultPath, to: &VaultPath) -> bool {
+/// A directory was renamed: rewrite every pin beneath it. Stale pins the
+/// rewrite lands on are dropped (see `dedup`).
+pub fn rewrite_directory_rename(
+    notes: &mut Vec<VaultPath>,
+    from: &VaultPath,
+    to: &VaultPath,
+) -> bool {
     let from = from.canonical();
     let to = to.canonical();
     let from_prefix = dir_prefix(&from);
@@ -185,6 +265,9 @@ pub fn rewrite_directory_rename(notes: &mut [VaultPath], from: &VaultPath, to: &
             *slot = VaultPath::new(format!("{to_prefix}{rest}"));
             changed = true;
         }
+    }
+    if changed {
+        dedup(notes);
     }
     changed
 }
@@ -198,26 +281,16 @@ pub fn remove_under_directory(notes: &mut Vec<VaultPath>, dir: &VaultPath) -> bo
     notes.len() != before
 }
 
-/// Apply `edit` to the stored list and write it back if it changed. Pins are
-/// non-critical bookkeeping beside a note operation that already succeeded,
-/// so any failure is logged and swallowed — the caller's operation stands.
+/// [`edit`] for the rename/delete hooks. Pins are non-critical bookkeeping
+/// beside a note operation that already succeeded, so any failure is logged
+/// and swallowed — the caller's operation stands.
 async fn best_effort_edit(
     workspace_path: &SystemPath,
     what: &str,
-    edit: impl FnOnce(&mut Vec<VaultPath>) -> bool,
+    f: impl FnOnce(&mut Vec<VaultPath>) -> bool,
 ) {
-    let mut all = match read_pinned_notes(workspace_path).await {
-        Ok(all) => all,
-        Err(e) => {
-            log::warn!("pinned notes: could not read list while {what}: {e}");
-            return;
-        }
-    };
-    if !edit(&mut all) {
-        return;
-    }
-    if let Err(e) = write_pinned_notes(workspace_path, &all).await {
-        log::warn!("pinned notes: could not write list while {what}: {e}");
+    if let Err(e) = edit(workspace_path, |all| ((), f(all))).await {
+        log::warn!("pinned notes: could not update list while {what}: {e}");
     }
 }
 
@@ -281,11 +354,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_truncates_a_file_holding_more_than_the_cap() {
-        // Not producible through `write_pinned_notes` (only `toggle` guards
-        // the cap, and only on the write path) — this is what a hand-edit or
-        // a three-way merge of `notes = [ … ]` across two machines looks
-        // like: more entries than the cap, sitting on disk.
+    async fn read_keeps_a_file_holding_more_than_the_cap() {
+        // Not producible through `toggle` (the only cap guard) — this is
+        // what a hand-edit or a three-way merge of `notes = [ … ]` across
+        // two machines looks like: more entries than the cap, on disk. Read
+        // returns them all, so a write-back never drops the extras.
         let dir = tempfile::TempDir::new().unwrap();
         let ws = sys(dir.path());
         let kimun_dir = dir.path().join(".kimun");
@@ -298,10 +371,90 @@ mod tests {
             .unwrap();
 
         let got = read_pinned_notes(&ws).await.unwrap();
-        let want: Vec<VaultPath> = (0..PINNED_NOTES_CAP)
-            .map(|i| p(&format!("/n{i}.md")))
+        assert_eq!(got.len(), extra, "every entry kept, in file order");
+
+        // An unrelated edit writes back the whole list, extras included.
+        edit(&ws, |all| ((), remove(all, &p("/n0.md"))))
+            .await
+            .unwrap();
+        let got = read_pinned_notes(&ws).await.unwrap();
+        assert_eq!(got.len(), extra - 1);
+        assert_eq!(got.last(), Some(&p(&format!("/n{}.md", extra - 1))));
+    }
+
+    #[tokio::test]
+    async fn edit_writes_only_when_the_closure_reports_a_change() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let ws = sys(dir.path());
+        let out = edit(&ws, |all| (all.len(), false)).await.unwrap();
+        assert_eq!(out, 0);
+        assert!(
+            !dir.path().join(".kimun").join("pinned-notes.toml").exists(),
+            "an unchanged list must not create the file"
+        );
+        let out = edit(&ws, |all| (toggle(all, &p("a.md")), true))
+            .await
+            .unwrap();
+        assert_eq!(out, PinToggle::Pinned { position: 0 });
+        assert_eq!(read_pinned_notes(&ws).await.unwrap(), vec![p("/a.md")]);
+    }
+
+    /// Two edits started together must both land: the second reads what the
+    /// first wrote instead of a stale copy. Without the per-file lock the
+    /// last write would win and one edit would silently vanish.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concurrent_edits_serialize_instead_of_losing_one() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let ws = sys(dir.path());
+        let mut tasks = Vec::new();
+        for i in 0..PINNED_NOTES_CAP {
+            let ws = ws.clone();
+            tasks.push(tokio::spawn(async move {
+                edit(&ws, |all| {
+                    ((), toggle(all, &p(&format!("n{i}.md"))) != PinToggle::Full)
+                })
+                .await
+                .unwrap();
+            }));
+        }
+        for t in tasks {
+            t.await.unwrap();
+        }
+        assert_eq!(
+            read_pinned_notes(&ws).await.unwrap().len(),
+            PINNED_NOTES_CAP,
+            "every toggle must have landed"
+        );
+    }
+
+    /// A crash mid-write must leave the previous list intact, never a
+    /// half-written file: the write goes through `replace_atomically`, so
+    /// the target is only ever a complete file (proved by the temp-then-
+    /// rename leaving no sibling temp file behind on the happy path, and by
+    /// the body being the exact serialization).
+    #[tokio::test]
+    async fn write_replaces_the_file_whole() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let ws = sys(dir.path());
+        write_pinned_notes(&ws, &[p("a.md")]).await.unwrap();
+        write_pinned_notes(&ws, &[p("b.md"), p("c.md")])
+            .await
+            .unwrap();
+        let kimun_dir = dir.path().join(".kimun");
+        let mut names: Vec<String> = std::fs::read_dir(&kimun_dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(got, want, "kept only the first entries, in file order");
+        names.sort();
+        assert_eq!(
+            names,
+            vec!["pinned-notes.toml".to_string()],
+            "no temp file left behind"
+        );
+        let body = tokio::fs::read_to_string(kimun_dir.join("pinned-notes.toml"))
+            .await
+            .unwrap();
+        assert_eq!(body, "notes = [\n    \"/b.md\",\n    \"/c.md\",\n]\n");
     }
 
     #[tokio::test]
@@ -388,6 +541,21 @@ mod tests {
     }
 
     #[test]
+    fn move_by_is_anchored_on_the_path() {
+        let mut notes = vec![p("a.md"), p("b.md"), p("c.md")];
+        assert!(move_by(&mut notes, &p("/a.md"), 2));
+        assert_eq!(notes, vec![p("b.md"), p("c.md"), p("a.md")]);
+        assert!(move_by(&mut notes, &p("a.md"), -1));
+        assert_eq!(notes, vec![p("b.md"), p("a.md"), p("c.md")]);
+        // Not pinned, zero, and out-of-range moves leave the list alone.
+        assert!(!move_by(&mut notes, &p("zzz.md"), 1));
+        assert!(!move_by(&mut notes, &p("a.md"), 0));
+        assert!(!move_by(&mut notes, &p("b.md"), -1));
+        assert!(!move_by(&mut notes, &p("c.md"), 1));
+        assert_eq!(notes, vec![p("b.md"), p("a.md"), p("c.md")]);
+    }
+
+    #[test]
     fn position_of_is_zero_based() {
         let notes = vec![p("a.md"), p("b.md")];
         assert_eq!(position_of(&notes, &p("b.md")), Some(1));
@@ -448,6 +616,29 @@ mod tests {
         let mut notes = vec![p("/proj/a.md")];
         assert!(rewrite_directory_rename(&mut notes, &p("proj"), &p("work")));
         assert_eq!(notes, vec![p("/work/a.md")]);
+    }
+
+    /// Renaming onto a path whose stale pin was kept as "missing" must not
+    /// leave the note pinned twice: the renamed note keeps its slot and the
+    /// stale pin goes.
+    #[test]
+    fn note_rename_onto_a_stale_pin_leaves_one_entry() {
+        let mut notes = vec![p("/a.md"), p("/b.md"), p("/c.md")];
+        assert!(rewrite_note_rename(&mut notes, &p("a.md"), &p("b.md")));
+        assert_eq!(notes, vec![p("/b.md"), p("/c.md")]);
+
+        // The stale pin sitting *before* the renamed one: the earlier slot
+        // survives either way, so the list is still one entry per note.
+        let mut notes = vec![p("/b.md"), p("/a.md"), p("/c.md")];
+        assert!(rewrite_note_rename(&mut notes, &p("a.md"), &p("b.md")));
+        assert_eq!(notes, vec![p("/b.md"), p("/c.md")]);
+    }
+
+    #[test]
+    fn directory_rename_onto_stale_pins_leaves_one_entry_each() {
+        let mut notes = vec![p("/proj/a.md"), p("/work/a.md"), p("/work/b.md")];
+        assert!(rewrite_directory_rename(&mut notes, &p("proj"), &p("work")));
+        assert_eq!(notes, vec![p("/work/a.md"), p("/work/b.md")]);
     }
 
     #[test]

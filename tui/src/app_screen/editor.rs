@@ -954,19 +954,39 @@ impl EditorScreen {
         self.present_overlay(overlay);
     }
 
-    /// Leader `m i`: pin the open note, or unpin it if pinned. Refused with
-    /// a flash when nothing is open (attachment view, Ask workspace, root)
-    /// or when the vault already holds the cap.
-    fn toggle_pin_open_note(&self, tx: &AppTx) {
-        let no_note = self.panels.is_showing_attachment()
-            || self.panels.is_showing_ask()
-            || !self.path.is_note();
-        if no_note {
-            tx.send(AppEvent::FlashMessage("no note open".into())).ok();
-            return;
+    /// The note the editor area is showing, if any — what every "+this
+    /// note" leader action (`m r`/`m m`/`m d`/`m c`/`m y`/`m i`) acts on.
+    /// `None` on the vault root, in the attachment view (`self.path` is
+    /// then the attachment's path, never a note) and while the Ask
+    /// workspace is up (`self.path` still names the note it replaced, but
+    /// the user is not looking at it). The one definition of "this note",
+    /// so the m-group cannot disagree about it.
+    fn open_note(&self) -> Option<&VaultPath> {
+        if self.panels.is_showing_ask() || !self.path.is_note() {
+            None
+        } else {
+            Some(&self.path)
         }
+    }
+
+    /// [`Self::open_note`], flashing "no note open" when there is none.
+    fn open_note_or_flash(&self, tx: &AppTx) -> Option<VaultPath> {
+        let note = self.open_note().cloned();
+        if note.is_none() {
+            tx.send(AppEvent::FlashMessage("no note open".into())).ok();
+        }
+        note
+    }
+
+    /// Leader `m i`: pin the open note, or unpin it if pinned. Refused with
+    /// a flash when nothing is open (see [`Self::open_note`]), when the
+    /// open note is no longer on disk, or when the vault already holds the
+    /// cap.
+    fn toggle_pin_open_note(&self, tx: &AppTx) {
+        let Some(path) = self.open_note_or_flash(tx) else {
+            return;
+        };
         let vault = self.vault.clone();
-        let path = self.path.clone();
         let tx = tx.clone();
         tokio::spawn(async move {
             let msg = match vault.toggle_pinned_note(&path).await {
@@ -980,6 +1000,9 @@ impl EditorScreen {
                     "already {} pinned — unpin one first",
                     kimun_core::PINNED_NOTES_CAP
                 ),
+                Err(VaultError::FSError(FSError::VaultPathNotFound { .. })) => {
+                    format!("note not found: {path}")
+                }
                 Err(e) => {
                     tracing::warn!("failed to toggle pin on {path}: {e}");
                     format!("could not update pinned notes: {e}")
@@ -1903,16 +1926,19 @@ impl EditorScreen {
                 self.footer.flash("templates — coming soon".to_string(), tx);
             }
             LeaderAction::NoteRename => {
-                tx.send(AppEvent::FileOp(FileOp::ShowRename(self.path.clone())))
-                    .ok();
+                if let Some(path) = self.open_note_or_flash(tx) {
+                    tx.send(AppEvent::FileOp(FileOp::ShowRename(path))).ok();
+                }
             }
             LeaderAction::NoteMove => {
-                tx.send(AppEvent::FileOp(FileOp::ShowMove(self.path.clone())))
-                    .ok();
+                if let Some(path) = self.open_note_or_flash(tx) {
+                    tx.send(AppEvent::FileOp(FileOp::ShowMove(path))).ok();
+                }
             }
             LeaderAction::NoteDelete => {
-                tx.send(AppEvent::FileOp(FileOp::ShowDelete(self.path.clone())))
-                    .ok();
+                if let Some(path) = self.open_note_or_flash(tx) {
+                    tx.send(AppEvent::FileOp(FileOp::ShowDelete(path))).ok();
+                }
             }
 
             // +links
@@ -1994,15 +2020,18 @@ impl EditorScreen {
                     .flash("preview — lands with phase 09".to_string(), tx);
             }
             LeaderAction::NoteCopyWikilink => {
-                let link = format!("[[{}]]", self.path.get_clean_name());
-                crate::components::yank(link, "wikilink copied", tx);
+                if let Some(path) = self.open_note_or_flash(tx) {
+                    let link = format!("[[{}]]", path.get_clean_name());
+                    crate::components::yank(link, "wikilink copied", tx);
+                }
             }
             LeaderAction::NoteExport => {
                 self.footer.flash("export — coming soon".to_string(), tx);
             }
             LeaderAction::NoteYankPath => {
-                let path = self.path.to_string();
-                crate::components::yank(path, "note path copied", tx);
+                if let Some(path) = self.open_note_or_flash(tx) {
+                    crate::components::yank(path.to_string(), "note path copied", tx);
+                }
             }
 
             // +ask — the Ask workspace's conversation actions.
@@ -2579,18 +2608,60 @@ mod tests {
         let (mut screen, vault, _, _dir) = test_screen().await;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         for i in 0..kimun_core::PINNED_NOTES_CAP {
-            vault
-                .toggle_pinned_note(&VaultPath::new(format!("n{i}.md")))
-                .await
-                .unwrap();
+            let n = VaultPath::new(format!("n{i}.md"));
+            vault.create_note(&n, "hi").await.unwrap();
+            vault.toggle_pinned_note(&n).await.unwrap();
         }
-        screen.path = VaultPath::new("extra.md");
+        let extra = VaultPath::new("extra.md");
+        vault.create_note(&extra, "hi").await.unwrap();
+        screen.path = extra;
         screen.handle_input(&ctrl_key('g'), &tx);
         screen.handle_input(&chr('m'), &tx);
         screen.handle_input(&chr('i'), &tx);
         let e = wait_for(&mut rx, |e| matches!(e, AppEvent::FlashMessage(_))).await;
         assert!(
             matches!(&e, AppEvent::FlashMessage(m) if m == "already 9 pinned — unpin one first"),
+            "{e:?}"
+        );
+    }
+
+    /// The open path can name a note that is no longer on disk — removed
+    /// in another terminal, or a create dialog dismissed with the path left
+    /// set. Pinning it would only store a pin born "missing", so it flashes.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn leader_m_i_on_a_missing_note_flashes() {
+        let (mut screen, vault, _, _dir) = test_screen().await;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        screen.path = VaultPath::new("gone.md");
+        screen.handle_input(&ctrl_key('g'), &tx);
+        screen.handle_input(&chr('m'), &tx);
+        screen.handle_input(&chr('i'), &tx);
+        let e = wait_for(&mut rx, |e| matches!(e, AppEvent::FlashMessage(_))).await;
+        assert!(
+            matches!(&e, AppEvent::FlashMessage(m) if m == "note not found: gone.md"),
+            "{e:?}"
+        );
+        assert!(vault.list_pinned_notes().await.unwrap().is_empty());
+    }
+
+    /// Every "+this note" action shares one definition of "this note": with
+    /// the Ask workspace up, `m c` refuses exactly as `m i` does, instead of
+    /// copying a wikilink to the note the user is no longer looking at.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn leader_m_c_with_ask_shown_flashes_like_m_i() {
+        let (mut screen, vault, _, _dir) = test_screen().await;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let note = VaultPath::new("plan.md");
+        vault.create_note(&note, "hi").await.unwrap();
+        screen.path = note;
+        screen.open_drawer_view(DrawerView::Ask, &tx);
+
+        screen.handle_input(&ctrl_key('g'), &tx);
+        screen.handle_input(&chr('m'), &tx);
+        screen.handle_input(&chr('c'), &tx);
+        let e = wait_for(&mut rx, |e| matches!(e, AppEvent::FlashMessage(_))).await;
+        assert!(
+            matches!(&e, AppEvent::FlashMessage(m) if m == "no note open"),
             "{e:?}"
         );
     }
@@ -2701,12 +2772,13 @@ mod tests {
     /// pruned, since only an explicit unpin removes it.
     #[tokio::test(flavor = "multi_thread")]
     async fn leader_digit_to_a_missing_pin_flashes() {
-        let (mut screen, vault, _, _dir) = test_screen().await;
+        let (mut screen, vault, _, dir) = test_screen().await;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        vault
-            .toggle_pinned_note(&VaultPath::new("gone.md"))
-            .await
-            .unwrap();
+        let gone = VaultPath::new("gone.md");
+        vault.create_note(&gone, "hi").await.unwrap();
+        vault.toggle_pinned_note(&gone).await.unwrap();
+        // Vanishes outside kimün after being pinned.
+        std::fs::remove_file(dir.path().join("gone.md")).unwrap();
         screen.handle_input(&ctrl_key('g'), &tx);
         screen.handle_input(&chr('1'), &tx);
         let e = wait_for(&mut rx, |e| matches!(e, AppEvent::FlashMessage(_))).await;
