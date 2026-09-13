@@ -63,6 +63,7 @@ pub use index::search_terms::{
     QueryTokenSpan, SearchTerms,
 };
 pub use index::{IndexDiff, IndexObserver, NoteChange, NoteSuggestion, TagSuggestion};
+pub use nfs::pinned_notes::{PinToggle, PINNED_NOTES_CAP};
 pub use nfs::saved_searches::{saved_search_name_matches, SavedSearch};
 pub use nfs::vault_id::VaultId;
 pub use nfs::EntryKind;
@@ -88,6 +89,7 @@ use note_rename::{rename_dest_err, NoteRename};
 use sync::VaultSync;
 use system::path_to_string;
 
+use crate::nfs::pinned_notes;
 use crate::nfs::saved_searches;
 use crate::nfs::DirectoryEntryData;
 
@@ -835,6 +837,69 @@ impl NoteVault {
         Ok(())
     }
 
+    // ── Pinned notes ──────────────────────────────────────────────────────
+
+    /// The vault's pinned notes, in the user's order, at most
+    /// [`PINNED_NOTES_CAP`] of them. A vault with no pin file has none.
+    ///
+    /// Truncated here, at the display seam, and nowhere else: only
+    /// `toggle_pinned_note` refuses a pin past the cap, and a hand-edit or a
+    /// sync merge of the file can hold more. Those extras are kept on disk
+    /// by every edit — truncating on read would let the next unrelated
+    /// rename or unpin silently delete them.
+    pub async fn list_pinned_notes(&self) -> Result<Vec<VaultPath>, VaultError> {
+        let mut all = pinned_notes::read_pinned_notes(self.workspace_path()).await?;
+        all.truncate(PINNED_NOTES_CAP);
+        Ok(all)
+    }
+
+    /// Pin `path` (appended last) or unpin it if it is already pinned.
+    /// Returns [`PinToggle::Full`] — and writes nothing — when the list is at
+    /// the cap and `path` is not in it. Fails if `path` is not a note: a
+    /// pinned directory would be doubly orphaned by its own deletion (the
+    /// directory-delete rewrite only drops pins *beneath* the directory, not
+    /// a pin *at* it), so a pin is a note or nothing. Pinning also fails
+    /// with [`FSError::VaultPathNotFound`] when the note is not on disk — a
+    /// pin is an explicit act on a real note, and a pin born missing would
+    /// only ever spend a cap slot. Unpinning a missing note always works.
+    pub async fn toggle_pinned_note(&self, path: &VaultPath) -> Result<PinToggle, VaultError> {
+        path.ensure_note()?;
+        let exists = nfs::path_exists(self.workspace_path(), path).await?;
+        pinned_notes::edit(self.workspace_path(), |all| {
+            if !exists && pinned_notes::position_of(all, path).is_none() {
+                let err = FSError::VaultPathNotFound { path: path.clone() };
+                return (Err(VaultError::FSError(err)), false);
+            }
+            let outcome = pinned_notes::toggle(all, path);
+            (Ok(outcome), outcome != PinToggle::Full)
+        })
+        .await?
+    }
+
+    /// Unpin `path`. `Ok(false)` when it was not pinned (nothing written).
+    pub async fn unpin_note(&self, path: &VaultPath) -> Result<bool, VaultError> {
+        Ok(pinned_notes::edit(self.workspace_path(), |all| {
+            let changed = pinned_notes::remove(all, path);
+            (changed, changed)
+        })
+        .await?)
+    }
+
+    /// Move the pin for `path` by `delta` slots (negative moves it up).
+    /// `Ok(false)` — nothing written — when `path` is not pinned or the
+    /// move would leave the list; see `pinned_notes::move_by`.
+    pub async fn move_pinned_note(
+        &self,
+        path: &VaultPath,
+        delta: isize,
+    ) -> Result<bool, VaultError> {
+        Ok(pinned_notes::edit(self.workspace_path(), |all| {
+            let changed = pinned_notes::move_by(all, path, delta);
+            (changed, changed)
+        })
+        .await?)
+    }
+
     /// Creates a new note at `path` with `text`, failing with
     /// [`VaultError::NoteExists`] if a note is already there. The create is
     /// exclusive (atomic `O_EXCL`), so it never clobbers an existing file.
@@ -1079,6 +1144,10 @@ impl NoteVault {
 
         nfs::delete_note(self.workspace_path(), &path).await?;
 
+        // Best-effort: a pin-file failure never fails a delete that already
+        // succeeded on disk and in the index.
+        pinned_notes::on_note_deleted(self.workspace_path(), &path).await;
+
         Ok(())
     }
 
@@ -1203,6 +1272,10 @@ impl NoteVault {
 
         nfs::delete_directory(self.workspace_path(), &path).await?;
 
+        // Best-effort: a pin-file failure never fails a delete that already
+        // succeeded on disk and in the index.
+        pinned_notes::on_directory_deleted(self.workspace_path(), &path).await;
+
         Ok(())
     }
 
@@ -1236,6 +1309,11 @@ impl NoteVault {
         nfs::rename_directory(self.workspace_path(), &from, &to)
             .await
             .map_err(rename_dest_err)?;
+
+        // Best-effort: a pin-file failure never fails a rename that already
+        // succeeded on disk. Fine before the index call too — that step
+        // cannot roll back the filesystem move either.
+        pinned_notes::on_directory_renamed(self.workspace_path(), &from, &to).await;
 
         self.index.rename_directory(&from, &to).await?;
 
@@ -3051,6 +3129,270 @@ mod tests {
             names.iter().any(|p| p.ends_with("/dir1/sub/c.md")),
             "{:?}",
             names
+        );
+    }
+
+    #[tokio::test]
+    async fn pin_toggle_pins_then_unpins_through_the_vault() {
+        let dir = TempDir::new().unwrap();
+        let vault = make_vault(dir.path()).await;
+        vault.validate_and_init().await.unwrap();
+
+        let a = VaultPath::new("a.md");
+        vault.create_note(&a, "hi").await.unwrap();
+        assert_eq!(
+            vault.toggle_pinned_note(&a).await.unwrap(),
+            PinToggle::Pinned { position: 0 }
+        );
+        assert_eq!(
+            vault.list_pinned_notes().await.unwrap(),
+            vec![VaultPath::new("/a.md")]
+        );
+        assert_eq!(
+            vault.toggle_pinned_note(&a).await.unwrap(),
+            PinToggle::Unpinned
+        );
+        assert!(vault.list_pinned_notes().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn pin_toggle_rejects_a_directory_path() {
+        let dir = TempDir::new().unwrap();
+        let vault = make_vault(dir.path()).await;
+        vault.validate_and_init().await.unwrap();
+
+        match vault.toggle_pinned_note(&VaultPath::new("dir")).await {
+            Err(VaultError::FSError(FSError::InvalidPath { message, .. })) => {
+                assert_eq!(message, "The path is not a note");
+            }
+            other => panic!("expected InvalidPath, got {:?}", other),
+        }
+        assert!(vault.list_pinned_notes().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn pin_toggle_refuses_past_the_cap() {
+        let dir = TempDir::new().unwrap();
+        let vault = make_vault(dir.path()).await;
+        vault.validate_and_init().await.unwrap();
+
+        for i in 0..PINNED_NOTES_CAP {
+            let n = VaultPath::new(format!("n{i}.md"));
+            vault.create_note(&n, "hi").await.unwrap();
+            vault.toggle_pinned_note(&n).await.unwrap();
+        }
+        let extra = VaultPath::new("extra.md");
+        vault.create_note(&extra, "hi").await.unwrap();
+        assert_eq!(
+            vault.toggle_pinned_note(&extra).await.unwrap(),
+            PinToggle::Full
+        );
+    }
+
+    /// A pin is an explicit act on a real note: pinning a path with no note
+    /// behind it (the open buffer's file removed outside kimün, or a create
+    /// dialog dismissed with the path left set) is refused rather than
+    /// stored as a pin born "missing".
+    #[tokio::test]
+    async fn pin_toggle_refuses_a_note_missing_on_disk() {
+        let dir = TempDir::new().unwrap();
+        let vault = make_vault(dir.path()).await;
+        vault.validate_and_init().await.unwrap();
+
+        match vault.toggle_pinned_note(&VaultPath::new("gone.md")).await {
+            Err(VaultError::FSError(FSError::VaultPathNotFound { path })) => {
+                assert_eq!(path, VaultPath::new("gone.md"));
+            }
+            other => panic!("expected VaultPathNotFound, got {:?}", other),
+        }
+        assert!(vault.list_pinned_notes().await.unwrap().is_empty());
+        assert!(
+            !dir.path().join(".kimun").join("pinned-notes.toml").exists(),
+            "a refused pin must not create the pin file"
+        );
+    }
+
+    /// The missing-note rule only guards *pinning*: a pin whose note vanished
+    /// afterwards is kept by design and must still be removable by toggle.
+    #[tokio::test]
+    async fn pin_toggle_unpins_a_note_that_vanished_after_pinning() {
+        let dir = TempDir::new().unwrap();
+        let vault = make_vault(dir.path()).await;
+        vault.validate_and_init().await.unwrap();
+
+        let a = VaultPath::new("a.md");
+        vault.create_note(&a, "hi").await.unwrap();
+        vault.toggle_pinned_note(&a).await.unwrap();
+        std::fs::remove_file(dir.path().join("a.md")).unwrap();
+
+        assert_eq!(
+            vault.toggle_pinned_note(&a).await.unwrap(),
+            PinToggle::Unpinned
+        );
+        assert!(vault.list_pinned_notes().await.unwrap().is_empty());
+    }
+
+    /// `list_pinned_notes` shows at most the cap, but an over-cap file (a
+    /// hand-edit or a sync merge) keeps its extra entries through every
+    /// edit — the cap is enforced on pinning, never by silently deleting.
+    #[tokio::test]
+    async fn pin_edits_keep_entries_past_the_cap_that_list_hides() {
+        let dir = TempDir::new().unwrap();
+        let vault = make_vault(dir.path()).await;
+        vault.validate_and_init().await.unwrap();
+
+        let extra = PINNED_NOTES_CAP + 2;
+        let entries: Vec<String> = (0..extra).map(|i| format!("\"/n{i}.md\"")).collect();
+        let kimun_dir = dir.path().join(".kimun");
+        std::fs::create_dir_all(&kimun_dir).unwrap();
+        std::fs::write(
+            kimun_dir.join("pinned-notes.toml"),
+            format!("notes = [{}]\n", entries.join(", ")),
+        )
+        .unwrap();
+
+        assert_eq!(
+            vault.list_pinned_notes().await.unwrap().len(),
+            PINNED_NOTES_CAP
+        );
+        assert!(vault.unpin_note(&VaultPath::new("n0.md")).await.unwrap());
+        let on_disk = crate::nfs::pinned_notes::read_pinned_notes(vault.workspace_path())
+            .await
+            .unwrap();
+        assert_eq!(on_disk.len(), extra - 1, "the extras survived the write");
+        assert_eq!(
+            on_disk.last(),
+            Some(&VaultPath::new(format!("/n{}.md", extra - 1)))
+        );
+    }
+
+    #[tokio::test]
+    async fn pin_unpin_and_move_persist() {
+        let dir = TempDir::new().unwrap();
+        let vault = make_vault(dir.path()).await;
+        vault.validate_and_init().await.unwrap();
+
+        for n in ["a.md", "b.md", "c.md"] {
+            let n = VaultPath::new(n);
+            vault.create_note(&n, "hi").await.unwrap();
+            vault.toggle_pinned_note(&n).await.unwrap();
+        }
+        assert!(vault
+            .move_pinned_note(&VaultPath::new("c.md"), -2)
+            .await
+            .unwrap());
+        assert_eq!(
+            vault.list_pinned_notes().await.unwrap(),
+            vec![
+                VaultPath::new("/c.md"),
+                VaultPath::new("/a.md"),
+                VaultPath::new("/b.md"),
+            ]
+        );
+        // No-op, out-of-range and not-pinned moves report `false` and leave
+        // the order untouched.
+        assert!(!vault
+            .move_pinned_note(&VaultPath::new("c.md"), 0)
+            .await
+            .unwrap());
+        assert!(!vault
+            .move_pinned_note(&VaultPath::new("c.md"), -1)
+            .await
+            .unwrap());
+        assert!(!vault
+            .move_pinned_note(&VaultPath::new("never.md"), 1)
+            .await
+            .unwrap());
+        assert_eq!(
+            vault.list_pinned_notes().await.unwrap(),
+            vec![
+                VaultPath::new("/c.md"),
+                VaultPath::new("/a.md"),
+                VaultPath::new("/b.md"),
+            ]
+        );
+        assert!(vault.unpin_note(&VaultPath::new("a.md")).await.unwrap());
+        assert!(!vault.unpin_note(&VaultPath::new("a.md")).await.unwrap());
+        assert_eq!(
+            vault.list_pinned_notes().await.unwrap(),
+            vec![VaultPath::new("/c.md"), VaultPath::new("/b.md")]
+        );
+    }
+
+    /// A no-op write must not just report `false`: it must not touch the
+    /// filesystem at all. Proved by absence rather than an mtime comparison
+    /// (which filesystem timestamp granularity can make flaky) — on a vault
+    /// with no pin file yet, a no-op unpin must leave it absent.
+    #[tokio::test]
+    async fn pin_noop_unpin_does_not_create_the_pin_file() {
+        let dir = TempDir::new().unwrap();
+        let vault = make_vault(dir.path()).await;
+        vault.validate_and_init().await.unwrap();
+
+        assert!(!vault.unpin_note(&VaultPath::new("never.md")).await.unwrap());
+        assert!(
+            !dir.path().join(".kimun").join("pinned-notes.toml").exists(),
+            "a no-op unpin must not create the pin file"
+        );
+    }
+
+    #[tokio::test]
+    async fn deleting_a_note_unpins_it() {
+        let dir = TempDir::new().unwrap();
+        let vault = make_vault(dir.path()).await;
+        let a = VaultPath::new("a.md");
+        vault.create_note(&a, "hi").await.unwrap();
+        vault.toggle_pinned_note(&a).await.unwrap();
+        let keep = VaultPath::new("keep.md");
+        vault.create_note(&keep, "hi").await.unwrap();
+        vault.toggle_pinned_note(&keep).await.unwrap();
+
+        vault.delete_note(&a).await.unwrap();
+
+        assert_eq!(
+            vault.list_pinned_notes().await.unwrap(),
+            vec![VaultPath::new("/keep.md")]
+        );
+    }
+
+    #[tokio::test]
+    async fn renaming_a_directory_rewrites_pins_beneath_it() {
+        let dir = TempDir::new().unwrap();
+        let vault = make_vault(dir.path()).await;
+        let inside = VaultPath::new("proj/a.md");
+        vault.create_note(&inside, "hi").await.unwrap();
+        vault.toggle_pinned_note(&inside).await.unwrap();
+
+        vault
+            .rename_directory(&VaultPath::new("proj"), &VaultPath::new("work"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            vault.list_pinned_notes().await.unwrap(),
+            vec![VaultPath::new("/work/a.md")]
+        );
+    }
+
+    #[tokio::test]
+    async fn deleting_a_directory_unpins_everything_beneath_it() {
+        let dir = TempDir::new().unwrap();
+        let vault = make_vault(dir.path()).await;
+        let inside = VaultPath::new("proj/a.md");
+        vault.create_note(&inside, "hi").await.unwrap();
+        vault.toggle_pinned_note(&inside).await.unwrap();
+        let keep = VaultPath::new("keep.md");
+        vault.create_note(&keep, "hi").await.unwrap();
+        vault.toggle_pinned_note(&keep).await.unwrap();
+
+        vault
+            .delete_directory(&VaultPath::new("proj"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            vault.list_pinned_notes().await.unwrap(),
+            vec![VaultPath::new("/keep.md")]
         );
     }
 }

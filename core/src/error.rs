@@ -1,6 +1,7 @@
 use thiserror::Error;
 
 use crate::nfs::VaultPath;
+use crate::system::SystemError;
 
 /// Top-level error returned at the public API edge of a vault.
 ///
@@ -137,7 +138,8 @@ impl VaultError {
             | VaultError::TaskJoin(_)
             | VaultError::FSError(FSError::ReadFileError(_))
             | VaultError::FSError(FSError::EncodingError(_))
-            | VaultError::FSError(FSError::SerializationError(_)) => None,
+            | VaultError::FSError(FSError::SerializationError(_))
+            | VaultError::FSError(FSError::System(_)) => None,
         }
     }
 }
@@ -186,6 +188,9 @@ pub enum FSError {
     /// failed to (de)serialize.
     #[error("Serialization error: {0}")]
     SerializationError(String),
+    /// A host-level file operation (`system`, e.g. an atomic replace) failed.
+    #[error(transparent)]
+    System(#[from] SystemError),
 }
 
 impl FSError {

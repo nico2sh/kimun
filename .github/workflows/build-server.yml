@@ -211,6 +211,10 @@ jobs:
           tag_name: ${{ github.ref_name }}
           draft: false
           prerelease: ${{ contains(steps.extract_version.outputs.version, '-') }}
+          # The "Latest" badge belongs to the app, not the server. Without this
+          # the asset upload PATCHes the release and GitHub's `make_latest`
+          # default (true) hands the badge to whichever release job finished last.
+          make_latest: false
           append_body: false
           files: |
             release-artifacts/kimun-server-*.zip

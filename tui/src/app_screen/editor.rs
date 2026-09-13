@@ -954,6 +954,100 @@ impl EditorScreen {
         self.present_overlay(overlay);
     }
 
+    /// The note the editor area is showing, if any — what every "+this
+    /// note" leader action (`m r`/`m m`/`m d`/`m c`/`m y`/`m i`) acts on.
+    /// `None` on the vault root, in the attachment view (`self.path` is
+    /// then the attachment's path, never a note) and while the Ask
+    /// workspace is up (`self.path` still names the note it replaced, but
+    /// the user is not looking at it). The one definition of "this note",
+    /// so the m-group cannot disagree about it.
+    fn open_note(&self) -> Option<&VaultPath> {
+        if self.panels.is_showing_ask() || !self.path.is_note() {
+            None
+        } else {
+            Some(&self.path)
+        }
+    }
+
+    /// [`Self::open_note`], flashing "no note open" when there is none.
+    fn open_note_or_flash(&self, tx: &AppTx) -> Option<VaultPath> {
+        let note = self.open_note().cloned();
+        if note.is_none() {
+            tx.send(AppEvent::FlashMessage("no note open".into())).ok();
+        }
+        note
+    }
+
+    /// Leader `m i`: pin the open note, or unpin it if pinned. Refused with
+    /// a flash when nothing is open (see [`Self::open_note`]), when the
+    /// open note is no longer on disk, or when the vault already holds the
+    /// cap.
+    fn toggle_pin_open_note(&self, tx: &AppTx) {
+        let Some(path) = self.open_note_or_flash(tx) else {
+            return;
+        };
+        let vault = self.vault.clone();
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            let msg = match vault.toggle_pinned_note(&path).await {
+                Ok(kimun_core::PinToggle::Pinned { position }) => format!(
+                    "pinned as {} of {}",
+                    position + 1,
+                    kimun_core::PINNED_NOTES_CAP
+                ),
+                Ok(kimun_core::PinToggle::Unpinned) => "unpinned".to_string(),
+                Ok(kimun_core::PinToggle::Full) => format!(
+                    "already {} pinned — unpin one first",
+                    kimun_core::PINNED_NOTES_CAP
+                ),
+                Err(VaultError::FSError(FSError::VaultPathNotFound { .. })) => {
+                    format!("note not found: {path}")
+                }
+                Err(e) => {
+                    tracing::warn!("failed to toggle pin on {path}: {e}");
+                    format!("could not update pinned notes: {e}")
+                }
+            };
+            tx.send(AppEvent::FlashMessage(msg)).ok();
+        });
+    }
+
+    /// Leader digit `n`: open pinned note `n` (1-based). A slot with no pin,
+    /// or a pin whose note is missing on disk, flashes instead.
+    fn jump_to_pinned(&self, n: u8, tx: &AppTx) {
+        let vault = self.vault.clone();
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            let pins = match vault.list_pinned_notes().await {
+                Ok(pins) => pins,
+                Err(e) => {
+                    tx.send(AppEvent::FlashMessage(format!(
+                        "could not read pinned notes: {e}"
+                    )))
+                    .ok();
+                    return;
+                }
+            };
+            let Some(path) = pins.get(usize::from(n).saturating_sub(1)).cloned() else {
+                tx.send(AppEvent::FlashMessage(format!("no pinned note {n}")))
+                    .ok();
+                return;
+            };
+            if !vault.exists(&path).await {
+                tx.send(AppEvent::FlashMessage(format!(
+                    "pinned note not found: {path}"
+                )))
+                .ok();
+                return;
+            }
+            tx.send(AppEvent::OpenPath {
+                path,
+                emphasis: None,
+            })
+            .ok();
+        });
+    }
+
     /// Construction recipes for [`OverlayOpen`] — the single site answering
     /// "what overlays exist and how is each built". Reads screen state (vault,
     /// settings, open note, panel sort/order seeds) but never mutates it;
@@ -1038,6 +1132,10 @@ impl EditorScreen {
                 ))
             }
             OverlayOpen::QuickNote => Box::new(ActiveDialog::quick_note(self.vault.clone())),
+            // Leader `f p`.
+            OverlayOpen::PinnedNotes => {
+                Box::new(ActiveDialog::pinned_notes(self.vault.clone(), tx))
+            }
         }
     }
 
@@ -1828,16 +1926,19 @@ impl EditorScreen {
                 self.footer.flash("templates — coming soon".to_string(), tx);
             }
             LeaderAction::NoteRename => {
-                tx.send(AppEvent::FileOp(FileOp::ShowRename(self.path.clone())))
-                    .ok();
+                if let Some(path) = self.open_note_or_flash(tx) {
+                    tx.send(AppEvent::FileOp(FileOp::ShowRename(path))).ok();
+                }
             }
             LeaderAction::NoteMove => {
-                tx.send(AppEvent::FileOp(FileOp::ShowMove(self.path.clone())))
-                    .ok();
+                if let Some(path) = self.open_note_or_flash(tx) {
+                    tx.send(AppEvent::FileOp(FileOp::ShowMove(path))).ok();
+                }
             }
             LeaderAction::NoteDelete => {
-                tx.send(AppEvent::FileOp(FileOp::ShowDelete(self.path.clone())))
-                    .ok();
+                if let Some(path) = self.open_note_or_flash(tx) {
+                    tx.send(AppEvent::FileOp(FileOp::ShowDelete(path))).ok();
+                }
             }
 
             // +links
@@ -1919,15 +2020,18 @@ impl EditorScreen {
                     .flash("preview — lands with phase 09".to_string(), tx);
             }
             LeaderAction::NoteCopyWikilink => {
-                let link = format!("[[{}]]", self.path.get_clean_name());
-                crate::components::yank(link, "wikilink copied", tx);
+                if let Some(path) = self.open_note_or_flash(tx) {
+                    let link = format!("[[{}]]", path.get_clean_name());
+                    crate::components::yank(link, "wikilink copied", tx);
+                }
             }
             LeaderAction::NoteExport => {
                 self.footer.flash("export — coming soon".to_string(), tx);
             }
             LeaderAction::NoteYankPath => {
-                let path = self.path.to_string();
-                crate::components::yank(path, "note path copied", tx);
+                if let Some(path) = self.open_note_or_flash(tx) {
+                    crate::components::yank(path.to_string(), "note path copied", tx);
+                }
             }
 
             // +ask — the Ask workspace's conversation actions.
@@ -1969,6 +2073,11 @@ impl EditorScreen {
             LeaderAction::AppQuit => {
                 tx.send(AppEvent::Quit).ok();
             }
+
+            // +pinned
+            LeaderAction::FindPinned => self.open_overlay(OverlayOpen::PinnedNotes, tx),
+            LeaderAction::NoteTogglePin => self.toggle_pin_open_note(tx),
+            LeaderAction::PinnedJump(n) => self.jump_to_pinned(n, tx),
         }
     }
 
@@ -2422,6 +2531,262 @@ mod tests {
 
         assert!(!screen.leader.is_pending());
         assert_eq!(screen.panels.focused(), PanelKind::Editor);
+    }
+
+    /// Drain `rx` until an event matching `pred` arrives, or time out.
+    async fn wait_for(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+        pred: impl Fn(&AppEvent) -> bool,
+    ) -> AppEvent {
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let e = rx.recv().await.expect("channel open");
+                if pred(&e) {
+                    break e;
+                }
+            }
+        })
+        .await
+        .expect("expected event")
+    }
+
+    /// Leader `f p` opens the pinned-notes dialog (a plain overlay open, same
+    /// door as every other leader-triggered dialog).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn leader_f_p_opens_the_pinned_notes_dialog() {
+        let (mut screen, _, _, _dir) = test_screen().await;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        screen.handle_input(&ctrl_key('g'), &tx);
+        screen.handle_input(&chr('f'), &tx);
+        screen.handle_input(&chr('p'), &tx);
+        assert!(screen.overlays.is_open());
+        assert_eq!(
+            screen.overlays.active_kind(),
+            Some(crate::components::overlay::OverlayKind::Dialog)
+        );
+    }
+
+    /// Leader `m i` pins the open note, flashing its 1-based position, then
+    /// unpins it on the second press.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn leader_m_i_toggles_the_pin_and_flashes() {
+        let (mut screen, vault, _, _dir) = test_screen().await;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let note = VaultPath::new("plan.md");
+        vault.create_note(&note, "hi").await.unwrap();
+        screen.path = note.clone();
+
+        screen.handle_input(&ctrl_key('g'), &tx);
+        screen.handle_input(&chr('m'), &tx);
+        screen.handle_input(&chr('i'), &tx);
+        let e = wait_for(&mut rx, |e| matches!(e, AppEvent::FlashMessage(_))).await;
+        assert!(
+            matches!(&e, AppEvent::FlashMessage(m) if m == "pinned as 1 of 9"),
+            "{e:?}"
+        );
+        // list_pinned_notes returns canonical, vault-absolute paths.
+        assert_eq!(
+            vault.list_pinned_notes().await.unwrap(),
+            vec![VaultPath::new("/plan.md")]
+        );
+
+        screen.handle_input(&ctrl_key('g'), &tx);
+        screen.handle_input(&chr('m'), &tx);
+        screen.handle_input(&chr('i'), &tx);
+        let e = wait_for(&mut rx, |e| matches!(e, AppEvent::FlashMessage(_))).await;
+        assert!(
+            matches!(&e, AppEvent::FlashMessage(m) if m == "unpinned"),
+            "{e:?}"
+        );
+        assert!(vault.list_pinned_notes().await.unwrap().is_empty());
+    }
+
+    /// A tenth pin is refused with a message telling the user what to do —
+    /// the cap is what guarantees every pinned note keeps a digit shortcut.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn leader_m_i_refuses_a_tenth_pin() {
+        let (mut screen, vault, _, _dir) = test_screen().await;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        for i in 0..kimun_core::PINNED_NOTES_CAP {
+            let n = VaultPath::new(format!("n{i}.md"));
+            vault.create_note(&n, "hi").await.unwrap();
+            vault.toggle_pinned_note(&n).await.unwrap();
+        }
+        let extra = VaultPath::new("extra.md");
+        vault.create_note(&extra, "hi").await.unwrap();
+        screen.path = extra;
+        screen.handle_input(&ctrl_key('g'), &tx);
+        screen.handle_input(&chr('m'), &tx);
+        screen.handle_input(&chr('i'), &tx);
+        let e = wait_for(&mut rx, |e| matches!(e, AppEvent::FlashMessage(_))).await;
+        assert!(
+            matches!(&e, AppEvent::FlashMessage(m) if m == "already 9 pinned — unpin one first"),
+            "{e:?}"
+        );
+    }
+
+    /// The open path can name a note that is no longer on disk — removed
+    /// in another terminal, or a create dialog dismissed with the path left
+    /// set. Pinning it would only store a pin born "missing", so it flashes.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn leader_m_i_on_a_missing_note_flashes() {
+        let (mut screen, vault, _, _dir) = test_screen().await;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        screen.path = VaultPath::new("gone.md");
+        screen.handle_input(&ctrl_key('g'), &tx);
+        screen.handle_input(&chr('m'), &tx);
+        screen.handle_input(&chr('i'), &tx);
+        let e = wait_for(&mut rx, |e| matches!(e, AppEvent::FlashMessage(_))).await;
+        assert!(
+            matches!(&e, AppEvent::FlashMessage(m) if m == "note not found: gone.md"),
+            "{e:?}"
+        );
+        assert!(vault.list_pinned_notes().await.unwrap().is_empty());
+    }
+
+    /// Every "+this note" action shares one definition of "this note": with
+    /// the Ask workspace up, `m c` refuses exactly as `m i` does, instead of
+    /// copying a wikilink to the note the user is no longer looking at.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn leader_m_c_with_ask_shown_flashes_like_m_i() {
+        let (mut screen, vault, _, _dir) = test_screen().await;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let note = VaultPath::new("plan.md");
+        vault.create_note(&note, "hi").await.unwrap();
+        screen.path = note;
+        screen.open_drawer_view(DrawerView::Ask, &tx);
+
+        screen.handle_input(&ctrl_key('g'), &tx);
+        screen.handle_input(&chr('m'), &tx);
+        screen.handle_input(&chr('c'), &tx);
+        let e = wait_for(&mut rx, |e| matches!(e, AppEvent::FlashMessage(_))).await;
+        assert!(
+            matches!(&e, AppEvent::FlashMessage(m) if m == "no note open"),
+            "{e:?}"
+        );
+    }
+
+    /// Toggling with no note open (the screen starts on the vault root, which
+    /// is not a note) flashes rather than doing nothing.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn leader_m_i_with_no_note_open_flashes() {
+        let (mut screen, _, _, _dir) = test_screen().await;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        // test_screen opens on VaultPath::root(), which is not a note.
+        screen.handle_input(&ctrl_key('g'), &tx);
+        screen.handle_input(&chr('m'), &tx);
+        screen.handle_input(&chr('i'), &tx);
+        let e = wait_for(&mut rx, |e| matches!(e, AppEvent::FlashMessage(_))).await;
+        assert!(
+            matches!(&e, AppEvent::FlashMessage(m) if m == "no note open"),
+            "{e:?}"
+        );
+    }
+
+    /// The attachment view counts as "no note open" even though `self.path`
+    /// is set (to the attachment's path, itself never a note).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn leader_m_i_with_attachment_shown_flashes() {
+        let (mut screen, vault, _, _dir) = test_screen().await;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        vault
+            .save_attachment(&VaultPath::new("assets/diagram.png"), &[1, 2, 3])
+            .await
+            .unwrap();
+        screen
+            .try_open_attachment(VaultPath::new("assets/diagram.png"), &tx)
+            .await;
+        assert!(screen.panels.is_showing_attachment());
+
+        screen.handle_input(&ctrl_key('g'), &tx);
+        screen.handle_input(&chr('m'), &tx);
+        screen.handle_input(&chr('i'), &tx);
+        let e = wait_for(&mut rx, |e| matches!(e, AppEvent::FlashMessage(_))).await;
+        assert!(
+            matches!(&e, AppEvent::FlashMessage(m) if m == "no note open"),
+            "{e:?}"
+        );
+    }
+
+    /// The Ask workspace counts as "no note open" even though `self.path`
+    /// still names the note that was open before switching to Ask — the
+    /// editor area is not showing it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn leader_m_i_with_ask_shown_flashes() {
+        let (mut screen, vault, _, _dir) = test_screen().await;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let note = VaultPath::new("plan.md");
+        vault.create_note(&note, "hi").await.unwrap();
+        screen.path = note;
+        screen.open_drawer_view(DrawerView::Ask, &tx);
+        assert!(screen.panels.is_showing_ask());
+
+        screen.handle_input(&ctrl_key('g'), &tx);
+        screen.handle_input(&chr('m'), &tx);
+        screen.handle_input(&chr('i'), &tx);
+        let e = wait_for(&mut rx, |e| matches!(e, AppEvent::FlashMessage(_))).await;
+        assert!(
+            matches!(&e, AppEvent::FlashMessage(m) if m == "no note open"),
+            "{e:?}"
+        );
+    }
+
+    /// Leader digit `2` opens the second pinned note (1-based).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn leader_digit_opens_the_nth_pinned_note() {
+        let (mut screen, vault, _, _dir) = test_screen().await;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let a = VaultPath::new("a.md");
+        let b = VaultPath::new("b.md");
+        vault.create_note(&a, "a").await.unwrap();
+        vault.create_note(&b, "b").await.unwrap();
+        vault.toggle_pinned_note(&a).await.unwrap();
+        vault.toggle_pinned_note(&b).await.unwrap();
+
+        screen.handle_input(&ctrl_key('g'), &tx);
+        screen.handle_input(&chr('2'), &tx);
+        let e = wait_for(&mut rx, |e| matches!(e, AppEvent::OpenPath { .. })).await;
+        // list_pinned_notes returns the canonical, vault-absolute form
+        // (`/b.md`); is_like compares components only.
+        assert!(
+            matches!(&e, AppEvent::OpenPath { path, .. } if path.is_like(&b)),
+            "{e:?}"
+        );
+    }
+
+    /// A digit with no pin in that slot flashes instead of failing silently.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn leader_digit_with_no_such_pin_flashes() {
+        let (mut screen, _, _, _dir) = test_screen().await;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        screen.handle_input(&ctrl_key('g'), &tx);
+        screen.handle_input(&chr('4'), &tx);
+        let e = wait_for(&mut rx, |e| matches!(e, AppEvent::FlashMessage(_))).await;
+        assert!(
+            matches!(&e, AppEvent::FlashMessage(m) if m == "no pinned note 4"),
+            "{e:?}"
+        );
+    }
+
+    /// A pin whose note has vanished from disk flashes — and is kept, never
+    /// pruned, since only an explicit unpin removes it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn leader_digit_to_a_missing_pin_flashes() {
+        let (mut screen, vault, _, dir) = test_screen().await;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let gone = VaultPath::new("gone.md");
+        vault.create_note(&gone, "hi").await.unwrap();
+        vault.toggle_pinned_note(&gone).await.unwrap();
+        // Vanishes outside kimün after being pinned.
+        std::fs::remove_file(dir.path().join("gone.md")).unwrap();
+        screen.handle_input(&ctrl_key('g'), &tx);
+        screen.handle_input(&chr('1'), &tx);
+        let e = wait_for(&mut rx, |e| matches!(e, AppEvent::FlashMessage(_))).await;
+        // The flashed path is the canonical form list_pinned_notes returned.
+        assert!(
+            matches!(&e, AppEvent::FlashMessage(m) if m == "pinned note not found: /gone.md"),
+            "{e:?}"
+        );
     }
 
     /// Bare Space never leads — the leader is only the configured gateway.

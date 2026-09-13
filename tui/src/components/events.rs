@@ -245,6 +245,14 @@ pub enum FileOp {
     Moved { from: VaultPath, to: VaultPath },
 }
 
+/// One row of the pinned-notes dialog: the pin and whether its note is
+/// currently on disk (a pin is kept, and shown as missing, when it is not).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PinnedRow {
+    pub path: VaultPath,
+    pub missing: bool,
+}
+
 /// An async result addressed to the open overlay — **Overlay data** in
 /// CONTEXT.md. The `OverlayHost` is the only consumer; arriving with no (or
 /// the wrong) overlay open means the overlay was closed or replaced while
@@ -262,6 +270,12 @@ pub enum OverlayData {
     /// Save-search dialog: existing saved-search names have loaded (drives
     /// the update/overwrite/save-new hint).
     SavedSearchNamesLoaded(Vec<String>),
+    /// Pinned-notes dialog: the list (with existence flags) has loaded or
+    /// reloaded after an edit — or that load failed. Carries its own error
+    /// rather than sharing [`OverlayData::Error`], so a failure from some
+    /// other overlay-started task (a rename confirmed just before the
+    /// dialog opened) is never mistaken for the reload this dialog waits on.
+    PinnedNotesLoaded(Result<Vec<PinnedRow>, String>),
     /// An overlay-initiated operation failed; carries a human-readable
     /// error message.
     Error(String),
