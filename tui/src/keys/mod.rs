@@ -291,9 +291,14 @@ pub fn key_event_to_combo(event: &KeyEvent) -> Option<KeyCombo> {
     let mut implied_ctrl = false;
     let key = match event.code {
         KeyCode::Char(c) => {
-            let c = if c as u8 >= 1 && c as u8 <= 26 {
+            // Compare on the full code point: `c as u8` truncates to the low byte,
+            // so a non-ASCII char such as '理' (U+7406) would look like '\x06' and
+            // fire Ctrl+F while typing.
+            let code = u32::from(c);
+            let c = if (1..=26).contains(&code) {
                 implied_ctrl = true;
-                (c as u8 + b'a' - 1) as char
+                char::from_u32(code + u32::from('a') - 1)
+                    .expect("ASCII control code 1..=26 always maps to a letter")
             } else {
                 c
             };
@@ -446,6 +451,40 @@ mod tests {
                 .is_empty(),
             "unbinding must yield no chords, not a silent fallback to the default"
         );
+    }
+
+    /// Regression: `c as u8` truncated the code point, so Japanese (and any
+    /// other) non-ASCII input was read as an ASCII control character and fired
+    /// shortcuts — typing '理' (U+7406) sent Ctrl+F, '成' (U+6210) sent Ctrl+P.
+    #[test]
+    fn non_ascii_chars_are_not_mistaken_for_control_codes() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers as CKeyMods};
+
+        for c in ['理', '成', 'あ', 'é'] {
+            let event = KeyEvent::new(KeyCode::Char(c), CKeyMods::NONE);
+            assert_eq!(
+                super::key_event_to_combo(&event),
+                None,
+                "{c:?} is not a shortcut and must not resolve to one"
+            );
+        }
+    }
+
+    /// The raw control characters this normalisation exists for must keep
+    /// implying Ctrl on terminals that deliver them without the modifier bit.
+    #[test]
+    fn ascii_control_chars_still_imply_ctrl() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers as CKeyMods};
+
+        for (raw, letter) in [('\x06', 'f'), ('\x10', 'p')] {
+            let raw_event = KeyEvent::new(KeyCode::Char(raw), CKeyMods::NONE);
+            let letter_event = KeyEvent::new(KeyCode::Char(letter), CKeyMods::CONTROL);
+            assert_eq!(
+                super::key_event_to_combo(&raw_event),
+                super::key_event_to_combo(&letter_event),
+                "raw ASCII control char {raw:?} must resolve like Ctrl+{letter}"
+            );
+        }
     }
 
     #[test]
