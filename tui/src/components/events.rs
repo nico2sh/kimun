@@ -271,8 +271,11 @@ pub enum OverlayData {
     /// the update/overwrite/save-new hint).
     SavedSearchNamesLoaded(Vec<String>),
     /// Pinned-notes dialog: the list (with existence flags) has loaded or
-    /// reloaded after an edit.
-    PinnedNotesLoaded(Vec<PinnedRow>),
+    /// reloaded after an edit — or that load failed. Carries its own error
+    /// rather than sharing [`OverlayData::Error`], so a failure from some
+    /// other overlay-started task (a rename confirmed just before the
+    /// dialog opened) is never mistaken for the reload this dialog waits on.
+    PinnedNotesLoaded(Result<Vec<PinnedRow>, String>),
     /// An overlay-initiated operation failed; carries a human-readable
     /// error message.
     Error(String),
