@@ -96,8 +96,8 @@ async fn run_init(settings: &mut AppSettings, name: Option<String>, path: PathBu
     // Validate before anything derived from the name touches the filesystem.
     // `add_workspace` validates too, but only after the cache file below has
     // already been created at `<cache_dir>/<name>.kimuncache` — a name with
-    // `..` or a separator in it puts that file (plus its -wal/-shm sidecars
-    // and any parent directories) outside the cache directory entirely, and
+    // `..` or a separator in it puts that file (plus its journal sidecars and
+    // any parent directories) outside the cache directory entirely, and
     // the command then aborts having already written them.
     kimun_core::nfs::filename::validate_filename(&workspace_name).map_err(|e| eyre!("{}", e))?;
 

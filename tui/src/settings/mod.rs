@@ -915,8 +915,8 @@ impl AppSettings {
 
     /// The named workspace's index file.
     ///
-    /// Returns the artifact, not a path: what the file is called, and that it
-    /// carries `-wal`/`-shm` siblings, is [`IndexFile`]'s business. Caller
+    /// Returns the artifact, not a path: what the file is called, and which
+    /// journal siblings it carries, is [`IndexFile`]'s business. Caller
     /// must have already validated `workspace_name` via
     /// `kimun_core::nfs::filename::validate_filename`.
     pub fn index_for(&self, workspace_name: &str) -> IndexFile {
