@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.2](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.24.1...kimun-notes-v0.24.2) - 2026-09-13
+
+### Fixed
+
+- clarifying comments for cache location
+- windows test on db index
+
 ## [0.24.1](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.24.0...kimun-notes-v0.24.1) - 2026-09-13
 
 ### Added
