@@ -866,19 +866,23 @@ async fn test_workspace_remove_reports_what_it_could_not_delete() {
         .unwrap_or_else(|e| panic!("init of '{name}' should succeed: {e:?}"));
     }
 
-    // A non-empty directory where the index file is: `remove_file` cannot
-    // delete it. A stand-in for the Windows lock, which cannot be provoked on
-    // demand — what is under test is the reporting, not the cause.
+    // A non-empty directory where a deleted artifact should be: `remove_file`
+    // cannot delete it, on any platform. A stand-in for the Windows lock, which
+    // cannot be provoked on demand — what is under test is the reporting, not
+    // the cause.
     //
-    // Through `system::remove_file` rather than `std::fs`: the index was open
-    // moments ago, and Windows reports a handle that has not finished closing
-    // as ERROR_SHARING_VIOLATION. Production code never hits that because every
-    // delete goes through this wrapper, which waits the lock out; the raw call
-    // here gave the setup — not the behaviour under test — a race it could lose.
-    let (index, _) = artifacts(&config_path, "doomed");
-    kimun_core::system::remove_file(&index).unwrap();
-    std::fs::create_dir(&index).unwrap();
-    std::fs::write(index.join("occupied"), b"x").unwrap();
+    // The *history* file, not the index: `workspace init` leaves no history
+    // behind (only the TUI writes one) so the directory can simply be created,
+    // and nothing ever holds a handle on it. Standing one where the index file
+    // is meant deleting that file first, and on Windows a handle on a
+    // just-closed SQLite index can outlive the wait `system::remove_file`
+    // gives it (see `LOCK_RETRY_TIMEOUT` in core's `system` — the lingering
+    // handle is a known, separate bug). That made the *setup* fail over
+    // something the test is not about. Both artifacts report through the same
+    // leftovers list, so the path under test is unchanged.
+    let (_, history) = artifacts(&config_path, "doomed");
+    std::fs::create_dir_all(&history).unwrap();
+    std::fs::write(history.join("occupied"), b"x").unwrap();
 
     let result = run_cli(
         CliCommand::Workspace {
@@ -897,7 +901,7 @@ async fn test_workspace_remove_reports_what_it_could_not_delete() {
     assert!(!ws_config.workspaces.contains_key("doomed"));
     // And the undeletable file is still there, which is exactly what the user
     // now gets told about on stderr.
-    assert!(index.exists(), "the stuck file is left in place");
+    assert!(history.exists(), "the stuck file is left in place");
 }
 
 /// Removing a workspace has to take the whole index with it, sidecars
