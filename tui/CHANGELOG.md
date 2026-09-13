@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.1](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.24.0...kimun-notes-v0.24.1) - 2026-09-13
+
+### Added
+
+- *(tui)* leader jump, toggle, and dialog for pinned notes
+- *(tui)* pinned notes dialog
+- *(tui)* leader actions for pinned notes, digit row collapse
+
+### Fixed
+
+- windows test failinig on removing index
+- atomic write on pinned notes
+- *(core,tui)* enforce pin cap on read, note-only pins, drop redundant close
+- *(tui)* guard pinned-notes reorder/unpin against overlapping writes
+- *(tui)* pin desired_height's test literal, refresh children() doc
+- *(tui)* which-key desired_height sizes off collapsed rows
+
+### Other
+
+- Merge pull request #190 from nico2sh/pinned-notes
+
 ## [0.24.0](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.23.3...kimun-notes-v0.24.0) - 2026-09-10
 
 ### Fixed

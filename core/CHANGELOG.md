@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/nico2sh/kimun/compare/kimun_core-v0.4.1...kimun_core-v0.5.0) - 2026-09-13
+
+### Added
+
+- *(core)* rename/delete keep pinned notes in step
+- *(core)* NoteVault pinned-note API
+- *(core)* pinned-notes storage and list rules
+
+### Fixed
+
+- atomic write on pinned notes
+- *(core,tui)* enforce pin cap on read, note-only pins, drop redundant close
+- *(core)* cover pinned-note no-ops and fix test-filter visibility
+- *(core)* canonicalize pinned-note paths at every module boundary
+
+### Other
+
+- Merge pull request #190 from nico2sh/pinned-notes
+- unlink the private canonical() reference in pinned_notes
+- cargo fmt across the pinned-notes work
+
 ## [0.4.1](https://github.com/nico2sh/kimun/compare/kimun_core-v0.4.0...kimun_core-v0.4.1) - 2026-09-10
 
 ### Fixed
