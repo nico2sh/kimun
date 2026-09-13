@@ -915,24 +915,44 @@ async fn test_workspace_remove_deletes_the_index_sidecars() {
     let doomed_dir = TempDir::new().unwrap();
     std::fs::write(&config_path, "# empty config\n").unwrap();
 
-    for (name, dir) in [("keep", &keep_dir), ("doomed", &doomed_dir)] {
-        run_cli(
-            CliCommand::Workspace {
-                subcommand: WorkspaceSubcommand::Init {
-                    name: Some(name.to_string()),
-                    path: dir.path().to_path_buf(),
-                },
+    // `keep` goes through the real command: it is the current workspace, so
+    // `remove` will not refuse the other one, and its index is a real database
+    // that has to come out of this untouched.
+    run_cli(
+        CliCommand::Workspace {
+            subcommand: WorkspaceSubcommand::Init {
+                name: Some("keep".to_string()),
+                path: keep_dir.path().to_path_buf(),
             },
-            Some(config_path.clone()),
-        )
-        .await
-        .unwrap_or_else(|e| panic!("init of '{name}' should succeed: {e:?}"));
-    }
+        },
+        Some(config_path.clone()),
+    )
+    .await
+    .unwrap_or_else(|e| panic!("init of 'keep' should succeed: {e:?}"));
+
+    // `doomed` is registered through the same `add_workspace` the init command
+    // calls — same entry, same minted file key — but its index is written below
+    // as plain files instead of being opened as a database. What is under test
+    // is that `remove` takes the whole index with it; opening a real one would
+    // add a SQLite handle this process has just closed, and on Windows such a
+    // handle can outlive the wait `system::remove_file` gives it (see
+    // `LOCK_RETRY_TIMEOUT` in core's `system` — a known, separate bug). That
+    // failed the test over something it is not about.
+    let mut settings =
+        AppSettings::load_from_file(config_path.clone()).expect("settings should load");
+    settings
+        .workspace_config
+        .as_mut()
+        .expect("'keep' must have created the workspace config")
+        .add_workspace("doomed".to_string(), doomed_dir.path().to_path_buf())
+        .expect("registering 'doomed' should succeed");
+    settings.save_to_disk().expect("config should save");
 
     let (doomed_index, _) = artifacts(&config_path, "doomed");
     let (kept_index, _) = artifacts(&config_path, "keep");
     let wal = sidecar(&doomed_index, "-wal");
     let shm = sidecar(&doomed_index, "-shm");
+    std::fs::write(&doomed_index, b"index").unwrap();
     std::fs::write(&wal, b"wal").unwrap();
     std::fs::write(&shm, b"shm").unwrap();
 
