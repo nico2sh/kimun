@@ -215,7 +215,7 @@ Who doesn't love open-source contributions! Whether you want to submit a bug fix
 
 ## Credits
 
-Kimün stands on the shoulders of giants in the terminal and note-taking ecosystem:
+Kimün has taken inspiration and depends on some fantastic projects and libraries, notably:
 
 * **UI/UX:** Built with [Ratatui](https://github.com/ratatui/ratatui) & [Ratatui-textarea](https://github.com/ratatui/ratatui-textarea).
 * **Search:** Powered by [Nucleo](https://github.com/helix-editor/nucleo) for ultra-fast fuzzy matching, and [ignore](https://github.com/BurntSushi/ripgrep/tree/master/crates/ignore) for fast directory walking.
