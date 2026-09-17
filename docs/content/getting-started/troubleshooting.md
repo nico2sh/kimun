@@ -20,6 +20,36 @@ Most terminals can't tell `Ctrl+Enter` from `Enter` unless the [kitty keyboard p
 - **Kitty, Ghostty, foot** support it out of the box.
 - On terminals that can't be taught, use `Ctrl+N` — it follows links exactly like `Ctrl+Enter`.
 
+## Backspace Moves Focus Instead of Deleting
+
+If pressing `Backspace` in the editor jumps focus to the drawer, your terminal
+is sending the older of the two backspace conventions. `Backspace` and `Ctrl+H`
+are the *same byte* (`0x08`) unless the [kitty keyboard
+protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/) is active, and
+`Ctrl+H` is bound to **focus left** — so Kimün sees the chord, not the key.
+
+Nothing can tell the two apart from the byte alone, so you pick which one wins:
+
+```toml
+ctrl_h = "backspace"    # Backspace deletes; the Ctrl+H chord is unreachable
+```
+
+Then rebind **focus left** to something else if you use it — see [Key
+Bindings](@/getting-started/configuration.md#key-bindings).
+
+Two other fixes, either of which keeps both keys working:
+
+- **Make your terminal send `0x7F`.** In Konsole: *Settings → Edit Current
+  Profile → Keyboard*, pick a key-bindings set whose backspace is `^?` (the
+  "Default" table). Check what yours sends with `cat -v` — press `Backspace`
+  and look for `^?` (fine) or `^H` (the problem).
+- **Use a terminal that speaks the kitty protocol** (Kitty, Ghostty, foot,
+  WezTerm with `enable_kitty_keyboard = true`, recent Konsole). There the two
+  keys are distinct and no setting is needed.
+
+See [`ctrl_h`](@/getting-started/configuration.md#top-level-fields) for the
+full list of values.
+
 ## Middle-Click Paste or Drag-to-Select Doesn't Work
 
 Kimün captures the mouse so it can drive panel dividers, list scroll, and click-to-focus. While it captures, your terminal's own mouse gestures are suppressed — including middle-click paste and drag-to-select-and-copy. This is unavoidable: a terminal either reports the mouse to the application or handles it itself, never both at once.

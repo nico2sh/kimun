@@ -1,9 +1,11 @@
 //! The **App loop** and the state it runs over (see CONTEXT.md § App shell).
 //!
 //! Submodules are internal seams: `events` (the **Input source**), `terminal`
-//! (the **Terminal session**), `bootstrap` (logging and the panic hook).
+//! (the **Terminal session**), `bootstrap` (logging and the panic hook),
+//! `ctrl_h` (which of two keys a `0x08` byte is).
 
 pub(crate) mod bootstrap;
+pub mod ctrl_h;
 pub mod events;
 pub(crate) mod terminal;
 
@@ -104,10 +106,16 @@ async fn run_cli_command(
 /// The session is left before anything else is printed.
 pub async fn run_tui(config_path: Option<PathBuf>) -> Result<()> {
     let mut app = App::new(config_path).await?;
-    // Read after App::new since the setting lives in its settings (ADR-0015).
-    let mouse_capture = app.settings.read().unwrap().mouse();
+    // Read after App::new since both live in its settings (ADR-0015).
+    let (mouse_capture, ctrl_h_setting) = {
+        let s = app.settings.read().unwrap();
+        (s.mouse(), s.ctrl_h)
+    };
     let mut session = terminal::TerminalSession::enter(mouse_capture)?;
-    let mut events = EventHandler::new();
+    // Resolved after `enter`: whether the kitty flags went out is half of the
+    // answer, and only the live session knows it.
+    let ctrl_h = ctrl_h::CtrlHPolicy::resolve(ctrl_h_setting, session.keyboard_enhanced());
+    let mut events = EventHandler::new(ctrl_h);
 
     spawn_update_check(&app, events.app_sender());
     respawn_rag(&mut app, &events.app_sender());

@@ -74,6 +74,25 @@ pub enum EditorBackendSetting {
     Vim,
 }
 
+/// What a bare `0x08` byte from the terminal means — see
+/// [`crate::app::ctrl_h`] for why one byte has to stand for two keys.
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CtrlHSetting {
+    /// Let the session decide: the Ctrl-H chord on a terminal that can tell
+    /// the two keys apart, Backspace on one whose erase character is `0x08`,
+    /// the chord otherwise.
+    #[default]
+    Auto,
+    /// Always Backspace. For a terminal whose Backspace key sends `0x08`
+    /// without the tty's erase character saying so — a Konsole keytab, say.
+    /// The Ctrl-H chord becomes unreachable; rebind the action to reach it.
+    Backspace,
+    /// Always the Ctrl-H chord, even where that leaves a `0x08` Backspace key
+    /// unable to delete.
+    Chord,
+}
+
 // pub mod theme;
 
 /// Path to kimün's directory on this machine, creating it if needed — used by
@@ -115,6 +134,12 @@ const CONFIG_HEADER: &str = "\
 # ──────────────
 #   theme             = \"Gruvbox Dark\"   # or any built-in / custom theme name
 #   leader_timeout_ms = 400               # hesitation before the which-key menu
+#   ctrl_h            = \"auto\"            # auto | backspace | chord
+#       What a bare 0x08 byte means. Backspace and Ctrl-H are the same byte
+#       on terminals without the kitty keyboard protocol, so only one of the
+#       two can work there. \"auto\" keeps the Ctrl-H chord unless the tty's
+#       erase character is 0x08; set \"backspace\" if your Backspace key moves
+#       focus instead of deleting, \"chord\" to always keep the chord.
 #
 # LEADER TREE OVERRIDES
 # ─────────────────────
@@ -190,6 +215,11 @@ pub struct AppSettings {
     pub journal_sort_order: SortOrderSetting,
     #[serde(default)]
     pub group_directories: bool,
+    /// What a bare `0x08` byte means: the Backspace key, or the Ctrl-H chord.
+    /// Only one of the two can work on a terminal that spells them the same
+    /// (see [`crate::app::ctrl_h`]); this picks which.
+    #[serde(default)]
+    pub ctrl_h: CtrlHSetting,
     /// Custom config file path. `None` means use the default location.
     /// Not serialized — it's a runtime-only override.
     #[serde(skip)]
@@ -468,6 +498,7 @@ impl Default for AppSettings {
             journal_sort_field: default_journal_sort_field(),
             journal_sort_order: default_journal_sort_order(),
             group_directories: false,
+            ctrl_h: CtrlHSetting::default(),
             config_file: None,
         }
     }
@@ -1261,6 +1292,28 @@ mod backend_tests {
         assert!(s.contains("editor_backend = \"vim\""), "serialized: {s}");
         let back: W = toml::from_str(&s).unwrap();
         assert_eq!(back.editor_backend, EditorBackendSetting::Vim);
+    }
+
+    /// Every spelling of the setting parses, and an older config without the
+    /// key keeps the Ctrl-H chord it has always had.
+    #[test]
+    fn ctrl_h_parses_and_defaults_to_auto() {
+        for (written, expected) in [
+            ("auto", CtrlHSetting::Auto),
+            ("backspace", CtrlHSetting::Backspace),
+            ("chord", CtrlHSetting::Chord),
+        ] {
+            let s = toml::from_str::<AppSettings>(&format!("ctrl_h = \"{written}\"\n"))
+                .unwrap_or_else(|e| panic!("ctrl_h = \"{written}\" must parse: {e}"));
+            assert_eq!(s.ctrl_h, expected);
+        }
+        assert_eq!(
+            toml::from_str::<AppSettings>("theme = \"gruvbox_dark\"\n")
+                .unwrap()
+                .ctrl_h,
+            CtrlHSetting::Auto,
+            "a config written before the setting existed must not change behaviour"
+        );
     }
 
     /// Workspace cache/history paths are absolute however the settings were

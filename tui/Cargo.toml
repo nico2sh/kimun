@@ -76,6 +76,12 @@ ureq = "2"
 sha2 = "0.10"
 self-replace = "1"
 
+# `src/app/ctrl_h.rs` only: `tcgetattr`, to read the tty's erase character.
+# The Backspace-vs-Ctrl-H tie cannot be broken from the byte stream, and this
+# is the one signal about which convention the terminal is set up for.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tempfile = "3"
 proptest = "1"
