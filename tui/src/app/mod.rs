@@ -116,7 +116,7 @@ pub async fn run_tui(config_path: Option<PathBuf>) -> Result<()> {
     // answer, and only the live session knows it.
     let ctrl_h = ctrl_h::CtrlHPolicy::resolve(ctrl_h_setting, session.keyboard_enhanced());
     let mut events = EventHandler::new(ctrl_h);
-    warn_about_unreachable_bindings(&app, &events.app_sender(), &session, ctrl_h);
+    app.key_warning = unreachable_binding_notice(&app, &session, ctrl_h_setting, ctrl_h);
 
     spawn_update_check(&app, events.app_sender());
     respawn_rag(&mut app, &events.app_sender());
@@ -156,6 +156,16 @@ pub struct App {
     /// Seeded into each editor screen so the footer can show the indicator.
     pub update: Option<crate::update::UpdateStatus>,
 
+    /// A one-shot notice that some key binding cannot reach this terminal,
+    /// waiting for a screen that can show it.
+    ///
+    /// Parked rather than sent, because it is decided before the app loop
+    /// starts — while **Start** is the live screen, and `FlashMessage` is only
+    /// handled by the editor. `switch_screen` takes it, so it is shown once
+    /// and not re-flashed on every later screen swap (unlike `update`, which
+    /// is a standing indicator and is re-seeded).
+    pub key_warning: Option<String>,
+
     /// The background RAG sync task for the current vault, when a server is
     /// configured. Aborted and respawned when the vault is rebuilt.
     pub rag_sync_task: Option<tokio::task::JoinHandle<()>>,
@@ -188,6 +198,7 @@ impl App {
             vault,
             screen_generation: 0,
             update: None,
+            key_warning: None,
             rag_sync_task: None,
             rag_status: crate::rag::RagStatus::Disabled,
         }
@@ -280,6 +291,15 @@ async fn switch_screen(app: &mut App, tx: &AppTx, new_screen: ScreenEvent) {
             .handle_app_message(AppEvent::Update(UpdateFlow::Available(status)), tx)
             .await;
     }
+    // `take`, not `clone`: a flash is a one-shot, and re-firing it on every
+    // screen swap would turn a warning into a nag. A non-editor screen drops
+    // it — which is the right trade, since the alternative is holding it until
+    // a screen that shows flashes exists and risking never showing it at all.
+    if let Some(msg) = app.key_warning.take() {
+        screen
+            .handle_app_message(AppEvent::FlashMessage(msg), tx)
+            .await;
+    }
     screen
         .handle_app_message(AppEvent::RagStatus(app.rag_status), tx)
         .await;
@@ -291,8 +311,6 @@ async fn switch_screen(app: &mut App, tx: &AppTx, new_screen: ScreenEvent) {
     app.screen_generation = app.screen_generation.wrapping_add(1);
 }
 
-/// Kick off the background update check (gated on the user's `update_check`
-/// preference). All network/filesystem work runs on `spawn_blocking` inside
 /// Tell the user about a binding their terminal cannot deliver.
 ///
 /// Only ever their own. The default keymap always keeps a chord that survives
@@ -301,6 +319,10 @@ async fn switch_screen(app: &mut App, tx: &AppTx, new_screen: ScreenEvent) {
 /// is theirs to change. That is the whole reason this reports rather than
 /// silently repairing: rebinding under them is exactly the surprise moving
 /// formatting to the leader was meant to avoid.
+///
+/// Returns the notice rather than sending it: at this point **Start** is the
+/// live screen and only the editor handles `FlashMessage`, so it is parked on
+/// [`App::key_warning`] for `switch_screen` to deliver once.
 ///
 /// Rare in practice, and deliberately so: `merge_missing_default_bindings`
 /// hands an action its default combo back unless the config gave that combo to
@@ -312,24 +334,28 @@ async fn switch_screen(app: &mut App, tx: &AppTx, new_screen: ScreenEvent) {
 /// Logged as a warning (durable — the troubleshooting docs send people to the
 /// log) and flashed once in the footer (visible, and gone in two seconds
 /// rather than nagging). `kimun doctor` prints the full picture on demand.
-fn warn_about_unreachable_bindings(
+fn unreachable_binding_notice(
     app: &App,
-    tx: &AppTx,
     session: &terminal::TerminalSession,
+    setting: crate::settings::CtrlHSetting,
     ctrl_h: ctrl_h::CtrlHPolicy,
-) {
+) -> Option<String> {
     use crate::keys::reachability::{Reach, TerminalKeys, unreachable_actions};
 
     let keys = TerminalKeys {
         enhanced: session.keyboard_enhanced(),
-        ctrl_h_is_backspace: ctrl_h == ctrl_h::CtrlHPolicy::Backspace,
+        // `FocusSidebar`'s only default chord is `Ctrl+H`, so under the
+        // rewrite it is stranded — and the warning would be about a binding
+        // kimün shipped, which its own premise says cannot happen. The rule
+        // for when that is worth saying lives with the policy.
+        ctrl_h_is_backspace: ctrl_h.loss_is_worth_reporting(setting),
     };
     let stranded = {
         let settings = app.settings.read().unwrap();
         unreachable_actions(&settings.key_bindings, keys)
     };
     if stranded.is_empty() {
-        return;
+        return None;
     }
     for u in &stranded {
         for (combo, reach) in &u.combos {
@@ -346,12 +372,13 @@ fn warn_about_unreachable_bindings(
         .map(|u| u.action.to_string())
         .collect::<Vec<_>>()
         .join(", ");
-    tx.send(AppEvent::FlashMessage(format!(
+    Some(format!(
         "{names}: no usable key on this terminal — run `kimun doctor`"
-    )))
-    .ok();
+    ))
 }
 
+/// Kick off the background update check (gated on the user's `update_check`
+/// preference). All network/filesystem work runs on `spawn_blocking` inside
 /// `update::check_now`; a found update is surfaced via `AppEvent::Update(UpdateFlow::Available)`. Failures are logged and
 /// swallowed — the check never blocks startup or interaction.
 fn spawn_update_check(app: &App, tx: AppTx) {

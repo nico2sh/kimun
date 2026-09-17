@@ -39,7 +39,11 @@ pub fn run(config_path: Option<PathBuf>) -> Result<()> {
     } else {
         None
     };
-    let policy = CtrlHPolicy::resolve(settings.ctrl_h, enhanced);
+    // `resolve_with`, not `resolve`: the latter probes termios itself, which
+    // would read the erase character behind the "not read — output is
+    // redirected" line printed below and let the table contradict its own
+    // disclaimer.
+    let policy = CtrlHPolicy::resolve_with(settings.ctrl_h, enhanced, erase == Some(0x08));
     let keys = TerminalKeys {
         enhanced,
         ctrl_h_is_backspace: policy == CtrlHPolicy::Backspace,
@@ -105,9 +109,17 @@ pub fn run(config_path: Option<PathBuf>) -> Result<()> {
             println!("! {} has no key this terminal can send.", u.action);
         }
         println!();
-        println!("Rebind those actions, or use a terminal that speaks the kitty");
-        println!("keyboard protocol (Kitty, Ghostty, foot, WezTerm with");
-        println!("enable_kitty_keyboard = true).");
+        if settings.ctrl_h == CtrlHSetting::Backspace && policy == CtrlHPolicy::Backspace {
+            // Then at least one of those is `Ctrl+H`, given up on purpose by
+            // the setting above. Saying "rebind or change terminals" without
+            // naming that reads as a defect rather than the trade it is.
+            println!("ctrl_h = \"backspace\" gives up the Ctrl+H chord, so any action");
+            println!("bound only to it is listed above. Rebind those you use.");
+        } else {
+            println!("Rebind those actions, or use a terminal that speaks the kitty");
+            println!("keyboard protocol (Kitty, Ghostty, foot, WezTerm with");
+            println!("enable_kitty_keyboard = true).");
+        }
     }
     Ok(())
 }

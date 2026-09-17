@@ -51,17 +51,47 @@ impl CtrlHPolicy {
     /// quietly did nothing on some terminals would be worse than one that is
     /// simply obeyed.
     pub fn resolve(setting: CtrlHSetting, keyboard_enhanced: bool) -> Self {
+        Self::resolve_with(setting, keyboard_enhanced, tty_erase_is_bs())
+    }
+
+    /// [`Self::resolve`] with the tty probe supplied rather than performed.
+    ///
+    /// Two callers need this. `kimun doctor` already knows the erase
+    /// character and must not read it a second time — it declines to read it
+    /// at all when its output is redirected, and a hidden probe inside here
+    /// would contradict the disclaimer it prints. And the `Auto` branches are
+    /// only testable at all once the probe is an argument: called for real,
+    /// it reads the test runner's own stdin.
+    pub fn resolve_with(
+        setting: CtrlHSetting,
+        keyboard_enhanced: bool,
+        tty_erase_is_bs: bool,
+    ) -> Self {
         let policy = match setting {
             CtrlHSetting::Chord => Self::Chord,
             CtrlHSetting::Backspace => Self::Backspace,
             CtrlHSetting::Auto if keyboard_enhanced => Self::Chord,
-            CtrlHSetting::Auto if tty_erase_is_bs() => Self::Backspace,
+            CtrlHSetting::Auto if tty_erase_is_bs => Self::Backspace,
             CtrlHSetting::Auto => Self::Chord,
         };
         tracing::debug!(
-            "ctrl_h: setting={setting:?} keyboard_enhanced={keyboard_enhanced} -> {policy:?}"
+            "ctrl_h: setting={setting:?} keyboard_enhanced={keyboard_enhanced} \
+             tty_erase_is_bs={tty_erase_is_bs} -> {policy:?}"
         );
         policy
+    }
+
+    /// Whether losing the `Ctrl+H` chord is worth telling the user about.
+    ///
+    /// Only when they did not ask for it. `ctrl_h = "backspace"` is a choice
+    /// made against a documented consequence — the setting's own
+    /// documentation says the chord becomes unreachable — so reporting it
+    /// every launch says nothing they do not know, and a warning that fires
+    /// on a working, chosen setup is one people learn to ignore. Under `auto`
+    /// the erase-character probe can reach the same policy without anyone
+    /// choosing it, and there it is news.
+    pub fn loss_is_worth_reporting(self, setting: CtrlHSetting) -> bool {
+        self == Self::Backspace && setting != CtrlHSetting::Backspace
     }
 
     /// `key`, with `Ctrl+h` rewritten to `Backspace` when that is the rule.
@@ -155,6 +185,48 @@ mod tests {
                 CtrlHPolicy::Chord,
                 "explicit `chord` must hold with keyboard_enhanced={enhanced}"
             );
+        }
+    }
+
+    /// The `Auto` decision table, now that the probe is an argument. These
+    /// four rows are the whole of what `auto` means.
+    #[test]
+    fn auto_reads_the_terminal() {
+        use CtrlHPolicy::{Backspace, Chord};
+        for (enhanced, erase_is_bs, expected) in [
+            (true, false, Chord),
+            (true, true, Chord),
+            (false, false, Chord),
+            (false, true, Backspace),
+        ] {
+            assert_eq!(
+                CtrlHPolicy::resolve_with(CtrlHSetting::Auto, enhanced, erase_is_bs),
+                expected,
+                "enhanced={enhanced} erase_is_bs={erase_is_bs}"
+            );
+        }
+    }
+
+    /// The rule that keeps the startup warning quiet for the people who
+    /// chose this, and talkative for the people who did not.
+    #[test]
+    fn only_an_unasked_for_loss_is_reported() {
+        assert!(
+            CtrlHPolicy::Backspace.loss_is_worth_reporting(CtrlHSetting::Auto),
+            "auto resolved it by probe — the user never chose it"
+        );
+        assert!(
+            !CtrlHPolicy::Backspace.loss_is_worth_reporting(CtrlHSetting::Backspace),
+            "they asked for exactly this"
+        );
+        // Nothing is lost under the chord policy, so there is nothing to say
+        // whatever the setting was.
+        for setting in [
+            CtrlHSetting::Auto,
+            CtrlHSetting::Backspace,
+            CtrlHSetting::Chord,
+        ] {
+            assert!(!CtrlHPolicy::Chord.loss_is_worth_reporting(setting));
         }
     }
 

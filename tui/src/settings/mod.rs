@@ -231,10 +231,12 @@ fn default_keybindings() -> KeyBindings {
     // No formatting chords. Markdown formatting lives on the leader's `+text`
     // group (`Ctrl+G t b` / `t i` / `t s`) and nowhere else, because `Ctrl+I`
     // is byte 0x09 — Tab's byte — on every terminal without the kitty keyboard
-    // protocol, and no other Ctrl+letter is free (all 26 are claimed by this
-    // table or by the editor's own clipboard/undo chords). Keeping `Ctrl+B` and
-    // `Ctrl+S` working while `Ctrl+I` silently indented was the inconsistency
-    // worth removing, so all three moved rather than two staying.
+    // protocol, and when the move was made no other Ctrl+letter was free: all
+    // 26 were claimed by this table or by the editor's own clipboard and undo
+    // chords, so Italic had nowhere to go. Keeping `Ctrl+B` and `Ctrl+S`
+    // working while `Ctrl+I` silently indented was the inconsistency worth
+    // removing, so all three moved rather than two staying — which is what
+    // freed those four letters again.
     //
     // The `Text(..)` actions are still bindable: they parse from a config file
     // and `editor_input::classify_tail` still claims them, so a user who wants
@@ -257,8 +259,11 @@ fn default_keybindings() -> KeyBindings {
         .add(KeyStrike::KeyQ, ActionShortcuts::Quit)
         .add(KeyStrike::KeyJ, ActionShortcuts::NewJournal)
         // Drawer toggle. Deliberate spec deviation: the spec's Tier-0 puts
-        // this on Ctrl-B, but Ctrl-B stays Bold (decision 2026-06-05) — the
-        // drawer toggle lives on Ctrl-T.
+        // this on Ctrl-B; the toggle went to Ctrl-T instead to leave Ctrl-B on
+        // Bold (decision 2026-06-05). Bold has since left the chord table for
+        // the leader, freeing Ctrl-B — but the toggle stays here, because
+        // moving a chord people have in their fingers to satisfy a spec is
+        // the cost without the benefit.
         .add(KeyStrike::KeyT, ActionShortcuts::ToggleSidebar)
         .add(KeyStrike::KeyR, ActionShortcuts::OpenSortDialog)
         // Leader gateway. Spec deviation: spec says Ctrl-K, which stays the
@@ -310,9 +315,10 @@ fn default_keybindings() -> KeyBindings {
         .add(KeyStrike::F5, ActionShortcuts::SwitchWorkspace);
 
     // Ctrl+D — save the current query to saved searches. Ctrl-only by design:
-    // Ctrl+Shift is unreliable on some terminals, Ctrl+S is taken by
-    // Strikethrough, and Ctrl+{A,C,X,Z} are claimed by the editor. Ctrl+D is
-    // the only free, terminal-safe Ctrl combo.
+    // Ctrl+Shift is unreliable on some terminals and Ctrl+{A,C,V,X,Y,Z} are
+    // claimed by the editor's own clipboard and undo chords. Ctrl+D was the
+    // only free, terminal-safe combo when it was chosen; retiring the
+    // formatting chords has since freed Ctrl+{B,I,S,U} as well.
     kb.batch_add()
         .with_ctrl()
         .add(KeyStrike::KeyD, ActionShortcuts::SaveCurrentQuery);
