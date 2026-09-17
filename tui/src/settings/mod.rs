@@ -1,4 +1,4 @@
-use crate::keys::action_shortcuts::{ActionShortcuts, TextAction};
+use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::key_strike::KeyStrike;
 use crate::settings::themes::Theme;
 use crate::settings::workspace_config::WorkspaceConfig;
@@ -228,32 +228,23 @@ pub struct AppSettings {
 
 fn default_keybindings() -> KeyBindings {
     let mut kb = KeyBindings::empty();
+    // No formatting chords. Markdown formatting lives on the leader's `+text`
+    // group (`Ctrl+G t b` / `t i` / `t s`) and nowhere else, because `Ctrl+I`
+    // is byte 0x09 — Tab's byte — on every terminal without the kitty keyboard
+    // protocol, and no other Ctrl+letter is free (all 26 are claimed by this
+    // table or by the editor's own clipboard/undo chords). Keeping `Ctrl+B` and
+    // `Ctrl+S` working while `Ctrl+I` silently indented was the inconsistency
+    // worth removing, so all three moved rather than two staying.
+    //
+    // The `Text(..)` actions are still bindable: they parse from a config file
+    // and `editor_input::classify_tail` still claims them, so a user who wants
+    // `Ctrl+B` back writes one line. `Text(Underline)`, `Link`, `Image` and
+    // `ToggleHeader` are absent from the leader group too — `emphasis_marker`
+    // implements none of them, so there is nothing yet to reach.
     kb.batch_add()
         .with_ctrl()
         .add(KeyStrike::KeyK, ActionShortcuts::SearchNotes)
-        .add(KeyStrike::KeyO, ActionShortcuts::OpenNote)
-        .add(KeyStrike::KeyB, ActionShortcuts::Text(TextAction::Bold))
-        .add(KeyStrike::KeyI, ActionShortcuts::Text(TextAction::Italic))
-        .add(
-            KeyStrike::KeyU,
-            ActionShortcuts::Text(TextAction::Underline),
-        )
-        .add(
-            KeyStrike::KeyS,
-            ActionShortcuts::Text(TextAction::Strikethrough),
-        )
-        // No Ctrl+L for `Text(Link)` and no Ctrl+T for `Text(ToggleHeader)`:
-        // both chords are taken below by FocusEditor and ToggleSidebar. They
-        // used to be added here anyway and were overwritten in silence, so
-        // `combos_for` answered "unbound" for both. Giving them free chords
-        // instead would advertise them in F1 and the footer while doing
-        // nothing — neither action is dispatched (`editor_input::classify_tail`
-        // routes only Bold / Italic / Strikethrough). Bind them when they are.
-        // =============================
-        // We add shift to the modifiers
-        // =============================
-        .with_shift()
-        .add(KeyStrike::KeyL, ActionShortcuts::Text(TextAction::Image));
+        .add(KeyStrike::KeyO, ActionShortcuts::OpenNote);
 
     // TUI navigation shortcuts (always Ctrl — terminal apps don't use Cmd/Meta).
     // NOTE: the `Quit` entry must match `crate::keys::default_quit_combo()`,
@@ -1296,15 +1287,37 @@ mod backend_tests {
         assert_eq!(back.editor_backend, EditorBackendSetting::Vim);
     }
 
-    /// Ctrl+L and Ctrl+T belong to focus and the drawer. `Text(Link)` and
-    /// `Text(ToggleHeader)` asked for the same two chords and lost them in
-    /// silence for as long as they were in the table; they are left unbound
-    /// until something dispatches them (`editor_input::classify_tail` routes
-    /// only Bold / Italic / Strikethrough). Bind them there and here together —
-    /// a chord that resolves to an action nobody runs is worse than no chord,
-    /// because F1 and the footer advertise it.
+    /// All formatting lives on the leader (`Ctrl+G t b` / `t i` / `t s`), so
+    /// the chord table binds no text action at all. `Ctrl+I` cannot work
+    /// outside the kitty keyboard protocol — it is Tab's byte — and having
+    /// `Ctrl+B` and `Ctrl+S` work while it silently did not was the
+    /// inconsistency. Users who want a chord back can still bind one: the
+    /// `Text(..)` actions stay parseable from config and the shortcut tier
+    /// still claims them.
     #[test]
-    fn link_and_toggle_header_are_left_unbound_on_purpose() {
+    fn the_default_table_binds_no_text_action() {
+        let kb = default_keybindings();
+        let bound: Vec<String> = kb
+            .to_hashmap()
+            .keys()
+            .filter_map(|a| match a {
+                ActionShortcuts::Text(t) => Some(format!("{t:?}")),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            bound.is_empty(),
+            "formatting belongs on the leader, but these still hold chords: {bound:?}"
+        );
+    }
+
+    /// Ctrl+L and Ctrl+T belong to focus and the drawer. `Text(Link)` and
+    /// `Text(ToggleHeader)` once asked for the same two chords and lost them
+    /// in silence; the builder now panics on that, and
+    /// `the_default_table_binds_no_text_action` covers the formatting side.
+    /// What is left to pin here is who owns the two chords.
+    #[test]
+    fn ctrl_l_and_ctrl_t_belong_to_focus_and_the_drawer() {
         let kb = default_keybindings();
         use crate::keys::key_combo::{KeyCombo, KeyModifiers};
         let ctrl = |key| KeyCombo::new(KeyModifiers::new().and_ctrl(), key);
@@ -1316,13 +1329,6 @@ mod backend_tests {
             kb.get_action(&ctrl(KeyStrike::KeyT)),
             Some(ActionShortcuts::ToggleSidebar)
         );
-        for action in [TextAction::Link, TextAction::ToggleHeader] {
-            let name = format!("{action:?}");
-            assert!(
-                kb.combos_for(&ActionShortcuts::Text(action)).is_empty(),
-                "{name} is not dispatched, so it must not advertise a chord"
-            );
-        }
     }
 
     /// Every spelling of the setting parses, and an older config without the

@@ -20,21 +20,24 @@ Most terminals can't tell `Ctrl+Enter` from `Enter` unless the [kitty keyboard p
 - **Kitty, Ghostty, foot** support it out of the box.
 - On terminals that can't be taught, use `Ctrl+N` — it follows links exactly like `Ctrl+Enter`.
 
-## Ctrl+I Indents Instead of Italicising
+## Ctrl+B Doesn't Make Text Bold
 
-`Ctrl+I` and `Tab` are the *same byte* (`0x09`) — that is ASCII, not a setting
-your terminal got wrong — so unless the [kitty keyboard
-protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/) is active, Kimün
-receives `Tab` and indents the line.
+Formatting has no `Ctrl` chord. It lives in the leader's `+text` group:
+`Ctrl+G t b` for bold, `t i` for italic, `t s` for strikethrough.
 
-Terminals where `Ctrl+I` works: Kitty, Ghostty, foot, WezTerm with
-`enable_kitty_keyboard = true`, and Windows (its console reports keys, not
-bytes). Terminals where it cannot: GNOME Terminal, Terminal.app, xterm, urxvt,
-and `tmux`/`screen` without extended keys.
+That is deliberate. `Ctrl+I` and `Tab` are the *same byte* (`0x09`) — ASCII,
+not a setting your terminal got wrong — so outside the [kitty keyboard
+protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/) `Ctrl+I` can only
+ever indent. Rather than have `Ctrl+B` and `Ctrl+S` work while `Ctrl+I` quietly
+did nothing, all three moved to the one route that works in every terminal.
 
-Everywhere else, wrap the selection by typing the `*` markers, or use a
-terminal from the first list. The same byte-level limit is why `Ctrl+Enter`
-needs the protocol too.
+If you want a chord anyway, bind it — see [Keybindings](@/using-kimun/keybindings.md#defaults).
+Note that on `Ctrl+I` specifically it will indent rather than italicise unless
+your terminal speaks the kitty protocol (Kitty, Ghostty, foot, WezTerm with
+`enable_kitty_keyboard = true`, or Windows, whose console reports keys rather
+than bytes — but not GNOME Terminal, Terminal.app, xterm, urxvt, or
+`tmux`/`screen` without extended keys). The same byte-level limit is why
+`Ctrl+Enter` needs the protocol too.
 
 ## Backspace Moves Focus Instead of Deleting
 

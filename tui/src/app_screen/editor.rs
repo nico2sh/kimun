@@ -40,7 +40,7 @@ use crate::components::saved_searches_modal::SavedSearchesModal;
 use crate::components::sidebar::SidebarComponent;
 use crate::components::text_editor::TextEditorComponent;
 use crate::keys::KeyBindings;
-use crate::keys::action_shortcuts::ActionShortcuts;
+use crate::keys::action_shortcuts::{ActionShortcuts, TextAction};
 use crate::keys::leader::{LeaderAction, LeaderEngine, LeaderOutcome};
 use crate::settings::SharedSettings;
 use crate::settings::icons::Icons;
@@ -1668,6 +1668,20 @@ impl EditorScreen {
         }
     }
 
+    /// A `+text` leader leaf: apply the formatting, or say why not.
+    ///
+    /// One helper for the three leaves so the focus rule is stated once. The
+    /// flash matters — a leader sequence that fires and does nothing visible
+    /// reads as a broken binding, and this is the only route to formatting.
+    fn apply_text_from_leader(&mut self, action: TextAction, tx: &AppTx) {
+        if self.panels.focused() == PanelKind::Editor {
+            self.run_op(EditorOp::ApplyText(action), tx);
+        } else {
+            self.footer
+                .flash("formatting needs the editor focused".to_string(), tx);
+        }
+    }
+
     /// Move focus one visible panel left, wrapping at the end.
     fn focus_left(&mut self, _tx: &AppTx) {
         if let Some(kind) = self.panels.prev_kind() {
@@ -2032,6 +2046,17 @@ impl EditorScreen {
                 if let Some(path) = self.open_note_or_flash(tx) {
                     crate::components::yank(path.to_string(), "note path copied", tx);
                 }
+            }
+
+            // +text — markdown formatting, the only route to it. Gated on the
+            // editor having focus for the same reason the shortcut tier gates
+            // `ActionShortcuts::Text` on `editor_active`: the action reads the
+            // editor's own selection, and applying it from a focused drawer
+            // would edit a buffer the user is not looking at.
+            LeaderAction::TextBold => self.apply_text_from_leader(TextAction::Bold, tx),
+            LeaderAction::TextItalic => self.apply_text_from_leader(TextAction::Italic, tx),
+            LeaderAction::TextStrikethrough => {
+                self.apply_text_from_leader(TextAction::Strikethrough, tx)
             }
 
             // +ask — the Ask workspace's conversation actions.

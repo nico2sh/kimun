@@ -148,11 +148,18 @@ A few details worth knowing:
 
 ### Text formatting
 
+Formatting lives in the leader's `+text` group — no `Ctrl` chord by default,
+because `Ctrl+I` is indistinguishable from `Tab` in most terminals. See
+[Keybindings](@/using-kimun/keybindings.md#defaults) if you want to bind one.
+
 | Action | Binding | Effect |
 | ------ | ------- | ------ |
-| Bold | `Ctrl+B` | `**…**` around the selection |
-| Italic | `Ctrl+I` | `*…*` |
-| Strikethrough | `Ctrl+S` | `~~…~~` |
+| Bold | `Ctrl+G t b` | `**…**` around the selection |
+| Italic | `Ctrl+G t i` | `*…*` |
+| Strikethrough | `Ctrl+G t s` | `~~…~~` |
+
+Each applies to the selection, or inserts an empty pair at the cursor. The
+editor must have focus.
 
 ### Autocomplete
 
