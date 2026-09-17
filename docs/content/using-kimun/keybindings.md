@@ -34,8 +34,14 @@ Everything on one screen. Looking for how to *change* a binding? That's in [Conf
 | File operations | `F2` |
 | Switch workspace | `F5` |
 | Focus right / left | `Ctrl+L` / `Ctrl+H` |
-| Bold / Italic / Strikethrough | `Ctrl+B` / `Ctrl+I` / `Ctrl+S` |
+| Bold / Italic / Strikethrough | `Ctrl+B` / `Ctrl+I`¹ / `Ctrl+S` |
 | Help | `F1` (cheatsheet: `Ctrl+G ?`) |
+
+¹ `Ctrl+I` needs a terminal that speaks the [kitty keyboard
+protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/). Everywhere else
+it is the same byte as `Tab` and indents instead — see [Troubleshooting →
+Ctrl+I Indents Instead of
+Italicising](@/getting-started/troubleshooting.md#ctrl-i-indents-instead-of-italicising).
 
 ## The Leader Tree
 

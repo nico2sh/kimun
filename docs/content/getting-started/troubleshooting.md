@@ -20,6 +20,22 @@ Most terminals can't tell `Ctrl+Enter` from `Enter` unless the [kitty keyboard p
 - **Kitty, Ghostty, foot** support it out of the box.
 - On terminals that can't be taught, use `Ctrl+N` — it follows links exactly like `Ctrl+Enter`.
 
+## Ctrl+I Indents Instead of Italicising
+
+`Ctrl+I` and `Tab` are the *same byte* (`0x09`) — that is ASCII, not a setting
+your terminal got wrong — so unless the [kitty keyboard
+protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/) is active, Kimün
+receives `Tab` and indents the line.
+
+Terminals where `Ctrl+I` works: Kitty, Ghostty, foot, WezTerm with
+`enable_kitty_keyboard = true`, and Windows (its console reports keys, not
+bytes). Terminals where it cannot: GNOME Terminal, Terminal.app, xterm, urxvt,
+and `tmux`/`screen` without extended keys.
+
+Everywhere else, wrap the selection by typing the `*` markers, or use a
+terminal from the first list. The same byte-level limit is why `Ctrl+Enter`
+needs the protocol too.
+
 ## Backspace Moves Focus Instead of Deleting
 
 If pressing `Backspace` in the editor jumps focus to the drawer, your terminal
