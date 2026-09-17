@@ -1287,6 +1287,64 @@ mod backend_tests {
         assert_eq!(back.editor_backend, EditorBackendSetting::Vim);
     }
 
+    /// Every action the default keymap binds must keep at least one chord
+    /// that survives a terminal without the kitty keyboard protocol — the
+    /// weakest terminal kimün supports, and the common case on Linux and
+    /// macOS.
+    ///
+    /// This is the guard that `Ctrl+I` needed and did not have: it was bound
+    /// to Italic for as long as nobody noticed that `0x09` is Tab's byte, and
+    /// nothing failed. An action with several chords passes on any one of
+    /// them, which is exactly why `OpenPreferences` leads with F4 and keeps
+    /// `Ctrl+,` as the alias rather than the reverse.
+    #[test]
+    fn every_default_action_keeps_a_chord_a_legacy_terminal_can_send() {
+        use crate::keys::reachability::{Reach, TerminalKeys, reach};
+
+        for (action, combos) in default_keybindings().to_hashmap() {
+            let verdicts: Vec<String> = combos
+                .iter()
+                .map(|c| match reach(*c, TerminalKeys::LEGACY) {
+                    Reach::Ok => format!("{c} arrives"),
+                    Reach::Shadowed(by) => format!("{c} arrives as {by}"),
+                    Reach::Untransmitted => format!("{c} is never sent"),
+                })
+                .collect();
+            assert!(
+                combos
+                    .iter()
+                    .any(|c| reach(*c, TerminalKeys::LEGACY).is_ok()),
+                "{action} has no chord a legacy terminal can send: {}",
+                verdicts.join("; ")
+            );
+        }
+    }
+
+    /// The other half of the rule above, made explicit because it reads like
+    /// a bug otherwise: an unreachable chord is fine *as an alias*. `Ctrl+,`
+    /// is the classic Preferences chord and most terminals send nothing
+    /// distinct for it, so F4 carries the action and `Ctrl+,` is a bonus on
+    /// terminals that can manage it. Drop F4 and the invariant fires.
+    #[test]
+    fn an_unreachable_chord_is_allowed_as_an_alias() {
+        use crate::keys::key_combo::{KeyCombo, KeyModifiers};
+        use crate::keys::reachability::{Reach, TerminalKeys, reach};
+
+        let kb = default_keybindings();
+        let combos = kb.combos_for(&ActionShortcuts::OpenPreferences);
+        let ctrl_comma = KeyCombo::new(KeyModifiers::new().and_ctrl(), KeyStrike::Comma);
+        assert!(combos.contains(&ctrl_comma), "the alias is still bound");
+        assert_eq!(
+            reach(ctrl_comma, TerminalKeys::LEGACY),
+            Reach::Untransmitted,
+            "and it is still the unreachable one"
+        );
+        assert!(
+            combos.contains(&KeyCombo::new(KeyModifiers::new(), KeyStrike::F4)),
+            "F4 is what actually carries Preferences"
+        );
+    }
+
     /// All formatting lives on the leader (`Ctrl+G t b` / `t i` / `t s`), so
     /// the chord table binds no text action at all. `Ctrl+I` cannot work
     /// outside the kitty keyboard protocol — it is Tab's byte — and having

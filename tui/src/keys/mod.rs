@@ -11,6 +11,7 @@ pub mod action_shortcuts;
 pub mod key_combo;
 pub mod key_strike;
 pub mod leader;
+pub mod reachability;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyBindings {
@@ -180,12 +181,21 @@ impl KeyBindings {
             .collect()
     }
 
-    /// Returns the display string of the first combo bound to `action`, or `None`.
+    /// The display string of the combo bound to `action`, or `None`.
+    ///
+    /// `min`, not `find`: this feeds the footer hints, the F1 help and the
+    /// cheatsheet, and a `HashMap` iterates in no particular order — so with
+    /// two combos on one action, `find` returned a different chord from frame
+    /// to frame and the footer flickered between them. Lowest [`KeyCombo`]
+    /// wins, which is arbitrary but stable, and matches the order
+    /// [`Self::to_hashmap`] already sorts each action's combos into.
     pub fn first_combo_for(&self, action: &ActionShortcuts) -> Option<String> {
         self.bindings
             .iter()
-            .find(|(_, a)| *a == action)
-            .map(|(combo, _)| combo.to_string())
+            .filter(|(_, a)| *a == action)
+            .map(|(combo, _)| combo)
+            .min()
+            .map(|combo| combo.to_string())
     }
 
     pub fn to_hashmap(&self) -> HashMap<ActionShortcuts, Vec<KeyCombo>> {
@@ -438,6 +448,38 @@ mod tests {
         action_shortcuts::{ActionShortcuts, TextAction},
         key_strike::KeyStrike,
     };
+
+    /// `first_combo_for` feeds the footer, F1 and the cheatsheet, so it has
+    /// to answer the same thing every time it is asked. It reads a `HashMap`,
+    /// whose iteration order varies run to run and even call to call, so
+    /// picking the first match made a two-chord action flicker between its
+    /// chords mid-session.
+    #[test]
+    fn first_combo_for_is_stable_when_an_action_has_two_chords() {
+        let mut kb = KeyBindings::empty();
+        kb.batch_add()
+            .with_ctrl()
+            .add(KeyStrike::KeyB, ActionShortcuts::FocusSidebar);
+        kb.batch_add()
+            .with_alt()
+            .add(KeyStrike::KeyY, ActionShortcuts::FocusSidebar);
+
+        let first = kb
+            .first_combo_for(&ActionShortcuts::FocusSidebar)
+            .expect("bound twice");
+        for _ in 0..50 {
+            assert_eq!(
+                kb.first_combo_for(&ActionShortcuts::FocusSidebar)
+                    .as_deref(),
+                Some(first.as_str())
+            );
+        }
+        // And it is the lowest combo, not merely a stable one: `combos_for`
+        // and `to_hashmap` sort the same way, so the three agree.
+        let mut combos = kb.combos_for(&ActionShortcuts::FocusSidebar);
+        combos.sort();
+        assert_eq!(first, combos[0].to_string());
+    }
 
     /// The guard on the builder. Without it a second `add` for one combo
     /// overwrote the first and said nothing — the bug that left `Text(Link)`
