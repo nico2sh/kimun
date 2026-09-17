@@ -330,6 +330,10 @@ Use these names exactly as shown. For the default shortcuts each one ships with,
 
 **Text editing** (only fire while the editor has focus)
 
+These have **no default binding** — formatting is reached through the leader's
+`+text` group (`Ctrl+G t b` / `t i` / `t s`). They stay bindable if you want a
+chord; `Bold`, `Italic` and `Strikethrough` are the three that are implemented.
+
 - `TextEditor-Bold`
 - `TextEditor-Italic`
 - `TextEditor-Underline`

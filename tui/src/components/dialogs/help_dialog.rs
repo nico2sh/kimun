@@ -61,6 +61,31 @@ impl HelpDialog {
                 .push((keys, label));
         }
 
+        // Formatting carries no default chord — it lives on the leader's
+        // `+text` group, because `Ctrl+I` is Tab's byte outside the kitty
+        // keyboard protocol. This list is built from the binding map, and
+        // `Text(..)` is the only action in `TextEditing`, so with nothing
+        // bound the whole section would vanish and formatting would read as
+        // removed rather than moved: name the route instead.
+        //
+        // Both conditions matter. A user with formatting chords of their own
+        // sees those, not this. And with the gateway itself unbound there is
+        // no `<leader> t` to reach, so there is nothing truthful to say —
+        // which is why the gateway is read as an Option rather than defaulted
+        // to a placeholder string. The BTreeMap keeps the section in place.
+        if !by_category.contains_key(&ShortcutCategory::TextEditing)
+            && let Some(leader) = key_bindings
+                .first_combo_for(&crate::keys::action_shortcuts::ActionShortcuts::Leader)
+        {
+            by_category.insert(
+                ShortcutCategory::TextEditing,
+                vec![(
+                    format!("{leader} t"),
+                    "bold / italic / strikethrough (+text)".to_string(),
+                )],
+            );
+        }
+
         let mut rows: Vec<HelpRow> = Vec::new();
         for (category, bindings) in by_category {
             if bindings.is_empty() {
@@ -393,6 +418,40 @@ mod tests {
             .add(KeyStrike::KeyB, ActionShortcuts::Text(TextAction::Bold))
             .add(KeyStrike::KeyQ, ActionShortcuts::Quit);
         kb
+    }
+
+    /// Formatting moved to the leader, so F1 has no chord to list for it.
+    /// It must still say where formatting went — a missing section reads as a
+    /// removed feature.
+    #[test]
+    fn f1_names_the_leader_route_when_no_formatting_chord_is_bound() {
+        let dialog = HelpDialog::new(&crate::settings::AppSettings::default().key_bindings);
+        let row = dialog.rows.iter().find_map(|r| match r {
+            HelpRow::Binding { keys, label } if label.contains("bold") => {
+                Some((keys.clone(), label.clone()))
+            }
+            _ => None,
+        });
+        let (keys, label) = row.expect("F1 must point at the formatting route");
+        assert!(keys.ends_with(" t"), "should name the +text group: {keys}");
+        assert!(
+            keys.starts_with("ctrl&G"),
+            "prefixed by the gateway: {keys}"
+        );
+        assert!(label.contains("italic"), "{label}");
+    }
+
+    /// A user who binds their own formatting chord sees that, not the hint.
+    #[test]
+    fn f1_prefers_a_real_formatting_chord_over_the_hint() {
+        let dialog = HelpDialog::new(&bindings_with_bold_and_quit());
+        assert!(
+            !dialog.rows.iter().any(|r| matches!(
+                r,
+                HelpRow::Binding { label, .. } if label.contains("+text")
+            )),
+            "the hint must stand down once a chord exists"
+        );
     }
 
     #[test]
