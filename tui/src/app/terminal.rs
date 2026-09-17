@@ -30,6 +30,7 @@ static SESSION_LIVE: AtomicBool = AtomicBool::new(false);
 
 pub struct TerminalSession {
     terminal: Terminal<CrosstermBackend<Stdout>>,
+    keyboard_enhanced: bool,
 }
 
 impl TerminalSession {
@@ -50,7 +51,11 @@ impl TerminalSession {
         execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
         // Required to receive F-keys and other special keys correctly in
         // terminals that speak the protocol (kitty, WezTerm).
-        if supports_keyboard_enhancement().unwrap_or(false) {
+        // Whether they went out is not only a rendering detail: with the
+        // protocol on, the terminal spells Backspace and Ctrl-H differently,
+        // which is what lets `ctrl_h::CtrlHPolicy` leave both keys working.
+        let keyboard_enhanced = supports_keyboard_enhancement().unwrap_or(false);
+        if keyboard_enhanced {
             let _ = execute!(
                 stdout,
                 PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
@@ -62,11 +67,21 @@ impl TerminalSession {
             let _ = execute!(stdout, EnableMouseCapture);
         }
         let terminal = Terminal::new(CrosstermBackend::new(stdout))?;
-        Ok(Self { terminal })
+        Ok(Self {
+            terminal,
+            keyboard_enhanced,
+        })
     }
 
     pub fn terminal_mut(&mut self) -> &mut Terminal<CrosstermBackend<Stdout>> {
         &mut self.terminal
+    }
+
+    /// Whether the kitty keyboard-enhancement flags were pushed — i.e. whether
+    /// this terminal reports keys unambiguously. Read once at startup to
+    /// resolve the Ctrl-H / Backspace tie (`app::ctrl_h`).
+    pub fn keyboard_enhanced(&self) -> bool {
+        self.keyboard_enhanced
     }
 }
 

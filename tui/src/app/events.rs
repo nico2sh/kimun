@@ -21,6 +21,7 @@ use futures::{Stream, StreamExt};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TryRecvError;
 
+use crate::app::ctrl_h::CtrlHPolicy;
 use crate::components::events::{AppEvent, AppTx, InputEvent};
 
 /// Terminal-originated events, already decoded. Boxed rather than generic so
@@ -36,16 +37,13 @@ pub struct EventHandler {
     input: InputSource,
 }
 
-impl Default for EventHandler {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl EventHandler {
-    /// The app's handler: crossterm reads the terminal.
-    pub fn new() -> Self {
-        Self::from_input(crossterm_input())
+    /// The app's handler: crossterm reads the terminal. `ctrl_h` is the
+    /// session's resolved Ctrl-H rule, applied as events are decoded — no
+    /// `Default`, because guessing that rule is exactly what this type must
+    /// not do.
+    pub fn new(ctrl_h: CtrlHPolicy) -> Self {
+        Self::from_input(crossterm_input(ctrl_h))
     }
 
     /// A handler over any input source — a `futures::stream::iter` of scripted
@@ -97,10 +95,10 @@ impl EventHandler {
 }
 
 /// The crossterm adapter: the terminal's event stream, decoded.
-fn crossterm_input() -> impl Stream<Item = AppEvent> + Send {
-    EventStream::new().filter_map(|event| {
+fn crossterm_input(ctrl_h: CtrlHPolicy) -> impl Stream<Item = AppEvent> + Send {
+    EventStream::new().filter_map(move |event| {
         tracing::debug!("RAW EVENT: {:?}", event);
-        futures::future::ready(decode(event))
+        futures::future::ready(decode(event, ctrl_h))
     })
 }
 
@@ -108,10 +106,15 @@ fn crossterm_input() -> impl Stream<Item = AppEvent> + Send {
 /// kitty protocol reports them; the app acts on presses), a resize is a
 /// redraw, focus and unknown events are nothing, and a read error is logged
 /// and skipped rather than ending the source.
-pub(crate) fn decode(event: io::Result<CrosstermEvent>) -> Option<AppEvent> {
+///
+/// This is also where `ctrl_h` is applied. The rewrite belongs here, at the
+/// one place every terminal key enters the app, rather than in the shortcut
+/// tier or a backend: both of those would have to agree about it, and a
+/// Backspace the editor sees as a chord is the same bug either way.
+pub(crate) fn decode(event: io::Result<CrosstermEvent>, ctrl_h: CtrlHPolicy) -> Option<AppEvent> {
     match event {
         Ok(CrosstermEvent::Key(key)) if key.kind != KeyEventKind::Release => {
-            Some(AppEvent::Input(InputEvent::Key(key)))
+            Some(AppEvent::Input(InputEvent::Key(ctrl_h.apply(key))))
         }
         Ok(CrosstermEvent::Mouse(mouse)) => Some(AppEvent::Input(InputEvent::Mouse(mouse))),
         Ok(CrosstermEvent::Paste(text)) => Some(AppEvent::Input(InputEvent::Paste(text))),
@@ -141,22 +144,56 @@ mod tests {
         })
     }
 
+    /// The rule that changes nothing, for the tests that are not about it.
+    const CHORD: CtrlHPolicy = CtrlHPolicy::Chord;
+
     #[test]
     fn decode_keeps_presses_and_drops_releases() {
         assert!(matches!(
-            decode(Ok(key(KeyCode::Char('a'), KeyEventKind::Press))),
+            decode(Ok(key(KeyCode::Char('a'), KeyEventKind::Press)), CHORD),
             Some(AppEvent::Input(InputEvent::Key(k))) if k.code == KeyCode::Char('a')
         ));
-        assert!(decode(Ok(key(KeyCode::Char('a'), KeyEventKind::Release))).is_none());
+        assert!(decode(Ok(key(KeyCode::Char('a'), KeyEventKind::Release)), CHORD).is_none());
     }
 
     #[test]
     fn decode_turns_a_resize_into_a_redraw_and_skips_errors() {
         assert!(matches!(
-            decode(Ok(CrosstermEvent::Resize(80, 24))),
+            decode(Ok(CrosstermEvent::Resize(80, 24)), CHORD),
             Some(AppEvent::Redraw)
         ));
-        assert!(decode(Err(std::io::Error::other("hangup"))).is_none());
+        assert!(decode(Err(std::io::Error::other("hangup")), CHORD).is_none());
+    }
+
+    /// The reported bug: a terminal whose Backspace key sends `0x08` reaches
+    /// crossterm as Ctrl-H, which the shortcut tier claims as a binding
+    /// (`FocusSidebar`, by default) before the editor ever sees it. Under the
+    /// Backspace rule the seam hands the loop a Backspace instead.
+    #[test]
+    fn decode_applies_the_ctrl_h_rule() {
+        let ctrl_h = CrosstermEvent::Key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL));
+        assert!(matches!(
+            decode(Ok(ctrl_h.clone()), CtrlHPolicy::Backspace),
+            Some(AppEvent::Input(InputEvent::Key(k)))
+                if k.code == KeyCode::Backspace && k.modifiers == KeyModifiers::NONE
+        ));
+        assert!(matches!(
+            decode(Ok(ctrl_h), CHORD),
+            Some(AppEvent::Input(InputEvent::Key(k)))
+                if k.code == KeyCode::Char('h') && k.modifiers == KeyModifiers::CONTROL
+        ));
+    }
+
+    /// A release still drops under the rewrite: the rule decides *which* key
+    /// an event is, never whether the loop hears about it.
+    #[test]
+    fn the_ctrl_h_rule_does_not_revive_releases() {
+        let release = CrosstermEvent::Key(KeyEvent::new_with_kind(
+            KeyCode::Char('h'),
+            KeyModifiers::CONTROL,
+            KeyEventKind::Release,
+        ));
+        assert!(decode(Ok(release), CtrlHPolicy::Backspace).is_none());
     }
 
     #[tokio::test]

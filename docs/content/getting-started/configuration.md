@@ -130,6 +130,7 @@ The file has five kinds of contents:
 | `journal_sort_field` | string | `"name"` | Sort field for the journal view. One of `"name"`, `"title"`. |
 | `journal_sort_order` | string | `"descending"` | Sort direction for the journal view. Descending shows newest first. |
 | `group_directories` | boolean | `false` | When `true`, the sidebar lists directories first, each group sorted by the chosen field/order. Set live from the sort dialog. |
+| `ctrl_h` | string | `"auto"` | What a bare `0x08` byte means, on terminals that spell `Backspace` and `Ctrl+H` the same way. `"auto"` keeps the `Ctrl+H` chord wherever the two keys are distinguishable — under the kitty keyboard protocol, or when the terminal's erase character is `0x7F` — and only gives it up on a terminal whose erase character is `0x08`. `"backspace"` makes the key delete and gives up the chord everywhere; it is the fix when `Backspace` moves focus instead of deleting. `"chord"` always keeps the chord. See [Troubleshooting](@/getting-started/troubleshooting.md#backspace-moves-focus-instead-of-deleting). |
 
 ### `[global]` Section
 
