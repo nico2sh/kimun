@@ -76,8 +76,21 @@ impl Reach {
 
 /// What happens to `combo` on a terminal with these traits.
 pub fn reach(combo: KeyCombo, keys: TerminalKeys) -> Reach {
-    // The protocol reports the key itself; every collision below is an
-    // artefact of packing chords into single bytes.
+    // Checked before the protocol, because this one is not the terminal's
+    // doing: `app::ctrl_h` rewrites `Ctrl+H` at kimün's own input seam, after
+    // the terminal has spoken, and an explicit `ctrl_h = "backspace"` is
+    // obeyed even where the protocol keeps the two keys apart. So the chord
+    // is gone under that setting on *any* terminal — and a diagnostic that
+    // said otherwise would contradict the session it describes.
+    //
+    // Exactly the bare chord: `CtrlHPolicy::apply` matches `CONTROL` alone,
+    // so `Ctrl+Shift+H` and `Ctrl+Alt+H` are untouched.
+    let bare_ctrl_h = KeyCombo::new(KeyModifiers::new().and_ctrl(), KeyStrike::KeyH);
+    if keys.ctrl_h_is_backspace && combo == bare_ctrl_h {
+        return Reach::Shadowed(KeyCombo::new(KeyModifiers::new(), KeyStrike::Backspace));
+    }
+    // Past here every collision is an artefact of packing chords into single
+    // bytes, which the protocol does away with.
     if keys.enhanced {
         return Reach::Ok;
     }
@@ -102,10 +115,6 @@ pub fn reach(combo: KeyCombo, keys: TerminalKeys) -> Reach {
         KeyStrike::KeyI => as_key(KeyStrike::Tab), // 0x09
         KeyStrike::KeyM => as_key(KeyStrike::Enter), // 0x0D
         KeyStrike::BracketLeft => as_key(KeyStrike::Escape), // 0x1B
-        // 0x08 is Ctrl+H's byte and, on a terminal set up the older way, the
-        // Backspace key's. Which one wins is the session's `ctrl_h` policy.
-        KeyStrike::KeyH if keys.ctrl_h_is_backspace => as_key(KeyStrike::Backspace),
-
         // 0x1C..=0x1F decode as Ctrl plus the digits 4-7, so these two chords
         // arrive wearing someone else's name. `Ctrl+4`..`Ctrl+7` are the
         // combos that *do* arrive, which is why they are reachable and the
@@ -237,14 +246,31 @@ mod tests {
             reach(ctrl(KeyStrike::KeyH), TerminalKeys::LEGACY),
             Reach::Ok
         );
-        let rewritten = TerminalKeys {
-            enhanced: false,
-            ctrl_h_is_backspace: true,
-        };
-        assert_eq!(
-            reach(ctrl(KeyStrike::KeyH), rewritten),
-            Reach::Shadowed(KeyCombo::new(KeyModifiers::new(), KeyStrike::Backspace))
-        );
+        let backspace = Reach::Shadowed(KeyCombo::new(KeyModifiers::new(), KeyStrike::Backspace));
+        for enhanced in [false, true] {
+            let rewritten = TerminalKeys {
+                enhanced,
+                ctrl_h_is_backspace: true,
+            };
+            assert_eq!(
+                reach(ctrl(KeyStrike::KeyH), rewritten),
+                backspace,
+                "the rewrite is kimün's own, not the terminal's (enhanced={enhanced})"
+            );
+            // Only the *bare* chord is rewritten. On a protocol terminal
+            // Ctrl+Shift+H is its own event and survives; on a legacy one it
+            // still loses its shift bit to the ordinary rule, landing on the
+            // chord that the rewrite then claims — reported one hop at a
+            // time, since chaining would assert more than is known.
+            assert_eq!(
+                reach(ctrl_shift(KeyStrike::KeyH), rewritten),
+                if enhanced {
+                    Reach::Ok
+                } else {
+                    Reach::Shadowed(ctrl(KeyStrike::KeyH))
+                }
+            );
+        }
     }
 
     /// `0x1C..=0x1F` arrive as Ctrl+4..7, so the digits are the reachable

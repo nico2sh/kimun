@@ -558,8 +558,10 @@ terminal you use Kimün in. Redirected to a file or a pipe there is nobody to
 answer the query, and `doctor` says so rather than guessing.
 
 The default keymap always keeps a reachable key for every action, so a
-complaint here is always about a `[key_bindings]` override — see [Key
-Bindings](@/getting-started/configuration.md#key-bindings).
+complaint here is almost always about a `[key_bindings]` override — see [Key
+Bindings](@/getting-started/configuration.md#key-bindings). The one exception
+is `ctrl_h = "backspace"`, which gives up the `Ctrl+H` chord by design; any
+action bound only to it is listed here, and `doctor` says so when that is why.
 
 ## JSON Output
 

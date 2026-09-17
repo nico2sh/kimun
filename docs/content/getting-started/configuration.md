@@ -116,7 +116,7 @@ The file has five kinds of contents:
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `config_version` | integer | `6` | Schema version. Managed by the config migration system; do not edit. |
+| `config_version` | integer | `7` | Schema version. Managed by the config migration system; do not edit. |
 | `cache_dir` | string | `"."` | Directory for per-workspace SQLite caches (`<workspace>.kimuncache`). Resolved relative to the config file's directory. Accepts `~`, relative, or absolute paths. |
 | `history_dir` | string | `"history"` | Directory for per-workspace history files (`<workspace>.txt`). Same path resolution as `cache_dir`. |
 | `theme` | string | `""` | Active TUI theme name (e.g. `"Nord"`). Empty string = built-in default. See [Themes](@/using-kimun/themes.md). |
