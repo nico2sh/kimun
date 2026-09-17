@@ -21,6 +21,8 @@
 //! `\t`, `\r`, `\x1B` each have their own arm — that named key is what wins,
 //! and the chord is what loses.
 
+use super::KeyBindings;
+use super::action_shortcuts::ActionShortcuts;
 use super::key_combo::{KeyCombo, KeyModifiers};
 use super::key_strike::KeyStrike;
 
@@ -129,6 +131,39 @@ pub fn reach(combo: KeyCombo, keys: TerminalKeys) -> Reach {
         // keymap cares about, which is why `OpenPreferences` leads with F4.
         _ => Reach::Untransmitted,
     }
+}
+
+/// An action with no chord this terminal can send, and what becomes of each
+/// chord it does have.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unreachable {
+    pub action: ActionShortcuts,
+    pub combos: Vec<(KeyCombo, Reach)>,
+}
+
+/// Every action in `bindings` that cannot be reached at all on this terminal,
+/// ordered by action name so output is stable between runs.
+///
+/// Empty for the default keymap on any terminal — an invariant test in
+/// [`crate::settings`] holds it to that. So a non-empty answer means the user's
+/// own `[key_bindings]` picked a chord their terminal cannot deliver, which is
+/// worth telling them about precisely because nothing else would: the chord
+/// simply does nothing, or quietly fires whatever shadows it.
+///
+/// Actions the user has deliberately *unbound* never appear: they hold no
+/// combos, and only bound actions are listed at all.
+pub fn unreachable_actions(bindings: &KeyBindings, keys: TerminalKeys) -> Vec<Unreachable> {
+    let mut found: Vec<Unreachable> = bindings
+        .to_hashmap()
+        .into_iter()
+        .filter(|(_, combos)| !combos.iter().any(|c| reach(*c, keys).is_ok()))
+        .map(|(action, combos)| Unreachable {
+            combos: combos.into_iter().map(|c| (c, reach(c, keys))).collect(),
+            action,
+        })
+        .collect();
+    found.sort_by_key(|u| u.action.to_string());
+    found
 }
 
 #[cfg(test)]
@@ -259,6 +294,62 @@ mod tests {
             reach(combo, TerminalKeys::LEGACY),
             Reach::Shadowed(KeyCombo::new(KeyModifiers::new().and_alt(), KeyStrike::Tab))
         );
+    }
+
+    /// The scan the startup warning and `kimun doctor` both run.
+    #[test]
+    fn the_scan_finds_an_action_with_no_usable_chord() {
+        let mut kb = KeyBindings::empty();
+        kb.batch_add()
+            .with_ctrl()
+            // Only chord, and it is Tab's byte: unreachable.
+            .add(KeyStrike::KeyI, ActionShortcuts::QuickNote)
+            // Unreachable, but this action has a second chord below.
+            .add(KeyStrike::KeyM, ActionShortcuts::Quit)
+            .add(KeyStrike::KeyQ, ActionShortcuts::Quit);
+
+        let found = unreachable_actions(&kb, TerminalKeys::LEGACY);
+        assert_eq!(found.len(), 1, "only QuickNote is stranded: {found:?}");
+        assert_eq!(found[0].action, ActionShortcuts::QuickNote);
+        assert_eq!(
+            found[0].combos,
+            vec![(
+                ctrl(KeyStrike::KeyI),
+                Reach::Shadowed(KeyCombo::new(KeyModifiers::new(), KeyStrike::Tab))
+            )]
+        );
+    }
+
+    /// The protocol resolves every collision, so nothing is ever stranded on
+    /// a terminal that speaks it.
+    #[test]
+    fn the_scan_finds_nothing_under_the_kitty_protocol() {
+        let mut kb = KeyBindings::empty();
+        kb.batch_add()
+            .with_ctrl()
+            .add(KeyStrike::KeyI, ActionShortcuts::QuickNote);
+        let enhanced = TerminalKeys {
+            enhanced: true,
+            ctrl_h_is_backspace: false,
+        };
+        assert!(unreachable_actions(&kb, enhanced).is_empty());
+    }
+
+    /// The default keymap must never trip the warning — otherwise it fires
+    /// for every user on a legacy terminal, which is a nag, not a warning.
+    #[test]
+    fn the_scan_is_silent_for_the_default_keymap() {
+        let kb = crate::settings::AppSettings::default().key_bindings;
+        for keys in [
+            TerminalKeys::LEGACY,
+            TerminalKeys {
+                enhanced: true,
+                ctrl_h_is_backspace: false,
+            },
+        ] {
+            let found = unreachable_actions(&kb, keys);
+            assert!(found.is_empty(), "{keys:?} stranded {found:?}");
+        }
     }
 
     /// The ordinary case, so the rules above read as exceptions rather than

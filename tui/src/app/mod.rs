@@ -116,6 +116,7 @@ pub async fn run_tui(config_path: Option<PathBuf>) -> Result<()> {
     // answer, and only the live session knows it.
     let ctrl_h = ctrl_h::CtrlHPolicy::resolve(ctrl_h_setting, session.keyboard_enhanced());
     let mut events = EventHandler::new(ctrl_h);
+    warn_about_unreachable_bindings(&app, &events.app_sender(), &session, ctrl_h);
 
     spawn_update_check(&app, events.app_sender());
     respawn_rag(&mut app, &events.app_sender());
@@ -292,6 +293,65 @@ async fn switch_screen(app: &mut App, tx: &AppTx, new_screen: ScreenEvent) {
 
 /// Kick off the background update check (gated on the user's `update_check`
 /// preference). All network/filesystem work runs on `spawn_blocking` inside
+/// Tell the user about a binding their terminal cannot deliver.
+///
+/// Only ever their own. The default keymap always keeps a chord that survives
+/// the weakest terminal kimün supports — `settings`' invariant test holds it
+/// to that — so anything found here came out of a `[key_bindings]` section and
+/// is theirs to change. That is the whole reason this reports rather than
+/// silently repairing: rebinding under them is exactly the surprise moving
+/// formatting to the leader was meant to avoid.
+///
+/// Rare in practice, and deliberately so: `merge_missing_default_bindings`
+/// hands an action its default combo back unless the config gave that combo to
+/// something else. So `SearchNotes = ["ctrl&I"]` alone still answers to Ctrl-K
+/// and stays reachable; it takes a config that *also* claims Ctrl-K elsewhere
+/// to strand it. Quiet is the point — a warning that fired on a working setup
+/// would teach people to ignore it.
+///
+/// Logged as a warning (durable — the troubleshooting docs send people to the
+/// log) and flashed once in the footer (visible, and gone in two seconds
+/// rather than nagging). `kimun doctor` prints the full picture on demand.
+fn warn_about_unreachable_bindings(
+    app: &App,
+    tx: &AppTx,
+    session: &terminal::TerminalSession,
+    ctrl_h: ctrl_h::CtrlHPolicy,
+) {
+    use crate::keys::reachability::{Reach, TerminalKeys, unreachable_actions};
+
+    let keys = TerminalKeys {
+        enhanced: session.keyboard_enhanced(),
+        ctrl_h_is_backspace: ctrl_h == ctrl_h::CtrlHPolicy::Backspace,
+    };
+    let stranded = {
+        let settings = app.settings.read().unwrap();
+        unreachable_actions(&settings.key_bindings, keys)
+    };
+    if stranded.is_empty() {
+        return;
+    }
+    for u in &stranded {
+        for (combo, reach) in &u.combos {
+            let fate = match reach {
+                Reach::Ok => continue,
+                Reach::Shadowed(by) => format!("arrives as {by}"),
+                Reach::Untransmitted => "is not sent by this terminal".to_string(),
+            };
+            tracing::warn!("key binding {combo} for {} {fate}", u.action);
+        }
+    }
+    let names = stranded
+        .iter()
+        .map(|u| u.action.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    tx.send(AppEvent::FlashMessage(format!(
+        "{names}: no usable key on this terminal — run `kimun doctor`"
+    )))
+    .ok();
+}
+
 /// `update::check_now`; a found update is surfaced via `AppEvent::Update(UpdateFlow::Available)`. Failures are logged and
 /// swallowed — the check never blocks startup or interaction.
 fn spawn_update_check(app: &App, tx: AppTx) {

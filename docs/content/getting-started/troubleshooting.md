@@ -5,7 +5,16 @@ weight = 10
 
 # Troubleshooting
 
-Something acting weird? The log file usually knows why.
+Something acting weird? The log file usually knows why — and for anything
+key-related, `kimun doctor` knows first:
+
+```sh
+kimun doctor
+```
+
+It reports what your terminal can deliver and what becomes of every key
+binding. Run it in the terminal you use Kimün in; see [CLI →
+Doctor](@/using-kimun/cli.md#doctor).
 
 ## Ctrl+Enter Acts Like Plain Enter
 
@@ -60,8 +69,9 @@ Two other fixes, either of which keeps both keys working:
 
 - **Make your terminal send `0x7F`.** In Konsole: *Settings → Edit Current
   Profile → Keyboard*, pick a key-bindings set whose backspace is `^?` (the
-  "Default" table). Check what yours sends with `cat -v` — press `Backspace`
-  and look for `^?` (fine) or `^H` (the problem).
+  "Default" table). `kimun doctor` prints the erase character it is set to; or
+  check with `cat -v`, pressing `Backspace` and looking for `^?` (fine) or
+  `^H` (the problem).
 - **Use a terminal that speaks the kitty protocol** (Kitty, Ghostty, foot,
   WezTerm with `enable_kitty_keyboard = true`, recent Konsole). There the two
   keys are distinct and no setting is needed.

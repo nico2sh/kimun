@@ -86,34 +86,40 @@ impl CtrlHPolicy {
     }
 }
 
-/// Whether this tty's erase character is `0x08`.
+/// This tty's erase character, or `None` when it cannot be read (not a tty,
+/// or not a platform with `termios`).
 ///
-/// The one signal available about which convention the user's terminal is set
-/// up for: a `^H` Backspace key and `stty erase ^H` are the halves of the same
-/// old-school setup, and a terminal emulator is not obliged to agree with the
-/// line discipline — so this catches the correlated case and no more. Raw mode
-/// does not touch `c_cc[VERASE]`, so the answer is the same before or after
-/// `enable_raw_mode`.
+/// `0x08` here is the one signal available about which convention the user's
+/// terminal is set up for: a `^H` Backspace key and `stty erase ^H` are halves
+/// of the same old-school setup, and a terminal emulator is not obliged to
+/// agree with the line discipline — so this catches the correlated case and no
+/// more. Raw mode does not touch `c_cc[VERASE]`, so the answer is the same
+/// before or after `enable_raw_mode`, which is what lets `kimun doctor` read
+/// it outside the TUI.
 #[cfg(unix)]
-fn tty_erase_is_bs() -> bool {
+pub fn tty_erase_char() -> Option<u8> {
     let mut termios = std::mem::MaybeUninit::<libc::termios>::uninit();
     // SAFETY: `tcgetattr` either fills `termios` completely or returns
     // non-zero, and it borrows nothing past the call. The buffer is only read
     // on the success path, below.
     if unsafe { libc::tcgetattr(libc::STDIN_FILENO, termios.as_mut_ptr()) } != 0 {
-        return false;
+        return None;
     }
     // SAFETY: `tcgetattr` returned 0, so the struct is initialised.
     let termios = unsafe { termios.assume_init() };
-    termios.c_cc[libc::VERASE] == 0x08
+    Some(termios.c_cc[libc::VERASE])
 }
 
 /// Windows has no `termios`, and no ambiguity to resolve: the console API
 /// reports the Backspace key and the Ctrl-H chord as different events however
 /// the terminal is configured.
 #[cfg(not(unix))]
+pub fn tty_erase_char() -> Option<u8> {
+    None
+}
+
 fn tty_erase_is_bs() -> bool {
-    false
+    tty_erase_char() == Some(0x08)
 }
 
 #[cfg(test)]
