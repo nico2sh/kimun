@@ -272,10 +272,25 @@ impl<'k> KeyBindBatch<'k> {
         self.modifiers.with_meta_cmd();
         self
     }
+    /// Bind `key` plus this batch's modifiers to `action`.
+    ///
+    /// The combo must still be free. Two `add` calls for one combo were
+    /// last-wins and silent, which is how `Ctrl+L` came to be bound to both
+    /// `Text(Link)` and `FocusEditor`: the first simply vanished, with no
+    /// warning, and `combos_for(Text(Link))` answering "nothing" was the only
+    /// trace. Every caller of this builder is a hand-written table, so a
+    /// duplicate is a mistake *in that table* and worth a panic in tests. A
+    /// user's config does not come through here — [`KeyBindings::from_hashmap`]
+    /// inserts directly and keeps last-wins, because their keymap is theirs to
+    /// contradict.
     pub fn add(self, key: KeyStrike, action: ActionShortcuts) -> KeyBindBatch<'k> {
-        self.bindings
-            .bindings
-            .insert(KeyCombo::new(self.modifiers, key), action);
+        let combo = KeyCombo::new(self.modifiers, key);
+        debug_assert!(
+            !self.bindings.bindings.contains_key(&combo),
+            "{combo} is already bound to {:?}, so binding it to {action:?} would drop that silently",
+            self.bindings.bindings.get(&combo)
+        );
+        self.bindings.bindings.insert(combo, action);
         self
     }
 }
@@ -423,6 +438,35 @@ mod tests {
         action_shortcuts::{ActionShortcuts, TextAction},
         key_strike::KeyStrike,
     };
+
+    /// The guard on the builder. Without it a second `add` for one combo
+    /// overwrote the first and said nothing — the bug that left `Text(Link)`
+    /// and `Text(ToggleHeader)` with no combo at all for as long as they were
+    /// in the default table.
+    #[test]
+    #[should_panic(expected = "would drop that silently")]
+    fn a_duplicate_combo_in_one_table_panics() {
+        KeyBindings::empty()
+            .batch_add()
+            .with_ctrl()
+            .add(KeyStrike::KeyL, ActionShortcuts::Text(TextAction::Link))
+            .add(KeyStrike::KeyL, ActionShortcuts::FocusEditor);
+    }
+
+    /// A user's keymap is theirs to contradict: two actions claiming one chord
+    /// in a config resolves to one of them rather than killing the app.
+    #[test]
+    fn a_duplicate_combo_in_a_user_config_does_not() {
+        let combo = super::KeyCombo::new(super::KeyModifiers::new().and_ctrl(), KeyStrike::KeyL);
+        let kb = KeyBindings::from_hashmap(std::collections::HashMap::from([
+            (ActionShortcuts::FocusEditor, vec![combo]),
+            (ActionShortcuts::Text(TextAction::Link), vec![combo]),
+        ]));
+        assert!(
+            kb.get_action(&combo).is_some(),
+            "one of the two must win, and the app must still start"
+        );
+    }
 
     /// `SearchList` resolves its yank chords through this, so a rebinding has to
     /// come back out of it — otherwise the help dialog advertises one chord

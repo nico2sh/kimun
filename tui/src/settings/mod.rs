@@ -242,11 +242,13 @@ fn default_keybindings() -> KeyBindings {
             KeyStrike::KeyS,
             ActionShortcuts::Text(TextAction::Strikethrough),
         )
-        .add(KeyStrike::KeyL, ActionShortcuts::Text(TextAction::Link))
-        .add(
-            KeyStrike::KeyT,
-            ActionShortcuts::Text(TextAction::ToggleHeader),
-        )
+        // No Ctrl+L for `Text(Link)` and no Ctrl+T for `Text(ToggleHeader)`:
+        // both chords are taken below by FocusEditor and ToggleSidebar. They
+        // used to be added here anyway and were overwritten in silence, so
+        // `combos_for` answered "unbound" for both. Giving them free chords
+        // instead would advertise them in F1 and the footer while doing
+        // nothing — neither action is dispatched (`editor_input::classify_tail`
+        // routes only Bold / Italic / Strikethrough). Bind them when they are.
         // =============================
         // We add shift to the modifiers
         // =============================
@@ -1292,6 +1294,35 @@ mod backend_tests {
         assert!(s.contains("editor_backend = \"vim\""), "serialized: {s}");
         let back: W = toml::from_str(&s).unwrap();
         assert_eq!(back.editor_backend, EditorBackendSetting::Vim);
+    }
+
+    /// Ctrl+L and Ctrl+T belong to focus and the drawer. `Text(Link)` and
+    /// `Text(ToggleHeader)` asked for the same two chords and lost them in
+    /// silence for as long as they were in the table; they are left unbound
+    /// until something dispatches them (`editor_input::classify_tail` routes
+    /// only Bold / Italic / Strikethrough). Bind them there and here together —
+    /// a chord that resolves to an action nobody runs is worse than no chord,
+    /// because F1 and the footer advertise it.
+    #[test]
+    fn link_and_toggle_header_are_left_unbound_on_purpose() {
+        let kb = default_keybindings();
+        use crate::keys::key_combo::{KeyCombo, KeyModifiers};
+        let ctrl = |key| KeyCombo::new(KeyModifiers::new().and_ctrl(), key);
+        assert_eq!(
+            kb.get_action(&ctrl(KeyStrike::KeyL)),
+            Some(ActionShortcuts::FocusEditor)
+        );
+        assert_eq!(
+            kb.get_action(&ctrl(KeyStrike::KeyT)),
+            Some(ActionShortcuts::ToggleSidebar)
+        );
+        for action in [TextAction::Link, TextAction::ToggleHeader] {
+            let name = format!("{action:?}");
+            assert!(
+                kb.combos_for(&ActionShortcuts::Text(action)).is_empty(),
+                "{name} is not dispatched, so it must not advertise a chord"
+            );
+        }
     }
 
     /// Every spelling of the setting parses, and an older config without the
