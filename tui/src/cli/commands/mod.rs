@@ -1,4 +1,5 @@
 // tui/src/cli/commands/mod.rs
+pub mod doctor;
 pub mod journal;
 pub mod labels;
 pub mod mcp;
