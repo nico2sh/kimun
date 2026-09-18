@@ -13,7 +13,7 @@ use super::SettingsError;
 /// layout (`workspace_dir` + top-level `last_paths`) and moved the index out of
 /// the vault, and every installation has long since passed through them. The
 /// oldest config this build understands is a v3 one.
-pub const CURRENT_CONFIG_VERSION: u32 = 6;
+pub const CURRENT_CONFIG_VERSION: u32 = 7;
 
 /// Runs all necessary migrations on `settings`, mutating it in place.
 /// Returns `true` if any migration was applied (caller should persist).
@@ -61,8 +61,14 @@ impl ConfigMigration {
             migrated = true;
         }
 
+        // v6 → v7: the formatting chords retire to the leader's `+text` group.
+        if settings.config_version < 7 {
+            Self::migrate_to_v7(settings);
+            migrated = true;
+        }
+
         // Future migrations go here, gated on config_version:
-        // if settings.config_version < 7 { ... migrated = true; }
+        // if settings.config_version < 8 { ... migrated = true; }
 
         if migrated {
             settings.config_version = CURRENT_CONFIG_VERSION;
@@ -86,12 +92,60 @@ impl ConfigMigration {
         let ctrl_comma = KeyCombo::new(ctrl, KeyStrike::Comma);
 
         let mut map = settings.key_bindings.to_hashmap();
-        let at_old_default = map
-            .get(&ActionShortcuts::OpenPreferences)
-            .is_some_and(|v| v.as_slice() == [ctrl_shift_p]);
+        let at_old_default =
+            still_at_default(&map, &ActionShortcuts::OpenPreferences, ctrl_shift_p);
         let comma_free = !map.values().flatten().any(|c| *c == ctrl_comma);
         if at_old_default && comma_free {
             map.insert(ActionShortcuts::OpenPreferences, vec![ctrl_comma]);
+        }
+        settings.key_bindings = KeyBindings::from_hashmap(map);
+    }
+
+    /// v6 → v7: drop the retired formatting chords, which moved to the
+    /// leader's `+text` group (`<leader> t b` / `t i` / `t s`).
+    ///
+    /// Needed because `key_bindings` is serialized: every config written
+    /// before this release carries the old defaults — `TextEditor-Bold =
+    /// ["ctrl&B"]` and friends — and `merge_missing_default_bindings` only
+    /// ever *adds*. Without this step the change reaches new installs only.
+    /// Existing ones would keep the chords *and* gain the leader group, which
+    /// is more inconsistent than before it, and two of those chords
+    /// (`Ctrl+I`, `Ctrl+Shift+L`) cannot arrive on a legacy terminal at all —
+    /// so the startup warning would fire about bindings kimün itself wrote.
+    ///
+    /// Each entry goes only if it still holds exactly the combo that was its
+    /// default; an edited one is left alone.
+    fn migrate_to_v7(settings: &mut AppSettings) {
+        use crate::keys::KeyBindings;
+        use crate::keys::action_shortcuts::{ActionShortcuts, TextAction};
+        use crate::keys::key_combo::{KeyCombo, KeyModifiers};
+        use crate::keys::key_strike::KeyStrike;
+
+        let ctrl = KeyModifiers::new().and_ctrl();
+        let retired = [
+            (TextAction::Bold, KeyCombo::new(ctrl, KeyStrike::KeyB)),
+            (TextAction::Italic, KeyCombo::new(ctrl, KeyStrike::KeyI)),
+            (TextAction::Underline, KeyCombo::new(ctrl, KeyStrike::KeyU)),
+            (
+                TextAction::Strikethrough,
+                KeyCombo::new(ctrl, KeyStrike::KeyS),
+            ),
+            (
+                TextAction::Image,
+                KeyCombo::new(ctrl.and_shift(), KeyStrike::KeyL),
+            ),
+            // `Link → Ctrl+L` and `ToggleHeader → Ctrl+T` were defaults on
+            // paper only: overwritten inside `default_keybindings` before it
+            // was ever serialized, so no v6 file carries them. A file that
+            // does was edited by hand, and is left alone like any other edit.
+        ];
+
+        let mut map = settings.key_bindings.to_hashmap();
+        for (action, old_default) in retired {
+            let action = ActionShortcuts::Text(action);
+            if still_at_default(&map, &action, old_default) {
+                map.remove(&action);
+            }
         }
         settings.key_bindings = KeyBindings::from_hashmap(map);
     }
@@ -111,9 +165,8 @@ impl ConfigMigration {
         let ctrl_shift_p = KeyCombo::new(ctrl_shift, KeyStrike::KeyP);
 
         let mut map = settings.key_bindings.to_hashmap();
-        let settings_is_old_default = map
-            .get(&ActionShortcuts::OpenPreferences)
-            .is_some_and(|v| v.as_slice() == [ctrl_p]);
+        let settings_is_old_default =
+            still_at_default(&map, &ActionShortcuts::OpenPreferences, ctrl_p);
         let palette_unset_or_old_default = map
             .get(&ActionShortcuts::OpenCommandPalette)
             .is_none_or(|v| v.is_empty() || v.as_slice() == [ctrl_shift_p]);
@@ -139,9 +192,7 @@ impl ConfigMigration {
         let ctrl_n = KeyCombo::new(ctrl, KeyStrike::KeyN);
 
         let mut map = settings.key_bindings.to_hashmap();
-        let follow_is_old_default = map
-            .get(&ActionShortcuts::FollowLink)
-            .is_some_and(|v| v.as_slice() == [ctrl_g]);
+        let follow_is_old_default = still_at_default(&map, &ActionShortcuts::FollowLink, ctrl_g);
         if follow_is_old_default {
             // Old default: hand Ctrl-G to the leader, FollowLink → Ctrl-N.
             map.insert(ActionShortcuts::FollowLink, vec![ctrl_n]);
@@ -152,6 +203,23 @@ impl ConfigMigration {
         // unbound until `merge_missing_default_bindings` finds Ctrl-G free
         // or the user binds it explicitly.)
     }
+}
+
+/// Whether `action` is bound to exactly `default` and nothing else — the
+/// "the user never touched this" test every keymap migration makes before it
+/// moves a binding. Someone who typed the old default by hand is
+/// indistinguishable from someone who inherited it; that is the accepted
+/// cost of serializing defaults, and re-adding the line is how they get it
+/// back.
+fn still_at_default(
+    map: &std::collections::HashMap<
+        crate::keys::action_shortcuts::ActionShortcuts,
+        Vec<crate::keys::key_combo::KeyCombo>,
+    >,
+    action: &crate::keys::action_shortcuts::ActionShortcuts,
+    default: crate::keys::key_combo::KeyCombo,
+) -> bool {
+    map.get(action).is_some_and(|v| v.as_slice() == [default])
 }
 
 #[cfg(test)]
@@ -193,6 +261,125 @@ mod tests {
         assert_eq!(map.get(&ActionShortcuts::Leader), Some(&vec![ctrl_g]));
         assert_eq!(map.get(&ActionShortcuts::FollowLink), Some(&vec![ctrl_n]));
         assert_eq!(settings.config_version, CURRENT_CONFIG_VERSION);
+    }
+
+    /// The retired formatting chords leave existing configs, so the leader
+    /// really is the only route — for upgraders as well as new installs.
+    #[test]
+    fn v7_retires_the_formatting_chords() {
+        use crate::keys::KeyBindings;
+        use crate::keys::action_shortcuts::{ActionShortcuts, TextAction};
+        use crate::keys::key_combo::{KeyCombo, KeyModifiers};
+        use crate::keys::key_strike::KeyStrike;
+
+        let ctrl = KeyModifiers::new().and_ctrl();
+        let mut settings = AppSettings::default();
+        let mut map = std::collections::HashMap::new();
+        // Exactly what a pre-v7 config.toml carries.
+        for (action, key) in [
+            (TextAction::Bold, KeyStrike::KeyB),
+            (TextAction::Italic, KeyStrike::KeyI),
+            (TextAction::Underline, KeyStrike::KeyU),
+            (TextAction::Strikethrough, KeyStrike::KeyS),
+        ] {
+            map.insert(
+                ActionShortcuts::Text(action),
+                vec![KeyCombo::new(ctrl, key)],
+            );
+        }
+        map.insert(
+            ActionShortcuts::Text(TextAction::Image),
+            vec![KeyCombo::new(ctrl.and_shift(), KeyStrike::KeyL)],
+        );
+        // A chord the user chose themselves, which must survive.
+        let ctrl_y = KeyCombo::new(ctrl, KeyStrike::KeyY);
+        map.insert(ActionShortcuts::Text(TextAction::Header(1)), vec![ctrl_y]);
+        settings.key_bindings = KeyBindings::from_hashmap(map);
+        settings.config_version = 6;
+
+        assert!(ConfigMigration::run(&mut settings).unwrap());
+        let map = settings.key_bindings.to_hashmap();
+        for action in [
+            TextAction::Bold,
+            TextAction::Italic,
+            TextAction::Underline,
+            TextAction::Strikethrough,
+            TextAction::Image,
+        ] {
+            let name = format!("{action:?}");
+            assert!(
+                !map.contains_key(&ActionShortcuts::Text(action)),
+                "{name} should have retired to the leader"
+            );
+        }
+        assert_eq!(
+            map.get(&ActionShortcuts::Text(TextAction::Header(1))),
+            Some(&vec![ctrl_y]),
+            "a chord the user chose is not ours to retire"
+        );
+    }
+
+    /// An edited formatting chord is the user's, not an inherited default, so
+    /// the migration leaves it where it is.
+    #[test]
+    fn v7_leaves_a_customised_formatting_chord_alone() {
+        use crate::keys::KeyBindings;
+        use crate::keys::action_shortcuts::{ActionShortcuts, TextAction};
+        use crate::keys::key_combo::{KeyCombo, KeyModifiers};
+        use crate::keys::key_strike::KeyStrike;
+
+        let ctrl = KeyModifiers::new().and_ctrl();
+        let moved = KeyCombo::new(ctrl.and_alt(), KeyStrike::KeyB);
+        let mut settings = AppSettings::default();
+        settings.key_bindings = KeyBindings::from_hashmap(std::collections::HashMap::from([(
+            ActionShortcuts::Text(TextAction::Bold),
+            vec![moved],
+        )]));
+        settings.config_version = 6;
+
+        ConfigMigration::run(&mut settings).unwrap();
+        assert_eq!(
+            settings
+                .key_bindings
+                .to_hashmap()
+                .get(&ActionShortcuts::Text(TextAction::Bold)),
+            Some(&vec![moved])
+        );
+    }
+
+    /// `Link → Ctrl+L` and `ToggleHeader → Ctrl+T` were never written to a
+    /// config by kimün, so a v6 file that carries one was typed by hand —
+    /// and a hand-typed line is the user's to keep.
+    #[test]
+    fn v7_keeps_a_hand_written_link_or_header_chord() {
+        use crate::keys::KeyBindings;
+        use crate::keys::action_shortcuts::{ActionShortcuts, TextAction};
+        use crate::keys::key_combo::{KeyCombo, KeyModifiers};
+        use crate::keys::key_strike::KeyStrike;
+
+        let ctrl = KeyModifiers::new().and_ctrl();
+        let link = KeyCombo::new(ctrl, KeyStrike::KeyL);
+        let header = KeyCombo::new(ctrl, KeyStrike::KeyT);
+        let mut settings = AppSettings::default();
+        settings.key_bindings = KeyBindings::from_hashmap(std::collections::HashMap::from([
+            (ActionShortcuts::Text(TextAction::Link), vec![link]),
+            (
+                ActionShortcuts::Text(TextAction::ToggleHeader),
+                vec![header],
+            ),
+        ]));
+        settings.config_version = 6;
+
+        ConfigMigration::run(&mut settings).unwrap();
+        let map = settings.key_bindings.to_hashmap();
+        assert_eq!(
+            map.get(&ActionShortcuts::Text(TextAction::Link)),
+            Some(&vec![link])
+        );
+        assert_eq!(
+            map.get(&ActionShortcuts::Text(TextAction::ToggleHeader)),
+            Some(&vec![header])
+        );
     }
 
     #[test]

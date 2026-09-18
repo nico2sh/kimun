@@ -40,7 +40,10 @@ pub struct HelpDialog {
 }
 
 impl HelpDialog {
-    pub fn new(key_bindings: &KeyBindings) -> Self {
+    pub fn new(key_bindings: &KeyBindings, tree: &crate::keys::leader::LeaderNode) -> Self {
+        use crate::keys::action_shortcuts::ActionShortcuts;
+        use crate::keys::leader::{LeaderAction, LeaderNode};
+
         let mut by_category: BTreeMap<ShortcutCategory, Vec<(String, String)>> = BTreeMap::new();
 
         let map = key_bindings.to_hashmap();
@@ -59,6 +62,49 @@ impl HelpDialog {
                 .entry(action.category())
                 .or_default()
                 .push((keys, label));
+        }
+
+        // Formatting carries no default chord — it lives on the leader's
+        // `+text` group, because `Ctrl+I` is Tab's byte outside the kitty
+        // keyboard protocol. This list is built from the binding map, so with
+        // nothing bound the whole section would vanish and formatting would
+        // read as removed rather than moved. Name the route, and read it off
+        // the tree the cheatsheet renders from, so a rebound or relabelled
+        // group is described as it is. Listed beside any chord the user
+        // bound: the leader is the route that always works.
+        //
+        // Both conditions matter. With the gateway unbound there is no
+        // `<leader> t` to reach, so there is nothing truthful to say — which
+        // is why the gateway is read as an Option rather than defaulted to a
+        // placeholder. And a tree with no group holding `TextBold` (an
+        // override removed it) has no route to name.
+        let text_group = tree.children().iter().find(|(_, node)| {
+            node.children().iter().any(|(_, leaf)| {
+                matches!(
+                    leaf,
+                    LeaderNode::Leaf {
+                        action: LeaderAction::TextBold,
+                        ..
+                    }
+                )
+            })
+        });
+        if let Some(leader) = key_bindings.first_combo_for(&ActionShortcuts::Leader)
+            && let Some((key, group)) = text_group
+        {
+            let leaves = group
+                .children()
+                .iter()
+                .map(|(_, leaf)| leaf.label())
+                .collect::<Vec<_>>()
+                .join(" / ");
+            by_category
+                .entry(ShortcutCategory::TextEditing)
+                .or_default()
+                .push((
+                    format!("{leader} {key}"),
+                    format!("{leaves} ({})", group.label()),
+                ));
         }
 
         let mut rows: Vec<HelpRow> = Vec::new();
@@ -150,7 +196,7 @@ impl HelpDialog {
         }
 
         // Tier-0: the flat always-on bindings, from the same help builder.
-        let flat = Self::new(key_bindings);
+        let flat = Self::new(key_bindings, &tree);
         rows.push(HelpRow::Blank);
         rows.push(HelpRow::Header("Always-on shortcuts".to_string()));
         rows.push(HelpRow::Separator);
@@ -395,9 +441,103 @@ mod tests {
         kb
     }
 
+    /// Formatting moved to the leader, so F1 has no chord to list for it.
+    /// It must still say where formatting went — a missing section reads as a
+    /// removed feature.
+    #[test]
+    fn f1_names_the_leader_route_when_no_formatting_chord_is_bound() {
+        let dialog = HelpDialog::new(
+            &crate::settings::AppSettings::default().key_bindings,
+            &crate::keys::leader::leader_tree(),
+        );
+        let row = dialog.rows.iter().find_map(|r| match r {
+            HelpRow::Binding { keys, label } if label.contains("bold") => {
+                Some((keys.clone(), label.clone()))
+            }
+            _ => None,
+        });
+        let (keys, label) = row.expect("F1 must point at the formatting route");
+        assert!(keys.ends_with(" t"), "should name the +text group: {keys}");
+        assert!(
+            keys.starts_with("ctrl&G"),
+            "prefixed by the gateway: {keys}"
+        );
+        assert_eq!(label, "bold / italic / strikethrough (+text)");
+    }
+
+    /// The leader route is the primary way to format, so it is listed even
+    /// beside a chord the user bound — a lone `TextEditor-Underline` chord is
+    /// a no-op, and hiding the three leaves that work behind it was the bug.
+    #[test]
+    fn f1_lists_the_leader_route_beside_a_real_formatting_chord() {
+        let mut kb = bindings_with_bold_and_quit();
+        kb.batch_add()
+            .with_ctrl()
+            .add(KeyStrike::KeyG, ActionShortcuts::Leader);
+        let dialog = HelpDialog::new(&kb, &crate::keys::leader::leader_tree());
+        let labels: Vec<&str> = dialog
+            .rows
+            .iter()
+            .filter_map(|r| match r {
+                HelpRow::Binding { label, .. } => Some(label.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(labels.contains(&"Bold"), "{labels:?}");
+        assert!(
+            labels.iter().any(|l| l.contains("+text")),
+            "the leader route must stand beside the chord: {labels:?}"
+        );
+    }
+
+    /// The row is read off the tree, so a rebound or relabelled `+text`
+    /// group shows up as it really is rather than as the shipped default.
+    #[test]
+    fn f1_formatting_hint_follows_the_tree() {
+        use crate::keys::leader::{LeaderAction, LeaderNode};
+        let tree = LeaderNode::Group {
+            label: "leader".into(),
+            children: vec![(
+                'x',
+                LeaderNode::Group {
+                    label: "+fmt".into(),
+                    children: vec![
+                        (
+                            'b',
+                            LeaderNode::Leaf {
+                                label: "bold",
+                                action: LeaderAction::TextBold,
+                            },
+                        ),
+                        (
+                            'i',
+                            LeaderNode::Leaf {
+                                label: "italic",
+                                action: LeaderAction::TextItalic,
+                            },
+                        ),
+                    ],
+                },
+            )],
+        };
+        let dialog = HelpDialog::new(&crate::settings::AppSettings::default().key_bindings, &tree);
+        let row = dialog.rows.iter().find_map(|r| match r {
+            HelpRow::Binding { keys, label } if label.contains("+fmt") => {
+                Some((keys.clone(), label.clone()))
+            }
+            _ => None,
+        });
+        let (keys, label) = row.expect("the hint must be built from the tree");
+        assert_eq!(keys, "ctrl&G x");
+        assert_eq!(label, "bold / italic (+fmt)");
+    }
+
     #[test]
     fn rows_contain_both_categories() {
-        let dialog = HelpDialog::new(&bindings_with_bold_and_quit());
+        let dialog = HelpDialog::new(
+            &bindings_with_bold_and_quit(),
+            &crate::keys::leader::leader_tree(),
+        );
         let headers: Vec<String> = dialog
             .rows
             .iter()
@@ -417,7 +557,10 @@ mod tests {
 
     #[test]
     fn binding_row_has_correct_keys_and_label() {
-        let dialog = HelpDialog::new(&bindings_with_bold_and_quit());
+        let dialog = HelpDialog::new(
+            &bindings_with_bold_and_quit(),
+            &crate::keys::leader::leader_tree(),
+        );
         let binding = dialog.rows.iter().find_map(|r| {
             if let HelpRow::Binding { keys, label } = r
                 && label == "Bold"
@@ -432,7 +575,7 @@ mod tests {
 
     #[test]
     fn empty_keybindings_produces_no_rows() {
-        let dialog = HelpDialog::new(&KeyBindings::empty());
+        let dialog = HelpDialog::new(&KeyBindings::empty(), &crate::keys::leader::leader_tree());
         assert!(
             !dialog
                 .rows

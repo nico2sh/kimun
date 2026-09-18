@@ -5,7 +5,16 @@ weight = 10
 
 # Troubleshooting
 
-Something acting weird? The log file usually knows why.
+Something acting weird? The log file usually knows why — and for anything
+key-related, `kimun doctor` knows first:
+
+```sh
+kimun doctor
+```
+
+It reports what your terminal can deliver and what becomes of every key
+binding. Run it in the terminal you use Kimün in; see [CLI →
+Doctor](@/using-kimun/cli.md#doctor).
 
 ## Ctrl+Enter Acts Like Plain Enter
 
@@ -19,6 +28,60 @@ Most terminals can't tell `Ctrl+Enter` from `Enter` unless the [kitty keyboard p
 
 - **Kitty, Ghostty, foot** support it out of the box.
 - On terminals that can't be taught, use `Ctrl+N` — it follows links exactly like `Ctrl+Enter`.
+
+## Ctrl+B Doesn't Make Text Bold
+
+Formatting has no `Ctrl` chord. It lives in the leader's `+text` group:
+`Ctrl+G t b` for bold, `t i` for italic, `t s` for strikethrough.
+
+That is deliberate. `Ctrl+I` and `Tab` are the *same byte* (`0x09`) — ASCII,
+not a setting your terminal got wrong — so outside the [kitty keyboard
+protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/) `Ctrl+I` can only
+ever indent. Rather than have `Ctrl+B` and `Ctrl+S` work while `Ctrl+I` quietly
+did nothing, all three moved to the one route that works in every terminal.
+
+If you want a chord anyway, bind it — see [Keybindings](@/using-kimun/keybindings.md#defaults).
+Note that on `Ctrl+I` specifically it will indent rather than italicise unless
+your terminal speaks the kitty protocol (Kitty, Ghostty, foot, WezTerm with
+`enable_kitty_keyboard = true`, or Windows, whose console reports keys rather
+than bytes — but not GNOME Terminal, Terminal.app, xterm, urxvt, or
+`tmux`/`screen` without extended keys). The same byte-level limit is why
+`Ctrl+Enter` needs the protocol too.
+
+## Backspace Moves Focus Instead of Deleting
+
+If pressing `Backspace` in the editor jumps focus to the drawer, your terminal
+is sending the older of the two backspace conventions. `Backspace` and `Ctrl+H`
+are the *same byte* (`0x08`) unless the [kitty keyboard
+protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/) is active, and
+`Ctrl+H` is bound to **focus left** — so Kimün sees the chord, not the key.
+
+Nothing can tell the two apart from the byte alone, so you pick which one wins:
+
+```toml
+ctrl_h = "backspace"    # Backspace deletes; the Ctrl+H chord is unreachable
+```
+
+Under the default `auto`, kimün picks `backspace` by itself when the tty's
+erase character is `^H`; the footer says so the first time you open a note,
+and **focus left** needs a new key or `ctrl_h = "chord"`.
+
+Then rebind **focus left** to something else if you use it — see [Key
+Bindings](@/getting-started/configuration.md#key-bindings).
+
+Two other fixes, either of which keeps both keys working:
+
+- **Make your terminal send `0x7F`.** In Konsole: *Settings → Edit Current
+  Profile → Keyboard*, pick a key-bindings set whose backspace is `^?` (the
+  "Default" table). `kimun doctor` prints the erase character it is set to; or
+  check with `cat -v`, pressing `Backspace` and looking for `^?` (fine) or
+  `^H` (the problem).
+- **Use a terminal that speaks the kitty protocol** (Kitty, Ghostty, foot,
+  WezTerm with `enable_kitty_keyboard = true`, recent Konsole). There the two
+  keys are distinct and no setting is needed.
+
+See [`ctrl_h`](@/getting-started/configuration.md#top-level-fields) for the
+full list of values.
 
 ## Middle-Click Paste or Drag-to-Select Doesn't Work
 

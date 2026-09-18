@@ -518,6 +518,51 @@ kimun journal show --format json | jq '.notes[0].metadata.headers'
 kimun journal show --format json | jq '.notes[0].metadata.headers[].text'
 ```
 
+## Doctor
+
+```sh
+kimun doctor
+```
+
+Reports what your terminal can deliver and what becomes of every key binding.
+Run it when a key seems to do nothing, or the wrong thing, and paste the output
+into a bug report.
+
+Terminals send `Ctrl` chords as single bytes, and some of those bytes already
+belong to real keys — `Ctrl+I` is `Tab`, `Ctrl+M` is `Enter`, `Ctrl+[` is
+`Esc`. `doctor` names every binding that cannot arrive on *this* terminal, and
+which key it arrives as instead:
+
+```
+Terminal
+  TERM                 xterm-256color
+  TERM_PROGRAM         (unset)
+  kitty keyboard       no reply — Ctrl chords share bytes with Tab, Enter and Esc
+  tty erase character  ^? (0x7f) — the usual setting
+  ctrl_h = auto         Ctrl+H is a chord (the tty's erase character is not 0x08)
+
+Key bindings
+  OpenSettings           F4 · ctrl&, (not sent by this terminal)
+  Quit                   ctrl&Q
+  ...
+
+Every bound action has a key this terminal can send.
+```
+
+An unreachable chord is fine as long as the action has another one — above,
+`Ctrl+,` cannot arrive but `F4` opens Preferences regardless. The last line is
+the one that matters: it names any action left with no usable key at all.
+
+Two of these answers come from the terminal itself, so run `doctor` **in** the
+terminal you use Kimün in. Redirected to a file or a pipe there is nobody to
+answer the query, and `doctor` says so rather than guessing.
+
+The default keymap always keeps a reachable key for every action, so a
+complaint here is almost always about a `[key_bindings]` override — see [Key
+Bindings](@/getting-started/configuration.md#key-bindings). The one exception
+is `ctrl_h = "backspace"`, which gives up the `Ctrl+H` chord by design; any
+action bound only to it is listed here, and `doctor` says so when that is why.
+
 ## JSON Output
 
 Both `search` and `notes` support JSON output for scripting and automation.

@@ -70,6 +70,12 @@ pub enum LeaderAction {
     AskSave,
     AskRegenerate,
     AskSource,
+    // +text (t) — markdown formatting. Deliberately leader-only: `Ctrl+I` is
+    // Tab's byte outside the kitty keyboard protocol, so no Ctrl chord can be
+    // the route that works on every terminal. See `settings::default_keybindings`.
+    TextBold,
+    TextItalic,
+    TextStrikethrough,
     /// Open the command palette.
     Palette,
     // help
@@ -151,6 +157,9 @@ impl LeaderAction {
             LeaderAction::AskSave => "ask.save",
             LeaderAction::AskRegenerate => "ask.regenerate",
             LeaderAction::AskSource => "ask.source",
+            LeaderAction::TextBold => "text.bold",
+            LeaderAction::TextItalic => "text.italic",
+            LeaderAction::TextStrikethrough => "text.strike",
             LeaderAction::Palette => "palette",
             LeaderAction::Help => "help",
             LeaderAction::NoteSave => "note.save",
@@ -161,7 +170,7 @@ impl LeaderAction {
     }
 
     /// Every action, for id lookup and docs.
-    pub const ALL: [LeaderAction; 63] = [
+    pub const ALL: [LeaderAction; 66] = [
         LeaderAction::OpenDrawer(DrawerView::Files),
         LeaderAction::OpenDrawer(DrawerView::Find),
         LeaderAction::OpenDrawer(DrawerView::Tags),
@@ -220,6 +229,9 @@ impl LeaderAction {
         LeaderAction::AskSave,
         LeaderAction::AskRegenerate,
         LeaderAction::AskSource,
+        LeaderAction::TextBold,
+        LeaderAction::TextItalic,
+        LeaderAction::TextStrikethrough,
         LeaderAction::Palette,
         LeaderAction::NoteSave,
         LeaderAction::AppQuit,
@@ -289,6 +301,9 @@ impl LeaderAction {
             LeaderAction::AskSave => "save as note",
             LeaderAction::AskRegenerate => "regenerate",
             LeaderAction::AskSource => "open top source",
+            LeaderAction::TextBold => "bold",
+            LeaderAction::TextItalic => "italic",
+            LeaderAction::TextStrikethrough => "strikethrough",
             LeaderAction::Palette => "command palette",
             LeaderAction::Help => "help / cheatsheet",
             LeaderAction::NoteSave => "write (save now)",
@@ -391,8 +406,13 @@ pub struct DisplayChild {
 }
 
 /// The leader tree per spec §8c (gateway key deviations noted in the module
-/// docs). Group letters: f n l o g v w m a, plus `p` `q` `?` and the digits
+/// docs). Group letters: f n l o g v w m t a, plus `p` `q` `?` and the digits
 /// `1`–`9` (pinned-note jumps).
+///
+/// `+text` is the only route to markdown formatting: the chord table binds no
+/// text action, because `Ctrl+I` is Tab's byte on every terminal without the
+/// kitty keyboard protocol and one formatting chord that silently did nothing
+/// was worse than none.
 pub fn leader_tree() -> LeaderNode {
     use DrawerView as DV;
     use LeaderAction as A;
@@ -514,6 +534,17 @@ pub fn leader_tree() -> LeaderNode {
                         ('r', leaf("rename", A::NoteRename)),
                         ('y', leaf("yank note path", A::NoteYankPath)),
                         ('i', leaf("pin / unpin", A::NoteTogglePin)),
+                    ],
+                },
+            ),
+            (
+                't',
+                Group {
+                    label: "+text".into(),
+                    children: vec![
+                        ('b', leaf("bold", A::TextBold)),
+                        ('i', leaf("italic", A::TextItalic)),
+                        ('s', leaf("strikethrough", A::TextStrikethrough)),
                     ],
                 },
             ),
@@ -875,8 +906,8 @@ mod tests {
         assert_eq!(
             groups,
             vec![
-                'f', 'n', 'l', 'o', 'g', 'v', 'w', 'm', 'a', 'p', 'q', '?', '1', '2', '3', '4',
-                '5', '6', '7', '8', '9'
+                'f', 'n', 'l', 'o', 'g', 'v', 'w', 'm', 't', 'a', 'p', 'q', '?', '1', '2', '3',
+                '4', '5', '6', '7', '8', '9'
             ]
         );
         // Doubled letters fire the group's most-common action.
@@ -1015,6 +1046,38 @@ mod tests {
         );
         assert_eq!(LeaderAction::NoteSave.id(), "note.save");
         assert_eq!(LeaderAction::AppQuit.id(), "app.quit");
+    }
+
+    /// Formatting lives here and nowhere else. `Ctrl+I` is byte `0x09` — the
+    /// same byte as Tab — on every terminal without the kitty keyboard
+    /// protocol, so a Ctrl chord could never be the route that works
+    /// everywhere; and `Ctrl+B`/`Ctrl+S` working while `Ctrl+I` silently did
+    /// not was the inconsistency worth removing. Leader keys are plain
+    /// characters after the gateway and carry no such collision.
+    #[test]
+    fn format_actions_fire_from_the_text_group() {
+        let mut e = LeaderEngine::new();
+        for (key, expected) in [
+            ('b', LeaderAction::TextBold),
+            ('i', LeaderAction::TextItalic),
+            ('s', LeaderAction::TextStrikethrough),
+        ] {
+            e.start();
+            assert_eq!(e.feed('t'), LeaderOutcome::Descended, "`t` is a group");
+            assert_eq!(e.feed(key), LeaderOutcome::Fired(expected));
+        }
+    }
+
+    #[test]
+    fn format_ids_round_trip() {
+        for action in [
+            LeaderAction::TextBold,
+            LeaderAction::TextItalic,
+            LeaderAction::TextStrikethrough,
+        ] {
+            assert_eq!(LeaderAction::from_id(action.id()), Some(action));
+        }
+        assert_eq!(LeaderAction::TextBold.id(), "text.bold");
     }
 
     #[test]

@@ -11,6 +11,7 @@ pub mod action_shortcuts;
 pub mod key_combo;
 pub mod key_strike;
 pub mod leader;
+pub mod reachability;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyBindings {
@@ -180,12 +181,21 @@ impl KeyBindings {
             .collect()
     }
 
-    /// Returns the display string of the first combo bound to `action`, or `None`.
+    /// The display string of the combo bound to `action`, or `None`.
+    ///
+    /// `min`, not `find`: this feeds the footer hints, the F1 help and the
+    /// cheatsheet, and a `HashMap` iterates in no particular order — so with
+    /// two combos on one action, `find` returned a different chord from frame
+    /// to frame and the footer flickered between them. Lowest [`KeyCombo`]
+    /// wins, which is arbitrary but stable, and matches the order
+    /// [`Self::to_hashmap`] already sorts each action's combos into.
     pub fn first_combo_for(&self, action: &ActionShortcuts) -> Option<String> {
         self.bindings
             .iter()
-            .find(|(_, a)| *a == action)
-            .map(|(combo, _)| combo.to_string())
+            .filter(|(_, a)| *a == action)
+            .map(|(combo, _)| combo)
+            .min()
+            .map(|combo| combo.to_string())
     }
 
     pub fn to_hashmap(&self) -> HashMap<ActionShortcuts, Vec<KeyCombo>> {
@@ -272,10 +282,25 @@ impl<'k> KeyBindBatch<'k> {
         self.modifiers.with_meta_cmd();
         self
     }
+    /// Bind `key` plus this batch's modifiers to `action`.
+    ///
+    /// The combo must still be free. Two `add` calls for one combo were
+    /// last-wins and silent, which is how `Ctrl+L` came to be bound to both
+    /// `Text(Link)` and `FocusEditor`: the first simply vanished, with no
+    /// warning, and `combos_for(Text(Link))` answering "nothing" was the only
+    /// trace. Every caller of this builder is a hand-written table, so a
+    /// duplicate is a mistake *in that table* and worth a panic in tests. A
+    /// user's config does not come through here — [`KeyBindings::from_hashmap`]
+    /// inserts directly and keeps last-wins, because their keymap is theirs to
+    /// contradict.
     pub fn add(self, key: KeyStrike, action: ActionShortcuts) -> KeyBindBatch<'k> {
-        self.bindings
-            .bindings
-            .insert(KeyCombo::new(self.modifiers, key), action);
+        let combo = KeyCombo::new(self.modifiers, key);
+        debug_assert!(
+            !self.bindings.bindings.contains_key(&combo),
+            "{combo} is already bound to {:?}, so binding it to {action:?} would drop that silently",
+            self.bindings.bindings.get(&combo)
+        );
+        self.bindings.bindings.insert(combo, action);
         self
     }
 }
@@ -423,6 +448,67 @@ mod tests {
         action_shortcuts::{ActionShortcuts, TextAction},
         key_strike::KeyStrike,
     };
+
+    /// `first_combo_for` feeds the footer, F1 and the cheatsheet, so it has
+    /// to answer the same thing every time it is asked. It reads a `HashMap`,
+    /// whose iteration order varies run to run and even call to call, so
+    /// picking the first match made a two-chord action flicker between its
+    /// chords mid-session.
+    #[test]
+    fn first_combo_for_is_stable_when_an_action_has_two_chords() {
+        let mut kb = KeyBindings::empty();
+        kb.batch_add()
+            .with_ctrl()
+            .add(KeyStrike::KeyB, ActionShortcuts::FocusSidebar);
+        kb.batch_add()
+            .with_alt()
+            .add(KeyStrike::KeyY, ActionShortcuts::FocusSidebar);
+
+        let first = kb
+            .first_combo_for(&ActionShortcuts::FocusSidebar)
+            .expect("bound twice");
+        for _ in 0..50 {
+            assert_eq!(
+                kb.first_combo_for(&ActionShortcuts::FocusSidebar)
+                    .as_deref(),
+                Some(first.as_str())
+            );
+        }
+        // And it is the lowest combo, not merely a stable one: `combos_for`
+        // and `to_hashmap` sort the same way, so the three agree.
+        let mut combos = kb.combos_for(&ActionShortcuts::FocusSidebar);
+        combos.sort();
+        assert_eq!(first, combos[0].to_string());
+    }
+
+    /// The guard on the builder. Without it a second `add` for one combo
+    /// overwrote the first and said nothing — the bug that left `Text(Link)`
+    /// and `Text(ToggleHeader)` with no combo at all for as long as they were
+    /// in the default table.
+    #[test]
+    #[should_panic(expected = "would drop that silently")]
+    fn a_duplicate_combo_in_one_table_panics() {
+        KeyBindings::empty()
+            .batch_add()
+            .with_ctrl()
+            .add(KeyStrike::KeyL, ActionShortcuts::Text(TextAction::Link))
+            .add(KeyStrike::KeyL, ActionShortcuts::FocusEditor);
+    }
+
+    /// A user's keymap is theirs to contradict: two actions claiming one chord
+    /// in a config resolves to one of them rather than killing the app.
+    #[test]
+    fn a_duplicate_combo_in_a_user_config_does_not() {
+        let combo = super::KeyCombo::new(super::KeyModifiers::new().and_ctrl(), KeyStrike::KeyL);
+        let kb = KeyBindings::from_hashmap(std::collections::HashMap::from([
+            (ActionShortcuts::FocusEditor, vec![combo]),
+            (ActionShortcuts::Text(TextAction::Link), vec![combo]),
+        ]));
+        assert!(
+            kb.get_action(&combo).is_some(),
+            "one of the two must win, and the app must still start"
+        );
+    }
 
     /// `SearchList` resolves its yank chords through this, so a rebinding has to
     /// come back out of it — otherwise the help dialog advertises one chord

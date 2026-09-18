@@ -1,4 +1,4 @@
-use crate::keys::action_shortcuts::{ActionShortcuts, TextAction};
+use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::key_strike::KeyStrike;
 use crate::settings::themes::Theme;
 use crate::settings::workspace_config::WorkspaceConfig;
@@ -74,6 +74,25 @@ pub enum EditorBackendSetting {
     Vim,
 }
 
+/// What a bare `0x08` byte from the terminal means — see
+/// [`crate::app::ctrl_h`] for why one byte has to stand for two keys.
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CtrlHSetting {
+    /// Let the session decide: the Ctrl-H chord on a terminal that can tell
+    /// the two keys apart, Backspace on one whose erase character is `0x08`,
+    /// the chord otherwise.
+    #[default]
+    Auto,
+    /// Always Backspace. For a terminal whose Backspace key sends `0x08`
+    /// without the tty's erase character saying so — a Konsole keytab, say.
+    /// The Ctrl-H chord becomes unreachable; rebind the action to reach it.
+    Backspace,
+    /// Always the Ctrl-H chord, even where that leaves a `0x08` Backspace key
+    /// unable to delete.
+    Chord,
+}
+
 // pub mod theme;
 
 /// Path to kimün's directory on this machine, creating it if needed — used by
@@ -115,6 +134,12 @@ const CONFIG_HEADER: &str = "\
 # ──────────────
 #   theme             = \"Gruvbox Dark\"   # or any built-in / custom theme name
 #   leader_timeout_ms = 400               # hesitation before the which-key menu
+#   ctrl_h            = \"auto\"            # auto | backspace | chord
+#       What a bare 0x08 byte means. Backspace and Ctrl-H are the same byte
+#       on terminals without the kitty keyboard protocol, so only one of the
+#       two can work there. \"auto\" keeps the Ctrl-H chord unless the tty's
+#       erase character is 0x08; set \"backspace\" if your Backspace key moves
+#       focus instead of deleting, \"chord\" to always keep the chord.
 #
 # LEADER TREE OVERRIDES
 # ─────────────────────
@@ -190,6 +215,11 @@ pub struct AppSettings {
     pub journal_sort_order: SortOrderSetting,
     #[serde(default)]
     pub group_directories: bool,
+    /// What a bare `0x08` byte means: the Backspace key, or the Ctrl-H chord.
+    /// Only one of the two can work on a terminal that spells them the same
+    /// (see [`crate::app::ctrl_h`]); this picks which.
+    #[serde(default)]
+    pub ctrl_h: CtrlHSetting,
     /// Custom config file path. `None` means use the default location.
     /// Not serialized — it's a runtime-only override.
     #[serde(skip)]
@@ -198,30 +228,25 @@ pub struct AppSettings {
 
 fn default_keybindings() -> KeyBindings {
     let mut kb = KeyBindings::empty();
+    // No formatting chords. Markdown formatting lives on the leader's `+text`
+    // group (`Ctrl+G t b` / `t i` / `t s`) and nowhere else, because `Ctrl+I`
+    // is byte 0x09 — Tab's byte — on every terminal without the kitty keyboard
+    // protocol, and when the move was made no other Ctrl+letter was free: all
+    // 26 were claimed by this table or by the editor's own clipboard and undo
+    // chords, so Italic had nowhere to go. Keeping `Ctrl+B` and `Ctrl+S`
+    // working while `Ctrl+I` silently indented was the inconsistency worth
+    // removing, so all three moved rather than two staying — which is what
+    // freed those four letters again.
+    //
+    // The `Text(..)` actions are still bindable: they parse from a config file
+    // and `editor_input::classify_tail` still claims them, so a user who wants
+    // `Ctrl+B` back writes one line. `Text(Underline)`, `Link`, `Image` and
+    // `ToggleHeader` are absent from the leader group too — `emphasis_marker`
+    // implements none of them, so there is nothing yet to reach.
     kb.batch_add()
         .with_ctrl()
         .add(KeyStrike::KeyK, ActionShortcuts::SearchNotes)
-        .add(KeyStrike::KeyO, ActionShortcuts::OpenNote)
-        .add(KeyStrike::KeyB, ActionShortcuts::Text(TextAction::Bold))
-        .add(KeyStrike::KeyI, ActionShortcuts::Text(TextAction::Italic))
-        .add(
-            KeyStrike::KeyU,
-            ActionShortcuts::Text(TextAction::Underline),
-        )
-        .add(
-            KeyStrike::KeyS,
-            ActionShortcuts::Text(TextAction::Strikethrough),
-        )
-        .add(KeyStrike::KeyL, ActionShortcuts::Text(TextAction::Link))
-        .add(
-            KeyStrike::KeyT,
-            ActionShortcuts::Text(TextAction::ToggleHeader),
-        )
-        // =============================
-        // We add shift to the modifiers
-        // =============================
-        .with_shift()
-        .add(KeyStrike::KeyL, ActionShortcuts::Text(TextAction::Image));
+        .add(KeyStrike::KeyO, ActionShortcuts::OpenNote);
 
     // TUI navigation shortcuts (always Ctrl — terminal apps don't use Cmd/Meta).
     // NOTE: the `Quit` entry must match `crate::keys::default_quit_combo()`,
@@ -234,8 +259,11 @@ fn default_keybindings() -> KeyBindings {
         .add(KeyStrike::KeyQ, ActionShortcuts::Quit)
         .add(KeyStrike::KeyJ, ActionShortcuts::NewJournal)
         // Drawer toggle. Deliberate spec deviation: the spec's Tier-0 puts
-        // this on Ctrl-B, but Ctrl-B stays Bold (decision 2026-06-05) — the
-        // drawer toggle lives on Ctrl-T.
+        // this on Ctrl-B; the toggle went to Ctrl-T instead to leave Ctrl-B on
+        // Bold (decision 2026-06-05). Bold has since left the chord table for
+        // the leader, freeing Ctrl-B — but the toggle stays here, because
+        // moving a chord people have in their fingers to satisfy a spec is
+        // the cost without the benefit.
         .add(KeyStrike::KeyT, ActionShortcuts::ToggleSidebar)
         .add(KeyStrike::KeyR, ActionShortcuts::OpenSortDialog)
         // Leader gateway. Spec deviation: spec says Ctrl-K, which stays the
@@ -287,9 +315,10 @@ fn default_keybindings() -> KeyBindings {
         .add(KeyStrike::F5, ActionShortcuts::SwitchWorkspace);
 
     // Ctrl+D — save the current query to saved searches. Ctrl-only by design:
-    // Ctrl+Shift is unreliable on some terminals, Ctrl+S is taken by
-    // Strikethrough, and Ctrl+{A,C,X,Z} are claimed by the editor. Ctrl+D is
-    // the only free, terminal-safe Ctrl combo.
+    // Ctrl+Shift is unreliable on some terminals and Ctrl+{A,C,V,X,Y,Z} are
+    // claimed by the editor's own clipboard and undo chords. Ctrl+D was the
+    // only free, terminal-safe combo when it was chosen; retiring the
+    // formatting chords has since freed Ctrl+{B,I,S,U} as well.
     kb.batch_add()
         .with_ctrl()
         .add(KeyStrike::KeyD, ActionShortcuts::SaveCurrentQuery);
@@ -468,6 +497,7 @@ impl Default for AppSettings {
             journal_sort_field: default_journal_sort_field(),
             journal_sort_order: default_journal_sort_order(),
             group_directories: false,
+            ctrl_h: CtrlHSetting::default(),
             config_file: None,
         }
     }
@@ -1261,6 +1291,126 @@ mod backend_tests {
         assert!(s.contains("editor_backend = \"vim\""), "serialized: {s}");
         let back: W = toml::from_str(&s).unwrap();
         assert_eq!(back.editor_backend, EditorBackendSetting::Vim);
+    }
+
+    /// Every action the default keymap binds must keep at least one chord
+    /// that survives a terminal without the kitty keyboard protocol — the
+    /// weakest terminal kimün supports, and the common case on Linux and
+    /// macOS.
+    ///
+    /// This is the guard that `Ctrl+I` needed and did not have: it was bound
+    /// to Italic for as long as nobody noticed that `0x09` is Tab's byte, and
+    /// nothing failed. An action with several chords passes on any one of
+    /// them, which is exactly why `OpenPreferences` leads with F4 and keeps
+    /// `Ctrl+,` as the alias rather than the reverse.
+    #[test]
+    fn every_default_action_keeps_a_chord_a_legacy_terminal_can_send() {
+        use crate::keys::reachability::{TerminalKeys, reach};
+
+        for (action, combos) in default_keybindings().to_hashmap() {
+            let verdicts: Vec<String> = combos
+                .iter()
+                .map(|c| format!("{c}: {}", reach(*c, TerminalKeys::LEGACY)))
+                .collect();
+            assert!(
+                combos
+                    .iter()
+                    .any(|c| reach(*c, TerminalKeys::LEGACY).is_ok()),
+                "{action} has no chord a legacy terminal can send: {}",
+                verdicts.join("; ")
+            );
+        }
+    }
+
+    /// The other half of the rule above, made explicit because it reads like
+    /// a bug otherwise: an unreachable chord is fine *as an alias*. `Ctrl+,`
+    /// is the classic Preferences chord and most terminals send nothing
+    /// distinct for it, so F4 carries the action and `Ctrl+,` is a bonus on
+    /// terminals that can manage it. Drop F4 and the invariant fires.
+    #[test]
+    fn an_unreachable_chord_is_allowed_as_an_alias() {
+        use crate::keys::key_combo::{KeyCombo, KeyModifiers};
+        use crate::keys::reachability::{Reach, TerminalKeys, reach};
+
+        let kb = default_keybindings();
+        let combos = kb.combos_for(&ActionShortcuts::OpenPreferences);
+        let ctrl_comma = KeyCombo::new(KeyModifiers::new().and_ctrl(), KeyStrike::Comma);
+        assert!(combos.contains(&ctrl_comma), "the alias is still bound");
+        assert_eq!(
+            reach(ctrl_comma, TerminalKeys::LEGACY),
+            Reach::Untransmitted,
+            "and it is still the unreachable one"
+        );
+        assert!(
+            combos.contains(&KeyCombo::new(KeyModifiers::new(), KeyStrike::F4)),
+            "F4 is what actually carries Preferences"
+        );
+    }
+
+    /// All formatting lives on the leader (`Ctrl+G t b` / `t i` / `t s`), so
+    /// the chord table binds no text action at all. `Ctrl+I` cannot work
+    /// outside the kitty keyboard protocol — it is Tab's byte — and having
+    /// `Ctrl+B` and `Ctrl+S` work while it silently did not was the
+    /// inconsistency. Users who want a chord back can still bind one: the
+    /// `Text(..)` actions stay parseable from config and the shortcut tier
+    /// still claims them.
+    #[test]
+    fn the_default_table_binds_no_text_action() {
+        let kb = default_keybindings();
+        let bound: Vec<String> = kb
+            .to_hashmap()
+            .keys()
+            .filter_map(|a| match a {
+                ActionShortcuts::Text(t) => Some(format!("{t:?}")),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            bound.is_empty(),
+            "formatting belongs on the leader, but these still hold chords: {bound:?}"
+        );
+    }
+
+    /// Ctrl+L and Ctrl+T belong to focus and the drawer. `Text(Link)` and
+    /// `Text(ToggleHeader)` once asked for the same two chords and lost them
+    /// in silence; the builder now panics on that, and
+    /// `the_default_table_binds_no_text_action` covers the formatting side.
+    /// What is left to pin here is who owns the two chords.
+    #[test]
+    fn ctrl_l_and_ctrl_t_belong_to_focus_and_the_drawer() {
+        let kb = default_keybindings();
+        use crate::keys::key_combo::{KeyCombo, KeyModifiers};
+        let ctrl = |key| KeyCombo::new(KeyModifiers::new().and_ctrl(), key);
+        assert_eq!(
+            kb.get_action(&ctrl(KeyStrike::KeyL)),
+            Some(ActionShortcuts::FocusEditor)
+        );
+        assert_eq!(
+            kb.get_action(&ctrl(KeyStrike::KeyT)),
+            Some(ActionShortcuts::ToggleSidebar)
+        );
+    }
+
+    /// Every spelling of the setting parses, and an older config without the
+    /// key keeps the Ctrl-H chord it has always had.
+    #[test]
+    fn ctrl_h_parses_and_defaults_to_auto() {
+        for (written, expected) in [
+            ("auto", CtrlHSetting::Auto),
+            ("backspace", CtrlHSetting::Backspace),
+            ("chord", CtrlHSetting::Chord),
+        ] {
+            let s = toml::from_str::<AppSettings>(&format!("ctrl_h = \"{written}\"\n"))
+                .unwrap_or_else(|e| panic!("ctrl_h = \"{written}\" must parse: {e}"));
+            assert_eq!(s.ctrl_h, expected);
+        }
+        assert_eq!(
+            toml::from_str::<AppSettings>("theme = \"gruvbox_dark\"\n")
+                .unwrap()
+                .ctrl_h,
+            CtrlHSetting::Auto,
+            "a config written before the setting existed must not change behaviour"
+        );
     }
 
     /// Workspace cache/history paths are absolute however the settings were

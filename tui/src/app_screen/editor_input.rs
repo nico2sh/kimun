@@ -70,6 +70,14 @@ impl InputCtx {
     fn find_panel_focused(&self) -> bool {
         self.focused == PanelKind::Drawer && self.drawer_view == DrawerView::Find
     }
+
+    /// Whether a buffer-targeting op (`EditorOp::ApplyText`) may run right
+    /// now: the editor owns input *and* no editor-internal surface holds it.
+    /// The same verdict `apply_claim` reaches for the chord tier; the leader
+    /// route asks here instead of re-deriving it, so the two cannot drift.
+    pub(crate) fn accepts_text_action(&self) -> bool {
+        self.editor_active() && self.claim == EditorClaim::None
+    }
 }
 
 /// The classifier's full verdict: pre-effects plus the intent. The executor
