@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.2](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.24.1...kimun-notes-v0.24.2) - 2026-09-18
+
+### Added
+
+- kimun doctor
+
+### Fixed
+
+- removed unsafe code for key combo validation
+- small bugs on the tui
+- regressions
+- ctrl I notes and guardrail
+- ctrl + H resolves to backspace in old terminals
+- clarifying comments for cache location
+- windows test on db index
+
+### Other
+
+- consistency on the terminal keys reach
+- format shortcuts are now leader-based
+- Update README.md
+
 ## [0.24.1](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.24.0...kimun-notes-v0.24.1) - 2026-09-13
 
 ### Added
