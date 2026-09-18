@@ -349,7 +349,7 @@ fn unreachable_binding_notice(
     setting: crate::settings::CtrlHSetting,
     ctrl_h: ctrl_h::CtrlHPolicy,
 ) -> Option<String> {
-    use crate::keys::reachability::{Reach, TerminalKeys, unreachable_actions};
+    use crate::keys::reachability::{TerminalKeys, unreachable_actions};
 
     let keys = TerminalKeys::detected(
         session.keyboard_enhanced(),
@@ -374,13 +374,8 @@ fn unreachable_binding_notice(
         return None;
     }
     for u in &stranded {
-        for (combo, reach) in &u.combos {
-            let fate = match reach {
-                Reach::Ok => continue,
-                Reach::Shadowed(by) => format!("arrives as {by}"),
-                Reach::Untransmitted => "is not sent by this terminal".to_string(),
-            };
-            tracing::warn!("key binding {combo} for {} {fate}", u.action);
+        for (combo, fate) in &u.combos {
+            tracing::warn!("key binding {combo} for {}: {fate}", u.action);
         }
     }
     Some(notice_text(&stranded, setting, ctrl_h))

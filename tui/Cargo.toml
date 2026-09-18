@@ -78,9 +78,11 @@ self-replace = "1"
 
 # `src/app/ctrl_h.rs` only: `tcgetattr`, to read the tty's erase character.
 # The Backspace-vs-Ctrl-H tie cannot be broken from the byte stream, and this
-# is the one signal about which convention the terminal is set up for.
+# is the one signal about which convention the terminal is set up for. rustix
+# rather than libc: crossterm already compiles it with `termios`, and its
+# `tcgetattr` needs no `unsafe`.
 [target.'cfg(unix)'.dependencies]
-libc = "0.2"
+rustix = { version = "1", features = ["termios"] }
 
 [dev-dependencies]
 tempfile = "3"

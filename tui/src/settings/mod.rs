@@ -1305,16 +1305,12 @@ mod backend_tests {
     /// `Ctrl+,` as the alias rather than the reverse.
     #[test]
     fn every_default_action_keeps_a_chord_a_legacy_terminal_can_send() {
-        use crate::keys::reachability::{Reach, TerminalKeys, reach};
+        use crate::keys::reachability::{TerminalKeys, reach};
 
         for (action, combos) in default_keybindings().to_hashmap() {
             let verdicts: Vec<String> = combos
                 .iter()
-                .map(|c| match reach(*c, TerminalKeys::LEGACY) {
-                    Reach::Ok => format!("{c} arrives"),
-                    Reach::Shadowed(by) => format!("{c} arrives as {by}"),
-                    Reach::Untransmitted => format!("{c} is never sent"),
-                })
+                .map(|c| format!("{c}: {}", reach(*c, TerminalKeys::LEGACY)))
                 .collect();
             assert!(
                 combos

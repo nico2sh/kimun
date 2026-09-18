@@ -1115,7 +1115,7 @@ impl EditorScreen {
             // Leader `v t` and inside CFG via `t`; the full settings screen
             // stays on the OpenSettings binding.
             OverlayOpen::ThemePicker => Box::new(ActiveDialog::theme_picker(&s)),
-            OverlayOpen::Help => Box::new(ActiveDialog::help(&s.key_bindings)),
+            OverlayOpen::Help => Box::new(ActiveDialog::help(&s.key_bindings, &s.leader_tree())),
             OverlayOpen::QueryHelp => Box::new(ActiveDialog::query_syntax()),
             OverlayOpen::Cheatsheet => Box::new(ActiveDialog::cheatsheet(&s)),
             OverlayOpen::SortQuery => {

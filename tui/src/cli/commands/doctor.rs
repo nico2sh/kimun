@@ -96,8 +96,7 @@ pub fn run(config_path: Option<PathBuf>) -> Result<()> {
                 .iter()
                 .map(|c| match reach(*c, keys) {
                     Reach::Ok => c.to_string(),
-                    Reach::Shadowed(by) => format!("{c} (arrives as {by})"),
-                    Reach::Untransmitted => format!("{c} (not sent by this terminal)"),
+                    fate => format!("{c} ({fate})"),
                 })
                 .collect();
             (action.to_string(), fates)
