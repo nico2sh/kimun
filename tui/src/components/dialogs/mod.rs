@@ -94,8 +94,11 @@ impl ActiveDialog {
     }
 
     // Constructors for the dialogs opened by EditorScreen via OverlayHost.
-    pub fn help(key_bindings: &crate::keys::KeyBindings) -> Self {
-        ActiveDialog::Help(HelpDialog::new(key_bindings))
+    pub fn help(
+        key_bindings: &crate::keys::KeyBindings,
+        tree: &crate::keys::leader::LeaderNode,
+    ) -> Self {
+        ActiveDialog::Help(HelpDialog::new(key_bindings, tree))
     }
 
     /// The full leader-tree cheatsheet (leader `?`).
@@ -395,7 +398,7 @@ mod tests {
 
     #[test]
     fn active_dialog_help_variant_compiles() {
-        let dialog = HelpDialog::new(&KeyBindings::empty());
+        let dialog = HelpDialog::new(&KeyBindings::empty(), &crate::keys::leader::leader_tree());
         let _active: ActiveDialog = ActiveDialog::Help(dialog);
     }
 

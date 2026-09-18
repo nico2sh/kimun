@@ -26,6 +26,12 @@
 # ──────────────
 #   theme             = "Gruvbox Dark"   # or any built-in / custom theme name
 #   leader_timeout_ms = 400               # hesitation before the which-key menu
+#   ctrl_h            = "auto"            # auto | backspace | chord
+#       What a bare 0x08 byte means. Backspace and Ctrl-H are the same byte
+#       on terminals without the kitty keyboard protocol, so only one of the
+#       two can work there. "auto" keeps the Ctrl-H chord unless the tty's
+#       erase character is 0x08; set "backspace" if your Backspace key moves
+#       focus instead of deleting, "chord" to always keep the chord.
 #
 # LEADER TREE OVERRIDES
 # ─────────────────────
@@ -40,7 +46,7 @@
 #   "f"   = "+search"        # rename the +find group caption
 #
 # ─────────────────────────────────────────────────────────────────────────────
-config_version = 6
+config_version = 7
 theme = "Gruvbox Dark"
 cache_dir = "."
 history_dir = "history"
@@ -53,6 +59,7 @@ default_sort_order = "ascending"
 journal_sort_field = "name"
 journal_sort_order = "descending"
 group_directories = false
+ctrl_h = "auto"
 
 [global]
 current_workspace = "personal"
@@ -74,11 +81,6 @@ OpenSettings = ["F4", "ctrl&,"]
 SearchNotes = ["ctrl&K"]
 OpenNote = ["ctrl&O"]
 NewJournal = ["ctrl&J"]
-TextEditor-Bold = ["ctrl&B"]
-TextEditor-Italic = ["ctrl&I"]
-TextEditor-Image = ["ctrl+shift&L"]
-TextEditor-Underline = ["ctrl&U"]
-TextEditor-Strikethrough = ["ctrl&S"]
 ToggleSidebar = ["ctrl&T"]
 FocusEditor = ["ctrl&L"]
 FocusSidebar = ["ctrl&H"]

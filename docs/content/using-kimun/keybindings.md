@@ -34,8 +34,25 @@ Everything on one screen. Looking for how to *change* a binding? That's in [Conf
 | File operations | `F2` |
 | Switch workspace | `F5` |
 | Focus right / left | `Ctrl+L` / `Ctrl+H` |
-| Bold / Italic / Strikethrough | `Ctrl+B` / `Ctrl+I` / `Ctrl+S` |
+| Bold / Italic / Strikethrough | `Ctrl+G t b` / `t i` / `t s` — see below¹ |
 | Help | `F1` (cheatsheet: `Ctrl+G ?`) |
+
+¹ Formatting has no `Ctrl` chord, on purpose. `Ctrl+I` and `Tab` are the same
+byte (`0x09`) on every terminal without the [kitty keyboard
+protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/), so it could
+never be the route that works everywhere — and `Ctrl+B` and `Ctrl+S` working
+while `Ctrl+I` quietly indented was worse than one consistent route. All three
+live in the leader's `+text` group, which works in every terminal.
+
+Want a chord back? Bind one — the actions are still bindable:
+
+```toml
+[key_bindings]
+TextEditor-Bold = ["ctrl&B"]
+```
+
+Remember that a `[key_bindings]` section [replaces the whole
+keymap](@/getting-started/configuration.md#replace-not-merge).
 
 ## The Leader Tree
 
@@ -50,6 +67,7 @@ Everything else lives behind the leader: press `Ctrl+G`, then a short sequence. 
 | `g` +git | `g s` status · `g p` sync/push · `g l` log · `g d` diff *(log/diff/sync are display-only stubs)* |
 | `v` +vault | `v s` switch vault · `v r` reindex · `v c` config panel · `v t` theme picker · `v p` preferences |
 | `w` +window | `w z` zen · `w l`/`w h` grow/shrink drawer |
+| `t` +text | `t b` bold · `t i` italic · `t s` strikethrough |
 | `m` +this note | `m t` toggle todo · `m p` preview · `m c` copy wikilink · `m y` yank path · `m r` rename · `m i` pin / unpin |
 | `p` | command palette |
 | `?` | help / cheatsheet |

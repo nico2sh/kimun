@@ -44,6 +44,8 @@ pub enum CliCommand {
     },
     /// Append to or show journal entries
     Journal(JournalArgs),
+    /// Report what this terminal can deliver, and every key binding's fate
+    Doctor,
     /// Start the MCP server (stdio transport)
     Mcp,
     /// List all hashtag labels in the vault with note counts
@@ -114,6 +116,10 @@ pub async fn run_cli(command: CliCommand, config_path: Option<std::path::PathBuf
             vault.close().await;
             result
         }
+        // Vault-independent: reads the config and asks the terminal, nothing
+        // more. Opening a workspace here would make a diagnostic depend on the
+        // thing being diagnosed.
+        CliCommand::Doctor => commands::doctor::run(config_path),
         CliCommand::Mcp => commands::mcp::run(config_path).await,
         CliCommand::Labels { format } => {
             let (vault, workspace_name) = create_and_init_vault(config_path).await?;

@@ -116,7 +116,7 @@ The file has five kinds of contents:
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `config_version` | integer | `6` | Schema version. Managed by the config migration system; do not edit. |
+| `config_version` | integer | `7` | Schema version. Managed by the config migration system; do not edit. |
 | `cache_dir` | string | `"."` | Directory for per-workspace SQLite caches (`<workspace>.kimuncache`). Resolved relative to the config file's directory. Accepts `~`, relative, or absolute paths. |
 | `history_dir` | string | `"history"` | Directory for per-workspace history files (`<workspace>.txt`). Same path resolution as `cache_dir`. |
 | `theme` | string | `""` | Active TUI theme name (e.g. `"Nord"`). Empty string = built-in default. See [Themes](@/using-kimun/themes.md). |
@@ -130,6 +130,7 @@ The file has five kinds of contents:
 | `journal_sort_field` | string | `"name"` | Sort field for the journal view. One of `"name"`, `"title"`. |
 | `journal_sort_order` | string | `"descending"` | Sort direction for the journal view. Descending shows newest first. |
 | `group_directories` | boolean | `false` | When `true`, the sidebar lists directories first, each group sorted by the chosen field/order. Set live from the sort dialog. |
+| `ctrl_h` | string | `"auto"` | Old terminals send `Backspace` and `Ctrl+H` the same way (character `0x08`), meaning that if you press `Backspace` the app will execute the binding associated to `Ctrl+H` if configured. `"auto"` keeps the `Ctrl+H` chord wherever the two keys are distinguishable — under the kitty keyboard protocol, or when the terminal's erase character is `0x7F` — and only gives it up on a terminal whose erase character is `0x08`. `"backspace"` makes the key delete and gives up the chord everywhere; it is the fix when `Backspace` moves focus instead of deleting. `"chord"` always keeps the chord. See [Troubleshooting](@/getting-started/troubleshooting.md#backspace-moves-focus-instead-of-deleting). |
 
 ### `[global]` Section
 
@@ -328,6 +329,10 @@ Use these names exactly as shown. For the default shortcuts each one ships with,
 - `OpenSortDialog` — Open the sort dialog for the focused panel (sidebar or query panel): choose sort field (name/title), direction, and (for the sidebar) whether to group directories first. (The legacy action names `CycleSortField` and `SortReverseOrder` still parse and map to this action.)
 
 **Text editing** (only fire while the editor has focus)
+
+These have **no default binding** — formatting is reached through the leader's
+`+text` group (`Ctrl+G t b` / `t i` / `t s`). They stay bindable if you want a
+chord; `Bold`, `Italic` and `Strikethrough` are the three that are implemented.
 
 - `TextEditor-Bold`
 - `TextEditor-Italic`

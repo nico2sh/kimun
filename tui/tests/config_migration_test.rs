@@ -1,4 +1,5 @@
 use kimun_notes::settings::AppSettings;
+use kimun_notes::settings::config_migration::CURRENT_CONFIG_VERSION;
 use tempfile::TempDir;
 
 mod common;
@@ -11,10 +12,13 @@ fn current_version_config_loads_without_migration() {
     let config_path = temp_dir.path().join("config.toml");
 
     // Write a config already at the current version, so no migration
-    // should run.
+    // should run. Sourced from the constant rather than a literal: a config
+    // "at the current version" is whatever that constant says today, and
+    // hardcoding it made this test fail on the v7 bump for no reason of its
+    // own.
     let v3_toml = format!(
         r#"
-config_version = 6
+config_version = {CURRENT_CONFIG_VERSION}
 
 [global]
 current_workspace = "default"
@@ -32,7 +36,7 @@ created = "2024-01-15T10:30:00Z"
     let settings = AppSettings::load_from_file(config_path.clone()).unwrap();
 
     assert!(settings.workspace_config.is_some());
-    assert_eq!(settings.config_version, 6);
+    assert_eq!(settings.config_version, CURRENT_CONFIG_VERSION);
 }
 
 #[test]
