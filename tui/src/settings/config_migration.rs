@@ -92,9 +92,8 @@ impl ConfigMigration {
         let ctrl_comma = KeyCombo::new(ctrl, KeyStrike::Comma);
 
         let mut map = settings.key_bindings.to_hashmap();
-        let at_old_default = map
-            .get(&ActionShortcuts::OpenPreferences)
-            .is_some_and(|v| v.as_slice() == [ctrl_shift_p]);
+        let at_old_default =
+            still_at_default(&map, &ActionShortcuts::OpenPreferences, ctrl_shift_p);
         let comma_free = !map.values().flatten().any(|c| *c == ctrl_comma);
         if at_old_default && comma_free {
             map.insert(ActionShortcuts::OpenPreferences, vec![ctrl_comma]);
@@ -115,10 +114,7 @@ impl ConfigMigration {
     /// so the startup warning would fire about bindings kimün itself wrote.
     ///
     /// Each entry goes only if it still holds exactly the combo that was its
-    /// default; an edited one is left alone. Someone who typed the old
-    /// default by hand is indistinguishable from someone who inherited it —
-    /// unavoidable once defaults are serialized — and re-adding the line is
-    /// how they get it back.
+    /// default; an edited one is left alone.
     fn migrate_to_v7(settings: &mut AppSettings) {
         use crate::keys::KeyBindings;
         use crate::keys::action_shortcuts::{ActionShortcuts, TextAction};
@@ -147,10 +143,7 @@ impl ConfigMigration {
         let mut map = settings.key_bindings.to_hashmap();
         for (action, old_default) in retired {
             let action = ActionShortcuts::Text(action);
-            if map
-                .get(&action)
-                .is_some_and(|combos| combos.as_slice() == [old_default])
-            {
+            if still_at_default(&map, &action, old_default) {
                 map.remove(&action);
             }
         }
@@ -172,9 +165,8 @@ impl ConfigMigration {
         let ctrl_shift_p = KeyCombo::new(ctrl_shift, KeyStrike::KeyP);
 
         let mut map = settings.key_bindings.to_hashmap();
-        let settings_is_old_default = map
-            .get(&ActionShortcuts::OpenPreferences)
-            .is_some_and(|v| v.as_slice() == [ctrl_p]);
+        let settings_is_old_default =
+            still_at_default(&map, &ActionShortcuts::OpenPreferences, ctrl_p);
         let palette_unset_or_old_default = map
             .get(&ActionShortcuts::OpenCommandPalette)
             .is_none_or(|v| v.is_empty() || v.as_slice() == [ctrl_shift_p]);
@@ -200,9 +192,7 @@ impl ConfigMigration {
         let ctrl_n = KeyCombo::new(ctrl, KeyStrike::KeyN);
 
         let mut map = settings.key_bindings.to_hashmap();
-        let follow_is_old_default = map
-            .get(&ActionShortcuts::FollowLink)
-            .is_some_and(|v| v.as_slice() == [ctrl_g]);
+        let follow_is_old_default = still_at_default(&map, &ActionShortcuts::FollowLink, ctrl_g);
         if follow_is_old_default {
             // Old default: hand Ctrl-G to the leader, FollowLink → Ctrl-N.
             map.insert(ActionShortcuts::FollowLink, vec![ctrl_n]);
@@ -213,6 +203,23 @@ impl ConfigMigration {
         // unbound until `merge_missing_default_bindings` finds Ctrl-G free
         // or the user binds it explicitly.)
     }
+}
+
+/// Whether `action` is bound to exactly `default` and nothing else — the
+/// "the user never touched this" test every keymap migration makes before it
+/// moves a binding. Someone who typed the old default by hand is
+/// indistinguishable from someone who inherited it; that is the accepted
+/// cost of serializing defaults, and re-adding the line is how they get it
+/// back.
+fn still_at_default(
+    map: &std::collections::HashMap<
+        crate::keys::action_shortcuts::ActionShortcuts,
+        Vec<crate::keys::key_combo::KeyCombo>,
+    >,
+    action: &crate::keys::action_shortcuts::ActionShortcuts,
+    default: crate::keys::key_combo::KeyCombo,
+) -> bool {
+    map.get(action).is_some_and(|v| v.as_slice() == [default])
 }
 
 #[cfg(test)]

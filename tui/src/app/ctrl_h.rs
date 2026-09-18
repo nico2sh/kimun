@@ -144,21 +144,12 @@ pub fn tty_erase_char() -> Option<u8> {
     erase_char_of(tty.as_fd())
 }
 
-/// `c_cc[VERASE]` of one descriptor, or `None` when it is not a terminal.
+/// `VERASE` of one descriptor, or `None` when it is not a terminal.
 #[cfg(unix)]
 fn erase_char_of(fd: std::os::fd::BorrowedFd<'_>) -> Option<u8> {
-    use std::os::fd::AsRawFd;
-
-    let mut termios = std::mem::MaybeUninit::<libc::termios>::uninit();
-    // SAFETY: `tcgetattr` either fills `termios` completely or returns
-    // non-zero, and it borrows nothing past the call. The buffer is only read
-    // on the success path, below.
-    if unsafe { libc::tcgetattr(fd.as_raw_fd(), termios.as_mut_ptr()) } != 0 {
-        return None;
-    }
-    // SAFETY: `tcgetattr` returned 0, so the struct is initialised.
-    let termios = unsafe { termios.assume_init() };
-    Some(termios.c_cc[libc::VERASE])
+    use rustix::termios::{SpecialCodeIndex, tcgetattr};
+    let termios = tcgetattr(fd).ok()?;
+    Some(termios.special_codes[SpecialCodeIndex::VERASE])
 }
 
 /// Windows has no `termios`, and no ambiguity to resolve: the console API
@@ -182,11 +173,11 @@ mod tests {
     }
 
     /// The kitty protocol makes the keys distinct, so `Auto` must not spend
-    /// the chord — whatever the tty's erase character happens to be.
+    /// the chord — even when the tty's erase character says otherwise.
     #[test]
     fn auto_keeps_the_chord_under_the_kitty_protocol() {
         assert_eq!(
-            CtrlHPolicy::resolve(CtrlHSetting::Auto, true),
+            CtrlHPolicy::resolve_with(CtrlHSetting::Auto, true, true),
             CtrlHPolicy::Chord
         );
     }
@@ -194,18 +185,20 @@ mod tests {
     /// Both explicit settings are obeyed on every terminal: naming one is the
     /// escape hatch for a session whose ambiguity `Auto` guessed wrong.
     #[test]
-    fn explicit_settings_ignore_the_protocol() {
+    fn explicit_settings_ignore_the_terminal() {
         for enhanced in [false, true] {
-            assert_eq!(
-                CtrlHPolicy::resolve(CtrlHSetting::Backspace, enhanced),
-                CtrlHPolicy::Backspace,
-                "explicit `backspace` must hold with keyboard_enhanced={enhanced}"
-            );
-            assert_eq!(
-                CtrlHPolicy::resolve(CtrlHSetting::Chord, enhanced),
-                CtrlHPolicy::Chord,
-                "explicit `chord` must hold with keyboard_enhanced={enhanced}"
-            );
+            for erase_is_bs in [false, true] {
+                assert_eq!(
+                    CtrlHPolicy::resolve_with(CtrlHSetting::Backspace, enhanced, erase_is_bs),
+                    CtrlHPolicy::Backspace,
+                    "explicit `backspace` must hold with enhanced={enhanced} erase_is_bs={erase_is_bs}"
+                );
+                assert_eq!(
+                    CtrlHPolicy::resolve_with(CtrlHSetting::Chord, enhanced, erase_is_bs),
+                    CtrlHPolicy::Chord,
+                    "explicit `chord` must hold with enhanced={enhanced} erase_is_bs={erase_is_bs}"
+                );
+            }
         }
     }
 

@@ -99,6 +99,20 @@ impl Reach {
     }
 }
 
+/// The fate as a phrase, without the chord — `arrives`, `arrives as <Tab>`,
+/// `not sent by this terminal`. `kimun doctor`, the startup log line and the
+/// settings invariant test all print it, and `docs/.../cli.md` quotes
+/// doctor's output, so the words live here and nowhere else.
+impl std::fmt::Display for Reach {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Reach::Ok => f.write_str("arrives"),
+            Reach::Shadowed(by) => write!(f, "arrives as {by}"),
+            Reach::Untransmitted => f.write_str("not sent by this terminal"),
+        }
+    }
+}
+
 /// The byte a `Ctrl` chord on `key` packs to on a legacy terminal, or `None`
 /// for a key most terminals send no distinct code for. Letters and the
 /// punctuation that shares their column are the only keys with a byte.
@@ -226,6 +240,11 @@ pub fn reach(combo: KeyCombo, keys: TerminalKeys) -> Reach {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unreachable {
     pub action: ActionShortcuts,
+    /// What becomes of each chord this action does have — never `Reach::Ok`.
+    /// `unreachable_actions` below only builds an `Unreachable` for an action
+    /// once it has confirmed `!combos.iter().any(|c| reach(*c, keys).is_ok())`,
+    /// so by construction none of the pairs stored here can be the `Ok` case;
+    /// each one is already known to be `Shadowed` or `Untransmitted`.
     pub combos: Vec<(KeyCombo, Reach)>,
 }
 
@@ -595,6 +614,22 @@ mod tests {
                 ctrl(KeyStrike::KeyH),
                 Reach::Shadowed(KeyCombo::new(KeyModifiers::new(), KeyStrike::Backspace))
             )]
+        );
+    }
+
+    /// Three callers print a chord's fate — doctor, the startup log line and
+    /// the default-keymap invariant test — and they had three wordings. One
+    /// `Display`, so the docs' doctor sample stays the wording everywhere.
+    #[test]
+    fn a_fate_has_one_wording() {
+        assert_eq!(Reach::Ok.to_string(), "arrives");
+        assert_eq!(
+            Reach::Shadowed(KeyCombo::new(KeyModifiers::new(), KeyStrike::Tab)).to_string(),
+            "arrives as <Tab>"
+        );
+        assert_eq!(
+            Reach::Untransmitted.to_string(),
+            "not sent by this terminal"
         );
     }
 }
