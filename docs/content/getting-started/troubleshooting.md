@@ -62,6 +62,10 @@ Nothing can tell the two apart from the byte alone, so you pick which one wins:
 ctrl_h = "backspace"    # Backspace deletes; the Ctrl+H chord is unreachable
 ```
 
+Under the default `auto`, kimün picks `backspace` by itself when the tty's
+erase character is `^H`; the footer says so the first time you open a note,
+and **focus left** needs a new key or `ctrl_h = "chord"`.
+
 Then rebind **focus left** to something else if you use it — see [Key
 Bindings](@/getting-started/configuration.md#key-bindings).
 

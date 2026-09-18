@@ -138,15 +138,10 @@ impl ConfigMigration {
                 TextAction::Image,
                 KeyCombo::new(ctrl.and_shift(), KeyStrike::KeyL),
             ),
-            // These two never reached a config file — they were overwritten
-            // inside `default_keybindings` before it was ever serialized —
-            // but they were defaults on paper, so retire them for the same
-            // reason and in the same place.
-            (TextAction::Link, KeyCombo::new(ctrl, KeyStrike::KeyL)),
-            (
-                TextAction::ToggleHeader,
-                KeyCombo::new(ctrl, KeyStrike::KeyT),
-            ),
+            // `Link → Ctrl+L` and `ToggleHeader → Ctrl+T` were defaults on
+            // paper only: overwritten inside `default_keybindings` before it
+            // was ever serialized, so no v6 file carries them. A file that
+            // does was edited by hand, and is left alone like any other edit.
         ];
 
         let mut map = settings.key_bindings.to_hashmap();
@@ -342,6 +337,41 @@ mod tests {
                 .to_hashmap()
                 .get(&ActionShortcuts::Text(TextAction::Bold)),
             Some(&vec![moved])
+        );
+    }
+
+    /// `Link → Ctrl+L` and `ToggleHeader → Ctrl+T` were never written to a
+    /// config by kimün, so a v6 file that carries one was typed by hand —
+    /// and a hand-typed line is the user's to keep.
+    #[test]
+    fn v7_keeps_a_hand_written_link_or_header_chord() {
+        use crate::keys::KeyBindings;
+        use crate::keys::action_shortcuts::{ActionShortcuts, TextAction};
+        use crate::keys::key_combo::{KeyCombo, KeyModifiers};
+        use crate::keys::key_strike::KeyStrike;
+
+        let ctrl = KeyModifiers::new().and_ctrl();
+        let link = KeyCombo::new(ctrl, KeyStrike::KeyL);
+        let header = KeyCombo::new(ctrl, KeyStrike::KeyT);
+        let mut settings = AppSettings::default();
+        settings.key_bindings = KeyBindings::from_hashmap(std::collections::HashMap::from([
+            (ActionShortcuts::Text(TextAction::Link), vec![link]),
+            (
+                ActionShortcuts::Text(TextAction::ToggleHeader),
+                vec![header],
+            ),
+        ]));
+        settings.config_version = 6;
+
+        ConfigMigration::run(&mut settings).unwrap();
+        let map = settings.key_bindings.to_hashmap();
+        assert_eq!(
+            map.get(&ActionShortcuts::Text(TextAction::Link)),
+            Some(&vec![link])
+        );
+        assert_eq!(
+            map.get(&ActionShortcuts::Text(TextAction::ToggleHeader)),
+            Some(&vec![header])
         );
     }
 

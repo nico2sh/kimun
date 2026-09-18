@@ -126,13 +126,34 @@ impl CtrlHPolicy {
 /// more. Raw mode does not touch `c_cc[VERASE]`, so the answer is the same
 /// before or after `enable_raw_mode`, which is what lets `kimun doctor` read
 /// it outside the TUI.
+///
+/// Asked of the descriptor crossterm reads keys from: stdin when it is a
+/// terminal, `/dev/tty` otherwise (its `tty_fd`). A launcher that redirects
+/// stdin still gets an interactive TUI, and probing fd 0 there would answer
+/// `None` for the very user the probe exists for.
 #[cfg(unix)]
 pub fn tty_erase_char() -> Option<u8> {
+    use std::io::IsTerminal;
+    use std::os::fd::AsFd;
+
+    let stdin = std::io::stdin();
+    if stdin.is_terminal() {
+        return erase_char_of(stdin.as_fd());
+    }
+    let tty = std::fs::File::open("/dev/tty").ok()?;
+    erase_char_of(tty.as_fd())
+}
+
+/// `c_cc[VERASE]` of one descriptor, or `None` when it is not a terminal.
+#[cfg(unix)]
+fn erase_char_of(fd: std::os::fd::BorrowedFd<'_>) -> Option<u8> {
+    use std::os::fd::AsRawFd;
+
     let mut termios = std::mem::MaybeUninit::<libc::termios>::uninit();
     // SAFETY: `tcgetattr` either fills `termios` completely or returns
     // non-zero, and it borrows nothing past the call. The buffer is only read
     // on the success path, below.
-    if unsafe { libc::tcgetattr(libc::STDIN_FILENO, termios.as_mut_ptr()) } != 0 {
+    if unsafe { libc::tcgetattr(fd.as_raw_fd(), termios.as_mut_ptr()) } != 0 {
         return None;
     }
     // SAFETY: `tcgetattr` returned 0, so the struct is initialised.
@@ -267,5 +288,16 @@ mod tests {
     fn leaves_backspace_alone() {
         let key = KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE);
         assert_eq!(CtrlHPolicy::Backspace.apply(key), key);
+    }
+
+    /// The probe answers `None` for a descriptor that is not a terminal
+    /// rather than reading garbage — `/dev/null` is the classic redirected
+    /// stdin, and the reason the probe now looks past stdin at all.
+    #[cfg(unix)]
+    #[test]
+    fn a_non_tty_descriptor_has_no_erase_char() {
+        use std::os::fd::AsFd;
+        let null = std::fs::File::open("/dev/null").unwrap();
+        assert_eq!(erase_char_of(null.as_fd()), None);
     }
 }

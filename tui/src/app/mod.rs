@@ -161,9 +161,10 @@ pub struct App {
     ///
     /// Parked rather than sent, because it is decided before the app loop
     /// starts — while **Start** is the live screen, and `FlashMessage` is only
-    /// handled by the editor. `switch_screen` takes it, so it is shown once
-    /// and not re-flashed on every later screen swap (unlike `update`, which
-    /// is a standing indicator and is re-seeded).
+    /// handled by the editor. `switch_screen` takes it the first time it
+    /// opens an editor, so it is shown once and not re-flashed on every later
+    /// screen swap (unlike `update`, which is a standing indicator and is
+    /// re-seeded).
     pub key_warning: Option<String>,
 
     /// The background RAG sync task for the current vault, when a server is
@@ -263,6 +264,10 @@ fn respawn_rag(app: &mut App, tx: &crate::components::events::AppTx) {
 async fn switch_screen(app: &mut App, tx: &AppTx, new_screen: ScreenEvent) {
     app.current_screen.on_exit(tx).await;
 
+    // Decided before `new_screen` is consumed below. Only the editor handles
+    // `FlashMessage`; every other screen drops it on the floor.
+    let shows_flashes = matches!(new_screen, ScreenEvent::OpenEditor(..));
+
     let mut screen: Box<dyn AppScreen> = match new_screen {
         ScreenEvent::Start => Box::new(StartScreen::new(app.settings.clone(), app.vault.clone())),
         ScreenEvent::OpenPreferences => Box::new(PreferencesScreen::new(app.settings.clone())),
@@ -292,10 +297,10 @@ async fn switch_screen(app: &mut App, tx: &AppTx, new_screen: ScreenEvent) {
             .await;
     }
     // `take`, not `clone`: a flash is a one-shot, and re-firing it on every
-    // screen swap would turn a warning into a nag. A non-editor screen drops
-    // it — which is the right trade, since the alternative is holding it until
-    // a screen that shows flashes exists and risking never showing it at all.
-    if let Some(msg) = app.key_warning.take() {
+    // screen swap would turn a warning into a nag. Taken only for a screen
+    // that shows flashes — Start can route through Onboarding or Browse
+    // first, and handing the notice to one of those loses it for good.
+    if shows_flashes && let Some(msg) = app.key_warning.take() {
         screen
             .handle_app_message(AppEvent::FlashMessage(msg), tx)
             .await;
@@ -313,16 +318,20 @@ async fn switch_screen(app: &mut App, tx: &AppTx, new_screen: ScreenEvent) {
 
 /// Tell the user about a binding their terminal cannot deliver.
 ///
-/// Only ever their own. The default keymap always keeps a chord that survives
-/// the weakest terminal kimün supports — `settings`' invariant test holds it
-/// to that — so anything found here came out of a `[key_bindings]` section and
-/// is theirs to change. That is the whole reason this reports rather than
-/// silently repairing: rebinding under them is exactly the surprise moving
-/// formatting to the leader was meant to avoid.
+/// Their own, with one exception. The default keymap always keeps a chord
+/// that survives the weakest terminal kimün supports — `settings`' invariant
+/// test holds it to that — so anything found here came out of a
+/// `[key_bindings]` section and is theirs to change. The exception is the
+/// Ctrl-H rewrite: under a Backspace policy `FocusSidebar` loses its only
+/// default chord, and the notice then names `ctrl_h` rather than the
+/// terminal (see `notice_text`). That is the whole reason this reports rather
+/// than silently repairing: rebinding under them is exactly the surprise
+/// moving formatting to the leader was meant to avoid.
 ///
 /// Returns the notice rather than sending it: at this point **Start** is the
 /// live screen and only the editor handles `FlashMessage`, so it is parked on
-/// [`App::key_warning`] for `switch_screen` to deliver once.
+/// [`App::key_warning`] for `switch_screen` to deliver once an editor is
+/// opened.
 ///
 /// Rare in practice, and deliberately so: `merge_missing_default_bindings`
 /// hands an action its default combo back unless the config gave that combo to
@@ -342,14 +351,21 @@ fn unreachable_binding_notice(
 ) -> Option<String> {
     use crate::keys::reachability::{Reach, TerminalKeys, unreachable_actions};
 
-    let keys = TerminalKeys {
-        enhanced: session.keyboard_enhanced(),
+    let keys = TerminalKeys::detected(
+        session.keyboard_enhanced(),
         // `FocusSidebar`'s only default chord is `Ctrl+H`, so under the
-        // rewrite it is stranded — and the warning would be about a binding
-        // kimün shipped, which its own premise says cannot happen. The rule
-        // for when that is worth saying lives with the policy.
-        ctrl_h_is_backspace: ctrl_h.loss_is_worth_reporting(setting),
-    };
+        // rewrite it is stranded. The rule for when that is worth saying
+        // lives with the policy.
+        //
+        // Deliberately not `policy == CtrlHPolicy::Backspace` — what
+        // `doctor.rs` passes for this same argument. Under an explicit
+        // `ctrl_h = "backspace"` `loss_is_worth_reporting` is false, so this
+        // startup scan reports Ctrl+H as reachable while `kimun doctor`
+        // still reports it stranded: the flash is for surprises, quiet on a
+        // setting the user picked on purpose, while doctor always shows the
+        // full picture on request.
+        ctrl_h.loss_is_worth_reporting(setting),
+    );
     let stranded = {
         let settings = app.settings.read().unwrap();
         unreachable_actions(&settings.key_bindings, keys)
@@ -367,14 +383,108 @@ fn unreachable_binding_notice(
             tracing::warn!("key binding {combo} for {} {fate}", u.action);
         }
     }
-    let names = stranded
-        .iter()
-        .map(|u| u.action.to_string())
-        .collect::<Vec<_>>()
-        .join(", ");
-    Some(format!(
-        "{names}: no usable key on this terminal — run `kimun doctor`"
-    ))
+    Some(notice_text(&stranded, setting, ctrl_h))
+}
+
+/// The footer renders this flash as a single unwrapped, centre-aligned
+/// `Paragraph` (`components::footer_bar.rs`). Ratatui's centre offset is
+/// `(area/2).saturating_sub(line/2)`, which is `0` once the line is wider
+/// than the area — so a line past this many columns on an 80-column footer
+/// renders from the left and the TAIL is what gets clipped. Kept as a
+/// constant (rather than inlined into the test) so the budget has one place
+/// to change and a comment explaining why it exists.
+///
+/// Only asserted by `the_single_clause_notice_fits_the_flash_width_budget`
+/// below, not consulted by `notice_text` itself: the two-clause case reports
+/// two independent facts and cannot always fit it, so there is no single
+/// formatting rule this constant could gate at runtime.
+#[allow(
+    dead_code,
+    reason = "read by the width-budget test, not by notice_text"
+)]
+const FLASH_WIDTH_BUDGET: usize = 72;
+
+/// More than this many actions in one clause are named, then folded into an
+/// "and N more" tail — the flash has to stay on `FLASH_WIDTH_BUDGET`, not
+/// grow with however many bindings a user managed to strand.
+const FLASH_NAME_LIMIT: usize = 2;
+
+/// The footer line for a stranded-binding scan.
+///
+/// Partitioned by *cause*, not by policy. Under a Backspace policy the scan
+/// can turn up two different kinds of entry in the same call: the bare
+/// `Ctrl+H` chord that the rewrite itself shadowed with Backspace — kimün's
+/// own doing, `auto` read the tty's erase character or the user set
+/// `backspace` — and, independently, anything else the user's own
+/// `[key_bindings]` bound to a chord this terminal cannot deliver (a
+/// `SearchNotes = ["ctrl&I"]` colliding with Tab is always-on and has nothing
+/// to do with `ctrl_h`). Wrapping *that* action's name in "Ctrl+H is
+/// Backspace" would send the user off to change the wrong setting, so only
+/// the entries the rewrite actually caused get the ctrl_h wording; everything
+/// else keeps the plain "no usable key" line. Both clauses appear,
+/// semicolon-joined, when one scan turns up both causes.
+///
+/// Deliberately terse: this is a flash, not the report. It names the action,
+/// the `ctrl_h` setting responsible (when that is the cause), and points at
+/// `kimun doctor` — `stranded_advice` there is what actually says "rebind or
+/// set ctrl_h", in more words than a footer line can afford. Kept at or under
+/// [`FLASH_WIDTH_BUDGET`] for the common single-clause case so the pointer to
+/// `kimun doctor` is never the part that gets clipped.
+fn notice_text(
+    stranded: &[crate::keys::reachability::Unreachable],
+    setting: crate::settings::CtrlHSetting,
+    policy: ctrl_h::CtrlHPolicy,
+) -> String {
+    use crate::keys::key_combo::{KeyCombo, KeyModifiers};
+    use crate::keys::key_strike::KeyStrike;
+    use crate::keys::reachability::Reach;
+
+    // The exact pair the rewrite itself produces: `reach()` shadows the bare
+    // chord with the plain key, nothing else. Checking the pair (not just the
+    // combo) is what keeps a hand-built entry that merely mentions Ctrl+H
+    // under some other reach — or a real collision that happens to share the
+    // combo — out of this group.
+    let ctrl_h_combo = KeyCombo::new(KeyModifiers::new().and_ctrl(), KeyStrike::KeyH);
+    let backspace_key = KeyCombo::new(KeyModifiers::new(), KeyStrike::Backspace);
+    let is_ctrl_h_loss = |u: &&crate::keys::reachability::Unreachable| {
+        policy == ctrl_h::CtrlHPolicy::Backspace
+            && u.combos.iter().any(|(combo, reach)| {
+                *combo == ctrl_h_combo && *reach == Reach::Shadowed(backspace_key)
+            })
+    };
+    let (ctrl_h_group, plain_group): (Vec<_>, Vec<_>) = stranded.iter().partition(is_ctrl_h_loss);
+
+    // Names two actions at most; anything past that is folded into a count so
+    // a heavily-remapped keymap cannot blow the width budget.
+    let join_names = |group: &[&crate::keys::reachability::Unreachable]| {
+        let names: Vec<String> = group.iter().map(|u| u.action.to_string()).collect();
+        if names.len() <= FLASH_NAME_LIMIT {
+            names.join(", ")
+        } else {
+            format!(
+                "{} and {} more",
+                names[..FLASH_NAME_LIMIT].join(", "),
+                names.len() - FLASH_NAME_LIMIT
+            )
+        }
+    };
+
+    let ctrl_h_clause = (!ctrl_h_group.is_empty()).then(|| {
+        let names = join_names(&ctrl_h_group);
+        let setting = format!("{setting:?}").to_lowercase();
+        format!("{names}: Ctrl+H is Backspace (ctrl_h = \"{setting}\")")
+    });
+    let plain_clause = (!plain_group.is_empty())
+        .then(|| format!("{}: no usable key here", join_names(&plain_group)));
+
+    match (ctrl_h_clause, plain_clause) {
+        (Some(a), None) => format!("{a} — run `kimun doctor`"),
+        (None, Some(b)) => format!("{b} — run `kimun doctor`"),
+        (Some(a), Some(b)) => format!("{a}; {b} — run `kimun doctor`"),
+        (None, None) => {
+            unreachable!("unreachable_binding_notice never calls this with an empty scan")
+        }
+    }
 }
 
 /// Kick off the background update check (gated on the user's `update_check`
@@ -704,5 +814,156 @@ mod tests {
         let combo = key_event_to_combo(&key).expect("Ctrl+, should produce a combo");
         let action = settings.key_bindings.get_action(&combo);
         assert_eq!(action, Some(ActionShortcuts::OpenPreferences));
+    }
+
+    /// The startup key warning is parked until a screen that can show it.
+    /// Start can route to Onboarding or Browse before any editor exists;
+    /// consuming the flash there loses the only notice the user gets.
+    #[tokio::test]
+    async fn the_key_warning_waits_for_a_screen_that_shows_flashes() {
+        use crate::components::events::ScreenEvent;
+        use kimun_core::nfs::VaultPath;
+        use kimun_core::{NoteVault, VaultConfig};
+
+        let settings = Arc::new(RwLock::new(AppSettings::default()));
+        let mut app = App::from_settings(settings).await;
+        app.key_warning = Some("stranded".to_string());
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        super::switch_screen(&mut app, &tx, ScreenEvent::OpenOnboarding).await;
+        assert_eq!(
+            app.key_warning.as_deref(),
+            Some("stranded"),
+            "onboarding cannot show a flash, so the warning must still be parked"
+        );
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let vault = Arc::new(
+            NoteVault::new(VaultConfig::new(crate::test_support::sys(dir.path())))
+                .await
+                .unwrap(),
+        );
+        super::switch_screen(
+            &mut app,
+            &tx,
+            ScreenEvent::OpenEditor(vault, VaultPath::root()),
+        )
+        .await;
+        assert!(
+            app.key_warning.is_none(),
+            "the editor shows flashes, so the one-shot is delivered and gone"
+        );
+    }
+
+    /// When `auto` chose Backspace the stranded action is kimün's own
+    /// default, and the flash has to say which setting did it — "run doctor"
+    /// alone reads as a broken install.
+    #[test]
+    fn the_notice_names_ctrl_h_when_auto_chose_backspace() {
+        use crate::app::ctrl_h::CtrlHPolicy;
+        use crate::keys::key_combo::{KeyCombo, KeyModifiers};
+        use crate::keys::key_strike::KeyStrike;
+        use crate::keys::reachability::{Reach, Unreachable};
+        use crate::settings::CtrlHSetting;
+
+        let ctrl_h = KeyCombo::new(KeyModifiers::new().and_ctrl(), KeyStrike::KeyH);
+        let stranded = vec![Unreachable {
+            action: ActionShortcuts::FocusSidebar,
+            combos: vec![(
+                ctrl_h,
+                Reach::Shadowed(KeyCombo::new(KeyModifiers::new(), KeyStrike::Backspace)),
+            )],
+        }];
+
+        let auto = super::notice_text(&stranded, CtrlHSetting::Auto, CtrlHPolicy::Backspace);
+        assert!(auto.contains("FocusSidebar"), "{auto}");
+        assert!(auto.contains("ctrl_h"), "{auto}");
+        assert!(auto.contains("kimun doctor"), "{auto}");
+
+        // A stranding the rewrite had no part in keeps the plain wording.
+        let theirs = super::notice_text(&stranded, CtrlHSetting::Auto, CtrlHPolicy::Chord);
+        assert!(!theirs.contains("ctrl_h"), "{theirs}");
+        assert!(theirs.contains("no usable key"), "{theirs}");
+    }
+
+    /// A single scan can turn up both causes at once: the rewrite's own loss
+    /// and an unrelated collision out of the user's own `[key_bindings]`.
+    /// Wrapping that second action's name in the ctrl_h wording would send
+    /// the user off to change the wrong setting, so the two clauses must
+    /// stay apart in the string, not just both appear somewhere in it.
+    #[test]
+    fn the_notice_keeps_an_unrelated_stranding_out_of_the_ctrl_h_clause() {
+        use crate::app::ctrl_h::CtrlHPolicy;
+        use crate::keys::key_combo::{KeyCombo, KeyModifiers};
+        use crate::keys::key_strike::KeyStrike;
+        use crate::keys::reachability::{Reach, Unreachable};
+        use crate::settings::CtrlHSetting;
+
+        let ctrl_h = KeyCombo::new(KeyModifiers::new().and_ctrl(), KeyStrike::KeyH);
+        let ctrl_i = KeyCombo::new(KeyModifiers::new().and_ctrl(), KeyStrike::KeyI);
+        let stranded = vec![
+            Unreachable {
+                action: ActionShortcuts::FocusSidebar,
+                combos: vec![(
+                    ctrl_h,
+                    Reach::Shadowed(KeyCombo::new(KeyModifiers::new(), KeyStrike::Backspace)),
+                )],
+            },
+            Unreachable {
+                action: ActionShortcuts::QuickNote,
+                combos: vec![(
+                    ctrl_i,
+                    Reach::Shadowed(KeyCombo::new(KeyModifiers::new(), KeyStrike::Tab)),
+                )],
+            },
+        ];
+
+        let text = super::notice_text(&stranded, CtrlHSetting::Auto, CtrlHPolicy::Backspace);
+        let ctrl_h_clause = text
+            .split_once("; ")
+            .map(|(first, _)| first)
+            .unwrap_or_else(|| panic!("expected the ctrl_h clause joined with '; ': {text}"));
+        assert!(
+            ctrl_h_clause.contains("FocusSidebar"),
+            "ctrl_h clause: {ctrl_h_clause}"
+        );
+        assert!(
+            !ctrl_h_clause.contains("QuickNote"),
+            "ctrl_h clause: {ctrl_h_clause}"
+        );
+        assert!(text.contains("QuickNote"), "{text}");
+    }
+
+    /// Pins the width budget: the footer renders this flash as an unwrapped,
+    /// centre-aligned `Paragraph` (`components::footer_bar.rs`), so a line
+    /// wider than the terminal is clipped from the *right* — losing the
+    /// `kimun doctor` pointer this flash exists to deliver. The common
+    /// scenario (the shipped default, `auto` chose Backspace) must fit an
+    /// 80-column footer with room to spare. A regression here means someone
+    /// widened the wording without checking it still fits.
+    #[test]
+    fn the_single_clause_notice_fits_the_flash_width_budget() {
+        use crate::app::ctrl_h::CtrlHPolicy;
+        use crate::keys::key_combo::{KeyCombo, KeyModifiers};
+        use crate::keys::key_strike::KeyStrike;
+        use crate::keys::reachability::{Reach, Unreachable};
+        use crate::settings::CtrlHSetting;
+
+        let ctrl_h = KeyCombo::new(KeyModifiers::new().and_ctrl(), KeyStrike::KeyH);
+        let stranded = vec![Unreachable {
+            action: ActionShortcuts::FocusSidebar,
+            combos: vec![(
+                ctrl_h,
+                Reach::Shadowed(KeyCombo::new(KeyModifiers::new(), KeyStrike::Backspace)),
+            )],
+        }];
+
+        let text = super::notice_text(&stranded, CtrlHSetting::Auto, CtrlHPolicy::Backspace);
+        assert!(
+            text.chars().count() <= super::FLASH_WIDTH_BUDGET,
+            "{} chars, over the {}-column budget: {text}",
+            text.chars().count(),
+            super::FLASH_WIDTH_BUDGET
+        );
     }
 }

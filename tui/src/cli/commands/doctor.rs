@@ -44,10 +44,7 @@ pub fn run(config_path: Option<PathBuf>) -> Result<()> {
     // redirected" line printed below and let the table contradict its own
     // disclaimer.
     let policy = CtrlHPolicy::resolve_with(settings.ctrl_h, enhanced, erase == Some(0x08));
-    let keys = TerminalKeys {
-        enhanced,
-        ctrl_h_is_backspace: policy == CtrlHPolicy::Backspace,
-    };
+    let keys = TerminalKeys::detected(enhanced, policy == CtrlHPolicy::Backspace);
 
     println!("kimün {}", env!("CARGO_PKG_VERSION"));
     println!();
@@ -57,7 +54,9 @@ pub fn run(config_path: Option<PathBuf>) -> Result<()> {
     if is_tty {
         println!(
             "  kitty keyboard       {}",
-            if enhanced {
+            if keys.enhanced && !enhanced {
+                "not needed — the Windows console reports keys, not bytes"
+            } else if enhanced {
                 "supported — keys arrive unambiguously"
             } else {
                 "no reply — Ctrl chords share bytes with Tab, Enter and Esc"
@@ -75,7 +74,16 @@ pub fn run(config_path: Option<PathBuf>) -> Result<()> {
         println!();
         println!("  Run `kimun doctor` directly in the terminal you use kimün in");
         println!("  to get these two answers. Until then the table below assumes");
-        println!("  the worst case: no protocol, so Ctrl chords collide.");
+        if keys.enhanced {
+            // `enhanced` (the escape-sequence probe) is false here — nobody
+            // answered — but `keys.enhanced` still folds in `cfg!(windows)`,
+            // so this is the Windows console: it reports keys, not bytes, and
+            // the table below reflects that rather than the worst case.
+            println!("  Windows: the console reports keys, not bytes, so no");
+            println!("  chord collides.");
+        } else {
+            println!("  the worst case: no protocol, so Ctrl chords collide.");
+        }
     }
 
     println!();
@@ -109,17 +117,7 @@ pub fn run(config_path: Option<PathBuf>) -> Result<()> {
             println!("! {} has no key this terminal can send.", u.action);
         }
         println!();
-        if settings.ctrl_h == CtrlHSetting::Backspace && policy == CtrlHPolicy::Backspace {
-            // Then at least one of those is `Ctrl+H`, given up on purpose by
-            // the setting above. Saying "rebind or change terminals" without
-            // naming that reads as a defect rather than the trade it is.
-            println!("ctrl_h = \"backspace\" gives up the Ctrl+H chord, so any action");
-            println!("bound only to it is listed above. Rebind those you use.");
-        } else {
-            println!("Rebind those actions, or use a terminal that speaks the kitty");
-            println!("keyboard protocol (Kitty, Ghostty, foot, WezTerm with");
-            println!("enable_kitty_keyboard = true).");
-        }
+        println!("{}", stranded_advice(settings.ctrl_h, policy));
     }
     Ok(())
 }
@@ -162,6 +160,30 @@ fn describe_policy(
     .to_string()
 }
 
+/// What to do about a stranded action. Keyed on the *policy*, not the
+/// setting: `auto` reaches Backspace by reading the tty, and the knob to turn
+/// is `ctrl_h` either way — advice that only mentioned it under an explicit
+/// `backspace` would send the `auto` user off to rebind a default.
+fn stranded_advice(setting: CtrlHSetting, policy: CtrlHPolicy) -> &'static str {
+    match (policy, setting) {
+        (CtrlHPolicy::Backspace, CtrlHSetting::Backspace) => {
+            "ctrl_h = \"backspace\" gives up the Ctrl+H chord, so any action\n\
+             bound only to it is listed above. Rebind those you use."
+        }
+        (CtrlHPolicy::Backspace, _) => {
+            "ctrl_h = \"auto\" chose Backspace because the tty's erase character\n\
+             is ^H, so the Ctrl+H chord is unreachable and any action bound only\n\
+             to it is listed above. Set ctrl_h = \"chord\" to keep the chord (a\n\
+             ^H Backspace key then cannot delete), or rebind those actions."
+        }
+        (CtrlHPolicy::Chord, _) => {
+            "Rebind those actions, or use a terminal that speaks the kitty\n\
+             keyboard protocol (Kitty, Ghostty, foot, WezTerm with\n\
+             enable_kitty_keyboard = true)."
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,5 +223,21 @@ mod tests {
         // line must not offer the terminal as the reason.
         let explicit = describe_policy(CtrlHSetting::Chord, CtrlHPolicy::Chord, false, Some(0x08));
         assert_eq!(explicit, "Ctrl+H is a chord");
+    }
+
+    /// The advice names the setting that caused the stranding whenever the
+    /// policy is Backspace — under `auto` as much as under an explicit
+    /// `backspace` — because the knob is the same either way.
+    #[test]
+    fn the_advice_names_ctrl_h_under_auto() {
+        let auto = stranded_advice(CtrlHSetting::Auto, CtrlHPolicy::Backspace);
+        assert!(auto.contains("ctrl_h = \"auto\""), "{auto}");
+        assert!(auto.contains("ctrl_h = \"chord\""), "{auto}");
+
+        let explicit = stranded_advice(CtrlHSetting::Backspace, CtrlHPolicy::Backspace);
+        assert!(explicit.contains("ctrl_h = \"backspace\""), "{explicit}");
+
+        let chord = stranded_advice(CtrlHSetting::Auto, CtrlHPolicy::Chord);
+        assert!(chord.contains("kitty"), "{chord}");
     }
 }

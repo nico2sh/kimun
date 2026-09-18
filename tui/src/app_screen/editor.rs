@@ -1670,15 +1670,19 @@ impl EditorScreen {
 
     /// A `+text` leader leaf: apply the formatting, or say why not.
     ///
-    /// One helper for the three leaves so the focus rule is stated once. The
-    /// flash matters — a leader sequence that fires and does nothing visible
-    /// reads as a broken binding, and this is the only route to formatting.
+    /// One helper for the three leaves, and one rule — `InputCtx`'s, the
+    /// same one the chord tier is held to by `apply_claim`. A pending leader
+    /// sequence outranks a claim so the keys reach here even with the find
+    /// bar open; the leaf itself still must not edit a buffer whose input
+    /// belongs to the bar. The flash matters — a leader sequence that fires
+    /// and does nothing visible reads as a broken binding, and this is the
+    /// only route to formatting.
     fn apply_text_from_leader(&mut self, action: TextAction, tx: &AppTx) {
-        if self.panels.focused() == PanelKind::Editor {
+        if self.input_ctx(false).accepts_text_action() {
             self.run_op(EditorOp::ApplyText(action), tx);
         } else {
             self.footer
-                .flash("formatting needs the editor focused".to_string(), tx);
+                .flash("formatting needs the note focused".to_string(), tx);
         }
     }
 
@@ -2469,6 +2473,57 @@ mod tests {
         assert!(!screen.leader.is_pending());
         assert_eq!(screen.panels.active_drawer_view(), DrawerView::Files);
         assert_eq!(screen.panels.focused(), PanelKind::Drawer);
+    }
+
+    /// `<leader> t b` while the find bar holds input must not touch the note.
+    /// The chord tier already loses `ApplyText` to a claim (`apply_claim`);
+    /// the leader route is the only other way to formatting and has to obey
+    /// the same rule, or "Bold while typing a find pattern" comes back.
+    #[tokio::test]
+    async fn leader_formatting_yields_to_the_find_bar() {
+        let (mut screen, _, _, _dir) = test_screen().await;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        screen
+            .panels
+            .editor_mut()
+            .unwrap()
+            .set_text("plain".to_string());
+        screen.run_op(EditorOp::FindInBuffer, &tx);
+        assert_eq!(
+            screen.panels.editor().unwrap().claim(),
+            crate::components::text_editor::EditorClaim::FindBar
+        );
+
+        screen.handle_input(&ctrl_key('g'), &tx);
+        screen.handle_input(&chr('t'), &tx);
+        screen.handle_input(&chr('b'), &tx);
+
+        assert!(!screen.leader.is_pending());
+        let text = screen.panels.editor().unwrap().get_text();
+        assert!(
+            !text.contains("**"),
+            "the note was formatted under a claim: {text:?}"
+        );
+    }
+
+    /// The positive case, so the test above proves the guard and not a broken
+    /// leader route: with no claim, `<leader> t b` inserts the bold pair.
+    #[tokio::test]
+    async fn leader_formatting_applies_with_the_editor_focused() {
+        let (mut screen, _, _, _dir) = test_screen().await;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        screen
+            .panels
+            .editor_mut()
+            .unwrap()
+            .set_text("plain".to_string());
+
+        screen.handle_input(&ctrl_key('g'), &tx);
+        screen.handle_input(&chr('t'), &tx);
+        screen.handle_input(&chr('b'), &tx);
+
+        let text = screen.panels.editor().unwrap().get_text();
+        assert!(text.contains("**"), "no bold marker was inserted: {text:?}");
     }
 
     /// Opening the FILES drawer points the sidebar at the current note's
