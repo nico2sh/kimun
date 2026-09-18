@@ -46,7 +46,7 @@
 #   "f"   = "+search"        # rename the +find group caption
 #
 # ─────────────────────────────────────────────────────────────────────────────
-config_version = 6
+config_version = 7
 theme = "Gruvbox Dark"
 cache_dir = "."
 history_dir = "history"
@@ -81,11 +81,6 @@ OpenSettings = ["F4", "ctrl&,"]
 SearchNotes = ["ctrl&K"]
 OpenNote = ["ctrl&O"]
 NewJournal = ["ctrl&J"]
-TextEditor-Bold = ["ctrl&B"]
-TextEditor-Italic = ["ctrl&I"]
-TextEditor-Image = ["ctrl+shift&L"]
-TextEditor-Underline = ["ctrl&U"]
-TextEditor-Strikethrough = ["ctrl&S"]
 ToggleSidebar = ["ctrl&T"]
 FocusEditor = ["ctrl&L"]
 FocusSidebar = ["ctrl&H"]
