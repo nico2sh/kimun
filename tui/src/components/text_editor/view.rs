@@ -132,10 +132,20 @@ enum RenderedCacheRebuild {
     None,
 }
 
+/// (revision, cursor, width, height) — what decides whether a frame is the one
+/// a wheel scroll happened on.
+type FrameKey = (u64, (usize, usize), u16, u16);
+
 #[derive(Clone)]
 pub struct MarkdownEditorView {
     pub layout: Layout,
     visual_scroll_offset: usize,
+    /// What the last `update` drew: (revision, cursor, width, height).
+    last_frame_key: FrameKey,
+    /// The frame a wheel scroll detached the viewport at. While `update` sees
+    /// that same frame the viewport stays where the wheel left it; typing, a
+    /// cursor move or a resize re-attaches it to the cursor.
+    free_scroll: Option<FrameKey>,
     /// Viewport height from the last `update`, so overlay derivation can bound
     /// itself to the visible rows.
     last_height: usize,
@@ -363,6 +373,8 @@ impl MarkdownEditorView {
         Self {
             layout: Layout::compute(&crate::ropetext::Text::new(), 0, Metrics::default(), &[]),
             visual_scroll_offset: 0,
+            last_frame_key: (0, (0, 0), 0, 0),
+            free_scroll: None,
             last_height: 0,
             text_snapshot: crate::ropetext::Text::new(),
             cursor_snapshot: (0, 0),
@@ -1050,11 +1062,42 @@ impl MarkdownEditorView {
             .map(|at| self.layout.visual_row_of(at))
             .unwrap_or(self.cursor_vrow);
         let height = rect.height as usize;
-        if self.cursor_vrow < self.visual_scroll_offset {
-            self.visual_scroll_offset = self.cursor_vrow;
-        } else if self.cursor_vrow >= self.visual_scroll_offset + height {
-            self.visual_scroll_offset = self.cursor_vrow - height + 1;
+        let frame = (generation, cursor, rect.width, rect.height);
+        self.last_frame_key = frame;
+        if self.free_scroll != Some(frame) {
+            self.free_scroll = None;
+            if self.cursor_vrow < self.visual_scroll_offset {
+                self.visual_scroll_offset = self.cursor_vrow;
+            } else if self.cursor_vrow >= self.visual_scroll_offset + height {
+                self.visual_scroll_offset = self.cursor_vrow - height + 1;
+            }
         }
+        // Never leave blank rows below the last line while content sits above
+        // the viewport. Without this, a resize that grows the pane keeps the
+        // offset it had when small, showing only the tail of the note until
+        // the cursor moves up. The cursor stays visible: it lies below the old
+        // offset and before the last row.
+        self.visual_scroll_offset = self.visual_scroll_offset.min(self.max_scroll_offset());
+    }
+
+    /// Furthest the viewport may scroll: the last line at the bottom row.
+    fn max_scroll_offset(&self) -> usize {
+        self.layout
+            .visual_lines()
+            .len()
+            .saturating_sub(self.last_height)
+    }
+
+    /// Mouse-wheel scroll: move the viewport by `delta` visual rows without
+    /// moving the cursor, clamped so it never runs past the first or last
+    /// line. The cursor may leave the screen; the next cursor move or edit
+    /// brings it back.
+    pub fn scroll_by(&mut self, delta: isize) {
+        self.visual_scroll_offset = self
+            .visual_scroll_offset
+            .saturating_add_signed(delta)
+            .min(self.max_scroll_offset());
+        self.free_scroll = Some(self.last_frame_key);
     }
 
     /// Attempt an incremental Gate-1 parse.
@@ -2394,6 +2437,68 @@ mod tests {
         let lines: Vec<String> = (0..5).map(|i| format!("line{}", i)).collect();
         update_view(&mut v, &lines, (4, 0), rect(3), 1, None);
         update_view(&mut v, &lines, (0, 0), rect(3), 1, None); // same generation — scroll still adjusts
+        assert_eq!(v.visual_scroll_offset, 0);
+    }
+
+    #[test]
+    fn wheel_scroll_moves_the_viewport_and_survives_the_next_frame() {
+        let mut v = MarkdownEditorView::new();
+        let lines: Vec<String> = (0..10).map(|i| format!("line{}", i)).collect();
+        update_view(&mut v, &lines, (0, 0), rect(3), 1, None);
+        v.scroll_by(4);
+        assert_eq!(v.visual_scroll_offset, 4);
+        // Same cursor, text and size: the redraw must not snap back.
+        update_view(&mut v, &lines, (0, 0), rect(3), 1, None);
+        assert_eq!(v.visual_scroll_offset, 4);
+        v.scroll_by(-1);
+        update_view(&mut v, &lines, (0, 0), rect(3), 1, None);
+        assert_eq!(v.visual_scroll_offset, 3);
+    }
+
+    #[test]
+    fn wheel_scroll_is_clamped_to_the_content() {
+        let mut v = MarkdownEditorView::new();
+        let lines: Vec<String> = (0..10).map(|i| format!("line{}", i)).collect();
+        update_view(&mut v, &lines, (0, 0), rect(3), 1, None);
+        v.scroll_by(100);
+        assert_eq!(v.visual_scroll_offset, 7, "last line sits at the bottom");
+        v.scroll_by(-100);
+        assert_eq!(v.visual_scroll_offset, 0);
+    }
+
+    #[test]
+    fn moving_the_cursor_after_a_wheel_scroll_brings_it_back_into_view() {
+        let mut v = MarkdownEditorView::new();
+        let lines: Vec<String> = (0..10).map(|i| format!("line{}", i)).collect();
+        update_view(&mut v, &lines, (0, 0), rect(3), 1, None);
+        v.scroll_by(6);
+        update_view(&mut v, &lines, (1, 0), rect(3), 1, None);
+        assert_eq!(v.visual_scroll_offset, 1);
+    }
+
+    #[test]
+    fn editing_after_a_wheel_scroll_brings_the_cursor_back_into_view() {
+        let mut v = MarkdownEditorView::new();
+        let mut lines: Vec<String> = (0..10).map(|i| format!("line{}", i)).collect();
+        update_view(&mut v, &lines, (0, 0), rect(3), 1, None);
+        v.scroll_by(6);
+        lines[0].push('x');
+        update_view(&mut v, &lines, (0, 0), rect(3), 2, None);
+        assert_eq!(v.visual_scroll_offset, 0);
+    }
+
+    #[test]
+    fn growing_the_viewport_pulls_content_back_down() {
+        // Shrinking to one row pins the cursor's (last) line at the top;
+        // growing back must reveal the lines above it, not leave the last
+        // line alone on screen with blank rows beneath.
+        let mut v = MarkdownEditorView::new();
+        let lines: Vec<String> = (0..5).map(|i| format!("line{}", i)).collect();
+        update_view(&mut v, &lines, (4, 0), rect(1), 1, None);
+        assert_eq!(v.visual_scroll_offset, 4);
+        update_view(&mut v, &lines, (4, 0), rect(3), 1, None);
+        assert_eq!(v.visual_scroll_offset, 2);
+        update_view(&mut v, &lines, (4, 0), rect(10), 1, None);
         assert_eq!(v.visual_scroll_offset, 0);
     }
 

@@ -129,6 +129,9 @@ pub struct ClipboardImage {
 /// `mailto:` and FTP links and expect them wrapped as markdown links too.
 const LINKABLE_PASTE_SCHEMES: &[&str] = &["http", "https", "ftp", "ftps", "mailto"];
 
+/// Visual rows one mouse-wheel notch scrolls the editor.
+const WHEEL_SCROLL_ROWS: isize = 3;
+
 fn linkable_url(s: &str) -> Option<&str> {
     kimun_core::note::scan::url_with_allowed_scheme(s, LINKABLE_PASTE_SCHEMES)
 }
@@ -1614,10 +1617,12 @@ impl TextEditorComponent {
                     .click_at_screen((mouse.row - r.y) as usize, (mouse.column - r.x) as usize);
                 ta.jump_to(lrow as usize, lcol as usize);
             }
-            // Everything else is somebody else's: a click and a drag are handled
-            // above, and a scroll is classified as an **Intent** before it reaches
-            // the buffer. The incumbent forwarded these to the widget, which
-            // scrolled a viewport kimün never renders from.
+            // The wheel moves kimün's own viewport, never the cursor — the
+            // find bar relies on that to let the user read elsewhere mid-search.
+            MouseEventKind::ScrollUp => self.view.scroll_by(-WHEEL_SCROLL_ROWS),
+            MouseEventKind::ScrollDown => self.view.scroll_by(WHEEL_SCROLL_ROWS),
+            // Everything else is somebody else's. The incumbent forwarded these
+            // to the widget, which scrolled a viewport kimün never renders from.
             _ => {}
         }
         self.selection = ta.selection_range();
