@@ -145,7 +145,7 @@ current_workspace = "default"
 |---|---|---|---|
 | `current_workspace` | string | *(unset)* | Workspace Kimün loads at startup. Must match a `[workspaces.<name>]` key. |
 | `update_check` | boolean | `true` | Check GitHub for a newer release on launch. Read only at startup. |
-| `mouse` | boolean | `true` | Capture the mouse for in-app use (divider drag, list scroll, click-to-focus). Set `false` to hand the mouse back to your terminal — see [Mouse](#mouse). Read only at startup; also a checkbox in Preferences (`Ctrl+,` → Display). |
+| `mouse` | boolean | `true` | Capture the mouse for in-app use (divider drag, list and editor scroll, click-to-focus). Set `false` to hand the mouse back to your terminal — see [Mouse](#mouse). Read only at startup; also a checkbox in Preferences (`Ctrl+,` → Display). |
 | `kimun_server_url` | string | *(unset)* | Base URL of the optional [Kimün server](@/using-kimun/server.md) (e.g. `"http://localhost:7573"`), which adds semantic search and question-answering. Unset means the feature is off. Also editable in Preferences (`Ctrl+,` → Server). |
 | `kimun_server_token` | string | *(unset)* | Bearer token for the Kimün server, when it requires one. |
 
@@ -153,7 +153,7 @@ current_workspace = "default"
 
 ### Mouse
 
-By default Kimün captures the mouse so you can drag panel dividers, scroll lists, and click to focus. Capturing is **all-or-nothing**: a terminal either reports every button to the application or handles the mouse itself — there is no middle ground. While Kimün is capturing, your terminal's own mouse gestures are suppressed, most notably **middle-click paste** (the X11 PRIMARY selection) and drag-to-select-and-copy.
+By default Kimün captures the mouse so you can drag panel dividers, scroll lists and the note editor, and click to focus. Capturing is **all-or-nothing**: a terminal either reports every button to the application or handles the mouse itself — there is no middle ground. While Kimün is capturing, your terminal's own mouse gestures are suppressed, most notably **middle-click paste** (the X11 PRIMARY selection) and drag-to-select-and-copy.
 
 Two ways to get the terminal's native mouse behaviour back:
 
