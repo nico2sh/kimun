@@ -1,5 +1,5 @@
 use super::markdown::{MarkdownSpanner, ParsedBuffer, opener_shape};
-use crate::ropetext::{Column, Layout, Metrics, RowHints, motion};
+use crate::ropetext::{Column, Layout, Metrics, RowHints, Viewport, motion};
 use crate::settings::themes::Theme;
 use ratatui::Frame;
 use ratatui::layout::Position;
@@ -132,23 +132,21 @@ enum RenderedCacheRebuild {
     None,
 }
 
-/// (revision, cursor, width, height) — what decides whether a frame is the one
-/// a wheel scroll happened on.
-type FrameKey = (u64, (usize, usize), u16, u16);
-
 #[derive(Clone)]
 pub struct MarkdownEditorView {
     pub layout: Layout,
-    visual_scroll_offset: usize,
-    /// What the last `update` drew: (revision, cursor, width, height).
-    last_frame_key: FrameKey,
-    /// The frame a wheel scroll detached the viewport at. While `update` sees
-    /// that same frame the viewport stays where the wheel left it; typing, a
-    /// cursor move or a resize re-attaches it to the cursor.
-    free_scroll: Option<FrameKey>,
-    /// Viewport height from the last `update`, so overlay derivation can bound
-    /// itself to the visible rows.
-    last_height: usize,
+    /// The visible rows. Its height is the last `update`'s, so overlay
+    /// derivation can bound itself to what is on screen.
+    viewport: Viewport,
+    /// Set by a wheel scroll that moved the view: `update` stops dragging the
+    /// viewport to the cursor, so the reader can look elsewhere without the
+    /// cursor moving. Cleared by [`Self::follow_cursor`], or by `update` seeing
+    /// a different `last_drawn`.
+    detached: bool,
+    /// (revision, cursor, width) of the last `update`. Any change — an edit, a
+    /// cursor jump from outside the keyboard path, a rewrap — re-attaches the
+    /// viewport, since the detached top no longer means what it did.
+    last_drawn: (u64, (usize, usize), u16),
     /// The text the caches below were built from.
     ///
     /// Held rather than borrowed because `render` runs without the frame's
@@ -372,10 +370,9 @@ impl MarkdownEditorView {
     pub fn new() -> Self {
         Self {
             layout: Layout::compute(&crate::ropetext::Text::new(), 0, Metrics::default(), &[]),
-            visual_scroll_offset: 0,
-            last_frame_key: (0, (0, 0), 0, 0),
-            free_scroll: None,
-            last_height: 0,
+            viewport: Viewport::default(),
+            detached: false,
+            last_drawn: (0, (0, 0), 0),
             text_snapshot: crate::ropetext::Text::new(),
             cursor_snapshot: (0, 0),
             fence_ranges: Vec::new(),
@@ -494,6 +491,9 @@ impl MarkdownEditorView {
         }
         self.layout = layout;
         self.layout_pending = None;
+        // The wrapped layout numbers visual rows differently from the stub, so
+        // a detached top would now point somewhere else in the note.
+        self.detached = false;
         self.last_layout_generation = generation;
     }
 
@@ -542,8 +542,8 @@ impl MarkdownEditorView {
     /// defect: a find pattern targeting concealed markdown counted and stepped
     /// to matches it could never paint.
     fn derive_content_overlays(&mut self) {
-        let scroll = self.visual_scroll_offset;
-        let height = self.last_height;
+        let scroll = self.viewport.top();
+        let height = self.viewport.height();
         let rows: Vec<usize> = self
             .layout
             .visual_lines()
@@ -681,7 +681,7 @@ impl MarkdownEditorView {
     }
 
     pub fn update(&mut self, snap: &super::snapshot::EditorSnapshot, rect: Rect) {
-        self.last_height = rect.height as usize;
+        self.viewport.set_height(rect.height as usize);
         // Snapshot owns the (cursor, lines, content_revision) atomicity
         // — readers below can index `parsed_buffer.lines[cursor.0]`
         // without `.get()` guards once Gate 1 has rebuilt the parse
@@ -1061,43 +1061,38 @@ impl MarkdownEditorView {
             .position(cursor.0, Column::new(cursor.1))
             .map(|at| self.layout.visual_row_of(at))
             .unwrap_or(self.cursor_vrow);
-        let height = rect.height as usize;
-        let frame = (generation, cursor, rect.width, rect.height);
-        self.last_frame_key = frame;
-        if self.free_scroll != Some(frame) {
-            self.free_scroll = None;
-            if self.cursor_vrow < self.visual_scroll_offset {
-                self.visual_scroll_offset = self.cursor_vrow;
-            } else if self.cursor_vrow >= self.visual_scroll_offset + height {
-                self.visual_scroll_offset = self.cursor_vrow - height + 1;
-            }
+        let drawn = (generation, cursor, rect.width);
+        if drawn != self.last_drawn {
+            self.last_drawn = drawn;
+            self.detached = false;
+        }
+        if !self.detached {
+            self.viewport.follow_row(self.cursor_vrow);
         }
         // Never leave blank rows below the last line while content sits above
         // the viewport. Without this, a resize that grows the pane keeps the
-        // offset it had when small, showing only the tail of the note until
-        // the cursor moves up. The cursor stays visible: it lies below the old
-        // offset and before the last row.
-        self.visual_scroll_offset = self.visual_scroll_offset.min(self.max_scroll_offset());
-    }
-
-    /// Furthest the viewport may scroll: the last line at the bottom row.
-    fn max_scroll_offset(&self) -> usize {
-        self.layout
-            .visual_lines()
-            .len()
-            .saturating_sub(self.last_height)
+        // top it had when small, showing only the tail of the note until the
+        // cursor moves up. A followed cursor stays visible: it lies below the
+        // old top and before the last row.
+        self.viewport.clamp(&self.layout);
     }
 
     /// Mouse-wheel scroll: move the viewport by `delta` visual rows without
-    /// moving the cursor, clamped so it never runs past the first or last
-    /// line. The cursor may leave the screen; the next cursor move or edit
-    /// brings it back.
-    pub fn scroll_by(&mut self, delta: isize) {
-        self.visual_scroll_offset = self
-            .visual_scroll_offset
-            .saturating_add_signed(delta)
-            .min(self.max_scroll_offset());
-        self.free_scroll = Some(self.last_frame_key);
+    /// moving the cursor, never past the first or last line. Only a notch that
+    /// moves the view detaches it — a saturated one must not stop the view
+    /// following the cursor. Returns whether the view moved.
+    pub fn scroll_by(&mut self, delta: isize) -> bool {
+        let moved = self.viewport.scroll_by(&self.layout, delta);
+        self.detached |= moved;
+        moved
+    }
+
+    /// Re-attach the viewport to the cursor: the next `update` scrolls the
+    /// least amount that brings it on screen. For any input that acts on the
+    /// cursor — including one that leaves it where it was, like a find-next
+    /// wrapping onto the same match.
+    pub fn follow_cursor(&mut self) {
+        self.detached = false;
     }
 
     /// Attempt an incremental Gate-1 parse.
@@ -1480,7 +1475,7 @@ impl MarkdownEditorView {
         }
         let text = &self.text_snapshot;
         let cursor = self.cursor_snapshot;
-        let scroll = self.visual_scroll_offset;
+        let scroll = self.viewport.top();
         let height = rect.height as usize;
         let vlines = self.layout.visual_lines();
 
@@ -1805,9 +1800,9 @@ impl MarkdownEditorView {
     /// Map a screen-relative click (row/col offset from the editor's
     /// top-left corner) to logical (row, col). Owns the
     /// visual-scroll-offset arithmetic so callers do not reach into
-    /// `visual_scroll_offset` — the view knows where it is scrolled.
+    /// viewport's top — the view knows where it is scrolled.
     pub fn click_at_screen(&self, screen_row: usize, screen_col: usize) -> (u16, u16) {
-        let vrow = screen_row + self.visual_scroll_offset;
+        let vrow = screen_row + self.viewport.top();
         self.click_to_logical_u16(vrow, screen_col)
     }
 
@@ -2183,7 +2178,7 @@ mod tests {
 
         let mut v = MarkdownEditorView::new();
         update_view(&mut v, &lines, (150, 25), rect(20), 1, None);
-        let scrolled = v.visual_scroll_offset;
+        let scrolled = v.viewport.top();
         assert!(scrolled > 0, "fixture must have scrolled away from the top");
 
         // The preview: that row shrinks below the cursor's column.
@@ -2192,7 +2187,8 @@ mod tests {
         update_view(&mut v, &preview, (150, 25), rect(20), 2, None);
 
         assert_eq!(
-            v.visual_scroll_offset, scrolled,
+            v.viewport.top(),
+            scrolled,
             "the viewport must not jump to the top of the note"
         );
     }
@@ -2414,7 +2410,7 @@ mod tests {
 
     #[test]
     fn new_has_zero_scroll() {
-        assert_eq!(MarkdownEditorView::new().visual_scroll_offset, 0);
+        assert_eq!(MarkdownEditorView::new().viewport.top(), 0);
     }
 
     #[test]
@@ -2428,7 +2424,7 @@ mod tests {
         let mut v = MarkdownEditorView::new();
         let lines: Vec<String> = (0..5).map(|i| format!("line{}", i)).collect();
         update_view(&mut v, &lines, (4, 0), rect(3), 1, None);
-        assert!(v.visual_scroll_offset >= 2);
+        assert!(v.viewport.top() >= 2);
     }
 
     #[test]
@@ -2437,7 +2433,7 @@ mod tests {
         let lines: Vec<String> = (0..5).map(|i| format!("line{}", i)).collect();
         update_view(&mut v, &lines, (4, 0), rect(3), 1, None);
         update_view(&mut v, &lines, (0, 0), rect(3), 1, None); // same generation — scroll still adjusts
-        assert_eq!(v.visual_scroll_offset, 0);
+        assert_eq!(v.viewport.top(), 0);
     }
 
     #[test]
@@ -2446,13 +2442,13 @@ mod tests {
         let lines: Vec<String> = (0..10).map(|i| format!("line{}", i)).collect();
         update_view(&mut v, &lines, (0, 0), rect(3), 1, None);
         v.scroll_by(4);
-        assert_eq!(v.visual_scroll_offset, 4);
+        assert_eq!(v.viewport.top(), 4);
         // Same cursor, text and size: the redraw must not snap back.
         update_view(&mut v, &lines, (0, 0), rect(3), 1, None);
-        assert_eq!(v.visual_scroll_offset, 4);
+        assert_eq!(v.viewport.top(), 4);
         v.scroll_by(-1);
         update_view(&mut v, &lines, (0, 0), rect(3), 1, None);
-        assert_eq!(v.visual_scroll_offset, 3);
+        assert_eq!(v.viewport.top(), 3);
     }
 
     #[test]
@@ -2461,9 +2457,9 @@ mod tests {
         let lines: Vec<String> = (0..10).map(|i| format!("line{}", i)).collect();
         update_view(&mut v, &lines, (0, 0), rect(3), 1, None);
         v.scroll_by(100);
-        assert_eq!(v.visual_scroll_offset, 7, "last line sits at the bottom");
+        assert_eq!(v.viewport.top(), 7, "last line sits at the bottom");
         v.scroll_by(-100);
-        assert_eq!(v.visual_scroll_offset, 0);
+        assert_eq!(v.viewport.top(), 0);
     }
 
     #[test]
@@ -2473,7 +2469,7 @@ mod tests {
         update_view(&mut v, &lines, (0, 0), rect(3), 1, None);
         v.scroll_by(6);
         update_view(&mut v, &lines, (1, 0), rect(3), 1, None);
-        assert_eq!(v.visual_scroll_offset, 1);
+        assert_eq!(v.viewport.top(), 1);
     }
 
     #[test]
@@ -2484,7 +2480,44 @@ mod tests {
         v.scroll_by(6);
         lines[0].push('x');
         update_view(&mut v, &lines, (0, 0), rect(3), 2, None);
-        assert_eq!(v.visual_scroll_offset, 0);
+        assert_eq!(v.viewport.top(), 0);
+    }
+
+    #[test]
+    fn follow_cursor_brings_the_view_back_when_nothing_else_changed() {
+        // Find-next wrapping onto the match the cursor already sits on changes
+        // neither the cursor nor the text; the explicit re-attach must still
+        // reveal it.
+        let mut v = MarkdownEditorView::new();
+        let lines: Vec<String> = (0..10).map(|i| format!("line{}", i)).collect();
+        update_view(&mut v, &lines, (0, 0), rect(3), 1, None);
+        v.scroll_by(6);
+        v.follow_cursor();
+        update_view(&mut v, &lines, (0, 0), rect(3), 1, None);
+        assert_eq!(v.viewport.top(), 0);
+    }
+
+    #[test]
+    fn a_saturated_wheel_notch_does_not_detach_the_view() {
+        let mut v = MarkdownEditorView::new();
+        let lines: Vec<String> = (0..10).map(|i| format!("line{}", i)).collect();
+        update_view(&mut v, &lines, (0, 0), rect(3), 1, None);
+        assert!(!v.scroll_by(-3), "already at the top");
+        assert!(!v.detached);
+    }
+
+    #[test]
+    fn a_wheel_scroll_survives_a_height_change_but_stays_within_content() {
+        let mut v = MarkdownEditorView::new();
+        let lines: Vec<String> = (0..10).map(|i| format!("line{}", i)).collect();
+        update_view(&mut v, &lines, (0, 0), rect(3), 1, None);
+        v.scroll_by(7);
+        update_view(&mut v, &lines, (0, 0), rect(5), 1, None);
+        assert_eq!(
+            v.viewport.top(),
+            5,
+            "clamped so the last line is at the bottom"
+        );
     }
 
     #[test]
@@ -2495,11 +2528,11 @@ mod tests {
         let mut v = MarkdownEditorView::new();
         let lines: Vec<String> = (0..5).map(|i| format!("line{}", i)).collect();
         update_view(&mut v, &lines, (4, 0), rect(1), 1, None);
-        assert_eq!(v.visual_scroll_offset, 4);
+        assert_eq!(v.viewport.top(), 4);
         update_view(&mut v, &lines, (4, 0), rect(3), 1, None);
-        assert_eq!(v.visual_scroll_offset, 2);
+        assert_eq!(v.viewport.top(), 2);
         update_view(&mut v, &lines, (4, 0), rect(10), 1, None);
-        assert_eq!(v.visual_scroll_offset, 0);
+        assert_eq!(v.viewport.top(), 0);
     }
 
     #[test]
@@ -2507,7 +2540,7 @@ mod tests {
         let mut v = MarkdownEditorView::new();
         let lines: Vec<String> = (0..10).map(|i| format!("line{}", i)).collect();
         update_view(&mut v, &lines, (5, 0), rect(3), 1, None);
-        let scroll = v.visual_scroll_offset;
+        let scroll = v.viewport.top();
         let (row, _col) = v.click_to_logical_u16(scroll, 0);
         assert_eq!(row as usize, scroll);
     }

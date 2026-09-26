@@ -1604,6 +1604,7 @@ impl TextEditorComponent {
         };
         match mouse.kind {
             MouseEventKind::Down(_) => {
+                self.view.follow_cursor();
                 ta.cancel_selection();
                 let (lrow, lcol) = self
                     .view
@@ -1619,8 +1620,20 @@ impl TextEditorComponent {
             }
             // The wheel moves kimün's own viewport, never the cursor — the
             // find bar relies on that to let the user read elsewhere mid-search.
-            MouseEventKind::ScrollUp => self.view.scroll_by(-WHEEL_SCROLL_ROWS),
-            MouseEventKind::ScrollDown => self.view.scroll_by(WHEEL_SCROLL_ROWS),
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                let delta = if mouse.kind == MouseEventKind::ScrollUp {
+                    -WHEEL_SCROLL_ROWS
+                } else {
+                    WHEEL_SCROLL_ROWS
+                };
+                // The popup is anchored to the cursor, which may now be off
+                // screen: left open, it would take keys the user cannot see.
+                if self.view.scroll_by(delta)
+                    && let Some(c) = self.autocomplete.as_mut()
+                {
+                    c.close();
+                }
+            }
             // Everything else is somebody else's. The incumbent forwarded these
             // to the widget, which scrolled a viewport kimün never renders from.
             _ => {}
@@ -1643,6 +1656,10 @@ impl Component for TextEditorComponent {
 
         match event {
             InputEvent::Key(key) => {
+                // Every key acts at the cursor, so a wheel-scrolled view comes
+                // back to it — even when the key leaves the cursor where it was
+                // (find-next onto the same match, a motion at the buffer edge).
+                self.view.follow_cursor();
                 // Cheap popup-open probe first. The snapshot is now a
                 // Cow-borrowed view of the textarea's lines (zero
                 // allocation on the Textarea path — perf #8), so
