@@ -130,7 +130,7 @@ pub struct ClipboardImage {
 const LINKABLE_PASTE_SCHEMES: &[&str] = &["http", "https", "ftp", "ftps", "mailto"];
 
 /// Visual rows one mouse-wheel notch scrolls the editor.
-const WHEEL_SCROLL_ROWS: isize = 3;
+const WHEEL_SCROLL_ROWS: isize = 1;
 
 fn linkable_url(s: &str) -> Option<&str> {
     kimun_core::note::scan::url_with_allowed_scheme(s, LINKABLE_PASTE_SCHEMES)
