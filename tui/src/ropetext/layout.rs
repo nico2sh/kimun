@@ -386,10 +386,14 @@ impl Viewport {
     /// Scroll the least amount that brings `cursor` on screen. Returns whether it
     /// moved.
     pub fn follow(&mut self, layout: &Layout, cursor: Position) -> bool {
+        self.follow_row(layout.visual_row_of(cursor))
+    }
+
+    /// [`Self::follow`] for a visual row already resolved by the caller.
+    pub fn follow_row(&mut self, row: usize) -> bool {
         if self.height == 0 {
             return false;
         }
-        let row = layout.visual_row_of(cursor);
         let was = self.top;
         if row < self.top {
             self.top = row;
@@ -399,17 +403,27 @@ impl Viewport {
         self.top != was
     }
 
-    /// Scroll by `delta` visual lines, without moving the cursor. Returns whether
-    /// it moved.
+    /// Scroll by `delta` visual lines, without moving the cursor, never past
+    /// [`Self::max_top`]. Returns whether it moved.
     pub fn scroll_by(&mut self, layout: &Layout, delta: isize) -> bool {
         let was = self.top;
-        let last = layout.visual_line_count().saturating_sub(1);
-        self.top = if delta >= 0 {
-            (self.top + delta.unsigned_abs()).min(last)
-        } else {
-            self.top.saturating_sub(delta.unsigned_abs())
-        };
+        self.top = self
+            .top
+            .saturating_add_signed(delta)
+            .min(self.max_top(layout));
         self.top != was
+    }
+
+    /// The furthest the view may scroll: the last visual line on the bottom
+    /// row, so no blank rows show below the content while any sits above.
+    pub fn max_top(&self, layout: &Layout) -> usize {
+        layout.visual_line_count().saturating_sub(self.height)
+    }
+
+    /// Pull the view back within [`Self::max_top`] — after the pane grew or
+    /// the content shrank.
+    pub fn clamp(&mut self, layout: &Layout) {
+        self.top = self.top.min(self.max_top(layout));
     }
 }
 
@@ -1027,10 +1041,23 @@ mod tests {
         let layout = plain(&t, 10);
         let mut view = Viewport::new(2);
         view.scroll_by(&layout, 99);
-        assert_eq!(view.top(), 2);
+        assert_eq!(view.top(), 1, "the last line sits on the bottom row");
+        assert!(!view.scroll_by(&layout, 1), "already at the bottom");
         view.scroll_by(&layout, -99);
         assert_eq!(view.top(), 0);
         assert!(!view.scroll_by(&layout, -1), "already at the top");
+    }
+
+    #[test]
+    fn a_taller_pane_pulls_the_content_back_down() {
+        let t = text("a\nb\nc\nd\ne");
+        let layout = plain(&t, 10);
+        let mut view = Viewport::new(2);
+        view.scroll_by(&layout, 99);
+        assert_eq!(view.top(), 3);
+        view.set_height(4);
+        view.clamp(&layout);
+        assert_eq!(view.top(), 1);
     }
 
     #[test]
