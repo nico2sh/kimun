@@ -24,7 +24,9 @@ use crate::app_screen::onboarding::OnboardingScreen;
 use crate::app_screen::preferences::PreferencesScreen;
 use crate::app_screen::start::StartScreen;
 use crate::app_screen::{AppScreen, ScreenKind};
-use crate::components::events::{AppEvent, AppTx, AppTxExt, InputEvent, ScreenEvent, UpdateFlow};
+use crate::components::events::{
+    AppEvent, AppTx, AppTxExt, FileOp, InputEvent, ScreenEvent, UpdateFlow,
+};
 use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::key_event_to_combo;
 use crate::settings::{AppSettings, SharedSettings};
@@ -306,12 +308,13 @@ async fn switch_screen(app: &mut App, tx: &AppTx, new_screen: ScreenEvent) {
     // screen swap would turn a warning into a nag. Drained only for a screen
     // that shows flashes — Start can route through Onboarding or Browse
     // first, and handing the notice to one of those loses it for good.
-    if shows_flashes {
-        for msg in std::mem::take(&mut app.parked_flashes) {
-            screen
-                .handle_app_message(AppEvent::FlashMessage(msg), tx)
-                .await;
-        }
+    // Joined into one flash: the footer holds a single one, so delivering
+    // them separately would leave only the last on screen.
+    if shows_flashes && !app.parked_flashes.is_empty() {
+        let msg = std::mem::take(&mut app.parked_flashes).join(" · ");
+        screen
+            .handle_app_message(AppEvent::FlashMessage(msg), tx)
+            .await;
     }
     screen
         .handle_app_message(AppEvent::RagStatus(app.rag_status), tx)
@@ -775,6 +778,25 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
                 .handle_app_message(AppEvent::RagStatus(status), tx)
                 .await;
         }
+        AppEvent::FileOp(op) => {
+            // History is app-wide bookkeeping; keep it in step here, whichever
+            // screen hosted the operation, then let the screen react.
+            match &op {
+                FileOp::Renamed { from, to } | FileOp::Moved { from, to } => {
+                    app.settings
+                        .write()
+                        .unwrap()
+                        .follow_rename_in_history(from, to);
+                }
+                FileOp::Deleted(path) => {
+                    app.settings.write().unwrap().follow_delete_in_history(path);
+                }
+                _ => {}
+            }
+            app.current_screen
+                .handle_app_message(AppEvent::FileOp(op), tx)
+                .await;
+        }
         other => {
             app.current_screen.handle_app_message(other, tx).await;
         }
@@ -890,6 +912,137 @@ mod tests {
         )
         .await;
         assert!(app.parked_flashes.is_empty());
+    }
+
+    /// An app whose current workspace's history is `history`, newest first,
+    /// kept in `scratch` (the config file too).
+    async fn app_with_history(history: &[&str], scratch: &tempfile::TempDir) -> App {
+        use kimun_core::nfs::VaultPath;
+
+        let workspace = crate::test_support::sys(scratch.path());
+        let settings = AppSettings::for_test_workspace("ws", &workspace, workspace.clone());
+        let paths: Vec<VaultPath> = history.iter().map(|p| VaultPath::new(*p)).collect();
+        settings.history_for("ws").write(&paths).unwrap();
+        App::from_settings(Arc::new(RwLock::new(settings))).await
+    }
+
+    async fn file_op(app: &mut App, op: crate::components::events::FileOp) {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        super::handle_app_message(crate::components::events::AppEvent::FileOp(op), app, &tx)
+            .await
+            .unwrap();
+    }
+
+    /// The history as plain strings, form-independent (entries may be stored
+    /// relative or absolute).
+    fn history_of(app: &App) -> Vec<String> {
+        app.settings
+            .read()
+            .unwrap()
+            .current_last_paths()
+            .iter()
+            .map(|p| {
+                let mut p = p.clone();
+                p.to_relative();
+                p.to_string()
+            })
+            .collect()
+    }
+
+    /// A rename done inside kimün must follow through to the history, or the
+    /// next launch finds the old path gone and blames an outside change.
+    #[tokio::test]
+    async fn renaming_a_note_rewrites_it_in_the_history() {
+        use crate::components::events::FileOp;
+        use kimun_core::nfs::VaultPath;
+
+        let scratch = tempfile::TempDir::new().unwrap();
+        let mut app = app_with_history(&["a.md", "other.md"], &scratch).await;
+        file_op(
+            &mut app,
+            FileOp::Renamed {
+                from: VaultPath::new("a.md"),
+                to: VaultPath::new("b.md"),
+            },
+        )
+        .await;
+        assert_eq!(history_of(&app), vec!["b.md", "other.md"]);
+    }
+
+    #[tokio::test]
+    async fn moving_a_directory_rewrites_the_notes_beneath_it() {
+        use crate::components::events::FileOp;
+        use kimun_core::nfs::VaultPath;
+
+        let scratch = tempfile::TempDir::new().unwrap();
+        let mut app = app_with_history(&["dir/a.md", "dirx/b.md"], &scratch).await;
+        file_op(
+            &mut app,
+            FileOp::Moved {
+                from: VaultPath::new("dir"),
+                to: VaultPath::new("archive/dir"),
+            },
+        )
+        .await;
+        assert_eq!(history_of(&app), vec!["archive/dir/a.md", "dirx/b.md"]);
+    }
+
+    #[tokio::test]
+    async fn deleting_drops_the_note_or_everything_beneath_the_directory() {
+        use crate::components::events::FileOp;
+        use kimun_core::nfs::VaultPath;
+
+        let scratch = tempfile::TempDir::new().unwrap();
+        let mut app =
+            app_with_history(&["a.md", "dir/b.md", "dirx/c.md", "keep.md"], &scratch).await;
+        file_op(&mut app, FileOp::Deleted(VaultPath::new("a.md"))).await;
+        file_op(&mut app, FileOp::Deleted(VaultPath::new("dir"))).await;
+        assert_eq!(history_of(&app), vec!["dirx/c.md", "keep.md"]);
+    }
+
+    /// The footer holds one flash at a time, so notices parked together must
+    /// reach it together — delivered one by one, each overwrites the last
+    /// before a frame is ever drawn.
+    #[tokio::test]
+    async fn every_parked_flash_reaches_the_footer() {
+        use crate::components::events::{AppEvent, ScreenEvent};
+        use kimun_core::nfs::VaultPath;
+        use kimun_core::{NoteVault, VaultConfig};
+
+        let settings = Arc::new(RwLock::new(AppSettings::default()));
+        let mut app = App::from_settings(settings).await;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        for notice in ["first notice", "second notice"] {
+            super::handle_app_message(AppEvent::ParkFlash(notice.to_string()), &mut app, &tx)
+                .await
+                .unwrap();
+        }
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let vault = Arc::new(
+            NoteVault::new(VaultConfig::new(crate::test_support::sys(dir.path())))
+                .await
+                .unwrap(),
+        );
+        super::switch_screen(
+            &mut app,
+            &tx,
+            ScreenEvent::OpenEditor(vault, VaultPath::root()),
+        )
+        .await;
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 30)).unwrap();
+        terminal.draw(|f| app.current_screen.render(f)).unwrap();
+        let flat: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(flat.contains("first notice"), "first notice lost");
+        assert!(flat.contains("second notice"), "second notice lost");
     }
 
     /// When `auto` chose Backspace the stranded action is kimün's own

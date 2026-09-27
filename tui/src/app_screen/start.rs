@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use kimun_core::NoteVault;
-use kimun_core::error::VaultError;
+use kimun_core::error::{FSError, VaultError};
 use kimun_core::nfs::VaultPath;
 use throbber_widgets_tui::ThrobberState;
 
@@ -42,16 +42,28 @@ impl StartScreen {
     /// When the note it would have landed on is the one gone, it parks a
     /// flash saying so: the editor opening somewhere else unannounced reads
     /// as kimün losing the note.
-    async fn restore_target(&self, tx: &AppTx) -> VaultPath {
+    ///
+    /// Only trusted after a successful index (`vault_reachable`): when the
+    /// vault itself can't be read every note looks gone, and pruning then
+    /// would wipe the history for good. It lands on the newest entry
+    /// unchecked instead, as it did before any of this existed.
+    async fn restore_target(&self, vault_reachable: bool, tx: &AppTx) -> VaultPath {
         let history = self.settings.read().unwrap().current_last_paths();
-        // No vault means no workspace: the open is routed to onboarding, and
-        // there is nothing to check the history against.
-        let Some(vault) = &self.vault else {
+        // No vault (no workspace — the open is routed to onboarding) or one
+        // that failed to index: nothing trustworthy to check the history
+        // against.
+        let Some(vault) = self.vault.as_ref().filter(|_| vault_reachable) else {
             return history.first().cloned().unwrap_or_else(VaultPath::root);
         };
         let mut live = Vec::with_capacity(history.len());
         for path in &history {
-            if vault.exists(path).await {
+            // Gone means the filesystem said not found. Any other failure
+            // (permissions, I/O) keeps the entry: it may well still be there.
+            let gone = matches!(
+                vault.entry_kind(path).await,
+                Err(VaultError::FSError(FSError::VaultPathNotFound { .. }))
+            );
+            if !gone {
                 live.push(path.clone());
             }
         }
@@ -93,7 +105,7 @@ impl AppScreen for StartScreen {
             });
             self.overlay = Some(spawn_running(handle, tx));
         } else {
-            let path = self.restore_target(tx).await;
+            let path = self.restore_target(false, tx).await;
             tx.send(AppEvent::open(path)).ok();
         }
     }
@@ -110,9 +122,9 @@ impl AppScreen for StartScreen {
     }
 
     async fn handle_app_message(&mut self, msg: AppEvent, tx: &AppTx) {
-        if let AppEvent::IndexingDone(_) = &msg {
+        if let AppEvent::IndexingDone(result) = &msg {
             self.overlay = None;
-            let path = self.restore_target(tx).await;
+            let path = self.restore_target(result.is_ok(), tx).await;
             tx.send(AppEvent::open(path)).ok();
         }
     }
@@ -262,11 +274,62 @@ mod tests {
 
     /// Runs the post-indexing restore and returns every event it sent.
     async fn restore(screen: &mut StartScreen) -> Vec<AppEvent> {
+        restore_after(screen, Ok(Duration::from_secs(0))).await
+    }
+
+    async fn restore_after(
+        screen: &mut StartScreen,
+        indexing: Result<Duration, String>,
+    ) -> Vec<AppEvent> {
         let (tx, mut rx) = unbounded_channel::<AppEvent>();
         screen
-            .handle_app_message(AppEvent::IndexingDone(Ok(Duration::from_secs(0))), &tx)
+            .handle_app_message(AppEvent::IndexingDone(indexing), &tx)
             .await;
         std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    }
+
+    /// A failed index usually means the vault itself is out of reach (an
+    /// unmounted drive, a sync folder not there yet). Every note looks
+    /// missing then, and pruning would wipe the history for good.
+    /// Only a note the filesystem reports as not found is gone. One it can't
+    /// look at right now (permissions, I/O) may well still be there.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn restore_keeps_a_note_it_cannot_check() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (mut screen, settings, _dir) = restore_fixture(
+            &["locked/note.md", "still.md"],
+            &["locked/note.md", "still.md"],
+        )
+        .await;
+        let locked = screen
+            .vault
+            .as_ref()
+            .unwrap()
+            .workspace_path()
+            .join("locked")
+            .into_path_buf();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        restore(&mut screen).await;
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert_eq!(
+            settings.read().unwrap().current_last_paths(),
+            vec![VaultPath::new("locked/note.md"), VaultPath::new("still.md")]
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_after_failed_indexing_leaves_the_history_alone() {
+        let (mut screen, settings, _dir) =
+            restore_fixture(&["gone.md", "still.md"], &["still.md"]).await;
+        let events = restore_after(&mut screen, Err("unreachable".to_string())).await;
+        assert_eq!(
+            settings.read().unwrap().current_last_paths(),
+            vec![VaultPath::new("gone.md"), VaultPath::new("still.md")]
+        );
+        assert!(parked_flashes(&events).is_empty());
     }
 
     fn opened(events: &[AppEvent]) -> Vec<VaultPath> {
