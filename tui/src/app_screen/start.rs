@@ -32,6 +32,42 @@ impl StartScreen {
             throbber_state: ThrobberState::default(),
         }
     }
+
+    /// Where the restored session lands: the newest history entry still on
+    /// disk, or the vault root when none is. Notes moved or deleted outside
+    /// kimün are skipped, not offered for re-creation — the user asked for
+    /// their last note, not for a new one — and dropped from the history so
+    /// they stop turning up in recents.
+    ///
+    /// When the note it would have landed on is the one gone, it parks a
+    /// flash saying so: the editor opening somewhere else unannounced reads
+    /// as kimün losing the note.
+    async fn restore_target(&self, tx: &AppTx) -> VaultPath {
+        let history = self.settings.read().unwrap().current_last_paths();
+        // No vault means no workspace: the open is routed to onboarding, and
+        // there is nothing to check the history against.
+        let Some(vault) = &self.vault else {
+            return history.first().cloned().unwrap_or_else(VaultPath::root);
+        };
+        let mut live = Vec::with_capacity(history.len());
+        for path in &history {
+            if vault.exists(path).await {
+                live.push(path.clone());
+            }
+        }
+        if live.len() != history.len() {
+            self.settings.write().unwrap().replace_path_history(&live);
+        }
+        if let Some(last) = history.first()
+            && live.first() != Some(last)
+        {
+            tx.send(AppEvent::ParkFlash(format!(
+                "{last} is gone (moved or deleted outside kimün)"
+            )))
+            .ok();
+        }
+        live.first().cloned().unwrap_or_else(VaultPath::root)
+    }
 }
 
 #[async_trait]
@@ -57,8 +93,7 @@ impl AppScreen for StartScreen {
             });
             self.overlay = Some(spawn_running(handle, tx));
         } else {
-            let paths = self.settings.read().unwrap().current_last_paths();
-            let path = paths.first().map_or_else(VaultPath::root, |p| p.to_owned());
+            let path = self.restore_target(tx).await;
             tx.send(AppEvent::open(path)).ok();
         }
     }
@@ -77,8 +112,7 @@ impl AppScreen for StartScreen {
     async fn handle_app_message(&mut self, msg: AppEvent, tx: &AppTx) {
         if let AppEvent::IndexingDone(_) = &msg {
             self.overlay = None;
-            let paths = self.settings.read().unwrap().current_last_paths();
-            let path = paths.first().map_or_else(VaultPath::root, |p| p.to_owned());
+            let path = self.restore_target(tx).await;
             tx.send(AppEvent::open(path)).ok();
         }
     }
@@ -197,6 +231,114 @@ mod tests {
         assert!(
             matches!(msg, AppEvent::OpenPath { .. }),
             "expected OpenPath even after failed indexing"
+        );
+    }
+
+    /// A vault holding `existing` notes, and settings whose history for it is
+    /// `history` (newest first). Returns the history dir guard with the rest.
+    async fn restore_fixture(
+        history: &[&str],
+        existing: &[&str],
+    ) -> (StartScreen, SharedSettings, tempfile::TempDir) {
+        let vault = make_vault().await;
+        for note in existing {
+            vault
+                .create_note(&VaultPath::new(*note), "text")
+                .await
+                .unwrap();
+        }
+        let history_dir = tempfile::TempDir::new().unwrap();
+        let settings = AppSettings::for_test_workspace(
+            "ws",
+            vault.workspace_path(),
+            crate::test_support::sys(history_dir.path()),
+        );
+        let paths: Vec<VaultPath> = history.iter().map(|p| VaultPath::new(*p)).collect();
+        settings.history_for("ws").write(&paths).unwrap();
+        let settings: SharedSettings = Arc::new(RwLock::new(settings));
+        let screen = StartScreen::new(settings.clone(), Some(vault));
+        (screen, settings, history_dir)
+    }
+
+    /// Runs the post-indexing restore and returns every event it sent.
+    async fn restore(screen: &mut StartScreen) -> Vec<AppEvent> {
+        let (tx, mut rx) = unbounded_channel::<AppEvent>();
+        screen
+            .handle_app_message(AppEvent::IndexingDone(Ok(Duration::from_secs(0))), &tx)
+            .await;
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    }
+
+    fn opened(events: &[AppEvent]) -> Vec<VaultPath> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                AppEvent::OpenPath { path, .. } => Some(path.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn restore_skips_a_last_note_gone_from_disk() {
+        let (mut screen, _settings, _dir) =
+            restore_fixture(&["gone.md", "still.md"], &["still.md"]).await;
+        let events = restore(&mut screen).await;
+        assert_eq!(opened(&events), vec![VaultPath::new("still.md")]);
+    }
+
+    fn parked_flashes(events: &[AppEvent]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                AppEvent::ParkFlash(msg) => Some(msg.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn restore_tells_the_user_their_last_note_is_gone() {
+        let (mut screen, _settings, _dir) =
+            restore_fixture(&["gone.md", "still.md"], &["still.md"]).await;
+        let events = restore(&mut screen).await;
+        let flashes = parked_flashes(&events);
+        assert_eq!(
+            flashes.len(),
+            1,
+            "expected one parked flash, got {flashes:?}"
+        );
+        assert!(
+            flashes[0].contains("gone.md"),
+            "flash must name the note: {flashes:?}"
+        );
+    }
+
+    /// Only the note the user expected to land on is worth a word; older
+    /// entries vanishing from recents is not news.
+    #[tokio::test]
+    async fn restore_is_silent_when_only_older_entries_are_gone() {
+        let (mut screen, _settings, _dir) =
+            restore_fixture(&["still.md", "gone.md"], &["still.md"]).await;
+        let events = restore(&mut screen).await;
+        assert!(parked_flashes(&events).is_empty());
+    }
+
+    #[tokio::test]
+    async fn restore_lands_on_the_root_when_no_history_entry_survives() {
+        let (mut screen, _settings, _dir) = restore_fixture(&["a.md", "b.md"], &[]).await;
+        let events = restore(&mut screen).await;
+        assert_eq!(opened(&events), vec![VaultPath::root()]);
+    }
+
+    #[tokio::test]
+    async fn restore_drops_notes_gone_from_disk_from_the_history() {
+        let (mut screen, settings, _dir) =
+            restore_fixture(&["gone.md", "still.md", "also_gone.md"], &["still.md"]).await;
+        restore(&mut screen).await;
+        assert_eq!(
+            settings.read().unwrap().current_last_paths(),
+            vec![VaultPath::new("still.md")]
         );
     }
 

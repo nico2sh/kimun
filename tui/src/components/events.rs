@@ -81,6 +81,10 @@ pub enum AppEvent {
     ExecuteLeaderAction(crate::keys::leader::LeaderAction),
     /// Show a transient footer flash — async tasks report results with it.
     FlashMessage(String),
+    /// A flash for the next screen that can show one. Sent while a screen
+    /// that drops flashes is live (Start, before any editor exists); the app
+    /// parks it and delivers it on the next switch to the editor.
+    ParkFlash(String),
     /// The self-update lifecycle (one owner in `app::handle_app_message` for the app-global
     /// bookkeeping, one in the editor screen for display).
     Update(UpdateFlow),
