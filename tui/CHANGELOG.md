@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.3](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.24.2...kimun-notes-v0.24.3) - 2026-09-27
+
+### Added
+
+- fallback through history when not finding a note on startup
+
+### Fixed
+
+- format
+- rename also updates history
+- small regressions
+- scroll doesn't go beyond text boudaries
+
+### Other
+
+- cleanup
+- scroll one line pero mousewheel
+
 ## [0.24.2](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.24.1...kimun-notes-v0.24.2) - 2026-09-18
 
 ### Added
