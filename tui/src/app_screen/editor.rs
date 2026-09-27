@@ -365,15 +365,6 @@ impl EditorScreen {
         // Save current note before switching
         self.try_save().await;
 
-        {
-            let mut s = self.settings.write().unwrap();
-            s.add_path_history(&path);
-        }
-        let settings_snapshot = self.settings.read().unwrap().clone();
-        tokio::spawn(async move {
-            settings_snapshot.save_to_disk().ok();
-        });
-
         self.path = path.clone();
         // Returning to a note swaps the editor area back from any attachment or
         // the Ask workspace. `clear_attachment` and `hide_ask_if_shown` each
@@ -387,6 +378,14 @@ impl EditorScreen {
             .set_open_note(Some(self.path.clone()));
         match self.vault.get_note_text(&self.path).await {
             Ok(content) => {
+                // Recorded only once the read succeeds: a note that isn't
+                // there was never opened, and history is what the next
+                // launch restores.
+                self.settings.read().unwrap().add_path_history(&path);
+                let settings_snapshot = self.settings.read().unwrap().clone();
+                tokio::spawn(async move {
+                    settings_snapshot.save_to_disk().ok();
+                });
                 self.doc_meta.note_opened(&self.path, tx);
                 if let Some(ed) = self.panels.editor_mut() {
                     ed.set_text(content);
@@ -3384,6 +3383,43 @@ mod tests {
             screen.overlays.active_kind(),
             Some(OverlayKind::Dialog),
             "saving from the note browser opens the save-search dialog"
+        );
+    }
+
+    /// A note that isn't there was never opened: offering to create it must
+    /// not also record it as the last note, or the next launch lands on it.
+    #[tokio::test]
+    async fn opening_a_missing_note_leaves_the_history_alone() {
+        use crate::settings::AppSettings;
+        use std::sync::RwLock;
+
+        let vault = crate::test_support::temp_vault("editor-missing").await;
+        vault
+            .create_note(&VaultPath::new("here.md"), "text")
+            .await
+            .unwrap();
+        let history_dir = tempfile::TempDir::new().unwrap();
+        let settings: SharedSettings = Arc::new(RwLock::new(AppSettings::for_test_workspace(
+            "ws",
+            vault.workspace_path(),
+            crate::test_support::sys(history_dir.path()),
+        )));
+        let mut screen = EditorScreen::new(vault, VaultPath::root(), settings.clone());
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        screen.open_path(VaultPath::new("here.md"), None, &tx).await;
+        screen
+            .open_path(VaultPath::new("missing.md"), None, &tx)
+            .await;
+
+        assert_eq!(
+            settings.read().unwrap().current_last_paths(),
+            vec![VaultPath::new("here.md")]
+        );
+        assert_eq!(
+            screen.overlays.active_kind(),
+            Some(OverlayKind::Dialog),
+            "the create-note offer still stands for an explicit open"
         );
     }
 

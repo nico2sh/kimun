@@ -24,7 +24,9 @@ use crate::app_screen::onboarding::OnboardingScreen;
 use crate::app_screen::preferences::PreferencesScreen;
 use crate::app_screen::start::StartScreen;
 use crate::app_screen::{AppScreen, ScreenKind};
-use crate::components::events::{AppEvent, AppTx, AppTxExt, InputEvent, ScreenEvent, UpdateFlow};
+use crate::components::events::{
+    AppEvent, AppTx, AppTxExt, FileOp, InputEvent, ScreenEvent, UpdateFlow,
+};
 use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::key_event_to_combo;
 use crate::settings::{AppSettings, SharedSettings};
@@ -116,7 +118,12 @@ pub async fn run_tui(config_path: Option<PathBuf>) -> Result<()> {
     // answer, and only the live session knows it.
     let ctrl_h = ctrl_h::CtrlHPolicy::resolve(ctrl_h_setting, session.keyboard_enhanced());
     let mut events = EventHandler::new(ctrl_h);
-    app.key_warning = unreachable_binding_notice(&app, &session, ctrl_h_setting, ctrl_h);
+    app.parked_flashes.extend(unreachable_binding_notice(
+        &app,
+        &session,
+        ctrl_h_setting,
+        ctrl_h,
+    ));
 
     spawn_update_check(&app, events.app_sender());
     respawn_rag(&mut app, &events.app_sender());
@@ -156,16 +163,17 @@ pub struct App {
     /// Seeded into each editor screen so the footer can show the indicator.
     pub update: Option<crate::update::UpdateStatus>,
 
-    /// A one-shot notice that some key binding cannot reach this terminal,
-    /// waiting for a screen that can show it.
+    /// One-shot flashes waiting for a screen that can show them, oldest
+    /// first: the notice that some key binding cannot reach this terminal,
+    /// and whatever [`AppEvent::ParkFlash`] sent (Start's "your last note is
+    /// gone").
     ///
-    /// Parked rather than sent, because it is decided before the app loop
-    /// starts — while **Start** is the live screen, and `FlashMessage` is only
-    /// handled by the editor. `switch_screen` takes it the first time it
-    /// opens an editor, so it is shown once and not re-flashed on every later
-    /// screen swap (unlike `update`, which is a standing indicator and is
-    /// re-seeded).
-    pub key_warning: Option<String>,
+    /// Parked rather than sent, because they are decided while **Start** is
+    /// the live screen, and `FlashMessage` is only handled by the editor.
+    /// `switch_screen` drains them the first time it opens an editor, so each
+    /// is shown once and not re-flashed on every later screen swap (unlike
+    /// `update`, which is a standing indicator and is re-seeded).
+    pub parked_flashes: Vec<String>,
 
     /// The background RAG sync task for the current vault, when a server is
     /// configured. Aborted and respawned when the vault is rebuilt.
@@ -199,7 +207,7 @@ impl App {
             vault,
             screen_generation: 0,
             update: None,
-            key_warning: None,
+            parked_flashes: Vec::new(),
             rag_sync_task: None,
             rag_status: crate::rag::RagStatus::Disabled,
         }
@@ -296,11 +304,14 @@ async fn switch_screen(app: &mut App, tx: &AppTx, new_screen: ScreenEvent) {
             .handle_app_message(AppEvent::Update(UpdateFlow::Available(status)), tx)
             .await;
     }
-    // `take`, not `clone`: a flash is a one-shot, and re-firing it on every
-    // screen swap would turn a warning into a nag. Taken only for a screen
+    // Drained, not cloned: a flash is a one-shot, and re-firing it on every
+    // screen swap would turn a warning into a nag. Drained only for a screen
     // that shows flashes — Start can route through Onboarding or Browse
     // first, and handing the notice to one of those loses it for good.
-    if shows_flashes && let Some(msg) = app.key_warning.take() {
+    // Joined into one flash: the footer holds a single one, so delivering
+    // them separately would leave only the last on screen.
+    if shows_flashes && !app.parked_flashes.is_empty() {
+        let msg = std::mem::take(&mut app.parked_flashes).join(" · ");
         screen
             .handle_app_message(AppEvent::FlashMessage(msg), tx)
             .await;
@@ -330,7 +341,7 @@ async fn switch_screen(app: &mut App, tx: &AppTx, new_screen: ScreenEvent) {
 ///
 /// Returns the notice rather than sending it: at this point **Start** is the
 /// live screen and only the editor handles `FlashMessage`, so it is parked on
-/// [`App::key_warning`] for `switch_screen` to deliver once an editor is
+/// [`App::parked_flashes`] for `switch_screen` to deliver once an editor is
 /// opened.
 ///
 /// Rare in practice, and deliberately so: `merge_missing_default_bindings`
@@ -655,6 +666,7 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
         AppEvent::OpenScreen(screen) => {
             switch_screen(app, tx, screen).await;
         }
+        AppEvent::ParkFlash(msg) => app.parked_flashes.push(msg),
         AppEvent::OpenPath { path, emphasis } => {
             // We either handle the new path within the current screen, or we switch to a new screen for this path
             let unhandled = app.current_screen.try_open_path(path, emphasis, tx).await;
@@ -766,6 +778,25 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
                 .handle_app_message(AppEvent::RagStatus(status), tx)
                 .await;
         }
+        AppEvent::FileOp(op) => {
+            // History is app-wide bookkeeping; keep it in step here, whichever
+            // screen hosted the operation, then let the screen react.
+            match &op {
+                FileOp::Renamed { from, to } | FileOp::Moved { from, to } => {
+                    app.settings
+                        .read()
+                        .unwrap()
+                        .follow_rename_in_history(from, to);
+                }
+                FileOp::Deleted(path) => {
+                    app.settings.read().unwrap().follow_delete_in_history(path);
+                }
+                _ => {}
+            }
+            app.current_screen
+                .handle_app_message(AppEvent::FileOp(op), tx)
+                .await;
+        }
         other => {
             app.current_screen.handle_app_message(other, tx).await;
         }
@@ -822,13 +853,13 @@ mod tests {
 
         let settings = Arc::new(RwLock::new(AppSettings::default()));
         let mut app = App::from_settings(settings).await;
-        app.key_warning = Some("stranded".to_string());
+        app.parked_flashes.push("stranded".to_string());
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
 
         super::switch_screen(&mut app, &tx, ScreenEvent::OpenOnboarding).await;
         assert_eq!(
-            app.key_warning.as_deref(),
-            Some("stranded"),
+            app.parked_flashes,
+            vec!["stranded".to_string()],
             "onboarding cannot show a flash, so the warning must still be parked"
         );
 
@@ -845,9 +876,131 @@ mod tests {
         )
         .await;
         assert!(
-            app.key_warning.is_none(),
+            app.parked_flashes.is_empty(),
             "the editor shows flashes, so the one-shot is delivered and gone"
         );
+    }
+
+    /// An app whose current workspace's history is `history`, newest first,
+    /// kept in `scratch` (the config file too).
+    async fn app_with_history(history: &[&str], scratch: &tempfile::TempDir) -> App {
+        let workspace = crate::test_support::sys(scratch.path());
+        let settings = AppSettings::for_test_workspace("ws", &workspace, workspace.clone());
+        settings.seed_test_history(history);
+        App::from_settings(Arc::new(RwLock::new(settings))).await
+    }
+
+    async fn file_op(app: &mut App, op: crate::components::events::FileOp) {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        super::handle_app_message(crate::components::events::AppEvent::FileOp(op), app, &tx)
+            .await
+            .unwrap();
+    }
+
+    /// The history as plain strings, form-independent (entries may be stored
+    /// relative or absolute).
+    fn history_of(app: &App) -> Vec<String> {
+        app.settings
+            .read()
+            .unwrap()
+            .current_last_paths()
+            .iter()
+            .map(|p| {
+                let mut p = p.clone();
+                p.to_relative();
+                p.to_string()
+            })
+            .collect()
+    }
+
+    /// A rename done inside kimün must follow through to the history, or the
+    /// next launch finds the old path gone and blames an outside change.
+    #[tokio::test]
+    async fn renaming_a_note_rewrites_it_in_the_history() {
+        use crate::components::events::FileOp;
+        use kimun_core::nfs::VaultPath;
+
+        let scratch = tempfile::TempDir::new().unwrap();
+        let mut app = app_with_history(&["a.md", "other.md"], &scratch).await;
+        file_op(
+            &mut app,
+            FileOp::Renamed {
+                from: VaultPath::new("a.md"),
+                to: VaultPath::new("b.md"),
+            },
+        )
+        .await;
+        assert_eq!(history_of(&app), vec!["b.md", "other.md"]);
+    }
+
+    #[tokio::test]
+    async fn moving_a_directory_rewrites_the_notes_beneath_it() {
+        use crate::components::events::FileOp;
+        use kimun_core::nfs::VaultPath;
+
+        let scratch = tempfile::TempDir::new().unwrap();
+        let mut app = app_with_history(&["dir/a.md", "dirx/b.md"], &scratch).await;
+        file_op(
+            &mut app,
+            FileOp::Moved {
+                from: VaultPath::new("dir"),
+                to: VaultPath::new("archive/dir"),
+            },
+        )
+        .await;
+        assert_eq!(history_of(&app), vec!["archive/dir/a.md", "dirx/b.md"]);
+    }
+
+    #[tokio::test]
+    async fn deleting_drops_the_note_or_everything_beneath_the_directory() {
+        use crate::components::events::FileOp;
+        use kimun_core::nfs::VaultPath;
+
+        let scratch = tempfile::TempDir::new().unwrap();
+        let mut app =
+            app_with_history(&["a.md", "dir/b.md", "dirx/c.md", "keep.md"], &scratch).await;
+        file_op(&mut app, FileOp::Deleted(VaultPath::new("a.md"))).await;
+        file_op(&mut app, FileOp::Deleted(VaultPath::new("dir"))).await;
+        assert_eq!(history_of(&app), vec!["dirx/c.md", "keep.md"]);
+    }
+
+    /// The footer holds one flash at a time, so notices parked together must
+    /// reach it together — delivered one by one, each overwrites the last
+    /// before a frame is ever drawn.
+    #[tokio::test]
+    async fn every_parked_flash_reaches_the_footer() {
+        use crate::components::events::{AppEvent, ScreenEvent};
+        use kimun_core::nfs::VaultPath;
+
+        let settings = Arc::new(RwLock::new(AppSettings::default()));
+        let mut app = App::from_settings(settings).await;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        for notice in ["first notice", "second notice"] {
+            super::handle_app_message(AppEvent::ParkFlash(notice.to_string()), &mut app, &tx)
+                .await
+                .unwrap();
+        }
+
+        let vault = crate::test_support::temp_vault("app").await;
+        super::switch_screen(
+            &mut app,
+            &tx,
+            ScreenEvent::OpenEditor(vault, VaultPath::root()),
+        )
+        .await;
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 30)).unwrap();
+        terminal.draw(|f| app.current_screen.render(f)).unwrap();
+        let flat: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(flat.contains("first notice"), "first notice lost");
+        assert!(flat.contains("second notice"), "second notice lost");
     }
 
     /// When `auto` chose Backspace the stranded action is kimün's own

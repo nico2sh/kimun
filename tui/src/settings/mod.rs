@@ -30,7 +30,7 @@ pub type SharedSettings = Arc<RwLock<AppSettings>>;
 use kimun_core::IndexFile;
 
 use self::history::HistoryFile;
-use kimun_core::nfs::VaultPath;
+use kimun_core::nfs::{VaultPath, pinned_notes};
 use kimun_core::system::{self, SystemPath};
 
 use crate::keys::KeyBindings;
@@ -897,17 +897,59 @@ impl AppSettings {
         self.needs_indexing
     }
 
-    pub fn add_path_history(&mut self, note_path: &VaultPath) {
+    pub fn add_path_history(&self, note_path: &VaultPath) {
         if !note_path.is_note() {
             return;
         }
-        let Some(workspace_name) = self.current_workspace_name() else {
+        let Some(history) = self.current_history() else {
             return;
         };
-        let history = self.history_for(&workspace_name);
         if let Err(e) = history.push(note_path) {
             tracing::warn!("failed to write history {history}: {e}");
         }
+    }
+
+    /// Follows a rename or move done inside kimün — of a note, or of a
+    /// directory and every note beneath it — so the history keeps pointing
+    /// at the notes. Same rules as pinned notes.
+    pub fn follow_rename_in_history(&self, from: &VaultPath, to: &VaultPath) {
+        self.edit_path_history(|paths| {
+            if from.is_note() {
+                pinned_notes::rewrite_note_rename(paths, from, to)
+            } else {
+                pinned_notes::rewrite_directory_rename(paths, from, to)
+            }
+        });
+    }
+
+    /// Follows a delete done inside kimün — of a note, or of a directory and
+    /// every note beneath it — so the history stops offering it.
+    pub fn follow_delete_in_history(&self, path: &VaultPath) {
+        self.edit_path_history(|paths| {
+            if path.is_note() {
+                pinned_notes::remove(paths, path)
+            } else {
+                pinned_notes::remove_under_directory(paths, path)
+            }
+        });
+    }
+
+    /// Applies `f` to the current workspace's history, writing it back when
+    /// `f` reports a change. Read and rewritten in one go, so an edit never
+    /// lands on a list loaded before some other write.
+    pub fn edit_path_history(&self, f: impl FnOnce(&mut Vec<VaultPath>) -> bool) {
+        let Some(history) = self.current_history() else {
+            return;
+        };
+        if let Err(e) = history.edit(f) {
+            tracing::warn!("failed to write history {history}: {e}");
+        }
+    }
+
+    /// The current workspace's history file; `None` with no workspace.
+    fn current_history(&self) -> Option<HistoryFile> {
+        self.current_workspace_name()
+            .map(|name| self.history_for(&name))
     }
 
     pub fn current_workspace_name(&self) -> Option<String> {
@@ -981,10 +1023,38 @@ impl AppSettings {
 
     /// Returns the last-visited paths for the current workspace.
     pub fn current_last_paths(&self) -> Vec<VaultPath> {
-        let Some(name) = self.current_workspace_name() else {
-            return Vec::new();
-        };
-        self.history_for(&name).load()
+        self.current_history()
+            .map(|history| history.load())
+            .unwrap_or_default()
+    }
+
+    /// Defaults with `name` as the current workspace (rooted at `workspace`),
+    /// and both the history files and the config file kept in `scratch_dir`,
+    /// so a test never touches the real config directory — opening a note
+    /// saves the settings, and with no `config_file` that save lands in the
+    /// developer's own `config.toml`.
+    #[cfg(test)]
+    pub(crate) fn for_test_workspace(
+        name: &str,
+        workspace: &SystemPath,
+        scratch_dir: SystemPath,
+    ) -> Self {
+        let mut wc = WorkspaceConfig::new_empty();
+        wc.add_workspace(name.to_string(), workspace.clone().into_path_buf())
+            .unwrap();
+        Self {
+            workspace_config: Some(wc),
+            config_file: Some(scratch_dir.join("config.toml").into_path_buf()),
+            history_dir_resolved: scratch_dir,
+            ..Self::default()
+        }
+    }
+
+    /// Seeds the current workspace's history with `paths`, newest first.
+    #[cfg(test)]
+    pub(crate) fn seed_test_history(&self, paths: &[&str]) {
+        let paths: Vec<VaultPath> = paths.iter().map(|p| VaultPath::new(*p)).collect();
+        self.current_history().unwrap().write(&paths).unwrap();
     }
 
     /// Build the icon set for the current `use_nerd_fonts` setting.
