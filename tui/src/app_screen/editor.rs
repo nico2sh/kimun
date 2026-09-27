@@ -381,10 +381,7 @@ impl EditorScreen {
                 // Recorded only once the read succeeds: a note that isn't
                 // there was never opened, and history is what the next
                 // launch restores.
-                {
-                    let mut s = self.settings.write().unwrap();
-                    s.add_path_history(&path);
-                }
+                self.settings.read().unwrap().add_path_history(&path);
                 let settings_snapshot = self.settings.read().unwrap().clone();
                 tokio::spawn(async move {
                     settings_snapshot.save_to_disk().ok();

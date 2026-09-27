@@ -897,27 +897,14 @@ impl AppSettings {
         self.needs_indexing
     }
 
-    pub fn add_path_history(&mut self, note_path: &VaultPath) {
+    pub fn add_path_history(&self, note_path: &VaultPath) {
         if !note_path.is_note() {
             return;
         }
-        let Some(workspace_name) = self.current_workspace_name() else {
+        let Some(history) = self.current_history() else {
             return;
         };
-        let history = self.history_for(&workspace_name);
         if let Err(e) = history.push(note_path) {
-            tracing::warn!("failed to write history {history}: {e}");
-        }
-    }
-
-    /// Replaces the current workspace's history with `paths`, newest first —
-    /// for dropping entries that no longer resolve to a note.
-    pub fn replace_path_history(&mut self, paths: &[VaultPath]) {
-        let Some(workspace_name) = self.current_workspace_name() else {
-            return;
-        };
-        let history = self.history_for(&workspace_name);
-        if let Err(e) = history.write(paths) {
             tracing::warn!("failed to write history {history}: {e}");
         }
     }
@@ -925,7 +912,7 @@ impl AppSettings {
     /// Follows a rename or move done inside kimün — of a note, or of a
     /// directory and every note beneath it — so the history keeps pointing
     /// at the notes. Same rules as pinned notes.
-    pub fn follow_rename_in_history(&mut self, from: &VaultPath, to: &VaultPath) {
+    pub fn follow_rename_in_history(&self, from: &VaultPath, to: &VaultPath) {
         self.edit_path_history(|paths| {
             if from.is_note() {
                 pinned_notes::rewrite_note_rename(paths, from, to)
@@ -937,7 +924,7 @@ impl AppSettings {
 
     /// Follows a delete done inside kimün — of a note, or of a directory and
     /// every note beneath it — so the history stops offering it.
-    pub fn follow_delete_in_history(&mut self, path: &VaultPath) {
+    pub fn follow_delete_in_history(&self, path: &VaultPath) {
         self.edit_path_history(|paths| {
             if path.is_note() {
                 pinned_notes::remove(paths, path)
@@ -947,14 +934,22 @@ impl AppSettings {
         });
     }
 
-    fn edit_path_history(&self, f: impl FnOnce(&mut Vec<VaultPath>) -> bool) {
-        let Some(workspace_name) = self.current_workspace_name() else {
+    /// Applies `f` to the current workspace's history, writing it back when
+    /// `f` reports a change. Read and rewritten in one go, so an edit never
+    /// lands on a list loaded before some other write.
+    pub fn edit_path_history(&self, f: impl FnOnce(&mut Vec<VaultPath>) -> bool) {
+        let Some(history) = self.current_history() else {
             return;
         };
-        let history = self.history_for(&workspace_name);
         if let Err(e) = history.edit(f) {
             tracing::warn!("failed to write history {history}: {e}");
         }
+    }
+
+    /// The current workspace's history file; `None` with no workspace.
+    fn current_history(&self) -> Option<HistoryFile> {
+        self.current_workspace_name()
+            .map(|name| self.history_for(&name))
     }
 
     pub fn current_workspace_name(&self) -> Option<String> {
@@ -1028,10 +1023,9 @@ impl AppSettings {
 
     /// Returns the last-visited paths for the current workspace.
     pub fn current_last_paths(&self) -> Vec<VaultPath> {
-        let Some(name) = self.current_workspace_name() else {
-            return Vec::new();
-        };
-        self.history_for(&name).load()
+        self.current_history()
+            .map(|history| history.load())
+            .unwrap_or_default()
     }
 
     /// Defaults with `name` as the current workspace (rooted at `workspace`),
@@ -1054,6 +1048,13 @@ impl AppSettings {
             history_dir_resolved: scratch_dir,
             ..Self::default()
         }
+    }
+
+    /// Seeds the current workspace's history with `paths`, newest first.
+    #[cfg(test)]
+    pub(crate) fn seed_test_history(&self, paths: &[&str]) {
+        let paths: Vec<VaultPath> = paths.iter().map(|p| VaultPath::new(*p)).collect();
+        self.current_history().unwrap().write(&paths).unwrap();
     }
 
     /// Build the icon set for the current `use_nerd_fonts` setting.

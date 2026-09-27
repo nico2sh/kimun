@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use kimun_core::NoteVault;
-use kimun_core::error::{FSError, VaultError};
+use kimun_core::error::VaultError;
 use kimun_core::nfs::VaultPath;
 use throbber_widgets_tui::ThrobberState;
 
@@ -56,19 +56,25 @@ impl StartScreen {
             return history.first().cloned().unwrap_or_else(VaultPath::root);
         };
         let mut live = Vec::with_capacity(history.len());
+        let mut gone = Vec::new();
         for path in &history {
             // Gone means the filesystem said not found. Any other failure
             // (permissions, I/O) keeps the entry: it may well still be there.
-            let gone = matches!(
-                vault.entry_kind(path).await,
-                Err(VaultError::FSError(FSError::VaultPathNotFound { .. }))
-            );
-            if !gone {
+            if vault
+                .entry_kind(path)
+                .await
+                .is_err_and(|e| e.is_not_found())
+            {
+                gone.push(path.clone());
+            } else {
                 live.push(path.clone());
             }
         }
-        if live.len() != history.len() {
-            self.settings.write().unwrap().replace_path_history(&live);
+        if !gone.is_empty() {
+            self.settings.read().unwrap().edit_path_history(|paths| {
+                paths.retain(|p| !gone.iter().any(|g| g.is_like(p)));
+                true
+            });
         }
         if let Some(last) = history.first()
             && live.first() != Some(last)
@@ -265,8 +271,7 @@ mod tests {
             vault.workspace_path(),
             crate::test_support::sys(history_dir.path()),
         );
-        let paths: Vec<VaultPath> = history.iter().map(|p| VaultPath::new(*p)).collect();
-        settings.history_for("ws").write(&paths).unwrap();
+        settings.seed_test_history(history);
         let settings: SharedSettings = Arc::new(RwLock::new(settings));
         let screen = StartScreen::new(settings.clone(), Some(vault));
         (screen, settings, history_dir)
