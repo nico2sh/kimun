@@ -30,7 +30,7 @@ pub type SharedSettings = Arc<RwLock<AppSettings>>;
 use kimun_core::IndexFile;
 
 use self::history::HistoryFile;
-use kimun_core::nfs::VaultPath;
+use kimun_core::nfs::{VaultPath, pinned_notes};
 use kimun_core::system::{self, SystemPath};
 
 use crate::keys::KeyBindings;
@@ -922,6 +922,41 @@ impl AppSettings {
         }
     }
 
+    /// Follows a rename or move done inside kimün — of a note, or of a
+    /// directory and every note beneath it — so the history keeps pointing
+    /// at the notes. Same rules as pinned notes.
+    pub fn follow_rename_in_history(&mut self, from: &VaultPath, to: &VaultPath) {
+        self.edit_path_history(|paths| {
+            if from.is_note() {
+                pinned_notes::rewrite_note_rename(paths, from, to)
+            } else {
+                pinned_notes::rewrite_directory_rename(paths, from, to)
+            }
+        });
+    }
+
+    /// Follows a delete done inside kimün — of a note, or of a directory and
+    /// every note beneath it — so the history stops offering it.
+    pub fn follow_delete_in_history(&mut self, path: &VaultPath) {
+        self.edit_path_history(|paths| {
+            if path.is_note() {
+                pinned_notes::remove(paths, path)
+            } else {
+                pinned_notes::remove_under_directory(paths, path)
+            }
+        });
+    }
+
+    fn edit_path_history(&self, f: impl FnOnce(&mut Vec<VaultPath>) -> bool) {
+        let Some(workspace_name) = self.current_workspace_name() else {
+            return;
+        };
+        let history = self.history_for(&workspace_name);
+        if let Err(e) = history.edit(f) {
+            tracing::warn!("failed to write history {history}: {e}");
+        }
+    }
+
     pub fn current_workspace_name(&self) -> Option<String> {
         self.workspace_config
             .as_ref()
@@ -999,21 +1034,24 @@ impl AppSettings {
         self.history_for(&name).load()
     }
 
-    /// Defaults with `name` as the current workspace (rooted at `workspace`)
-    /// and history files kept in `history_dir`, so a test's history never
-    /// touches the real config directory.
+    /// Defaults with `name` as the current workspace (rooted at `workspace`),
+    /// and both the history files and the config file kept in `scratch_dir`,
+    /// so a test never touches the real config directory — opening a note
+    /// saves the settings, and with no `config_file` that save lands in the
+    /// developer's own `config.toml`.
     #[cfg(test)]
     pub(crate) fn for_test_workspace(
         name: &str,
         workspace: &SystemPath,
-        history_dir: SystemPath,
+        scratch_dir: SystemPath,
     ) -> Self {
         let mut wc = WorkspaceConfig::new_empty();
         wc.add_workspace(name.to_string(), workspace.clone().into_path_buf())
             .unwrap();
         Self {
             workspace_config: Some(wc),
-            history_dir_resolved: history_dir,
+            config_file: Some(scratch_dir.join("config.toml").into_path_buf()),
+            history_dir_resolved: scratch_dir,
             ..Self::default()
         }
     }

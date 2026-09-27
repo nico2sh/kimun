@@ -89,6 +89,16 @@ impl HistoryFile {
         self.write(&existing)
     }
 
+    /// Applies `f` to the stored paths and writes them back when it reports
+    /// a change — for the rename/delete rules shared with pinned notes.
+    pub fn edit(&self, f: impl FnOnce(&mut Vec<VaultPath>) -> bool) -> Result<(), SystemError> {
+        let mut paths = self.load();
+        if f(&mut paths) {
+            self.write(&paths)?;
+        }
+        Ok(())
+    }
+
     /// Replaces the file's contents with `paths`.
     ///
     /// Atomic, because this rewrites the whole file on every note the user
