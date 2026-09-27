@@ -292,8 +292,7 @@ current_workspace = "notes"
         ),
     )
     .unwrap();
-    let settings =
-        kimun_notes::settings::AppSettings::load_from_file(cfg_path.clone()).unwrap();
+    let settings = kimun_notes::settings::AppSettings::load_from_file(cfg_path.clone()).unwrap();
 
     settings.add_path_history(&VaultPath::new("a.md"));
     settings.add_path_history(&VaultPath::new("b.md"));
