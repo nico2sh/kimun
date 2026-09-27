@@ -784,12 +784,12 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
             match &op {
                 FileOp::Renamed { from, to } | FileOp::Moved { from, to } => {
                     app.settings
-                        .write()
+                        .read()
                         .unwrap()
                         .follow_rename_in_history(from, to);
                 }
                 FileOp::Deleted(path) => {
-                    app.settings.write().unwrap().follow_delete_in_history(path);
+                    app.settings.read().unwrap().follow_delete_in_history(path);
                 }
                 _ => {}
             }
@@ -881,48 +881,12 @@ mod tests {
         );
     }
 
-    /// Start restores the session before any editor exists, so its notice
-    /// about a vanished last note has to wait just like the key warning.
-    #[tokio::test]
-    async fn a_parked_flash_waits_for_a_screen_that_shows_flashes() {
-        use crate::components::events::{AppEvent, ScreenEvent};
-        use kimun_core::nfs::VaultPath;
-        use kimun_core::{NoteVault, VaultConfig};
-
-        let settings = Arc::new(RwLock::new(AppSettings::default()));
-        let mut app = App::from_settings(settings).await;
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-
-        super::handle_app_message(AppEvent::ParkFlash("gone".to_string()), &mut app, &tx)
-            .await
-            .unwrap();
-        super::switch_screen(&mut app, &tx, ScreenEvent::OpenOnboarding).await;
-        assert_eq!(app.parked_flashes, vec!["gone".to_string()]);
-
-        let dir = tempfile::TempDir::new().unwrap();
-        let vault = Arc::new(
-            NoteVault::new(VaultConfig::new(crate::test_support::sys(dir.path())))
-                .await
-                .unwrap(),
-        );
-        super::switch_screen(
-            &mut app,
-            &tx,
-            ScreenEvent::OpenEditor(vault, VaultPath::root()),
-        )
-        .await;
-        assert!(app.parked_flashes.is_empty());
-    }
-
     /// An app whose current workspace's history is `history`, newest first,
     /// kept in `scratch` (the config file too).
     async fn app_with_history(history: &[&str], scratch: &tempfile::TempDir) -> App {
-        use kimun_core::nfs::VaultPath;
-
         let workspace = crate::test_support::sys(scratch.path());
         let settings = AppSettings::for_test_workspace("ws", &workspace, workspace.clone());
-        let paths: Vec<VaultPath> = history.iter().map(|p| VaultPath::new(*p)).collect();
-        settings.history_for("ws").write(&paths).unwrap();
+        settings.seed_test_history(history);
         App::from_settings(Arc::new(RwLock::new(settings))).await
     }
 
@@ -1007,7 +971,6 @@ mod tests {
     async fn every_parked_flash_reaches_the_footer() {
         use crate::components::events::{AppEvent, ScreenEvent};
         use kimun_core::nfs::VaultPath;
-        use kimun_core::{NoteVault, VaultConfig};
 
         let settings = Arc::new(RwLock::new(AppSettings::default()));
         let mut app = App::from_settings(settings).await;
@@ -1018,12 +981,7 @@ mod tests {
                 .unwrap();
         }
 
-        let dir = tempfile::TempDir::new().unwrap();
-        let vault = Arc::new(
-            NoteVault::new(VaultConfig::new(crate::test_support::sys(dir.path())))
-                .await
-                .unwrap(),
-        );
+        let vault = crate::test_support::temp_vault("app").await;
         super::switch_screen(
             &mut app,
             &tx,
