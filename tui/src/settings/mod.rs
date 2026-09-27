@@ -910,6 +910,18 @@ impl AppSettings {
         }
     }
 
+    /// Replaces the current workspace's history with `paths`, newest first —
+    /// for dropping entries that no longer resolve to a note.
+    pub fn replace_path_history(&mut self, paths: &[VaultPath]) {
+        let Some(workspace_name) = self.current_workspace_name() else {
+            return;
+        };
+        let history = self.history_for(&workspace_name);
+        if let Err(e) = history.write(paths) {
+            tracing::warn!("failed to write history {history}: {e}");
+        }
+    }
+
     pub fn current_workspace_name(&self) -> Option<String> {
         self.workspace_config
             .as_ref()
@@ -985,6 +997,25 @@ impl AppSettings {
             return Vec::new();
         };
         self.history_for(&name).load()
+    }
+
+    /// Defaults with `name` as the current workspace (rooted at `workspace`)
+    /// and history files kept in `history_dir`, so a test's history never
+    /// touches the real config directory.
+    #[cfg(test)]
+    pub(crate) fn for_test_workspace(
+        name: &str,
+        workspace: &SystemPath,
+        history_dir: SystemPath,
+    ) -> Self {
+        let mut wc = WorkspaceConfig::new_empty();
+        wc.add_workspace(name.to_string(), workspace.clone().into_path_buf())
+            .unwrap();
+        Self {
+            workspace_config: Some(wc),
+            history_dir_resolved: history_dir,
+            ..Self::default()
+        }
     }
 
     /// Build the icon set for the current `use_nerd_fonts` setting.

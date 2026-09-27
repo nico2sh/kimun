@@ -116,7 +116,12 @@ pub async fn run_tui(config_path: Option<PathBuf>) -> Result<()> {
     // answer, and only the live session knows it.
     let ctrl_h = ctrl_h::CtrlHPolicy::resolve(ctrl_h_setting, session.keyboard_enhanced());
     let mut events = EventHandler::new(ctrl_h);
-    app.key_warning = unreachable_binding_notice(&app, &session, ctrl_h_setting, ctrl_h);
+    app.parked_flashes.extend(unreachable_binding_notice(
+        &app,
+        &session,
+        ctrl_h_setting,
+        ctrl_h,
+    ));
 
     spawn_update_check(&app, events.app_sender());
     respawn_rag(&mut app, &events.app_sender());
@@ -156,16 +161,17 @@ pub struct App {
     /// Seeded into each editor screen so the footer can show the indicator.
     pub update: Option<crate::update::UpdateStatus>,
 
-    /// A one-shot notice that some key binding cannot reach this terminal,
-    /// waiting for a screen that can show it.
+    /// One-shot flashes waiting for a screen that can show them, oldest
+    /// first: the notice that some key binding cannot reach this terminal,
+    /// and whatever [`AppEvent::ParkFlash`] sent (Start's "your last note is
+    /// gone").
     ///
-    /// Parked rather than sent, because it is decided before the app loop
-    /// starts — while **Start** is the live screen, and `FlashMessage` is only
-    /// handled by the editor. `switch_screen` takes it the first time it
-    /// opens an editor, so it is shown once and not re-flashed on every later
-    /// screen swap (unlike `update`, which is a standing indicator and is
-    /// re-seeded).
-    pub key_warning: Option<String>,
+    /// Parked rather than sent, because they are decided while **Start** is
+    /// the live screen, and `FlashMessage` is only handled by the editor.
+    /// `switch_screen` drains them the first time it opens an editor, so each
+    /// is shown once and not re-flashed on every later screen swap (unlike
+    /// `update`, which is a standing indicator and is re-seeded).
+    pub parked_flashes: Vec<String>,
 
     /// The background RAG sync task for the current vault, when a server is
     /// configured. Aborted and respawned when the vault is rebuilt.
@@ -199,7 +205,7 @@ impl App {
             vault,
             screen_generation: 0,
             update: None,
-            key_warning: None,
+            parked_flashes: Vec::new(),
             rag_sync_task: None,
             rag_status: crate::rag::RagStatus::Disabled,
         }
@@ -296,14 +302,16 @@ async fn switch_screen(app: &mut App, tx: &AppTx, new_screen: ScreenEvent) {
             .handle_app_message(AppEvent::Update(UpdateFlow::Available(status)), tx)
             .await;
     }
-    // `take`, not `clone`: a flash is a one-shot, and re-firing it on every
-    // screen swap would turn a warning into a nag. Taken only for a screen
+    // Drained, not cloned: a flash is a one-shot, and re-firing it on every
+    // screen swap would turn a warning into a nag. Drained only for a screen
     // that shows flashes — Start can route through Onboarding or Browse
     // first, and handing the notice to one of those loses it for good.
-    if shows_flashes && let Some(msg) = app.key_warning.take() {
-        screen
-            .handle_app_message(AppEvent::FlashMessage(msg), tx)
-            .await;
+    if shows_flashes {
+        for msg in std::mem::take(&mut app.parked_flashes) {
+            screen
+                .handle_app_message(AppEvent::FlashMessage(msg), tx)
+                .await;
+        }
     }
     screen
         .handle_app_message(AppEvent::RagStatus(app.rag_status), tx)
@@ -330,7 +338,7 @@ async fn switch_screen(app: &mut App, tx: &AppTx, new_screen: ScreenEvent) {
 ///
 /// Returns the notice rather than sending it: at this point **Start** is the
 /// live screen and only the editor handles `FlashMessage`, so it is parked on
-/// [`App::key_warning`] for `switch_screen` to deliver once an editor is
+/// [`App::parked_flashes`] for `switch_screen` to deliver once an editor is
 /// opened.
 ///
 /// Rare in practice, and deliberately so: `merge_missing_default_bindings`
@@ -655,6 +663,7 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
         AppEvent::OpenScreen(screen) => {
             switch_screen(app, tx, screen).await;
         }
+        AppEvent::ParkFlash(msg) => app.parked_flashes.push(msg),
         AppEvent::OpenPath { path, emphasis } => {
             // We either handle the new path within the current screen, or we switch to a new screen for this path
             let unhandled = app.current_screen.try_open_path(path, emphasis, tx).await;
@@ -822,13 +831,13 @@ mod tests {
 
         let settings = Arc::new(RwLock::new(AppSettings::default()));
         let mut app = App::from_settings(settings).await;
-        app.key_warning = Some("stranded".to_string());
+        app.parked_flashes.push("stranded".to_string());
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
 
         super::switch_screen(&mut app, &tx, ScreenEvent::OpenOnboarding).await;
         assert_eq!(
-            app.key_warning.as_deref(),
-            Some("stranded"),
+            app.parked_flashes,
+            vec!["stranded".to_string()],
             "onboarding cannot show a flash, so the warning must still be parked"
         );
 
@@ -845,9 +854,42 @@ mod tests {
         )
         .await;
         assert!(
-            app.key_warning.is_none(),
+            app.parked_flashes.is_empty(),
             "the editor shows flashes, so the one-shot is delivered and gone"
         );
+    }
+
+    /// Start restores the session before any editor exists, so its notice
+    /// about a vanished last note has to wait just like the key warning.
+    #[tokio::test]
+    async fn a_parked_flash_waits_for_a_screen_that_shows_flashes() {
+        use crate::components::events::{AppEvent, ScreenEvent};
+        use kimun_core::nfs::VaultPath;
+        use kimun_core::{NoteVault, VaultConfig};
+
+        let settings = Arc::new(RwLock::new(AppSettings::default()));
+        let mut app = App::from_settings(settings).await;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        super::handle_app_message(AppEvent::ParkFlash("gone".to_string()), &mut app, &tx)
+            .await
+            .unwrap();
+        super::switch_screen(&mut app, &tx, ScreenEvent::OpenOnboarding).await;
+        assert_eq!(app.parked_flashes, vec!["gone".to_string()]);
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let vault = Arc::new(
+            NoteVault::new(VaultConfig::new(crate::test_support::sys(dir.path())))
+                .await
+                .unwrap(),
+        );
+        super::switch_screen(
+            &mut app,
+            &tx,
+            ScreenEvent::OpenEditor(vault, VaultPath::root()),
+        )
+        .await;
+        assert!(app.parked_flashes.is_empty());
     }
 
     /// When `auto` chose Backspace the stranded action is kimün's own
