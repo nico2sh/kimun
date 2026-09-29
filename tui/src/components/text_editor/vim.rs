@@ -135,6 +135,7 @@ pub enum Command {
     EnterInsert(InsertEntry),                    // i a I A o O
     EnterReplace,                                // R — overwrite until Esc
     EnterVisual { line: bool },                  // v / V
+    ReselectVisual,                              // gv
     Repeat,                                      // .
 }
 
@@ -149,6 +150,8 @@ enum GKey {
     CaseOp(Operator),
     /// `gJ` — join without space handling.
     Join,
+    /// `gv` — reselect the last Visual selection.
+    Reselect,
 }
 
 /// What one Normal-mode key parsed into. Parsing never touches the buffer;
@@ -239,6 +242,16 @@ struct InsertCapture {
     start: (usize, usize),
 }
 
+/// A Visual selection as `gv` brings it back: which Visual mode, and both
+/// ends — the anchor apart from the cursor, since the side the cursor was on
+/// is the side the selection keeps extending from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct VisualSelection {
+    line: bool,
+    anchor: (usize, usize),
+    cursor: (usize, usize),
+}
+
 // ── VimEngine ────────────────────────────────────────────────────────────────
 
 /// Modal vim state layered over the textarea buffer.
@@ -264,6 +277,8 @@ pub struct VimEngine {
     /// Replace mode's restore stack: what each overwritten position held
     /// (`None` = the char was appended past EOL). Backspace pops it.
     replace_stack: Vec<Option<char>>,
+    /// The selection Visual mode last ended with, for `gv`.
+    last_visual: Option<VisualSelection>,
 }
 
 impl Default for VimEngine {
@@ -279,6 +294,7 @@ impl Default for VimEngine {
             last_change: None,
             insert_capture: None,
             replace_stack: Vec::new(),
+            last_visual: None,
         }
     }
 }
@@ -379,9 +395,62 @@ impl VimEngine {
         match self.mode {
             EditorMode::Insert => self.handle_insert(key, ta),
             EditorMode::Replace => self.handle_replace(key, ta),
-            EditorMode::Visual | EditorMode::VisualLine => self.handle_visual(key, ta),
+            EditorMode::Visual | EditorMode::VisualLine => {
+                // Snapshot before the key: the key that leaves Visual is the
+                // one that may cancel the selection or edit it away.
+                let selection = self.visual_selection(ta);
+                let outcome = self.handle_visual(key, ta);
+                if !matches!(self.mode, EditorMode::Visual | EditorMode::VisualLine) {
+                    self.last_visual = selection.or(self.last_visual);
+                }
+                outcome
+            }
             _ => self.handle_normal(key, ta),
         }
+    }
+
+    /// The live Visual selection, or `None` outside Visual mode.
+    fn visual_selection(&self, ta: &RopeBuffer) -> Option<VisualSelection> {
+        let line = match self.mode {
+            EditorMode::Visual => false,
+            EditorMode::VisualLine => true,
+            _ => return None,
+        };
+        let cursor = ta.cursor();
+        let anchor = match ta.selection_range() {
+            Some((start, end)) if cursor == start => end,
+            Some((start, _)) => start,
+            None => cursor,
+        };
+        Some(VisualSelection {
+            line,
+            anchor,
+            cursor,
+        })
+    }
+
+    /// Enter Visual with `sel` selected. Positions the buffer no longer has —
+    /// it shrank since — are pulled back onto its last row and column.
+    fn restore_visual(&mut self, sel: VisualSelection, ta: &mut RopeBuffer) {
+        let clamp = |(row, col): (usize, usize), ta: &RopeBuffer| {
+            let row = row.min(ta.row_count().saturating_sub(1));
+            let len = ta.row(row).map_or(0, |r| r.chars().count());
+            (row, col.min(len))
+        };
+        let (anchor, cursor) = (clamp(sel.anchor, ta), clamp(sel.cursor, ta));
+        ta.cancel_selection();
+        if !ta.jump_to(anchor.0, anchor.1) {
+            ta.jump_to(anchor.0, 0);
+        }
+        ta.start_selection();
+        if !ta.jump_to(cursor.0, cursor.1) {
+            ta.jump_to(cursor.0, 0);
+        }
+        self.mode = if sel.line {
+            EditorMode::VisualLine
+        } else {
+            EditorMode::Visual
+        };
     }
 
     // ── Visual + Visual-line mode handler ────────────────────────────────────
@@ -578,6 +647,14 @@ impl VimEngine {
             let mutated = self.indent_lines(outdent, line_count, ta);
             self.mode = EditorMode::Normal;
             self.clear_pending();
+            // `.` shifts as many rows again from the cursor, which is now on
+            // the first of them (vim).
+            if mutated {
+                self.record(Command::IndentLines {
+                    outdent,
+                    count: line_count,
+                });
+            }
             // Not `NoOp` when nothing moved: the selection was cancelled and
             // the cursor jumped, so the host still has to re-mirror
             // `selection_range()` (now `None`) and drop the visual highlight.
@@ -630,6 +707,16 @@ impl VimEngine {
                 }
                 Some(GKey::CaseOp(op)) => self.visual_operate(op, ta),
                 Some(GKey::Join) => self.visual_join(false, ta),
+                // gv in Visual swaps the live selection with the previous one.
+                Some(GKey::Reselect) => {
+                    self.clear_pending();
+                    let Some(previous) = self.last_visual else {
+                        return VimKeyOutcome::NoOp;
+                    };
+                    self.last_visual = self.visual_selection(ta);
+                    self.restore_visual(previous, ta);
+                    VimKeyOutcome::CursorOnly
+                }
                 None => {
                     self.clear_pending();
                     VimKeyOutcome::NoOp
@@ -1151,6 +1238,10 @@ impl VimEngine {
                 count: self.take_count().max(2) - 1,
                 spaced: false,
             }),
+            Some(GKey::Reselect) => {
+                self.clear_pending();
+                Parsed::Cmd(Command::ReselectVisual)
+            }
             None => {
                 // Unmapped g-sequence aborts the whole pending state (vim).
                 self.clear_pending();
@@ -1398,6 +1489,7 @@ impl VimEngine {
             | Command::Undo(_)
             | Command::Redo(_)
             | Command::EnterVisual { .. }
+            | Command::ReselectVisual
             | Command::Repeat => false,
             Command::OperateMotion(op, ..)
             | Command::OperateLine(op, _)
@@ -1449,6 +1541,7 @@ impl VimEngine {
             | Command::Undo(_)
             | Command::Redo(_)
             | Command::EnterVisual { .. }
+            | Command::ReselectVisual
             | Command::Repeat => true,
         }
     }
@@ -1596,6 +1689,13 @@ impl VimEngine {
                 };
                 VimKeyOutcome::CursorOnly
             }
+            Command::ReselectVisual => match self.last_visual {
+                Some(sel) => {
+                    self.restore_visual(sel, ta);
+                    VimKeyOutcome::CursorOnly
+                }
+                None => VimKeyOutcome::NoOp,
+            },
             Command::Repeat => match self.last_change.clone() {
                 Some(change) => self.apply(&change.command, change.inserted.as_deref(), ta),
                 None => VimKeyOutcome::NoOp,
@@ -1707,6 +1807,7 @@ impl VimEngine {
             'U' => Some(GKey::CaseOp(Operator::Uppercase)),
             '~' => Some(GKey::CaseOp(Operator::ToggleCase)),
             'J' => Some(GKey::Join),
+            'v' => Some(GKey::Reselect),
             _ => None,
         }
     }
