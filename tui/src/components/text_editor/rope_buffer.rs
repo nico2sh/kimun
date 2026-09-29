@@ -654,6 +654,11 @@ impl RopeBuffer {
         true
     }
 
+    /// Forget every mark — the buffer now shows another note.
+    pub fn clear_marks(&mut self) {
+        self.marks.clear();
+    }
+
     /// Where mark `name` points now, if it is set.
     pub fn mark(&self, name: char) -> Option<(usize, usize)> {
         self.marks.get(&name).map(|m| (m.row(), m.column().get()))

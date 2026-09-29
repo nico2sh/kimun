@@ -228,6 +228,19 @@ impl BackendState {
         }
     }
 
+    /// Let the vim interpreter record the live Visual selection for `gv`
+    /// before the host edits it away. A no-op for the other backends.
+    pub fn conclude_visual(&mut self) {
+        if let BackendState::Textarea(TextareaBackend {
+            input: InputInterpreter::Vim(e),
+            ta,
+            ..
+        }) = self
+        {
+            e.conclude_visual(ta);
+        }
+    }
+
     /// True when a bare Space should start the leader sequence. Only the vim
     /// interpreter ever says yes (Normal mode, empty pending state); for every
     /// other backend Space is just typing.
@@ -261,10 +274,12 @@ impl BackendState {
     pub fn reset_input_state(&mut self) {
         if let BackendState::Textarea(TextareaBackend {
             input: InputInterpreter::Vim(engine),
+            ta,
             ..
         }) = self
         {
             engine.reset_to_normal();
+            ta.clear_marks();
         }
     }
 

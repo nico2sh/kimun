@@ -265,9 +265,6 @@ struct InsertCapture {
     start: (usize, usize),
 }
 
-/// A live Visual selection: which Visual mode, and both ends — the anchor
-/// apart from the cursor, since the side the cursor was on is the side the
-/// selection keeps extending from.
 /// What `gv` needs besides the selection's ends (the `<`/`>` marks): the
 /// Visual mode, and which end the cursor was on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -276,6 +273,9 @@ struct LastVisual {
     cursor_at_start: bool,
 }
 
+/// A live Visual selection: which Visual mode, and both ends — the anchor
+/// apart from the cursor, since the side the cursor was on is the side the
+/// selection keeps extending from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct VisualSelection {
     line: bool,
@@ -466,12 +466,29 @@ impl VimEngine {
         } else {
             (sel.cursor, sel.anchor)
         };
-        ta.set_mark('<', start);
-        ta.set_mark('>', end);
+        // Both or neither: a half-set pair would pair a new end with an old.
+        if !(ta.set_mark('<', start) && ta.set_mark('>', end)) {
+            self.last_visual = None;
+            return;
+        }
         self.last_visual = Some(LastVisual {
             line: sel.line,
             cursor_at_start: start != end && sel.cursor == start,
         });
+    }
+
+    /// End Visual *before* an edit that consumes the selection: the marks go
+    /// down while the selection's coordinates still describe the buffer, and
+    /// the edit then carries them along like the cursor. Left to
+    /// `track_visual` after the key, they would be set from pre-edit
+    /// coordinates in the post-edit buffer.
+    ///
+    /// Public for the host's own selection edits (the clipboard-image paste),
+    /// which reach the buffer without passing through a key.
+    pub fn conclude_visual(&mut self, ta: &mut RopeBuffer) {
+        if let Some(sel) = self.live_visual.take() {
+            self.remember_visual(sel, ta);
+        }
     }
 
     /// The selection `gv` restores, with its ends where the text has taken
@@ -511,23 +528,14 @@ impl VimEngine {
         })
     }
 
-    /// Enter Visual with `sel` selected. Positions the buffer no longer has —
-    /// it shrank since — are pulled back onto its last row and column.
+    /// Enter Visual with `sel` selected. Its ends come from the buffer's
+    /// marks (or its live selection), which are always positions it has.
     fn restore_visual(&mut self, sel: VisualSelection, ta: &mut RopeBuffer) {
-        let clamp = |(row, col): (usize, usize), ta: &RopeBuffer| {
-            let row = row.min(ta.row_count().saturating_sub(1));
-            let len = ta.row(row).map_or(0, |r| r.chars().count());
-            (row, col.min(len))
-        };
-        let (anchor, cursor) = (clamp(sel.anchor, ta), clamp(sel.cursor, ta));
         ta.cancel_selection();
-        if !ta.jump_to(anchor.0, anchor.1) {
-            ta.jump_to(anchor.0, 0);
-        }
+        let placed = ta.jump_to(sel.anchor.0, sel.anchor.1);
         ta.start_selection();
-        if !ta.jump_to(cursor.0, cursor.1) {
-            ta.jump_to(cursor.0, 0);
-        }
+        let placed = ta.jump_to(sel.cursor.0, sel.cursor.1) && placed;
+        debug_assert!(placed, "a mark outside the buffer: {sel:?}");
         self.mode = if sel.line {
             EditorMode::VisualLine
         } else {
@@ -788,6 +796,14 @@ impl VimEngine {
     /// it from the extent, exactly as a later `.` does, so the first press and
     /// the replay cannot drift apart, and `.` is recorded in one place.
     fn operate_on_selection(&mut self, op: SelectionOp, ta: &mut RopeBuffer) -> VimKeyOutcome {
+        self.conclude_visual(ta);
+        // Nothing to put: leave Visual without a change for `.` to repeat.
+        if op == SelectionOp::Put && self.registers.read().is_none() {
+            ta.cancel_selection();
+            self.mode = EditorMode::Normal;
+            self.clear_pending();
+            return VimKeyOutcome::CursorOnly;
+        }
         let cursor = ta.cursor();
         let (start, end) = ta.selection_range().unwrap_or((cursor, cursor));
         let extent = if self.mode == EditorMode::VisualLine {
@@ -825,22 +841,13 @@ impl VimEngine {
             Extent::Span { rows, end_col } => (((row + rows).min(last), end_col), false),
         };
         let lines = end.0 - row + 1;
-        let op = match op {
-            SelectionOp::Operate(o @ (Operator::Indent | Operator::Outdent)) => {
-                SelectionOp::Shift {
-                    outdent: o == Operator::Outdent,
-                    steps: 1,
-                }
-            }
-            op => op,
-        };
         match op {
             SelectionOp::Shift { outdent, steps } => {
                 ta.jump_to(row, 0);
                 // One command, one undo, however many steps.
                 let mutated = ta.edit(|ta| {
                     (0..steps.max(1))
-                        .fold(false, |any, _| ta.indent_rows(row..=end.0, outdent) || any)
+                        .fold(false, |any, _| self.indent_lines(outdent, lines, ta) || any)
                 });
                 // Not `NoOp` when nothing moved: coming from Visual, the host
                 // still has to drop the highlight.
@@ -889,32 +896,32 @@ impl VimEngine {
         ta: &mut RopeBuffer,
     ) -> VimKeyOutcome {
         let Some(reg) = self.registers.read().cloned() else {
-            return VimKeyOutcome::CursorOnly;
+            return VimKeyOutcome::NoOp;
         };
         let text = reg.text;
-        if linewise {
-            let (row, _) = ta.cursor();
-            ta.jump_to(row, 0);
-            self.apply_operator_linewise(Operator::Delete, lines, None, ta);
-            let body = text.strip_suffix('\n').unwrap_or(&text);
-            ta.move_cursor(CursorMove::Head);
-            ta.insert_str(body);
-            ta.insert_newline();
-            ta.move_cursor(CursorMove::Up);
-        } else {
-            let start = ta.cursor();
-            Self::select_range(ta, start, end, true);
-            // cut + insert is two history entries for one keypress; one
-            // `edit()` scope makes visual `p` a single undo.
-            ta.cut(); // cursor lands at the deletion gap
-            self.fill_from_textarea(ta, RegisterKind::Charwise);
-            // vim visual-p leaves the cursor at the start of the pasted text.
-            let paste_start = ta.cursor();
-            ta.edit(|ta| {
+        // Delete then insert is several history entries for one keypress; one
+        // `edit()` scope makes visual `p` a single undo.
+        ta.edit(|ta| {
+            if linewise {
+                let (row, _) = ta.cursor();
+                ta.jump_to(row, 0);
+                self.apply_operator_linewise(Operator::Delete, lines, None, ta);
+                let body = text.strip_suffix('\n').unwrap_or(&text);
+                ta.move_cursor(CursorMove::Head);
+                ta.insert_str(body);
+                ta.insert_newline();
+                ta.move_cursor(CursorMove::Up);
+            } else {
+                let start = ta.cursor();
+                Self::select_range(ta, start, end, true);
+                ta.cut(); // cursor lands at the deletion gap
+                self.fill_from_textarea(ta, RegisterKind::Charwise);
+                // vim visual-p leaves the cursor at the start of the pasted text.
+                let paste_start = ta.cursor();
                 ta.insert_str(&text);
                 ta.jump_to(paste_start.0, paste_start.1);
-            });
-        }
+            }
+        });
         VimKeyOutcome::TextMutated
     }
 
@@ -933,6 +940,7 @@ impl VimEngine {
     /// text with nothing to put in its place, and the host's read can fail for
     /// ordinary reasons (empty clipboard, X11 hiccup).
     fn clipboard_chord_visual(&mut self, c: char, ta: &mut RopeBuffer) -> VimKeyOutcome {
+        self.conclude_visual(ta);
         let linewise = self.mode == EditorMode::VisualLine;
         let Some(((sr, sc), (er, ec))) = ta.selection_range() else {
             self.mode = EditorMode::Normal;
