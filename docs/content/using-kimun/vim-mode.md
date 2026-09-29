@@ -107,9 +107,11 @@ Text objects are single-line for now.
 | `y` | yank |
 | `p` `P` | replace the selection with the register (the replaced text enters the register — vim's swap) |
 | `u` `U` `g~` | lowercase / uppercase / toggle case |
-| `>` `<` | indent / outdent the selected lines; `.` repeats it on as many rows from the cursor |
+| `>` `<` | indent / outdent the selected lines (`3>` shifts three steps) |
 | `J` `gJ` | join the selected lines |
 | `(` `[` `{` `<` `"` `'` `` ` `` `*` `_` `~` | **kimün twist**: wraps the selection ([auto-surround](@/using-kimun/tui.md)) instead of vim's behavior — so `*` bolds, `[` `[` builds a wikilink, and `~` wraps for strikethrough (use `g~` for vim's toggle-case) |
+
+`.` after any Visual edit repeats it at the cursor on a region of the same shape: as many lines for `V`, as many characters for a one-row `v`, and for a `v` across rows the same number of rows ending at the same column.
 
 ## Registers, search, command line
 

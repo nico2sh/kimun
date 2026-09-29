@@ -112,6 +112,28 @@ pub enum InsertEntry {
     OpenAbove, // O
 }
 
+/// What a Visual operator key does to the selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionOp {
+    Operate(Operator),                     // d x c s y u U g~
+    Shift { outdent: bool, steps: usize }, // > < (a count shifts that many steps)
+    Join { spaced: bool },                 // J / gJ
+    Put,                                   // p P
+}
+
+/// A selection's shape, measured from its start. A `Command::OnSelection`
+/// rebuilds it from the cursor, so `.` elsewhere acts on a region of the same
+/// shape (vim).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Extent {
+    /// Whole lines: this many, from the cursor's row.
+    Lines(usize),
+    /// Charwise on one row: this many chars from the cursor.
+    Chars(usize),
+    /// Charwise across rows: `rows` further down, through column `end_col`.
+    Span { rows: usize, end_col: usize },
+}
+
 /// The fully-parsed unit of work. `apply` is the only door that
 /// mutates the buffer; dot-repeat (and future macros) replay these values
 /// through that same door, so first press and replay cannot diverge.
@@ -136,6 +158,7 @@ pub enum Command {
     EnterReplace,                                // R — overwrite until Esc
     EnterVisual { line: bool },                  // v / V
     ReselectVisual,                              // gv
+    OnSelection(SelectionOp, Extent),            // a Visual operator key
     Repeat,                                      // .
 }
 
@@ -558,60 +581,12 @@ impl VimEngine {
             _ => None,
         };
         if let Some(op) = op {
-            return self.visual_operate(op, ta);
+            return self.operate_on_selection(SelectionOp::Operate(op), ta);
         }
 
         // 'p'/'P': replace the current visual selection with the register.
-        // The register is engine-owned, so the cut below cannot clobber it.
         if c == 'p' || c == 'P' {
-            let Some(reg) = self.registers.read().cloned() else {
-                ta.cancel_selection();
-                self.mode = EditorMode::Normal;
-                return VimKeyOutcome::CursorOnly;
-            };
-            let text = reg.text;
-            if self.mode == EditorMode::VisualLine {
-                // VisualLine: delete the selected whole lines, then paste the
-                // saved content. The delete fills the register with the deleted
-                // lines — vim swap behavior — while `text` keeps the original.
-                let (start_row, end_row) = if let Some(((sr, _), (er, _))) = ta.selection_range() {
-                    (sr, er)
-                } else {
-                    let (r, _) = ta.cursor();
-                    (r, r)
-                };
-                ta.cancel_selection();
-                ta.jump_to(start_row, 0);
-                let count = end_row - start_row + 1;
-                self.apply_operator_linewise(Operator::Delete, count, None, ta);
-                let body = text.strip_suffix('\n').unwrap_or(&text);
-                ta.move_cursor(CursorMove::Head);
-                ta.insert_str(body);
-                ta.insert_newline();
-                ta.move_cursor(CursorMove::Up);
-            } else {
-                // Charwise: make an inclusive selection, delete it, and fill
-                // the register with the deleted text (vim swap: the replaced
-                // selection enters the register), then insert the saved `text`.
-                if let Some((start, end)) = ta.selection_range() {
-                    ta.cancel_selection();
-                    Self::select_range(ta, start, end, true);
-                }
-                // cut + insert is two history entries for one keypress; one
-                // `edit()` scope makes visual `p` a single undo.
-                ta.cut(); // cursor lands at the deletion gap
-                self.fill_from_textarea(ta, RegisterKind::Charwise);
-                // Record where the paste starts so we can leave the cursor there
-                // (vim visual-p leaves cursor at the start of the pasted text).
-                let paste_start = ta.cursor();
-                ta.edit(|ta| {
-                    ta.insert_str(&text); // insert the SAVED content, not the yank buffer
-                    ta.jump_to(paste_start.0, paste_start.1);
-                });
-            }
-            self.mode = EditorMode::Normal;
-            self.clear_pending();
-            return VimKeyOutcome::TextMutated;
+            return self.operate_on_selection(SelectionOp::Put, ta);
         }
 
         // 'o': swap cursor and anchor (vim: move to the other end of the
@@ -628,42 +603,14 @@ impl VimEngine {
             return VimKeyOutcome::CursorOnly;
         }
 
-        // Visual `>`/`<` — indent/outdent the selected line range.
+        // Visual `>`/`<` — shift the selected rows; a count shifts that many
+        // steps (vim `V3>`).
         if c == '>' || c == '<' {
-            let outdent = c == '<';
-            let line_count = if let Some(((sr, _), (er, _))) = ta.selection_range() {
-                er.saturating_sub(sr) + 1
-            } else {
-                1
+            let op = SelectionOp::Shift {
+                outdent: c == '<',
+                steps: self.take_count(),
             };
-            // Cancel selection; jump to first selected row; then indent.
-            let start_row = if let Some(((sr, _), _)) = ta.selection_range() {
-                sr
-            } else {
-                ta.cursor().0
-            };
-            ta.cancel_selection();
-            ta.jump_to(start_row, 0);
-            let mutated = self.indent_lines(outdent, line_count, ta);
-            self.mode = EditorMode::Normal;
-            self.clear_pending();
-            // `.` shifts as many rows again from the cursor, which is now on
-            // the first of them (vim).
-            if mutated {
-                self.record(Command::IndentLines {
-                    outdent,
-                    count: line_count,
-                });
-            }
-            // Not `NoOp` when nothing moved: the selection was cancelled and
-            // the cursor jumped, so the host still has to re-mirror
-            // `selection_range()` (now `None`) and drop the visual highlight.
-            // `NoOp` returns without touching it and leaves the rows painted.
-            return if mutated {
-                VimKeyOutcome::TextMutated
-            } else {
-                VimKeyOutcome::CursorOnly
-            };
+            return self.operate_on_selection(op, ta);
         }
 
         // Pair chars: set Normal and return PassThrough so the host's existing
@@ -705,8 +652,10 @@ impl VimEngine {
                     self.clear_pending();
                     VimKeyOutcome::CursorOnly
                 }
-                Some(GKey::CaseOp(op)) => self.visual_operate(op, ta),
-                Some(GKey::Join) => self.visual_join(false, ta),
+                Some(GKey::CaseOp(op)) => self.operate_on_selection(SelectionOp::Operate(op), ta),
+                Some(GKey::Join) => {
+                    self.operate_on_selection(SelectionOp::Join { spaced: false }, ta)
+                }
                 // gv in Visual swaps the live selection with the previous one.
                 Some(GKey::Reselect) => {
                     self.clear_pending();
@@ -726,7 +675,7 @@ impl VimEngine {
 
         // J: join the selected lines with vim's space handling.
         if c == 'J' {
-            return self.visual_join(true, ta);
+            return self.operate_on_selection(SelectionOp::Join { spaced: true }, ta);
         }
 
         // f/F/t/T: pend a selection-extending find.
@@ -777,81 +726,140 @@ impl VimEngine {
         VimKeyOutcome::NoOp
     }
 
-    /// Visual `J` / `gJ`: join all selected lines into one (vim), then
-    /// return to Normal mode.
-    fn visual_join(&mut self, spaced: bool, ta: &mut RopeBuffer) -> VimKeyOutcome {
-        let (start_row, end_row) = if let Some(((sr, _), (er, _))) = ta.selection_range() {
-            (sr, er)
+    /// Run a Visual operator key: measure the live selection, put the cursor
+    /// on its start and hand the rest to `execute` as a `Command`. The
+    /// selection is not read again after this — `apply_on_selection` rebuilds
+    /// it from the extent, exactly as a later `.` does, so the first press and
+    /// the replay cannot drift apart, and `.` is recorded in one place.
+    fn operate_on_selection(&mut self, op: SelectionOp, ta: &mut RopeBuffer) -> VimKeyOutcome {
+        let cursor = ta.cursor();
+        let (start, end) = ta.selection_range().unwrap_or((cursor, cursor));
+        let extent = if self.mode == EditorMode::VisualLine {
+            Extent::Lines(end.0 - start.0 + 1)
+        } else if start.0 == end.0 {
+            Extent::Chars(end.1.saturating_sub(start.1) + 1)
         } else {
-            let (r, _) = ta.cursor();
-            (r, r)
+            Extent::Span {
+                rows: end.0 - start.0,
+                end_col: end.1,
+            }
         };
         ta.cancel_selection();
-        ta.jump_to(start_row, 0);
-        let joins = end_row.saturating_sub(start_row).max(1);
-        for _ in 0..joins {
-            Self::join_line(ta, spaced);
-        }
-        self.mode = EditorMode::Normal;
-        self.clear_pending();
-        VimKeyOutcome::TextMutated
+        ta.jump_to(start.0, start.1);
+        self.execute(Command::OnSelection(op, extent), ta)
     }
 
-    /// Apply `op` to the live visual selection (charwise or linewise) and
-    /// leave Visual mode. Shared by the visual operator keys (d/x/c/s/y/u/U)
-    /// and `g~`.
-    fn visual_operate(&mut self, op: Operator, ta: &mut RopeBuffer) -> VimKeyOutcome {
-        if self.mode == EditorMode::VisualLine {
-            // VisualLine: operate on whole selected lines, preserving newlines.
-            let (start_row, end_row) = if let Some(((sr, _), (er, _))) = ta.selection_range() {
-                (sr, er)
-            } else {
-                let (r, _) = ta.cursor();
-                (r, r)
-            };
-            // Cancel the current selection so apply_operator_linewise can
-            // re-anchor from the correct start row.
-            ta.cancel_selection();
-            ta.jump_to(start_row, 0);
-            let count = end_row - start_row + 1;
-            self.apply_operator_linewise(op, count, None, ta);
-        } else {
-            // Charwise Visual: vim selection is inclusive of the char under
-            // the cursor — re-select through select_range's inclusive end.
-            let range = ta.selection_range();
-            if let Some((start, end)) = range {
-                ta.cancel_selection();
-                Self::select_range(ta, start, end, true);
+    /// Apply `op` to the region of shape `extent` that starts at the cursor,
+    /// and land in Normal (Insert for a change). The one home of every Visual
+    /// operator, on first press and on `.` alike.
+    fn apply_on_selection(
+        &mut self,
+        op: SelectionOp,
+        extent: Extent,
+        inserted: Option<&str>,
+        ta: &mut RopeBuffer,
+    ) -> VimKeyOutcome {
+        self.mode = EditorMode::Normal;
+        let (row, col) = ta.cursor();
+        let last = ta.row_count().saturating_sub(1);
+        // The region: first and last row, and for charwise the inclusive end.
+        let (end, linewise) = match extent {
+            Extent::Lines(n) => (((row + n.max(1) - 1).min(last), 0), true),
+            Extent::Chars(n) => ((row, col + n.max(1) - 1), false),
+            Extent::Span { rows, end_col } => (((row + rows).min(last), end_col), false),
+        };
+        let lines = end.0 - row + 1;
+        let op = match op {
+            SelectionOp::Operate(o @ (Operator::Indent | Operator::Outdent)) => {
+                SelectionOp::Shift {
+                    outdent: o == Operator::Outdent,
+                    steps: 1,
+                }
             }
-            if op == Operator::Change {
-                // Honest dot-repeat: `.` after a visual change replays a
-                // same-sized change from the cursor (vim semantics) —
-                // chars on one row, whole lines across rows.
-                let capture_cmd = match range {
-                    Some(((sr, sc), (er, ec))) if sr == er => Command::OperateMotion(
-                        Operator::Change,
-                        Motion::Right,
-                        ec.saturating_sub(sc) + 1,
-                    ),
-                    Some(((sr, _), (er, _))) => {
-                        Command::OperateLine(Operator::Change, er.saturating_sub(sr) + 1)
-                    }
-                    None => Command::OperateMotion(Operator::Change, Motion::Right, 1),
-                };
+            op => op,
+        };
+        match op {
+            SelectionOp::Shift { outdent, steps } => {
+                ta.jump_to(row, 0);
+                // One command, one undo, however many steps.
+                let mutated = ta.edit(|ta| {
+                    (0..steps.max(1))
+                        .fold(false, |any, _| ta.indent_rows(row..=end.0, outdent) || any)
+                });
+                // Not `NoOp` when nothing moved: coming from Visual, the host
+                // still has to drop the highlight.
+                if mutated {
+                    VimKeyOutcome::TextMutated
+                } else {
+                    VimKeyOutcome::CursorOnly
+                }
+            }
+            SelectionOp::Join { spaced } => {
+                ta.jump_to(row, 0);
+                let count = (lines - 1).max(1);
+                self.apply(&Command::JoinLines { count, spaced }, None, ta)
+            }
+            SelectionOp::Put => self.put_over(linewise, lines, end, ta),
+            SelectionOp::Operate(op) if linewise => {
+                ta.jump_to(row, 0);
+                self.apply_operator_linewise(op, lines, inserted, ta);
+                Self::outcome_for(op)
+            }
+            SelectionOp::Operate(Operator::Change) => {
+                Self::select_range(ta, (row, col), end, true);
                 ta.cut();
                 self.fill_from_textarea(ta, RegisterKind::Charwise);
-                self.finish_insert_entry(&capture_cmd, None, ta);
-            } else {
+                let cmd = Command::OnSelection(op, extent);
+                self.finish_insert_entry(&cmd, inserted, ta);
+                VimKeyOutcome::TextMutated
+            }
+            SelectionOp::Operate(op) => {
+                Self::select_range(ta, (row, col), end, true);
                 self.apply_operator_on_selection(op, ta);
+                Self::outcome_for(op)
             }
         }
-        // Change paths own the Insert transition (via the insert capture);
-        // everything else returns to Normal here — one writer per transition.
-        if op != Operator::Change {
-            self.mode = EditorMode::Normal;
+    }
+
+    /// Visual `p`/`P`: replace the region with the register. The region's text
+    /// enters the register (vim's swap) while the pasted text is the register
+    /// as it was before, read first — the engine owns the register, so the cut
+    /// cannot clobber what is being put.
+    fn put_over(
+        &mut self,
+        linewise: bool,
+        lines: usize,
+        end: (usize, usize),
+        ta: &mut RopeBuffer,
+    ) -> VimKeyOutcome {
+        let Some(reg) = self.registers.read().cloned() else {
+            return VimKeyOutcome::CursorOnly;
+        };
+        let text = reg.text;
+        if linewise {
+            let (row, _) = ta.cursor();
+            ta.jump_to(row, 0);
+            self.apply_operator_linewise(Operator::Delete, lines, None, ta);
+            let body = text.strip_suffix('\n').unwrap_or(&text);
+            ta.move_cursor(CursorMove::Head);
+            ta.insert_str(body);
+            ta.insert_newline();
+            ta.move_cursor(CursorMove::Up);
+        } else {
+            let start = ta.cursor();
+            Self::select_range(ta, start, end, true);
+            // cut + insert is two history entries for one keypress; one
+            // `edit()` scope makes visual `p` a single undo.
+            ta.cut(); // cursor lands at the deletion gap
+            self.fill_from_textarea(ta, RegisterKind::Charwise);
+            // vim visual-p leaves the cursor at the start of the pasted text.
+            let paste_start = ta.cursor();
+            ta.edit(|ta| {
+                ta.insert_str(&text);
+                ta.jump_to(paste_start.0, paste_start.1);
+            });
         }
-        self.clear_pending();
-        Self::outcome_for(op)
+        VimKeyOutcome::TextMutated
     }
 
     /// Ctrl-C / Ctrl-X / Ctrl-V in Visual or Visual-line.
@@ -1491,6 +1499,9 @@ impl VimEngine {
             | Command::EnterVisual { .. }
             | Command::ReselectVisual
             | Command::Repeat => false,
+            Command::OnSelection(op, _) => {
+                !matches!(op, SelectionOp::Operate(Operator::Yank) | SelectionOp::Put)
+            }
             Command::OperateMotion(op, ..)
             | Command::OperateLine(op, _)
             | Command::OperateObject(op, _)
@@ -1542,6 +1553,7 @@ impl VimEngine {
             | Command::Redo(_)
             | Command::EnterVisual { .. }
             | Command::ReselectVisual
+            | Command::OnSelection(..)
             | Command::Repeat => true,
         }
     }
@@ -1696,6 +1708,7 @@ impl VimEngine {
                 }
                 None => VimKeyOutcome::NoOp,
             },
+            Command::OnSelection(op, extent) => self.apply_on_selection(op, extent, inserted, ta),
             Command::Repeat => match self.last_change.clone() {
                 Some(change) => self.apply(&change.command, change.inserted.as_deref(), ta),
                 None => VimKeyOutcome::NoOp,
@@ -2271,8 +2284,8 @@ impl VimEngine {
             }
             Operator::Indent | Operator::Outdent => {
                 // Compute the selected row range, cancel the selection, then
-                // indent/outdent those rows. This covers operator+motion (e.g.
-                // `>j`) and visual `>`/`<` (which call this via handle_visual).
+                // indent/outdent those rows — operator+motion (e.g. `>j`).
+                // Visual `>`/`<` is `SelectionOp::Shift`, not this.
                 let outdent = op == Operator::Outdent;
                 let (rows, start_row) = if let Some(((sr, _), (er, _))) = ta.selection_range() {
                     (er.saturating_sub(sr) + 1, sr)

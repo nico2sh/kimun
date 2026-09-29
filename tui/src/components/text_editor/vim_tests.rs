@@ -2746,3 +2746,100 @@ fn charwise_visual_indent_within_one_row() {
     }
     assert_eq!(t.rows(), &["    one two"]);
 }
+
+// ── Visual operators replay through `.` ──────────────────────────────────
+//
+// Every Visual operator is a `Command` over the selection's extent, so `.`
+// repeats it at the cursor on a region of the same shape (vim): as many lines
+// linewise, as many chars on one row, and across rows the same row span
+// ending at the same column.
+
+#[test]
+fn dot_repeats_visual_line_delete_not_an_older_change() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("a\nb\nc\nd\ne\nf"));
+    for c in ['V', '>'] {
+        e.handle_key(&key(c), &mut t); // an older change in `.`
+    }
+    for c in ['j', 'V', 'j', 'd', '.'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["    a", "f"]);
+}
+
+#[test]
+fn dot_repeats_charwise_visual_delete_same_width() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("abcdef ghijkl"));
+    for c in ['v', 'l', 'l', 'd', 'w', '.'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["def jkl"]);
+}
+
+#[test]
+fn dot_repeats_multirow_charwise_delete_same_shape() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("abcd\nefgh\nijkl\nmnop"));
+    // `l v j` selects "bcd\nef" — one row down, ending at column 1.
+    for c in ['l', 'v', 'j', 'd'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["agh", "ijkl", "mnop"]);
+    for c in ['j', '.'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["agh", "iop"]);
+}
+
+#[test]
+fn dot_repeats_visual_case_ops() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("abc def"));
+    for c in ['v', 'l', 'U', 'w', '.'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["ABc DEf"]);
+}
+
+#[test]
+fn dot_repeats_visual_join() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("a\nb\nc\nd\ne\nf"));
+    for c in ['V', 'j', 'j', 'J', 'j', '.'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["a b c", "d e f"]);
+}
+
+/// A Visual yank is not a change: `.` keeps repeating the change before it.
+#[test]
+fn visual_yank_leaves_the_dot_register_alone() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("abcdef"));
+    for c in ['x', 'v', 'l', 'y', '.'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["cdef"]);
+}
+
+/// vim: a count before Visual `>` shifts that many steps, and `.` repeats
+/// the same number of steps.
+#[test]
+fn visual_indent_takes_a_count() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("a\nb\nc"));
+    t.set_indent_width(2);
+    for c in ['V', 'j', '3', '>'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["      a", "      b", "c"]);
+    e.handle_key(&key('.'), &mut t);
+    assert_eq!(t.rows(), &["            a", "            b", "c"]);
+    e.handle_key(&key('u'), &mut t);
+    assert_eq!(
+        t.rows(),
+        &["      a", "      b", "c"],
+        "a counted shift is one undo"
+    );
+}
