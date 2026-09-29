@@ -3870,6 +3870,29 @@ mod tests {
         );
     }
 
+    /// vim: `>` over a charwise selection shifts every row it touches, with
+    /// the ends mid-row.
+    #[test]
+    fn vim_charwise_visual_indent_shifts_the_touched_rows() {
+        let mut editor = make_vim_editor();
+        let tx = dummy_tx();
+        editor.set_text("one\ntwo\nthree".to_string());
+        for c in ['l', 'v', 'j'] {
+            editor.handle_input(
+                &InputEvent::Key(key(KeyCode::Char(c), KeyModifiers::NONE)),
+                &tx,
+            );
+        }
+        // Terminals report `>` as the shifted key it is.
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('>'), KeyModifiers::SHIFT)),
+            &tx,
+        );
+        assert_eq!(editor.get_text(), "    one\n    two\nthree");
+        assert_eq!(vim_mode(&editor), EditorMode::Normal);
+        assert_eq!(editor.selection, None);
+    }
+
     /// `gv` from Normal must repaint the highlight, not only put the engine
     /// back in Visual.
     #[test]
