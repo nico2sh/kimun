@@ -265,6 +265,12 @@ fn build_editor_host_snapshot(
 /// moved) vs. a no-op (both same).
 pub struct TextEditorComponent {
     backend: BackendState,
+    /// The note on screen, set by [`Self::open_note`]. Whether the next text
+    /// is a *reload* of this note or *another* note is decided by this, never
+    /// by comparing texts: two notes can hold the same text (two empty ones,
+    /// two made from one template), and state that belongs to one — undo
+    /// history, selection, `gv` marks — must not leak into the other.
+    note: Option<kimun_core::nfs::VaultPath>,
     /// Tracks the rendered rect to map mouse click coordinates.
     rect: Rect,
     key_bindings: KeyBindings,
@@ -350,6 +356,7 @@ impl TextEditorComponent {
             selection: None,
             nvim_host: NvimHost::new(),
             search: None,
+            note: None,
             autocomplete: None,
             autocomplete_vault: None,
             autocomplete_redraw_bound: false,
@@ -558,21 +565,40 @@ impl TextEditorComponent {
         self.revs.arm_needles();
     }
 
-    /// Show a note just opened: [`Self::set_text`], plus forgetting the
-    /// input state the previous note left, which `set_text` skips when the
-    /// two texts happen to match.
-    pub fn open_text(&mut self, text: String) {
-        self.set_text(text);
-        self.backend.reset_input_state();
+    /// Show `note` with `text`.
+    ///
+    /// The note already on screen is reloaded ([`Self::set_text`]): unchanged
+    /// text keeps everything — history, selection, scroll, `gv`. Any other
+    /// note is loaded from scratch even when its text is identical, so nothing
+    /// of the previous note carries over.
+    pub fn open_note(&mut self, note: kimun_core::nfs::VaultPath, text: String) {
+        if self.note.as_ref().is_some_and(|open| open.is_like(&note)) {
+            self.set_text(text);
+            return;
+        }
+        self.note = Some(note);
+        self.load(text);
     }
 
+    /// The note on screen was renamed to `note`: still the same note, so
+    /// nothing is reset, and a later [`Self::open_note`] under the new name is
+    /// a reload.
+    pub fn renamed_to(&mut self, note: kimun_core::nfs::VaultPath) {
+        self.note = Some(note);
+    }
+
+    /// Reload the note on screen with `text`.
+    ///
+    /// A no-op when the buffer would be identical — preserves view scroll,
+    /// selection, edit generation cache, and an open autocomplete popup.
+    /// Saves the expensive lines clone too. Still normalises the saved
+    /// marker: if the buffer was flagged dirty by a previous divergent
+    /// save, reloading the same content from disk should clear that
+    /// flag rather than persist a phantom `[+]` in the title bar.
+    ///
+    /// That shortcut is only right for the *same* note; switching notes goes
+    /// through [`Self::open_note`].
     pub fn set_text(&mut self, text: String) {
-        // No-op when the buffer would be identical — preserves view scroll,
-        // selection, edit generation cache, and an open autocomplete popup.
-        // Saves the expensive lines clone too. Still normalises the saved
-        // marker: if the buffer was flagged dirty by a previous divergent
-        // save, reloading the same content from disk should clear that
-        // flag rather than persist a phantom `[+]` in the title bar.
         if text == self.get_text() {
             self.revs.mark_saved_current();
             if let Some(nvim) = self.backend.as_nvim() {
@@ -580,6 +606,12 @@ impl TextEditorComponent {
             }
             return;
         }
+        self.load(text);
+    }
+
+    /// Replace the buffer with `text` and drop everything that described the
+    /// old one: history, selection, input state, popups.
+    fn load(&mut self, text: String) {
         match &mut self.backend {
             BackendState::Textarea(tb) => {
                 tb.ta.replace(crate::ropetext::Text::from(text.as_str()));
@@ -3914,29 +3946,98 @@ mod tests {
         assert_eq!(editor.selection, None);
     }
 
-    /// Opening a note whose text matches the one on screen skips the buffer
-    /// swap, but not the reset: `gv` must not reach into the previous note.
+    fn press(editor: &mut TextEditorComponent, keys: &str) {
+        let tx = dummy_tx();
+        for c in keys.chars() {
+            editor.handle_input(
+                &InputEvent::Key(key(KeyCode::Char(c), KeyModifiers::NONE)),
+                &tx,
+            );
+        }
+    }
+
+    fn note(name: &str) -> kimun_core::nfs::VaultPath {
+        kimun_core::nfs::VaultPath::note_path_from(name)
+    }
+
+    /// Another note is another note, whatever its text: the one on screen
+    /// before must leave no undo history behind. With the text-equality
+    /// shortcut, `u` in note B restored note A's text — and autosave would
+    /// have written it to B.
     #[test]
-    fn vim_gv_does_not_cross_notes_with_the_same_text() {
+    fn a_note_with_the_same_text_does_not_inherit_undo_history() {
+        let mut editor = make_vim_editor();
+        editor.open_note(note("alpha"), "one".to_string());
+        press(&mut editor, "x");
+        assert_eq!(editor.get_text(), "ne");
+        editor.open_note(note("beta"), "ne".to_string());
+        press(&mut editor, "u");
+        assert_eq!(editor.get_text(), "ne", "beta has nothing to undo");
+    }
+
+    /// The common case of identical text: two empty notes. Redo must not
+    /// reach into the other one either.
+    #[test]
+    fn empty_notes_do_not_share_history() {
         let mut editor = make_vim_editor();
         let tx = dummy_tx();
-        editor.set_text("a\nb\nc".to_string());
-        for c in ['V', 'j'] {
-            editor.handle_input(
-                &InputEvent::Key(key(KeyCode::Char(c), KeyModifiers::NONE)),
-                &tx,
-            );
-        }
+        editor.open_note(note("alpha"), String::new());
+        press(&mut editor, "ix");
         editor.handle_input(&InputEvent::Key(key(KeyCode::Esc, KeyModifiers::NONE)), &tx);
-        editor.open_text("a\nb\nc".to_string());
-        for c in ['g', 'v'] {
-            editor.handle_input(
-                &InputEvent::Key(key(KeyCode::Char(c), KeyModifiers::NONE)),
-                &tx,
-            );
-        }
+        press(&mut editor, "u");
+        assert_eq!(editor.get_text(), "");
+        editor.open_note(note("beta"), String::new());
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('r'), KeyModifiers::CONTROL)),
+            &tx,
+        );
+        assert_eq!(editor.get_text(), "", "beta has nothing to redo");
+    }
+
+    /// Nor the selection, its highlight, or `gv`.
+    #[test]
+    fn a_note_with_the_same_text_does_not_inherit_the_selection() {
+        let mut editor = make_vim_editor();
+        let tx = dummy_tx();
+        editor.open_note(note("alpha"), "a\nb\nc".to_string());
+        press(&mut editor, "Vj");
+        editor.handle_input(&InputEvent::Key(key(KeyCode::Esc, KeyModifiers::NONE)), &tx);
+        press(&mut editor, "Vj");
+        editor.open_note(note("beta"), "a\nb\nc".to_string());
         assert_eq!(vim_mode(&editor), EditorMode::Normal);
         assert_eq!(editor.selection, None);
+        press(&mut editor, "gv");
+        assert_eq!(
+            vim_mode(&editor),
+            EditorMode::Normal,
+            "no selection to reselect"
+        );
+    }
+
+    /// Opening the note already on screen is a reload, not a switch: its
+    /// undo history (and `gv`) stay.
+    #[test]
+    fn reopening_the_same_note_keeps_its_history() {
+        let mut editor = make_vim_editor();
+        editor.open_note(note("alpha"), "one".to_string());
+        press(&mut editor, "x");
+        editor.open_note(note("alpha"), "ne".to_string());
+        press(&mut editor, "u");
+        assert_eq!(editor.get_text(), "one");
+    }
+
+    /// A rename is the same note under a new name: history survives it, and
+    /// opening it under the new name afterwards is still the same note.
+    #[test]
+    fn renaming_the_open_note_keeps_its_history() {
+        let mut editor = make_vim_editor();
+        editor.open_note(note("alpha"), "one".to_string());
+        press(&mut editor, "x");
+        editor.renamed_to(note("gamma"));
+        editor.set_text("ne".to_string());
+        editor.open_note(note("gamma"), "ne".to_string());
+        press(&mut editor, "u");
+        assert_eq!(editor.get_text(), "one");
     }
 
     /// A paste from outside the key path (clipboard image) replaces the
