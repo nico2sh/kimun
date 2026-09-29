@@ -1738,18 +1738,11 @@ impl Component for TextEditorComponent {
                                 .backend
                                 .as_textarea()
                                 .and_then(|ta| ta.selection_range());
-                            // Charwise Visual highlight: extend end col by 1 so the
-                            // char under the cursor is visually included (vim inclusive).
-                            if self.backend.selection_includes_cursor()
-                                && let Some(((sr, sc), (er, ec))) = self.selection
-                            {
-                                let len = self
-                                    .backend
-                                    .as_textarea()
-                                    .and_then(|ta| ta.row(er))
-                                    .map(|l| l.chars().count())
-                                    .unwrap_or(ec);
-                                self.selection = Some(((sr, sc), (er, (ec + 1).min(len))));
+                            // Charwise Visual highlight: the whole character under
+                            // the cursor is inside the selection (vim inclusive),
+                            // however many chars it is — the engine's range.
+                            if self.backend.selection_includes_cursor() {
+                                self.selection = self.backend.selection_as_shown();
                             }
                             // Linewise Visual (`V`): the textarea's live selection is
                             // still just charwise under the hood (Head..End at the
@@ -4753,6 +4746,37 @@ cccccccc"
             );
         }
         assert_eq!(editor.get_text(), "*hello* world");
+    }
+
+    /// `v` on a multi-codepoint emoji then `*` wraps the whole emoji — not
+    /// half of it, and not a literal `*` typed in Normal.
+    #[test]
+    fn surround_over_an_emoji_wraps_all_of_it() {
+        let mut editor = make_vim_editor();
+        let tx = dummy_tx();
+        editor.set_text("a❤️b".to_string());
+        for c in ['l', 'v', '*'] {
+            editor.handle_input(
+                &InputEvent::Key(key(KeyCode::Char(c), KeyModifiers::NONE)),
+                &tx,
+            );
+        }
+        assert_eq!(editor.get_text(), "a*❤️*b");
+    }
+
+    /// The charwise highlight covers the whole character under the cursor.
+    #[test]
+    fn visual_highlight_covers_the_whole_emoji() {
+        let mut editor = make_vim_editor();
+        let tx = dummy_tx();
+        editor.set_text("a👍🏽b".to_string());
+        for c in ['l', 'v'] {
+            editor.handle_input(
+                &InputEvent::Key(key(KeyCode::Char(c), KeyModifiers::NONE)),
+                &tx,
+            );
+        }
+        assert_eq!(editor.selection, Some(((0, 1), (0, 3))));
     }
 
     /// Auto-surround over a `V` row wraps the row, matching the highlight.

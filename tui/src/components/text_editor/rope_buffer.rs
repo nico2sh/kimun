@@ -613,9 +613,10 @@ impl RopeBuffer {
     fn carry_marks_across(&mut self, change: &Change) {
         let at = change.rows().start;
         let delta = change.line_delta();
-        let text = self.inner.text();
-        let last = text.line_count().saturating_sub(1);
-        self.marks.retain(|_, mark| {
+        let last = self.row_count().saturating_sub(1);
+        let names: Vec<char> = self.marks.keys().copied().collect();
+        for name in names {
+            let mark = self.marks[&name];
             let (row, col) = (mark.row(), mark.column().get());
             let row = if row > at {
                 row.saturating_add_signed(delta).max(at)
@@ -623,18 +624,42 @@ impl RopeBuffer {
                 row
             }
             .min(last);
-            let col = col.min(text.line_len_chars(row).unwrap_or(0));
-            match text
-                .position(row, Column::new(col))
-                .or_else(|| text.position(row, Column::new(0)))
-            {
+            // The restored row need not have a character edge at `col`; move
+            // on to the next one, as a mapped mark does.
+            let (start, end) = self.cluster_at(row, col);
+            let col = if col == start { col } else { end };
+            match self.inner.text().position(row, Column::new(col)) {
                 Some(moved) => {
-                    *mark = moved;
-                    true
+                    self.marks.insert(name, moved);
                 }
-                None => false,
+                None => {
+                    self.marks.remove(&name);
+                }
             }
-        });
+        }
+    }
+
+    /// The character at column `col` of `row`, as its start and end columns.
+    ///
+    /// One character on screen can be several chars in the buffer — `❤️` is
+    /// two, a decomposed `é` is `e` plus U+0301 — so "the char under the
+    /// cursor" is a grapheme cluster, and only its edges are positions the
+    /// buffer accepts. A column inside a cluster belongs to that cluster; one at
+    /// or past the row's end gives the row's end twice.
+    pub fn cluster_at(&self, row: usize, col: usize) -> (usize, usize) {
+        use unicode_segmentation::UnicodeSegmentation;
+        let Some(line) = self.row(row) else {
+            return (col, col);
+        };
+        let mut start = 0;
+        for cluster in line.graphemes(true) {
+            let end = start + cluster.chars().count();
+            if col < end {
+                return (start, end);
+            }
+            start = end;
+        }
+        (start, start)
     }
 
     // ── Marks ────────────────────────────────────────────────────────────────
@@ -1396,6 +1421,12 @@ mod indent_tests {
         assert!(damage.contains(&1) && damage.contains(&2), "{damage:?}");
         assert_eq!(outcome.line_delta, 0);
     }
+}
+
+#[cfg(test)]
+mod mark_tests {
+    use super::*;
+    use crate::ropetext::Text;
 
     /// A mark keeps pointing at its text: rows added above carry it down,
     /// text typed before it on its row carries it right, and deleting the
@@ -1429,5 +1460,22 @@ mod indent_tests {
         assert_eq!(t.mark('>'), Some((2, 0)));
         t.replace(Text::from("other"));
         assert_eq!(t.mark('>'), None);
+    }
+
+    /// An undo can restore a row whose characters sit differently: a mark
+    /// whose column now falls inside an emoji moves on to the next whole
+    /// character, as a mapped one does — not back to column 0.
+    #[test]
+    fn a_mark_undo_leaves_inside_a_character_moves_to_the_next() {
+        let mut t = RopeBuffer::new(Text::from("ab❤️x"));
+        t.jump_to(0, 2);
+        t.start_selection();
+        t.jump_to(0, 4);
+        t.cut();
+        assert_eq!(t.rows(), &["abx"]);
+        assert!(t.set_mark('<', (0, 3)));
+        t.undo();
+        assert_eq!(t.rows(), &["ab❤️x"]);
+        assert_eq!(t.mark('<'), Some((0, 4)));
     }
 }

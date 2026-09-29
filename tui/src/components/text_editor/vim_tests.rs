@@ -3148,3 +3148,190 @@ fn visual_put_undoes_in_one_step() {
     e.handle_key(&key('u'), &mut t);
     assert_eq!(t.rows(), &["one", "two"]);
 }
+
+// ── Multi-codepoint characters (grapheme clusters) ───────────────────────
+//
+// One character on screen can be several chars in the buffer: ❤️ is
+// U+2764 U+FE0F, 👍🏽 a base plus a skin-tone modifier, a decomposed é an `e`
+// plus U+0301. Visual mode selects, operates on, measures and remembers whole
+// characters — never half of one.
+
+#[test]
+fn visual_delete_takes_the_whole_emoji_under_the_cursor() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("a❤️b"));
+    for c in ['l', 'v', 'd'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["ab"]);
+    e.handle_key(&key('p'), &mut t);
+    assert_eq!(t.rows(), &["ab❤️"], "the register holds the whole emoji");
+}
+
+#[test]
+fn visual_selection_ending_on_a_modified_emoji_takes_all_of_it() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("x👍🏽y"));
+    for c in ['v', 'l', 'd'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["y"]);
+}
+
+#[test]
+fn visual_delete_takes_a_decomposed_accent_with_its_letter() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("e\u{301}x"));
+    for c in ['v', 'd'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["x"]);
+}
+
+#[test]
+fn visual_case_op_keeps_the_combining_mark() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("e\u{301}x"));
+    for c in ['v', 'U'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["E\u{301}x"]);
+}
+
+/// `.` measures a one-row selection in characters, so replaying it over
+/// plain text takes as many characters — not as many chars of the buffer.
+#[test]
+fn dot_replays_a_visual_delete_by_characters_not_codepoints() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("❤️x abc"));
+    for c in ['v', 'l', 'd', 'w', '.'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &[" c"]);
+}
+
+/// A replayed multi-row selection whose end column falls inside a character
+/// takes that whole character.
+#[test]
+fn dot_replay_ending_inside_an_emoji_takes_all_of_it() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("ab\ncd\nef\n❤️z"));
+    for c in ['v', 'j', 'l', 'd'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["", "ef", "❤️z"]);
+    for c in ['j', '.'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["", "z"]);
+}
+
+#[test]
+fn visual_range_covers_whole_characters() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("a❤️b\nx👍🏽"));
+    for c in ['l', 'v'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(e.visual_range(&t), Some(((0, 1), (0, 3))));
+    for c in ['j', 'l'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(e.visual_range(&t), Some(((0, 1), (1, 3))));
+}
+
+/// A combining mark typed right after a mark joins the character before it;
+/// the mark must still name a whole character (the next one, like the
+/// cursor), and `gv` must reselect without tripping over it.
+#[test]
+fn gv_survives_a_combining_mark_typed_at_its_mark() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("ex"));
+    for c in ['l', 'v'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    e.handle_key(&esc(), &mut t);
+    e.handle_key(&key('i'), &mut t);
+    t.insert_str("\u{301}");
+    e.handle_key(&esc(), &mut t);
+    assert_eq!(t.rows(), &["e\u{301}x"]);
+    for c in ['g', 'v'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(*e.mode(), EditorMode::Visual);
+    assert_eq!(t.selection_range(), Some(((0, 2), (0, 2))));
+}
+
+/// A join can fuse two characters: a row that starts with a bare combining
+/// mark attaches it to the last letter of the row above. A mark on that bare
+/// accent must move on to a whole character, and `gv` reselect without
+/// tripping over it.
+#[test]
+fn gv_survives_a_join_that_fuses_characters_at_its_mark() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("x\n\u{301}y"));
+    for c in ['j', 'v'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    e.handle_key(&esc(), &mut t);
+    for c in ['k', 'g', 'J'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["x\u{301}y"]);
+    for c in ['g', 'v'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(*e.mode(), EditorMode::Visual);
+    assert_eq!(t.selection_range(), Some(((0, 2), (0, 2))));
+}
+
+#[test]
+fn paste_after_an_emoji_goes_after_all_of_it() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("a❤️"));
+    for c in ['x', 'p'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["❤️a"]);
+}
+
+#[test]
+fn till_stops_on_the_emoji_before_the_target() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("a👍🏽x"));
+    for c in ['t', 'x'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.cursor(), (0, 1));
+}
+
+#[test]
+fn till_backward_stops_on_the_emoji_after_the_target() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("x❤️b"));
+    for c in ['$', 'T', 'x'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.cursor(), (0, 1));
+}
+
+#[test]
+fn find_forward_starts_past_the_emoji_under_the_cursor() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("❤️\u{fe0f}"));
+    // U+FE0F is inside the cursor's own character; `f` must look past it.
+    for c in ['f', '\u{fe0f}'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.cursor(), (0, 0));
+}
+
+#[test]
+fn replace_char_swaps_a_whole_emoji() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("a❤️b"));
+    for c in ['l', 'r', 'z'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["azb"]);
+}

@@ -128,7 +128,8 @@ pub enum SelectionOp {
 pub enum Extent {
     /// Whole lines: this many, from the cursor's row.
     Lines(usize),
-    /// Charwise on one row: this many chars from the cursor.
+    /// Charwise on one row: this many characters (grapheme clusters — `❤️`
+    /// is one) from the cursor.
     Chars(usize),
     /// Charwise across rows: `rows` further down, through column `end_col`.
     Span { rows: usize, end_col: usize },
@@ -486,10 +487,10 @@ impl VimEngine {
     /// host's own selection edits (paste, auto-surround, copy) alike.
     pub fn visual_range(&self, ta: &RopeBuffer) -> Option<((usize, usize), (usize, usize))> {
         let ((sr, sc), (er, ec)) = ta.selection_range()?;
-        let end_len = ta.row(er).map_or(ec, |l| l.chars().count());
         match self.mode {
-            EditorMode::Visual => Some(((sr, sc), (er, (ec + 1).min(end_len)))),
-            EditorMode::VisualLine => Some(((sr, 0), (er, end_len))),
+            // The whole character under the cursor, however many chars it is.
+            EditorMode::Visual => Some(((sr, sc), (er, ta.cluster_at(er, ec).1))),
+            EditorMode::VisualLine => Some(((sr, 0), (er, ta.row_len(er)))),
             _ => None,
         }
     }
@@ -833,7 +834,7 @@ impl VimEngine {
         let extent = if self.mode == EditorMode::VisualLine {
             Extent::Lines(end.0 - start.0 + 1)
         } else if start.0 == end.0 {
-            Extent::Chars(end.1.saturating_sub(start.1) + 1)
+            Extent::Chars(Self::chars_through(ta, start.0, start.1, end.1))
         } else {
             Extent::Span {
                 rows: end.0 - start.0,
@@ -861,7 +862,10 @@ impl VimEngine {
         // The region: first and last row, and for charwise the inclusive end.
         let (end, linewise) = match extent {
             Extent::Lines(n) => (((row + n.max(1) - 1).min(last), 0), true),
-            Extent::Chars(n) => ((row, col + n.max(1) - 1), false),
+            Extent::Chars(n) => (
+                (row, Self::col_after_chars(ta, row, col, n.max(1) - 1)),
+                false,
+            ),
             Extent::Span { rows, end_col } => (((row + rows).min(last), end_col), false),
         };
         let lines = end.0 - row + 1;
@@ -2001,8 +2005,10 @@ impl VimEngine {
     }
 
     /// Select `[start, end]` (inclusive) or `[start, end)` on the textarea.
-    /// The single home of the vim-inclusive → ratatui-half-open `+1`
-    /// conversion, clamped to the end line's length.
+    /// The single home of the vim-inclusive → half-open conversion: inclusive
+    /// takes the whole character at `end`, however many chars it is, clamped
+    /// to the row. Columns inside a character — a replayed extent can land
+    /// there — are widened to its edges, so the selection never splits one.
     fn select_range(
         ta: &mut RopeBuffer,
         start: (usize, usize),
@@ -2010,15 +2016,40 @@ impl VimEngine {
         inclusive: bool,
     ) {
         let (er, ec) = end;
-        let end_col = if inclusive {
-            let len = ta.row(er).map(|l| l.chars().count()).unwrap_or(ec);
-            (ec + 1).min(len)
-        } else {
-            ec
-        };
-        ta.jump_to(start.0, start.1);
+        let (end_start, end_end) = ta.cluster_at(er, ec);
+        let end_col = if inclusive { end_end } else { end_start };
+        ta.jump_to(start.0, ta.cluster_at(start.0, start.1).0);
         ta.start_selection();
         ta.jump_to(er, end_col);
+    }
+
+    /// How many characters (grapheme clusters) `from..=to` on `row` covers.
+    fn chars_through(ta: &RopeBuffer, row: usize, from: usize, to: usize) -> usize {
+        let mut count = 1;
+        let mut col = ta.cluster_at(row, from).1;
+        while col <= to {
+            let next = ta.cluster_at(row, col).1;
+            if next == col {
+                break;
+            }
+            count += 1;
+            col = next;
+        }
+        count
+    }
+
+    /// The column `n` characters right of `col` on `row`, stopping at the
+    /// row's last character.
+    fn col_after_chars(ta: &RopeBuffer, row: usize, col: usize, n: usize) -> usize {
+        let mut at = ta.cluster_at(row, col).0;
+        for _ in 0..n {
+            let next = ta.cluster_at(row, at).1;
+            if next == at || next >= ta.row_len(row) {
+                break;
+            }
+            at = next;
+        }
+        at
     }
 
     fn apply_motion(&self, motion: Motion, count: usize, ta: &mut RopeBuffer) {
@@ -2103,11 +2134,13 @@ impl VimEngine {
             (0..col).rev().filter(|&i| chars[i] == ch).nth(n - 1)
         };
         let Some(pos) = pos else { return };
+        // `t`/`T` stop one *character* short — the whole cluster beside the
+        // target, not one char of it.
         let target = if till {
             if forward {
-                pos.saturating_sub(1)
+                ta.cluster_at(row, pos.saturating_sub(1)).0
             } else {
-                pos + 1
+                ta.cluster_at(row, pos).1
             }
         } else {
             pos
@@ -2483,9 +2516,10 @@ impl VimEngine {
             }
             RegisterKind::Charwise => {
                 if after {
+                    // After the whole character under the cursor, however
+                    // many chars it is.
                     let (row, col) = ta.cursor();
-                    let len = ta.row(row).map(|l| l.chars().count()).unwrap_or(col);
-                    ta.jump_to(row, (col + 1).min(len));
+                    ta.jump_to(row, ta.cluster_at(row, col).1);
                 }
                 for _ in 0..count.max(1) {
                     ta.insert_str(text);
