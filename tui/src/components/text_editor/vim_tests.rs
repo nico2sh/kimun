@@ -1234,17 +1234,17 @@ fn n_and_N_emit_search_nav() {
 #[test]
 fn mouse_selection_enters_and_leaves_visual() {
     let mut e = VimEngine::default();
-    let t = ta();
-    e.sync_mouse_selection(true, &t);
+    let mut t = ta();
+    e.sync_mouse_selection(true, &mut t);
     assert_eq!(*e.mode(), EditorMode::Visual);
-    e.sync_mouse_selection(false, &t);
+    e.sync_mouse_selection(false, &mut t);
     assert_eq!(*e.mode(), EditorMode::Normal);
 }
 
 #[test]
 fn mouse_no_selection_in_normal_stays_normal() {
     let mut e = VimEngine::default();
-    e.sync_mouse_selection(false, &ta());
+    e.sync_mouse_selection(false, &mut ta());
     assert_eq!(*e.mode(), EditorMode::Normal);
 }
 
@@ -1253,7 +1253,7 @@ fn mouse_does_not_disturb_insert() {
     let mut e = VimEngine::default();
     let mut t = RopeBuffer::new(Text::from("x"));
     e.handle_key(&key('i'), &mut t); // Insert
-    e.sync_mouse_selection(true, &t);
+    e.sync_mouse_selection(true, &mut t);
     assert_eq!(*e.mode(), EditorMode::Insert); // mouse doesn't yank Insert into Visual
 }
 
@@ -2953,13 +2953,13 @@ fn gv_reselects_a_mouse_selection() {
     t.jump_to(0, 1);
     t.start_selection();
     t.jump_to(0, 4);
-    e.sync_mouse_selection(true, &t);
+    e.sync_mouse_selection(true, &mut t);
     assert_eq!(*e.mode(), EditorMode::Visual);
     let dragged = t.selection_range();
     // A click elsewhere: the host drops the selection, then syncs.
     t.cancel_selection();
     t.jump_to(0, 8);
-    e.sync_mouse_selection(false, &t);
+    e.sync_mouse_selection(false, &mut t);
     assert_eq!(*e.mode(), EditorMode::Normal);
     e.handle_key(&key('g'), &mut t);
     e.handle_key(&key('v'), &mut t);
@@ -2978,8 +2978,99 @@ fn gv_reselects_a_keyboard_selection_a_click_cleared() {
     let selected = t.selection_range();
     t.cancel_selection();
     t.jump_to(0, 8);
-    e.sync_mouse_selection(false, &t);
+    e.sync_mouse_selection(false, &mut t);
     e.handle_key(&key('g'), &mut t);
     e.handle_key(&key('v'), &mut t);
     assert_eq!(t.selection_range(), selected);
+}
+
+// ── `gv` follows the text it selected ─────────────────────────────────────
+//
+// vim's `'<` `'>` marks move with the text: rows added or removed above the
+// selection carry it along, and `gv` reselects the same text, not the same
+// numbers.
+
+#[test]
+fn gv_follows_rows_deleted_above() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("a\nb\nc\nd"));
+    for c in ['j', 'j', 'V', 'j'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    e.handle_key(&esc(), &mut t);
+    for c in ['g', 'g', 'd', 'd', 'g', 'v', '>'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["b", "    c", "    d"]);
+}
+
+#[test]
+fn gv_follows_rows_inserted_above() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("a\nb\nc"));
+    for c in ['j', 'V'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    e.handle_key(&esc(), &mut t);
+    for c in ['g', 'g', 'O', 'x'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    t.insert_str("x");
+    e.handle_key(&esc(), &mut t);
+    for c in ['g', 'v', '>'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["x", "a", "    b", "c"]);
+}
+
+/// Charwise, text typed before the selection on its own row carries it right.
+#[test]
+fn gv_follows_text_typed_before_it_on_the_row() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("hello world"));
+    for c in ['w', 'v', 'e'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    e.handle_key(&esc(), &mut t);
+    for c in ['0', 'i'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    t.insert_str("XX");
+    e.handle_key(&esc(), &mut t);
+    for c in ['g', 'v', 'd'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["XXhello "]);
+}
+
+/// Undo puts the rows back, and the selection moves back with them.
+#[test]
+fn gv_follows_an_undo() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("a\nb\nc\nd"));
+    for c in ['j', 'j', 'V', 'j'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    e.handle_key(&esc(), &mut t);
+    for c in ['g', 'g', 'd', 'd', 'u', 'g', 'v', '>'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["a", "b", "    c", "    d"]);
+}
+
+/// Deleting the selected text itself leaves `gv` something valid to select.
+#[test]
+fn gv_after_its_text_is_deleted_stays_in_bounds() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("a\nb\nc"));
+    for c in ['j', 'V', 'j'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    e.handle_key(&esc(), &mut t);
+    for c in ['k', 'd', 'j', 'g', 'v'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["a"]);
+    assert_eq!(*e.mode(), EditorMode::VisualLine);
+    assert_eq!(t.cursor().0, 0);
 }
