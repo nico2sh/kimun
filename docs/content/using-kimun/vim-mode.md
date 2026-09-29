@@ -98,7 +98,7 @@ Text objects are single-line for now.
 
 ## Visual mode
 
-`v` selects charwise, `V` linewise. Motions, counts, finds (`vf,`), `gg`/`5G`, and text objects (`vi(`, `va"`) all extend or re-aim the selection; `o` jumps to the other end.
+`v` selects charwise, `V` linewise. Motions, counts, finds (`vf,`), `gg`/`5G`, and text objects (`vi(`, `va"`) all extend or re-aim the selection; `o` jumps to the other end. `gv` reselects the last selection (in Visual it swaps with it), so `V j > gv >` indents the same rows twice — as does `V j > .`.
 
 | Keys | Action on the selection |
 |---|---|
@@ -107,7 +107,7 @@ Text objects are single-line for now.
 | `y` | yank |
 | `p` `P` | replace the selection with the register (the replaced text enters the register — vim's swap) |
 | `u` `U` `g~` | lowercase / uppercase / toggle case |
-| `>` `<` | indent / outdent the selected lines |
+| `>` `<` | indent / outdent the selected lines; `.` repeats it on as many rows from the cursor |
 | `J` `gJ` | join the selected lines |
 | `(` `[` `{` `<` `"` `'` `` ` `` `*` `_` `~` | **kimün twist**: wraps the selection ([auto-surround](@/using-kimun/tui.md)) instead of vim's behavior — so `*` bolds, `[` `[` builds a wikilink, and `~` wraps for strikethrough (use `g~` for vim's toggle-case) |
 

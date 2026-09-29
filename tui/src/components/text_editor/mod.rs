@@ -3870,6 +3870,23 @@ mod tests {
         );
     }
 
+    /// `gv` from Normal must repaint the highlight, not only put the engine
+    /// back in Visual.
+    #[test]
+    fn vim_gv_repaints_the_last_selection() {
+        let mut editor = make_vim_editor();
+        let tx = dummy_tx();
+        editor.set_text("a\nb\nc".to_string());
+        for c in ['V', 'j', '>', 'g', 'v'] {
+            editor.handle_input(
+                &InputEvent::Key(key(KeyCode::Char(c), KeyModifiers::NONE)),
+                &tx,
+            );
+        }
+        assert_eq!(vim_mode(&editor), EditorMode::VisualLine);
+        assert!(editor.selection.is_some(), "gv must paint the highlight");
+    }
+
     /// End-to-end for the anchor invariant: `n` moved the cursor while a
     /// selection anchor was live, turning it into an unpainted selection that
     /// the next keystroke deleted. `"foo bar foo"` became `"Xfoo"`.
