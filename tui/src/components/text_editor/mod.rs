@@ -851,22 +851,14 @@ impl TextEditorComponent {
         crate::components::yank(text, "copied", tx);
     }
 
-    /// The live selection range, with the end extended by one char when in vim
-    /// charwise Visual mode (vim treats the selection as inclusive of the char
-    /// under the cursor; ratatui's range is half-open). Read-only: computes the
-    /// range without touching the cursor or live selection. `None` when there
-    /// is no selection or no textarea backend.
+    /// The live selection range as the highlight shows it: under vim's
+    /// Visual modes the range Visual covers (whole rows for `V`, the char
+    /// under the cursor included for `v`), otherwise the buffer's own
+    /// selection. Read-only: computes the range without touching the cursor
+    /// or live selection. `None` when there is no selection or no textarea
+    /// backend.
     fn inclusive_visual_range(&self) -> Option<((usize, usize), (usize, usize))> {
-        let charwise = self.backend.selection_includes_cursor();
-        let ta = self.backend.as_textarea()?;
-        let (start, (er, ec)) = ta.selection_range()?;
-        let end = if charwise {
-            let len = ta.row(er).map(|l| l.chars().count()).unwrap_or(ec);
-            (er, (ec + 1).min(len))
-        } else {
-            (er, ec)
-        };
-        Some((start, end))
+        self.backend.selection_as_shown()
     }
 
     /// Paste text from the OS clipboard at the cursor, replacing any active
@@ -901,16 +893,16 @@ impl TextEditorComponent {
     /// On the Nvim backend the URL-wrap shortcut is skipped (would require
     /// reading the visual selection from nvim) — `text` is forwarded via
     /// `nvim_paste`, which honours the current mode (insert/normal/visual).
-    /// In vim charwise Visual mode the live textarea selection is half-open and
-    /// excludes the char under the cursor, but vim treats the selection as
-    /// inclusive. Extend the selection end by one so out-of-engine consumers
-    /// (paste-over-selection, bold/italic/strikethrough wrap) act on the WHOLE
-    /// visual range — mirrors the highlight path (see `selection_includes_cursor`)
-    /// and the vim engine's own `select_range(.., inclusive=true)`. No-op
-    /// outside charwise Visual (Direct/Insert/VisualLine/Nvim), where the
-    /// half-open range is already what callers want.
+    /// Under vim's Visual modes the live textarea selection is not what the
+    /// highlight shows: charwise it excludes the char under the cursor (vim's
+    /// selection is inclusive), linewise it spans anchor-to-cursor columns
+    /// rather than whole rows. Re-select the range Visual covers
+    /// ([`vim::VimEngine::visual_range`]) so out-of-engine consumers
+    /// (paste-over-selection, bold/italic/strikethrough wrap) act on all of
+    /// it. No-op outside Visual (Direct/Insert/Nvim), where the buffer's
+    /// selection is already what callers want.
     fn extend_visual_selection_inclusive(&mut self) {
-        if !self.backend.selection_includes_cursor() {
+        if !(self.backend.selection_includes_cursor() || self.backend.is_visual_line()) {
             return;
         }
         if let Some((start, end)) = self.inclusive_visual_range()
@@ -4710,6 +4702,72 @@ cccccccc"
             " world",
             "the inclusive visual range is what gets replaced"
         );
+    }
+
+    /// Linewise Visual covers whole rows, so a paste from outside the key
+    /// path replaces all of them — not the anchor-to-cursor columns the
+    /// buffer's selection happens to span.
+    #[test]
+    fn external_paste_over_visual_line_replaces_the_whole_rows() {
+        let mut editor = make_vim_editor();
+        let tx = dummy_tx();
+        editor.set_text("a\nbb\ncc\nd".to_string());
+        for c in ['j', 'l', 'V', 'j'] {
+            editor.handle_input(
+                &InputEvent::Key(key(KeyCode::Char(c), KeyModifiers::NONE)),
+                &tx,
+            );
+        }
+        editor.take_selection_for_external_paste();
+        assert_eq!(editor.get_text(), "a\n\nd");
+        assert_eq!(vim_mode(&editor), EditorMode::Normal);
+    }
+
+    /// A terminal paste over `V` rows replaces them, as Ctrl+V does.
+    #[test]
+    fn bracketed_paste_over_visual_line_replaces_the_whole_rows() {
+        let mut editor = make_vim_editor();
+        let tx = dummy_tx();
+        editor.set_text("a\nbb\ncc\nd".to_string());
+        for c in ['j', 'l', 'V', 'j'] {
+            editor.handle_input(
+                &InputEvent::Key(key(KeyCode::Char(c), KeyModifiers::NONE)),
+                &tx,
+            );
+        }
+        editor.paste_text("X", &tx);
+        assert_eq!(editor.get_text(), "a\nX\nd");
+    }
+
+    /// Charwise: the char under the cursor is inside the selection (vim), so
+    /// it is inside the wrap.
+    #[test]
+    fn surround_over_charwise_visual_includes_the_cursor_char() {
+        let mut editor = make_vim_editor();
+        let tx = dummy_tx();
+        editor.set_text("hello world".to_string());
+        for c in ['v', 'e', '*'] {
+            editor.handle_input(
+                &InputEvent::Key(key(KeyCode::Char(c), KeyModifiers::NONE)),
+                &tx,
+            );
+        }
+        assert_eq!(editor.get_text(), "*hello* world");
+    }
+
+    /// Auto-surround over a `V` row wraps the row, matching the highlight.
+    #[test]
+    fn surround_over_visual_line_wraps_the_whole_row() {
+        let mut editor = make_vim_editor();
+        let tx = dummy_tx();
+        editor.set_text("a\nbold\nc".to_string());
+        for c in ['j', 'l', 'V', '*'] {
+            editor.handle_input(
+                &InputEvent::Key(key(KeyCode::Char(c), KeyModifiers::NONE)),
+                &tx,
+            );
+        }
+        assert_eq!(editor.get_text(), "a\n*bold*\nc");
     }
 
     /// The same call outside Visual must not eat anything — Ctrl+V with an
