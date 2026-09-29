@@ -1006,6 +1006,116 @@ fn pending_hint_shows_operator_and_count() {
 
 // ── Dot-repeat tests ─────────────────────────────────────────────────────
 
+/// vim: `.` after a Visual `>` over N rows shifts N rows again, starting at
+/// the cursor — which the `>` left on the first selected row.
+#[test]
+fn dot_repeats_visual_indent_over_the_same_rows() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("one\ntwo\nthree"));
+    for c in ['V', 'j', '>', '.'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["        one", "        two", "three"]);
+}
+
+/// `gv` reselects the last Visual selection — mode, anchor and cursor end —
+/// so `>` can be pressed again on the same rows.
+#[test]
+fn gv_reselects_the_last_visual_selection() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("one\ntwo\nthree"));
+    for c in ['j', 'V', 'k', '>'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(*e.mode(), EditorMode::Normal);
+    e.handle_key(&key('G'), &mut t);
+    e.handle_key(&key('g'), &mut t);
+    e.handle_key(&key('v'), &mut t);
+    assert_eq!(*e.mode(), EditorMode::VisualLine);
+    assert_eq!(t.cursor().0, 0, "cursor back on the end it was on");
+    e.handle_key(&key('>'), &mut t);
+    assert_eq!(t.rows(), &["        one", "        two", "three"]);
+}
+
+#[test]
+fn gv_keeps_charwise_mode_and_endpoints() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("hello world"));
+    for c in ['w', 'v', 'l', 'l'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    let selected = t.selection_range();
+    e.handle_key(&esc(), &mut t);
+    e.handle_key(&key('0'), &mut t);
+    e.handle_key(&key('g'), &mut t);
+    e.handle_key(&key('v'), &mut t);
+    assert_eq!(*e.mode(), EditorMode::Visual);
+    assert_eq!(t.selection_range(), selected);
+    assert_eq!(t.cursor(), (0, 8));
+}
+
+/// With no earlier selection there is nothing to reselect.
+#[test]
+fn gv_without_a_previous_selection_does_nothing() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("one"));
+    e.handle_key(&key('g'), &mut t);
+    e.handle_key(&key('v'), &mut t);
+    assert_eq!(*e.mode(), EditorMode::Normal);
+    assert!(t.selection_range().is_none());
+}
+
+/// A reselection past the end of a buffer that has since shrunk lands on
+/// what is still there rather than failing.
+#[test]
+fn gv_clamps_to_a_shrunken_buffer() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("one\ntwo\nthree"));
+    for c in ['j', 'j', '$', 'v', 'h'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    e.handle_key(&esc(), &mut t);
+    for c in ['d', 'd', 'd', 'd'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["one"]);
+    e.handle_key(&key('g'), &mut t);
+    e.handle_key(&key('v'), &mut t);
+    assert_eq!(*e.mode(), EditorMode::Visual);
+    assert_eq!(t.cursor().0, 0);
+}
+
+/// In Visual, `gv` swaps the live selection with the previous one (vim).
+#[test]
+fn gv_in_visual_swaps_with_the_previous_selection() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("one\ntwo\nthree"));
+    e.handle_key(&key('V'), &mut t);
+    e.handle_key(&esc(), &mut t);
+    for c in ['G', 'v', 'l'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    let second = t.selection_range();
+    e.handle_key(&key('g'), &mut t);
+    e.handle_key(&key('v'), &mut t);
+    assert_eq!(*e.mode(), EditorMode::VisualLine);
+    assert_eq!(t.cursor().0, 0);
+    e.handle_key(&key('g'), &mut t);
+    e.handle_key(&key('v'), &mut t);
+    assert_eq!(*e.mode(), EditorMode::Visual);
+    assert_eq!(t.selection_range(), second);
+}
+
+#[test]
+fn dot_repeats_visual_outdent_over_the_same_rows() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("        one\n        two\nthree"));
+    for c in ['j', 'V', 'k', '<', '.'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["one", "two", "three"]);
+}
+
 #[test]
 fn dot_repeats_x() {
     let mut e = VimEngine::default();
