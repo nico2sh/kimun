@@ -3074,3 +3074,77 @@ fn gv_after_its_text_is_deleted_stays_in_bounds() {
     assert_eq!(*e.mode(), EditorMode::VisualLine);
     assert_eq!(t.cursor().0, 0);
 }
+
+// ── `gv` marks are taken before the edit that ends Visual ────────────────
+
+/// A Visual delete ends Visual by removing rows the selection named; `gv`
+/// must reselect where that text was, in the mode it was selected in — not
+/// fall back to an older selection whose marks the new ones failed to replace.
+#[test]
+fn gv_after_a_visual_delete_uses_that_selection() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("a\nb\nc\nd"));
+    for c in ['v', 'l'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    e.handle_key(&esc(), &mut t); // older charwise marks on row 0
+    for c in ['G', 'V', 'k', 'd', 'g', 'v'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["a", "b"]);
+    assert_eq!(*e.mode(), EditorMode::VisualLine);
+    assert_eq!(t.cursor().0, 1, "where the deleted rows were, not row 0");
+}
+
+/// Charwise: the deleted span collapses to where it began; `gv` lands there,
+/// not at the coordinates the span had before the delete.
+#[test]
+fn gv_after_a_charwise_delete_lands_where_the_text_was() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("abcdef"));
+    for c in ['l', 'l', 'v', 'l', 'd', 'g', 'v'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["abef"]);
+    assert_eq!(*e.mode(), EditorMode::Visual);
+    assert_eq!(t.cursor(), (0, 2));
+}
+
+// ── Visual `p` ────────────────────────────────────────────────────────────
+
+/// With nothing to put, Visual `p` changes nothing and must not become the
+/// change `.` repeats.
+#[test]
+fn visual_put_with_an_empty_register_keeps_the_dot_change() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("a\nb"));
+    for c in ['>', '>', 'j', 'v', 'p'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(*e.mode(), EditorMode::Normal);
+    assert_eq!(t.rows(), &["    a", "b"]);
+    e.handle_key(&key('.'), &mut t);
+    assert_eq!(t.rows(), &["    a", "    b"]);
+}
+
+/// One Visual `p` is one undo, charwise and linewise.
+#[test]
+fn visual_put_undoes_in_one_step() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("bye hello"));
+    for c in ['y', 'i', 'w', 'w', 'v', 'i', 'w', 'p'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["bye bye"]);
+    e.handle_key(&key('u'), &mut t);
+    assert_eq!(t.rows(), &["bye hello"]);
+
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("one\ntwo"));
+    for c in ['y', 'y', 'j', 'V', 'p'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["one", "one"]);
+    e.handle_key(&key('u'), &mut t);
+    assert_eq!(t.rows(), &["one", "two"]);
+}

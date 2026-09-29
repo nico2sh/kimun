@@ -558,6 +558,14 @@ impl TextEditorComponent {
         self.revs.arm_needles();
     }
 
+    /// Show a note just opened: [`Self::set_text`], plus forgetting the
+    /// input state the previous note left, which `set_text` skips when the
+    /// two texts happen to match.
+    pub fn open_text(&mut self, text: String) {
+        self.set_text(text);
+        self.backend.reset_input_state();
+    }
+
     pub fn set_text(&mut self, text: String) {
         // No-op when the buffer would be identical — preserves view scroll,
         // selection, edit generation cache, and an open autocomplete popup.
@@ -1012,6 +1020,9 @@ impl TextEditorComponent {
     /// the same door the mouse path uses. Without this the engine keeps a mode
     /// that the buffer no longer supports: still Visual, selection gone.
     pub fn take_selection_for_external_paste(&mut self) {
+        // Before the cut, so `gv` marks move with it rather than being set
+        // from coordinates the cut has just invalidated.
+        self.backend.conclude_visual();
         self.extend_visual_selection_inclusive();
         let cut = if let Some(ta) = self.backend.as_textarea_mut() {
             let cut = ta.selection_range().is_some() && ta.cut();
@@ -3916,6 +3927,56 @@ mod tests {
         }
         assert_eq!(vim_mode(&editor), EditorMode::Normal);
         assert_eq!(editor.selection, None);
+    }
+
+    /// Opening a note whose text matches the one on screen skips the buffer
+    /// swap, but not the reset: `gv` must not reach into the previous note.
+    #[test]
+    fn vim_gv_does_not_cross_notes_with_the_same_text() {
+        let mut editor = make_vim_editor();
+        let tx = dummy_tx();
+        editor.set_text("a\nb\nc".to_string());
+        for c in ['V', 'j'] {
+            editor.handle_input(
+                &InputEvent::Key(key(KeyCode::Char(c), KeyModifiers::NONE)),
+                &tx,
+            );
+        }
+        editor.handle_input(&InputEvent::Key(key(KeyCode::Esc, KeyModifiers::NONE)), &tx);
+        editor.open_text("a\nb\nc".to_string());
+        for c in ['g', 'v'] {
+            editor.handle_input(
+                &InputEvent::Key(key(KeyCode::Char(c), KeyModifiers::NONE)),
+                &tx,
+            );
+        }
+        assert_eq!(vim_mode(&editor), EditorMode::Normal);
+        assert_eq!(editor.selection, None);
+    }
+
+    /// A paste from outside the key path (clipboard image) replaces the
+    /// selection; `gv` afterwards lands where it was, not on stale numbers.
+    #[test]
+    fn vim_gv_after_external_paste_lands_where_the_selection_was() {
+        let mut editor = make_vim_editor();
+        let tx = dummy_tx();
+        editor.set_text("a\nb\nc".to_string());
+        for c in ['j', 'V', 'j'] {
+            editor.handle_input(
+                &InputEvent::Key(key(KeyCode::Char(c), KeyModifiers::NONE)),
+                &tx,
+            );
+        }
+        editor.take_selection_for_external_paste();
+        for c in ['g', 'v'] {
+            editor.handle_input(
+                &InputEvent::Key(key(KeyCode::Char(c), KeyModifiers::NONE)),
+                &tx,
+            );
+        }
+        assert_eq!(vim_mode(&editor), EditorMode::VisualLine);
+        let ta = get_ta(&mut editor);
+        assert_eq!(ta.cursor().0, 1);
     }
 
     /// `gv` from Normal must repaint the highlight, not only put the engine
