@@ -300,6 +300,10 @@ pub struct VimEngine {
     /// Replace mode's restore stack: what each overwritten position held
     /// (`None` = the char was appended past EOL). Backspace pops it.
     replace_stack: Vec<Option<char>>,
+    /// The live Visual selection as of the last key or mouse sync. The key or
+    /// click that ends Visual may already have cancelled or edited the
+    /// selection away, so this — not the buffer — is what Visual ended with.
+    live_visual: Option<VisualSelection>,
     /// The selection Visual mode last ended with, for `gv`.
     last_visual: Option<VisualSelection>,
 }
@@ -317,6 +321,7 @@ impl Default for VimEngine {
             last_change: None,
             insert_capture: None,
             replace_stack: Vec::new(),
+            live_visual: None,
             last_visual: None,
         }
     }
@@ -384,11 +389,16 @@ impl VimEngine {
         // must not survive: execute() skips dot-recording while one is live,
         // which would silently disable `.` for every later change.
         self.insert_capture = None;
+        // `gv` belongs to the note it was made in.
+        self.live_visual = None;
+        self.last_visual = None;
     }
 
     /// Reconcile mode after a host-driven selection change (mouse). A live
     /// selection means Visual; losing the selection in Visual returns to Normal.
-    pub fn sync_mouse_selection(&mut self, has_selection: bool) {
+    /// `ta` is the buffer after the change, so a mouse selection is followed
+    /// for `gv` like a keyboard one.
+    pub fn sync_mouse_selection(&mut self, has_selection: bool, ta: &RopeBuffer) {
         match (has_selection, &self.mode) {
             (true, EditorMode::Normal) => self.mode = EditorMode::Visual,
             (false, EditorMode::Visual) | (false, EditorMode::VisualLine) => {
@@ -396,6 +406,7 @@ impl VimEngine {
             }
             _ => {}
         }
+        self.track_visual(ta);
     }
 
     /// True when a bare Space should start the leader: Normal mode, nothing
@@ -415,20 +426,26 @@ impl VimEngine {
     /// act on the live selection. In Normal mode, motions move the cursor
     /// and the insert-entry keys switch to Insert mode.
     pub fn handle_key(&mut self, key: &KeyEvent, ta: &mut RopeBuffer) -> VimKeyOutcome {
-        match self.mode {
+        let outcome = match self.mode {
             EditorMode::Insert => self.handle_insert(key, ta),
             EditorMode::Replace => self.handle_replace(key, ta),
-            EditorMode::Visual | EditorMode::VisualLine => {
-                // Snapshot before the key: the key that leaves Visual is the
-                // one that may cancel the selection or edit it away.
-                let selection = self.visual_selection(ta);
-                let outcome = self.handle_visual(key, ta);
-                if !matches!(self.mode, EditorMode::Visual | EditorMode::VisualLine) {
-                    self.last_visual = selection.or(self.last_visual);
-                }
-                outcome
-            }
+            EditorMode::Visual | EditorMode::VisualLine => self.handle_visual(key, ta),
             _ => self.handle_normal(key, ta),
+        };
+        self.track_visual(ta);
+        outcome
+    }
+
+    /// Follow the Visual selection for `gv`: while Visual lasts, remember the
+    /// selection; once it ends, the last one remembered is what `gv` restores.
+    fn track_visual(&mut self, ta: &RopeBuffer) {
+        match self.visual_selection(ta) {
+            Some(selection) => self.live_visual = Some(selection),
+            None => {
+                if let Some(ended) = self.live_visual.take() {
+                    self.last_visual = Some(ended);
+                }
+            }
         }
     }
 
@@ -479,15 +496,24 @@ impl VimEngine {
     // ── Visual + Visual-line mode handler ────────────────────────────────────
 
     fn handle_visual(&mut self, key: &KeyEvent, ta: &mut RopeBuffer) -> VimKeyOutcome {
-        // One-key continuations consume the next key first: the find target
-        // (`vf,` extends through the ','), and the object key after `i`/`a`
-        // (`vi(` re-aims the selection at the object). The g continuation is
-        // resolved below where the full key context is available.
+        // One-key continuations consume the next key first, as in Normal mode:
+        // the g-command (`gv`, `gJ`), the find target (`vf,` extends through
+        // the ','), and the object key after `i`/`a` (`vi(` re-aims the
+        // selection at the object). Nothing below may see a key one of these
+        // is waiting for.
         // A Ctrl-chord is never the awaited character (`vf` then Ctrl-C must
         // abandon the find, not search for a literal 'c'). Fall through to the
         // handling below, which routes Ctrl-C/X/V to the clipboard chords.
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match self.awaiting {
+            Some(Awaiting::G) if !ctrl => {
+                self.awaiting = None;
+                if let KeyCode::Char(c) = key.code {
+                    return self.visual_g_key(c, ta);
+                }
+                self.clear_pending();
+                return VimKeyOutcome::NoOp;
+            }
             Some(Awaiting::Find(pf)) if !ctrl => {
                 self.awaiting = None;
                 if let KeyCode::Char(ch) = key.code {
@@ -527,28 +553,20 @@ impl VimEngine {
             return VimKeyOutcome::CursorOnly;
         }
 
-        // Arrow keys: extend the selection.
+        // Arrow keys: extend the selection, taking a count like `hjkl`.
         let plain = key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT;
         let KeyCode::Char(c) = key.code else {
-            match key.code {
-                KeyCode::Left => {
-                    ta.move_cursor(CursorMove::Back);
-                    return VimKeyOutcome::CursorOnly;
-                }
-                KeyCode::Right => {
-                    ta.move_cursor(CursorMove::Forward);
-                    return VimKeyOutcome::CursorOnly;
-                }
-                KeyCode::Up => {
-                    ta.move_cursor(CursorMove::Up);
-                    return VimKeyOutcome::CursorOnly;
-                }
-                KeyCode::Down => {
-                    ta.move_cursor(CursorMove::Down);
-                    return VimKeyOutcome::CursorOnly;
-                }
+            let motion = match key.code {
+                KeyCode::Left => Motion::Left,
+                KeyCode::Right => Motion::Right,
+                KeyCode::Up => Motion::Up,
+                KeyCode::Down => Motion::Down,
                 _ => return VimKeyOutcome::NoOp,
-            }
+            };
+            let count = self.take_count();
+            self.apply_motion(motion, count, ta);
+            self.clear_pending();
+            return VimKeyOutcome::CursorOnly;
         };
         // OS clipboard chords. The engine claims them so the mode and selection
         // transition happens here rather than behind its back — the host used to
@@ -600,6 +618,7 @@ impl VimEngine {
                 ta.start_selection();
                 ta.jump_to(other.0, other.1);
             }
+            self.clear_pending();
             return VimKeyOutcome::CursorOnly;
         }
 
@@ -614,65 +633,18 @@ impl VimEngine {
         }
 
         // Pair chars: set Normal and return PassThrough so the host's existing
-        // auto-surround path wraps the selection. Skipped while a `g` is
-        // pending — `g~` (case toggle) must reach the g-block below.
-        if !matches!(self.awaiting, Some(Awaiting::G))
-            && matches!(
-                c,
-                '(' | '[' | '{' | '<' | '"' | '\'' | '`' | '*' | '_' | '~'
-            )
-        {
+        // auto-surround path wraps the selection. (`g~` never gets here: the
+        // pending `g` took the `~` above; nor does `<`, which outdents.)
+        if matches!(c, '(' | '[' | '{' | '"' | '\'' | '`' | '*' | '_' | '~') {
             self.mode = EditorMode::Normal;
             return VimKeyOutcome::PassThrough;
         }
 
-        // g prefix — the same shared g-command grammar as Normal mode,
-        // dispatched against the selection. Case ops run on the selection
-        // (bare `~` belongs to auto-surround in kimün, so g~ is the visual
-        // toggle-case key); gJ joins the selected lines raw.
-        if c == 'g' && !matches!(self.awaiting, Some(Awaiting::G)) {
+        // g prefix — resolved by `visual_g_key` on the next key.
+        if c == 'g' {
             self.awaiting = Some(Awaiting::G);
             return VimKeyOutcome::NoOp;
         }
-        if matches!(self.awaiting, Some(Awaiting::G)) {
-            self.awaiting = None;
-            return match Self::g_key_for(c) {
-                Some(GKey::GotoLine) => {
-                    let m = match self.pending_count.take() {
-                        Some(n) => Motion::GotoLine(n),
-                        None => Motion::FileStart,
-                    };
-                    self.apply_motion(m, 1, ta);
-                    self.clear_pending();
-                    VimKeyOutcome::CursorOnly
-                }
-                Some(GKey::Motion(m)) => {
-                    let cnt = self.take_count();
-                    self.apply_motion(m, cnt, ta);
-                    self.clear_pending();
-                    VimKeyOutcome::CursorOnly
-                }
-                Some(GKey::CaseOp(op)) => self.operate_on_selection(SelectionOp::Operate(op), ta),
-                Some(GKey::Join) => {
-                    self.operate_on_selection(SelectionOp::Join { spaced: false }, ta)
-                }
-                // gv in Visual swaps the live selection with the previous one.
-                Some(GKey::Reselect) => {
-                    self.clear_pending();
-                    let Some(previous) = self.last_visual else {
-                        return VimKeyOutcome::NoOp;
-                    };
-                    self.last_visual = self.visual_selection(ta);
-                    self.restore_visual(previous, ta);
-                    VimKeyOutcome::CursorOnly
-                }
-                None => {
-                    self.clear_pending();
-                    VimKeyOutcome::NoOp
-                }
-            };
-        }
-
         // J: join the selected lines with vim's space handling.
         if c == 'J' {
             return self.operate_on_selection(SelectionOp::Join { spaced: true }, ta);
@@ -724,6 +696,46 @@ impl VimEngine {
 
         self.clear_pending();
         VimKeyOutcome::NoOp
+    }
+
+    /// The key after a Visual `g`: the shared g-command grammar
+    /// (`g_key_for`), dispatched against the selection. Case ops run on the
+    /// selection (bare `~` belongs to auto-surround in kimün, so `g~` is the
+    /// visual toggle-case key); `gJ` joins the selected lines raw.
+    fn visual_g_key(&mut self, c: char, ta: &mut RopeBuffer) -> VimKeyOutcome {
+        match Self::g_key_for(c) {
+            Some(GKey::GotoLine) => {
+                let m = match self.pending_count.take() {
+                    Some(n) => Motion::GotoLine(n),
+                    None => Motion::FileStart,
+                };
+                self.apply_motion(m, 1, ta);
+                self.clear_pending();
+                VimKeyOutcome::CursorOnly
+            }
+            Some(GKey::Motion(m)) => {
+                let cnt = self.take_count();
+                self.apply_motion(m, cnt, ta);
+                self.clear_pending();
+                VimKeyOutcome::CursorOnly
+            }
+            Some(GKey::CaseOp(op)) => self.operate_on_selection(SelectionOp::Operate(op), ta),
+            Some(GKey::Join) => self.operate_on_selection(SelectionOp::Join { spaced: false }, ta),
+            // gv in Visual swaps the live selection with the previous one.
+            Some(GKey::Reselect) => {
+                self.clear_pending();
+                let Some(previous) = self.last_visual else {
+                    return VimKeyOutcome::NoOp;
+                };
+                self.last_visual = self.visual_selection(ta);
+                self.restore_visual(previous, ta);
+                VimKeyOutcome::CursorOnly
+            }
+            None => {
+                self.clear_pending();
+                VimKeyOutcome::NoOp
+            }
+        }
     }
 
     /// Run a Visual operator key: measure the live selection, put the cursor
@@ -1242,6 +1254,11 @@ impl VimEngine {
                 self.pending_op_count = self.pending_count.take();
                 Parsed::Pending
             }
+            // Not motions: after an operator (`dgJ`, `dgv`) vim aborts both.
+            Some(GKey::Join | GKey::Reselect) if self.pending_operator.is_some() => {
+                self.clear_pending();
+                Parsed::Nothing
+            }
             Some(GKey::Join) => Parsed::Cmd(Command::JoinLines {
                 count: self.take_count().max(2) - 1,
                 spaced: false,
@@ -1499,9 +1516,7 @@ impl VimEngine {
             | Command::EnterVisual { .. }
             | Command::ReselectVisual
             | Command::Repeat => false,
-            Command::OnSelection(op, _) => {
-                !matches!(op, SelectionOp::Operate(Operator::Yank) | SelectionOp::Put)
-            }
+            Command::OnSelection(op, _) => *op != SelectionOp::Operate(Operator::Yank),
             Command::OperateMotion(op, ..)
             | Command::OperateLine(op, _)
             | Command::OperateObject(op, _)
