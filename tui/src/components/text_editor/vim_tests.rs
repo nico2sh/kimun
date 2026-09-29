@@ -2724,3 +2724,25 @@ fn tilde_keeps_the_rest_of_the_cluster() {
         "toggling case must not drop the combining acute"
     );
 }
+
+/// vim: a charwise selection shifts every row it touches, mid-row ends and all.
+#[test]
+fn charwise_visual_indent_shifts_the_touched_rows() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("one\ntwo\nthree"));
+    for c in ['l', 'v', 'j', '>'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["    one", "    two", "three"]);
+    assert_eq!(*e.mode(), EditorMode::Normal);
+}
+
+#[test]
+fn charwise_visual_indent_within_one_row() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("one two"));
+    for c in ['w', 'v', 'l', '>'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["    one two"]);
+}
