@@ -288,9 +288,15 @@ impl<'a> Txn<'a> {
     /// it opened from. Text inserted exactly at the position is left in front of
     /// it, so a marker keeps pointing at what it was pointing at; text deleted
     /// across it collapses it to the start of what was removed.
+    ///
+    /// An edit can fuse characters around a marker — a combining mark typed
+    /// right at it joins the character before, a join brings a bare accent up
+    /// against a letter — leaving its offset inside one grapheme cluster. It
+    /// then moves on to the start of the next whole character, as the cursor
+    /// does.
     pub fn map(&self, position: Position) -> Option<Position> {
         let byte = self.remap(position, Gravity::Backward)?;
-        Some(self.buffer.text.position_at_derived_byte(byte))
+        Some(self.buffer.text.position_at_cursor_byte(byte))
     }
 
     /// Insert `text` at `at`.
