@@ -1234,16 +1234,17 @@ fn n_and_N_emit_search_nav() {
 #[test]
 fn mouse_selection_enters_and_leaves_visual() {
     let mut e = VimEngine::default();
-    e.sync_mouse_selection(true);
+    let t = ta();
+    e.sync_mouse_selection(true, &t);
     assert_eq!(*e.mode(), EditorMode::Visual);
-    e.sync_mouse_selection(false);
+    e.sync_mouse_selection(false, &t);
     assert_eq!(*e.mode(), EditorMode::Normal);
 }
 
 #[test]
 fn mouse_no_selection_in_normal_stays_normal() {
     let mut e = VimEngine::default();
-    e.sync_mouse_selection(false);
+    e.sync_mouse_selection(false, &ta());
     assert_eq!(*e.mode(), EditorMode::Normal);
 }
 
@@ -1252,7 +1253,7 @@ fn mouse_does_not_disturb_insert() {
     let mut e = VimEngine::default();
     let mut t = RopeBuffer::new(Text::from("x"));
     e.handle_key(&key('i'), &mut t); // Insert
-    e.sync_mouse_selection(true);
+    e.sync_mouse_selection(true, &t);
     assert_eq!(*e.mode(), EditorMode::Insert); // mouse doesn't yank Insert into Visual
 }
 
@@ -2842,4 +2843,143 @@ fn visual_indent_takes_a_count() {
         &["      a", "      b", "c"],
         "a counted shift is one undo"
     );
+}
+
+/// vim: `.` repeats a Visual `p` over a same-shaped region, putting what the
+/// register holds by then — the text the first `p` swapped out.
+#[test]
+fn dot_repeats_visual_put() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("foo bar baz"));
+    for c in ['y', 'i', 'w', 'w', 'v', 'e', 'p'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["foo foo baz"]);
+    for c in ['w', '.'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["foo foo bar"]);
+}
+
+// ── Visual pending state resolves first ─────────────────────────────────
+
+/// A pending `g` takes the next key, whatever it is — `o` must not slip past
+/// it and leave the `g` waiting to swallow the key after.
+#[test]
+fn visual_g_then_unmapped_key_does_not_linger() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("one\ntwo\nthree"));
+    for c in ['v', 'g', 'o', 'j'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.cursor().0, 1, "`j` after the aborted `go` must move");
+    assert_eq!(e.pending_hint(), None);
+}
+
+/// Arrow keys take a pending count, like the letter motions, and leave none
+/// behind.
+#[test]
+fn visual_arrow_uses_the_count() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("a\nb\nc\nd\ne\nf"));
+    e.handle_key(&key('v'), &mut t);
+    e.handle_key(&key('2'), &mut t);
+    e.handle_key(&KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &mut t);
+    assert_eq!(t.cursor().0, 2);
+    e.handle_key(&key('j'), &mut t);
+    assert_eq!(t.cursor().0, 3, "no count left over for `j`");
+}
+
+#[test]
+fn visual_o_clears_a_pending_count() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("a\nb\nc\nd\ne\nf"));
+    for c in ['v', 'j', '3', 'o', 'j'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.cursor().0, 1, "`o` swallows the count; `j` moves one row");
+}
+
+// ── g-commands that are not motions abort a pending operator ────────────
+
+#[test]
+fn operator_then_gv_aborts() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("one\ntwo"));
+    e.handle_key(&key('V'), &mut t);
+    e.handle_key(&esc(), &mut t);
+    for c in ['d', 'g', 'v'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(*e.mode(), EditorMode::Normal);
+    assert!(t.selection_range().is_none());
+    e.handle_key(&key('j'), &mut t);
+    assert_eq!(t.rows(), &["one", "two"], "the `d` is gone, not pending");
+}
+
+#[test]
+fn operator_then_gj_join_aborts() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("one\ntwo"));
+    for c in ['d', 'g', 'J'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["one", "two"]);
+}
+
+// ── `gv` remembers the selection Visual really ended with ─────────────────
+
+/// A note switch resets the engine; the old note's selection must not be
+/// reselected in the new one.
+#[test]
+fn reset_forgets_the_last_visual_selection() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("one\ntwo"));
+    e.handle_key(&key('V'), &mut t);
+    e.handle_key(&esc(), &mut t);
+    e.reset_to_normal();
+    e.handle_key(&key('g'), &mut t);
+    e.handle_key(&key('v'), &mut t);
+    assert_eq!(*e.mode(), EditorMode::Normal);
+    assert!(t.selection_range().is_none());
+}
+
+/// A selection made with the mouse is the last Visual selection once the
+/// mouse clears it.
+#[test]
+fn gv_reselects_a_mouse_selection() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("hello world"));
+    t.jump_to(0, 1);
+    t.start_selection();
+    t.jump_to(0, 4);
+    e.sync_mouse_selection(true, &t);
+    assert_eq!(*e.mode(), EditorMode::Visual);
+    let dragged = t.selection_range();
+    // A click elsewhere: the host drops the selection, then syncs.
+    t.cancel_selection();
+    t.jump_to(0, 8);
+    e.sync_mouse_selection(false, &t);
+    assert_eq!(*e.mode(), EditorMode::Normal);
+    e.handle_key(&key('g'), &mut t);
+    e.handle_key(&key('v'), &mut t);
+    assert_eq!(t.selection_range(), dragged);
+}
+
+/// A keyboard selection cleared by a mouse click is still what `gv` brings
+/// back — the click happened before the engine could see the selection go.
+#[test]
+fn gv_reselects_a_keyboard_selection_a_click_cleared() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("hello world"));
+    for c in ['v', 'l', 'l'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    let selected = t.selection_range();
+    t.cancel_selection();
+    t.jump_to(0, 8);
+    e.sync_mouse_selection(false, &t);
+    e.handle_key(&key('g'), &mut t);
+    e.handle_key(&key('v'), &mut t);
+    assert_eq!(t.selection_range(), selected);
 }

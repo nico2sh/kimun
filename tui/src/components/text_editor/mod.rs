@@ -3893,6 +3893,31 @@ mod tests {
         assert_eq!(editor.selection, None);
     }
 
+    /// Opening another note forgets the last Visual selection: `gv` there
+    /// must not select rows the user never selected in that note.
+    #[test]
+    fn vim_gv_does_not_cross_notes() {
+        let mut editor = make_vim_editor();
+        let tx = dummy_tx();
+        editor.set_text("a\nb\nc".to_string());
+        for c in ['V', 'j'] {
+            editor.handle_input(
+                &InputEvent::Key(key(KeyCode::Char(c), KeyModifiers::NONE)),
+                &tx,
+            );
+        }
+        editor.handle_input(&InputEvent::Key(key(KeyCode::Esc, KeyModifiers::NONE)), &tx);
+        editor.set_text("x\ny\nz".to_string());
+        for c in ['g', 'v'] {
+            editor.handle_input(
+                &InputEvent::Key(key(KeyCode::Char(c), KeyModifiers::NONE)),
+                &tx,
+            );
+        }
+        assert_eq!(vim_mode(&editor), EditorMode::Normal);
+        assert_eq!(editor.selection, None);
+    }
+
     /// `gv` from Normal must repaint the highlight, not only put the engine
     /// back in Visual.
     #[test]

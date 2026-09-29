@@ -220,10 +220,11 @@ impl BackendState {
     pub fn sync_mouse_selection(&mut self, has_selection: bool) {
         if let BackendState::Textarea(TextareaBackend {
             input: InputInterpreter::Vim(e),
+            ta,
             ..
         }) = self
         {
-            e.sync_mouse_selection(has_selection);
+            e.sync_mouse_selection(has_selection, ta);
         }
     }
 
