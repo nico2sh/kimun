@@ -477,6 +477,23 @@ impl VimEngine {
         });
     }
 
+    /// The half-open range the live Visual selection covers — what the
+    /// highlight shows and what any edit of the selection must take: whole row
+    /// bodies in Visual-line, and in charwise Visual the char under the cursor
+    /// too (vim's selection is inclusive). `None` outside Visual.
+    ///
+    /// The one home of that rule, for the engine's clipboard chords and the
+    /// host's own selection edits (paste, auto-surround, copy) alike.
+    pub fn visual_range(&self, ta: &RopeBuffer) -> Option<((usize, usize), (usize, usize))> {
+        let ((sr, sc), (er, ec)) = ta.selection_range()?;
+        let end_len = ta.row(er).map_or(ec, |l| l.chars().count());
+        match self.mode {
+            EditorMode::Visual => Some(((sr, sc), (er, (ec + 1).min(end_len)))),
+            EditorMode::VisualLine => Some(((sr, 0), (er, end_len))),
+            _ => None,
+        }
+    }
+
     /// End Visual *before* an edit that consumes the selection: the marks go
     /// down while the selection's coordinates still describe the buffer, and
     /// the edit then carries them along like the cursor. Left to
@@ -682,11 +699,18 @@ impl VimEngine {
             return self.operate_on_selection(op, ta);
         }
 
-        // Pair chars: set Normal and return PassThrough so the host's existing
-        // auto-surround path wraps the selection. (`g~` never gets here: the
-        // pending `g` took the `~` above; nor does `<`, which outdents.)
+        // Pair chars: select exactly what Visual covers, set Normal and return
+        // PassThrough so the host's auto-surround path wraps it — the same
+        // hand-off as the Ctrl-V chord. (`g~` never gets here: the pending `g`
+        // took the `~` above; nor does `<`, which outdents.)
         if matches!(c, '(' | '[' | '{' | '"' | '\'' | '`' | '*' | '_' | '~') {
+            if let Some((from, to)) = self.visual_range(ta) {
+                self.conclude_visual(ta);
+                ta.cancel_selection();
+                Self::select_range(ta, from, to, false);
+            }
             self.mode = EditorMode::Normal;
+            self.clear_pending();
             return VimKeyOutcome::PassThrough;
         }
 
@@ -942,11 +966,14 @@ impl VimEngine {
     fn clipboard_chord_visual(&mut self, c: char, ta: &mut RopeBuffer) -> VimKeyOutcome {
         self.conclude_visual(ta);
         let linewise = self.mode == EditorMode::VisualLine;
-        let Some(((sr, sc), (er, ec))) = ta.selection_range() else {
+        let Some(((sr, sc), (er, _))) = ta.selection_range() else {
             self.mode = EditorMode::Normal;
             self.clear_pending();
             return VimKeyOutcome::CursorOnly;
         };
+        let (from, to) = self
+            .visual_range(ta)
+            .expect("a selection in Visual has a visual range");
 
         // The text the clipboard receives, computed from the line bodies rather
         // than from whatever range the buffer edit happens to consume — the
@@ -959,16 +986,10 @@ impl VimEngine {
             String::new() // filled from the selection below
         };
 
-        // The range the chord acts on: whole lines for linewise, the
-        // vim-inclusive span (the char under the cursor counts) for charwise.
+        // The range the chord acts on: what the selection covers.
         let select_content = |ta: &mut RopeBuffer| {
             ta.cancel_selection();
-            if linewise {
-                let end_len = ta.row(er).map(|l| l.chars().count()).unwrap_or(ec);
-                Self::select_range(ta, (sr, 0), (er, end_len), false);
-            } else {
-                Self::select_range(ta, (sr, sc), (er, ec), true);
-            }
+            Self::select_range(ta, from, to, false);
         };
 
         let action = match c {

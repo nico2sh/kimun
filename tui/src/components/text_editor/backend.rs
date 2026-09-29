@@ -228,6 +228,21 @@ impl BackendState {
         }
     }
 
+    /// The selection as the user sees it: under the vim interpreter's Visual
+    /// modes, the range the highlight covers (`VimEngine::visual_range`);
+    /// otherwise the buffer's own selection. `None` without one, or on nvim.
+    pub fn selection_as_shown(&self) -> Option<((usize, usize), (usize, usize))> {
+        let BackendState::Textarea(tb) = self else {
+            return None;
+        };
+        if let InputInterpreter::Vim(e) = &tb.input
+            && let Some(range) = e.visual_range(&tb.ta)
+        {
+            return Some(range);
+        }
+        tb.ta.selection_range()
+    }
+
     /// Let the vim interpreter record the live Visual selection for `gv`
     /// before the host edits it away. A no-op for the other backends.
     pub fn conclude_visual(&mut self) {
