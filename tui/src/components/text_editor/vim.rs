@@ -265,9 +265,17 @@ struct InsertCapture {
     start: (usize, usize),
 }
 
-/// A Visual selection as `gv` brings it back: which Visual mode, and both
-/// ends — the anchor apart from the cursor, since the side the cursor was on
-/// is the side the selection keeps extending from.
+/// A live Visual selection: which Visual mode, and both ends — the anchor
+/// apart from the cursor, since the side the cursor was on is the side the
+/// selection keeps extending from.
+/// What `gv` needs besides the selection's ends (the `<`/`>` marks): the
+/// Visual mode, and which end the cursor was on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LastVisual {
+    line: bool,
+    cursor_at_start: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct VisualSelection {
     line: bool,
@@ -304,8 +312,9 @@ pub struct VimEngine {
     /// click that ends Visual may already have cancelled or edited the
     /// selection away, so this — not the buffer — is what Visual ended with.
     live_visual: Option<VisualSelection>,
-    /// The selection Visual mode last ended with, for `gv`.
-    last_visual: Option<VisualSelection>,
+    /// How the last Visual selection is restored by `gv`. Its ends are not
+    /// here: they are the buffer's `<` and `>` marks, which follow the text.
+    last_visual: Option<LastVisual>,
 }
 
 impl Default for VimEngine {
@@ -398,7 +407,7 @@ impl VimEngine {
     /// selection means Visual; losing the selection in Visual returns to Normal.
     /// `ta` is the buffer after the change, so a mouse selection is followed
     /// for `gv` like a keyboard one.
-    pub fn sync_mouse_selection(&mut self, has_selection: bool, ta: &RopeBuffer) {
+    pub fn sync_mouse_selection(&mut self, has_selection: bool, ta: &mut RopeBuffer) {
         match (has_selection, &self.mode) {
             (true, EditorMode::Normal) => self.mode = EditorMode::Visual,
             (false, EditorMode::Visual) | (false, EditorMode::VisualLine) => {
@@ -438,15 +447,48 @@ impl VimEngine {
 
     /// Follow the Visual selection for `gv`: while Visual lasts, remember the
     /// selection; once it ends, the last one remembered is what `gv` restores.
-    fn track_visual(&mut self, ta: &RopeBuffer) {
+    fn track_visual(&mut self, ta: &mut RopeBuffer) {
         match self.visual_selection(ta) {
             Some(selection) => self.live_visual = Some(selection),
             None => {
                 if let Some(ended) = self.live_visual.take() {
-                    self.last_visual = Some(ended);
+                    self.remember_visual(ended, ta);
                 }
             }
         }
+    }
+
+    /// Make `sel` what `gv` restores. Its ends go into the buffer as the `<`
+    /// and `>` marks (vim's names), so edits elsewhere carry them along.
+    fn remember_visual(&mut self, sel: VisualSelection, ta: &mut RopeBuffer) {
+        let (start, end) = if sel.anchor <= sel.cursor {
+            (sel.anchor, sel.cursor)
+        } else {
+            (sel.cursor, sel.anchor)
+        };
+        ta.set_mark('<', start);
+        ta.set_mark('>', end);
+        self.last_visual = Some(LastVisual {
+            line: sel.line,
+            cursor_at_start: start != end && sel.cursor == start,
+        });
+    }
+
+    /// The selection `gv` restores, with its ends where the text has taken
+    /// them since.
+    fn recall_visual(&self, ta: &RopeBuffer) -> Option<VisualSelection> {
+        let last = self.last_visual?;
+        let (start, end) = (ta.mark('<')?, ta.mark('>')?);
+        let (anchor, cursor) = if last.cursor_at_start {
+            (end, start)
+        } else {
+            (start, end)
+        };
+        Some(VisualSelection {
+            line: last.line,
+            anchor,
+            cursor,
+        })
     }
 
     /// The live Visual selection, or `None` outside Visual mode.
@@ -724,10 +766,12 @@ impl VimEngine {
             // gv in Visual swaps the live selection with the previous one.
             Some(GKey::Reselect) => {
                 self.clear_pending();
-                let Some(previous) = self.last_visual else {
+                let Some(previous) = self.recall_visual(ta) else {
                     return VimKeyOutcome::NoOp;
                 };
-                self.last_visual = self.visual_selection(ta);
+                if let Some(current) = self.visual_selection(ta) {
+                    self.remember_visual(current, ta);
+                }
                 self.restore_visual(previous, ta);
                 VimKeyOutcome::CursorOnly
             }
@@ -1716,7 +1760,7 @@ impl VimEngine {
                 };
                 VimKeyOutcome::CursorOnly
             }
-            Command::ReselectVisual => match self.last_visual {
+            Command::ReselectVisual => match self.recall_visual(ta) {
                 Some(sel) => {
                     self.restore_visual(sel, ta);
                     VimKeyOutcome::CursorOnly

@@ -184,6 +184,10 @@ pub struct RopeBuffer {
     yank: String,
     search: Option<regex::Regex>,
     indent_width: std::num::NonZeroU8,
+    /// Named positions that travel with the text they point at — vim's marks,
+    /// keyed by vim's name for them (`<` and `>` hold the ends of the last
+    /// Visual selection). Edits carry them along; see [`Self::set_mark`].
+    marks: std::collections::BTreeMap<char, Position>,
 }
 
 impl Default for RopeBuffer {
@@ -204,6 +208,7 @@ impl RopeBuffer {
             yank: String::new(),
             search: None,
             indent_width: DEFAULT_INDENT_WIDTH,
+            marks: std::collections::BTreeMap::new(),
         }
     }
 
@@ -212,6 +217,8 @@ impl RopeBuffer {
         self.inner.set_text(text);
         self.pending = EditOutcome::default();
         self.goal = None;
+        // They pointed into the text that is gone.
+        self.marks.clear();
     }
 
     pub fn text(&self) -> &Text {
@@ -333,6 +340,16 @@ impl RopeBuffer {
             self.inner.begin()
         };
         f(&mut txn);
+        // Marks ride the transaction exactly, like the cursor: text inserted at
+        // a mark stays in front of it, and a deletion across it collapses it
+        // to where the deleted text began.
+        self.marks.retain(|_, mark| match txn.map(*mark) {
+            Some(mapped) => {
+                *mark = mapped;
+                true
+            }
+            None => false,
+        });
         let change = txn.commit();
         if self.depth > 0 {
             self.group_started = true;
@@ -578,7 +595,68 @@ impl RopeBuffer {
         }
         self.goal = None;
         self.inner.clear_selection();
+        if let Some(change) = &change {
+            self.carry_marks_across(change);
+        }
         self.record(change)
+    }
+
+    /// Bring the marks into a text that undo or redo swapped in whole.
+    ///
+    /// There is no transaction to map through here, only what the change
+    /// reports: the rows it touched and how many it added. A mark below the
+    /// first touched row moves by that many (never above it, when rows went);
+    /// a mark on or above it stays. Coarser than a transaction's map — a mark
+    /// on the very row an undo re-inserts above stays put — but it keeps a
+    /// mark on the rows it named for the edits that matter, lines coming and
+    /// going above it.
+    fn carry_marks_across(&mut self, change: &Change) {
+        let at = change.rows().start;
+        let delta = change.line_delta();
+        let text = self.inner.text();
+        let last = text.line_count().saturating_sub(1);
+        self.marks.retain(|_, mark| {
+            let (row, col) = (mark.row(), mark.column().get());
+            let row = if row > at {
+                row.saturating_add_signed(delta).max(at)
+            } else {
+                row
+            }
+            .min(last);
+            let col = col.min(text.line_len_chars(row).unwrap_or(0));
+            match text
+                .position(row, Column::new(col))
+                .or_else(|| text.position(row, Column::new(0)))
+            {
+                Some(moved) => {
+                    *mark = moved;
+                    true
+                }
+                None => false,
+            }
+        });
+    }
+
+    // ── Marks ────────────────────────────────────────────────────────────────
+
+    /// Put mark `name` at `(row, col)`. `false`, setting nothing, when the
+    /// buffer has no such position.
+    ///
+    /// From here on the mark follows the text it points at: rows added or
+    /// removed above it carry it along, text typed before it on its row pushes
+    /// it right, and deleting the text under it collapses it to where the
+    /// deletion began.
+    pub fn set_mark(&mut self, name: char, (row, col): (usize, usize)) -> bool {
+        let Some(at) = self.inner.text().position(row, Column::new(col)) else {
+            return false;
+        };
+        self.marks.insert(name, at);
+        true
+    }
+
+    /// Where mark `name` points now, if it is set.
+    pub fn mark(&self, name: char) -> Option<(usize, usize)> {
+        self.marks.get(&name).map(|m| (m.row(), m.column().get()))
     }
 
     // ── Cursor and selection ─────────────────────────────────────────────────
@@ -1312,5 +1390,39 @@ mod indent_tests {
         let damage = outcome.damage.expect("the edits were reported");
         assert!(damage.contains(&1) && damage.contains(&2), "{damage:?}");
         assert_eq!(outcome.line_delta, 0);
+    }
+
+    /// A mark keeps pointing at its text: rows added above carry it down,
+    /// text typed before it on its row carries it right, and deleting the
+    /// rows above brings it back up.
+    #[test]
+    fn marks_follow_the_text() {
+        let mut t = RopeBuffer::new(Text::from("one\ntwo"));
+        assert!(t.set_mark('<', (1, 1)));
+        t.jump_to(0, 0);
+        t.insert_str("zero\n");
+        assert_eq!(t.mark('<'), Some((2, 1)));
+        t.jump_to(2, 0);
+        t.insert_str("XX");
+        assert_eq!(t.mark('<'), Some((2, 3)));
+        t.jump_to(0, 0);
+        t.start_selection();
+        t.jump_to(1, 0);
+        t.cut();
+        assert_eq!(t.mark('<'), Some((1, 3)));
+    }
+
+    /// Undo swaps the text in whole; the mark still lands on its rows.
+    #[test]
+    fn marks_follow_undo_and_a_new_text_drops_them() {
+        let mut t = RopeBuffer::new(Text::from("a\nb\nc"));
+        t.set_mark('>', (2, 0));
+        t.jump_to(0, 0);
+        t.insert_str("x\n");
+        assert_eq!(t.mark('>'), Some((3, 0)));
+        t.undo();
+        assert_eq!(t.mark('>'), Some((2, 0)));
+        t.replace(Text::from("other"));
+        assert_eq!(t.mark('>'), None);
     }
 }
