@@ -109,7 +109,7 @@ Text objects are single-line for now.
 | `u` `U` `g~` | lowercase / uppercase / toggle case |
 | `>` `<` | indent / outdent the selected lines (`3>` shifts three steps) |
 | `J` `gJ` | join the selected lines |
-| `(` `[` `{` `"` `'` `` ` `` `*` `_` `~` | **kimün twist**: wraps the selection ([auto-surround](@/using-kimun/tui.md)) instead of vim's behavior — so `*` bolds, `[` `[` builds a wikilink, and `~` wraps for strikethrough (use `g~` for vim's toggle-case) |
+| `(` `[` `{` `"` `'` `` ` `` `*` `_` `~` | **kimün twist**: wraps the selection ([auto-surround](@/using-kimun/tui.md)) instead of vim's behavior. The wrapped text stays selected, still in Visual, so wraps chain — `*` bolds, `[` `[` builds a wikilink, and `~` wraps for strikethrough (use `g~` for vim's toggle-case) |
 
 `.` after any Visual edit repeats it at the cursor on a region of the same shape: as many lines for `V`, as many characters for a one-row `v`, and for a `v` across rows the same number of rows ending at the same column.
 

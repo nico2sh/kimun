@@ -3335,3 +3335,40 @@ fn replace_char_swaps_a_whole_emoji() {
     }
     assert_eq!(t.rows(), &["azb"]);
 }
+
+// ── Linewise Visual `p` at the end of the buffer ─────────────────────────
+
+/// Over the last row, the put lands where that row was — not above the row
+/// before it.
+#[test]
+fn visual_line_put_over_the_last_row_stays_in_place() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("a\nb\nc"));
+    for c in ['y', 'y', 'G', 'V', 'p'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["a", "b", "a"]);
+    assert_eq!(t.cursor().0, 2);
+}
+
+/// Over every row, the put is the whole buffer — no stray empty row after.
+#[test]
+fn visual_line_put_over_the_whole_buffer_leaves_no_extra_row() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("one"));
+    for c in ['y', 'y', 'V', 'p'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["one"]);
+}
+
+#[test]
+fn visual_line_put_of_several_lines_over_the_last_rows() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("a\nb\nc\nd"));
+    for c in ['y', 'j', 'G', 'V', 'k', 'p'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["a", "b", "a", "b"]);
+    assert_eq!(t.cursor().0, 2, "on the first pasted row");
+}

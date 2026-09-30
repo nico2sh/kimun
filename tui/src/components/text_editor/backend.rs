@@ -228,19 +228,38 @@ impl BackendState {
         }
     }
 
-    /// The selection as the user sees it: under the vim interpreter's Visual
-    /// modes, the range the highlight covers (`VimEngine::visual_range`);
+    /// The range the vim interpreter's Visual selection covers
+    /// (`VimEngine::visual_range`: whole characters, whole rows for `V`).
+    /// `None` outside Visual and on the other backends.
+    pub fn visual_range(&self) -> Option<((usize, usize), (usize, usize))> {
+        match self {
+            BackendState::Textarea(TextareaBackend {
+                input: InputInterpreter::Vim(e),
+                ta,
+                ..
+            }) => e.visual_range(ta),
+            _ => None,
+        }
+    }
+
+    /// The selection as the user sees it: the Visual range under vim,
     /// otherwise the buffer's own selection. `None` without one, or on nvim.
     pub fn selection_as_shown(&self) -> Option<((usize, usize), (usize, usize))> {
-        let BackendState::Textarea(tb) = self else {
-            return None;
-        };
-        if let InputInterpreter::Vim(e) = &tb.input
-            && let Some(range) = e.visual_range(&tb.ta)
+        self.visual_range()
+            .or_else(|| self.as_textarea().and_then(|ta| ta.selection_range()))
+    }
+
+    /// Hand the vim interpreter the selection the host just left (see
+    /// `VimEngine::adopt_host_selection`). A no-op for the other backends.
+    pub fn adopt_host_selection(&mut self) {
+        if let BackendState::Textarea(TextareaBackend {
+            input: InputInterpreter::Vim(e),
+            ta,
+            ..
+        }) = self
         {
-            return Some(range);
+            e.adopt_host_selection(ta);
         }
-        tb.ta.selection_range()
     }
 
     /// Let the vim interpreter record the live Visual selection for `gv`
@@ -263,15 +282,6 @@ impl BackendState {
         matches!(self,
             BackendState::Textarea(TextareaBackend { input: InputInterpreter::Vim(e), .. })
             if e.space_leads())
-    }
-
-    /// True when the current selection visually includes the char under the
-    /// cursor, so the highlight path extends the end col by one. Only the vim
-    /// interpreter's charwise Visual mode (not VisualLine) selects this way.
-    pub fn selection_includes_cursor(&self) -> bool {
-        matches!(self,
-            BackendState::Textarea(TextareaBackend { input: InputInterpreter::Vim(e), .. })
-            if *e.mode() == EditorMode::Visual)
     }
 
     /// True when the vim interpreter is in linewise Visual (`V`). The
