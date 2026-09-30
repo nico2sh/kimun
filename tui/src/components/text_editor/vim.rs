@@ -509,6 +509,48 @@ impl VimEngine {
         }
     }
 
+    /// The host left a selection on text the user keeps working on — the
+    /// inner text of an auto-surround or emphasis wrap, left selected so wraps
+    /// chain (`[` `[` builds a wikilink). Take it as a charwise Visual
+    /// selection, the cursor on its last character, so the mode agrees with
+    /// the highlight and the next wrap covers exactly that text. With nothing
+    /// selected, Normal.
+    ///
+    /// Only from Normal (the pair-char hand-off has just left Visual) or
+    /// Visual (an emphasis applied to it). A wrap typed in Insert or Replace
+    /// stays there.
+    pub fn adopt_host_selection(&mut self, ta: &mut RopeBuffer) {
+        if !matches!(
+            self.mode,
+            EditorMode::Normal | EditorMode::Visual | EditorMode::VisualLine
+        ) {
+            return;
+        }
+        self.clear_pending();
+        match ta.selection_range() {
+            Some((start, end)) if start != end => {
+                // The half-open end's last character: the one before `end`,
+                // or the newline ending the row above when `end` is a row
+                // start.
+                let last = if end.1 > 0 {
+                    (end.0, ta.cluster_at(end.0, end.1 - 1).0)
+                } else {
+                    (end.0 - 1, ta.row_len(end.0 - 1))
+                };
+                ta.cancel_selection();
+                ta.jump_to(start.0, start.1);
+                ta.start_selection();
+                ta.jump_to(last.0, last.1);
+                self.mode = EditorMode::Visual;
+            }
+            _ => {
+                ta.cancel_selection();
+                self.mode = EditorMode::Normal;
+            }
+        }
+        self.track_visual(ta);
+    }
+
     /// The selection `gv` restores, with its ends where the text has taken
     /// them since.
     fn recall_visual(&self, ta: &RopeBuffer) -> Option<VisualSelection> {
@@ -912,6 +954,26 @@ impl VimEngine {
         }
     }
 
+    /// After rows `r0..=r1` of a buffer whose last row was `last` were deleted
+    /// linewise, open one empty row where they stood and put the cursor on it
+    /// — for `cc` to type into and linewise Visual `p` to fill.
+    ///
+    /// Where that row goes depends on what the delete took with it: every row
+    /// leaves one empty row already; the last rows took the newline *before*
+    /// them, so a row is added after the cursor's; anything else took the
+    /// newline after them, so one is added before the cursor's row.
+    fn reopen_deleted_line(ta: &mut RopeBuffer, r0: usize, r1: usize, last: usize) {
+        if r0 == 0 && r1 == last {
+            ta.jump_to(0, 0);
+        } else if r0 > 0 && r1 == last {
+            ta.move_cursor(CursorMove::End);
+            ta.insert_newline();
+        } else {
+            ta.insert_newline();
+            ta.move_cursor(CursorMove::Up);
+        }
+    }
+
     /// Visual `p`/`P`: replace the region with the register. The region's text
     /// enters the register (vim's swap) while the pasted text is the register
     /// as it was before, read first — the engine owns the register, so the cut
@@ -931,14 +993,15 @@ impl VimEngine {
         // `edit()` scope makes visual `p` a single undo.
         ta.edit(|ta| {
             if linewise {
-                let (row, _) = ta.cursor();
-                ta.jump_to(row, 0);
+                let (r0, _) = ta.cursor();
+                let last = ta.row_count().saturating_sub(1);
+                let r1 = (r0 + lines - 1).min(last);
+                ta.jump_to(r0, 0);
                 self.apply_operator_linewise(Operator::Delete, lines, None, ta);
-                let body = text.strip_suffix('\n').unwrap_or(&text);
-                ta.move_cursor(CursorMove::Head);
-                ta.insert_str(body);
-                ta.insert_newline();
-                ta.move_cursor(CursorMove::Up);
+                Self::reopen_deleted_line(ta, r0, r1, last);
+                ta.insert_str(text.strip_suffix('\n').unwrap_or(&text));
+                // vim leaves the cursor on the first pasted row.
+                ta.jump_to(r0, 0);
             } else {
                 let start = ta.cursor();
                 Self::select_range(ta, start, end, true);
@@ -2298,18 +2361,7 @@ impl VimEngine {
                 self.registers.fill(register_text, RegisterKind::Linewise);
                 if op == Operator::Change {
                     // cc: open a fresh empty line to type into, at the right spot
-                    if r0 == 0 && r1 == last {
-                        // whole-buffer case: cut() left [""], the cursor is already
-                        // at (0,0) on an empty line — no extra newline needed.
-                        ta.jump_to(0, 0);
-                    } else if r0 > 0 && r1 == last {
-                        // we consumed the preceding newline; add a line back
-                        ta.move_cursor(CursorMove::End);
-                        ta.insert_newline();
-                    } else {
-                        ta.insert_newline();
-                        ta.move_cursor(CursorMove::Up);
-                    }
+                    Self::reopen_deleted_line(ta, r0, r1, last);
                     self.finish_insert_entry(&Command::OperateLine(op, count), inserted, ta);
                 }
             }
