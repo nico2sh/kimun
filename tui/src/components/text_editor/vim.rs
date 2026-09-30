@@ -495,6 +495,14 @@ impl VimEngine {
         }
     }
 
+    /// Whether Visual covers nothing — `v`/`V` on an empty row. There is
+    /// nothing there to wrap, so a pair char or an emphasis does nothing
+    /// rather than type into the selection. The one home of that rule, for the
+    /// engine's pair-char hand-off and the host's emphasis actions alike.
+    pub fn visual_is_empty(&self, ta: &RopeBuffer) -> bool {
+        self.visual_range(ta).is_some_and(|(from, to)| from == to)
+    }
+
     /// End Visual *before* an edit that consumes the selection: the marks go
     /// down while the selection's coordinates still describe the buffer, and
     /// the edit then carries them along like the cursor. Left to
@@ -806,7 +814,7 @@ impl VimEngine {
         // took the `~` above; nor does `<`, which outdents.)
         if matches!(c, '(' | '[' | '{' | '"' | '\'' | '`' | '*' | '_' | '~') {
             // Nothing to wrap (an empty row): stay selecting, type nothing.
-            if self.visual_range(ta).is_some_and(|(from, to)| from == to) {
+            if self.visual_is_empty(ta) {
                 self.clear_pending();
                 return VimKeyOutcome::NoOp;
             }

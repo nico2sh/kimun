@@ -304,6 +304,22 @@ impl Text {
         }
     }
 
+    /// The position nearest `(row, column)` that this text has: the row and
+    /// column clamped to the text, and a column inside a grapheme cluster
+    /// moved on to the cluster's end, as the cursor would be.
+    ///
+    /// For a position remembered by row and column across a text swapped in
+    /// whole (an undo), where there is no edit to carry it through.
+    pub fn position_near(&self, row: usize, column: usize) -> Position {
+        let row = row.min(self.line_count().saturating_sub(1));
+        let len = self.line_len_chars(row).unwrap_or(0);
+        let column = column.min(len);
+        (column..=len)
+            .find_map(|c| self.position(row, Column::new(c)))
+            .or_else(|| self.position(row, Column::ZERO))
+            .unwrap_or_else(|| self.start())
+    }
+
     /// The position at `byte`, snapping if the byte is somehow not addressable.
     ///
     /// For offsets this crate derived itself — a remapped cursor, a restored
