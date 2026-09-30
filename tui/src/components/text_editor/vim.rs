@@ -513,12 +513,13 @@ impl VimEngine {
     /// inner text of an auto-surround or emphasis wrap, left selected so wraps
     /// chain (`[` `[` builds a wikilink). Take it as a charwise Visual
     /// selection, the cursor on its last character, so the mode agrees with
-    /// the highlight and the next wrap covers exactly that text. With nothing
-    /// selected, Normal.
+    /// the highlight and the next wrap covers exactly that text.
     ///
-    /// Only from Normal (the pair-char hand-off has just left Visual) or
-    /// Visual (an emphasis applied to it). A wrap typed in Insert or Replace
-    /// stays there.
+    /// Adopted from Normal (the pair-char hand-off has just left Visual),
+    /// Visual, or Visual-line (an emphasis applied to either); a wrap typed in
+    /// Insert or Replace stays there. Nothing selected, or text that ends in a
+    /// line break — which no Visual range can end on, so a chained wrap would
+    /// cover less than the first and come out unbalanced — lands in Normal.
     pub fn adopt_host_selection(&mut self, ta: &mut RopeBuffer) {
         if !matches!(
             self.mode,
@@ -528,19 +529,9 @@ impl VimEngine {
         }
         self.clear_pending();
         match ta.selection_range() {
-            Some((start, end)) if start != end => {
-                // The half-open end's last character: the one before `end`,
-                // or the newline ending the row above when `end` is a row
-                // start.
-                let last = if end.1 > 0 {
-                    (end.0, ta.cluster_at(end.0, end.1 - 1).0)
-                } else {
-                    (end.0 - 1, ta.row_len(end.0 - 1))
-                };
-                ta.cancel_selection();
-                ta.jump_to(start.0, start.1);
-                ta.start_selection();
-                ta.jump_to(last.0, last.1);
+            Some((start, end)) if start != end && end.1 > 0 => {
+                let last = Self::char_before(ta, end);
+                Self::select_inclusive(ta, start, last);
                 self.mode = EditorMode::Visual;
             }
             _ => {
@@ -549,6 +540,73 @@ impl VimEngine {
             }
         }
         self.track_visual(ta);
+    }
+
+    /// A mouse drag from `origin` to `pos`, which covers the text between
+    /// them. Select exactly that — the character *at* the far end is not part
+    /// of it — as a Visual selection whose cursor is on the dragged side, so
+    /// the highlight and what `d`/`y`/a wrap take agree with what was dragged
+    /// over. Rebuilt from `origin` on every drag event, so it cannot drift.
+    ///
+    /// Keeps Visual-line when already in it. A drag back onto its origin
+    /// selects nothing and returns to Normal. `false`, touching nothing, in
+    /// Insert or Replace, where the host's plain drag selection stands.
+    pub fn select_dragged(
+        &mut self,
+        ta: &mut RopeBuffer,
+        origin: (usize, usize),
+        pos: (usize, usize),
+    ) -> bool {
+        if !matches!(
+            self.mode,
+            EditorMode::Normal | EditorMode::Visual | EditorMode::VisualLine
+        ) {
+            return false;
+        }
+        if origin == pos {
+            ta.cancel_selection();
+            ta.jump_to(pos.0, pos.1);
+            self.mode = EditorMode::Normal;
+        } else {
+            let (start, end) = if origin < pos {
+                (origin, pos)
+            } else {
+                (pos, origin)
+            };
+            let last = Self::char_before(ta, end).max(start);
+            if origin < pos {
+                Self::select_inclusive(ta, start, last);
+            } else {
+                Self::select_inclusive(ta, last, start);
+            }
+            if self.mode == EditorMode::Normal {
+                self.mode = EditorMode::Visual;
+            }
+        }
+        self.track_visual(ta);
+        true
+    }
+
+    /// The last character before the half-open end `end`: the one to its
+    /// left, or — at a row start — the last one on the row above (the line
+    /// break between them is not a character a Visual range can hold).
+    fn char_before(ta: &RopeBuffer, end: (usize, usize)) -> (usize, usize) {
+        if end.1 > 0 {
+            (end.0, ta.cluster_at(end.0, end.1 - 1).0)
+        } else if end.0 > 0 {
+            let len = ta.row_len(end.0 - 1);
+            (end.0 - 1, ta.cluster_at(end.0 - 1, len.saturating_sub(1)).0)
+        } else {
+            end
+        }
+    }
+
+    /// Select from `anchor` to `cursor`, both inclusive in vim's sense.
+    fn select_inclusive(ta: &mut RopeBuffer, anchor: (usize, usize), cursor: (usize, usize)) {
+        ta.cancel_selection();
+        ta.jump_to(anchor.0, anchor.1);
+        ta.start_selection();
+        ta.jump_to(cursor.0, cursor.1);
     }
 
     /// The selection `gv` restores, with its ends where the text has taken
@@ -747,6 +805,11 @@ impl VimEngine {
         // hand-off as the Ctrl-V chord. (`g~` never gets here: the pending `g`
         // took the `~` above; nor does `<`, which outdents.)
         if matches!(c, '(' | '[' | '{' | '"' | '\'' | '`' | '*' | '_' | '~') {
+            // Nothing to wrap (an empty row): stay selecting, type nothing.
+            if self.visual_range(ta).is_some_and(|(from, to)| from == to) {
+                self.clear_pending();
+                return VimKeyOutcome::NoOp;
+            }
             if let Some((from, to)) = self.visual_range(ta) {
                 self.conclude_visual(ta);
                 ta.cancel_selection();
@@ -876,7 +939,7 @@ impl VimEngine {
         let extent = if self.mode == EditorMode::VisualLine {
             Extent::Lines(end.0 - start.0 + 1)
         } else if start.0 == end.0 {
-            Extent::Chars(Self::chars_through(ta, start.0, start.1, end.1))
+            Extent::Chars(ta.clusters_through(start.0, start.1, end.1))
         } else {
             Extent::Span {
                 rows: end.0 - start.0,
@@ -904,10 +967,7 @@ impl VimEngine {
         // The region: first and last row, and for charwise the inclusive end.
         let (end, linewise) = match extent {
             Extent::Lines(n) => (((row + n.max(1) - 1).min(last), 0), true),
-            Extent::Chars(n) => (
-                (row, Self::col_after_chars(ta, row, col, n.max(1) - 1)),
-                false,
-            ),
+            Extent::Chars(n) => ((row, ta.col_after_clusters(row, col, n.max(1) - 1)), false),
             Extent::Span { rows, end_col } => (((row + rows).min(last), end_col), false),
         };
         let lines = end.0 - row + 1;
@@ -1031,9 +1091,13 @@ impl VimEngine {
     /// text with nothing to put in its place, and the host's read can fail for
     /// ordinary reasons (empty clipboard, X11 hiccup).
     fn clipboard_chord_visual(&mut self, c: char, ta: &mut RopeBuffer) -> VimKeyOutcome {
+        if c == 'c' {
+            let text = self.copy_visual(ta).unwrap_or_default();
+            return VimKeyOutcome::Host(VimHostAction::ClipboardCopy(text));
+        }
         self.conclude_visual(ta);
         let linewise = self.mode == EditorMode::VisualLine;
-        let Some(((sr, sc), (er, _))) = ta.selection_range() else {
+        let Some(((sr, _), (er, _))) = ta.selection_range() else {
             self.mode = EditorMode::Normal;
             self.clear_pending();
             return VimKeyOutcome::CursorOnly;
@@ -1060,19 +1124,6 @@ impl VimEngine {
         };
 
         let action = match c {
-            'c' => {
-                select_content(ta);
-                ta.copy();
-                let text = if linewise {
-                    clipboard_text
-                } else {
-                    ta.yank_text()
-                };
-                ta.cancel_selection();
-                // vim leaves the cursor at the start of a yanked range.
-                ta.jump_to(sr, sc);
-                VimHostAction::ClipboardCopy(text)
-            }
             'x' => {
                 let text = if linewise {
                     // Take the newline with the lines, or `dd`'s stray-blank-line
@@ -1098,6 +1149,32 @@ impl VimEngine {
         self.mode = EditorMode::Normal;
         self.clear_pending();
         VimKeyOutcome::Host(action)
+    }
+
+    /// Copy the live Visual selection for the OS clipboard and leave Visual —
+    /// vim's Ctrl-C is Esc. `None` outside Visual.
+    ///
+    /// The one copy path for a Visual selection, whichever gesture asked: the
+    /// Ctrl-C chord and the host's right-click both come here, so they cannot
+    /// disagree about what was selected. Linewise copies whole lines, newline
+    /// included (an empty line copies as `"\n"`); charwise copies the range
+    /// the highlight shows. The register is not touched — the clipboard and
+    /// the register are separate channels.
+    pub fn copy_visual(&mut self, ta: &mut RopeBuffer) -> Option<String> {
+        let (from, to) = self.visual_range(ta)?;
+        self.conclude_visual(ta);
+        let text = if self.mode == EditorMode::VisualLine {
+            format!("{}\n", ta.joined_rows(from.0, to.0))
+        } else {
+            ta.text_between(from, to).unwrap_or_default()
+        };
+        let (start, _) = ta.selection_range().unwrap_or((from, from));
+        ta.cancel_selection();
+        // vim leaves the cursor at the start of a yanked range.
+        ta.jump_to(start.0, start.1);
+        self.mode = EditorMode::Normal;
+        self.clear_pending();
+        Some(text)
     }
 
     /// Re-aim the charwise visual selection at the text object under the
@@ -2084,35 +2161,6 @@ impl VimEngine {
         ta.jump_to(start.0, ta.cluster_at(start.0, start.1).0);
         ta.start_selection();
         ta.jump_to(er, end_col);
-    }
-
-    /// How many characters (grapheme clusters) `from..=to` on `row` covers.
-    fn chars_through(ta: &RopeBuffer, row: usize, from: usize, to: usize) -> usize {
-        let mut count = 1;
-        let mut col = ta.cluster_at(row, from).1;
-        while col <= to {
-            let next = ta.cluster_at(row, col).1;
-            if next == col {
-                break;
-            }
-            count += 1;
-            col = next;
-        }
-        count
-    }
-
-    /// The column `n` characters right of `col` on `row`, stopping at the
-    /// row's last character.
-    fn col_after_chars(ta: &RopeBuffer, row: usize, col: usize, n: usize) -> usize {
-        let mut at = ta.cluster_at(row, col).0;
-        for _ in 0..n {
-            let next = ta.cluster_at(row, at).1;
-            if next == at || next >= ta.row_len(row) {
-                break;
-            }
-            at = next;
-        }
-        at
     }
 
     fn apply_motion(&self, motion: Motion, count: usize, ta: &mut RopeBuffer) {

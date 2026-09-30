@@ -249,6 +249,34 @@ impl BackendState {
             .or_else(|| self.as_textarea().and_then(|ta| ta.selection_range()))
     }
 
+    /// Copy the vim interpreter's Visual selection and leave Visual (see
+    /// `VimEngine::copy_visual`). `None` outside Visual and on the other
+    /// backends, where the buffer's own selection is what gets copied.
+    pub fn copy_visual(&mut self) -> Option<String> {
+        match self {
+            BackendState::Textarea(TextareaBackend {
+                input: InputInterpreter::Vim(e),
+                ta,
+                ..
+            }) => e.copy_visual(ta),
+            _ => None,
+        }
+    }
+
+    /// A mouse drag from `origin` to `pos` under the vim interpreter (see
+    /// `VimEngine::select_dragged`). `false` where the plain drag selection
+    /// stands: the other backends, and vim's Insert and Replace.
+    pub fn select_dragged(&mut self, origin: (usize, usize), pos: (usize, usize)) -> bool {
+        match self {
+            BackendState::Textarea(TextareaBackend {
+                input: InputInterpreter::Vim(e),
+                ta,
+                ..
+            }) => e.select_dragged(ta, origin, pos),
+            _ => false,
+        }
+    }
+
     /// Hand the vim interpreter the selection the host just left (see
     /// `VimEngine::adopt_host_selection`). A no-op for the other backends.
     pub fn adopt_host_selection(&mut self) {

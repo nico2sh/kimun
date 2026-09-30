@@ -3372,3 +3372,44 @@ fn visual_line_put_of_several_lines_over_the_last_rows() {
     assert_eq!(t.rows(), &["a", "b", "a", "b"]);
     assert_eq!(t.cursor().0, 2, "on the first pasted row");
 }
+
+// ── Copy, shared by Ctrl-C and the host ───────────────────────────────────
+
+#[test]
+fn copy_visual_takes_the_inclusive_range_and_leaves_visual() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("hello world"));
+    for c in ['v', 'e'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(e.copy_visual(&mut t).as_deref(), Some("hello"));
+    assert_eq!(*e.mode(), EditorMode::Normal);
+    assert!(t.selection_range().is_none());
+}
+
+#[test]
+fn copy_visual_of_an_empty_line_is_a_newline() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("a\n\nb"));
+    for c in ['j', 'V'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(e.copy_visual(&mut t).as_deref(), Some("\n"));
+}
+
+/// A row far longer than a screen: the character-counting helpers must
+/// still get it right (and not rescan the row per character).
+#[test]
+fn visual_operators_on_a_very_long_row() {
+    let mut e = VimEngine::default();
+    let row: String = "ab❤️".repeat(5000);
+    let mut t = RopeBuffer::new(Text::from(format!("{row}\n{row}").as_str()));
+    for c in ['v', '$', 'd'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows()[0], "");
+    for c in ['j', '.'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows()[1], "");
+}

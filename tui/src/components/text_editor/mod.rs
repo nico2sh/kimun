@@ -271,6 +271,9 @@ pub struct TextEditorComponent {
     /// two made from one template), and state that belongs to one — undo
     /// history, selection, `gv` marks — must not leak into the other.
     note: Option<kimun_core::nfs::VaultPath>,
+    /// Where the current mouse drag started, so each drag event rebuilds the
+    /// selection from it rather than from a selection the last event reshaped.
+    drag_origin: Option<(usize, usize)>,
     /// Tracks the rendered rect to map mouse click coordinates.
     rect: Rect,
     key_bindings: KeyBindings,
@@ -357,6 +360,7 @@ impl TextEditorComponent {
             nvim_host: NvimHost::new(),
             search: None,
             note: None,
+            drag_origin: None,
             autocomplete: None,
             autocomplete_vault: None,
             autocomplete_redraw_bound: false,
@@ -858,6 +862,12 @@ impl TextEditorComponent {
     /// failure is reported rather than swallowed, and so "nothing was selected"
     /// is distinguishable from "the copy failed".
     fn copy_selection_to_clipboard(&mut self, tx: &AppTx) {
+        // A vim Visual selection copies exactly as the Ctrl-C chord does —
+        // one path for both gestures.
+        if let Some(text) = self.backend.copy_visual() {
+            crate::components::yank(text, "copied", tx);
+            return;
+        }
         let text = {
             // Match the highlighted range in vim charwise Visual mode: the
             // textarea selection is half-open, but the cursor's char is part of
@@ -873,9 +883,6 @@ impl TextEditorComponent {
                 .zip(self.backend.as_textarea())
                 .and_then(|(range, ta)| ta.text_between(range.0, range.1));
             match selected {
-                // Linewise Visual copies lines, newline included — as vim's
-                // own Ctrl-C chord does.
-                Some(t) if !t.is_empty() && self.backend.is_visual_line() => format!("{t}\n"),
                 Some(t) if !t.is_empty() => t,
                 _ => {
                     tx.send(AppEvent::FlashMessage("nothing to copy".into()))
@@ -1101,6 +1108,15 @@ impl TextEditorComponent {
         let Some(marker) = markdown_edits::emphasis_marker(action) else {
             return;
         };
+        // A Visual selection with nothing in it (an empty row): nothing to
+        // wrap, and inserting a marker pair would type into a selection.
+        if self
+            .backend
+            .visual_range()
+            .is_some_and(|(from, to)| from == to)
+        {
+            return;
+        }
         if self.wrap_selection(marker, marker) {
             return;
         }
@@ -1132,10 +1148,7 @@ impl TextEditorComponent {
             return;
         };
         if markdown_edits::jump_to_heading(ta, heading) {
-            self.selection = self
-                .backend
-                .as_textarea()
-                .and_then(|ta| ta.selection_range());
+            self.sync_highlight();
         }
     }
 
@@ -1380,10 +1393,7 @@ impl TextEditorComponent {
     fn undo_grouped(&mut self) -> bool {
         let moved = self.backend.as_textarea_mut().is_some_and(|ta| ta.undo());
         if moved {
-            self.selection = self
-                .backend
-                .as_textarea()
-                .and_then(|ta| ta.selection_range());
+            self.sync_highlight();
         }
         moved
     }
@@ -1392,10 +1402,7 @@ impl TextEditorComponent {
     fn redo_grouped(&mut self) -> bool {
         let moved = self.backend.as_textarea_mut().is_some_and(|ta| ta.redo());
         if moved {
-            self.selection = self
-                .backend
-                .as_textarea()
-                .and_then(|ta| ta.selection_range());
+            self.sync_highlight();
         }
         moved
     }
@@ -1638,6 +1645,21 @@ impl TextEditorComponent {
             self.sync_highlight();
             return EventState::Consumed;
         }
+        // A drag under vim selects what it covers, rebuilt from where it began.
+        if matches!(mouse.kind, MouseEventKind::Drag(_))
+            && let Some(origin) = self.drag_origin
+        {
+            let (lrow, lcol) = self
+                .view
+                .click_at_screen((mouse.row - r.y) as usize, (mouse.column - r.x) as usize);
+            if self
+                .backend
+                .select_dragged(origin, (lrow as usize, lcol as usize))
+            {
+                self.sync_highlight();
+                return EventState::Consumed;
+            }
+        }
         // Now extract ta for remaining mouse operations.
         let Some(ta) = self.backend.as_textarea_mut() else {
             unreachable!()
@@ -1651,6 +1673,7 @@ impl TextEditorComponent {
                     .click_at_screen((mouse.row - r.y) as usize, (mouse.column - r.x) as usize);
                 ta.jump_to(lrow as usize, lcol as usize);
                 ta.start_selection();
+                self.drag_origin = Some(ta.cursor());
             }
             MouseEventKind::Drag(_) => {
                 let (lrow, lcol) = self
@@ -1876,12 +1899,14 @@ impl Component for TextEditorComponent {
                 // Only treat a NON-EMPTY selection as "real" to avoid flipping
                 // vim Normal→Visual on a plain click.  Mirrors the same guard
                 // at ~line 1014 which protects auto-indent from collapsed sel.
+                // As shown, not raw: a one-character Visual selection has its
+                // anchor and cursor on the same character yet selects it.
                 let has_sel = self
                     .backend
-                    .as_textarea()
-                    .and_then(|ta| ta.selection_range())
+                    .selection_as_shown()
                     .is_some_and(|(s, e)| s != e);
                 self.backend.sync_mouse_selection(has_sel);
+                self.sync_highlight();
                 result
             }
             // Bracketed paste is intercepted by EditorScreen so it can run the
@@ -4970,35 +4995,143 @@ cccccccc"
         assert_eq!(vim_mode(&editor), EditorMode::Insert);
     }
 
-    /// Right-click copy leaves the highlight exactly as it was.
-    #[test]
-    fn right_click_copy_keeps_the_visual_highlight() {
+    fn mouse(kind: ratatui::crossterm::event::MouseEventKind, column: u16) -> InputEvent {
+        InputEvent::Mouse(ratatui::crossterm::event::MouseEvent {
+            kind,
+            column,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
+    fn rendered_vim_editor(text: &str) -> TextEditorComponent {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
-        use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
         let mut editor = make_vim_editor();
+        editor.set_text(text.to_string());
+        let mut term = Terminal::new(TestBackend::new(30, 4)).unwrap();
+        term.draw(|f| editor.render(f, Rect::new(0, 0, 30, 4), &Theme::default(), true))
+            .unwrap();
+        editor
+    }
+
+    /// Right-click in Visual is Ctrl-C: same copy, and the same return to
+    /// Normal — for `v` and for `V`, an empty line included.
+    #[test]
+    fn right_click_in_visual_copies_like_ctrl_c() {
+        use ratatui::crossterm::event::{MouseButton, MouseEventKind};
         let tx = dummy_tx();
-        let theme = Theme::default();
-        let mut term = Terminal::new(TestBackend::new(20, 4)).unwrap();
-        let area = Rect::new(0, 0, 20, 4);
-        editor.set_text("hello\nworld".to_string());
-        term.draw(|f| editor.render(f, area, &theme, true)).unwrap();
-        for keys in ["ve", "V"] {
-            editor.handle_input(&InputEvent::Key(key(KeyCode::Esc, KeyModifiers::NONE)), &tx);
-            press(&mut editor, "gg");
+        for (text, keys) in [("hello world", "ve"), ("hello", "V"), ("\nx", "V")] {
+            let mut editor = rendered_vim_editor(text);
             press(&mut editor, keys);
-            let before = editor.selection;
-            editor.handle_input(
-                &InputEvent::Mouse(MouseEvent {
-                    kind: MouseEventKind::Down(MouseButton::Right),
-                    column: 1,
-                    row: 0,
-                    modifiers: KeyModifiers::NONE,
-                }),
-                &tx,
+            editor.handle_input(&mouse(MouseEventKind::Down(MouseButton::Right), 1), &tx);
+            assert_eq!(
+                vim_mode(&editor),
+                EditorMode::Normal,
+                "after `{keys}` on {text:?}"
             );
-            assert_eq!(editor.selection, before, "after `{keys}`");
+            assert_eq!(editor.selection, None);
         }
+    }
+
+    /// A drag selects what was dragged over: the highlight, and what `d`
+    /// takes, end where the mouse stopped — forwards and backwards.
+    #[test]
+    fn a_drag_selects_exactly_what_was_dragged() {
+        use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+        let tx = dummy_tx();
+        for (from, to) in [(0, 5), (5, 0)] {
+            let mut editor = rendered_vim_editor("hello world");
+            editor.handle_input(&mouse(MouseEventKind::Down(MouseButton::Left), from), &tx);
+            editor.handle_input(&mouse(MouseEventKind::Drag(MouseButton::Left), to), &tx);
+            assert_eq!(vim_mode(&editor), EditorMode::Visual);
+            assert_eq!(editor.selection, Some(((0, 0), (0, 5))), "drag {from}→{to}");
+            press(&mut editor, "d");
+            assert_eq!(editor.get_text(), " world", "drag {from}→{to}");
+        }
+    }
+
+    /// A drag over one character selects that character, and stays Visual.
+    #[test]
+    fn a_one_character_drag_selects_it() {
+        use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+        let tx = dummy_tx();
+        let mut editor = rendered_vim_editor("hello");
+        editor.handle_input(&mouse(MouseEventKind::Down(MouseButton::Left), 1), &tx);
+        editor.handle_input(&mouse(MouseEventKind::Drag(MouseButton::Left), 2), &tx);
+        assert_eq!(vim_mode(&editor), EditorMode::Visual);
+        assert_eq!(editor.selection, Some(((0, 1), (0, 2))));
+        press(&mut editor, "d");
+        assert_eq!(editor.get_text(), "hllo");
+    }
+
+    /// Dragging back and forth never loses a character: each event selects
+    /// from where the drag began.
+    #[test]
+    fn a_drag_that_turns_back_selects_from_its_origin() {
+        use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+        let tx = dummy_tx();
+        let mut editor = rendered_vim_editor("hello world");
+        editor.handle_input(&mouse(MouseEventKind::Down(MouseButton::Left), 6), &tx);
+        for col in [3, 1, 0, 9, 11] {
+            editor.handle_input(&mouse(MouseEventKind::Drag(MouseButton::Left), col), &tx);
+        }
+        assert_eq!(editor.selection, Some(((0, 6), (0, 11))));
+        press(&mut editor, "d");
+        assert_eq!(editor.get_text(), "hello ");
+    }
+
+    /// `V` then a pair char on an empty row has nothing to wrap: nothing
+    /// happens — no literal char typed while in Normal.
+    #[test]
+    fn a_pair_char_over_an_empty_visual_row_does_nothing() {
+        for keys in ["jV*", "jv*"] {
+            let mut editor = make_vim_editor();
+            editor.set_text("a\n\nb".to_string());
+            press(&mut editor, keys);
+            assert_eq!(editor.get_text(), "a\n\nb", "{keys}");
+            assert_ne!(
+                vim_mode(&editor),
+                EditorMode::Normal,
+                "{keys}: still selecting"
+            );
+        }
+    }
+
+    #[test]
+    fn emphasis_over_an_empty_visual_row_does_nothing() {
+        let mut editor = make_vim_editor();
+        editor.set_text("a\n\nb".to_string());
+        press(&mut editor, "jv");
+        editor.apply_text_action(TextAction::Bold);
+        assert_eq!(editor.get_text(), "a\n\nb");
+        assert_eq!(vim_mode(&editor), EditorMode::Visual);
+    }
+
+    /// A wrap whose text ends in a line break cannot stay selected in Visual
+    /// (a Visual range cannot end on a newline); it lands in Normal rather
+    /// than chaining into an unbalanced second wrap.
+    #[test]
+    fn a_wrap_ending_in_a_line_break_does_not_chain() {
+        let mut editor = make_vim_editor();
+        editor.set_text("a\n\nz".to_string());
+        press(&mut editor, "vj*");
+        assert_eq!(editor.get_text(), "*a\n*\nz");
+        assert_eq!(vim_mode(&editor), EditorMode::Normal);
+        press(&mut editor, "*");
+        assert_eq!(editor.get_text(), "*a\n*\nz");
+    }
+
+    /// Emphasis from `V` wraps the row and keeps its text selected in Visual.
+    #[test]
+    fn emphasis_from_visual_line_keeps_the_row_text_selected() {
+        let mut editor = make_vim_editor();
+        editor.set_text("hello\nx".to_string());
+        press(&mut editor, "V");
+        editor.apply_text_action(TextAction::Bold);
+        assert_eq!(editor.get_text(), "**hello**\nx");
+        assert_eq!(vim_mode(&editor), EditorMode::Visual);
+        assert_eq!(editor.selection, Some(((0, 2), (0, 7))));
     }
 
     /// Auto-surround over a `V` row wraps the row, matching the highlight.
@@ -5027,38 +5160,32 @@ cccccccc"
         assert_eq!(vim_mode(&editor), EditorMode::Normal);
     }
 
-    /// It must include the char under the cursor (matching the highlight), but
-    /// must NOT mutate the live selection — otherwise repeated right-click copy
-    /// drifts the selection one char wider each time (`((0,0),(0,4))` →
-    /// `(0,5)` → `(0,6)` …).
+    /// Copying a Visual selection from the host (right-click) is the Ctrl-C
+    /// chord: it covers the inclusive range the highlight shows ("hello", see
+    /// `copy_visual_takes_the_inclusive_range_and_leaves_visual`) and leaves
+    /// Visual. That also settles the old drift, where each repeated copy grew
+    /// the live selection one char: after the first copy there is none left
+    /// to grow.
     #[test]
-    fn vim_visual_copy_is_read_only_and_does_not_grow_selection() {
+    fn vim_visual_copy_leaves_visual_and_nothing_to_grow() {
         let mut editor = make_vim_editor();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         editor.set_text("hello world".to_string());
-        editor.handle_input(
-            &InputEvent::Key(key(KeyCode::Char('v'), KeyModifiers::NONE)),
-            &tx,
-        );
-        editor.handle_input(
-            &InputEvent::Key(key(KeyCode::Char('e'), KeyModifiers::NONE)),
-            &tx,
-        );
-        let before = get_ta(&mut editor).selection_range();
-        assert_eq!(before, Some(((0, 0), (0, 4))));
-        // The text copied must cover the inclusive range "hello".
+        press(&mut editor, "ve");
         assert_eq!(
             editor.backend.selection_as_shown(),
             Some(((0, 0), (0, 5))),
-            "copy must read the inclusive range including the cursor char"
+            "the copy reads the inclusive range including the cursor char"
         );
-        // Repeated copy must leave the live selection untouched.
         editor.copy_selection_to_clipboard(&tx);
+        assert_eq!(vim_mode(&editor), EditorMode::Normal);
+        assert_eq!(get_ta(&mut editor).selection_range(), None);
         editor.copy_selection_to_clipboard(&tx);
+        assert_eq!(get_ta(&mut editor).selection_range(), None);
         assert_eq!(
-            get_ta(&mut editor).selection_range(),
-            before,
-            "copy must not move the cursor or grow the live selection"
+            get_ta(&mut editor).cursor(),
+            (0, 0),
+            "at the copied range's start"
         );
     }
 
