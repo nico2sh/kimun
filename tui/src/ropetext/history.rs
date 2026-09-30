@@ -55,6 +55,9 @@ pub(crate) struct Entry {
     pub cursor_after: usize,
     pub anchor_before: Option<usize>,
     pub anchor_after: Option<usize>,
+    /// The buffer's marks, by name, as offsets in `before` and `after`.
+    pub marks_before: Vec<(char, usize)>,
+    pub marks_after: Vec<(char, usize)>,
     /// Bytes of text this entry is responsible for retaining.
     pub retained: usize,
 }
@@ -149,6 +152,7 @@ impl History {
         newest.after = entry.after;
         newest.cursor_after = entry.cursor_after;
         newest.anchor_after = entry.anchor_after;
+        newest.marks_after = entry.marks_after;
         newest.retained += entry.retained;
 
         self.spent += newest.cost();
@@ -244,6 +248,8 @@ mod tests {
             cursor_after: after.len(),
             anchor_before: None,
             anchor_after: None,
+            marks_before: Vec::new(),
+            marks_after: Vec::new(),
             retained: after.len(),
         }
     }

@@ -220,10 +220,99 @@ impl BackendState {
     pub fn sync_mouse_selection(&mut self, has_selection: bool) {
         if let BackendState::Textarea(TextareaBackend {
             input: InputInterpreter::Vim(e),
+            ta,
             ..
         }) = self
         {
-            e.sync_mouse_selection(has_selection);
+            e.sync_mouse_selection(has_selection, ta);
+        }
+    }
+
+    /// The range the vim interpreter's Visual selection covers
+    /// (`VimEngine::visual_range`: whole characters, whole rows for `V`).
+    /// `None` outside Visual and on the other backends.
+    pub fn visual_range(&self) -> Option<((usize, usize), (usize, usize))> {
+        match self {
+            BackendState::Textarea(TextareaBackend {
+                input: InputInterpreter::Vim(e),
+                ta,
+                ..
+            }) => e.visual_range(ta),
+            _ => None,
+        }
+    }
+
+    /// The selection as the user sees it: the Visual range under vim,
+    /// otherwise the buffer's own selection. `None` without one, or on nvim.
+    pub fn selection_as_shown(&self) -> Option<((usize, usize), (usize, usize))> {
+        self.visual_range()
+            .or_else(|| self.as_textarea().and_then(|ta| ta.selection_range()))
+    }
+
+    /// Whether the vim interpreter is in Visual over nothing — an empty row
+    /// (see `VimEngine::visual_is_empty`). `false` elsewhere.
+    pub fn visual_is_empty(&self) -> bool {
+        match self {
+            BackendState::Textarea(TextareaBackend {
+                input: InputInterpreter::Vim(e),
+                ta,
+                ..
+            }) => e.visual_is_empty(ta),
+            _ => false,
+        }
+    }
+
+    /// Copy the vim interpreter's Visual selection and leave Visual (see
+    /// `VimEngine::copy_visual`). `None` outside Visual and on the other
+    /// backends, where the buffer's own selection is what gets copied.
+    pub fn copy_visual(&mut self) -> Option<String> {
+        match self {
+            BackendState::Textarea(TextareaBackend {
+                input: InputInterpreter::Vim(e),
+                ta,
+                ..
+            }) => e.copy_visual(ta),
+            _ => None,
+        }
+    }
+
+    /// A mouse drag from `origin` to `pos` under the vim interpreter (see
+    /// `VimEngine::select_dragged`). `false` where the plain drag selection
+    /// stands: the other backends, and vim's Insert and Replace.
+    pub fn select_dragged(&mut self, origin: (usize, usize), pos: (usize, usize)) -> bool {
+        match self {
+            BackendState::Textarea(TextareaBackend {
+                input: InputInterpreter::Vim(e),
+                ta,
+                ..
+            }) => e.select_dragged(ta, origin, pos),
+            _ => false,
+        }
+    }
+
+    /// Hand the vim interpreter the selection the host just left (see
+    /// `VimEngine::adopt_host_selection`). A no-op for the other backends.
+    pub fn adopt_host_selection(&mut self) {
+        if let BackendState::Textarea(TextareaBackend {
+            input: InputInterpreter::Vim(e),
+            ta,
+            ..
+        }) = self
+        {
+            e.adopt_host_selection(ta);
+        }
+    }
+
+    /// Let the vim interpreter record the live Visual selection for `gv`
+    /// before the host edits it away. A no-op for the other backends.
+    pub fn conclude_visual(&mut self) {
+        if let BackendState::Textarea(TextareaBackend {
+            input: InputInterpreter::Vim(e),
+            ta,
+            ..
+        }) = self
+        {
+            e.conclude_visual(ta);
         }
     }
 
@@ -234,15 +323,6 @@ impl BackendState {
         matches!(self,
             BackendState::Textarea(TextareaBackend { input: InputInterpreter::Vim(e), .. })
             if e.space_leads())
-    }
-
-    /// True when the current selection visually includes the char under the
-    /// cursor, so the highlight path extends the end col by one. Only the vim
-    /// interpreter's charwise Visual mode (not VisualLine) selects this way.
-    pub fn selection_includes_cursor(&self) -> bool {
-        matches!(self,
-            BackendState::Textarea(TextareaBackend { input: InputInterpreter::Vim(e), .. })
-            if *e.mode() == EditorMode::Visual)
     }
 
     /// True when the vim interpreter is in linewise Visual (`V`). The
@@ -263,6 +343,7 @@ impl BackendState {
             ..
         }) = self
         {
+            // The buffer's marks went with its text (`RopeBuffer::replace`).
             engine.reset_to_normal();
         }
     }

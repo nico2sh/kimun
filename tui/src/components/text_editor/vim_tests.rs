@@ -1006,6 +1006,116 @@ fn pending_hint_shows_operator_and_count() {
 
 // ── Dot-repeat tests ─────────────────────────────────────────────────────
 
+/// vim: `.` after a Visual `>` over N rows shifts N rows again, starting at
+/// the cursor — which the `>` left on the first selected row.
+#[test]
+fn dot_repeats_visual_indent_over_the_same_rows() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("one\ntwo\nthree"));
+    for c in ['V', 'j', '>', '.'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["        one", "        two", "three"]);
+}
+
+/// `gv` reselects the last Visual selection — mode, anchor and cursor end —
+/// so `>` can be pressed again on the same rows.
+#[test]
+fn gv_reselects_the_last_visual_selection() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("one\ntwo\nthree"));
+    for c in ['j', 'V', 'k', '>'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(*e.mode(), EditorMode::Normal);
+    e.handle_key(&key('G'), &mut t);
+    e.handle_key(&key('g'), &mut t);
+    e.handle_key(&key('v'), &mut t);
+    assert_eq!(*e.mode(), EditorMode::VisualLine);
+    assert_eq!(t.cursor().0, 0, "cursor back on the end it was on");
+    e.handle_key(&key('>'), &mut t);
+    assert_eq!(t.rows(), &["        one", "        two", "three"]);
+}
+
+#[test]
+fn gv_keeps_charwise_mode_and_endpoints() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("hello world"));
+    for c in ['w', 'v', 'l', 'l'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    let selected = t.selection_range();
+    e.handle_key(&esc(), &mut t);
+    e.handle_key(&key('0'), &mut t);
+    e.handle_key(&key('g'), &mut t);
+    e.handle_key(&key('v'), &mut t);
+    assert_eq!(*e.mode(), EditorMode::Visual);
+    assert_eq!(t.selection_range(), selected);
+    assert_eq!(t.cursor(), (0, 8));
+}
+
+/// With no earlier selection there is nothing to reselect.
+#[test]
+fn gv_without_a_previous_selection_does_nothing() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("one"));
+    e.handle_key(&key('g'), &mut t);
+    e.handle_key(&key('v'), &mut t);
+    assert_eq!(*e.mode(), EditorMode::Normal);
+    assert!(t.selection_range().is_none());
+}
+
+/// A reselection past the end of a buffer that has since shrunk lands on
+/// what is still there rather than failing.
+#[test]
+fn gv_clamps_to_a_shrunken_buffer() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("one\ntwo\nthree"));
+    for c in ['j', 'j', '$', 'v', 'h'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    e.handle_key(&esc(), &mut t);
+    for c in ['d', 'd', 'd', 'd'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["one"]);
+    e.handle_key(&key('g'), &mut t);
+    e.handle_key(&key('v'), &mut t);
+    assert_eq!(*e.mode(), EditorMode::Visual);
+    assert_eq!(t.cursor().0, 0);
+}
+
+/// In Visual, `gv` swaps the live selection with the previous one (vim).
+#[test]
+fn gv_in_visual_swaps_with_the_previous_selection() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("one\ntwo\nthree"));
+    e.handle_key(&key('V'), &mut t);
+    e.handle_key(&esc(), &mut t);
+    for c in ['G', 'v', 'l'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    let second = t.selection_range();
+    e.handle_key(&key('g'), &mut t);
+    e.handle_key(&key('v'), &mut t);
+    assert_eq!(*e.mode(), EditorMode::VisualLine);
+    assert_eq!(t.cursor().0, 0);
+    e.handle_key(&key('g'), &mut t);
+    e.handle_key(&key('v'), &mut t);
+    assert_eq!(*e.mode(), EditorMode::Visual);
+    assert_eq!(t.selection_range(), second);
+}
+
+#[test]
+fn dot_repeats_visual_outdent_over_the_same_rows() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("        one\n        two\nthree"));
+    for c in ['j', 'V', 'k', '<', '.'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["one", "two", "three"]);
+}
+
 #[test]
 fn dot_repeats_x() {
     let mut e = VimEngine::default();
@@ -1124,16 +1234,17 @@ fn n_and_N_emit_search_nav() {
 #[test]
 fn mouse_selection_enters_and_leaves_visual() {
     let mut e = VimEngine::default();
-    e.sync_mouse_selection(true);
+    let mut t = ta();
+    e.sync_mouse_selection(true, &mut t);
     assert_eq!(*e.mode(), EditorMode::Visual);
-    e.sync_mouse_selection(false);
+    e.sync_mouse_selection(false, &mut t);
     assert_eq!(*e.mode(), EditorMode::Normal);
 }
 
 #[test]
 fn mouse_no_selection_in_normal_stays_normal() {
     let mut e = VimEngine::default();
-    e.sync_mouse_selection(false);
+    e.sync_mouse_selection(false, &mut ta());
     assert_eq!(*e.mode(), EditorMode::Normal);
 }
 
@@ -1142,7 +1253,7 @@ fn mouse_does_not_disturb_insert() {
     let mut e = VimEngine::default();
     let mut t = RopeBuffer::new(Text::from("x"));
     e.handle_key(&key('i'), &mut t); // Insert
-    e.sync_mouse_selection(true);
+    e.sync_mouse_selection(true, &mut t);
     assert_eq!(*e.mode(), EditorMode::Insert); // mouse doesn't yank Insert into Visual
 }
 
@@ -2613,4 +2724,748 @@ fn tilde_keeps_the_rest_of_the_cluster() {
         &["E\u{301}f"],
         "toggling case must not drop the combining acute"
     );
+}
+
+/// vim: a charwise selection shifts every row it touches, mid-row ends and all.
+#[test]
+fn charwise_visual_indent_shifts_the_touched_rows() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("one\ntwo\nthree"));
+    for c in ['l', 'v', 'j', '>'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["    one", "    two", "three"]);
+    assert_eq!(*e.mode(), EditorMode::Normal);
+}
+
+#[test]
+fn charwise_visual_indent_within_one_row() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("one two"));
+    for c in ['w', 'v', 'l', '>'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["    one two"]);
+}
+
+// ── Visual operators replay through `.` ──────────────────────────────────
+//
+// Every Visual operator is a `Command` over the selection's extent, so `.`
+// repeats it at the cursor on a region of the same shape (vim): as many lines
+// linewise, as many chars on one row, and across rows the same row span
+// ending at the same column.
+
+#[test]
+fn dot_repeats_visual_line_delete_not_an_older_change() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("a\nb\nc\nd\ne\nf"));
+    for c in ['V', '>'] {
+        e.handle_key(&key(c), &mut t); // an older change in `.`
+    }
+    for c in ['j', 'V', 'j', 'd', '.'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["    a", "f"]);
+}
+
+#[test]
+fn dot_repeats_charwise_visual_delete_same_width() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("abcdef ghijkl"));
+    for c in ['v', 'l', 'l', 'd', 'w', '.'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["def jkl"]);
+}
+
+#[test]
+fn dot_repeats_multirow_charwise_delete_same_shape() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("abcd\nefgh\nijkl\nmnop"));
+    // `l v j` selects "bcd\nef" — one row down, ending at column 1.
+    for c in ['l', 'v', 'j', 'd'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["agh", "ijkl", "mnop"]);
+    for c in ['j', '.'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["agh", "iop"]);
+}
+
+#[test]
+fn dot_repeats_visual_case_ops() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("abc def"));
+    for c in ['v', 'l', 'U', 'w', '.'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["ABc DEf"]);
+}
+
+#[test]
+fn dot_repeats_visual_join() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("a\nb\nc\nd\ne\nf"));
+    for c in ['V', 'j', 'j', 'J', 'j', '.'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["a b c", "d e f"]);
+}
+
+/// A Visual yank is not a change: `.` keeps repeating the change before it.
+#[test]
+fn visual_yank_leaves_the_dot_register_alone() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("abcdef"));
+    for c in ['x', 'v', 'l', 'y', '.'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["cdef"]);
+}
+
+/// vim: a count before Visual `>` shifts that many steps, and `.` repeats
+/// the same number of steps.
+#[test]
+fn visual_indent_takes_a_count() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("a\nb\nc"));
+    t.set_indent_width(2);
+    for c in ['V', 'j', '3', '>'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["      a", "      b", "c"]);
+    e.handle_key(&key('.'), &mut t);
+    assert_eq!(t.rows(), &["            a", "            b", "c"]);
+    e.handle_key(&key('u'), &mut t);
+    assert_eq!(
+        t.rows(),
+        &["      a", "      b", "c"],
+        "a counted shift is one undo"
+    );
+}
+
+/// vim: `.` repeats a Visual `p` over a same-shaped region, putting what the
+/// register holds by then — the text the first `p` swapped out.
+#[test]
+fn dot_repeats_visual_put() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("foo bar baz"));
+    for c in ['y', 'i', 'w', 'w', 'v', 'e', 'p'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["foo foo baz"]);
+    for c in ['w', '.'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["foo foo bar"]);
+}
+
+// ── Visual pending state resolves first ─────────────────────────────────
+
+/// A pending `g` takes the next key, whatever it is — `o` must not slip past
+/// it and leave the `g` waiting to swallow the key after.
+#[test]
+fn visual_g_then_unmapped_key_does_not_linger() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("one\ntwo\nthree"));
+    for c in ['v', 'g', 'o', 'j'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.cursor().0, 1, "`j` after the aborted `go` must move");
+    assert_eq!(e.pending_hint(), None);
+}
+
+/// Arrow keys take a pending count, like the letter motions, and leave none
+/// behind.
+#[test]
+fn visual_arrow_uses_the_count() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("a\nb\nc\nd\ne\nf"));
+    e.handle_key(&key('v'), &mut t);
+    e.handle_key(&key('2'), &mut t);
+    e.handle_key(&KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &mut t);
+    assert_eq!(t.cursor().0, 2);
+    e.handle_key(&key('j'), &mut t);
+    assert_eq!(t.cursor().0, 3, "no count left over for `j`");
+}
+
+#[test]
+fn visual_o_clears_a_pending_count() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("a\nb\nc\nd\ne\nf"));
+    for c in ['v', 'j', '3', 'o', 'j'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.cursor().0, 1, "`o` swallows the count; `j` moves one row");
+}
+
+// ── g-commands that are not motions abort a pending operator ────────────
+
+#[test]
+fn operator_then_gv_aborts() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("one\ntwo"));
+    e.handle_key(&key('V'), &mut t);
+    e.handle_key(&esc(), &mut t);
+    for c in ['d', 'g', 'v'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(*e.mode(), EditorMode::Normal);
+    assert!(t.selection_range().is_none());
+    e.handle_key(&key('j'), &mut t);
+    assert_eq!(t.rows(), &["one", "two"], "the `d` is gone, not pending");
+}
+
+#[test]
+fn operator_then_gj_join_aborts() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("one\ntwo"));
+    for c in ['d', 'g', 'J'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["one", "two"]);
+}
+
+// ── `gv` remembers the selection Visual really ended with ─────────────────
+
+/// A note switch resets the engine; the old note's selection must not be
+/// reselected in the new one.
+#[test]
+fn reset_forgets_the_last_visual_selection() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("one\ntwo"));
+    e.handle_key(&key('V'), &mut t);
+    e.handle_key(&esc(), &mut t);
+    e.reset_to_normal();
+    e.handle_key(&key('g'), &mut t);
+    e.handle_key(&key('v'), &mut t);
+    assert_eq!(*e.mode(), EditorMode::Normal);
+    assert!(t.selection_range().is_none());
+}
+
+/// A selection made with the mouse is the last Visual selection once the
+/// mouse clears it.
+#[test]
+fn gv_reselects_a_mouse_selection() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("hello world"));
+    t.jump_to(0, 1);
+    t.start_selection();
+    t.jump_to(0, 4);
+    e.sync_mouse_selection(true, &mut t);
+    assert_eq!(*e.mode(), EditorMode::Visual);
+    let dragged = t.selection_range();
+    // A click elsewhere: the host drops the selection, then syncs.
+    t.cancel_selection();
+    t.jump_to(0, 8);
+    e.sync_mouse_selection(false, &mut t);
+    assert_eq!(*e.mode(), EditorMode::Normal);
+    e.handle_key(&key('g'), &mut t);
+    e.handle_key(&key('v'), &mut t);
+    assert_eq!(t.selection_range(), dragged);
+}
+
+/// A keyboard selection cleared by a mouse click is still what `gv` brings
+/// back — the click happened before the engine could see the selection go.
+#[test]
+fn gv_reselects_a_keyboard_selection_a_click_cleared() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("hello world"));
+    for c in ['v', 'l', 'l'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    let selected = t.selection_range();
+    t.cancel_selection();
+    t.jump_to(0, 8);
+    e.sync_mouse_selection(false, &mut t);
+    e.handle_key(&key('g'), &mut t);
+    e.handle_key(&key('v'), &mut t);
+    assert_eq!(t.selection_range(), selected);
+}
+
+// ── `gv` follows the text it selected ─────────────────────────────────────
+//
+// vim's `'<` `'>` marks move with the text: rows added or removed above the
+// selection carry it along, and `gv` reselects the same text, not the same
+// numbers.
+
+#[test]
+fn gv_follows_rows_deleted_above() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("a\nb\nc\nd"));
+    for c in ['j', 'j', 'V', 'j'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    e.handle_key(&esc(), &mut t);
+    for c in ['g', 'g', 'd', 'd', 'g', 'v', '>'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["b", "    c", "    d"]);
+}
+
+#[test]
+fn gv_follows_rows_inserted_above() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("a\nb\nc"));
+    for c in ['j', 'V'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    e.handle_key(&esc(), &mut t);
+    for c in ['g', 'g', 'O', 'x'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    t.insert_str("x");
+    e.handle_key(&esc(), &mut t);
+    for c in ['g', 'v', '>'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["x", "a", "    b", "c"]);
+}
+
+/// Charwise, text typed before the selection on its own row carries it right.
+#[test]
+fn gv_follows_text_typed_before_it_on_the_row() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("hello world"));
+    for c in ['w', 'v', 'e'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    e.handle_key(&esc(), &mut t);
+    for c in ['0', 'i'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    t.insert_str("XX");
+    e.handle_key(&esc(), &mut t);
+    for c in ['g', 'v', 'd'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["XXhello "]);
+}
+
+/// Undo puts the rows back, and the selection moves back with them.
+#[test]
+fn gv_follows_an_undo() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("a\nb\nc\nd"));
+    for c in ['j', 'j', 'V', 'j'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    e.handle_key(&esc(), &mut t);
+    for c in ['g', 'g', 'd', 'd', 'u', 'g', 'v', '>'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["a", "b", "    c", "    d"]);
+}
+
+/// Deleting the selected text itself leaves `gv` something valid to select.
+#[test]
+fn gv_after_its_text_is_deleted_stays_in_bounds() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("a\nb\nc"));
+    for c in ['j', 'V', 'j'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    e.handle_key(&esc(), &mut t);
+    for c in ['k', 'd', 'j', 'g', 'v'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["a"]);
+    assert_eq!(*e.mode(), EditorMode::VisualLine);
+    assert_eq!(t.cursor().0, 0);
+}
+
+// ── `gv` marks are taken before the edit that ends Visual ────────────────
+
+/// A Visual delete ends Visual by removing rows the selection named; `gv`
+/// must reselect where that text was, in the mode it was selected in — not
+/// fall back to an older selection whose marks the new ones failed to replace.
+#[test]
+fn gv_after_a_visual_delete_uses_that_selection() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("a\nb\nc\nd"));
+    for c in ['v', 'l'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    e.handle_key(&esc(), &mut t); // older charwise marks on row 0
+    for c in ['G', 'V', 'k', 'd', 'g', 'v'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["a", "b"]);
+    assert_eq!(*e.mode(), EditorMode::VisualLine);
+    assert_eq!(t.cursor().0, 1, "where the deleted rows were, not row 0");
+}
+
+/// Charwise: the deleted span collapses to where it began; `gv` lands there,
+/// not at the coordinates the span had before the delete.
+#[test]
+fn gv_after_a_charwise_delete_lands_where_the_text_was() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("abcdef"));
+    for c in ['l', 'l', 'v', 'l', 'd', 'g', 'v'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["abef"]);
+    assert_eq!(*e.mode(), EditorMode::Visual);
+    assert_eq!(t.cursor(), (0, 2));
+}
+
+// ── Visual `p` ────────────────────────────────────────────────────────────
+
+/// With nothing to put, Visual `p` changes nothing and must not become the
+/// change `.` repeats.
+#[test]
+fn visual_put_with_an_empty_register_keeps_the_dot_change() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("a\nb"));
+    for c in ['>', '>', 'j', 'v', 'p'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(*e.mode(), EditorMode::Normal);
+    assert_eq!(t.rows(), &["    a", "b"]);
+    e.handle_key(&key('.'), &mut t);
+    assert_eq!(t.rows(), &["    a", "    b"]);
+}
+
+/// One Visual `p` is one undo, charwise and linewise.
+#[test]
+fn visual_put_undoes_in_one_step() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("bye hello"));
+    for c in ['y', 'i', 'w', 'w', 'v', 'i', 'w', 'p'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["bye bye"]);
+    e.handle_key(&key('u'), &mut t);
+    assert_eq!(t.rows(), &["bye hello"]);
+
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("one\ntwo"));
+    for c in ['y', 'y', 'j', 'V', 'p'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["one", "one"]);
+    e.handle_key(&key('u'), &mut t);
+    assert_eq!(t.rows(), &["one", "two"]);
+}
+
+// ── Multi-codepoint characters (grapheme clusters) ───────────────────────
+//
+// One character on screen can be several chars in the buffer: ❤️ is
+// U+2764 U+FE0F, 👍🏽 a base plus a skin-tone modifier, a decomposed é an `e`
+// plus U+0301. Visual mode selects, operates on, measures and remembers whole
+// characters — never half of one.
+
+#[test]
+fn visual_delete_takes_the_whole_emoji_under_the_cursor() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("a❤️b"));
+    for c in ['l', 'v', 'd'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["ab"]);
+    e.handle_key(&key('p'), &mut t);
+    assert_eq!(t.rows(), &["ab❤️"], "the register holds the whole emoji");
+}
+
+#[test]
+fn visual_selection_ending_on_a_modified_emoji_takes_all_of_it() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("x👍🏽y"));
+    for c in ['v', 'l', 'd'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["y"]);
+}
+
+#[test]
+fn visual_delete_takes_a_decomposed_accent_with_its_letter() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("e\u{301}x"));
+    for c in ['v', 'd'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["x"]);
+}
+
+#[test]
+fn visual_case_op_keeps_the_combining_mark() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("e\u{301}x"));
+    for c in ['v', 'U'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["E\u{301}x"]);
+}
+
+/// `.` measures a one-row selection in characters, so replaying it over
+/// plain text takes as many characters — not as many chars of the buffer.
+#[test]
+fn dot_replays_a_visual_delete_by_characters_not_codepoints() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("❤️x abc"));
+    for c in ['v', 'l', 'd', 'w', '.'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &[" c"]);
+}
+
+/// A replayed multi-row selection whose end column falls inside a character
+/// takes that whole character.
+#[test]
+fn dot_replay_ending_inside_an_emoji_takes_all_of_it() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("ab\ncd\nef\n❤️z"));
+    for c in ['v', 'j', 'l', 'd'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["", "ef", "❤️z"]);
+    for c in ['j', '.'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["", "z"]);
+}
+
+#[test]
+fn visual_range_covers_whole_characters() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("a❤️b\nx👍🏽"));
+    for c in ['l', 'v'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(e.visual_range(&t), Some(((0, 1), (0, 3))));
+    for c in ['j', 'l'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(e.visual_range(&t), Some(((0, 1), (1, 3))));
+}
+
+/// A combining mark typed right after a mark joins the character before it;
+/// the mark must still name a whole character (the next one, like the
+/// cursor), and `gv` must reselect without tripping over it.
+#[test]
+fn gv_survives_a_combining_mark_typed_at_its_mark() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("ex"));
+    for c in ['l', 'v'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    e.handle_key(&esc(), &mut t);
+    e.handle_key(&key('i'), &mut t);
+    t.insert_str("\u{301}");
+    e.handle_key(&esc(), &mut t);
+    assert_eq!(t.rows(), &["e\u{301}x"]);
+    for c in ['g', 'v'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(*e.mode(), EditorMode::Visual);
+    assert_eq!(t.selection_range(), Some(((0, 2), (0, 2))));
+}
+
+/// A join can fuse two characters: a row that starts with a bare combining
+/// mark attaches it to the last letter of the row above. A mark on that bare
+/// accent must move on to a whole character, and `gv` reselect without
+/// tripping over it.
+#[test]
+fn gv_survives_a_join_that_fuses_characters_at_its_mark() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("x\n\u{301}y"));
+    for c in ['j', 'v'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    e.handle_key(&esc(), &mut t);
+    for c in ['k', 'g', 'J'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["x\u{301}y"]);
+    for c in ['g', 'v'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(*e.mode(), EditorMode::Visual);
+    assert_eq!(t.selection_range(), Some(((0, 2), (0, 2))));
+}
+
+#[test]
+fn paste_after_an_emoji_goes_after_all_of_it() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("a❤️"));
+    for c in ['x', 'p'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["❤️a"]);
+}
+
+#[test]
+fn till_stops_on_the_emoji_before_the_target() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("a👍🏽x"));
+    for c in ['t', 'x'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.cursor(), (0, 1));
+}
+
+#[test]
+fn till_backward_stops_on_the_emoji_after_the_target() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("x❤️b"));
+    for c in ['$', 'T', 'x'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.cursor(), (0, 1));
+}
+
+#[test]
+fn find_forward_starts_past_the_emoji_under_the_cursor() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("❤️\u{fe0f}"));
+    // U+FE0F is inside the cursor's own character; `f` must look past it.
+    for c in ['f', '\u{fe0f}'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.cursor(), (0, 0));
+}
+
+#[test]
+fn replace_char_swaps_a_whole_emoji() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("a❤️b"));
+    for c in ['l', 'r', 'z'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["azb"]);
+}
+
+// ── Linewise Visual `p` at the end of the buffer ─────────────────────────
+
+/// Over the last row, the put lands where that row was — not above the row
+/// before it.
+#[test]
+fn visual_line_put_over_the_last_row_stays_in_place() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("a\nb\nc"));
+    for c in ['y', 'y', 'G', 'V', 'p'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["a", "b", "a"]);
+    assert_eq!(t.cursor().0, 2);
+}
+
+/// Over every row, the put is the whole buffer — no stray empty row after.
+#[test]
+fn visual_line_put_over_the_whole_buffer_leaves_no_extra_row() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("one"));
+    for c in ['y', 'y', 'V', 'p'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["one"]);
+}
+
+#[test]
+fn visual_line_put_of_several_lines_over_the_last_rows() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("a\nb\nc\nd"));
+    for c in ['y', 'j', 'G', 'V', 'k', 'p'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["a", "b", "a", "b"]);
+    assert_eq!(t.cursor().0, 2, "on the first pasted row");
+}
+
+// ── Copy, shared by Ctrl-C and the host ───────────────────────────────────
+
+#[test]
+fn copy_visual_takes_the_inclusive_range_and_leaves_visual() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("hello world"));
+    for c in ['v', 'e'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(e.copy_visual(&mut t).as_deref(), Some("hello"));
+    assert_eq!(*e.mode(), EditorMode::Normal);
+    assert!(t.selection_range().is_none());
+}
+
+#[test]
+fn copy_visual_of_an_empty_line_is_a_newline() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("a\n\nb"));
+    for c in ['j', 'V'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(e.copy_visual(&mut t).as_deref(), Some("\n"));
+}
+
+/// A row far longer than a screen: the character-counting helpers must
+/// still get it right (and not rescan the row per character).
+#[test]
+fn visual_operators_on_a_very_long_row() {
+    let mut e = VimEngine::default();
+    let row: String = "ab❤️".repeat(5000);
+    let mut t = RopeBuffer::new(Text::from(format!("{row}\n{row}").as_str()));
+    for c in ['v', '$', 'd'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows()[0], "");
+    for c in ['j', '.'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows()[1], "");
+}
+
+// ── `gv` across undo and redo ─────────────────────────────────────────────
+//
+// vim saves the Visual marks with each change and puts them back on undo:
+// undoing a Visual delete brings back both the text and the selection `gv`
+// reselects.
+
+#[test]
+fn gv_after_undoing_a_visual_delete_reselects_its_rows() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("a\nb\nc\nd"));
+    for c in ['j', 'V', 'j', 'd', 'u', 'g', 'v'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["a", "b", "c", "d"]);
+    assert_eq!(*e.mode(), EditorMode::VisualLine);
+    let ((sr, _), (er, _)) = t.selection_range().expect("gv selected");
+    assert_eq!((sr, er), (1, 2));
+}
+
+#[test]
+fn gv_after_redo_follows_the_redone_delete() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("a\nb\nc\nd"));
+    for c in ['j', 'V', 'j', 'd', 'u'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    e.handle_key(
+        &KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+        &mut t,
+    );
+    assert_eq!(t.rows(), &["a", "d"]);
+    for c in ['g', 'v'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.cursor().0, 1, "where the deleted rows were");
+}
+
+/// A selection made after a change is not part of that change: undoing it
+/// keeps the selection `gv` restores (vim keeps a mark the change never saw).
+#[test]
+fn undo_keeps_a_selection_made_after_the_change() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("ab\ncd\nef"));
+    e.handle_key(&key('x'), &mut t);
+    for c in ['j', 'V', 'j'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    e.handle_key(&esc(), &mut t);
+    for c in ['u', 'g', 'v'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["ab", "cd", "ef"]);
+    let ((sr, _), (er, _)) = t.selection_range().expect("gv selected");
+    assert_eq!((sr, er), (1, 2));
 }
