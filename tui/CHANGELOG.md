@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.4](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.24.3...kimun-notes-v0.24.4) - 2026-09-30
+
+### Added
+
+- gv repeats selection
+
+### Fixed
+
+- gv works with undo and redo
+- right click copy and ctrl+C follow same path
+- behavior on last line visual paste
+- note identity by path not text
+- possible issues with multibyte chars
+- image pasting properly replaces selected text
+- small bugs
+- gv follows text selection
+- gv is cleared on switching notes
+- visual changes are repeatable with . in vim mode
+- repeat visual commands with
+
+### Other
+
+- tests
+
 ## [0.24.3](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.24.2...kimun-notes-v0.24.3) - 2026-09-27
 
 ### Added
