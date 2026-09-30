@@ -646,20 +646,93 @@ impl RopeBuffer {
     /// cursor" is a grapheme cluster, and only its edges are positions the
     /// buffer accepts. A column inside a cluster belongs to that cluster; one at
     /// or past the row's end gives the row's end twice.
+    ///
+    /// The edges are the text's own ([`motion::next_cluster`]), so this can
+    /// never call a column an edge that the buffer would then refuse.
     pub fn cluster_at(&self, row: usize, col: usize) -> (usize, usize) {
-        use unicode_segmentation::UnicodeSegmentation;
-        let Some(line) = self.row(row) else {
+        let text = self.inner.text();
+        let Some(len) = text.line_len_chars(row) else {
             return (col, col);
         };
+        if col >= len {
+            return (len, len);
+        }
+        // The nearest edge at or before `col` — a cluster is a few chars, so
+        // this walks back a few at most.
+        let Some(start) = (0..=col)
+            .rev()
+            .find_map(|c| text.position(row, Column::new(c)))
+        else {
+            return (col, col);
+        };
+        (start.column().get(), Self::next_edge(text, start, len))
+    }
+
+    /// How many characters (grapheme clusters) columns `from..=to` of `row`
+    /// span. At least one.
+    ///
+    /// One segmentation pass over the row — the same Unicode rule the text
+    /// applies, over the same row, so the two agree on every edge inside it.
+    /// Stepping [`motion::next_cluster`] per character instead is correct but
+    /// re-checks context at every step, which on a paragraph-long row is a
+    /// visible stall.
+    pub fn clusters_through(&self, row: usize, from: usize, to: usize) -> usize {
+        use unicode_segmentation::UnicodeSegmentation;
+        let Some(line) = self.row(row) else {
+            return 1;
+        };
         let mut start = 0;
+        let mut count = 0;
         for cluster in line.graphemes(true) {
             let end = start + cluster.chars().count();
-            if col < end {
-                return (start, end);
+            if start > to {
+                break;
+            }
+            if end > from {
+                count += 1;
             }
             start = end;
         }
-        (start, start)
+        count.max(1)
+    }
+
+    /// The column `n` characters right of the character at `col` on `row`,
+    /// stopping at the row's last character. One pass, as
+    /// [`Self::clusters_through`].
+    pub fn col_after_clusters(&self, row: usize, col: usize, n: usize) -> usize {
+        use unicode_segmentation::UnicodeSegmentation;
+        let Some(line) = self.row(row) else {
+            return col;
+        };
+        // Starts of the character holding `col` and of every one after it.
+        let mut starts = line
+            .graphemes(true)
+            .scan(0, |at, cluster| {
+                let start = *at;
+                *at += cluster.chars().count();
+                Some((start, *at))
+            })
+            .skip_while(|&(_, end)| end <= col)
+            .map(|(start, _)| start);
+        let Some(mut at) = starts.next() else {
+            // `col` is at or past the row's end.
+            return line.chars().count();
+        };
+        for next in starts.take(n) {
+            at = next;
+        }
+        at
+    }
+
+    /// The column where the character starting at `at` ends, on its own row
+    /// (a row of `len` chars).
+    fn next_edge(text: &Text, at: Position, len: usize) -> usize {
+        let next = motion::next_cluster(text, at);
+        if next.row() == at.row() && next.byte() > at.byte() {
+            next.column().get()
+        } else {
+            len
+        }
     }
 
     // ── Marks ────────────────────────────────────────────────────────────────
