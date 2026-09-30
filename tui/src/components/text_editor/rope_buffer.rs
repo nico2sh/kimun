@@ -581,6 +581,125 @@ impl RopeBuffer {
         self.record(change)
     }
 
+    /// The character at column `col` of `row`, as its start and end columns.
+    ///
+    /// One character on screen can be several chars in the buffer — `❤️` is
+    /// two, a decomposed `é` is `e` plus U+0301 — so "the char under the
+    /// cursor" is a grapheme cluster, and only its edges are positions the
+    /// buffer accepts. A column inside a cluster belongs to that cluster; one at
+    /// or past the row's end gives the row's end twice.
+    ///
+    /// The edges are the text's own ([`motion::next_cluster`]), so this can
+    /// never call a column an edge that the buffer would then refuse.
+    pub fn cluster_at(&self, row: usize, col: usize) -> (usize, usize) {
+        let text = self.inner.text();
+        let Some(len) = text.line_len_chars(row) else {
+            return (col, col);
+        };
+        if col >= len {
+            return (len, len);
+        }
+        // The nearest edge at or before `col` — a cluster is a few chars, so
+        // this walks back a few at most.
+        let Some(start) = (0..=col)
+            .rev()
+            .find_map(|c| text.position(row, Column::new(c)))
+        else {
+            return (col, col);
+        };
+        (start.column().get(), Self::next_edge(text, start, len))
+    }
+
+    /// How many characters (grapheme clusters) columns `from..=to` of `row`
+    /// span. At least one.
+    ///
+    /// One segmentation pass over the row — the same Unicode rule the text
+    /// applies, over the same row, so the two agree on every edge inside it.
+    /// Stepping [`motion::next_cluster`] per character instead is correct but
+    /// re-checks context at every step, which on a paragraph-long row is a
+    /// visible stall.
+    pub fn clusters_through(&self, row: usize, from: usize, to: usize) -> usize {
+        use unicode_segmentation::UnicodeSegmentation;
+        let Some(line) = self.row(row) else {
+            return 1;
+        };
+        let mut start = 0;
+        let mut count = 0;
+        for cluster in line.graphemes(true) {
+            let end = start + cluster.chars().count();
+            if start > to {
+                break;
+            }
+            if end > from {
+                count += 1;
+            }
+            start = end;
+        }
+        count.max(1)
+    }
+
+    /// The column `n` characters right of the character at `col` on `row`,
+    /// stopping at the row's last character. One pass, as
+    /// [`Self::clusters_through`].
+    pub fn col_after_clusters(&self, row: usize, col: usize, n: usize) -> usize {
+        use unicode_segmentation::UnicodeSegmentation;
+        let Some(line) = self.row(row) else {
+            return col;
+        };
+        // Starts of the character holding `col` and of every one after it.
+        let mut starts = line
+            .graphemes(true)
+            .scan(0, |at, cluster| {
+                let start = *at;
+                *at += cluster.chars().count();
+                Some((start, *at))
+            })
+            .skip_while(|&(_, end)| end <= col)
+            .map(|(start, _)| start);
+        let Some(mut at) = starts.next() else {
+            // `col` is at or past the row's end.
+            return line.chars().count();
+        };
+        for next in starts.take(n) {
+            at = next;
+        }
+        at
+    }
+
+    /// The column where the character starting at `at` ends, on its own row
+    /// (a row of `len` chars).
+    fn next_edge(text: &Text, at: Position, len: usize) -> usize {
+        let next = motion::next_cluster(text, at);
+        if next.row() == at.row() && next.byte() > at.byte() {
+            next.column().get()
+        } else {
+            len
+        }
+    }
+
+    // ── Marks ────────────────────────────────────────────────────────────────
+
+    /// Put mark `name` at `(row, col)`. `false`, setting nothing, when the
+    /// buffer has no such position.
+    ///
+    /// From here on the mark follows the text it points at: rows added or
+    /// removed above it carry it along, text typed before it on its row pushes
+    /// it right, and deleting the text under it collapses it to where the
+    /// deletion began. Undo and redo put it back where it was before and after
+    /// each change. The edit buffer owns the marks, beside the cursor and the
+    /// history that saves them.
+    pub fn set_mark(&mut self, name: char, (row, col): (usize, usize)) -> bool {
+        let Some(at) = self.inner.text().position(row, Column::new(col)) else {
+            return false;
+        };
+        self.inner.set_mark(name, at)
+    }
+
+    /// Where mark `name` points now, if it is set.
+    pub fn mark(&self, name: char) -> Option<(usize, usize)> {
+        self.inner.mark(name).map(|m| (m.row(), m.column().get()))
+    }
+
     // ── Cursor and selection ─────────────────────────────────────────────────
 
     /// Move the cursor, extending a live selection.
@@ -1312,5 +1431,62 @@ mod indent_tests {
         let damage = outcome.damage.expect("the edits were reported");
         assert!(damage.contains(&1) && damage.contains(&2), "{damage:?}");
         assert_eq!(outcome.line_delta, 0);
+    }
+}
+
+#[cfg(test)]
+mod mark_tests {
+    use super::*;
+    use crate::ropetext::Text;
+
+    /// A mark keeps pointing at its text: rows added above carry it down,
+    /// text typed before it on its row carries it right, and deleting the
+    /// rows above brings it back up.
+    #[test]
+    fn marks_follow_the_text() {
+        let mut t = RopeBuffer::new(Text::from("one\ntwo"));
+        assert!(t.set_mark('<', (1, 1)));
+        t.jump_to(0, 0);
+        t.insert_str("zero\n");
+        assert_eq!(t.mark('<'), Some((2, 1)));
+        t.jump_to(2, 0);
+        t.insert_str("XX");
+        assert_eq!(t.mark('<'), Some((2, 3)));
+        t.jump_to(0, 0);
+        t.start_selection();
+        t.jump_to(1, 0);
+        t.cut();
+        assert_eq!(t.mark('<'), Some((1, 3)));
+    }
+
+    /// Undo swaps the text in whole; the mark still lands on its rows.
+    #[test]
+    fn marks_follow_undo_and_a_new_text_drops_them() {
+        let mut t = RopeBuffer::new(Text::from("a\nb\nc"));
+        t.set_mark('>', (2, 0));
+        t.jump_to(0, 0);
+        t.insert_str("x\n");
+        assert_eq!(t.mark('>'), Some((3, 0)));
+        t.undo();
+        assert_eq!(t.mark('>'), Some((2, 0)));
+        t.replace(Text::from("other"));
+        assert_eq!(t.mark('>'), None);
+    }
+
+    /// An undo can restore a row whose characters sit differently: a mark
+    /// whose column now falls inside an emoji moves on to the next whole
+    /// character, as a mapped one does — not back to column 0.
+    #[test]
+    fn a_mark_undo_leaves_inside_a_character_moves_to_the_next() {
+        let mut t = RopeBuffer::new(Text::from("ab❤️x"));
+        t.jump_to(0, 2);
+        t.start_selection();
+        t.jump_to(0, 4);
+        t.cut();
+        assert_eq!(t.rows(), &["abx"]);
+        assert!(t.set_mark('<', (0, 3)));
+        t.undo();
+        assert_eq!(t.rows(), &["ab❤️x"]);
+        assert_eq!(t.mark('<'), Some((0, 4)));
     }
 }

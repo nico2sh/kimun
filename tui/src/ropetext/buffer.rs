@@ -1,5 +1,6 @@
 //! The edit buffer: text, cursor, selection and history as one thing.
 
+use std::collections::BTreeMap;
 use std::ops::Range;
 
 use crate::ropetext::change::{Change, Edit};
@@ -54,6 +55,10 @@ pub struct EditBuffer {
     text: Text,
     cursor: Position,
     anchor: Option<Position>,
+    /// Named positions that travel with the text they point at (vim's marks).
+    /// Every edit carries them like the cursor, and every history entry saves
+    /// them, so undo and redo put them back where they were.
+    marks: BTreeMap<char, Position>,
     history: History,
 }
 
@@ -70,6 +75,7 @@ impl EditBuffer {
             text,
             cursor,
             anchor: None,
+            marks: BTreeMap::new(),
             history: History::new(DEFAULT_BUDGET_BYTES),
         }
     }
@@ -158,7 +164,37 @@ impl EditBuffer {
         self.text = text;
         self.cursor = self.text.start();
         self.anchor = None;
+        self.marks.clear();
         self.history.clear();
+    }
+
+    /// Put mark `name` at `at`. `false`, setting nothing, when `at` belongs to
+    /// a state of the text this buffer has left.
+    ///
+    /// From here on the mark follows the text it points at: text inserted
+    /// exactly at it stays in front of it, a deletion across it collapses it
+    /// to where the deletion began, and an edit that fuses characters around
+    /// it moves it on to the next whole one. Undo and redo put it back where
+    /// it was before and after each change.
+    pub fn set_mark(&mut self, name: char, at: Position) -> bool {
+        if self.text.is_stale(at) {
+            return false;
+        }
+        self.marks.insert(name, at);
+        true
+    }
+
+    pub fn mark(&self, name: char) -> Option<Position> {
+        self.marks.get(&name).copied()
+    }
+
+    /// The marks as byte offsets — how a history entry stores them, for the
+    /// same reason it stores the cursor that way.
+    fn mark_offsets(&self) -> Vec<(char, usize)> {
+        self.marks
+            .iter()
+            .map(|(&name, at)| (name, at.byte()))
+            .collect()
     }
 
     /// How many bytes of edit history to retain.
@@ -197,8 +233,9 @@ impl EditBuffer {
         let shape = entry.inverse.clone();
         let cursor = entry.cursor_before;
         let anchor = entry.anchor_before;
+        let marks = entry.marks_before.clone();
         self.history.step_back();
-        Some(self.restore(text, shape, cursor, anchor))
+        Some(self.restore(text, shape, cursor, anchor, &marks))
     }
 
     /// Redo the group a previous [`Self::undo`] took back.
@@ -208,8 +245,9 @@ impl EditBuffer {
         let shape = entry.forward.clone();
         let cursor = entry.cursor_after;
         let anchor = entry.anchor_after;
+        let marks = entry.marks_after.clone();
         self.history.step_forward();
-        Some(self.restore(text, shape, cursor, anchor))
+        Some(self.restore(text, shape, cursor, anchor, &marks))
     }
 
     fn restore(
@@ -218,10 +256,27 @@ impl EditBuffer {
         shape: Shape,
         cursor: usize,
         anchor: Option<usize>,
+        marks: &[(char, usize)],
     ) -> Change {
+        // A mark the entry did not save — set after that change — is kept, at
+        // the same row and column of the restored text (vim keeps it too).
+        let unsaved: Vec<(char, usize, usize)> = self
+            .marks
+            .iter()
+            .filter(|(name, _)| !marks.iter().any(|(saved, _)| saved == *name))
+            .map(|(&name, at)| (name, at.row(), at.column().get()))
+            .collect();
         self.text = text;
         self.cursor = self.text.position_at_derived_byte(cursor);
         self.anchor = anchor.map(|a| self.text.position_at_derived_byte(a));
+        self.marks = marks
+            .iter()
+            .map(|&(name, byte)| (name, self.text.position_at_derived_byte(byte)))
+            .collect();
+        for (name, row, col) in unsaved {
+            let at = self.text.position_near(row, col);
+            self.marks.insert(name, at);
+        }
         Change::new(
             self.text.revision(),
             shape.edits,
@@ -244,6 +299,7 @@ pub struct Txn<'a> {
     before: Text,
     cursor_before: usize,
     anchor_before: Option<usize>,
+    marks_before: Vec<(char, usize)>,
     applied: Vec<Applied>,
     /// Retained bytes, accumulated as edits land.
     retained: usize,
@@ -256,11 +312,13 @@ impl<'a> Txn<'a> {
         let before = buffer.text.clone();
         let cursor_before = buffer.cursor.byte();
         let anchor_before = buffer.anchor.map(Position::byte);
+        let marks_before = buffer.mark_offsets();
         Self {
             buffer,
             before,
             cursor_before,
             anchor_before,
+            marks_before,
             applied: Vec::new(),
             retained: 0,
             extending,
@@ -288,9 +346,15 @@ impl<'a> Txn<'a> {
     /// it opened from. Text inserted exactly at the position is left in front of
     /// it, so a marker keeps pointing at what it was pointing at; text deleted
     /// across it collapses it to the start of what was removed.
+    ///
+    /// An edit can fuse characters around a marker — a combining mark typed
+    /// right at it joins the character before, a join brings a bare accent up
+    /// against a letter — leaving its offset inside one grapheme cluster. It
+    /// then moves on to the start of the next whole character, as the cursor
+    /// does.
     pub fn map(&self, position: Position) -> Option<Position> {
         let byte = self.remap(position, Gravity::Backward)?;
-        Some(self.buffer.text.position_at_derived_byte(byte))
+        Some(self.buffer.text.position_at_cursor_byte(byte))
     }
 
     /// Insert `text` at `at`.
@@ -367,6 +431,8 @@ impl<'a> Txn<'a> {
             cursor_after: self.buffer.cursor.byte(),
             anchor_before: self.anchor_before,
             anchor_after: self.buffer.anchor.map(Position::byte),
+            marks_before: self.marks_before.clone(),
+            marks_after: self.buffer.mark_offsets(),
             retained: self.retained,
         };
 
@@ -417,6 +483,13 @@ impl<'a> Txn<'a> {
         // and a cursor snaps forward out of one rather than back into the text
         // it just typed.
         self.buffer.cursor = self.buffer.text.position_at_cursor_byte(cursor);
+        // Marks stay in front of text inserted at them (backward gravity), and
+        // snap forward, like the cursor, out of a character an edit fused
+        // around them.
+        for mark in self.buffer.marks.values_mut() {
+            let byte = shift(mark.byte(), &edit, Gravity::Backward);
+            *mark = self.buffer.text.position_at_cursor_byte(byte);
+        }
         // An edit is not a selection gesture. Typing over a selection must not
         // leave the typed text selected, and a caller that does want a selection
         // afterwards — wrapping a selection in brackets, so the next wrap nests —
@@ -510,6 +583,11 @@ impl Drop for Txn<'_> {
         self.buffer.anchor = self
             .anchor_before
             .map(|byte| self.buffer.text.position_at_derived_byte(byte));
+        self.buffer.marks = self
+            .marks_before
+            .iter()
+            .map(|&(name, byte)| (name, self.buffer.text.position_at_derived_byte(byte)))
+            .collect();
     }
 }
 
@@ -1033,5 +1111,72 @@ mod tests {
             snap.text.slice(snap.text.full_span()).as_deref(),
             Some("hello")
         );
+    }
+
+    // ── Marks ────────────────────────────────────────────────────────────
+
+    fn mark_at(buf: &EditBuffer, name: char) -> Option<(usize, usize)> {
+        buf.mark(name).map(|m| (m.row(), m.column().get()))
+    }
+
+    /// Undo puts a mark back where it was before the change, redo where it
+    /// was after — not wherever a row count would guess.
+    #[test]
+    fn undo_and_redo_restore_the_marks_a_change_moved() {
+        let mut buf = buffer("a\nb\nc\nd");
+        let (b, d) = (at(&buf, 1, 0), at(&buf, 3, 0));
+        buf.set_mark('<', b);
+        buf.set_mark('>', d);
+        let mut txn = buf.begin();
+        let span = txn
+            .text()
+            .span(at_txn(&txn, 1, 0), at_txn(&txn, 3, 0))
+            .unwrap();
+        txn.delete(span);
+        txn.commit();
+        assert_eq!(mark_at(&buf, '<'), Some((1, 0)));
+        assert_eq!(mark_at(&buf, '>'), Some((1, 0)));
+        buf.undo();
+        assert_eq!(mark_at(&buf, '<'), Some((1, 0)));
+        assert_eq!(mark_at(&buf, '>'), Some((3, 0)));
+        buf.redo();
+        assert_eq!(mark_at(&buf, '>'), Some((1, 0)));
+    }
+
+    /// A mark set after a change is not the change's to restore: undoing it
+    /// keeps the mark, at the same row and column of the restored text.
+    #[test]
+    fn undo_keeps_a_mark_the_change_never_saw() {
+        let mut buf = buffer("ab\ncd");
+        let mut txn = buf.begin();
+        let start = at_txn(&txn, 0, 0);
+        txn.insert(start, "x");
+        txn.commit();
+        let d = at(&buf, 1, 1);
+        buf.set_mark('<', d);
+        buf.undo();
+        assert_eq!(mark_at(&buf, '<'), Some((1, 1)));
+    }
+
+    /// A transaction dropped without committing puts the marks back with the
+    /// text.
+    #[test]
+    fn a_rolled_back_transaction_restores_the_marks() {
+        let mut buf = buffer("abc");
+        let c = at(&buf, 0, 2);
+        buf.set_mark('m', c);
+        {
+            let mut txn = buf.begin();
+            let start = at_txn(&txn, 0, 0);
+            txn.insert(start, "xyz");
+        }
+        assert_eq!(buf.text().to_string(), "abc");
+        assert_eq!(mark_at(&buf, 'm'), Some((0, 2)));
+    }
+
+    fn at_txn(txn: &Txn<'_>, row: usize, col: usize) -> Position {
+        txn.text()
+            .position(row, Column::new(col))
+            .expect("addressable in the test fixture")
     }
 }

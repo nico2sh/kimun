@@ -388,7 +388,7 @@ impl EditorScreen {
                 });
                 self.doc_meta.note_opened(&self.path, tx);
                 if let Some(ed) = self.panels.editor_mut() {
-                    ed.set_text(content);
+                    ed.open_note(self.path.clone(), content);
                     // Arrive-from-query emphasis: apply after the load so the
                     // buffer's new revision owns the needles.
                     if let Some(needles) = emphasis {
@@ -655,6 +655,7 @@ impl EditorScreen {
                 Ok(text) => {
                     self.path = to.clone();
                     if let Some(ed) = self.panels.editor_mut() {
+                        ed.renamed_to(to.clone());
                         ed.set_text(text.clone());
                         ed.mark_saved(text);
                     }
