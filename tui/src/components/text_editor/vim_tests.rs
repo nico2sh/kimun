@@ -3413,3 +3413,59 @@ fn visual_operators_on_a_very_long_row() {
     }
     assert_eq!(t.rows()[1], "");
 }
+
+// ── `gv` across undo and redo ─────────────────────────────────────────────
+//
+// vim saves the Visual marks with each change and puts them back on undo:
+// undoing a Visual delete brings back both the text and the selection `gv`
+// reselects.
+
+#[test]
+fn gv_after_undoing_a_visual_delete_reselects_its_rows() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("a\nb\nc\nd"));
+    for c in ['j', 'V', 'j', 'd', 'u', 'g', 'v'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["a", "b", "c", "d"]);
+    assert_eq!(*e.mode(), EditorMode::VisualLine);
+    let ((sr, _), (er, _)) = t.selection_range().expect("gv selected");
+    assert_eq!((sr, er), (1, 2));
+}
+
+#[test]
+fn gv_after_redo_follows_the_redone_delete() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("a\nb\nc\nd"));
+    for c in ['j', 'V', 'j', 'd', 'u'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    e.handle_key(
+        &KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+        &mut t,
+    );
+    assert_eq!(t.rows(), &["a", "d"]);
+    for c in ['g', 'v'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.cursor().0, 1, "where the deleted rows were");
+}
+
+/// A selection made after a change is not part of that change: undoing it
+/// keeps the selection `gv` restores (vim keeps a mark the change never saw).
+#[test]
+fn undo_keeps_a_selection_made_after_the_change() {
+    let mut e = VimEngine::default();
+    let mut t = RopeBuffer::new(Text::from("ab\ncd\nef"));
+    e.handle_key(&key('x'), &mut t);
+    for c in ['j', 'V', 'j'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    e.handle_key(&esc(), &mut t);
+    for c in ['u', 'g', 'v'] {
+        e.handle_key(&key(c), &mut t);
+    }
+    assert_eq!(t.rows(), &["ab", "cd", "ef"]);
+    let ((sr, _), (er, _)) = t.selection_range().expect("gv selected");
+    assert_eq!((sr, er), (1, 2));
+}

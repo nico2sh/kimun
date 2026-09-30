@@ -249,6 +249,19 @@ impl BackendState {
             .or_else(|| self.as_textarea().and_then(|ta| ta.selection_range()))
     }
 
+    /// Whether the vim interpreter is in Visual over nothing — an empty row
+    /// (see `VimEngine::visual_is_empty`). `false` elsewhere.
+    pub fn visual_is_empty(&self) -> bool {
+        match self {
+            BackendState::Textarea(TextareaBackend {
+                input: InputInterpreter::Vim(e),
+                ta,
+                ..
+            }) => e.visual_is_empty(ta),
+            _ => false,
+        }
+    }
+
     /// Copy the vim interpreter's Visual selection and leave Visual (see
     /// `VimEngine::copy_visual`). `None` outside Visual and on the other
     /// backends, where the buffer's own selection is what gets copied.
@@ -327,12 +340,11 @@ impl BackendState {
     pub fn reset_input_state(&mut self) {
         if let BackendState::Textarea(TextareaBackend {
             input: InputInterpreter::Vim(engine),
-            ta,
             ..
         }) = self
         {
+            // The buffer's marks went with its text (`RopeBuffer::replace`).
             engine.reset_to_normal();
-            ta.clear_marks();
         }
     }
 

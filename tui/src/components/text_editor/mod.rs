@@ -616,6 +616,8 @@ impl TextEditorComponent {
     /// Replace the buffer with `text` and drop everything that described the
     /// old one: history, selection, input state, popups.
     fn load(&mut self, text: String) {
+        // A drag under way belonged to the old text.
+        self.drag_origin = None;
         match &mut self.backend {
             BackendState::Textarea(tb) => {
                 tb.ta.replace(crate::ropetext::Text::from(text.as_str()));
@@ -895,16 +897,18 @@ impl TextEditorComponent {
     }
 
     /// Paint the selection as the user sees it: under vim's Visual modes the
-    /// range Visual covers — whole characters, and for `V` whole rows at full
-    /// width (the textarea's selection underneath spans anchor-to-cursor
-    /// columns, and vim's linewise Visual ignores columns) — otherwise the
-    /// buffer's own selection.
+    /// range Visual covers (`VimEngine::visual_range` decides what that is),
+    /// otherwise the buffer's own selection.
+    ///
+    /// One painting choice on top: a `V` selection's last row is painted to
+    /// the pane's edge rather than to its last character, so linewise reads as
+    /// whole lines. Which rows are covered is still the engine's range.
     fn sync_highlight(&mut self) {
         self.selection = self.backend.selection_as_shown();
         if self.backend.is_visual_line()
-            && let Some(((sr, _), (er, _))) = self.selection
+            && let Some((start, (er, _))) = self.selection
         {
-            self.selection = Some(((sr, 0), (er, usize::MAX)));
+            self.selection = Some((start, (er, usize::MAX)));
         }
     }
 
@@ -1110,11 +1114,7 @@ impl TextEditorComponent {
         };
         // A Visual selection with nothing in it (an empty row): nothing to
         // wrap, and inserting a marker pair would type into a selection.
-        if self
-            .backend
-            .visual_range()
-            .is_some_and(|(from, to)| from == to)
-        {
+        if self.backend.visual_is_empty() {
             return;
         }
         if self.wrap_selection(marker, marker) {
@@ -1646,19 +1646,28 @@ impl TextEditorComponent {
             return EventState::Consumed;
         }
         // A drag under vim selects what it covers, rebuilt from where it began.
-        if matches!(mouse.kind, MouseEventKind::Drag(_))
-            && let Some(origin) = self.drag_origin
-        {
+        // With no press in this editor behind it (one that began elsewhere, or
+        // before another note was opened) there is nothing it could select.
+        if matches!(mouse.kind, MouseEventKind::Drag(_)) {
             let (lrow, lcol) = self
                 .view
                 .click_at_screen((mouse.row - r.y) as usize, (mouse.column - r.x) as usize);
-            if self
-                .backend
-                .select_dragged(origin, (lrow as usize, lcol as usize))
-            {
-                self.sync_highlight();
-                return EventState::Consumed;
+            match self.drag_origin {
+                Some(origin)
+                    if self
+                        .backend
+                        .select_dragged(origin, (lrow as usize, lcol as usize)) =>
+                {
+                    self.sync_highlight();
+                    return EventState::Consumed;
+                }
+                None if self.backend.is_vim() => return EventState::Consumed,
+                _ => {}
             }
+        }
+        // The drag, if any, is over.
+        if matches!(mouse.kind, MouseEventKind::Up(_)) {
+            self.drag_origin = None;
         }
         // Now extract ta for remaining mouse operations.
         let Some(ta) = self.backend.as_textarea_mut() else {
@@ -1889,23 +1898,14 @@ impl Component for TextEditorComponent {
                 // The press that placed the cursor is the *first* of the pair,
                 // which is why one path can serve both.
 
-                // Plan 3 Task 5: reconcile the vim engine mode from whether the
-                // textarea selection is live after the mouse event. A drag that
-                // creates a selection enters Visual; a click that clears one
-                // returns to Normal. Insert mode is left untouched (the engine
-                // match arm is a no-op for all modes other than Normal/Visual).
-                // A bare click leaves a collapsed (zero-width) selection active
-                // because handle_mouse's Down arm calls start_selection().
-                // Only treat a NON-EMPTY selection as "real" to avoid flipping
-                // vim Normal→Visual on a plain click.  Mirrors the same guard
-                // at ~line 1014 which protects auto-indent from collapsed sel.
-                // As shown, not raw: a one-character Visual selection has its
-                // anchor and cursor on the same character yet selects it.
-                let has_sel = self
-                    .backend
-                    .selection_as_shown()
-                    .is_some_and(|(s, e)| s != e);
-                self.backend.sync_mouse_selection(has_sel);
+                // Reconcile the vim engine's mode by gesture, not by the shape
+                // the selection happens to have: a left press ends Visual, and a
+                // drag selects (`select_dragged`, in `handle_mouse`); scroll,
+                // release and right-click leave the mode alone. Insert and
+                // Replace, and the other backends, are untouched either way.
+                if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+                    self.backend.sync_mouse_selection(false);
+                }
                 self.sync_highlight();
                 result
             }
@@ -5049,6 +5049,84 @@ cccccccc"
             press(&mut editor, "d");
             assert_eq!(editor.get_text(), " world", "drag {from}→{to}");
         }
+    }
+
+    /// A left click ends Visual, as it always did: the click's empty
+    /// selection is not a one-character (or one-row) Visual selection.
+    #[test]
+    fn a_click_leaves_visual() {
+        use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+        let tx = dummy_tx();
+        for keys in ["vll", "V"] {
+            let mut editor = rendered_vim_editor("hello world");
+            press(&mut editor, keys);
+            editor.handle_input(&mouse(MouseEventKind::Down(MouseButton::Left), 8), &tx);
+            assert_eq!(vim_mode(&editor), EditorMode::Normal, "after `{keys}`");
+            press(&mut editor, "x");
+            assert_eq!(
+                editor.get_text(),
+                "hello wold",
+                "after `{keys}`: a plain `x`"
+            );
+        }
+    }
+
+    /// The click also leaves `gv` the selection it ended.
+    #[test]
+    fn gv_after_a_click_reselects_what_the_click_ended() {
+        use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+        let tx = dummy_tx();
+        let mut editor = rendered_vim_editor("hello world");
+        press(&mut editor, "vll");
+        editor.handle_input(&mouse(MouseEventKind::Down(MouseButton::Left), 8), &tx);
+        press(&mut editor, "gv");
+        assert_eq!(vim_mode(&editor), EditorMode::Visual);
+        assert_eq!(editor.selection, Some(((0, 0), (0, 3))));
+    }
+
+    /// Scrolling is not a selection gesture: Visual survives it, even over
+    /// an empty row, where the Visual range itself is empty.
+    #[test]
+    fn scrolling_keeps_visual() {
+        use ratatui::crossterm::event::MouseEventKind;
+        let tx = dummy_tx();
+        for keys in ["jV", "jv", "ve"] {
+            let mut editor = rendered_vim_editor("a\n\nb");
+            press(&mut editor, keys);
+            let mode = vim_mode(&editor);
+            editor.handle_input(&mouse(MouseEventKind::ScrollDown, 1), &tx);
+            assert_eq!(vim_mode(&editor), mode, "after `{keys}`");
+        }
+    }
+
+    /// A drag with no press in this editor behind it — one that began
+    /// elsewhere, or before another note was opened — selects nothing.
+    #[test]
+    fn a_drag_without_its_own_press_selects_nothing() {
+        use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+        let tx = dummy_tx();
+        let mut editor = rendered_vim_editor("hello world");
+        editor.open_note(note("alpha"), "hello world".to_string());
+        editor.handle_input(&mouse(MouseEventKind::Down(MouseButton::Left), 2), &tx);
+        editor.open_note(note("beta"), "other text".to_string());
+        editor.handle_input(&mouse(MouseEventKind::Drag(MouseButton::Left), 8), &tx);
+        assert_eq!(vim_mode(&editor), EditorMode::Normal);
+        assert!(
+            get_ta(&mut editor)
+                .selection_range()
+                .is_none_or(|(s, e)| s == e)
+        );
+
+        let mut editor = rendered_vim_editor("hello world");
+        editor.handle_input(&mouse(MouseEventKind::Down(MouseButton::Left), 2), &tx);
+        editor.handle_input(&mouse(MouseEventKind::Up(MouseButton::Left), 2), &tx);
+        get_ta(&mut editor).cancel_selection();
+        editor.handle_input(&mouse(MouseEventKind::Drag(MouseButton::Left), 8), &tx);
+        assert_eq!(
+            vim_mode(&editor),
+            EditorMode::Normal,
+            "a drag after the release"
+        );
     }
 
     /// A drag over one character selects that character, and stays Visual.
