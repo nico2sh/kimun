@@ -61,6 +61,7 @@ impl RagError {
 /// The subset of server operations the sync orchestration depends on, behind a
 /// trait so it can be exercised with a fake in tests. [`RagClient`] is the real
 /// implementation.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait RagTransport: Send + Sync {
     async fn push_docs(&self, docs: Vec<WireDoc>) -> Result<(), RagError>;
