@@ -34,6 +34,7 @@ pub enum ScreenKind {
 // Nothing in a screen is non-`Send` now, so the relaxation is gone rather than
 // merely unused. Reintroducing a non-`Send` field means reintroducing `?Send`
 // across every screen impl and `Overlay` too, so prefer not to.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait AppScreen: Send {
     /// Called once when the screen mounts. Send `AppEvent`s through `tx` to

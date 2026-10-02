@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::LlmConfig;
 use crate::document::FlattenedChunk;
 
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait LLMClient: Send + Sync {
     async fn ask(

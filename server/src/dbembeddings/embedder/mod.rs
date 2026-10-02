@@ -10,6 +10,7 @@ pub mod http;
 /// embedder must serve both indexing and querying — mixing models produces
 /// meaningless similarities — so it is a per-server invariant of the stored
 /// vectors.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait Embedder: Send + Sync {
     /// Embeds document chunks (the indexing side).

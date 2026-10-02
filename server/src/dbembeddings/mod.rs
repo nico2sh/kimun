@@ -52,6 +52,7 @@ pub struct EmbeddedChunk {
 /// never an error (reconciliation starts by reading hashes of a possibly
 /// never-pushed vault); `query` returns similarity scores (higher = better),
 /// best-first.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait VectorStore: Send + Sync {
     /// Appends rows. Replacing a note's chunks is the pipeline's job (it

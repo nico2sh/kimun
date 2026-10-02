@@ -14,6 +14,7 @@ pub use http::HttpReranker;
 /// rerank endpoint. Unlike the [`super::dbembeddings::embedder::Embedder`],
 /// this is not an invariant of the stored vectors — swapping rerankers never
 /// invalidates the index.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait Reranker: Send + Sync {
     /// Scores `results` against `query`; returns one `(input index, score)`
