@@ -12,7 +12,6 @@ use crate::settings::themes::Theme;
 const ROW_COUNT: usize = 4;
 const ROW_LEADER_TIMEOUT: usize = 3;
 
-const MIN_LEADER_TIMEOUT_MS: u64 = 0;
 const MAX_LEADER_TIMEOUT_MS: u64 = 2000;
 const LEADER_TIMEOUT_STEP: u64 = 50;
 
@@ -61,9 +60,7 @@ impl DisplaySection {
         self.leader_timeout_ms = if increase {
             (self.leader_timeout_ms + LEADER_TIMEOUT_STEP).min(MAX_LEADER_TIMEOUT_MS)
         } else {
-            self.leader_timeout_ms
-                .saturating_sub(LEADER_TIMEOUT_STEP)
-                .max(MIN_LEADER_TIMEOUT_MS)
+            self.leader_timeout_ms.saturating_sub(LEADER_TIMEOUT_STEP)
         };
     }
 
