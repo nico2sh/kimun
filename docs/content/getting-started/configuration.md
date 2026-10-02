@@ -121,7 +121,7 @@ The file has five kinds of contents:
 | `history_dir` | string | `"history"` | Directory for per-workspace history files (`<workspace>.txt`). Same path resolution as `cache_dir`. |
 | `theme` | string | `""` | Active TUI theme name (e.g. `"Nord"`). Empty string = built-in default. See [Themes](@/using-kimun/themes.md). |
 | `autosave_interval_secs` | integer | `5` | How often unsaved changes are written to disk (seconds). |
-| `leader_timeout_ms` | integer | `400` | Hesitation (milliseconds) before the which-key panel reveals itself during a pending leader sequence. Sequences typed faster never wait. |
+| `leader_timeout_ms` | integer | `400` | Hesitation (milliseconds) before the which-key panel reveals itself during a pending leader sequence. Sequences typed faster never wait. Also editable from the Preferences window (Display section). |
 | `use_nerd_fonts` | boolean | `false` | Enable Nerd Font glyphs in the TUI. Leave `false` if your terminal's font doesn't include Nerd Font patches. |
 | `editor_backend` | string | `"textarea"` | Editor engine. `"textarea"` = built-in editor. `"vim"` = built-in vim emulation. `"nvim"` = embedded Neovim. Also editable from the Preferences window (Editor section). |
 | `nvim_path` | string | *(unset)* | Absolute path to the `nvim` binary. Only needed when Neovim is not on `PATH`. |
