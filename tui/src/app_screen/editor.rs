@@ -78,7 +78,7 @@ pub struct EditorScreen {
     /// The Ask workspace's coordination layer: Thread↔Sources sync, capability
     /// refresh, AskData routing, and show/stash transitions (see `ask.rs`).
     ask: AskCoordinator,
-    /// The leader-key sequence state machine (Ctrl-G gateway, spec §8a).
+    /// The leader-key sequence state machine (Ctrl-B gateway by default, spec §8a).
     leader: LeaderEngine,
     /// The mouse presses currently forming one gesture, so a double-click in
     /// the editor can follow a link (see `click_run`). Fed before each
@@ -2455,7 +2455,7 @@ mod tests {
         key_event(ratatui::crossterm::event::KeyCode::Char(c))
     }
 
-    /// Ctrl-G (leader) then `o` `f` opens the FILES drawer — the full
+    /// Ctrl-B (leader) then `o` `f` opens the FILES drawer — the full
     /// sequence fires with no menu drawn and no timeout wait.
     #[tokio::test]
     async fn leader_sequence_opens_drawer_view() {
@@ -2465,7 +2465,7 @@ mod tests {
         // Start from a non-Files view so the switch is observable.
         screen.panels.open_drawer_view(DrawerView::Tags);
 
-        screen.handle_input(&ctrl_key('g'), &tx);
+        screen.handle_input(&ctrl_key('b'), &tx);
         assert!(screen.leader.is_pending());
         screen.handle_input(&chr('o'), &tx);
         screen.handle_input(&chr('f'), &tx);
@@ -2494,7 +2494,7 @@ mod tests {
             crate::components::text_editor::EditorClaim::FindBar
         );
 
-        screen.handle_input(&ctrl_key('g'), &tx);
+        screen.handle_input(&ctrl_key('b'), &tx);
         screen.handle_input(&chr('t'), &tx);
         screen.handle_input(&chr('b'), &tx);
 
@@ -2518,7 +2518,7 @@ mod tests {
             .unwrap()
             .set_text("plain".to_string());
 
-        screen.handle_input(&ctrl_key('g'), &tx);
+        screen.handle_input(&ctrl_key('b'), &tx);
         screen.handle_input(&chr('t'), &tx);
         screen.handle_input(&chr('b'), &tx);
 
@@ -2579,7 +2579,7 @@ mod tests {
         );
     }
 
-    /// The gateway works mid-typing: with the editor focused, Ctrl-G arms
+    /// The gateway works mid-typing: with the editor focused, Ctrl-B arms
     /// the sequence and the next chars are consumed, not inserted.
     #[tokio::test]
     async fn leader_consumes_keys_while_editor_focused() {
@@ -2589,7 +2589,7 @@ mod tests {
         screen.panels.editor_mut().unwrap().set_text(String::new());
         assert_eq!(screen.panels.focused(), PanelKind::Editor);
 
-        screen.handle_input(&ctrl_key('g'), &tx);
+        screen.handle_input(&ctrl_key('b'), &tx);
         assert!(screen.leader.is_pending());
         // 'w' is a group key; it must not land in the buffer.
         screen.handle_input(&chr('w'), &tx);
@@ -2605,7 +2605,7 @@ mod tests {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
 
         screen.panels.focus(PanelKind::Rail);
-        screen.handle_input(&ctrl_key('g'), &tx);
+        screen.handle_input(&ctrl_key('b'), &tx);
         screen.handle_input(&chr('f'), &tx);
         screen.handle_input(&key_event(ratatui::crossterm::event::KeyCode::Esc), &tx);
 
@@ -2636,7 +2636,7 @@ mod tests {
     async fn leader_f_p_opens_the_pinned_notes_dialog() {
         let (mut screen, _, _, _dir) = test_screen().await;
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        screen.handle_input(&ctrl_key('g'), &tx);
+        screen.handle_input(&ctrl_key('b'), &tx);
         screen.handle_input(&chr('f'), &tx);
         screen.handle_input(&chr('p'), &tx);
         assert!(screen.overlays.is_open());
@@ -2656,7 +2656,7 @@ mod tests {
         vault.create_note(&note, "hi").await.unwrap();
         screen.path = note.clone();
 
-        screen.handle_input(&ctrl_key('g'), &tx);
+        screen.handle_input(&ctrl_key('b'), &tx);
         screen.handle_input(&chr('m'), &tx);
         screen.handle_input(&chr('i'), &tx);
         let e = wait_for(&mut rx, |e| matches!(e, AppEvent::FlashMessage(_))).await;
@@ -2670,7 +2670,7 @@ mod tests {
             vec![VaultPath::new("/plan.md")]
         );
 
-        screen.handle_input(&ctrl_key('g'), &tx);
+        screen.handle_input(&ctrl_key('b'), &tx);
         screen.handle_input(&chr('m'), &tx);
         screen.handle_input(&chr('i'), &tx);
         let e = wait_for(&mut rx, |e| matches!(e, AppEvent::FlashMessage(_))).await;
@@ -2695,7 +2695,7 @@ mod tests {
         let extra = VaultPath::new("extra.md");
         vault.create_note(&extra, "hi").await.unwrap();
         screen.path = extra;
-        screen.handle_input(&ctrl_key('g'), &tx);
+        screen.handle_input(&ctrl_key('b'), &tx);
         screen.handle_input(&chr('m'), &tx);
         screen.handle_input(&chr('i'), &tx);
         let e = wait_for(&mut rx, |e| matches!(e, AppEvent::FlashMessage(_))).await;
@@ -2713,7 +2713,7 @@ mod tests {
         let (mut screen, vault, _, _dir) = test_screen().await;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         screen.path = VaultPath::new("gone.md");
-        screen.handle_input(&ctrl_key('g'), &tx);
+        screen.handle_input(&ctrl_key('b'), &tx);
         screen.handle_input(&chr('m'), &tx);
         screen.handle_input(&chr('i'), &tx);
         let e = wait_for(&mut rx, |e| matches!(e, AppEvent::FlashMessage(_))).await;
@@ -2736,7 +2736,7 @@ mod tests {
         screen.path = note;
         screen.open_drawer_view(DrawerView::Ask, &tx);
 
-        screen.handle_input(&ctrl_key('g'), &tx);
+        screen.handle_input(&ctrl_key('b'), &tx);
         screen.handle_input(&chr('m'), &tx);
         screen.handle_input(&chr('c'), &tx);
         let e = wait_for(&mut rx, |e| matches!(e, AppEvent::FlashMessage(_))).await;
@@ -2753,7 +2753,7 @@ mod tests {
         let (mut screen, _, _, _dir) = test_screen().await;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         // test_screen opens on VaultPath::root(), which is not a note.
-        screen.handle_input(&ctrl_key('g'), &tx);
+        screen.handle_input(&ctrl_key('b'), &tx);
         screen.handle_input(&chr('m'), &tx);
         screen.handle_input(&chr('i'), &tx);
         let e = wait_for(&mut rx, |e| matches!(e, AppEvent::FlashMessage(_))).await;
@@ -2778,7 +2778,7 @@ mod tests {
             .await;
         assert!(screen.panels.is_showing_attachment());
 
-        screen.handle_input(&ctrl_key('g'), &tx);
+        screen.handle_input(&ctrl_key('b'), &tx);
         screen.handle_input(&chr('m'), &tx);
         screen.handle_input(&chr('i'), &tx);
         let e = wait_for(&mut rx, |e| matches!(e, AppEvent::FlashMessage(_))).await;
@@ -2801,7 +2801,7 @@ mod tests {
         screen.open_drawer_view(DrawerView::Ask, &tx);
         assert!(screen.panels.is_showing_ask());
 
-        screen.handle_input(&ctrl_key('g'), &tx);
+        screen.handle_input(&ctrl_key('b'), &tx);
         screen.handle_input(&chr('m'), &tx);
         screen.handle_input(&chr('i'), &tx);
         let e = wait_for(&mut rx, |e| matches!(e, AppEvent::FlashMessage(_))).await;
@@ -2823,7 +2823,7 @@ mod tests {
         vault.toggle_pinned_note(&a).await.unwrap();
         vault.toggle_pinned_note(&b).await.unwrap();
 
-        screen.handle_input(&ctrl_key('g'), &tx);
+        screen.handle_input(&ctrl_key('b'), &tx);
         screen.handle_input(&chr('2'), &tx);
         let e = wait_for(&mut rx, |e| matches!(e, AppEvent::OpenPath { .. })).await;
         // list_pinned_notes returns the canonical, vault-absolute form
@@ -2839,7 +2839,7 @@ mod tests {
     async fn leader_digit_with_no_such_pin_flashes() {
         let (mut screen, _, _, _dir) = test_screen().await;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        screen.handle_input(&ctrl_key('g'), &tx);
+        screen.handle_input(&ctrl_key('b'), &tx);
         screen.handle_input(&chr('4'), &tx);
         let e = wait_for(&mut rx, |e| matches!(e, AppEvent::FlashMessage(_))).await;
         assert!(
@@ -2859,7 +2859,7 @@ mod tests {
         vault.toggle_pinned_note(&gone).await.unwrap();
         // Vanishes outside kimün after being pinned.
         std::fs::remove_file(dir.path().join("gone.md")).unwrap();
-        screen.handle_input(&ctrl_key('g'), &tx);
+        screen.handle_input(&ctrl_key('b'), &tx);
         screen.handle_input(&chr('1'), &tx);
         let e = wait_for(&mut rx, |e| matches!(e, AppEvent::FlashMessage(_))).await;
         // The flashed path is the canonical form list_pinned_notes returned.

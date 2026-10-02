@@ -7,7 +7,7 @@ weight = 14
 
 Kimün ships with 21 built-in themes — all the classics — and lets you write your own as a small TOML file.
 
-The fastest way to pick one is the **live theme picker** — `Ctrl+G v t` (or the CFG drawer's `t`): moving the selection restyles the whole app instantly, Enter persists, Esc reverts. Or set it in your config:
+The fastest way to pick one is the **live theme picker** — `Ctrl+B v t` (or the CFG drawer's `t`): moving the selection restyles the whole app instantly, Enter persists, Esc reverts. Or set it in your config:
 
 ```toml
 theme = "Nord"
@@ -107,7 +107,7 @@ Colors can be specified in the following formats:
 
 ### Activating a Custom Theme
 
-Once the file is saved, start (or restart) Kimün. Your theme appears in the theme picker (`Ctrl+G v t`) alongside the built-in ones. You can also set it directly in `config.toml`:
+Once the file is saved, start (or restart) Kimün. Your theme appears in the theme picker (`Ctrl+B v t`) alongside the built-in ones. You can also set it directly in `config.toml`:
 
 ```toml
 theme = "My Theme"

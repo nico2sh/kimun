@@ -44,7 +44,7 @@ The first time you launch Kimün with no workspace configured, a centered setup 
 You can reopen the guided setup any time:
 
 - **Command palette** (`Ctrl+P` inside the editor) → type "guided setup".
-- **Leader sequence** `v o` (default leader is `Ctrl+G`, so: `Ctrl+G` then `v` then `o`).
+- **Leader sequence** `v o` (default leader is `Ctrl+B`, so: `Ctrl+B` then `v` then `o`).
 
 On rerun, the Workspace step is informational — it lists your current workspaces rather than prompting you to set one up. To add, rename, or remove workspaces, use the Preferences screen (`Ctrl+,`) or the `kimun workspace` CLI commands (see [Workspaces](@/getting-started/workspaces.md)).
 
@@ -248,11 +248,11 @@ The `[key_bindings]` section maps action names to shortcuts:
 ```toml
 [key_bindings]
 Quit = ["ctrl&Q"]
-Leader = ["ctrl&G"]
+Leader = ["ctrl&B"]
 OpenCommandPalette = ["ctrl&P"]
 SearchNotes = ["ctrl&K"]
 FileOperations = ["F2"]
-TextEditor-Bold = ["ctrl&B"]
+TextEditor-Bold = ["ctrl&S"]
 ```
 
 #### Replace, Not Merge
@@ -273,7 +273,7 @@ To remap a single action like Preferences, the smallest correct config still lis
 OpenSettings = ["ctrl&."]   # your new Preferences key
 # …plus every other binding you want to keep, e.g.:
 Quit               = ["ctrl&Q"]
-Leader             = ["ctrl&G"]
+Leader             = ["ctrl&B"]
 OpenCommandPalette = ["ctrl&P"]
 SearchNotes        = ["ctrl&K"]
 # …and so on for the rest of the defaults
@@ -303,7 +303,7 @@ Use these names exactly as shown. For the default shortcuts each one ships with,
 **Navigation & UI**
 
 - `Quit` — Exit Kimün
-- `Leader` — The leader gateway (default `Ctrl+G`) — starts a key sequence; see the [leader key](@/using-kimun/tui.md#the-leader-key)
+- `Leader` — The leader gateway (default `Ctrl+B`) — starts a key sequence; see the [leader key](@/using-kimun/tui.md#the-leader-key)
 - `OpenCommandPalette` — The command palette (default `Ctrl+P`)
 - `OpenSettings` — Open the Preferences screen (default `F4`; `Ctrl+,` is an alias — `Ctrl+,` doesn't transmit on every terminal, so `F4` is the dependable default)
 - `ToggleSidebar` — Show/hide the drawer (default `Ctrl+T`)
@@ -331,7 +331,7 @@ Use these names exactly as shown. For the default shortcuts each one ships with,
 **Text editing** (only fire while the editor has focus)
 
 These have **no default binding** — formatting is reached through the leader's
-`+text` group (`Ctrl+G t b` / `t i` / `t s`). They stay bindable if you want a
+`+text` group (`Ctrl+B t b` / `t i` / `t s`). They stay bindable if you want a
 chord; `Bold`, `Italic` and `Strikethrough` are the three that are implemented.
 
 - `TextEditor-Bold`
@@ -357,7 +357,7 @@ The leader key's sequence tree is fully remappable. `[leader.bind]` maps a key s
 "f" = "+search"          # rename the +find group caption
 ```
 
-Action ids follow a `group.action` scheme (`find.files`, `note.new`, `vault.theme`, `drawer.links`, …). The cheatsheet (`Ctrl+G ?`) and the command palette always reflect your overrides. Unknown ids and malformed sequences are skipped with a log warning; they never break startup. Assigning a single key that currently names a whole group replaces that group (a warning is logged), so prefer two-key sequences unless that is what you want.
+Action ids follow a `group.action` scheme (`find.files`, `note.new`, `vault.theme`, `drawer.links`, …). The cheatsheet (`Ctrl+B ?`) and the command palette always reflect your overrides. Unknown ids and malformed sequences are skipped with a log warning; they never break startup. Assigning a single key that currently names a whole group replaces that group (a warning is logged), so prefer two-key sequences unless that is what you want.
 
 ### Files Kimün Stores on Disk
 

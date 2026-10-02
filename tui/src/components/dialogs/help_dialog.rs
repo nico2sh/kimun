@@ -459,7 +459,7 @@ mod tests {
         let (keys, label) = row.expect("F1 must point at the formatting route");
         assert!(keys.ends_with(" t"), "should name the +text group: {keys}");
         assert!(
-            keys.starts_with("ctrl&G"),
+            keys.starts_with("ctrl&B"),
             "prefixed by the gateway: {keys}"
         );
         assert_eq!(label, "bold / italic / strikethrough (+text)");
@@ -528,7 +528,7 @@ mod tests {
             _ => None,
         });
         let (keys, label) = row.expect("the hint must be built from the tree");
-        assert_eq!(keys, "ctrl&G x");
+        assert_eq!(keys, "ctrl&B x");
         assert_eq!(label, "bold / italic (+fmt)");
     }
 

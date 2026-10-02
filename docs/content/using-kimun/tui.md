@@ -32,19 +32,19 @@ Kimün's terminal UI is built around a single editor screen with an activity rai
 
 ## The Leader Key
 
-Press **`Ctrl+G`** (the *leader*) and then a short key sequence to reach any command. Sequences are grouped mnemonically — `f` for +find, `n` for +note, `v` for +vault, and so on. A few examples:
+Press **`Ctrl+B`** (the *leader*) and then a short key sequence to reach any command. Sequences are grouped mnemonically — `f` for +find, `n` for +note, `v` for +vault, and so on. A few examples:
 
 ```
-Ctrl+G f f    open the file picker
-Ctrl+G n d    open today's journal
-Ctrl+G v t    open the theme picker
+Ctrl+B f f    open the file picker
+Ctrl+B n d    open today's journal
+Ctrl+B v t    open the theme picker
 ```
 
 The full group-by-group tree is on the [Keybindings cheat-sheet](@/using-kimun/keybindings.md#the-leader-tree).
 
 Hesitate mid-sequence and a **which-key** panel pops up above the status bar showing what each next key does (the delay is configurable — `leader_timeout_ms`). In **lists** (not text fields), a bare `Space` also starts a leader sequence — and with the [vim editor backend](@/using-kimun/vim-mode.md), so does `Space` in the editor's Normal mode.
 
-The full tree, with your custom bindings applied, is in the cheatsheet: `Ctrl+G ?`.
+The full tree, with your custom bindings applied, is in the cheatsheet: `Ctrl+B ?`.
 
 ### Command Palette
 
@@ -105,7 +105,7 @@ The editor renders Markdown styled in place — still plain editable source, no 
 - `[[wikilinks]]` blue and underlined, `#tags` colored — a single click places the cursor (so link text stays editable), a **double-click** follows the link / runs the tag query. `Ctrl+N` does the same from the keyboard
 - Task lists: `- [ ]` checkboxes accented, `- [x]` rows dimmed and struck through
 - The cursor line reveals raw markup for editing
-- An empty note shows a ghost tip (`Type to start · [[ to link · # to tag · Ctrl+G for commands`) that vanishes on the first keystroke
+- An empty note shows a ghost tip (`Type to start · [[ to link · # to tag · Ctrl+B for commands`) that vanishes on the first keystroke
 
 When the cursor enters a link or tag, status line 2 shows where it goes: `→ people/maria · 3 backlinks` or `→ #tag · tag query`.
 
@@ -154,9 +154,9 @@ because `Ctrl+I` is indistinguishable from `Tab` in most terminals. See
 
 | Action | Binding | Effect |
 | ------ | ------- | ------ |
-| Bold | `Ctrl+G t b` | `**…**` around the selection |
-| Italic | `Ctrl+G t i` | `*…*` |
-| Strikethrough | `Ctrl+G t s` | `~~…~~` |
+| Bold | `Ctrl+B t b` | `**…**` around the selection |
+| Italic | `Ctrl+B t i` | `*…*` |
+| Strikethrough | `Ctrl+B t s` | `~~…~~` |
 
 Each applies to the selection, or inserts an empty pair at the cursor. The
 editor must have focus.
@@ -195,11 +195,11 @@ Capturing the mouse means your terminal's own gestures — middle-click paste, d
 
 ## Saved Searches
 
-`Ctrl+D` saves the active query (from FIND, the query modal, or the panel) under a name; queries are stored as *templates*, so `{note}` re-resolves against whichever note is open when run. Open the picker with **`F3`** or **`Ctrl+G f s`**: type to filter, `1`–`9` quick-select, Enter runs it in FIND, Delete removes it. Or type `?name` directly in any query field.
+`Ctrl+D` saves the active query (from FIND, the query modal, or the panel) under a name; queries are stored as *templates*, so `{note}` re-resolves against whichever note is open when run. Open the picker with **`F3`** or **`Ctrl+B f s`**: type to filter, `1`–`9` quick-select, Enter runs it in FIND, Delete removes it. Or type `?name` directly in any query field.
 
 ## Pinned Notes
 
-Pin up to nine notes per vault for one-keystroke access — a tenth pin is refused rather than swapped in, and unpinning makes room. With a note open, **`Ctrl+G m i`** pins it (or unpins it if already pinned); **`Ctrl+G 1`**…**`Ctrl+G 9`** jumps straight to pinned note 1–9. **`Ctrl+G f p`** opens the pinned-notes dialog: press a number or `Enter` to open that note, `j`/`k` to move, `J`/`K` to reorder, `d` to unpin, Esc to close — changes are saved as you make them. Pins live in the vault (`.kimun/pinned-notes.toml`) so they travel with your notes; renaming or moving a pinned note keeps its pin, deleting it removes the pin, and a pin whose note vanished outside Kimün is shown as *(missing)* until you unpin it.
+Pin up to nine notes per vault for one-keystroke access — a tenth pin is refused rather than swapped in, and unpinning makes room. With a note open, **`Ctrl+B m i`** pins it (or unpins it if already pinned); **`Ctrl+B 1`**…**`Ctrl+B 9`** jumps straight to pinned note 1–9. **`Ctrl+B f p`** opens the pinned-notes dialog: press a number or `Enter` to open that note, `j`/`k` to move, `J`/`K` to reorder, `d` to unpin, Esc to close — changes are saved as you make them. Pins live in the vault (`.kimun/pinned-notes.toml`) so they travel with your notes; renaming or moving a pinned note keeps its pin, deleting it removes the pin, and a pin whose note vanished outside Kimün is shown as *(missing)* until you unpin it.
 
 ## Quick Note & Journal
 
@@ -212,7 +212,7 @@ Pin up to nine notes per vault for one-keystroke access — a tenth pin is refus
 
 ## Preferences Screen
 
-**`Ctrl+,`** opens Preferences: workspace paths, theme, keybindings, autosave, indexing. Also reachable via the palette, `Ctrl+G v p`, or the CFG drawer's `p`.
+**`Ctrl+,`** opens Preferences: workspace paths, theme, keybindings, autosave, indexing. Also reachable via the palette, `Ctrl+B v p`, or the CFG drawer's `p`.
 
 > Preferences was previously on `Ctrl+Shift+P`; it moved because that combination is a chord prefix in kitty's default configuration, which swallows the next key.
 
@@ -220,4 +220,4 @@ Pin up to nine notes per vault for one-keystroke access — a tenth pin is refus
 
 The full default table lives on the [Keybindings cheat-sheet](@/using-kimun/keybindings.md) — one screen, everything on it. All bindings are remappable in [Configuration](@/getting-started/configuration.md#key-bindings).
 
-Everything else lives behind the leader (`Ctrl+G`) — press it and pause: the which-key panel pops up and shows you everything available.
+Everything else lives behind the leader (`Ctrl+B`) — press it and pause: the which-key panel pops up and shows you everything available.
