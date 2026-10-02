@@ -127,7 +127,7 @@ const CONFIG_HEADER: &str = "\
 #   OpenSettings = [\"F4\", \"ctrl&,\"]     # F4 (Ctrl+, alias)
 #   NewJournal   = [\"ctrl&J\"]            # Ctrl+J
 #   FileOperations = [\"F2\"]              # F2  (open file-ops menu: delete/rename/move)
-#   Leader       = [\"ctrl&G\"]            # Ctrl+G  (leader gateway: Ctrl+G f f, ...)
+#   Leader       = [\"ctrl&B\"]            # Ctrl+B  (leader gateway: Ctrl+B f f, ...)
 #   OpenCommandPalette = [\"ctrl&P\"]      # Ctrl+P  (every leader command, fuzzy)
 #
 # OTHER SETTINGS
@@ -229,20 +229,22 @@ pub struct AppSettings {
 fn default_keybindings() -> KeyBindings {
     let mut kb = KeyBindings::empty();
     // No formatting chords. Markdown formatting lives on the leader's `+text`
-    // group (`Ctrl+G t b` / `t i` / `t s`) and nowhere else, because `Ctrl+I`
+    // group (`Ctrl+B t b` / `t i` / `t s`) and nowhere else, because `Ctrl+I`
     // is byte 0x09 — Tab's byte — on every terminal without the kitty keyboard
     // protocol, and when the move was made no other Ctrl+letter was free: all
     // 26 were claimed by this table or by the editor's own clipboard and undo
-    // chords, so Italic had nowhere to go. Keeping `Ctrl+B` and `Ctrl+S`
-    // working while `Ctrl+I` silently indented was the inconsistency worth
-    // removing, so all three moved rather than two staying — which is what
-    // freed those four letters again.
+    // chords, so Italic had nowhere to go. Keeping the old `Ctrl+B` and
+    // `Ctrl+S` chords working while `Ctrl+I` silently indented was the
+    // inconsistency worth removing, so all three moved rather than two
+    // staying — which is what freed those letters again (`Ctrl+B` has since
+    // been reclaimed below, for the gateway itself).
     //
     // The `Text(..)` actions are still bindable: they parse from a config file
     // and `editor_input::classify_tail` still claims them, so a user who wants
-    // `Ctrl+B` back writes one line. `Text(Underline)`, `Link`, `Image` and
-    // `ToggleHeader` are absent from the leader group too — `emphasis_marker`
-    // implements none of them, so there is nothing yet to reach.
+    // a direct chord back writes one line. `Text(Underline)`, `Link`, `Image`
+    // and `ToggleHeader` are absent from the leader group too —
+    // `emphasis_marker` implements none of them, so there is nothing yet to
+    // reach.
     kb.batch_add()
         .with_ctrl()
         .add(KeyStrike::KeyK, ActionShortcuts::SearchNotes)
@@ -261,14 +263,20 @@ fn default_keybindings() -> KeyBindings {
         // Drawer toggle. Deliberate spec deviation: the spec's Tier-0 puts
         // this on Ctrl-B; the toggle went to Ctrl-T instead to leave Ctrl-B on
         // Bold (decision 2026-06-05). Bold has since left the chord table for
-        // the leader, freeing Ctrl-B — but the toggle stays here, because
+        // the leader, and Ctrl-B now hosts the gateway itself (decision
+        // 2026-10-02) — but the toggle stays on Ctrl-T regardless, because
         // moving a chord people have in their fingers to satisfy a spec is
         // the cost without the benefit.
         .add(KeyStrike::KeyT, ActionShortcuts::ToggleSidebar)
         .add(KeyStrike::KeyR, ActionShortcuts::OpenSortDialog)
         // Leader gateway. Spec deviation: spec says Ctrl-K, which stays the
-        // note browser; the gateway lives on Ctrl-G (decision 2026-06-05).
-        .add(KeyStrike::KeyG, ActionShortcuts::Leader)
+        // note browser. Ctrl-G held the gateway from 2026-06-05 until Ctrl-B
+        // freed up (formatting left for the leader's own `+text` group);
+        // Ctrl-B is tmux's standard prefix, so new installs get it as the
+        // gateway instead (decision 2026-10-02). Existing config.toml files
+        // already have `Leader = ["ctrl&G"]` written from first run and are
+        // unaffected — this only changes what a fresh install picks up.
+        .add(KeyStrike::KeyB, ActionShortcuts::Leader)
         // FollowLink's always-works binding; Ctrl+Enter also follows on
         // kitty-protocol terminals (hardcoded in the editor screen).
         .add(KeyStrike::KeyN, ActionShortcuts::FollowLink)
@@ -318,7 +326,8 @@ fn default_keybindings() -> KeyBindings {
     // Ctrl+Shift is unreliable on some terminals and Ctrl+{A,C,V,X,Y,Z} are
     // claimed by the editor's own clipboard and undo chords. Ctrl+D was the
     // only free, terminal-safe combo when it was chosen; retiring the
-    // formatting chords has since freed Ctrl+{B,I,S,U} as well.
+    // formatting chords has since freed Ctrl+{I,S,U} as well (Ctrl+B is
+    // taken again — it now hosts the leader gateway, above).
     kb.batch_add()
         .with_ctrl()
         .add(KeyStrike::KeyD, ActionShortcuts::SaveCurrentQuery);
@@ -1417,7 +1426,7 @@ mod backend_tests {
         );
     }
 
-    /// All formatting lives on the leader (`Ctrl+G t b` / `t i` / `t s`), so
+    /// All formatting lives on the leader (`Ctrl+B t b` / `t i` / `t s`), so
     /// the chord table binds no text action at all. `Ctrl+I` cannot work
     /// outside the kitty keyboard protocol — it is Tab's byte — and having
     /// `Ctrl+B` and `Ctrl+S` work while it silently did not was the

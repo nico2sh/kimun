@@ -163,6 +163,7 @@ impl SuggestionItem {
 
 /// Autocomplete candidates for the query input, kept separate from the vault
 /// so the autocomplete host is testable in isolation.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait SuggestionSource: Send + Sync + 'static {
     async fn notes_by_prefix(&self, prefix: &str, limit: usize) -> Vec<SuggestionItem>;
@@ -235,6 +236,7 @@ impl SuggestionSource for VaultSuggestions {
 
 /// Where a `SearchList`'s rows come from. Vault-backed in the app, in-memory
 /// in tests. Streaming vs one-shot is a delivery detail of the SAME seam.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait RowSource<R: SearchRow>: Send + Sync + 'static {
     /// Called on construction and on every committed query change. Empty query

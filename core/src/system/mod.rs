@@ -1,8 +1,8 @@
 //! Host-scoped paths and file operations: the machine kimün runs on.
 //!
-//! Sibling of [`nfs`](crate::nfs), and the split between them is the whole
+//! Sibling of [`nfs`], and the split between them is the whole
 //! point. `nfs` is **vault-scoped** — it addresses notes with
-//! [`VaultPath`](crate::nfs::VaultPath) inside one workspace directory. This
+//! [`VaultPath`] inside one workspace directory. This
 //! module is **host-scoped**: the home directory, the app's own directories,
 //! and the file operations that carry OS-specific knowledge (verbatim paths,
 //! cross-volume moves, atomic replace). Everything else in the workspace goes

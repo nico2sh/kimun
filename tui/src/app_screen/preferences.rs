@@ -124,6 +124,7 @@ impl PreferencesScreen {
         let use_nerd_fonts = s.use_nerd_fonts;
         let update_check = s.update_check();
         let mouse = s.mouse();
+        let leader_timeout_ms = s.leader_timeout_ms;
         let server_url = s
             .workspace_config
             .as_ref()
@@ -139,7 +140,12 @@ impl PreferencesScreen {
         drop(s);
         Self {
             appearance_section: AppearanceSection::new(themes, &active_name),
-            display_section: DisplaySection::new(use_nerd_fonts, update_check, mouse),
+            display_section: DisplaySection::new(
+                use_nerd_fonts,
+                update_check,
+                mouse,
+                leader_timeout_ms,
+            ),
             sorting_section,
             workspaces_section,
             pending_create_name: None,
@@ -539,6 +545,7 @@ impl AppScreen for PreferencesScreen {
                                     .global;
                                 global.update_check = self.display_section.update_check;
                                 global.mouse = self.display_section.mouse;
+                                s.leader_timeout_ms = self.display_section.leader_timeout_ms;
                             }
                             r
                         }

@@ -1,7 +1,7 @@
 //! The **leader engine** — the non-modal key-sequence state machine behind
-//! the leader gateway (Ctrl-G; spec §8 says Ctrl-K, which stays the note
-//! browser here). The gateway starts a sequence in every context; subsequent
-//! keys walk the leader tree until a leaf fires, `Esc` cancels, or
+//! the leader gateway (Ctrl-B by default; spec §8 says Ctrl-K, which stays
+//! the note browser here). The gateway starts a sequence in every context;
+//! subsequent keys walk the leader tree until a leaf fires, `Esc` cancels, or
 //! `Backspace` steps up a level. The which-key overlay (phase 06) renders
 //! the pending node; this module is pure input logic.
 
