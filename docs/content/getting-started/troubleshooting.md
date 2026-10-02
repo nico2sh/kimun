@@ -31,14 +31,15 @@ Most terminals can't tell `Ctrl+Enter` from `Enter` unless the [kitty keyboard p
 
 ## Ctrl+B Doesn't Make Text Bold
 
-Formatting has no `Ctrl` chord. It lives in the leader's `+text` group:
-`Ctrl+G t b` for bold, `t i` for italic, `t s` for strikethrough.
+`Ctrl+B` is the leader gateway, not a formatting chord — press it, then
+`t b` for bold, `t i` for italic, `t s` for strikethrough.
 
 That is deliberate. `Ctrl+I` and `Tab` are the *same byte* (`0x09`) — ASCII,
 not a setting your terminal got wrong — so outside the [kitty keyboard
 protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/) `Ctrl+I` can only
-ever indent. Rather than have `Ctrl+B` and `Ctrl+S` work while `Ctrl+I` quietly
-did nothing, all three moved to the one route that works in every terminal.
+ever indent. Rather than have `Ctrl+B` and `Ctrl+S` work directly while
+`Ctrl+I` quietly did nothing, all three moved to the leader's `+text` group,
+the one route that works in every terminal.
 
 If you want a chord anyway, bind it — see [Keybindings](@/using-kimun/keybindings.md#defaults).
 Note that on `Ctrl+I` specifically it will indent rather than italicise unless

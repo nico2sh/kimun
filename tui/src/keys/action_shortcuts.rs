@@ -65,7 +65,7 @@ pub enum ActionShortcuts {
     // revealed. Ships with no default chord — the Ctrl-letter namespace is
     // full, and `Tab` from an open find bar reaches the same state.
     ReplaceInBuffer,
-    /// The leader gateway (Ctrl+G by default): starts a key sequence against
+    /// The leader gateway (Ctrl+B by default): starts a key sequence against
     /// the leader tree in every context, including mid-typing.
     Leader,
     /// The command palette (Ctrl+Shift+P by default): every leader command

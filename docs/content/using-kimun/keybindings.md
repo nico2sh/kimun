@@ -7,7 +7,7 @@ weight = 11
 
 Everything on one screen. Looking for how to *change* a binding? That's in [Configuration → Key Bindings](@/getting-started/configuration.md#key-bindings).
 
-> In the app itself: `F1` opens help, and `Ctrl+G ?` shows this same cheatsheet — with your custom bindings applied.
+> In the app itself: `F1` opens help, and `Ctrl+B ?` shows this same cheatsheet — with your custom bindings applied.
 
 > **Overriding replaces, it doesn't merge.** A `[key_bindings]` section in your config defines the *entire* keymap — any action you don't list ends up unbound (only `Quit` is auto-restored). To change one key, copy the full table below into your config and edit just the lines you want. Details in [Configuration → Key Bindings](@/getting-started/configuration.md#replace-not-merge).
 
@@ -16,7 +16,7 @@ Everything on one screen. Looking for how to *change* a binding? That's in [Conf
 | Action | Default |
 | ------ | ------- |
 | Quit | `Ctrl+Q` |
-| **Leader** (command sequences) | `Ctrl+G` |
+| **Leader** (command sequences) | `Ctrl+B` |
 | Command palette | `Ctrl+P` |
 | Preferences | `F4` / `Ctrl+,` |
 | Query search (telescope) | `Ctrl+K` |
@@ -34,8 +34,8 @@ Everything on one screen. Looking for how to *change* a binding? That's in [Conf
 | File operations | `F2` |
 | Switch workspace | `F5` |
 | Focus right / left | `Ctrl+L` / `Ctrl+H` |
-| Bold / Italic / Strikethrough | `Ctrl+G t b` / `t i` / `t s` — see below¹ |
-| Help | `F1` (cheatsheet: `Ctrl+G ?`) |
+| Bold / Italic / Strikethrough | `Ctrl+B t b` / `t i` / `t s` — see below¹ |
+| Help | `F1` (cheatsheet: `Ctrl+B ?`) |
 
 ¹ Formatting has no `Ctrl` chord, on purpose. `Ctrl+I` and `Tab` are the same
 byte (`0x09`) on every terminal without the [kitty keyboard
@@ -44,11 +44,12 @@ never be the route that works everywhere — and `Ctrl+B` and `Ctrl+S` working
 while `Ctrl+I` quietly indented was worse than one consistent route. All three
 live in the leader's `+text` group, which works in every terminal.
 
-Want a chord back? Bind one — the actions are still bindable:
+Want a chord back? Bind one — the actions are still bindable (just not on
+`Ctrl+B`, which is the leader gateway by default):
 
 ```toml
 [key_bindings]
-TextEditor-Bold = ["ctrl&B"]
+TextEditor-Bold = ["ctrl&S"]
 ```
 
 Remember that a `[key_bindings]` section [replaces the whole
@@ -56,7 +57,7 @@ keymap](@/getting-started/configuration.md#replace-not-merge).
 
 ## The Leader Tree
 
-Everything else lives behind the leader: press `Ctrl+G`, then a short sequence. Pause mid-sequence and the which-key panel shows you what's next.
+Everything else lives behind the leader: press `Ctrl+B`, then a short sequence. Pause mid-sequence and the which-key panel shows you what's next.
 
 | Group | Keys | Examples |
 | ----- | ---- | -------- |
