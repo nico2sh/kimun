@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.5](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.24.4...kimun-notes-v0.24.5) - 2026-10-02
+
+### Added
+
+- new preference for timeout of the whichkey hint
+
+### Other
+
+- clippy
+- clippy
+- lead key changed to ctrl B
+
 ## [0.24.4](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.24.3...kimun-notes-v0.24.4) - 2026-09-30
 
 ### Added
