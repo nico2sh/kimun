@@ -3,7 +3,7 @@ use chrono::Utc;
 use kimun_core::NoteVault;
 use kimun_core::nfs::NoteEntryData;
 use kimun_core::nfs::VaultPath;
-use kimun_core::note::NoteContentData;
+use kimun_core::note::{NoteContentData, NoteDetails, PropertyValue};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -23,12 +23,44 @@ pub struct JsonOutputMetadata {
     pub generated_at: String,
 }
 
+/// A note's frontmatter properties, serialized as one JSON object whose
+/// keys keep the note's order (`{"status": "done", "priority": 2}`).
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct JsonProperties(pub Vec<(String, PropertyValue)>);
+
+impl Serialize for JsonProperties {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(self.0.len()))?;
+        for (key, value) in &self.0 {
+            map.serialize_entry(key, value)?;
+        }
+        map.end()
+    }
+}
+
 /// Nested note-level metadata extracted from content
 #[derive(Debug, Serialize, Deserialize)]
 pub struct JsonNoteMetadata {
     pub tags: Vec<String>,
     pub links: Vec<String>,
     pub headers: Vec<JsonHeader>,
+    /// Frontmatter properties. Output only.
+    #[serde(skip_deserializing, default)]
+    pub properties: JsonProperties,
+}
+
+impl JsonNoteMetadata {
+    /// Everything the JSON output reports about a note's own text: labels,
+    /// links, headings and frontmatter properties.
+    pub fn from_content(content: &str) -> Self {
+        Self {
+            tags: extract_tags(content),
+            links: extract_links(content),
+            headers: extract_headers(content),
+            properties: JsonProperties(NoteDetails::properties_of(content)),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -85,10 +117,6 @@ pub fn format_notes_with_content_as_json(
 
             let content: &str = content_lookup.get(&path_str).copied().unwrap_or("");
 
-            let tags = extract_tags(content);
-            let links = extract_links(content);
-            let headers = extract_headers(content);
-
             // Detect journal date using vault
             let journal_date = vault
                 .journal_date(&entry_data.path)
@@ -106,11 +134,7 @@ pub fn format_notes_with_content_as_json(
                 created,
                 hash: format!("{:x}", content_data.hash),
                 journal_date,
-                metadata: JsonNoteMetadata {
-                    tags,
-                    links,
-                    headers,
-                },
+                metadata: JsonNoteMetadata::from_content(content),
                 backlinks: None,
             }
         })

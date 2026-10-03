@@ -653,3 +653,152 @@ async fn test_note_show_partial_failure_returns_err() {
 
     assert!(result.is_err(), "partial failure should return Err");
 }
+
+// --- note prop ---
+
+use kimun_notes::cli::commands::properties::{PropFormat, PropSubcommand};
+
+async fn prop(config_path: &std::path::Path, subcommand: PropSubcommand) -> color_eyre::Result<()> {
+    run_cli(
+        CliCommand::Note {
+            subcommand: NoteSubcommand::Prop { subcommand },
+        },
+        Some(config_path.to_path_buf()),
+    )
+    .await
+}
+
+fn set(path: &str, key: &str, values: &[&str]) -> PropSubcommand {
+    PropSubcommand::Set {
+        path: path.to_string(),
+        key: key.to_string(),
+        values: values.iter().map(|v| v.to_string()).collect(),
+        kind: None,
+        yaml: false,
+    }
+}
+
+#[tokio::test]
+async fn test_note_prop_set_infers_and_writes_frontmatter() {
+    let config_dir = TempDir::new().unwrap();
+    let config_path = config_dir.path().join("config.toml");
+    let workspace_dir = TempDir::new().unwrap();
+    std::fs::write(workspace_dir.path().join("garden.md"), "# Garden\n").unwrap();
+    write_config(&config_path, workspace_dir.path()).await;
+
+    prop(&config_path, set("/garden", "priority", &["2"]))
+        .await
+        .unwrap();
+    prop(&config_path, set("/garden", "tags", &["garden", "spring"]))
+        .await
+        .unwrap();
+    prop(&config_path, set("/garden", "zip", &["02134"]))
+        .await
+        .unwrap();
+
+    let content = std::fs::read_to_string(workspace_dir.path().join("garden.md")).unwrap();
+    assert_eq!(
+        content,
+        "+++\npriority = 2\ntags = [\"garden\", \"spring\"]\nzip = \"02134\"\n+++\n# Garden\n"
+    );
+}
+
+#[tokio::test]
+async fn test_note_prop_set_yaml_flag_picks_new_block_format() {
+    let config_dir = TempDir::new().unwrap();
+    let config_path = config_dir.path().join("config.toml");
+    let workspace_dir = TempDir::new().unwrap();
+    std::fs::write(workspace_dir.path().join("n.md"), "body\n").unwrap();
+    write_config(&config_path, workspace_dir.path()).await;
+
+    let mut sub = set("/n", "status", &["open"]);
+    if let PropSubcommand::Set { yaml, .. } = &mut sub {
+        *yaml = true;
+    }
+    prop(&config_path, sub).await.unwrap();
+    let content = std::fs::read_to_string(workspace_dir.path().join("n.md")).unwrap();
+    assert_eq!(content, "---\nstatus: open\n---\nbody\n");
+}
+
+#[tokio::test]
+async fn test_note_prop_set_refuses_vault_type_mismatch_unless_typed() {
+    let config_dir = TempDir::new().unwrap();
+    let config_path = config_dir.path().join("config.toml");
+    let workspace_dir = TempDir::new().unwrap();
+    std::fs::write(
+        workspace_dir.path().join("a.md"),
+        "+++\npriority = 1\n+++\n",
+    )
+    .unwrap();
+    std::fs::write(workspace_dir.path().join("b.md"), "body\n").unwrap();
+    write_config(&config_path, workspace_dir.path()).await;
+
+    let err = prop(&config_path, set("/b", "priority", &["high"]))
+        .await
+        .unwrap_err();
+    let vault_err = err
+        .downcast_ref::<kimun_core::error::VaultError>()
+        .expect("a typed VaultError reaches the CLI boundary");
+    assert!(
+        vault_err
+            .user_message()
+            .unwrap()
+            .contains("holds number values")
+    );
+    assert_eq!(
+        std::fs::read_to_string(workspace_dir.path().join("b.md")).unwrap(),
+        "body\n"
+    );
+
+    let mut typed = set("/b", "priority", &["high"]);
+    if let PropSubcommand::Set { kind, .. } = &mut typed {
+        *kind = Some(kimun_core::note::PropertyKind::Text);
+    }
+    prop(&config_path, typed).await.unwrap();
+    assert!(
+        std::fs::read_to_string(workspace_dir.path().join("b.md"))
+            .unwrap()
+            .contains("priority = \"high\"")
+    );
+}
+
+#[tokio::test]
+async fn test_note_prop_get_list_and_remove() {
+    let config_dir = TempDir::new().unwrap();
+    let config_path = config_dir.path().join("config.toml");
+    let workspace_dir = TempDir::new().unwrap();
+    std::fs::write(
+        workspace_dir.path().join("n.md"),
+        "+++\nstatus = \"done\"\nn = 1\n+++\nbody\n",
+    )
+    .unwrap();
+    write_config(&config_path, workspace_dir.path()).await;
+
+    let get = |key: &str| PropSubcommand::Get {
+        path: "/n".to_string(),
+        key: key.to_string(),
+        format: PropFormat::Json,
+    };
+    prop(&config_path, get("STATUS")).await.unwrap();
+    assert!(prop(&config_path, get("missing")).await.is_err());
+    prop(
+        &config_path,
+        PropSubcommand::List {
+            path: "/n".to_string(),
+            format: PropFormat::Text,
+        },
+    )
+    .await
+    .unwrap();
+
+    let remove = |key: &str| PropSubcommand::Remove {
+        path: "/n".to_string(),
+        key: key.to_string(),
+    };
+    prop(&config_path, remove("status")).await.unwrap();
+    prop(&config_path, remove("status")).await.unwrap();
+    assert_eq!(
+        std::fs::read_to_string(workspace_dir.path().join("n.md")).unwrap(),
+        "+++\nn = 1\n+++\nbody\n"
+    );
+}

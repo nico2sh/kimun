@@ -1,7 +1,7 @@
 pub(crate) mod content_extractor;
 pub(crate) mod properties;
 
-pub use properties::{FrontmatterFormat, PropertyValue};
+pub use properties::{FrontmatterFormat, PropertyKind, PropertyValue};
 
 use std::fmt::Display;
 

@@ -5,6 +5,7 @@ pub mod labels;
 pub mod mcp;
 pub mod note_ops;
 pub mod notes;
+pub mod properties;
 pub mod search;
 pub mod update;
 pub mod workspace;

@@ -67,6 +67,11 @@ pub enum NoteSubcommand {
         #[arg(long)]
         preview: bool,
     },
+    /// Read and edit a note's frontmatter properties
+    Prop {
+        #[command(subcommand)]
+        subcommand: super::properties::PropSubcommand,
+    },
     /// Delete a note (requires --force; the content is backed up first)
     Delete {
         /// Note path, relative to quick_note_path or absolute from vault root
@@ -129,6 +134,9 @@ pub async fn run(
         }
         NoteSubcommand::Delete { path, force } => {
             run_delete(vault, &path, force, quick_note_path).await
+        }
+        NoteSubcommand::Prop { subcommand } => {
+            super::properties::run(subcommand, vault, quick_note_path).await
         }
     }
 }
@@ -331,7 +339,7 @@ async fn run_show(
     use crate::cli::json_output::{
         JsonNoteEntry, JsonNoteMetadata, JsonOutput, JsonOutputMetadata,
     };
-    use crate::cli::metadata_extractor::{extract_headers, extract_links, extract_tags};
+    use crate::cli::metadata_extractor::{extract_links, extract_tags};
     use crate::cli::output::OutputFormat;
     use chrono::Utc;
 
@@ -410,9 +418,6 @@ async fn run_show(
                     .note_entry(&vault_path)
                     .await
                     .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
-                let tags = extract_tags(content);
-                let links = extract_links(content);
-                let headers = extract_headers(content);
                 let journal_date = vault
                     .journal_date(&vault_path)
                     .map(|d| d.format("%Y-%m-%d").to_string());
@@ -425,11 +430,7 @@ async fn run_show(
                     created: entry_data.modified_secs, // TODO: track actual creation time
                     hash: format!("{:x}", content_data.hash),
                     journal_date,
-                    metadata: JsonNoteMetadata {
-                        tags,
-                        links,
-                        headers,
-                    },
+                    metadata: JsonNoteMetadata::from_content(content),
                     backlinks: if backlink_paths.is_empty() {
                         None
                     } else {

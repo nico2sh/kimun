@@ -8,36 +8,19 @@
 //! editing is strict (a malformed block refuses the edit).
 
 mod toml_formatter;
+mod value;
 mod yaml_formatter;
+
+pub use value::{PropertyKind, PropertyValue};
 
 use std::collections::HashSet;
 use std::ops::Range;
 
-use chrono::{DateTime, NaiveDate, SecondsFormat, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
 
 use super::content_extractor::frontmatter_delimiter;
 use toml_formatter::TomlFormatter;
 use yaml_formatter::YamlFormatter;
-
-/// A typed frontmatter property value — the neutral model every
-/// `PropertyFormatter` parses into and writes from. Mirrors Obsidian's
-/// property types.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
-pub enum PropertyValue {
-    /// Free text.
-    Text(String),
-    /// Any number. Integers beyond 2^53 lose exactness (as in Obsidian).
-    Number(f64),
-    /// `true` / `false`.
-    Bool(bool),
-    /// A calendar date with no time component.
-    Date(NaiveDate),
-    /// A date and time; offset-less sources are read as UTC.
-    DateTime(DateTime<Utc>),
-    /// A list of text items (Obsidian's List type); non-text items are
-    /// stringified.
-    List(Vec<String>),
-}
 
 /// The syntax of a frontmatter block, chosen by its delimiter: `+++` is TOML,
 /// `---` is YAML.
@@ -48,6 +31,21 @@ pub enum FrontmatterFormat {
     Toml,
     /// `---`-delimited YAML, as written by Obsidian.
     Yaml,
+}
+
+/// Parses `toml` / `yaml` (case-insensitive).
+impl std::str::FromStr for FrontmatterFormat {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_lowercase().as_str() {
+            "toml" => Ok(FrontmatterFormat::Toml),
+            "yaml" => Ok(FrontmatterFormat::Yaml),
+            other => Err(format!(
+                "unknown frontmatter format '{other}' (expected toml or yaml)"
+            )),
+        }
+    }
 }
 
 impl FrontmatterFormat {
@@ -354,7 +352,7 @@ fn nested_key_error(key: &str) -> FrontmatterError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
+    use chrono::{NaiveDate, TimeZone};
 
     pub(super) fn d(y: i32, m: u32, day: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(y, m, day).unwrap()
