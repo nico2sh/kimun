@@ -1,6 +1,5 @@
 use crate::cli::json_output::JsonHeader;
 use regex::Regex;
-use std::collections::HashSet;
 use std::sync::OnceLock;
 
 fn header_regex() -> &'static Regex {
@@ -8,28 +7,10 @@ fn header_regex() -> &'static Regex {
     REGEX.get_or_init(|| Regex::new(r"^(#{1,6})\s+(.+)$").unwrap())
 }
 
+/// The note's labels as the index records them — inline `#hashtags` plus
+/// the frontmatter `tags` property, TOML or YAML.
 pub fn extract_tags(content: &str) -> Vec<String> {
-    let mut tags: HashSet<String> = HashSet::new();
-
-    // Extract from YAML frontmatter
-    if let Some(frontmatter) = extract_frontmatter(content)
-        && let Some(yaml_tags) = extract_frontmatter_tags(&frontmatter)
-    {
-        for tag in yaml_tags {
-            tags.insert(tag.to_lowercase());
-        }
-    }
-
-    // Extract hashtags from content (consistent with core's label_matches:
-    // applies word-boundary, ASCII-only label name, and skips frontmatter/
-    // code/HTML/markdown-link/wikilink zones — matching what core indexes.)
-    for tag in kimun_core::note::extract_labels(content) {
-        tags.insert(tag);
-    }
-
-    let mut result: Vec<String> = tags.into_iter().collect();
-    result.sort();
-    result
+    kimun_core::note::note_tags(content)
 }
 
 pub fn extract_links(content: &str) -> Vec<String> {
@@ -55,143 +36,16 @@ pub fn extract_headers(content: &str) -> Vec<JsonHeader> {
     headers
 }
 
-fn extract_frontmatter(content: &str) -> Option<String> {
-    if !content.starts_with("---") {
-        return None;
-    }
-
-    let lines: Vec<&str> = content.lines().collect();
-    if lines.len() < 3 {
-        return None;
-    }
-
-    let mut end_index = None;
-    for (i, line) in lines.iter().enumerate().skip(1) {
-        if line.trim() == "---" {
-            end_index = Some(i);
-            break;
-        }
-    }
-
-    if let Some(end) = end_index {
-        let frontmatter_lines = &lines[1..end];
-        Some(frontmatter_lines.join("\n"))
-    } else {
-        None
-    }
-}
-
-fn extract_frontmatter_tags(frontmatter: &str) -> Option<Vec<String>> {
-    let mut tags: Vec<String> = Vec::new();
-    let mut in_tags_block = false;
-
-    for line in frontmatter.lines() {
-        let line = line.trim();
-
-        // Handle "tags: [tag1, tag2]" format (inline array)
-        if let Some(tags_str) = line.strip_prefix("tags:") {
-            let trimmed = tags_str.trim();
-
-            // Check if this is an inline array format
-            if trimmed.starts_with('[') && trimmed.ends_with(']') {
-                let cleaned = trimmed
-                    .strip_prefix('[')
-                    .and_then(|s| s.strip_suffix(']'))
-                    .unwrap_or(trimmed);
-
-                for tag in cleaned.split(',') {
-                    let clean_tag = tag
-                        .trim()
-                        .strip_prefix('"')
-                        .and_then(|s| s.strip_suffix('"'))
-                        .or_else(|| {
-                            tag.trim()
-                                .strip_prefix('\'')
-                                .and_then(|s| s.strip_suffix('\''))
-                        })
-                        .unwrap_or(tag.trim());
-
-                    if !clean_tag.is_empty() {
-                        tags.push(clean_tag.to_string());
-                    }
-                }
-            }
-            // Check if this is the start of a block sequence (no content after colon, or just empty)
-            else if trimmed.is_empty() {
-                in_tags_block = true;
-            }
-            // Single tag on same line as "tags:"
-            else {
-                let clean_tag = trimmed
-                    .strip_prefix('"')
-                    .and_then(|s| s.strip_suffix('"'))
-                    .unwrap_or(trimmed);
-                if !clean_tag.is_empty() {
-                    tags.push(clean_tag.to_string());
-                }
-            }
-        }
-        // Handle YAML block sequence format (tags: \n  - tag1 \n  - tag2)
-        else if in_tags_block && line.starts_with('-') {
-            if let Some(tag_str) = line.strip_prefix('-') {
-                let clean_tag = tag_str
-                    .trim()
-                    .strip_prefix('"')
-                    .and_then(|s| s.strip_suffix('"'))
-                    .or_else(|| {
-                        tag_str
-                            .trim()
-                            .strip_prefix('\'')
-                            .and_then(|s| s.strip_suffix('\''))
-                    })
-                    .unwrap_or(tag_str.trim());
-
-                if !clean_tag.is_empty() {
-                    tags.push(clean_tag.to_string());
-                }
-            }
-        }
-        // Handle "tag: value" format (single tag)
-        else if let Some(tag_str) = line.strip_prefix("tag:") {
-            let clean_tag = tag_str
-                .trim()
-                .strip_prefix('"')
-                .and_then(|s| s.strip_suffix('"'))
-                .unwrap_or(tag_str.trim());
-
-            if !clean_tag.is_empty() {
-                tags.push(clean_tag.to_string());
-            }
-        }
-        // Exit tags block if we encounter a new YAML key or empty line
-        else if in_tags_block && (line.contains(':') || line.is_empty()) {
-            in_tags_block = false;
-        }
-    }
-
-    if tags.is_empty() { None } else { Some(tags) }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn frontmatter_tags_array_format() {
-        let frontmatter = r#"tags: ["project", "urgent"]
-title: "Test Note""#;
-
-        let tags = extract_frontmatter_tags(frontmatter).unwrap();
-        assert_eq!(tags, vec!["project", "urgent"]);
-    }
-
-    #[test]
-    fn frontmatter_single_tag_format() {
-        let frontmatter = r#"tag: meeting
-title: "Test Note""#;
-
-        let tags = extract_frontmatter_tags(frontmatter).unwrap();
-        assert_eq!(tags, vec!["meeting"]);
+    fn frontmatter_tags_in_either_format() {
+        let yaml = "---\ntags:\n  - Project\n  - urgent\ntitle: Test\n---\nbody";
+        assert_eq!(extract_tags(yaml), ["project", "urgent"]);
+        let toml = "+++\ntags = [\"meeting\"]\n+++\nbody #notes";
+        assert_eq!(extract_tags(toml), ["meeting", "notes"]);
     }
 
     #[test]

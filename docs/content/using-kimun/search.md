@@ -141,7 +141,7 @@ An unknown label returns zero results, not an error.
 - **Allowed characters:** letters, digits, underscores (`[A-Za-z0-9_]+`). A hashtag ends at the first character outside that set, so `#tag-with-dash` yields the label `tag`.
 - **Case-insensitive:** stored lowercase; `#Finance` and `#finance` are the same label.
 - **Not indexed as labels:** hashtags inside inline code or fenced code blocks, HTML, Markdown link spans `[text](url#fragment)`, or wikilinks `[[#section]]`. A `#word` written inside frontmatter is not a label either.
-- **Frontmatter tags count too:** a `tags` property (`tags = ["a", "b"]` in TOML, `tags: [a, b]` or a `- a` list in YAML) adds its items as labels, so `#a` finds the note. A plain string (`tags: big project`) is one label. Frontmatter tags may contain characters inline hashtags can't (spaces, dashes); quote them in queries: `#"big project"`.
+- **Frontmatter tags count too:** a `tags` property (`tags = ["a", "b"]` in TOML, `tags: [a, b]` or a `- a` list in YAML) adds its items as labels, so `#a` finds the note. The singular `tag` key older Obsidian notes use works the same way. A plain string (`tags: big project`) is one label. Frontmatter tags may contain characters inline hashtags can't (spaces, dashes); quote them in queries: `#"big project"`.
 
 ## Properties
 
@@ -171,7 +171,7 @@ prop:status=done      → status equals "done" (case-insensitive)
 prop:"due date<2025-01-01" → quote the whole term when the key has spaces
 ```
 
-A key on its own (`%due`, `prop:"due date"`) finds notes that have the property at all — an empty list (`tags = []`) counts. A key followed by an operator but no value (`%due=`) is ignored.
+A key on its own (`%due`, `prop:"due date"`) finds notes that have the property at all — even with no value: an empty list (`tags = []`) or a blank YAML entry (`due:`, which Obsidian writes for an unset property) counts, and `%due!=x` includes them too. A key followed by an operator but no value (`%due=`) is ignored.
 
 Operators: `=` `!=` `<` `<=` `>` `>=`. A comparison that doesn't fit the property's type (for example `%due>5` on a date, or `<` on a list) matches nothing rather than erroring.
 

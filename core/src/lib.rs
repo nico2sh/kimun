@@ -61,7 +61,7 @@ pub use index::file::IndexFile;
 pub use index::search_terms::{
     expand_bare_note_prefixes, query_has_unterminated_quote, query_token_spans, quote_query_term,
     strip_order_directive, with_order_directive, OrderBy, OrderField, PropertyFilter, PropertyOp,
-    QueryTokenClass, QueryTokenSpan, SearchTerms,
+    PropertyTest, QueryTokenClass, QueryTokenSpan, SearchTerms,
 };
 pub use index::{IndexDiff, IndexObserver, NoteChange, NoteSuggestion, TagSuggestion};
 pub use nfs::pinned_notes::{PinToggle, PINNED_NOTES_CAP};
@@ -1285,10 +1285,12 @@ impl NoteVault {
         path: &VaultPath,
         key: &str,
     ) -> Result<Option<PropertyValue>, VaultError> {
-        let key = key.trim().to_lowercase();
-        Ok(self
-            .get_properties(path)
-            .await?
+        let properties = self.get_properties(path).await?;
+        // A key that can't be a property (empty, multi-line) is never found.
+        let Some(key) = properties::normalize_key(key) else {
+            return Ok(None);
+        };
+        Ok(properties
             .into_iter()
             .find_map(|(k, v)| (k == key).then_some(v)))
     }

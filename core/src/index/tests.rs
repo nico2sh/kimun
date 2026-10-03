@@ -1768,6 +1768,17 @@ async fn prop_rows(db: &NoteIndex, path: &str) -> Vec<PropRow> {
     .unwrap()
 }
 
+/// Every `property_keys` key of `path`, sorted.
+async fn key_rows(db: &NoteIndex, path: &str) -> Vec<String> {
+    let rows: Vec<(String,)> =
+        sqlx::query_as("SELECT key FROM property_keys WHERE path = ? ORDER BY key")
+            .bind(path)
+            .fetch_all(db.pool())
+            .await
+            .unwrap();
+    rows.into_iter().map(|(k,)| k).collect()
+}
+
 #[tokio::test]
 async fn properties_table_and_indexes_exist() {
     let (_tmp, db) = open_temp().await;
@@ -1775,6 +1786,8 @@ async fn properties_table_and_indexes_exist() {
         ("table", "properties"),
         ("index", "properties_by_key_text"),
         ("index", "properties_by_key_num"),
+        ("table", "property_keys"),
+        ("index", "property_keys_by_key"),
     ] {
         let row: (i64,) =
             sqlx::query_as("SELECT COUNT(*) FROM sqlite_master WHERE type = ? AND name = ?")
@@ -1814,6 +1827,24 @@ async fn saving_a_note_indexes_its_properties() {
 }
 
 #[tokio::test]
+async fn every_key_is_recorded_valued_or_not() {
+    let (_tmp, db) = open_temp().await;
+    db.apply(added(vec![note(
+        "/n.md",
+        "---\nstatus:\ntags: []\nn: .nan\nok: 1\nmeta:\n  x: 1\n---\n",
+    )]))
+    .await
+    .unwrap();
+    assert_eq!(key_rows(&db, "/n.md").await, ["n", "ok", "status", "tags"]);
+    let valued: Vec<String> = prop_rows(&db, "/n.md")
+        .await
+        .into_iter()
+        .map(|r| r.0)
+        .collect();
+    assert_eq!(valued, ["ok"], "only usable values get value rows");
+}
+
+#[tokio::test]
 async fn resaving_without_a_key_removes_its_rows() {
     let (_tmp, db) = open_temp().await;
     db.apply(added(vec![note("/n.md", "+++\na = 1\nb = 2\n+++\n")]))
@@ -1828,6 +1859,7 @@ async fn resaving_without_a_key_removes_its_rows() {
         .map(|r| r.0)
         .collect();
     assert_eq!(keys, vec!["b".to_string()]);
+    assert_eq!(key_rows(&db, "/n.md").await, ["b"]);
 }
 
 #[tokio::test]
@@ -1899,12 +1931,15 @@ async fn properties_follow_note_rename_and_delete() {
     .await
     .unwrap();
     assert!(prop_rows(&db, "/old.md").await.is_empty());
+    assert!(key_rows(&db, "/old.md").await.is_empty());
     assert_eq!(prop_rows(&db, "/new.md").await.len(), 1);
+    assert_eq!(key_rows(&db, "/new.md").await, ["a"]);
 
     db.delete_notes(&[VaultPath::note_path_from("/new.md")])
         .await
         .unwrap();
     assert!(prop_rows(&db, "/new.md").await.is_empty());
+    assert!(key_rows(&db, "/new.md").await.is_empty());
 }
 
 #[tokio::test]
@@ -1917,12 +1952,15 @@ async fn properties_follow_directory_rename_and_delete() {
         .await
         .unwrap();
     assert!(prop_rows(&db, "/old_dir/n.md").await.is_empty());
+    assert!(key_rows(&db, "/old_dir/n.md").await.is_empty());
     assert_eq!(prop_rows(&db, "/new_dir/n.md").await.len(), 1);
+    assert_eq!(key_rows(&db, "/new_dir/n.md").await, ["a"]);
 
     db.delete_directories(&[VaultPath::new("/new_dir")])
         .await
         .unwrap();
     assert!(prop_rows(&db, "/new_dir/n.md").await.is_empty());
+    assert!(key_rows(&db, "/new_dir/n.md").await.is_empty());
 }
 
 #[tokio::test]
@@ -1930,11 +1968,12 @@ async fn stale_schema_version_rebuilds_with_properties_table() {
     let tmp = tempfile::TempDir::new().unwrap();
     let file = file::IndexFile::at(crate::system::sys(tmp.path().join("kimun.sqlite")));
     let db = NoteIndex::open(&file).await.unwrap();
-    sqlx::query("UPDATE appData SET value = '0.11' WHERE name = 'version'")
+    // A 0.12 index: properties but no property_keys.
+    sqlx::query("UPDATE appData SET value = '0.12' WHERE name = 'version'")
         .execute(db.pool())
         .await
         .unwrap();
-    sqlx::query("DROP TABLE properties")
+    sqlx::query("DROP TABLE property_keys")
         .execute(db.pool())
         .await
         .unwrap();
@@ -1949,6 +1988,7 @@ async fn stale_schema_version_rebuilds_with_properties_table() {
         .await
         .unwrap();
     assert_eq!(prop_rows(&db, "/n.md").await.len(), 1);
+    assert_eq!(key_rows(&db, "/n.md").await, ["a"]);
     db.close().await;
 }
 
@@ -1985,6 +2025,33 @@ async fn prop_has_property() {
         vec!["/c.md"]
     );
     assert!(db.search("%missing").await.unwrap().is_empty());
+}
+
+// A YAML key with no value (`status:`, Obsidian's unset property) is a
+// property the note has, without a value to compare.
+#[tokio::test]
+async fn prop_valueless_yaml_key_counts_as_present() {
+    let (_tmp, db) = prop_fixture().await;
+    db.apply(added(vec![note("/f.md", "---\nstatus:\n---\n")]))
+        .await
+        .unwrap();
+    assert_eq!(
+        paths(&db.search("%status").await.unwrap()),
+        vec!["/a.md", "/b.md", "/f.md"]
+    );
+    assert_eq!(
+        paths(&db.search("-%status").await.unwrap()),
+        vec!["/c.md", "/d.md"]
+    );
+    assert_eq!(
+        paths(&db.search("%status!=done").await.unwrap()),
+        vec!["/b.md", "/f.md"],
+        "has status, and it isn't done"
+    );
+    assert_eq!(
+        paths(&db.search("%status=done").await.unwrap()),
+        vec!["/a.md"]
+    );
 }
 
 // An empty list is still a property the note has, but holds no values.

@@ -7,7 +7,7 @@ use toml_edit::{DocumentMut, Item, Value};
 
 use super::{
     finite, format_datetime, format_number, is_integral, nested_key_error, FrontmatterError,
-    PropertyFormatter, PropertyValue,
+    PropertyEntry, PropertyFormatter, PropertyValue,
 };
 use crate::dates::format_iso_date;
 
@@ -15,11 +15,12 @@ use crate::dates::format_iso_date;
 pub(super) struct TomlFormatter;
 
 impl PropertyFormatter for TomlFormatter {
-    fn parse(&self, block: &str) -> Result<Vec<(String, PropertyValue)>, FrontmatterError> {
+    fn parse(&self, block: &str) -> Result<Vec<PropertyEntry>, FrontmatterError> {
         let doc = document(block)?;
+        // A `[table]` / `[[array]]` item is not a value, so not a property.
         Ok(doc
             .iter()
-            .filter_map(|(k, item)| Some((k.to_lowercase(), read_value(item.as_value()?)?)))
+            .filter_map(|(k, item)| Some((k.to_lowercase(), read_value(item.as_value()?))))
             .collect())
     }
 
@@ -206,7 +207,12 @@ mod tests {
     use super::*;
 
     fn parse(block: &str) -> Vec<(String, PropertyValue)> {
-        TomlFormatter.parse(block).unwrap()
+        TomlFormatter
+            .parse(block)
+            .unwrap()
+            .into_iter()
+            .filter_map(|(k, v)| Some((k, v?)))
+            .collect()
     }
 
     #[test]

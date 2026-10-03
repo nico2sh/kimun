@@ -6,13 +6,13 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use log::{debug, error};
-use search_terms::{OrderBy, PropertyFilter, PropertyOp, SearchTerms};
+use search_terms::{OrderBy, PropertyFilter, PropertyOp, PropertyTest, SearchTerms};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 
 pub(crate) mod file;
 use sqlx::{Row, Sqlite, Transaction};
 
-use crate::note::properties::{format_datetime, format_number, frontmatter_tags, parse_datetime};
+use crate::note::properties::{format_datetime, format_number, parse_datetime, PropertySet};
 use crate::note::PropertyValue;
 use crate::note::{ContentChunk, LinkType, NoteContentData, NoteDetails};
 
@@ -120,7 +120,15 @@ use super::{
 // 0.12: Added the `properties` table (typed frontmatter key/values) and the
 //       frontmatter `tags:` → `labels` unification. Bump forces a clean
 //       reindex so existing vaults get both populated.
-const VERSION: &str = "0.12";
+// 0.13: Added `property_keys` (which keys each note has, valued or not, for
+//       the `%key` has-property filter). Bump forces a clean reindex so it is
+//       filled — and drops 0.12 builds' value-less empty-list rows.
+const VERSION: &str = "0.13";
+
+/// Tables whose rows belong to one note through a `path` column. Every save,
+/// rename and delete keeps all of them in step with the note, so a new
+/// per-note table only has to be listed here.
+const NOTE_PATH_TABLES: [&str; 4] = ["notesContent", "labels", "properties", "property_keys"];
 pub(crate) const DB_FILE: &str = "kimun.sqlite";
 
 /// The diff a vault sync walk produces and `NoteIndex::apply` consumes in
@@ -949,7 +957,7 @@ async fn create_tables(pool: &SqlitePool) -> Result<(), DBError> {
             key TEXT NOT NULL,
             list_index INTEGER NOT NULL DEFAULT 0,
             value_type TEXT NOT NULL,
-            value_text TEXT,
+            value_text TEXT NOT NULL,
             value_num REAL,
             PRIMARY KEY (path, key, list_index)
         )",
@@ -962,6 +970,21 @@ async fn create_tables(pool: &SqlitePool) -> Result<(), DBError> {
         .execute(&mut *tx)
         .await?;
     sqlx::query("CREATE INDEX properties_by_key_num ON properties(key, value_num)")
+        .execute(&mut *tx)
+        .await?;
+
+    // Every frontmatter key a note has, whether or not its value is usable
+    // (YAML `key:`, an empty list, a non-finite number): backs `%key`.
+    sqlx::query(
+        "CREATE TABLE property_keys (
+            path TEXT NOT NULL,
+            key TEXT NOT NULL,
+            PRIMARY KEY (path, key)
+        )",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("CREATE INDEX property_keys_by_key ON property_keys(key)")
         .execute(&mut *tx)
         .await?;
 
@@ -1470,31 +1493,43 @@ fn add_properties_query(
     );
 }
 
-/// `SELECT path FROM properties …` for one `prop:` filter. A query value that
-/// parses as a finite number compares numerically against `number` rows (and,
-/// for `=`/`!=`, also textually against non-number rows, so `version=10`
-/// still finds the text "10"); any other value compares `value_text`
-/// lexicographically, which orders ISO dates correctly. Ordering operators
-/// never match lists or bools; a type mismatch is simply no match. `!=` means
-/// "has the key, and no value equal to this" (so on a list: does not contain).
-/// `Exists` (`%key`) is "has the key", whatever its value — an empty list
-/// included, since it is indexed as one value-less row.
+/// `SELECT path FROM …` for one `prop:` filter: a has-property test against
+/// `property_keys`, or a value comparison (see [`property_comparison`]).
 fn property_subquery(f: &PropertyFilter, var_num: &mut usize, params: &mut Vec<String>) -> String {
     let k = *var_num;
     params.push(f.key.clone());
     *var_num += 1;
-    if f.op == PropertyOp::Exists {
-        return format!("SELECT path FROM properties WHERE key = ?{k}");
+    match &f.test {
+        PropertyTest::Exists => format!("SELECT path FROM property_keys WHERE key = ?{k}"),
+        PropertyTest::Compare { op, value } => property_comparison(k, *op, value, var_num, params),
     }
+}
+
+/// `SELECT path FROM …` comparing key `?{k}`'s values with `value`. A value that parses as a finite number compares numerically
+/// against `number` rows (and, for `=`/`!=`, also textually against
+/// non-number rows, so `version=10` still finds the text "10"); any other
+/// value compares `value_text` lexicographically, which orders ISO dates
+/// correctly. Ordering operators never match lists or bools; a type mismatch is
+/// simply no match. `!=` means "has the key, and no value equal to this" —
+/// so on a list: does not contain, and a key with no value (YAML `key:`, an
+/// empty list) matches.
+fn property_comparison(
+    k: usize,
+    op: PropertyOp,
+    value: &str,
+    var_num: &mut usize,
+    params: &mut Vec<String>,
+) -> String {
     let v = *var_num;
     // Date-times are stored as lowercased canonical RFC3339 (UTC), so a query
     // value that reads as one is compared in that form.
-    let value = parse_datetime(&f.value)
-        .map_or_else(|| f.value.clone(), |dt| format_datetime(&dt).to_lowercase());
-    params.push(value);
+    params.push(parse_datetime(value).map_or_else(
+        || value.to_string(),
+        |dt| format_datetime(&dt).to_lowercase(),
+    ));
     *var_num += 1;
 
-    let numeric = f.value.parse::<f64>().is_ok_and(f64::is_finite);
+    let numeric = value.parse::<f64>().is_ok_and(f64::is_finite);
     let eq = if numeric {
         format!(
             "((value_type = 'number' AND value_num = CAST(?{v} AS REAL)) \
@@ -1503,18 +1538,18 @@ fn property_subquery(f: &PropertyFilter, var_num: &mut usize, params: &mut Vec<S
     } else {
         format!("(value_type <> 'number' AND value_text = ?{v})")
     };
-    match f.op {
+    match op {
         PropertyOp::Eq => format!("SELECT path FROM properties WHERE key = ?{k} AND {eq}"),
         PropertyOp::Ne => format!(
-            "SELECT path FROM properties WHERE key = ?{k} \
+            "SELECT path FROM property_keys WHERE key = ?{k} \
              EXCEPT SELECT path FROM properties WHERE key = ?{k} AND {eq}"
         ),
-        op if numeric => format!(
+        PropertyOp::Lt | PropertyOp::Le | PropertyOp::Gt | PropertyOp::Ge if numeric => format!(
             "SELECT path FROM properties WHERE key = ?{k} \
              AND value_type = 'number' AND value_num {} CAST(?{v} AS REAL)",
             op.sql()
         ),
-        op => format!(
+        PropertyOp::Lt | PropertyOp::Le | PropertyOp::Gt | PropertyOp::Ge => format!(
             "SELECT path FROM properties WHERE key = ?{k} \
              AND value_type IN ('text', 'date', 'datetime') AND value_text {} ?{v}",
             op.sql()
@@ -1534,24 +1569,21 @@ async fn property_sort_keys(
     pool: &SqlitePool,
     key: &str,
 ) -> Result<HashMap<String, PropertySortKey>, DBError> {
-    let rows: Vec<(String, String, Option<String>, Option<f64>)> = sqlx::query_as(
+    let rows: Vec<(String, String, String, Option<f64>)> = sqlx::query_as(
         "SELECT path, value_type, value_text, value_num FROM properties \
          WHERE key = ? AND list_index = 0",
     )
     .bind(key)
     .fetch_all(pool)
     .await?;
-    // An empty list's value-less row has nothing to sort by: it stays out of
-    // the map, so the note sorts with the notes missing the property.
     Ok(rows
         .into_iter()
-        .filter_map(|(path, ty, text, num)| {
-            let k = match (ty.as_str(), num, text) {
-                ("number", Some(n), _) => PropertySortKey::Number(n),
-                (_, _, Some(text)) => PropertySortKey::Text(text),
-                (_, _, None) => return None,
+        .map(|(path, ty, text, num)| {
+            let k = match (ty.as_str(), num) {
+                ("number", Some(n)) => PropertySortKey::Number(n),
+                _ => PropertySortKey::Text(text),
             };
-            Some((path, k))
+            (path, k)
         })
         .collect())
 }
@@ -1698,10 +1730,10 @@ async fn delete_notes(
     }
     let path_strings: Vec<String> = paths.iter().map(|p| p.to_string()).collect();
     bulk_delete_in(tx, "notes", &["path"], &path_strings).await?;
-    bulk_delete_in(tx, "notesContent", &["path"], &path_strings).await?;
     bulk_delete_in(tx, "links", &["source", "destination"], &path_strings).await?;
-    bulk_delete_in(tx, "labels", &["path"], &path_strings).await?;
-    bulk_delete_in(tx, "properties", &["path"], &path_strings).await?;
+    for table in NOTE_PATH_TABLES {
+        bulk_delete_in(tx, table, &["path"], &path_strings).await?;
+    }
     Ok(())
 }
 
@@ -1724,7 +1756,7 @@ async fn save_note(
         data.clone(),
         chunks,
         links,
-        note_details.get_properties(),
+        NoteDetails::property_set_of(&note_details.raw_text),
     );
 
     let mut tx = pool.begin().await?;
@@ -1770,55 +1802,45 @@ struct PropertyRow {
     key: String,
     list_index: i64,
     value_type: &'static str,
-    /// Lowercased canonical text — matching is case-insensitive. `None` only
-    /// for the single row of an empty list.
-    value_text: Option<String>,
+    /// Lowercased canonical text — matching is case-insensitive.
+    value_text: String,
     value_num: Option<f64>,
 }
 
 impl PropertyRow {
-    /// The rows one property occupies: one for a scalar, one per item for a
-    /// list, and one value-less row for an empty list (so `%key` still sees
-    /// the property while no comparison can match it).
+    /// The value rows one property occupies: one for a scalar, one per item
+    /// for a list (an empty list has no values; its key alone is recorded in
+    /// `property_keys`).
     fn rows(path_idx: usize, key: String, value: PropertyValue) -> Vec<Self> {
-        let scalar = |value_type, text: String, num| {
-            vec![Self {
-                path_idx,
-                key: key.clone(),
-                list_index: 0,
-                value_type,
-                value_text: Some(text.to_lowercase()),
-                value_num: num,
-            }]
+        let row = |list_index, value_type, text: String, value_num| Self {
+            path_idx,
+            key: key.clone(),
+            list_index,
+            value_type,
+            value_text: text.to_lowercase(),
+            value_num,
         };
         match value {
-            PropertyValue::Text(s) => scalar("text", s, None),
-            PropertyValue::Number(n) => scalar("number", format_number(n), Some(n)),
-            PropertyValue::Bool(b) => scalar("bool", b.to_string(), None),
-            PropertyValue::Date(d) => scalar("date", crate::dates::format_iso_date(d), None),
-            PropertyValue::DateTime(dt) => scalar("datetime", format_datetime(&dt), None),
-            PropertyValue::List(items) if items.is_empty() => vec![Self {
-                path_idx,
-                key: key.clone(),
-                list_index: 0,
-                value_type: "list",
-                value_text: None,
-                value_num: None,
-            }],
+            PropertyValue::Text(s) => vec![row(0, "text", s, None)],
+            PropertyValue::Number(n) => vec![row(0, "number", format_number(n), Some(n))],
+            PropertyValue::Bool(b) => vec![row(0, "bool", b.to_string(), None)],
+            PropertyValue::Date(d) => {
+                vec![row(0, "date", crate::dates::format_iso_date(d), None)]
+            }
+            PropertyValue::DateTime(dt) => vec![row(0, "datetime", format_datetime(&dt), None)],
             PropertyValue::List(items) => items
                 .into_iter()
                 .enumerate()
-                .map(|(i, item)| Self {
-                    path_idx,
-                    key: key.clone(),
-                    list_index: i as i64,
-                    value_type: "list",
-                    value_text: Some(item.to_lowercase()),
-                    value_num: None,
-                })
+                .map(|(i, item)| row(i as i64, "list", item, None))
                 .collect(),
         }
     }
+}
+
+/// One key a note's frontmatter has, valued or not (`property_keys`).
+struct PropertyKeyRow {
+    path_idx: usize,
+    key: String,
 }
 
 /// Bulk-upserts a slice of notes plus their chunks and links inside the given
@@ -1840,7 +1862,7 @@ async fn upsert_notes_batched(
         // functions take the text by `AsRef<str>` and keep it borrowed.
         let data = NoteDetails::content_data_of(text);
         let (chunks, links) = NoteDetails::chunks_and_links_of(&entry_data.path, text);
-        let properties = NoteDetails::properties_of(text);
+        let properties = NoteDetails::property_set_of(text);
         batch.push(entry_data, data, chunks, links, properties);
     }
     batch.flush(tx).await
@@ -1856,6 +1878,7 @@ struct NoteBatch {
     links: Vec<LinkRow>,
     labels: Vec<LabelRow>,
     properties: Vec<PropertyRow>,
+    property_keys: Vec<PropertyKeyRow>,
 }
 
 impl NoteBatch {
@@ -1867,6 +1890,7 @@ impl NoteBatch {
             links: Vec::with_capacity(links),
             labels: Vec::with_capacity(labels),
             properties: Vec::new(),
+            property_keys: Vec::new(),
         }
     }
 
@@ -1876,7 +1900,7 @@ impl NoteBatch {
         data: NoteContentData,
         chunks: Vec<ContentChunk>,
         links: Vec<crate::note::NoteLink>,
-        properties: Vec<(String, PropertyValue)>,
+        properties: PropertySet,
     ) {
         let idx = self.paths.len();
         // Store every note under its canonical vault-relative key so the index
@@ -1925,27 +1949,34 @@ impl NoteBatch {
         }
         // Frontmatter `tags:` joins the inline hashtags in `labels`; the PK's
         // ON CONFLICT DO NOTHING dedupes a tag present in both forms.
-        for name in frontmatter_tags(&properties) {
+        for name in properties.tags() {
             self.labels.push(LabelRow {
                 path_idx: idx,
                 name,
             });
         }
-        for (key, value) in properties {
+        for key in properties.keys() {
+            self.property_keys.push(PropertyKeyRow {
+                path_idx: idx,
+                key: key.to_string(),
+            });
+        }
+        for (key, value) in properties.into_values() {
             self.properties.extend(PropertyRow::rows(idx, key, value));
         }
     }
 
     async fn flush(self, tx: &mut Transaction<'_, Sqlite>) -> Result<(), DBError> {
         bulk_upsert_note_rows(tx, &self.notes, &self.paths).await?;
-        bulk_delete_in(tx, "notesContent", &["path"], &self.paths).await?;
         bulk_delete_in(tx, "links", &["source"], &self.paths).await?;
-        bulk_delete_in(tx, "labels", &["path"], &self.paths).await?;
-        bulk_delete_in(tx, "properties", &["path"], &self.paths).await?;
+        for table in NOTE_PATH_TABLES {
+            bulk_delete_in(tx, table, &["path"], &self.paths).await?;
+        }
         bulk_insert(tx, &self.chunks, &self.paths).await?;
         bulk_insert(tx, &self.links, &self.paths).await?;
         bulk_insert(tx, &self.labels, &self.paths).await?;
         bulk_insert(tx, &self.properties, &self.paths).await?;
+        bulk_insert(tx, &self.property_keys, &self.paths).await?;
         Ok(())
     }
 }
@@ -2115,6 +2146,20 @@ impl BulkInsertRow for PropertyRow {
     }
 }
 
+impl BulkInsertRow for PropertyKeyRow {
+    const HEADER: &'static str = "INSERT INTO property_keys (path, key) VALUES ";
+    const FOOTER: &'static str = " ON CONFLICT(path, key) DO NOTHING";
+    const COLS: usize = 2;
+
+    fn bind_to<'q>(
+        &'q self,
+        q: sqlx::query::Query<'q, Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
+        paths: &'q [String],
+    ) -> sqlx::query::Query<'q, Sqlite, sqlx::sqlite::SqliteArguments<'q>> {
+        q.bind(&paths[self.path_idx]).bind(&self.key)
+    }
+}
+
 /// Generic chunked multi-row INSERT. Builds `<HEADER>(?, …), (?, …)<FOOTER>`,
 /// chunking so binds-per-statement stays under `SQLITE_PARAM_BUDGET`.
 async fn bulk_insert<R: BulkInsertRow>(
@@ -2231,12 +2276,6 @@ async fn rename_note(
         .execute(&mut **tx)
         .await?;
 
-    sqlx::query("UPDATE notesContent SET path = ? WHERE path = ?")
-        .bind(to.to_string())
-        .bind(from.to_string())
-        .execute(&mut **tx)
-        .await?;
-
     sqlx::query("UPDATE links SET source = ? WHERE source = ?")
         .bind(to.to_string())
         .bind(from.to_string())
@@ -2258,17 +2297,13 @@ async fn rename_note(
         .execute(&mut **tx)
         .await?;
 
-    sqlx::query("UPDATE labels SET path = ? WHERE path = ?")
-        .bind(to.to_string())
-        .bind(from.to_string())
-        .execute(&mut **tx)
-        .await?;
-
-    sqlx::query("UPDATE properties SET path = ? WHERE path = ?")
-        .bind(to.to_string())
-        .bind(from.to_string())
-        .execute(&mut **tx)
-        .await?;
+    for table in NOTE_PATH_TABLES {
+        sqlx::query(&format!("UPDATE {table} SET path = ? WHERE path = ?"))
+            .bind(to.to_string())
+            .bind(from.to_string())
+            .execute(&mut **tx)
+            .await?;
+    }
 
     Ok(())
 }
@@ -2310,13 +2345,6 @@ async fn rename_directory(
         .execute(&mut **tx)
         .await?;
 
-    sqlx::query("UPDATE notesContent SET path = ? || SUBSTR(path, LENGTH(?) + 1) WHERE path LIKE (? || '%') ESCAPE '\\'")
-        .bind(&to)
-        .bind(&from)
-        .bind(&from_escaped)
-        .execute(&mut **tx)
-        .await?;
-
     sqlx::query(
         "UPDATE links SET source = ? || SUBSTR(source, LENGTH(?) + 1) WHERE source LIKE (? || '%') ESCAPE '\\'",
     )
@@ -2333,19 +2361,16 @@ async fn rename_directory(
         .execute(&mut **tx)
         .await?;
 
-    sqlx::query("UPDATE labels SET path = ? || SUBSTR(path, LENGTH(?) + 1) WHERE path LIKE (? || '%') ESCAPE '\\'")
+    for table in NOTE_PATH_TABLES {
+        sqlx::query(&format!(
+            "UPDATE {table} SET path = ? || SUBSTR(path, LENGTH(?) + 1) WHERE path LIKE (? || '%') ESCAPE '\\'"
+        ))
         .bind(&to)
         .bind(&from)
         .bind(&from_escaped)
         .execute(&mut **tx)
         .await?;
-
-    sqlx::query("UPDATE properties SET path = ? || SUBSTR(path, LENGTH(?) + 1) WHERE path LIKE (? || '%') ESCAPE '\\'")
-        .bind(&to)
-        .bind(&from)
-        .bind(&from_escaped)
-        .execute(&mut **tx)
-        .await?;
+    }
 
     Ok(())
 }
@@ -2373,11 +2398,6 @@ async fn delete_directory(
         .execute(&mut **tx)
         .await?;
 
-    sqlx::query("DELETE FROM notesContent WHERE path LIKE (? || '%') ESCAPE '\\'")
-        .bind(&pattern)
-        .execute(&mut **tx)
-        .await?;
-
     // Clear both sides of the links table — outbound (source) and inbound
     // (destination) — so backlinks pointing to deleted notes don't linger.
     sqlx::query("DELETE FROM links WHERE source LIKE (? || '%') ESCAPE '\\' OR destination LIKE (? || '%') ESCAPE '\\'")
@@ -2386,15 +2406,14 @@ async fn delete_directory(
         .execute(&mut **tx)
         .await?;
 
-    sqlx::query("DELETE FROM labels WHERE path LIKE (? || '%') ESCAPE '\\'")
+    for table in NOTE_PATH_TABLES {
+        sqlx::query(&format!(
+            "DELETE FROM {table} WHERE path LIKE (? || '%') ESCAPE '\\'"
+        ))
         .bind(&pattern)
         .execute(&mut **tx)
         .await?;
-
-    sqlx::query("DELETE FROM properties WHERE path LIKE (? || '%') ESCAPE '\\'")
-        .bind(&pattern)
-        .execute(&mut **tx)
-        .await?;
+    }
 
     Ok(())
 }
