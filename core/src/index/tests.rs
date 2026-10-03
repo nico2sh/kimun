@@ -2118,14 +2118,22 @@ async fn prop_exclusion() {
     );
 }
 
-// Values with spaces survive whole-term quoting through the whole pipeline.
+// Values with spaces survive quoting — of the whole term or of the value
+// alone — through the whole pipeline.
 #[tokio::test]
 async fn prop_quoted_value_with_spaces() {
     let (_tmp, db) = prop_fixture().await;
-    assert_eq!(
-        paths(&db.search("prop:\"label=in progress\"").await.unwrap()),
-        vec!["/a.md"]
-    );
+    for query in [
+        "prop:\"label=in progress\"",
+        "prop:label=\"in progress\"",
+        "%label='in progress'",
+    ] {
+        assert_eq!(
+            paths(&db.search(query).await.unwrap()),
+            vec!["/a.md"],
+            "{query}"
+        );
+    }
 }
 
 #[tokio::test]

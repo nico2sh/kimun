@@ -165,7 +165,8 @@ prop:status=done      → status equals "done" (case-insensitive)
 %tags=work            → a list property contains "work"
 %tags!=work           → has tags, but not "work"
 -%status=done         → excludes notes whose status is "done" (notes with no status are kept)
-prop:"status=in progress"  → quote the whole term when the value has spaces
+%status="in progress" → quote a value that has spaces
+prop:"due date<2025-01-01" → quote the whole term when the key has spaces
 ```
 
 A `prop:` / `%` term always needs an operator and a value: `%status` on its own is not supported and is ignored.
