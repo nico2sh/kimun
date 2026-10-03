@@ -1291,14 +1291,9 @@ fn strip_hashtags_in_text_event(
 /// same as LF files, and ignores a leading UTF-8 byte-order mark (Windows
 /// editors write one); the offset still counts it, so it indexes `text`.
 pub(in crate::note) fn frontmatter_delimiter(text: &str) -> Option<(&str, usize)> {
-    let newline_pos = text.find('\n')?;
-    let bom = if text.starts_with('\u{feff}') {
-        '\u{feff}'.len_utf8()
-    } else {
-        0
-    };
-    let raw_first = &text[bom..newline_pos];
-    let first_line = raw_first.trim_end_matches('\r');
+    let (bom, rest) = split_bom(text);
+    let newline_pos = bom.len() + rest.find('\n')?;
+    let first_line = text[bom.len()..newline_pos].trim_end_matches('\r');
     if first_line != "---" && first_line != "+++" {
         return None;
     }
@@ -1333,13 +1328,22 @@ fn frontmatter_end_byte(text: &str) -> usize {
     0
 }
 
+/// Splits a leading UTF-8 byte-order mark off `text`: `("\u{feff}", rest)`, or
+/// `("", text)` when there is none.
+pub(in crate::note) fn split_bom(text: &str) -> (&str, &str) {
+    match text.strip_prefix('\u{feff}') {
+        Some(rest) => ("\u{feff}", rest),
+        None => ("", text),
+    }
+}
+
 fn remove_frontmatter<S: AsRef<str>>(text: S) -> (String, String) {
     let mut lines = text.as_ref().lines();
 
     let Some(first_line) = lines.next() else {
         return (String::new(), String::new());
     };
-    let first_line = first_line.strip_prefix('\u{feff}').unwrap_or(first_line);
+    let first_line = split_bom(first_line).1;
 
     if first_line != "---" && first_line != "+++" {
         return (String::new(), text.as_ref().to_string());

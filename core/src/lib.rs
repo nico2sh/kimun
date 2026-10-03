@@ -1289,12 +1289,13 @@ impl NoteVault {
     ) -> Result<Option<PropertyValue>, VaultError> {
         let properties = self.get_properties(path).await?;
         // A key that can't be a property (empty, multi-line) is never found.
-        let Some(key) = properties::normalize_key(key) else {
+        // A key that can't be a property (empty, multi-line) is never found.
+        let Some(key) = properties::clean_key(key) else {
             return Ok(None);
         };
         Ok(properties
             .into_iter()
-            .find_map(|(k, v)| (properties::match_key(&k) == key).then_some(v)))
+            .find_map(|(k, v)| properties::keys_match(&k, &key).then_some(v)))
     }
 
     /// Sets a frontmatter property, keeping the existing block's format,
@@ -1341,14 +1342,16 @@ impl NoteVault {
         new_block_format: FrontmatterFormat,
     ) -> Result<PropertyValue, VaultError> {
         let key = Self::property_key(key)?;
-        let norm = properties::search_form(&key);
         let vault_kind = match input.forced_kind() {
             Some(_) => None,
-            None => self.index.dominant_property_kind(&norm, path).await?,
+            None => {
+                let indexed = properties::search_form(&key);
+                self.index.dominant_property_kind(&indexed, path).await?
+            }
         };
         let value =
             input
-                .resolve(&norm, vault_kind)
+                .resolve(&key, vault_kind)
                 .map_err(|message| VaultError::InvalidProperty {
                     key: key.to_string(),
                     message,
@@ -4454,6 +4457,19 @@ mod property_api_tests {
         PropertyValue::Text(s.into())
     }
 
+    /// Paths of the notes `query` finds, sorted.
+    async fn hits(vault: &NoteVault, query: &str) -> Vec<String> {
+        let mut paths: Vec<String> = vault
+            .search_notes(query)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(e, _)| e.path.to_string())
+            .collect();
+        paths.sort();
+        paths
+    }
+
     fn input(values: &[&str]) -> PropertyInput {
         PropertyInput::new(values.iter().map(|v| v.to_string()).collect())
     }
@@ -4845,20 +4861,6 @@ mod property_api_tests {
         for (path, body) in notes {
             vault.create_note(&p(path), body).await.unwrap();
         }
-        let hits = |q: &'static str| {
-            let vault = &vault;
-            async move {
-                let mut r: Vec<String> = vault
-                    .search_notes(q)
-                    .await
-                    .unwrap()
-                    .into_iter()
-                    .map(|(e, _)| e.path.to_string())
-                    .collect();
-                r.sort();
-                r
-            }
-        };
         let done = vec!["/a.md".to_string(), "/c.md".to_string()];
         for q in [
             "prop:status=done",
@@ -4868,17 +4870,29 @@ mod property_api_tests {
             "%status='DONE'",
             "-%status!=done",
         ] {
-            assert_eq!(hits(q).await, done, "{q}");
+            assert_eq!(hits(&vault, q).await, done, "{q}");
         }
-        assert_eq!(hits("%status=\"IN progress\"").await, ["/b.md"], "quoted");
-        assert_eq!(hits("%status!=DONE").await, ["/b.md"], "!=");
-        assert_eq!(hits("-%status=DONE %status").await, ["/b.md"], "exclusion");
-        assert_eq!(hits("%labels=RED").await, ["/a.md"], "list item");
-        assert_eq!(hits("%labels!=red").await, ["/b.md"], "list !=");
-        assert_eq!(hits("%owner=ÁNNA").await, ["/a.md"], "non-ASCII");
-        assert_eq!(hits("%owner=BOB").await, ["/b.md"], "TOML text");
-        assert_eq!(hits("%flag=TRUE").await, ["/a.md"], "bool");
-        assert_eq!(hits("%status>=DONE %status<=Done").await, done, "ordering");
+        assert_eq!(
+            hits(&vault, "%status=\"IN progress\"").await,
+            ["/b.md"],
+            "quoted"
+        );
+        assert_eq!(hits(&vault, "%status!=DONE").await, ["/b.md"], "!=");
+        assert_eq!(
+            hits(&vault, "-%status=DONE %status").await,
+            ["/b.md"],
+            "exclusion"
+        );
+        assert_eq!(hits(&vault, "%labels=RED").await, ["/a.md"], "list item");
+        assert_eq!(hits(&vault, "%labels!=red").await, ["/b.md"], "list !=");
+        assert_eq!(hits(&vault, "%owner=ÁNNA").await, ["/a.md"], "non-ASCII");
+        assert_eq!(hits(&vault, "%owner=BOB").await, ["/b.md"], "TOML text");
+        assert_eq!(hits(&vault, "%flag=TRUE").await, ["/a.md"], "bool");
+        assert_eq!(
+            hits(&vault, "%status>=DONE %status<=Done").await,
+            done,
+            "ordering"
+        );
         // Sorting ignores case: "done" < "done" < "in progress".
         let sorted: Vec<String> = vault
             .search_notes("%STATUS or:prop:Status")
@@ -4910,27 +4924,13 @@ mod property_api_tests {
             )
             .await
             .unwrap();
-        let hits = |q: &'static str| {
-            let vault = &vault;
-            async move {
-                let mut r: Vec<String> = vault
-                    .search_notes(q)
-                    .await
-                    .unwrap()
-                    .into_iter()
-                    .map(|(e, _)| e.path.to_string())
-                    .collect();
-                r.sort();
-                r
-            }
-        };
         let both = ["/a.md", "/b.md"];
-        assert_eq!(hits("%état=terminé").await, both);
-        assert_eq!(hits("%ÉTAT=TERMINÉ").await, both);
-        assert_eq!(hits("%名前=田中").await, ["/a.md"]);
-        assert_eq!(hits("%ПРОЕКТ=ёлка").await, ["/a.md"]);
-        assert_eq!(hits("%емоджи=😀").await, ["/b.md"]);
-        assert_eq!(hits("%status=\"日本語 # 😀\"").await, ["/a.md"]);
+        assert_eq!(hits(&vault, "%état=terminé").await, both);
+        assert_eq!(hits(&vault, "%ÉTAT=TERMINÉ").await, both);
+        assert_eq!(hits(&vault, "%名前=田中").await, ["/a.md"]);
+        assert_eq!(hits(&vault, "%ПРОЕКТ=ёлка").await, ["/a.md"]);
+        assert_eq!(hits(&vault, "%емоджи=😀").await, ["/b.md"]);
+        assert_eq!(hits(&vault, "%status=\"日本語 # 😀\"").await, ["/a.md"]);
 
         // Edits next to multibyte text keep every character, and the
         // trailing comment of the replaced entry.
@@ -4950,8 +4950,12 @@ mod property_api_tests {
             vault.get_note_text(&p("/b.md")).await.unwrap(),
             "+++\n\"ÉTAT\" = \"Ça va\" # ünï\n\"емоджи\" = \"😀\"\n+++\n"
         );
-        assert_eq!(hits("%état=FINI ✔").await.len(), 0, "space needs quotes");
-        assert_eq!(hits("%état=\"fini ✔\"").await, ["/a.md"]);
+        assert_eq!(
+            hits(&vault, "%état=FINI ✔").await.len(),
+            0,
+            "space needs quotes"
+        );
+        assert_eq!(hits(&vault, "%état=\"fini ✔\"").await, ["/a.md"]);
         assert!(vault.remove_property(&p("/a.md"), "НАЗВАНИЕ").await.is_ok());
         assert!(vault.remove_property(&p("/a.md"), "ПРОЕКТ").await.unwrap());
     }
@@ -4968,10 +4972,6 @@ mod property_api_tests {
             )
             .await
             .unwrap();
-        let count = |q: &'static str| {
-            let vault = &vault;
-            async move { vault.search_notes(q).await.unwrap().len() }
-        };
         for q in [
             "%etat=termine",
             "%ETAT=TERMINE",
@@ -4984,10 +4984,9 @@ mod property_api_tests {
             "%resume=x",
             "%étât>=termine %état<=termine",
         ] {
-            let q: &'static str = Box::leak(q.to_string().into_boxed_str());
-            assert_eq!(count(q).await, 1, "{q}");
+            assert_eq!(hits(&vault, q).await.len(), 1, "{q}");
         }
-        assert_eq!(count("%etat=terminer").await, 0);
+        assert!(hits(&vault, "%etat=terminer").await.is_empty());
         vault
             .set_property(&p("/a.md"), "resume", text("y"), FrontmatterFormat::Yaml)
             .await
@@ -4997,6 +4996,35 @@ mod property_api_tests {
             raw.contains("résumé: x") && raw.contains("resume: y"),
             "{raw}"
         );
+    }
+
+    /// Keys that fold together in the index (`résumé`, `resume`) stay separate
+    /// in the note; the index keeps the first and never mixes their values.
+    /// A `tâgs` key is not a tags key.
+    #[tokio::test]
+    async fn keys_that_fold_together_do_not_mix_in_the_index() {
+        let (_tmp, vault) = new_vault().await;
+        vault
+            .create_note(
+                &p("/a.md"),
+                "---\nrésumé: [one]\nresume: [x, y, z]\ntâgs: [nope]\n---\n",
+            )
+            .await
+            .unwrap();
+        assert_eq!(vault.get_properties(&p("/a.md")).await.unwrap().len(), 3);
+        assert_eq!(hits(&vault, "%resume=one").await, ["/a.md"]);
+        assert!(hits(&vault, "%resume=y").await.is_empty());
+        assert!(vault.get_tags(&p("/a.md")).await.unwrap().is_empty());
+        let value = vault
+            .set_property_from_input(
+                &p("/a.md"),
+                "tâgs",
+                &input(&["solo"]),
+                FrontmatterFormat::Yaml,
+            )
+            .await
+            .unwrap();
+        assert_eq!(value, text("solo"), "only `tags` / `tag` are forced lists");
     }
 
     /// A key spelled differently in two notes is still one vault-wide key.

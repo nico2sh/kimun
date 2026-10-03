@@ -6,8 +6,8 @@ use chrono::{FixedOffset, NaiveDate, NaiveTime, TimeZone};
 use toml_edit::{DocumentMut, Item, Value};
 
 use super::{
-    finite, format_number, is_integral, nested_key_error, FrontmatterError, PropertyDateTime,
-    PropertyEntry, PropertyFormatter, PropertyValue,
+    finite, format_number, is_integral, keys_match, nested_key_error, FrontmatterError,
+    PropertyDateTime, PropertyEntry, PropertyFormatter, PropertyValue,
 };
 use crate::dates::format_iso_date;
 
@@ -127,10 +127,9 @@ fn document(block: &str) -> Result<DocumentMut, FrontmatterError> {
 /// Root keys equal to `key` case-insensitively, as written. A match holding a
 /// table (not a value) refuses the edit.
 fn matching_keys(doc: &DocumentMut, key: &str) -> Result<Vec<String>, FrontmatterError> {
-    let wanted = key.to_lowercase();
     let mut keys = Vec::new();
     for (k, item) in doc.iter() {
-        if k.to_lowercase() == wanted {
+        if keys_match(k, key) {
             if !item.is_value() {
                 return Err(nested_key_error(key));
             }
