@@ -1966,6 +1966,60 @@ async fn prop_fixture() -> (tempfile::TempDir, NoteIndex) {
 }
 
 #[tokio::test]
+async fn prop_has_property() {
+    let (_tmp, db) = prop_fixture().await;
+    assert_eq!(
+        paths(&db.search("%status").await.unwrap()),
+        vec!["/a.md", "/b.md"]
+    );
+    assert_eq!(
+        paths(&db.search("prop:TAGS").await.unwrap()),
+        vec!["/a.md", "/b.md"]
+    );
+    assert_eq!(
+        paths(&db.search("-%status").await.unwrap()),
+        vec!["/c.md", "/d.md"]
+    );
+    assert_eq!(
+        paths(&db.search("%priority -%tags").await.unwrap()),
+        vec!["/c.md"]
+    );
+    assert!(db.search("%missing").await.unwrap().is_empty());
+}
+
+// An empty list is still a property the note has, but holds no values.
+#[tokio::test]
+async fn prop_empty_list_counts_as_present() {
+    let (_tmp, db) = prop_fixture().await;
+    db.apply(added(vec![note("/e.md", "+++\ntags = []\n+++\n")]))
+        .await
+        .unwrap();
+    assert_eq!(
+        paths(&db.search("%tags").await.unwrap()),
+        vec!["/a.md", "/b.md", "/e.md"]
+    );
+    assert_eq!(
+        paths(&db.search("%tags=y").await.unwrap()),
+        vec!["/a.md", "/b.md"]
+    );
+    assert_eq!(
+        paths(&db.search("%tags!=x").await.unwrap()),
+        vec!["/b.md", "/e.md"],
+        "has tags, none equal x"
+    );
+    assert!(db.search("%tags>a").await.unwrap().is_empty());
+    // Sorting treats an empty list like a missing value: last.
+    let order: Vec<String> = db
+        .search("%tags or:%tags")
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(e, _)| e.path.to_string())
+        .collect();
+    assert_eq!(order.last().map(String::as_str), Some("/e.md"));
+}
+
+#[tokio::test]
 async fn prop_equality_per_type() {
     let (_tmp, db) = prop_fixture().await;
     assert_eq!(
