@@ -377,6 +377,37 @@ kimun note delete "inbox/stale-idea" --force
 - Removes the note from the index as well as from disk
 - Backs up the deleted content first (see [Backups](#backups))
 
+### Properties
+
+Read and edit a note's frontmatter [properties](@/using-kimun/search.md#properties) without touching the rest of the file.
+
+```sh
+kimun note prop list "projects/garden"               # key: value lines
+kimun note prop list "projects/garden" --format json # one JSON object
+kimun note prop get "projects/garden" status         # just the value
+kimun note prop set "projects/garden" status active
+kimun note prop set "projects/garden" tags garden spring   # several values → a list
+kimun note prop set "projects/garden" due 2026-05-01
+kimun note prop set "projects/garden" priority high --type text
+kimun note prop remove "projects/garden" status
+```
+
+#### How `set` picks a type
+
+- **A key other notes already use:** the value must fit the type most of them give it. For example, if `priority` is a number elsewhere, `2` is stored as a number and `high` is refused. A single value for a list key becomes a one-item list.
+- **A new key:** typed by its look. `5` and `4.5` → number, `true`/`false` → true/false, `2026-05-01` → date, `2026-05-01T14:30` → date & time, anything else → text. Text that only looks numeric (`02134`, `1.10`) stays text, so it is never rewritten.
+- **`--type text|number|bool|date|datetime|list`** forces the type. Use it to store a value that doesn't fit the key's usual type; only this note changes.
+
+#### Features
+
+- Keeps the rest of the frontmatter (format, comments, key order) as it was
+- A note without frontmatter gets a TOML (`+++`) block; `--yaml` makes it YAML (`---`). An existing block keeps its format
+- Keys are case-insensitive (stored lowercase)
+- Negative numbers work as values (`set n delta -5`); a text value starting with `-` goes after `--` (`set n mood -- -meh`)
+- `get` fails for a property the note doesn't have; `remove` doesn't
+- Refuses to edit a note whose existing frontmatter doesn't parse, leaving it untouched
+- Backs up the previous content first (see [Backups](#backups))
+
 ### Backups
 
 Every CLI (and MCP) edit that overwrites or deletes a note's content copies the
@@ -384,8 +415,8 @@ old content into a hidden, dated directory inside the vault before changing it.
 These backups are excluded from indexing and search, kept for 30 days, then
 purged automatically.
 
-- Covers `overwrite`, `replace`, `delete`, and the backlink rewrites performed by
-  rename/move. `create` and a first-time `append` have nothing to back up.
+- Covers `overwrite`, `replace`, `delete`, `prop set`/`prop remove`, and the
+  backlink rewrites performed by rename/move. `create` and a first-time `append` have nothing to back up.
 - Interactive TUI editing does **not** create backups (the editor has its own
   history).
 - If a backup cannot be written, the operation is aborted and the note is left
@@ -592,7 +623,8 @@ Both `search` and `notes` support JSON output for scripting and automation.
       "metadata": {
         "tags": ["rust", "cli"],
         "links": ["projects/parser", "projects/lexer"],
-        "headers": ["Overview", "Architecture", "TODO"]
+        "headers": ["Overview", "Architecture", "TODO"],
+        "properties": {"status": "active", "priority": 2, "tags": ["rust", "cli"]}
       },
       "backlinks": ["blog/rust-post.md"]
     }

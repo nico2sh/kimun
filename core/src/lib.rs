@@ -85,7 +85,9 @@ use index::NoteIndex;
 use log::{debug, warn};
 use nfs::{NoteEntryData, VaultPath};
 use note::properties;
-use note::{ContentChunk, FrontmatterFormat, NoteContentData, NoteDetails, PropertyValue};
+use note::{
+    ContentChunk, FrontmatterFormat, NoteContentData, NoteDetails, PropertyKind, PropertyValue,
+};
 use note_locks::NoteLocks;
 use note_rename::{rename_dest_err, NoteRename};
 use sync::VaultSync;
@@ -1322,6 +1324,37 @@ impl NoteVault {
             self.save_note_unlocked(path, updated).await?;
         }
         Ok(())
+    }
+
+    /// Sets a property from user-typed text, as the CLI and MCP server take it.
+    /// An explicit `kind` decides the type. Without one, the input must fit
+    /// the type most other notes give `key` (a single value for a list key
+    /// becomes a one-item list); a key no other note has a value for is typed
+    /// by [`PropertyValue::infer`], and several values make a list. A mismatch
+    /// is refused with [`VaultError::InvalidProperty`] instead of drifting the
+    /// vault's types. Returns the value written; only this note changes.
+    pub async fn set_property_from_input(
+        &self,
+        path: &VaultPath,
+        key: &str,
+        values: &[String],
+        kind: Option<PropertyKind>,
+        new_block_format: FrontmatterFormat,
+    ) -> Result<PropertyValue, VaultError> {
+        let norm = Self::property_key(key)?;
+        let vault_kind = match kind {
+            Some(_) => None,
+            None => self.index.dominant_property_kind(&norm, path).await?,
+        };
+        let value = PropertyValue::from_input(values, kind, vault_kind).map_err(|message| {
+            VaultError::InvalidProperty {
+                key: key.to_string(),
+                message,
+            }
+        })?;
+        self.set_property(path, key, value.clone(), new_block_format)
+            .await?;
+        Ok(value)
     }
 
     /// Removes a frontmatter property (every case variant of `key`). Returns
@@ -4416,6 +4449,123 @@ mod property_api_tests {
 
     fn text(s: &str) -> PropertyValue {
         PropertyValue::Text(s.into())
+    }
+
+    fn input(values: &[&str]) -> Vec<String> {
+        values.iter().map(|v| v.to_string()).collect()
+    }
+
+    #[tokio::test]
+    async fn input_is_inferred_for_a_new_key() {
+        let (_tmp, vault) = new_vault().await;
+        vault.create_note(&p("/n.md"), "body").await.unwrap();
+        let set = |key: &'static str, values: Vec<String>| {
+            let vault = &vault;
+            async move {
+                vault
+                    .set_property_from_input(
+                        &p("/n.md"),
+                        key,
+                        &values,
+                        None,
+                        FrontmatterFormat::Toml,
+                    )
+                    .await
+                    .unwrap()
+            }
+        };
+        assert_eq!(set("n", input(&["5"])).await, PropertyValue::Number(5.0));
+        assert_eq!(set("zip", input(&["02134"])).await, text("02134"));
+        assert_eq!(
+            set("tags", input(&["a", "b"])).await,
+            PropertyValue::List(vec!["a".into(), "b".into()])
+        );
+        assert_eq!(
+            vault.get_property(&p("/n.md"), "zip").await.unwrap(),
+            Some(text("02134")),
+            "the typed text is stored unchanged"
+        );
+    }
+
+    #[tokio::test]
+    async fn input_must_fit_the_vault_type_unless_typed_explicitly() {
+        let (_tmp, vault) = new_vault().await;
+        for (path, body) in [
+            ("/a.md", "+++\npriority = 1\ntags = [\"x\"]\n+++\n"),
+            ("/b.md", "+++\npriority = 2\n+++\n"),
+            ("/c.md", "body"),
+        ] {
+            vault.create_note(&p(path), body).await.unwrap();
+        }
+        let set = |values: &[&str], kind: Option<PropertyKind>| {
+            let values = input(values);
+            let vault = &vault;
+            async move {
+                vault
+                    .set_property_from_input(
+                        &p("/c.md"),
+                        "priority",
+                        &values,
+                        kind,
+                        FrontmatterFormat::Toml,
+                    )
+                    .await
+            }
+        };
+        let err = set(&["high"], None).await.unwrap_err();
+        assert!(matches!(err, VaultError::InvalidProperty { .. }), "{err:?}");
+        assert!(
+            err.user_message().unwrap().contains("holds number values"),
+            "{err:?}"
+        );
+        assert_eq!(
+            vault.get_note_text(&p("/c.md")).await.unwrap(),
+            "body",
+            "refused, untouched"
+        );
+
+        assert_eq!(set(&["3"], None).await.unwrap(), PropertyValue::Number(3.0));
+        assert_eq!(
+            set(&["high"], Some(PropertyKind::Text)).await.unwrap(),
+            text("high")
+        );
+        assert_eq!(
+            vault.get_property(&p("/a.md"), "priority").await.unwrap(),
+            Some(PropertyValue::Number(1.0)),
+            "an explicit type changes only the note written"
+        );
+
+        let tags = vault
+            .set_property_from_input(
+                &p("/c.md"),
+                "tags",
+                &input(&["garden"]),
+                None,
+                FrontmatterFormat::Toml,
+            )
+            .await
+            .unwrap();
+        assert_eq!(tags, PropertyValue::List(vec!["garden".into()]));
+    }
+
+    #[tokio::test]
+    async fn a_notes_own_value_does_not_lock_its_type() {
+        let (_tmp, vault) = new_vault().await;
+        vault
+            .create_note(&p("/n.md"), "+++\nstatus = 1\n+++\n")
+            .await
+            .unwrap();
+        let value = vault
+            .set_property_from_input(
+                &p("/n.md"),
+                "status",
+                &input(&["open"]),
+                None,
+                FrontmatterFormat::Toml,
+            )
+            .await
+            .unwrap();
+        assert_eq!(value, text("open"));
     }
 
     #[tokio::test]

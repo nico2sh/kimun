@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use color_eyre::eyre::{Result, eyre};
+use kimun_core::note::{FrontmatterFormat, PropertyKind};
 use kimun_core::{NoteVault, nfs::VaultPath};
 use rmcp::{
     ErrorData as McpError, RoleServer, ServerHandler, ServiceExt,
@@ -21,7 +22,9 @@ use rmcp::{
     tool, tool_handler, tool_router,
     transport::stdio,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+
+use crate::cli::json_output::JsonProperties;
 
 // ---------------------------------------------------------------------------
 // Parameter structs
@@ -118,6 +121,71 @@ pub struct ReplaceInNoteParams {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct DeleteNoteParams {
     pub path: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GetPropertiesParams {
+    pub path: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SetPropertyParams {
+    pub path: String,
+    /// Property key (stored lowercase)
+    pub key: String,
+    /// The value: a string (typed like the key's values in other notes, or by its look for a new key), a number, true/false, or an array of strings for a list
+    pub value: serde_json::Value,
+    /// Force a type: text, number, bool, date, datetime or list. Needed to store a value that doesn't fit the key's type elsewhere in the vault; only this note changes.
+    #[serde(rename = "type")]
+    pub kind: Option<String>,
+    /// Frontmatter syntax for a note that has no frontmatter yet: "toml" (default) or "yaml". An existing block keeps its format.
+    pub format: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct RemovePropertyParams {
+    pub path: String,
+    /// Property key (case-insensitive)
+    pub key: String,
+}
+
+/// `get_properties` reply: properties in the note's order, plus its labels.
+#[derive(Serialize)]
+struct PropertiesReply {
+    properties: JsonProperties,
+    tags: Vec<String>,
+}
+
+/// A `set_property` JSON value as the text values and type core types input
+/// from. A JSON number, boolean or array carries its own type (unless `kind`
+/// overrides it); a string is left to core's typing rules.
+fn property_input(
+    value: &serde_json::Value,
+    kind: Option<&str>,
+) -> Result<(Vec<String>, Option<PropertyKind>), String> {
+    use serde_json::Value;
+    let kind = kind.map(str::parse::<PropertyKind>).transpose()?;
+    let scalar = |v: &Value| match v {
+        Value::String(s) => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    };
+    let (values, own_kind) = match value {
+        Value::String(s) => (vec![s.clone()], None),
+        Value::Number(n) => (vec![n.to_string()], Some(PropertyKind::Number)),
+        Value::Bool(b) => (vec![b.to_string()], Some(PropertyKind::Bool)),
+        Value::Array(items) => (
+            items
+                .iter()
+                .map(scalar)
+                .collect::<Option<Vec<_>>>()
+                .ok_or("list items must be strings, numbers or true/false")?,
+            Some(PropertyKind::List),
+        ),
+        _ => return Err("value must be a string, number, true/false or an array".to_string()),
+    };
+    Ok((values, kind.or(own_kind)))
 }
 
 // ---------------------------------------------------------------------------
@@ -274,6 +342,89 @@ impl KimunHandler {
             Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
                 "Note deleted: {}",
                 vault_path
+            ))])),
+            Err(e) => vault_err(e),
+        }
+    }
+
+    #[tool(
+        description = "Return a note's frontmatter properties as JSON, in the note's order: {\"properties\": {\"status\": \"done\", \"priority\": 2, \"due\": \"2024-03-01\", \"tags\": [\"a\"]}, \"tags\": [\"a\", \"inline\"]}. `tags` is every label of the note — its inline #hashtags plus its frontmatter tags."
+    )]
+    async fn get_properties(
+        &self,
+        Parameters(p): Parameters<GetPropertiesParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let vault_path = Self::resolve_path(&p.path);
+        let properties = match self.vault.get_properties(&vault_path).await {
+            Ok(properties) => properties,
+            Err(e) => return vault_err(e),
+        };
+        let tags = match self.vault.get_tags(&vault_path).await {
+            Ok(tags) => tags,
+            Err(e) => return vault_err(e),
+        };
+        let reply = PropertiesReply {
+            properties: JsonProperties(properties),
+            tags,
+        };
+        let json = serde_json::to_string(&reply)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    #[tool(
+        description = "Set a frontmatter property on a note, keeping the rest of its frontmatter (format, comments, order) as is. `value` is a string, number, true/false, or an array of strings (a list). A string is typed like the key's values in other notes (a single string for a list key becomes a one-item list), or by its look for a key no other note has: 5 → number, true → true/false, 2024-03-01 → date, 2024-03-01T14:30 → date-time, else text; text that only looks numeric (02134, 1.10) stays text. A value that doesn't fit the key's type elsewhere in the vault is refused — pass `type` to store it anyway (only this note changes). A note without frontmatter gets a TOML (+++) block unless format is \"yaml\"."
+    )]
+    async fn set_property(
+        &self,
+        Parameters(p): Parameters<SetPropertyParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let vault_path = Self::resolve_path(&p.path);
+        let input = property_input(&p.value, p.kind.as_deref()).and_then(|input| {
+            let format = p
+                .format
+                .as_deref()
+                .map(str::parse::<FrontmatterFormat>)
+                .transpose()?;
+            Ok((input, format.unwrap_or_default()))
+        });
+        let ((values, kind), format) = match input {
+            Ok(input) => input,
+            Err(msg) => return Ok(CallToolResult::error(vec![Content::text(msg)])),
+        };
+        match self
+            .vault
+            .set_property_from_input(&vault_path, &p.key, &values, kind, format)
+            .await
+        {
+            Ok(value) => Ok(CallToolResult::success(vec![Content::text(format!(
+                "Set {} = {} ({}) in {}",
+                p.key,
+                value,
+                value.kind(),
+                vault_path
+            ))])),
+            Err(e) => vault_err(e),
+        }
+    }
+
+    #[tool(
+        description = "Remove a frontmatter property from a note (with any comment lines directly above it). Not an error when the note doesn't have it.",
+        annotations(destructive_hint = true)
+    )]
+    async fn remove_property(
+        &self,
+        Parameters(p): Parameters<RemovePropertyParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let vault_path = Self::resolve_path(&p.path);
+        match self.vault.remove_property(&vault_path, &p.key).await {
+            Ok(true) => Ok(CallToolResult::success(vec![Content::text(format!(
+                "Removed {} from {}",
+                p.key, vault_path
+            ))])),
+            Ok(false) => Ok(CallToolResult::success(vec![Content::text(format!(
+                "No property '{}' in {}",
+                p.key, vault_path
             ))])),
             Err(e) => vault_err(e),
         }
@@ -721,6 +872,160 @@ mod tests {
         vault.validate_and_init().await.unwrap();
         let handler = KimunHandler::new(vault);
         (handler, dir)
+    }
+
+    async fn set_prop(
+        handler: &KimunHandler,
+        path: &str,
+        key: &str,
+        value: serde_json::Value,
+        kind: Option<&str>,
+    ) -> CallToolResult {
+        handler
+            .set_property(Parameters(SetPropertyParams {
+                path: path.to_string(),
+                key: key.to_string(),
+                value,
+                kind: kind.map(str::to_string),
+                format: None,
+            }))
+            .await
+            .unwrap()
+    }
+
+    async fn properties_json(handler: &KimunHandler, path: &str) -> serde_json::Value {
+        let result = handler
+            .get_properties(Parameters(GetPropertiesParams {
+                path: path.to_string(),
+            }))
+            .await
+            .unwrap();
+        assert!(is_success(&result), "{}", result_text(&result));
+        let text = match &result.content[0].raw {
+            RawContent::Text(t) => t.text.clone(),
+            other => panic!("expected text content, got {other:?}"),
+        };
+        serde_json::from_str(&text).unwrap()
+    }
+
+    #[test]
+    fn json_values_carry_their_own_type() {
+        use serde_json::json;
+        assert_eq!(
+            property_input(&json!("5"), None),
+            Ok((vec!["5".into()], None))
+        );
+        assert_eq!(
+            property_input(&json!(5), None),
+            Ok((vec!["5".into()], Some(PropertyKind::Number)))
+        );
+        assert_eq!(
+            property_input(&json!(true), None),
+            Ok((vec!["true".into()], Some(PropertyKind::Bool)))
+        );
+        assert_eq!(
+            property_input(&json!(["a", 2]), None),
+            Ok((vec!["a".into(), "2".into()], Some(PropertyKind::List)))
+        );
+        assert_eq!(
+            property_input(&json!(2024), Some("text")),
+            Ok((vec!["2024".into()], Some(PropertyKind::Text))),
+            "an explicit type wins"
+        );
+        assert!(property_input(&json!({"a": 1}), None).is_err());
+        assert!(property_input(&json!([["nested"]]), None).is_err());
+        assert!(property_input(&json!("x"), Some("float")).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_property_tools_round_trip() {
+        let (handler, _dir) = make_handler().await;
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "garden".to_string(),
+                content: "Garden #outdoor".to_string(),
+            }))
+            .await
+            .unwrap();
+        for (key, value) in [
+            ("status", serde_json::json!("active")),
+            ("priority", serde_json::json!(2)),
+            ("due", serde_json::json!("2026-05-01")),
+            ("tags", serde_json::json!(["garden", "spring"])),
+        ] {
+            let result = set_prop(&handler, "garden", key, value, None).await;
+            assert!(is_success(&result), "{}", result_text(&result));
+        }
+        assert_eq!(
+            properties_json(&handler, "garden").await,
+            serde_json::json!({
+                "properties": {
+                    "status": "active",
+                    "priority": 2,
+                    "due": "2026-05-01",
+                    "tags": ["garden", "spring"],
+                },
+                "tags": ["garden", "outdoor", "spring"],
+            })
+        );
+
+        let removed = handler
+            .remove_property(Parameters(RemovePropertyParams {
+                path: "garden".to_string(),
+                key: "Status".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert!(result_text(&removed).contains("Removed"));
+        let again = handler
+            .remove_property(Parameters(RemovePropertyParams {
+                path: "garden".to_string(),
+                key: "status".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert!(is_success(&again) && result_text(&again).contains("No property"));
+    }
+
+    #[tokio::test]
+    async fn test_set_property_refuses_vault_type_mismatch() {
+        let (handler, _dir) = make_handler().await;
+        for path in ["a", "b"] {
+            handler
+                .create_note(Parameters(CreateNoteParams {
+                    path: path.to_string(),
+                    content: "body".to_string(),
+                }))
+                .await
+                .unwrap();
+        }
+        set_prop(&handler, "a", "priority", serde_json::json!(1), None).await;
+        let refused = set_prop(&handler, "b", "priority", serde_json::json!("high"), None).await;
+        assert_eq!(refused.is_error, Some(true));
+        assert!(result_text(&refused).contains("holds number values"));
+        let typed = set_prop(
+            &handler,
+            "b",
+            "priority",
+            serde_json::json!("high"),
+            Some("text"),
+        )
+        .await;
+        assert!(is_success(&typed), "{}", result_text(&typed));
+        let bad_type = set_prop(&handler, "b", "x", serde_json::json!("1"), Some("float")).await;
+        assert_eq!(bad_type.is_error, Some(true));
+    }
+
+    #[tokio::test]
+    async fn test_get_properties_missing_note_is_tool_error() {
+        let (handler, _dir) = make_handler().await;
+        let result = handler
+            .get_properties(Parameters(GetPropertiesParams {
+                path: "nope".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
     }
 
     fn is_success(result: &CallToolResult) -> bool {

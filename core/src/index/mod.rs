@@ -13,8 +13,9 @@ pub(crate) mod file;
 use sqlx::{Row, Sqlite, Transaction};
 
 use crate::note::properties::{format_datetime, format_number, parse_datetime, PropertySet};
-use crate::note::PropertyValue;
-use crate::note::{ContentChunk, LinkType, NoteContentData, NoteDetails};
+use crate::note::{
+    ContentChunk, LinkType, NoteContentData, NoteDetails, PropertyKind, PropertyValue,
+};
 
 /// A note change reported by the `NoteIndex` the moment it is recorded, for
 /// consumers outside core (the RAG client). Thin by design — it carries a path,
@@ -696,6 +697,29 @@ impl NoteIndex {
                 .fetch_all(&self.pool)
                 .await?;
         Ok(rows.into_iter().map(|(n,)| n).collect())
+    }
+
+    /// The kind most notes give `key`, not counting `except` (the note about
+    /// to be written). `None` when no other note has a value for it, or when
+    /// two kinds tie — then there is no vault-wide type to follow.
+    pub(crate) async fn dominant_property_kind(
+        &self,
+        key: &str,
+        except: &VaultPath,
+    ) -> Result<Option<PropertyKind>, DBError> {
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT value_type, COUNT(DISTINCT path) AS notes FROM properties \
+             WHERE key = ? AND path <> ? GROUP BY value_type ORDER BY notes DESC LIMIT 2",
+        )
+        .bind(key)
+        .bind(except.canonical().to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(match rows.as_slice() {
+            [(kind, _)] => kind.parse().ok(),
+            [(kind, top), (_, second)] if top > second => kind.parse().ok(),
+            _ => None,
+        })
     }
 
     /// Returns notes whose `noteName` starts with `prefix` (case-insensitive),
@@ -1812,27 +1836,26 @@ impl PropertyRow {
     /// for a list (an empty list has no values; its key alone is recorded in
     /// `property_keys`).
     fn rows(path_idx: usize, key: String, value: PropertyValue) -> Vec<Self> {
-        let row = |list_index, value_type, text: String, value_num| Self {
+        // `value_type` is the kind's name, so the index and `PropertyKind`
+        // share one vocabulary (see `dominant_property_kind`).
+        let value_type = value.kind().as_str();
+        let row = |list_index, value_text: String, value_num| Self {
             path_idx,
             key: key.clone(),
             list_index,
             value_type,
-            value_text: text.to_lowercase(),
+            value_text: value_text.to_lowercase(),
             value_num,
         };
         match value {
-            PropertyValue::Text(s) => vec![row(0, "text", s, None)],
-            PropertyValue::Number(n) => vec![row(0, "number", format_number(n), Some(n))],
-            PropertyValue::Bool(b) => vec![row(0, "bool", b.to_string(), None)],
-            PropertyValue::Date(d) => {
-                vec![row(0, "date", crate::dates::format_iso_date(d), None)]
-            }
-            PropertyValue::DateTime(dt) => vec![row(0, "datetime", format_datetime(&dt), None)],
+            PropertyValue::Number(n) => vec![row(0, format_number(n), Some(n))],
             PropertyValue::List(items) => items
                 .into_iter()
                 .enumerate()
-                .map(|(i, item)| row(i as i64, "list", item, None))
+                .map(|(i, item)| row(i as i64, item, None))
                 .collect(),
+            // Text, bool, date and date-time: their canonical text.
+            scalar => vec![row(0, scalar.to_string(), None)],
         }
     }
 }

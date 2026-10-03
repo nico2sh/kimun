@@ -93,7 +93,7 @@ async fn run_show(
     use crate::cli::json_output::{
         JsonNoteEntry, JsonNoteMetadata, JsonOutput, JsonOutputMetadata,
     };
-    use crate::cli::metadata_extractor::{extract_headers, extract_links, extract_tags};
+    use crate::cli::metadata_extractor::{extract_links, extract_tags};
     use chrono::Utc;
     use kimun_core::error::{FSError, VaultError};
 
@@ -144,9 +144,6 @@ async fn run_show(
                 .await
                 .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
             let modified_secs = note_entry.modified_secs;
-            let tags = extract_tags(content);
-            let links = extract_links(content);
-            let headers = extract_headers(content);
             let journal_date = vault
                 .journal_date(&vault_path)
                 .map(|d| d.format("%Y-%m-%d").to_string());
@@ -159,11 +156,7 @@ async fn run_show(
                 created: modified_secs,
                 hash: format!("{:x}", content_data.hash),
                 journal_date,
-                metadata: JsonNoteMetadata {
-                    tags,
-                    links,
-                    headers,
-                },
+                metadata: JsonNoteMetadata::from_content(content),
                 backlinks: if backlink_paths.is_empty() {
                     None
                 } else {
