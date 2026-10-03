@@ -64,6 +64,15 @@ pub enum VaultError {
         /// The compiler's explanation of the failure.
         message: String,
     },
+    /// A property write was given an unusable key (empty, multi-line) or value
+    /// (a non-finite number).
+    #[error("Invalid property '{key}': {message}")]
+    InvalidProperty {
+        /// The key as supplied.
+        key: String,
+        /// Why it was rejected.
+        message: String,
+    },
     /// A vault scan found paths that collide once compared case-insensitively.
     #[error("Case-sensitivity conflicts detected in vault:\n{}", conflicts.join("\n"))]
     CaseConflict {
@@ -127,11 +136,15 @@ impl VaultError {
             VaultError::FSError(FSError::InvalidPath { path, message }) => {
                 Some(format!("Invalid path '{path}': {message}"))
             }
+            VaultError::FSError(FSError::InvalidFrontmatter { path, message }) => Some(format!(
+                "Could not parse existing frontmatter in '{path}': {message}"
+            )),
             VaultError::PathIsNotDirectory { path } => Some(format!("Not a directory: {path}")),
             // These error Displays are already clear, single-path messages.
             VaultError::ReplaceTextNotFound { .. }
             | VaultError::ReplaceTextNotUnique { .. }
-            | VaultError::InvalidRegex { .. } => Some(self.to_string()),
+            | VaultError::InvalidRegex { .. }
+            | VaultError::InvalidProperty { .. } => Some(self.to_string()),
             // Internal failures — no actionable user message.
             VaultError::DBError(_)
             | VaultError::CaseConflict { .. }
@@ -169,6 +182,15 @@ pub enum FSError {
         /// The offending path.
         path: String,
         /// Why the path was rejected.
+        message: String,
+    },
+    /// A note's existing frontmatter block does not parse, so a property write
+    /// refused to touch it rather than guess.
+    #[error("Invalid frontmatter in {path}: {message}")]
+    InvalidFrontmatter {
+        /// The note whose frontmatter failed to parse.
+        path: VaultPath,
+        /// The parser's explanation.
         message: String,
     },
     /// A vault path was resolved but the corresponding entry is missing on
@@ -235,6 +257,28 @@ pub enum DBError {
 mod tests {
     use super::*;
     use crate::nfs::VaultPath;
+
+    #[test]
+    fn property_errors_have_user_messages() {
+        assert_eq!(
+            VaultError::FSError(FSError::InvalidFrontmatter {
+                path: VaultPath::note_path_from("a"),
+                message: "boom".into(),
+            })
+            .user_message()
+            .as_deref(),
+            Some("Could not parse existing frontmatter in 'a.md': boom")
+        );
+        assert_eq!(
+            VaultError::InvalidProperty {
+                key: "".into(),
+                message: "key is empty".into()
+            }
+            .user_message()
+            .as_deref(),
+            Some("Invalid property '': key is empty")
+        );
+    }
 
     #[test]
     fn user_messages_are_clean_and_llm_facing() {

@@ -373,6 +373,9 @@ _Avoid_: content extractor (the implementation, not the door)
 The `note::scan` module — live text analysis over editor buffer fragments: link/wikilink spans, exclusion zones (code, frontmatter, links), label tokens, URL classification. The presentation layer drives WYSIWYG behaviour with these on text being edited; they take arbitrary text fragments, not notes. Whole-note extraction belongs to **Note details** instead.
 _Avoid_: span helpers / zone helpers (each names a part), parser utilities
 
+**Property**:
+A typed key/value pair in a note's frontmatter block (`+++` TOML or `---` YAML): text, number, bool, date, date-time or list of text. Keys are case-insensitive (stored lowercase). Indexed in the `properties` table and queried with `prop:`/`%`. The `tags` property also feeds **Labels**. Read leniently (a malformed block yields none); written strictly (a malformed block refuses the write).
+
 ### Note editing
 
 **Auto-surround**:

@@ -5,7 +5,7 @@ weight = 13
 
 # Search
 
-Search is Kimün's superpower. Every Markdown file in your workspace is indexed, and a small query language lets you slice by content, name, section, path, label, and links.
+Search is Kimün's superpower. Every Markdown file in your workspace is indexed, and a small query language lets you slice by content, name, section, path, label, property, and links.
 
 (Everything here is exact-match search over the local index. For finding notes by *meaning* — and asking questions answered from your notes — see [Semantic Search & Ask](@/using-kimun/server.md).)
 
@@ -18,8 +18,10 @@ The whole grammar fits in one table:
 | By section heading | `@` | `in:` | `@personal` |
 | By path | `/` | `pt:` | `/journal/2024` |
 | By label (hashtag) | `#` | `lb:` | `#finance` |
+| By property | `%` | `prop:` | `%priority>=2` |
 | Notes linking **to** X | `<` | `lk:` | `<projects` |
 | Notes X links **to** | `>` | `fwd:` | `>projects` |
+| Sort results | `^` | `or:` | `^title`, `-^title` |
 | Exclude anything | `-` prefix | | `-#draft`, `-@temp` |
 
 Space between terms = AND. There is no OR. That's the whole precedence story.
@@ -138,7 +140,41 @@ An unknown label returns zero results, not an error.
 
 - **Allowed characters:** letters, digits, underscores (`[A-Za-z0-9_]+`). A hashtag ends at the first character outside that set, so `#tag-with-dash` yields the label `tag`.
 - **Case-insensitive:** stored lowercase; `#Finance` and `#finance` are the same label.
-- **Not indexed as labels:** hashtags inside inline code or fenced code blocks, YAML/TOML frontmatter, HTML, Markdown link spans `[text](url#fragment)`, or wikilinks `[[#section]]`.
+- **Not indexed as labels:** hashtags inside inline code or fenced code blocks, HTML, Markdown link spans `[text](url#fragment)`, or wikilinks `[[#section]]`. A `#word` written inside frontmatter is not a label either.
+- **Frontmatter tags count too:** a `tags` property (`tags = ["a", "b"]` in TOML, `tags: [a, b]` or a `- a` list in YAML) adds its items as labels, so `#a` finds the note. A plain string (`tags: big project`) is one label. Frontmatter tags may contain characters inline hashtags can't (spaces, dashes); quote them in queries: `#"big project"`.
+
+## Properties
+
+Notes can carry typed properties in a frontmatter block at the very top — TOML between `+++` lines (Kimün's default) or YAML between `---` lines (what Obsidian writes):
+
+```toml
++++
+status = "in progress"
+priority = 2
+due = 2024-03-01
+tags = ["work", "q1"]
++++
+```
+
+Query them with `prop:` or its short form `%`:
+
+```
+prop:status=done      → status equals "done" (case-insensitive)
+%priority>=2          → numeric comparison
+%due<2024-04-01       → dates compare chronologically
+%tags=work            → a list property contains "work"
+%tags!=work           → has tags, but not "work"
+-%status=done         → excludes notes whose status is "done" (notes with no status are kept)
+prop:"status=in progress"  → quote the whole term when the value has spaces
+```
+
+A `prop:` / `%` term always needs an operator and a value: `%status` on its own is not supported and is ignored.
+
+Operators: `=` `!=` `<` `<=` `>` `>=`. A comparison that doesn't fit the property's type (for example `%due>5` on a date, or `<` on a list) matches nothing rather than erroring.
+
+Sort by a property with `or:prop:key` or `^%key`; see [Sorting](#sorting). Notes without the property always come last.
+
+Supported types: text, number, true/false, date (`2024-03-01`), date & time (`2024-03-01T14:30`), and lists of text. Nested tables are ignored. A block that fails to parse is still searchable as plain text, it just contributes no properties.
 
 ## Excluding things
 
@@ -170,6 +206,28 @@ meeting -cancelled                 → "meeting" but not "cancelled"
 screen* =notes                     → starts with "screen", in name "notes"
 #project -#archived @work          → labelled "project", not "archived", under "Work"
 ```
+
+## Sorting
+
+Results come back in the default order unless you add a sort directive: `or:` (long) or `^` (short), followed by a key. Prefix the directive with `-` for descending order.
+
+```
+^title               → by note title, ascending (same as or:title)
+-^title              → by note title, descending (same as -or:title)
+or:file              → by file name
+^%due                → by the "due" property, ascending
+-or:prop:priority    → by the "priority" property, descending
+```
+
+Sort keys:
+
+| Key | Aliases | Sorts by |
+|---|---|---|
+| `title` | `t` | note title |
+| `file` | `filename`, `f` | file name |
+| `prop:<key>` | `%<key>` | a [property](#properties) value; notes without it come last in either direction |
+
+The directive combines with any filter (`#project -#draft ^title`). The TUI sort dialog (`Ctrl+R`) writes this directive into the query for you.
 
 ## Query variables
 
@@ -247,6 +305,9 @@ The simple but great note taking app!
 | `<spec -<draft` | notes linking to "spec" but not to "draft" | backlink inclusion + exclusion |
 | `>kimun` | notes that the note "kimun" links to | forward link filter |
 | `fwd:spec #project` | notes that "spec" links to and labelled "project" | forward link + label |
+| `%status=done` | notes whose status is "done" | property filter |
+| `%priority>=2 #work ^%due` | work notes with priority 2 or more, soonest due first | property + label + sort |
+| `#project -^title` | project notes, titles Z to A | sort descending |
 
 ## Edge cases
 

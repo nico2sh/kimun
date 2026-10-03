@@ -6,12 +6,14 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use log::{debug, error};
-use search_terms::{OrderBy, SearchTerms};
+use search_terms::{OrderBy, PropertyFilter, PropertyOp, SearchTerms};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 
 pub(crate) mod file;
 use sqlx::{Row, Sqlite, Transaction};
 
+use crate::note::properties::{format_datetime, format_number, frontmatter_tags, parse_datetime};
+use crate::note::PropertyValue;
 use crate::note::{ContentChunk, LinkType, NoteContentData, NoteDetails};
 
 /// A note change reported by the `NoteIndex` the moment it is recorded, for
@@ -115,7 +117,10 @@ use super::{
 //       relative+absolute duplicates) that canonical reads no longer match.
 //       Bump forces a clean reindex so every row is rewritten canonical and
 //       stale duplicates are dropped.
-const VERSION: &str = "0.11";
+// 0.12: Added the `properties` table (typed frontmatter key/values) and the
+//       frontmatter `tags:` → `labels` unification. Bump forces a clean
+//       reindex so existing vaults get both populated.
+const VERSION: &str = "0.12";
 pub(crate) const DB_FILE: &str = "kimun.sqlite";
 
 /// The diff a vault sync walk produces and `NoteIndex::apply` consumes in
@@ -465,6 +470,15 @@ impl NoteIndex {
             .map(row_to_note_entry)
             .collect::<Result<_, _>>()?;
 
+        let mut prop_sort: HashMap<String, HashMap<String, PropertySortKey>> = HashMap::new();
+        for ob in &order_by {
+            if let OrderBy::Property { key, .. } = ob {
+                if !prop_sort.contains_key(key) {
+                    prop_sort.insert(key.clone(), property_sort_keys(&self.pool, key).await?);
+                }
+            }
+        }
+
         if !order_by.is_empty() {
             result.sort_by(|(a_entry, a_content), (b_entry, b_content)| {
                 for ob in &order_by {
@@ -487,6 +501,14 @@ impl NoteIndex {
                             } else {
                                 cmp.reverse()
                             }
+                        }
+                        OrderBy::Property { key, asc } => {
+                            let values = &prop_sort[key];
+                            cmp_property_sort_keys(
+                                values.get(&a_entry.path.to_string()),
+                                values.get(&b_entry.path.to_string()),
+                                *asc,
+                            )
                         }
                     };
                     if ord != std::cmp::Ordering::Equal {
@@ -655,6 +677,17 @@ impl NoteIndex {
             .fetch_all(&self.pool)
             .await?;
         Ok(rows.into_iter().map(|(p,)| VaultPath::new(p)).collect())
+    }
+
+    /// The labels of one note — inline `#hashtags` and frontmatter `tags:`
+    /// together — sorted and distinct.
+    pub(crate) async fn labels_of(&self, path: &VaultPath) -> Result<Vec<String>, DBError> {
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT DISTINCT name FROM labels WHERE path = ? ORDER BY name")
+                .bind(path.canonical().to_string())
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows.into_iter().map(|(n,)| n).collect())
     }
 
     /// Returns notes whose `noteName` starts with `prefix` (case-insensitive),
@@ -906,6 +939,32 @@ async fn create_tables(pool: &SqlitePool) -> Result<(), DBError> {
     .execute(&mut *tx)
     .await?;
 
+    // Typed frontmatter properties: one row per scalar (list_index 0) or per
+    // list item (0..N). `value_text` is the lowercased canonical text used for
+    // equality and lexicographic (ISO date) comparison; `value_num` is set
+    // only for numbers. The PK serves per-note lookups.
+    sqlx::query(
+        "CREATE TABLE properties (
+            path TEXT NOT NULL,
+            key TEXT NOT NULL,
+            list_index INTEGER NOT NULL DEFAULT 0,
+            value_type TEXT NOT NULL,
+            value_text TEXT,
+            value_num REAL,
+            PRIMARY KEY (path, key, list_index)
+        )",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    // Back `prop:key<op>value` scans across notes.
+    sqlx::query("CREATE INDEX properties_by_key_text ON properties(key, value_text)")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("CREATE INDEX properties_by_key_num ON properties(key, value_num)")
+        .execute(&mut *tx)
+        .await?;
+
     tx.commit().await?;
 
     Ok(())
@@ -985,6 +1044,7 @@ fn build_search_sql_query_inner(search_terms: &SearchTerms) -> (String, Vec<Stri
     add_labels_query(search_terms, &mut var_num, &mut params, &mut queries);
     add_links_query(search_terms, &mut var_num, &mut params, &mut queries);
     add_forward_links_query(search_terms, &mut var_num, &mut params, &mut queries);
+    add_properties_query(search_terms, &mut var_num, &mut params, &mut queries);
 
     if queries.is_empty() {
         debug!("No query provided");
@@ -1136,21 +1196,21 @@ fn notes_base_sql() -> &'static str {
     &NOTES_BASE_SQL
 }
 
-/// Fan-out shared by membership-style operators (labels, links): each positive
+/// Fan-out shared by membership-style operators (labels, links, properties): each positive
 /// term becomes its own INTERSECT branch (`notes.path IN (subquery)`); excluded
 /// terms are bundled into one notes-only SELECT chaining `NOT IN (subquery)` so
 /// the INTERSECT machinery still composes. `mk_subquery(term, var_num, params)`
 /// returns the inner `SELECT <col> FROM …` for one term (pushing its bind
 /// params and advancing `var_num`), or `None` to skip a degenerate term.
-fn add_membership_query<F>(
-    positives: &[String],
-    excludeds: &[String],
+fn add_membership_query<T, F>(
+    positives: &[T],
+    excludeds: &[T],
     var_num: &mut usize,
     params: &mut Vec<String>,
     queries: &mut Vec<String>,
     mk_subquery: F,
 ) where
-    F: Fn(&str, &mut usize, &mut Vec<String>) -> Option<String>,
+    F: Fn(&T, &mut usize, &mut Vec<String>) -> Option<String>,
 {
     for term in positives {
         if let Some(sub) = mk_subquery(term, var_num, params) {
@@ -1308,7 +1368,7 @@ fn add_links_query(
         var_num,
         params,
         queries,
-        link_subquery,
+        |t: &String, v: &mut usize, p: &mut Vec<String>| link_subquery(t, v, p),
     );
 }
 
@@ -1390,8 +1450,126 @@ fn add_forward_links_query(
         var_num,
         params,
         queries,
-        forward_link_subquery,
+        |t: &String, v: &mut usize, p: &mut Vec<String>| forward_link_subquery(t, v, p),
     );
+}
+
+fn add_properties_query(
+    s: &SearchTerms,
+    var_num: &mut usize,
+    params: &mut Vec<String>,
+    queries: &mut Vec<String>,
+) {
+    add_membership_query(
+        &s.properties,
+        &s.excluded_properties,
+        var_num,
+        params,
+        queries,
+        |f, var_num, params| Some(property_subquery(f, var_num, params)),
+    );
+}
+
+/// `SELECT path FROM properties …` for one `prop:` filter. A query value that
+/// parses as a finite number compares numerically against `number` rows (and,
+/// for `=`/`!=`, also textually against non-number rows, so `version=10`
+/// still finds the text "10"); any other value compares `value_text`
+/// lexicographically, which orders ISO dates correctly. Ordering operators
+/// never match lists or bools; a type mismatch is simply no match. `!=` means
+/// "has the key, and no value equal to this" (so on a list: does not contain).
+fn property_subquery(f: &PropertyFilter, var_num: &mut usize, params: &mut Vec<String>) -> String {
+    let k = *var_num;
+    params.push(f.key.clone());
+    *var_num += 1;
+    let v = *var_num;
+    // Date-times are stored as lowercased canonical RFC3339 (UTC), so a query
+    // value that reads as one is compared in that form.
+    let value = parse_datetime(&f.value)
+        .map_or_else(|| f.value.clone(), |dt| format_datetime(&dt).to_lowercase());
+    params.push(value);
+    *var_num += 1;
+
+    let numeric = f.value.parse::<f64>().is_ok_and(f64::is_finite);
+    let eq = if numeric {
+        format!(
+            "((value_type = 'number' AND value_num = CAST(?{v} AS REAL)) \
+             OR (value_type <> 'number' AND value_text = ?{v}))"
+        )
+    } else {
+        format!("(value_type <> 'number' AND value_text = ?{v})")
+    };
+    match f.op {
+        PropertyOp::Eq => format!("SELECT path FROM properties WHERE key = ?{k} AND {eq}"),
+        PropertyOp::Ne => format!(
+            "SELECT path FROM properties WHERE key = ?{k} \
+             EXCEPT SELECT path FROM properties WHERE key = ?{k} AND {eq}"
+        ),
+        op if numeric => format!(
+            "SELECT path FROM properties WHERE key = ?{k} \
+             AND value_type = 'number' AND value_num {} CAST(?{v} AS REAL)",
+            op.sql()
+        ),
+        op => format!(
+            "SELECT path FROM properties WHERE key = ?{k} \
+             AND value_type IN ('text', 'date', 'datetime') AND value_text {} ?{v}",
+            op.sql()
+        ),
+    }
+}
+
+/// A note's sort value for `or:prop:` — numbers sort before text.
+#[derive(Debug, Clone, PartialEq)]
+enum PropertySortKey {
+    Number(f64),
+    Text(String),
+}
+
+/// Each note's first value (`list_index = 0`) of `key`, by canonical path.
+async fn property_sort_keys(
+    pool: &SqlitePool,
+    key: &str,
+) -> Result<HashMap<String, PropertySortKey>, DBError> {
+    let rows: Vec<(String, String, String, Option<f64>)> = sqlx::query_as(
+        "SELECT path, value_type, value_text, value_num FROM properties \
+         WHERE key = ? AND list_index = 0",
+    )
+    .bind(key)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(path, ty, text, num)| {
+            let k = match (ty.as_str(), num) {
+                ("number", Some(n)) => PropertySortKey::Number(n),
+                _ => PropertySortKey::Text(text),
+            };
+            (path, k)
+        })
+        .collect())
+}
+
+/// Missing values sort last in both directions; direction applies otherwise.
+fn cmp_property_sort_keys(
+    a: Option<&PropertySortKey>,
+    b: Option<&PropertySortKey>,
+    asc: bool,
+) -> std::cmp::Ordering {
+    use std::cmp::Ordering::{Equal, Greater, Less};
+    use PropertySortKey::{Number, Text};
+    let ord = match (a, b) {
+        (None, None) => return Equal,
+        (None, Some(_)) => return Greater,
+        (Some(_), None) => return Less,
+        (Some(Number(x)), Some(Number(y))) => x.total_cmp(y),
+        (Some(Text(x)), Some(Text(y))) => x.cmp(y),
+        (Some(Number(_)), Some(Text(_))) => Less,
+        (Some(Text(_)), Some(Number(_))) => Greater,
+    };
+    if asc {
+        ord
+    } else {
+        ord.reverse()
+    }
 }
 
 /// Builds basePath conditions for path-style search terms. A trailing
@@ -1515,6 +1693,7 @@ async fn delete_notes(
     bulk_delete_in(tx, "notesContent", &["path"], &path_strings).await?;
     bulk_delete_in(tx, "links", &["source", "destination"], &path_strings).await?;
     bulk_delete_in(tx, "labels", &["path"], &path_strings).await?;
+    bulk_delete_in(tx, "properties", &["path"], &path_strings).await?;
     Ok(())
 }
 
@@ -1532,7 +1711,13 @@ async fn save_note(
         .filter(|l| matches!(l.ltype, LinkType::Hashtag))
         .count();
     let mut batch = NoteBatch::with_capacity(1, chunks.len(), links.len(), label_count);
-    batch.push(entry_data, data.clone(), chunks, links);
+    batch.push(
+        entry_data,
+        data.clone(),
+        chunks,
+        links,
+        note_details.get_properties(),
+    );
 
     let mut tx = pool.begin().await?;
     batch.flush(&mut tx).await?;
@@ -1572,6 +1757,52 @@ struct LabelRow {
     name: String,
 }
 
+struct PropertyRow {
+    path_idx: usize,
+    key: String,
+    list_index: i64,
+    value_type: &'static str,
+    /// Lowercased canonical text — matching is case-insensitive.
+    value_text: String,
+    value_num: Option<f64>,
+}
+
+impl PropertyRow {
+    /// The rows one property occupies: one for a scalar, one per item for a
+    /// list (an empty list occupies none).
+    fn rows(path_idx: usize, key: String, value: PropertyValue) -> Vec<Self> {
+        let scalar = |value_type, text: String, num| {
+            vec![Self {
+                path_idx,
+                key: key.clone(),
+                list_index: 0,
+                value_type,
+                value_text: text.to_lowercase(),
+                value_num: num,
+            }]
+        };
+        match value {
+            PropertyValue::Text(s) => scalar("text", s, None),
+            PropertyValue::Number(n) => scalar("number", format_number(n), Some(n)),
+            PropertyValue::Bool(b) => scalar("bool", b.to_string(), None),
+            PropertyValue::Date(d) => scalar("date", crate::dates::format_iso_date(d), None),
+            PropertyValue::DateTime(dt) => scalar("datetime", format_datetime(&dt), None),
+            PropertyValue::List(items) => items
+                .into_iter()
+                .enumerate()
+                .map(|(i, item)| Self {
+                    path_idx,
+                    key: key.clone(),
+                    list_index: i as i64,
+                    value_type: "list",
+                    value_text: item.to_lowercase(),
+                    value_num: None,
+                })
+                .collect(),
+        }
+    }
+}
+
 /// Bulk-upserts a slice of notes plus their chunks and links inside the given
 /// transaction. Each note's raw text is parsed once; chunks/links are bound by
 /// `path_idx` into a shared `paths` table to avoid per-row clones. Inserts
@@ -1591,7 +1822,8 @@ async fn upsert_notes_batched(
         // functions take the text by `AsRef<str>` and keep it borrowed.
         let data = NoteDetails::content_data_of(text);
         let (chunks, links) = NoteDetails::chunks_and_links_of(&entry_data.path, text);
-        batch.push(entry_data, data, chunks, links);
+        let properties = NoteDetails::properties_of(text);
+        batch.push(entry_data, data, chunks, links, properties);
     }
     batch.flush(tx).await
 }
@@ -1605,6 +1837,7 @@ struct NoteBatch {
     chunks: Vec<ChunkRow>,
     links: Vec<LinkRow>,
     labels: Vec<LabelRow>,
+    properties: Vec<PropertyRow>,
 }
 
 impl NoteBatch {
@@ -1615,6 +1848,7 @@ impl NoteBatch {
             chunks: Vec::with_capacity(chunks),
             links: Vec::with_capacity(links),
             labels: Vec::with_capacity(labels),
+            properties: Vec::new(),
         }
     }
 
@@ -1624,6 +1858,7 @@ impl NoteBatch {
         data: NoteContentData,
         chunks: Vec<ContentChunk>,
         links: Vec<crate::note::NoteLink>,
+        properties: Vec<(String, PropertyValue)>,
     ) {
         let idx = self.paths.len();
         // Store every note under its canonical vault-relative key so the index
@@ -1670,6 +1905,17 @@ impl NoteBatch {
                 _ => {}
             }
         }
+        // Frontmatter `tags:` joins the inline hashtags in `labels`; the PK's
+        // ON CONFLICT DO NOTHING dedupes a tag present in both forms.
+        for name in frontmatter_tags(&properties) {
+            self.labels.push(LabelRow {
+                path_idx: idx,
+                name,
+            });
+        }
+        for (key, value) in properties {
+            self.properties.extend(PropertyRow::rows(idx, key, value));
+        }
     }
 
     async fn flush(self, tx: &mut Transaction<'_, Sqlite>) -> Result<(), DBError> {
@@ -1677,9 +1923,11 @@ impl NoteBatch {
         bulk_delete_in(tx, "notesContent", &["path"], &self.paths).await?;
         bulk_delete_in(tx, "links", &["source"], &self.paths).await?;
         bulk_delete_in(tx, "labels", &["path"], &self.paths).await?;
+        bulk_delete_in(tx, "properties", &["path"], &self.paths).await?;
         bulk_insert(tx, &self.chunks, &self.paths).await?;
         bulk_insert(tx, &self.links, &self.paths).await?;
         bulk_insert(tx, &self.labels, &self.paths).await?;
+        bulk_insert(tx, &self.properties, &self.paths).await?;
         Ok(())
     }
 }
@@ -1826,6 +2074,26 @@ impl BulkInsertRow for LabelRow {
         paths: &'q [String],
     ) -> sqlx::query::Query<'q, Sqlite, sqlx::sqlite::SqliteArguments<'q>> {
         q.bind(&self.name).bind(&paths[self.path_idx])
+    }
+}
+
+impl BulkInsertRow for PropertyRow {
+    const HEADER: &'static str = "INSERT INTO properties \
+        (path, key, list_index, value_type, value_text, value_num) VALUES ";
+    const FOOTER: &'static str = " ON CONFLICT(path, key, list_index) DO NOTHING";
+    const COLS: usize = 6;
+
+    fn bind_to<'q>(
+        &'q self,
+        q: sqlx::query::Query<'q, Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
+        paths: &'q [String],
+    ) -> sqlx::query::Query<'q, Sqlite, sqlx::sqlite::SqliteArguments<'q>> {
+        q.bind(&paths[self.path_idx])
+            .bind(&self.key)
+            .bind(self.list_index)
+            .bind(self.value_type)
+            .bind(&self.value_text)
+            .bind(self.value_num)
     }
 }
 
@@ -1978,6 +2246,12 @@ async fn rename_note(
         .execute(&mut **tx)
         .await?;
 
+    sqlx::query("UPDATE properties SET path = ? WHERE path = ?")
+        .bind(to.to_string())
+        .bind(from.to_string())
+        .execute(&mut **tx)
+        .await?;
+
     Ok(())
 }
 
@@ -2048,6 +2322,13 @@ async fn rename_directory(
         .execute(&mut **tx)
         .await?;
 
+    sqlx::query("UPDATE properties SET path = ? || SUBSTR(path, LENGTH(?) + 1) WHERE path LIKE (? || '%') ESCAPE '\\'")
+        .bind(&to)
+        .bind(&from)
+        .bind(&from_escaped)
+        .execute(&mut **tx)
+        .await?;
+
     Ok(())
 }
 
@@ -2088,6 +2369,11 @@ async fn delete_directory(
         .await?;
 
     sqlx::query("DELETE FROM labels WHERE path LIKE (? || '%') ESCAPE '\\'")
+        .bind(&pattern)
+        .execute(&mut **tx)
+        .await?;
+
+    sqlx::query("DELETE FROM properties WHERE path LIKE (? || '%') ESCAPE '\\'")
         .bind(&pattern)
         .execute(&mut **tx)
         .await?;

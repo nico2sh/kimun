@@ -430,7 +430,7 @@ impl QueryPanel {
                     SortOrder::Descending
                 },
             ),
-            None => (SortField::Name, SortOrder::Ascending),
+            Some(OrderBy::Property { .. }) | None => (SortField::Name, SortOrder::Ascending),
         }
     }
 

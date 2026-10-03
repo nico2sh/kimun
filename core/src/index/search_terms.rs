@@ -22,6 +22,8 @@ enum ElementType {
     ExcludedLinks,
     ForwardLinks,
     ExcludedForwardLinks,
+    Property,
+    ExcludedProperty,
 }
 
 struct QueryTermExtractor {
@@ -34,7 +36,7 @@ struct QueryTermExtractor {
 // Excluded variants must come before their positive counterparts so longer prefixes match first.
 type PrefixEntry = (&'static str, &'static str, fn() -> ElementType);
 
-fn prefix_table() -> [PrefixEntry; 12] {
+fn prefix_table() -> [PrefixEntry; 14] {
     [
         ("-name:", "-=", || ElementType::ExcludedAt),
         ("-lk:", "-<", || ElementType::ExcludedLinks),
@@ -42,12 +44,14 @@ fn prefix_table() -> [PrefixEntry; 12] {
         ("-in:", "-@", || ElementType::ExcludedIn),
         ("-pt:", "-/", || ElementType::ExcludedPath),
         ("-lb:", "-#", || ElementType::ExcludedLabel),
+        ("-prop:", "-%", || ElementType::ExcludedProperty),
         ("name:", "=", || ElementType::At),
         ("lk:", "<", || ElementType::Links),
         ("fwd:", ">", || ElementType::ForwardLinks),
         ("in:", "@", || ElementType::In),
         ("pt:", "/", || ElementType::Path),
         ("lb:", "#", || ElementType::Label),
+        ("prop:", "%", || ElementType::Property),
     ]
 }
 
@@ -152,10 +156,25 @@ pub enum OrderBy {
         /// `true` to sort ascending, `false` to sort descending.
         asc: bool,
     },
+    /// Sort by a frontmatter property (`or:prop:key` / `or:%key`). Notes
+    /// without it sort last in either direction.
+    Property {
+        /// Lowercased property key.
+        key: String,
+        /// `true` to sort ascending, `false` to sort descending.
+        asc: bool,
+    },
 }
 
 impl OrderBy {
     fn from_term(term: &str, asc: bool) -> Option<Self> {
+        if let Some(key) = term
+            .strip_prefix("prop:")
+            .or_else(|| term.strip_prefix('%'))
+        {
+            let key = key.trim().to_lowercase();
+            return (!key.is_empty()).then_some(OrderBy::Property { key, asc });
+        }
         match term {
             "f" => Some(OrderBy::FileName { asc }),
             "file" => Some(OrderBy::FileName { asc }),
@@ -175,6 +194,76 @@ pub enum OrderField {
     Title,
     /// Order results by filename.
     FileName,
+}
+
+/// Comparison operator of a `prop:` filter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PropertyOp {
+    /// `=` — equal; on a list, "contains this item".
+    Eq,
+    /// `!=` — has the property but no value equal to this one.
+    Ne,
+    /// `<`
+    Lt,
+    /// `<=`
+    Le,
+    /// `>`
+    Gt,
+    /// `>=`
+    Ge,
+}
+
+impl PropertyOp {
+    /// The SQL comparison operator.
+    pub fn sql(self) -> &'static str {
+        match self {
+            PropertyOp::Eq => "=",
+            PropertyOp::Ne => "!=",
+            PropertyOp::Lt => "<",
+            PropertyOp::Le => "<=",
+            PropertyOp::Gt => ">",
+            PropertyOp::Ge => ">=",
+        }
+    }
+}
+
+/// One `prop:key<op>value` / `%key<op>value` filter. Key and value are
+/// lowercased: property matching is case-insensitive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PropertyFilter {
+    /// The property key.
+    pub key: String,
+    /// The comparison.
+    pub op: PropertyOp,
+    /// The value compared against, without surrounding quotes.
+    pub value: String,
+}
+
+impl PropertyFilter {
+    /// Parses `key<op>value`. The key runs up to the first `= ! < >`; `None`
+    /// when the key or value is empty or the operator is malformed.
+    pub fn parse(term: &str) -> Option<Self> {
+        let at = term.find(['=', '!', '<', '>'])?;
+        let key = term[..at].trim().to_lowercase();
+        let rest = &term[at..];
+        let (op, len) = [
+            ("!=", PropertyOp::Ne),
+            ("<=", PropertyOp::Le),
+            (">=", PropertyOp::Ge),
+            ("=", PropertyOp::Eq),
+            ("<", PropertyOp::Lt),
+            (">", PropertyOp::Gt),
+        ]
+        .into_iter()
+        .find_map(|(s, op)| rest.starts_with(s).then_some((op, s.len())))?;
+        let raw = rest[len..].trim();
+        let value = ['"', '\'']
+            .into_iter()
+            .find_map(|q| raw.strip_prefix(q).and_then(|r| r.strip_suffix(q)))
+            .unwrap_or(raw)
+            .to_lowercase();
+        (!key.is_empty() && !value.is_empty()).then_some(Self { key, op, value })
+    }
 }
 
 /// True if `token` is an order directive in any of its four forms:
@@ -327,6 +416,7 @@ pub fn with_order_directive(query: &str, field: OrderField, asc: bool) -> String
 /// - `lb:` / `#` — label (lowercased and deduplicated)
 /// - `lk:` / `<` — backlinks (notes linking *to* the target)
 /// - `fwd:` / `>` — forward links (notes the target links *to*)
+/// - `prop:` / `%` — property filter (`prop:status=done`, `%priority>2`)
 /// - `or:` / `^` — order directive (`or:title`, `^file`, …)
 ///
 /// Any prefix may be negated by a leading `-` (`-#draft`, `-lk:spec`) to
@@ -367,6 +457,10 @@ pub struct SearchTerms {
     pub excluded_links: Vec<String>,
     /// Negated `fwd:` / `>` values (`-fwd:`, `->`). Deduped, order preserved.
     pub excluded_forward_links: Vec<String>,
+    /// `prop:` / `%` filters (`key<op>value`).
+    pub properties: Vec<PropertyFilter>,
+    /// Negated `prop:` / `%` filters (`-prop:`, `-%`).
+    pub excluded_properties: Vec<PropertyFilter>,
 }
 
 /// Maximum byte length of a query string accepted by [`SearchTerms::from_query_string`].
@@ -420,6 +514,8 @@ impl SearchTerms {
         let mut excluded_labels = vec![];
         let mut excluded_links = vec![];
         let mut excluded_forward_links = vec![];
+        let mut properties = vec![];
+        let mut excluded_properties = vec![];
         while !query.is_empty() {
             let qp = QueryTermExtractor::extract_and_consume(query);
             query = qp.remainder;
@@ -502,6 +598,10 @@ impl SearchTerms {
                         excluded_forward_links.push(qp.term);
                     }
                 }
+                ElementType::Property => properties.extend(PropertyFilter::parse(&qp.term)),
+                ElementType::ExcludedProperty => {
+                    excluded_properties.extend(PropertyFilter::parse(&qp.term))
+                }
             }
         }
 
@@ -528,6 +628,8 @@ impl SearchTerms {
             excluded_labels,
             excluded_links,
             excluded_forward_links,
+            properties,
+            excluded_properties,
         }
     }
 }
@@ -548,8 +650,8 @@ fn dedup_preserving_order(v: &mut Vec<String>) {
 pub enum QueryTokenClass {
     /// A leading `-` (exclusion).
     Negation,
-    /// A field prefix: a sigil (`<` `>` `=` `@` `/` `#` `^`) or its long form
-    /// (`lk:` `fwd:` `name:` `in:` `pt:` `lb:` `or:`).
+    /// A field prefix: a sigil (`<` `>` `=` `@` `/` `#` `%` `^`) or its long form
+    /// (`lk:` `fwd:` `name:` `in:` `pt:` `lb:` `prop:` `or:`).
     FieldKey,
     /// A note-targeting value (after `<` / `>` / `=` and long forms).
     LinkValue,
@@ -756,6 +858,21 @@ mod lexer_tests {
     }
 
     #[test]
+    fn lexes_property_prefixes() {
+        use QueryTokenClass as C;
+        assert_eq!(
+            classes("prop:status=done -%n>2"),
+            vec![
+                (C::FieldKey, "prop:".into()),
+                (C::Term, "status=done".into()),
+                (C::Negation, "-".into()),
+                (C::FieldKey, "%".into()),
+                (C::Term, "n>2".into()),
+            ]
+        );
+    }
+
+    #[test]
     fn lexes_field_prefixes_and_values() {
         use QueryTokenClass as C;
         assert_eq!(
@@ -868,6 +985,103 @@ mod lexer_tests {
 mod tests {
     use super::expand_bare_note_prefixes;
     use super::SearchTerms;
+    use super::{OrderBy, PropertyFilter, PropertyOp};
+
+    fn pf(key: &str, op: PropertyOp, value: &str) -> PropertyFilter {
+        PropertyFilter {
+            key: key.into(),
+            op,
+            value: value.into(),
+        }
+    }
+
+    #[test]
+    fn property_filter_operators() {
+        for (term, op, value) in [
+            ("k=v", PropertyOp::Eq, "v"),
+            ("k!=v", PropertyOp::Ne, "v"),
+            ("k<5", PropertyOp::Lt, "5"),
+            ("k<=5", PropertyOp::Le, "5"),
+            ("k>2024-01-01", PropertyOp::Gt, "2024-01-01"),
+            ("k>=5", PropertyOp::Ge, "5"),
+        ] {
+            assert_eq!(
+                PropertyFilter::parse(term),
+                Some(pf("k", op, value)),
+                "{term}"
+            );
+        }
+    }
+
+    #[test]
+    fn property_filter_normalizes_and_rejects() {
+        assert_eq!(
+            PropertyFilter::parse("Status=Done"),
+            Some(pf("status", PropertyOp::Eq, "done"))
+        );
+        assert_eq!(
+            PropertyFilter::parse("due date=x y"),
+            Some(pf("due date", PropertyOp::Eq, "x y"))
+        );
+        assert_eq!(
+            PropertyFilter::parse("k=\"v\""),
+            Some(pf("k", PropertyOp::Eq, "v"))
+        );
+        assert_eq!(PropertyFilter::parse("k"), None);
+        assert_eq!(PropertyFilter::parse("=v"), None);
+        assert_eq!(PropertyFilter::parse("k="), None);
+        assert_eq!(PropertyFilter::parse("k!v"), None);
+    }
+
+    #[test]
+    fn prop_prefixes_long_short_and_excluded() {
+        let st =
+            SearchTerms::from_query_string("prop:status=done %priority>2 -prop:a=b -%c!=d meeting");
+        assert_eq!(
+            st.properties,
+            vec![
+                pf("status", PropertyOp::Eq, "done"),
+                pf("priority", PropertyOp::Gt, "2"),
+            ]
+        );
+        assert_eq!(
+            st.excluded_properties,
+            vec![pf("a", PropertyOp::Eq, "b"), pf("c", PropertyOp::Ne, "d"),]
+        );
+        assert_eq!(st.terms, vec!["meeting"]);
+    }
+
+    // Whole-term quoting carries spaces in the value.
+    #[test]
+    fn quoted_property_term_keeps_spaces() {
+        let st =
+            SearchTerms::from_query_string("prop:\"status=in progress\" %'due date<2025-01-01'");
+        assert_eq!(
+            st.properties,
+            vec![
+                pf("status", PropertyOp::Eq, "in progress"),
+                pf("due date", PropertyOp::Lt, "2025-01-01"),
+            ]
+        );
+        assert!(st.terms.is_empty());
+    }
+
+    #[test]
+    fn malformed_property_terms_are_dropped() {
+        let st = SearchTerms::from_query_string("prop:nokey %=x");
+        assert!(st.properties.is_empty());
+        assert!(st.terms.is_empty());
+    }
+
+    #[test]
+    fn order_by_property() {
+        let st = SearchTerms::from_query_string("or:prop:Due -or:%priority ^title");
+        assert!(matches!(&st.order_by[0], OrderBy::Property { key, asc: true } if key == "due"));
+        assert!(
+            matches!(&st.order_by[1], OrderBy::Property { key, asc: false } if key == "priority")
+        );
+        assert!(matches!(st.order_by[2], OrderBy::Title { asc: true }));
+    }
 
     #[test]
     fn expand_bare_short_note_prefixes() {
