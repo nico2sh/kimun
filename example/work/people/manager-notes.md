@@ -1,3 +1,7 @@
++++
+type = "1on1"
+last_meeting = 2026-04-10
++++
 # Manager 1:1 Notes
 
 ## 2026-04-10

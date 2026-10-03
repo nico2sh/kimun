@@ -1,3 +1,11 @@
+---
+type: idea
+status: growing
+source: Designing Data-Intensive Applications
+tags:
+  - systems
+  - reading
+---
 # Distributed Systems
 
 Reading notes from "Designing Data-Intensive Applications" and related materials.

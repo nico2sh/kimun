@@ -1,3 +1,10 @@
+---
+type: idea
+status: evergreen
+method: pour over
+tags:
+  - brewing
+---
 # Coffee Brewing Notes
 
 ## Pour Over (V60)

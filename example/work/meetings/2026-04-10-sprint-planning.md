@@ -1,3 +1,9 @@
++++
+type = "meeting"
+date = 2026-04-10
+attendees = ["me", "maria", "carlos", "david"]
+tags = ["planning"]
++++
 # Sprint Planning — 2026-04-10
 
 **Attendees:** Me, [[maria]], [[carlos]], [[david]]

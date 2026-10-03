@@ -1,3 +1,9 @@
++++
+type = "project"
+status = "proposal"
+priority = 2
+estimate_weeks = 6
++++
 # Observability Improvements Proposal
 
 ## Problem
