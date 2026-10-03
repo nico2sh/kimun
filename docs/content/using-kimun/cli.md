@@ -404,7 +404,7 @@ kimun note prop remove "projects/garden" status
 
 - Keeps the rest of the frontmatter (format, comments, key order) as it was
 - A note without frontmatter gets a TOML (`+++`) block; `--yaml` makes it YAML (`---`). An existing block keeps its format
-- Keys are case-insensitive (stored lowercase)
+- Keys are case-insensitive but keep the spelling you give them: `set n dueDate …` writes `dueDate`, and `dueDate`, `duedate` and `DUEDATE` all reach the same property. An existing key keeps the spelling already in the note
 - Negative numbers work as values (`set n delta -5`); a text value starting with `-` goes after `--` (`set n mood -- -meh`)
 - `get` fails for a property the note doesn't have; `remove` doesn't
 - Refuses to edit a note whose existing frontmatter doesn't parse, leaving it untouched

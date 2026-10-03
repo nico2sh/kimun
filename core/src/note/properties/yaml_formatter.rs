@@ -25,7 +25,7 @@ impl PropertyFormatter for YamlFormatter {
         Ok(root
             .iter()
             .filter(|(_, v)| !matches!(v, Yaml::Hash(_)))
-            .filter_map(|(k, v)| Some((scalar_text(k)?.to_lowercase(), read_value(v))))
+            .filter_map(|(k, v)| Some((scalar_text(k)?, read_value(v))))
             .collect())
     }
 
@@ -41,7 +41,13 @@ impl PropertyFormatter for YamlFormatter {
         let written_key = entries
             .first()
             .map_or_else(|| key.to_string(), |(_, k)| k.clone());
-        let rendered = render_entry(&written_key, value);
+        let mut rendered = render_entry(&written_key, value);
+        // A `# comment` trailing the old entry's first line stays on it.
+        if let Some((range, _)) = entries.first() {
+            if let Some(comment) = inline_comment(&lines[range.start]) {
+                rendered[0].push_str(comment);
+            }
+        }
         // Drop later duplicates (and their comments) back to front so the
         // first range stays valid.
         for (range, _) in entries.iter().skip(1).rev() {
@@ -206,6 +212,34 @@ fn line_key(line: &str) -> Option<String> {
     Some(line[..colon].trim_end().to_string())
 }
 
+/// The trailing `# comment` of a line (with the whitespace before it), if
+/// any: a `#` outside quotes that follows whitespace.
+fn inline_comment(line: &str) -> Option<&str> {
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    let mut prev_space = false;
+    for (i, c) in line.char_indices() {
+        match quote {
+            Some('"') if escaped => escaped = false,
+            Some('"') if c == '\\' => escaped = true,
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None if (c == '"' || c == '\'')
+                && (i == 0 || prev_space || line[..i].ends_with([':', '[', ',', '{'])) =>
+            {
+                quote = Some(c)
+            }
+            None if c == '#' && prev_space => {
+                let head = line[..i].trim_end();
+                return Some(line[head.len()..].trim_end());
+            }
+            None => {}
+        }
+        prev_space = c.is_whitespace();
+    }
+    None
+}
+
 /// A line that continues the entry above it: indented or a `- ` list item.
 fn is_continuation(line: &str) -> bool {
     line.starts_with([' ', '\t']) || line.starts_with("- ") || line == "-"
@@ -345,7 +379,7 @@ mod tests {
         assert_eq!(
             p,
             vec![
-                ("title".into(), PropertyValue::Text("Hello".into())),
+                ("Title".into(), PropertyValue::Text("Hello".into())),
                 ("count".into(), PropertyValue::Number(3.0)),
                 ("ratio".into(), PropertyValue::Number(0.5)),
                 ("done".into(), PropertyValue::Bool(false)),
@@ -452,5 +486,21 @@ mod tests {
         let f = YamlFormatter;
         assert!(f.set("{a: 1}\n", "b", &PropertyValue::Bool(true)).is_err());
         assert!(f.remove("{a: 1}\n", "a").is_err());
+    }
+
+    #[test]
+    fn keeps_the_inline_comment_of_a_replaced_entry() {
+        let set = |block: &str, v: PropertyValue| YamlFormatter.set(block, "k", &v).unwrap();
+        let text = |s: &str| PropertyValue::Text(s.into());
+        assert_eq!(set("k: a # why\nz: 1\n", text("b")), "k: b # why\nz: 1\n");
+        assert_eq!(set("k: a   # why\n", text("b")), "k: b   # why\n");
+        // A `#` inside quotes or glued to a word is not a comment.
+        assert_eq!(set("k: \"a # b\"\n", text("c")), "k: c\n");
+        assert_eq!(set("k: a#b\n", text("c")), "k: c\n");
+        assert_eq!(set("k: 'it''s' # c\n", text("d")), "k: d # c\n");
+        // The comment survives a change of shape, scalar to list and back.
+        let list = set("k: a # c\n", PropertyValue::List(vec!["x".into()]));
+        assert_eq!(list, "k: # c\n  - x\n");
+        assert_eq!(set(&list, text("a")), "k: a # c\n");
     }
 }

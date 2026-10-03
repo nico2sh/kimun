@@ -374,7 +374,7 @@ The `note::scan` module — live text analysis over editor buffer fragments: lin
 _Avoid_: span helpers / zone helpers (each names a part), parser utilities
 
 **Property**:
-A typed key/value pair in a note's frontmatter block (`+++` TOML or `---` YAML): text, number, bool, date, date-time or list of text. Keys are case-insensitive (stored lowercase). Indexed in the `properties` table and queried with `prop:`/`%`. The `tags` property also feeds **Labels**. Read leniently (a malformed block yields none); written strictly (a malformed block refuses the write).
+A typed key/value pair in a note's frontmatter block (`+++` TOML or `---` YAML): text, number, bool, date, date-time or list of text. Keys are matched case-insensitively but spelled as written (in the note, and in what `get_properties` returns); the index stores them lowercase. Indexed in the `properties` table and queried with `prop:`/`%`. The `tags` property also feeds **Labels**. Read leniently (a malformed block yields none); written strictly (a malformed block refuses the write).
 
 ### Note editing
 

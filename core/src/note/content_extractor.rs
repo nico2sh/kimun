@@ -1288,10 +1288,16 @@ fn strip_hashtags_in_text_event(
 /// Returns the byte offset immediately after the closing `\n` of the opening
 /// delimiter line, or `None` if the text does not start with a valid frontmatter
 /// delimiter (`---` or `+++`).  Strips a trailing `\r` so CRLF files work the
-/// same as LF files.
+/// same as LF files, and ignores a leading UTF-8 byte-order mark (Windows
+/// editors write one); the offset still counts it, so it indexes `text`.
 pub(in crate::note) fn frontmatter_delimiter(text: &str) -> Option<(&str, usize)> {
     let newline_pos = text.find('\n')?;
-    let raw_first = &text[..newline_pos];
+    let bom = if text.starts_with('\u{feff}') {
+        '\u{feff}'.len_utf8()
+    } else {
+        0
+    };
+    let raw_first = &text[bom..newline_pos];
     let first_line = raw_first.trim_end_matches('\r');
     if first_line != "---" && first_line != "+++" {
         return None;
@@ -1333,6 +1339,7 @@ fn remove_frontmatter<S: AsRef<str>>(text: S) -> (String, String) {
     let Some(first_line) = lines.next() else {
         return (String::new(), String::new());
     };
+    let first_line = first_line.strip_prefix('\u{feff}').unwrap_or(first_line);
 
     if first_line != "---" && first_line != "+++" {
         return (String::new(), text.as_ref().to_string());
@@ -3241,5 +3248,13 @@ ls -la ./test
                 .any(|c| c.breadcrumb == "Setup" && c.text.contains("make")),
             "the code is filed under its heading: {chunks:?}"
         );
+    }
+
+    #[test]
+    fn frontmatter_after_a_byte_order_mark_is_still_frontmatter() {
+        let text = "\u{feff}---\ntitle: x\n---\nbody";
+        let (fm, body) = super::remove_frontmatter(text);
+        assert_eq!((fm.as_str(), body.as_str()), ("title: x", "body"));
+        assert_eq!(&text[super::frontmatter_end_byte(text)..], "body");
     }
 }

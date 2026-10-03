@@ -47,7 +47,7 @@ pub enum PropSubcommand {
     Set {
         /// Note path, relative to quick_note_path or absolute from vault root
         path: String,
-        /// Property key (stored lowercase)
+        /// Property key (case-insensitive; a new key is written as spelled)
         key: String,
         /// The value, or several for a list (none: an empty list, for `tags`
         /// or with `--type list`)
