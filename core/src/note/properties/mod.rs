@@ -20,7 +20,7 @@ use std::ops::Range;
 
 use chrono::{DateTime, SecondsFormat, Utc};
 
-use super::content_extractor::frontmatter_delimiter;
+use super::content_extractor::{frontmatter_delimiter, split_bom};
 use toml_formatter::TomlFormatter;
 use yaml_formatter::YamlFormatter;
 
@@ -78,9 +78,9 @@ pub(crate) struct FrontmatterError(pub(crate) String);
 pub(crate) type PropertyEntry = (String, Option<PropertyValue>);
 
 /// What a note's frontmatter declares: its property entries in file order,
-/// keys spelled as written, the first of any case-duplicate keys winning. The one shape the index and
-/// the API read properties through — keys (for "has property"), typed values
-/// and the `tags` labels all come from here.
+/// keys spelled as written, the first of any case-duplicate keys winning. The
+/// one shape the index and the API read properties through — keys (for "has
+/// property"), typed values and the `tags` labels all come from here.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct PropertySet {
     entries: Vec<PropertyEntry>,
@@ -98,8 +98,8 @@ impl PropertySet {
     }
 
     /// Every key the note has, with its value when it has a usable one.
-    pub(crate) fn entries(&self) -> impl Iterator<Item = (&str, Option<&PropertyValue>)> {
-        self.entries.iter().map(|(k, v)| (k.as_str(), v.as_ref()))
+    pub(crate) fn into_entries(self) -> Vec<PropertyEntry> {
+        self.entries
     }
 
     /// The properties that have a usable value.
@@ -123,7 +123,7 @@ impl PropertySet {
     /// lowercased, empties removed.
     pub(crate) fn tags(&self) -> Vec<String> {
         self.values()
-            .filter(|(k, _)| is_tag_key(&match_key(k)))
+            .filter(|(k, _)| is_tag_key(k))
             .flat_map(|(_, v)| match v {
                 PropertyValue::List(items) => items.iter().map(String::as_str).collect(),
                 PropertyValue::Text(s) => vec![s.as_str()],
@@ -288,20 +288,17 @@ impl<'t> NoteProperties<'t> {
             None => {
                 let d = self.format.delimiter();
                 // A byte-order mark must stay the first character of the file.
-                let (bom, body) = match self.text.strip_prefix('\u{feff}') {
-                    Some(rest) => ("\u{feff}", rest),
-                    None => ("", self.text),
-                };
+                let (bom, body) = split_bom(self.text);
                 format!("{bom}{d}\n{block}{d}\n{body}")
             }
         }
     }
 }
 
-// Key casing, one rule: keys are *matched* case-insensitively and *spelled*
-// as the user wrote them. [`match_key`] is the form every comparison, index
-// row and query uses; [`clean_key`] is the form that is written to, and read
-// back from, a note (`dueDate` stays `dueDate`).
+// Key rule: a key is *spelled* as the user wrote it ([`clean_key`]: in the
+// note, and in what reads return), *identified* by case alone ([`match_key`] /
+// [`keys_match`]: edits, lookups, tag detection), and *searched* in
+// [`search_form`] (case and accents: the index and queries).
 
 /// A property key as spelled: trimmed, casing kept. `None` when empty or
 /// containing control characters (a line break would corrupt the block).
@@ -310,18 +307,24 @@ pub(crate) fn clean_key(key: &str) -> Option<String> {
     (!key.is_empty() && !key.chars().any(char::is_control)).then(|| key.to_string())
 }
 
-/// The case-insensitive form of a key, for matching and indexing.
+/// A key's identity: lowercased. Two keys with the same identity are one
+/// property (`Status` and `status`), whatever their accents.
 pub(crate) fn match_key(key: &str) -> String {
     key.to_lowercase()
+}
+
+/// Whether two keys name the same property.
+pub(crate) fn keys_match(a: &str, b: &str) -> bool {
+    match_key(a) == match_key(b)
 }
 
 /// The form property text is searched in: case-folded and accent-stripped
 /// (`É` → `e`), so `done` finds `Done` and `e` finds `é`. Used for every
 /// indexed value, every query value and every indexed or queried key.
 ///
-/// Editing is stricter than searching: an edit finds its key by [`match_key`]
-/// (case only), so `résumé` and `resume` stay two properties when written.
-/// If a note has two keys that fold together, the index keeps the first.
+/// Searching is looser than editing: an edit identifies a key by
+/// [`match_key`], so `résumé` and `resume` stay two properties when written,
+/// and the index keeps only the first of a note's keys that fold together.
 pub(crate) fn search_form(text: &str) -> String {
     super::diacritics::remove_diacritics(text).to_lowercase()
 }
@@ -331,18 +334,14 @@ pub(crate) fn search_key(key: &str) -> Option<String> {
     clean_key(key).map(|k| search_form(&k))
 }
 
-/// A property key as matched: [`clean_key`], lowercased.
-pub(crate) fn normalize_key(key: &str) -> Option<String> {
-    clean_key(key).map(|k| match_key(&k))
-}
-
 /// The frontmatter keys whose items are unified into the label index:
 /// `tags`, and the singular `tag` older Obsidian notes use.
 const TAG_KEYS: [&str; 2] = ["tags", "tag"];
 
-/// `key` (matched, see [`match_key`]) holds a note's tags: always a list of labels.
+/// `key` holds a note's tags (whatever its casing): always a list of labels.
 pub(crate) fn is_tag_key(key: &str) -> bool {
-    TAG_KEYS.contains(&key)
+    let key = match_key(key);
+    TAG_KEYS.contains(&key.as_str())
 }
 
 // ---- Helpers shared by the formatters ------------------------------------
@@ -565,11 +564,19 @@ mod tests {
     }
 
     #[test]
-    fn normalize_key_rules() {
-        assert_eq!(normalize_key("  Status "), Some("status".into()));
-        assert_eq!(normalize_key("due date"), Some("due date".into()));
-        assert_eq!(normalize_key("  "), None);
-        assert_eq!(normalize_key("a\nb"), None);
+    fn key_rules() {
+        assert_eq!(clean_key("  Status "), Some("Status".into()));
+        assert_eq!(clean_key("due date"), Some("due date".into()));
+        assert_eq!(clean_key("  "), None);
+        assert_eq!(clean_key("a\nb"), None);
+        assert!(keys_match("Status", "STATUS"));
+        assert!(
+            !keys_match("résumé", "resume"),
+            "identity ignores case only"
+        );
+        assert_eq!(search_key(" RÉSUMÉ "), Some("resume".into()));
+        assert_eq!(search_form("Ça va"), "ca va");
+        assert!(is_tag_key("Tags") && is_tag_key("TAG") && !is_tag_key("tâgs"));
     }
 
     #[test]
@@ -808,7 +815,11 @@ mod tests {
     fn property_set_separates_keys_from_values() {
         let set = set_of("---\nStatus:\nstatus: x\ntags: [a]\ndue: 2024-01-01\n---\n");
         assert_eq!(
-            set.entries().map(|(k, _)| k).collect::<Vec<_>>(),
+            set.clone()
+                .into_entries()
+                .into_iter()
+                .map(|(k, _)| k)
+                .collect::<Vec<_>>(),
             ["Status", "tags", "due"]
         );
         assert_eq!(
@@ -818,9 +829,8 @@ mod tests {
         );
         assert_eq!(set.tags(), vec!["a"]);
         assert!(set_of("---\nkey: [unclosed\n---\n")
-            .entries()
-            .next()
-            .is_none());
+            .into_entries()
+            .is_empty());
     }
 
     #[test]

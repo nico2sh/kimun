@@ -8,8 +8,8 @@ use std::ops::Range;
 use yaml_rust2::{yaml::Hash, Yaml, YamlLoader};
 
 use super::{
-    finite, format_number, nested_key_error, FrontmatterError, PropertyDateTime, PropertyEntry,
-    PropertyFormatter, PropertyValue,
+    finite, format_number, keys_match, nested_key_error, FrontmatterError, PropertyDateTime,
+    PropertyEntry, PropertyFormatter, PropertyValue,
 };
 use crate::dates::{format_iso_date, parse_iso_date};
 
@@ -99,8 +99,7 @@ fn root(block: &str) -> Result<Option<Hash>, FrontmatterError> {
 }
 
 fn key_matches(k: &Yaml, key: &str) -> bool {
-    let key = key.to_lowercase();
-    scalar_text(k).is_some_and(|k| k.to_lowercase() == key)
+    scalar_text(k).is_some_and(|k| keys_match(&k, key))
 }
 
 /// The block must parse, and `key` must not hold a nested mapping.
@@ -213,31 +212,36 @@ fn line_key(line: &str) -> Option<String> {
 }
 
 /// The trailing `# comment` of a line (with the whitespace before it), if
-/// any: a `#` outside quotes that follows whitespace.
+/// any: a `#` outside quotes that follows whitespace. A quote opens only where
+/// a scalar can start (line start, after whitespace or `: [ , {`), so an
+/// apostrophe inside a word is not one.
 fn inline_comment(line: &str) -> Option<&str> {
+    let mut chars = line.char_indices().peekable();
     let mut quote: Option<char> = None;
-    let mut escaped = false;
-    let mut prev_space = false;
-    for (i, c) in line.char_indices() {
+    let mut prev = None;
+    while let Some((i, c)) = chars.next() {
         match quote {
-            Some('"') if escaped => escaped = false,
-            Some('"') if c == '\\' => escaped = true,
+            Some('"') if c == '\\' => {
+                chars.next();
+            }
+            // `''` is an escaped apostrophe, not the end of the string.
+            Some('\'') if c == '\'' && chars.next_if(|&(_, n)| n == '\'').is_some() => {}
             Some(q) if c == q => quote = None,
             Some(_) => {}
-            None if (c == '"' || c == '\'')
-                && (i == 0 || prev_space || line[..i].ends_with([':', '[', ',', '{'])) =>
-            {
-                quote = Some(c)
-            }
-            None if c == '#' && prev_space => {
-                let head = line[..i].trim_end();
-                return Some(line[head.len()..].trim_end());
+            None if matches!(c, '"' | '\'') && prev.is_none_or(opens_scalar) => quote = Some(c),
+            None if c == '#' && prev.is_some_and(char::is_whitespace) => {
+                return Some(line[line[..i].trim_end().len()..].trim_end());
             }
             None => {}
         }
-        prev_space = c.is_whitespace();
+        prev = Some(c);
     }
     None
+}
+
+/// `c` may directly precede the first character of a YAML scalar.
+fn opens_scalar(c: char) -> bool {
+    c.is_whitespace() || matches!(c, ':' | '[' | ',' | '{')
 }
 
 /// A line that continues the entry above it: indented or a `- ` list item.
@@ -265,12 +269,11 @@ fn leading_comments(lines: &[String], start: usize) -> usize {
 /// part of an entry only when an indented / `- ` line follows them; trailing
 /// ones are left out.
 fn entry_ranges(lines: &[String], key: &str) -> Vec<(Range<usize>, String)> {
-    let key = key.to_lowercase();
     let mut out = Vec::new();
     let mut i = 0;
     while i < lines.len() {
         match line_key(&lines[i]) {
-            Some(k) if k.to_lowercase() == key => {
+            Some(k) if keys_match(&k, key) => {
                 let mut end = i + 1;
                 let mut probe = end;
                 while probe < lines.len() {
@@ -498,6 +501,9 @@ mod tests {
         assert_eq!(set("k: \"a # b\"\n", text("c")), "k: c\n");
         assert_eq!(set("k: a#b\n", text("c")), "k: c\n");
         assert_eq!(set("k: 'it''s' # c\n", text("d")), "k: d # c\n");
+        assert_eq!(set("k: 'a''b # x' # c\n", text("d")), "k: d # c\n");
+        assert_eq!(set("k: \"a\\\" # x\" # c\n", text("d")), "k: d # c\n");
+        assert_eq!(set("k: it's # c\n", text("d")), "k: d # c\n");
         // The comment survives a change of shape, scalar to list and back.
         let list = set("k: a # c\n", PropertyValue::List(vec!["x".into()]));
         assert_eq!(list, "k: # c\n  - x\n");

@@ -984,7 +984,7 @@ async fn create_tables(pool: &SqlitePool) -> Result<(), DBError> {
     .await?;
 
     // Typed frontmatter properties: one row per scalar (list_index 0) or per
-    // list item (0..N). `value_text` is the lowercased canonical text used for
+    // list item (0..N). `value_text` is the canonical text in `search_form` used for
     // equality and lexicographic (ISO date) comparison; `value_num` is set
     // only for numbers. The PK serves per-note lookups.
     sqlx::query(
@@ -1841,7 +1841,7 @@ struct PropertyRow {
     key: String,
     list_index: i64,
     value_type: &'static str,
-    /// Lowercased canonical text — matching is case-insensitive.
+    /// Canonical text in `search_form` (case-folded, accents stripped).
     value_text: String,
     value_num: Option<f64>,
 }
@@ -1997,17 +1997,23 @@ impl NoteBatch {
                 name,
             });
         }
-        for (key, value) in properties.entries() {
+        // Keys are indexed in search form; of a note's keys that fold to the
+        // same one (`résumé`, `resume`) only the first is indexed, so two
+        // properties never interleave their rows.
+        let mut seen = std::collections::HashSet::new();
+        for (key, value) in properties.into_entries() {
+            let key = search_form(&key);
+            if !seen.insert(key.clone()) {
+                continue;
+            }
             self.property_keys.push(PropertyKeyRow {
                 path_idx: idx,
-                // The index matches keys case-insensitively: lowercase form.
-                key: search_form(key),
-                value_type: value.map(|v| v.kind().as_str()),
+                key: key.clone(),
+                value_type: value.as_ref().map(|v| v.kind().as_str()),
             });
-        }
-        for (key, value) in properties.into_values() {
-            self.properties
-                .extend(PropertyRow::rows(idx, search_form(&key), value));
+            if let Some(value) = value {
+                self.properties.extend(PropertyRow::rows(idx, key, value));
+            }
         }
     }
 

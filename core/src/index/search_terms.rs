@@ -284,7 +284,7 @@ pub enum PropertyTest {
     /// including none (YAML `due:`) or an empty list.
     Exists,
     /// `key<op>value`: a value of the property compares true against `value`
-    /// (lowercased, without surrounding quotes).
+    /// (in `search_form`, without surrounding quotes).
     Compare {
         /// The comparison.
         op: PropertyOp,
@@ -294,8 +294,8 @@ pub enum PropertyTest {
 }
 
 /// One `prop:` / `%` filter: `key<op>value`, or a bare `key` (has the
-/// property). Keys and values are lowercased: property matching is
-/// case-insensitive.
+/// property). Keys and values are in `search_form`: property matching
+/// ignores case and accents.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PropertyFilter {
     /// The property key.
