@@ -4827,6 +4827,135 @@ mod property_api_tests {
         );
     }
 
+    /// `Status`/`status` and `Done`/`done` are the same in every query form.
+    #[tokio::test]
+    async fn property_searches_ignore_case_in_keys_and_values() {
+        let (_tmp, vault) = new_vault().await;
+        let notes = [
+            (
+                "/a.md",
+                "---\nStatus: Done\nOwner: Ánna\nlabels: [Red, Blue]\nflag: True\n---\n",
+            ),
+            (
+                "/b.md",
+                "+++\nSTATUS = \"In Progress\"\nowner = \"bob\"\nlabels = [\"GREEN\"]\n+++\n",
+            ),
+            ("/c.md", "+++\nstatus = \"done\"\n+++\n"),
+        ];
+        for (path, body) in notes {
+            vault.create_note(&p(path), body).await.unwrap();
+        }
+        let hits = |q: &'static str| {
+            let vault = &vault;
+            async move {
+                let mut r: Vec<String> = vault
+                    .search_notes(q)
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|(e, _)| e.path.to_string())
+                    .collect();
+                r.sort();
+                r
+            }
+        };
+        let done = vec!["/a.md".to_string(), "/c.md".to_string()];
+        for q in [
+            "prop:status=done",
+            "prop:STATUS=DONE",
+            "%Status=Done",
+            "%sTaTuS=dOnE",
+            "%status='DONE'",
+            "-%status!=done",
+        ] {
+            assert_eq!(hits(q).await, done, "{q}");
+        }
+        assert_eq!(hits("%status=\"IN progress\"").await, ["/b.md"], "quoted");
+        assert_eq!(hits("%status!=DONE").await, ["/b.md"], "!=");
+        assert_eq!(hits("-%status=DONE %status").await, ["/b.md"], "exclusion");
+        assert_eq!(hits("%labels=RED").await, ["/a.md"], "list item");
+        assert_eq!(hits("%labels!=red").await, ["/b.md"], "list !=");
+        assert_eq!(hits("%owner=ÁNNA").await, ["/a.md"], "non-ASCII");
+        assert_eq!(hits("%owner=BOB").await, ["/b.md"], "TOML text");
+        assert_eq!(hits("%flag=TRUE").await, ["/a.md"], "bool");
+        assert_eq!(hits("%status>=DONE %status<=Done").await, done, "ordering");
+        // Sorting ignores case: "done" < "done" < "in progress".
+        let sorted: Vec<String> = vault
+            .search_notes("%STATUS or:prop:Status")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(e, _)| e.path.to_string())
+            .collect();
+        assert_eq!(sorted.last().unwrap(), "/b.md", "{sorted:?}");
+    }
+
+    /// Multibyte text (accents, CJK, emoji, non-Latin cased scripts) in keys,
+    /// values and comments: matched without regard to case, edited without
+    /// slicing a character, and untouched where it isn't the target.
+    #[tokio::test]
+    async fn multibyte_keys_values_and_comments() {
+        let (_tmp, vault) = new_vault().await;
+        vault
+            .create_note(
+                &p("/a.md"),
+                "---\nÉtat: Terminé # 完了 ✅\n名前: 田中\nпроект: Ёлка\nstatus: \"日本語 # 😀\" # ok\n---\nbody",
+            )
+            .await
+            .unwrap();
+        vault
+            .create_note(
+                &p("/b.md"),
+                "+++\n\"ÉTAT\" = \"TERMINÉ\" # ünï\n\"емоджи\" = \"😀\"\n+++\n",
+            )
+            .await
+            .unwrap();
+        let hits = |q: &'static str| {
+            let vault = &vault;
+            async move {
+                let mut r: Vec<String> = vault
+                    .search_notes(q)
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|(e, _)| e.path.to_string())
+                    .collect();
+                r.sort();
+                r
+            }
+        };
+        let both = ["/a.md", "/b.md"];
+        assert_eq!(hits("%état=terminé").await, both);
+        assert_eq!(hits("%ÉTAT=TERMINÉ").await, both);
+        assert_eq!(hits("%名前=田中").await, ["/a.md"]);
+        assert_eq!(hits("%ПРОЕКТ=ёлка").await, ["/a.md"]);
+        assert_eq!(hits("%емоджи=😀").await, ["/b.md"]);
+        assert_eq!(hits("%status=\"日本語 # 😀\"").await, ["/a.md"]);
+
+        // Edits next to multibyte text keep every character, and the
+        // trailing comment of the replaced entry.
+        vault
+            .set_property(&p("/a.md"), "état", text("Fini ✔"), FrontmatterFormat::Yaml)
+            .await
+            .unwrap();
+        vault
+            .set_property(&p("/b.md"), "état", text("Ça va"), FrontmatterFormat::Toml)
+            .await
+            .unwrap();
+        assert_eq!(
+            vault.get_note_text(&p("/a.md")).await.unwrap(),
+            "---\nÉtat: Fini ✔ # 完了 ✅\n名前: 田中\nпроект: Ёлка\nstatus: \"日本語 # 😀\" # ok\n---\nbody"
+        );
+        assert_eq!(
+            vault.get_note_text(&p("/b.md")).await.unwrap(),
+            "+++\n\"ÉTAT\" = \"Ça va\" # ünï\n\"емоджи\" = \"😀\"\n+++\n"
+        );
+        assert_eq!(hits("%état=FINI ✔").await.len(), 0, "space needs quotes");
+        assert_eq!(hits("%état=\"fini ✔\"").await, ["/a.md"]);
+        assert!(vault.remove_property(&p("/a.md"), "НАЗВАНИЕ").await.is_ok());
+        assert!(vault.remove_property(&p("/a.md"), "ПРОЕКТ").await.unwrap());
+    }
+
     /// A key spelled differently in two notes is still one vault-wide key.
     #[tokio::test]
     async fn vault_type_check_ignores_key_casing() {
