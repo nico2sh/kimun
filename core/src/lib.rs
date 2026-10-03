@@ -1341,7 +1341,7 @@ impl NoteVault {
         new_block_format: FrontmatterFormat,
     ) -> Result<PropertyValue, VaultError> {
         let key = Self::property_key(key)?;
-        let norm = properties::match_key(&key);
+        let norm = properties::search_form(&key);
         let vault_kind = match input.forced_kind() {
             Some(_) => None,
             None => self.index.dominant_property_kind(&norm, path).await?,
@@ -4954,6 +4954,49 @@ mod property_api_tests {
         assert_eq!(hits("%état=\"fini ✔\"").await, ["/a.md"]);
         assert!(vault.remove_property(&p("/a.md"), "НАЗВАНИЕ").await.is_ok());
         assert!(vault.remove_property(&p("/a.md"), "ПРОЕКТ").await.unwrap());
+    }
+
+    /// Searching ignores accents too (`e` finds `é`, also in decomposed form),
+    /// but editing keeps `résumé` and `resume` as two properties.
+    #[tokio::test]
+    async fn property_searches_ignore_accents() {
+        let (_tmp, vault) = new_vault().await;
+        vault
+            .create_note(
+                &p("/a.md"),
+                "---\nÉtat: Terminé\nlabels: [Café, naïve]\nrésumé: x\n---\n",
+            )
+            .await
+            .unwrap();
+        let count = |q: &'static str| {
+            let vault = &vault;
+            async move { vault.search_notes(q).await.unwrap().len() }
+        };
+        for q in [
+            "%etat=termine",
+            "%ETAT=TERMINE",
+            "%état=terminé",
+            "%e\u{301}tat=terminé",
+            "%état=termine\u{301}",
+            "%labels=cafe",
+            "%labels=NAIVE",
+            "%labels=cafe\u{301}",
+            "%resume=x",
+            "%étât>=termine %état<=termine",
+        ] {
+            let q: &'static str = Box::leak(q.to_string().into_boxed_str());
+            assert_eq!(count(q).await, 1, "{q}");
+        }
+        assert_eq!(count("%etat=terminer").await, 0);
+        vault
+            .set_property(&p("/a.md"), "resume", text("y"), FrontmatterFormat::Yaml)
+            .await
+            .unwrap();
+        let raw = vault.get_note_text(&p("/a.md")).await.unwrap();
+        assert!(
+            raw.contains("résumé: x") && raw.contains("resume: y"),
+            "{raw}"
+        );
     }
 
     /// A key spelled differently in two notes is still one vault-wide key.

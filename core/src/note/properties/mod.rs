@@ -315,6 +315,22 @@ pub(crate) fn match_key(key: &str) -> String {
     key.to_lowercase()
 }
 
+/// The form property text is searched in: case-folded and accent-stripped
+/// (`É` → `e`), so `done` finds `Done` and `e` finds `é`. Used for every
+/// indexed value, every query value and every indexed or queried key.
+///
+/// Editing is stricter than searching: an edit finds its key by [`match_key`]
+/// (case only), so `résumé` and `resume` stay two properties when written.
+/// If a note has two keys that fold together, the index keeps the first.
+pub(crate) fn search_form(text: &str) -> String {
+    super::diacritics::remove_diacritics(text).to_lowercase()
+}
+
+/// A property key as it is searched: [`clean_key`] in [`search_form`].
+pub(crate) fn search_key(key: &str) -> Option<String> {
+    clean_key(key).map(|k| search_form(&k))
+}
+
 /// A property key as matched: [`clean_key`], lowercased.
 pub(crate) fn normalize_key(key: &str) -> Option<String> {
     clean_key(key).map(|k| match_key(&k))
