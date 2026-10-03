@@ -41,6 +41,7 @@
 //! });
 //! ```
 
+pub(crate) mod dates;
 /// Error types returned across the crate's public API.
 pub mod error;
 pub(crate) mod index;
@@ -59,8 +60,8 @@ pub mod system;
 pub use index::file::IndexFile;
 pub use index::search_terms::{
     expand_bare_note_prefixes, query_has_unterminated_quote, query_token_spans, quote_query_term,
-    strip_order_directive, with_order_directive, OrderBy, OrderField, QueryTokenClass,
-    QueryTokenSpan, SearchTerms,
+    strip_order_directive, with_order_directive, OrderBy, OrderField, PropertyFilter, PropertyOp,
+    QueryTokenClass, QueryTokenSpan, SearchTerms,
 };
 pub use index::{IndexDiff, IndexObserver, NoteChange, NoteSuggestion, TagSuggestion};
 pub use nfs::pinned_notes::{PinToggle, PINNED_NOTES_CAP};
@@ -83,7 +84,8 @@ use futures_util::{stream, Stream, StreamExt, TryStreamExt};
 use index::NoteIndex;
 use log::{debug, warn};
 use nfs::{NoteEntryData, VaultPath};
-use note::{ContentChunk, NoteContentData, NoteDetails};
+use note::properties;
+use note::{ContentChunk, FrontmatterFormat, NoteContentData, NoteDetails, PropertyValue};
 use note_locks::NoteLocks;
 use note_rename::{rename_dest_err, NoteRename};
 use sync::VaultSync;
@@ -461,8 +463,7 @@ impl NoteVault {
     }
 
     fn get_todays_journal(&self) -> (String, VaultPath) {
-        let today = Utc::now();
-        let today_string = today.format("%Y-%m-%d").to_string();
+        let today_string = crate::dates::format_iso_date(Utc::now().date_naive());
 
         (
             today_string.clone(),
@@ -482,7 +483,7 @@ impl NoteVault {
         let (parent, _) = note_path.get_parent_path();
         if parent.eq(&self.journal_path) {
             let name = note_path.get_clean_name();
-            NaiveDate::parse_from_str(&name, "%Y-%m-%d").ok()
+            crate::dates::parse_iso_date(&name)
         } else {
             None
         }
@@ -1258,6 +1259,110 @@ impl NoteVault {
         let (count, content) =
             Self::compute_replacement(&text, pattern, replacement, all, regex, path)?;
         Ok(ReplacePreview { count, content })
+    }
+
+    /// The note's labels: inline `#hashtags` and frontmatter `tags:` together,
+    /// lowercased, sorted, distinct. Index-backed: a missing or not-yet-indexed
+    /// note returns an empty list, not `NotFound`.
+    pub async fn get_tags(&self, path: &VaultPath) -> Result<Vec<String>, VaultError> {
+        Ok(self.index.labels_of(path).await?)
+    }
+
+    /// The note's frontmatter properties in file order, keys lowercased. Read
+    /// from the note itself; a malformed block yields none. Missing-file
+    /// behaviour matches [`Self::get_note_text`].
+    pub async fn get_properties(
+        &self,
+        path: &VaultPath,
+    ) -> Result<Vec<(String, PropertyValue)>, VaultError> {
+        let text = self.get_note_text(path).await?;
+        Ok(NoteDetails::properties_of(text))
+    }
+
+    /// One frontmatter property, `key` matched case-insensitively.
+    pub async fn get_property(
+        &self,
+        path: &VaultPath,
+        key: &str,
+    ) -> Result<Option<PropertyValue>, VaultError> {
+        let key = key.trim().to_lowercase();
+        Ok(self
+            .get_properties(path)
+            .await?
+            .into_iter()
+            .find_map(|(k, v)| (k == key).then_some(v)))
+    }
+
+    /// Sets a frontmatter property, keeping the existing block's format,
+    /// comments and key order. A note with no block gets one in
+    /// `new_block_format`. Fails with [`FSError::InvalidFrontmatter`] (file
+    /// untouched) when the existing block doesn't parse. Serialized per note.
+    pub async fn set_property(
+        &self,
+        path: &VaultPath,
+        key: &str,
+        value: PropertyValue,
+        new_block_format: FrontmatterFormat,
+    ) -> Result<(), VaultError> {
+        let norm = Self::property_key(key)?;
+        if matches!(value, PropertyValue::Number(n) if !n.is_finite()) {
+            return Err(VaultError::InvalidProperty {
+                key: key.to_string(),
+                message: "number must be finite".to_string(),
+            });
+        }
+        let _guard = self.lock_note(path).await;
+        let text = Self::lf(self.get_note_text(path).await?);
+        let updated = properties::NoteProperties::new(&text, new_block_format)
+            .set(&norm, &value)
+            .map_err(|e| Self::frontmatter_error(path, e))?;
+        if updated != text {
+            self.save_note_unlocked(path, updated).await?;
+        }
+        Ok(())
+    }
+
+    /// Removes a frontmatter property (every case variant of `key`). Returns
+    /// whether anything was removed. Same locking and refusal rules as
+    /// [`Self::set_property`].
+    pub async fn remove_property(&self, path: &VaultPath, key: &str) -> Result<bool, VaultError> {
+        let norm = Self::property_key(key)?;
+        let _guard = self.lock_note(path).await;
+        let text = Self::lf(self.get_note_text(path).await?);
+        match properties::NoteProperties::new(&text, FrontmatterFormat::default())
+            .remove(&norm)
+            .map_err(|e| Self::frontmatter_error(path, e))?
+        {
+            Some(updated) => {
+                self.save_note_unlocked(path, updated).await?;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    fn property_key(key: &str) -> Result<String, VaultError> {
+        properties::normalize_key(key).ok_or_else(|| VaultError::InvalidProperty {
+            key: key.to_string(),
+            message: "key must be non-empty and on one line".to_string(),
+        })
+    }
+
+    fn frontmatter_error(path: &VaultPath, e: properties::FrontmatterError) -> VaultError {
+        VaultError::FSError(FSError::InvalidFrontmatter {
+            path: path.clone(),
+            message: e.0,
+        })
+    }
+
+    /// Property edits work on LF text; `save_note_unlocked` restores the
+    /// file's own line endings on write.
+    fn lf(text: String) -> String {
+        if text.contains('\r') {
+            text.replace("\r\n", "\n")
+        } else {
+            text
+        }
     }
 
     /// Deletes the directory at `path` and its contents, removing the
@@ -4286,5 +4391,271 @@ mod saved_search_tests {
             .await
             .unwrap()
             .is_empty());
+    }
+}
+
+#[cfg(test)]
+mod property_api_tests {
+    use super::*;
+    use crate::nfs::VaultPath;
+    use crate::note::{FrontmatterFormat, PropertyValue};
+
+    async fn new_vault() -> (tempfile::TempDir, NoteVault) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cfg = VaultConfig::new(crate::system::sys(tmp.path()));
+        let vault = NoteVault::new(cfg).await.unwrap();
+        vault.validate_and_init().await.unwrap();
+        (tmp, vault)
+    }
+
+    fn p(s: &str) -> VaultPath {
+        VaultPath::note_path_from(s)
+    }
+
+    fn text(s: &str) -> PropertyValue {
+        PropertyValue::Text(s.into())
+    }
+
+    #[tokio::test]
+    async fn set_then_get_round_trips_and_creates_toml_by_default() {
+        let (_tmp, vault) = new_vault().await;
+        vault.create_note(&p("/n.md"), "# T\nbody").await.unwrap();
+        vault
+            .set_property(
+                &p("/n.md"),
+                "Status",
+                text("Done"),
+                FrontmatterFormat::default(),
+            )
+            .await
+            .unwrap();
+        vault
+            .set_property(
+                &p("/n.md"),
+                "n",
+                PropertyValue::Number(2.0),
+                FrontmatterFormat::Yaml,
+            )
+            .await
+            .unwrap();
+
+        let raw = vault.get_note_text(&p("/n.md")).await.unwrap();
+        assert!(
+            raw.starts_with("+++\nstatus = \"Done\"\nn = 2\n+++\n# T"),
+            "{raw}"
+        );
+        assert_eq!(
+            vault.get_properties(&p("/n.md")).await.unwrap(),
+            vec![
+                ("status".to_string(), text("Done")),
+                ("n".to_string(), PropertyValue::Number(2.0))
+            ]
+        );
+        assert_eq!(
+            vault.get_property(&p("/n.md"), "STATUS").await.unwrap(),
+            Some(text("Done"))
+        );
+        assert_eq!(vault.get_property(&p("/n.md"), "nope").await.unwrap(), None);
+        // The index saw the write.
+        let hits = vault.search_notes("prop:status=done").await.unwrap();
+        assert_eq!(hits.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn set_creates_yaml_block_on_request() {
+        let (_tmp, vault) = new_vault().await;
+        vault.create_note(&p("/n.md"), "body").await.unwrap();
+        vault
+            .set_property(&p("/n.md"), "a", text("x"), FrontmatterFormat::Yaml)
+            .await
+            .unwrap();
+        assert_eq!(
+            vault.get_note_text(&p("/n.md")).await.unwrap(),
+            "---\na: x\n---\nbody"
+        );
+    }
+
+    #[tokio::test]
+    async fn existing_block_format_is_preserved() {
+        let (_tmp, vault) = new_vault().await;
+        vault
+            .create_note(&p("/y.md"), "---\na: 1\n---\nbody")
+            .await
+            .unwrap();
+        vault
+            .set_property(&p("/y.md"), "b", text("x"), FrontmatterFormat::Toml)
+            .await
+            .unwrap();
+        assert_eq!(
+            vault.get_note_text(&p("/y.md")).await.unwrap(),
+            "---\na: 1\nb: x\n---\nbody"
+        );
+
+        vault
+            .create_note(&p("/t.md"), "+++\na = 1\n+++\nbody")
+            .await
+            .unwrap();
+        vault
+            .set_property(&p("/t.md"), "b", text("x"), FrontmatterFormat::Yaml)
+            .await
+            .unwrap();
+        assert_eq!(
+            vault.get_note_text(&p("/t.md")).await.unwrap(),
+            "+++\na = 1\nb = \"x\"\n+++\nbody"
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_property_only_touches_its_key() {
+        let (_tmp, vault) = new_vault().await;
+        vault
+            .create_note(&p("/n.md"), "+++\na = 1\nb = 2\n+++\nbody")
+            .await
+            .unwrap();
+        assert!(vault.remove_property(&p("/n.md"), "A").await.unwrap());
+        assert!(!vault.remove_property(&p("/n.md"), "a").await.unwrap());
+        assert_eq!(
+            vault.get_properties(&p("/n.md")).await.unwrap(),
+            vec![("b".to_string(), PropertyValue::Number(2.0))]
+        );
+        assert!(vault.search_notes("prop:a=1").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn unparseable_frontmatter_is_refused_on_write() {
+        let (_tmp, vault) = new_vault().await;
+        let original = "+++\nnot = = toml\n+++\nbody";
+        vault.create_note(&p("/n.md"), original).await.unwrap();
+        let err = vault
+            .set_property(&p("/n.md"), "a", text("x"), FrontmatterFormat::Toml)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, VaultError::FSError(FSError::InvalidFrontmatter { .. })),
+            "{err:?}"
+        );
+        let err = vault.remove_property(&p("/n.md"), "not").await.unwrap_err();
+        assert!(matches!(
+            err,
+            VaultError::FSError(FSError::InvalidFrontmatter { .. })
+        ));
+        assert_eq!(
+            vault.get_note_text(&p("/n.md")).await.unwrap(),
+            original,
+            "file untouched"
+        );
+        // Reads stay lenient.
+        assert!(vault.get_properties(&p("/n.md")).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn invalid_key_and_value_are_rejected() {
+        let (_tmp, vault) = new_vault().await;
+        vault.create_note(&p("/n.md"), "body").await.unwrap();
+        let err = vault
+            .set_property(&p("/n.md"), "  ", text("x"), FrontmatterFormat::Toml)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, VaultError::InvalidProperty { .. }));
+        let err = vault
+            .set_property(
+                &p("/n.md"),
+                "n",
+                PropertyValue::Number(f64::NAN),
+                FrontmatterFormat::Toml,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, VaultError::InvalidProperty { .. }));
+    }
+
+    #[tokio::test]
+    async fn missing_note_is_not_found() {
+        let (_tmp, vault) = new_vault().await;
+        assert!(vault
+            .get_properties(&p("/nope.md"))
+            .await
+            .unwrap_err()
+            .is_not_found());
+        assert!(vault
+            .get_property(&p("/nope.md"), "a")
+            .await
+            .unwrap_err()
+            .is_not_found());
+        assert!(vault
+            .set_property(&p("/nope.md"), "a", text("x"), FrontmatterFormat::Toml)
+            .await
+            .unwrap_err()
+            .is_not_found());
+    }
+
+    #[tokio::test]
+    async fn get_tags_unions_inline_and_frontmatter() {
+        let (_tmp, vault) = new_vault().await;
+        vault
+            .create_note(
+                &p("/n.md"),
+                "---\ntags: [Fm, shared]\n---\nbody #shared #inline",
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            vault.get_tags(&p("/n.md")).await.unwrap(),
+            vec!["fm", "inline", "shared"]
+        );
+    }
+
+    /// A CRLF note keeps its CRLF endings and its single frontmatter block.
+    #[tokio::test]
+    async fn crlf_note_keeps_endings_and_block() {
+        let (tmp, vault) = new_vault().await;
+        // Authored on Windows, outside the vault (same seeding as `crlf_index_tests`).
+        tokio::fs::write(tmp.path().join("n.md"), "---\r\na: 1\r\n---\r\nbody\r\n")
+            .await
+            .unwrap();
+        vault
+            .set_property(&p("/n.md"), "b", text("x"), FrontmatterFormat::Toml)
+            .await
+            .unwrap();
+        assert_eq!(
+            vault.get_note_text(&p("/n.md")).await.unwrap(),
+            "---\r\na: 1\r\nb: x\r\n---\r\nbody\r\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_sets_on_one_note_both_land() {
+        let (_tmp, vault) = new_vault().await;
+        let vault = std::sync::Arc::new(vault);
+        vault.create_note(&p("/n.md"), "body").await.unwrap();
+        let tasks: Vec<_> = (0..8)
+            .map(|i| {
+                let v = vault.clone();
+                tokio::spawn(async move {
+                    v.set_property(
+                        &p("/n.md"),
+                        &format!("k{i}"),
+                        PropertyValue::Number(i as f64),
+                        FrontmatterFormat::Toml,
+                    )
+                    .await
+                })
+            })
+            .collect();
+        for t in tasks {
+            t.await.unwrap().unwrap();
+        }
+        assert_eq!(vault.get_properties(&p("/n.md")).await.unwrap().len(), 8);
+    }
+
+    #[tokio::test]
+    async fn full_reindex_populates_properties() {
+        let (_tmp, vault) = new_vault().await;
+        vault
+            .create_note(&p("/n.md"), "+++\nstatus = \"open\"\n+++\n")
+            .await
+            .unwrap();
+        vault.recreate_index().await.unwrap();
+        assert_eq!(vault.search_notes("%status=open").await.unwrap().len(), 1);
     }
 }

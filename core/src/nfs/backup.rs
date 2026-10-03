@@ -41,7 +41,7 @@ async fn purge_old_backups(backups_root: &Path) {
     };
     while let Ok(Some(entry)) = entries.next_entry().await {
         let name = entry.file_name();
-        if let Ok(date) = chrono::NaiveDate::parse_from_str(&name.to_string_lossy(), "%Y-%m-%d") {
+        if let Some(date) = crate::dates::parse_iso_date(&name.to_string_lossy()) {
             if date < cutoff {
                 let _ = tokio::fs::remove_dir_all(entry.path()).await;
             }
@@ -108,7 +108,7 @@ pub(crate) async fn backup_note(
         })?;
     let backups_root = workspace_path.as_path().join(".kimun").join("backups");
     purge_old_backups(&backups_root).await;
-    let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let date = crate::dates::format_iso_date(chrono::Utc::now().date_naive());
     let base = backups_root.join(date).join(rel);
     if let Some(parent) = base.parent() {
         tokio::fs::create_dir_all(parent).await?;

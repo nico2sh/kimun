@@ -1273,7 +1273,7 @@ fn strip_hashtags_in_text_event(
 /// delimiter line, or `None` if the text does not start with a valid frontmatter
 /// delimiter (`---` or `+++`).  Strips a trailing `\r` so CRLF files work the
 /// same as LF files.
-fn frontmatter_delimiter(text: &str) -> Option<(&str, usize)> {
+pub(in crate::note) fn frontmatter_delimiter(text: &str) -> Option<(&str, usize)> {
     let newline_pos = text.find('\n')?;
     let raw_first = &text[..newline_pos];
     let first_line = raw_first.trim_end_matches('\r');

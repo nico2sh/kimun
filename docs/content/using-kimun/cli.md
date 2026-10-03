@@ -124,7 +124,7 @@ kimun labels --format paths   # bare labels, one per line (pipeable)
 kimun labels --format json    # JSON with total + per-label note_count
 ```
 
-Labels come from in-text `#hashtag` tokens (see [Search](@/using-kimun/search.md#labels) for full label rules — note that frontmatter / code / HTML / link bodies / wikilinks are excluded from indexing).
+Labels come from in-text `#hashtag` tokens and from a frontmatter `tags` property (see [Search](@/using-kimun/search.md#labels) for full label rules — code / HTML / link bodies / wikilinks are excluded from indexing).
 
 ### JSON schema
 

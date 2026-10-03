@@ -1,4 +1,7 @@
 pub(crate) mod content_extractor;
+pub(crate) mod properties;
+
+pub use properties::{FrontmatterFormat, PropertyValue};
 
 use std::fmt::Display;
 
@@ -129,6 +132,13 @@ impl NoteDetails {
         content_extractor::get_chunks_and_links(path, text)
     }
 
+    /// Frontmatter properties of a note body (see [`PropertyValue`]), without
+    /// constructing a `NoteDetails`. Keys lowercased, in file order; a
+    /// malformed block yields none.
+    pub fn properties_of<S: AsRef<str>>(text: S) -> Vec<(String, PropertyValue)> {
+        properties::NoteProperties::new(text.as_ref(), FrontmatterFormat::default()).list()
+    }
+
     /// Title of this note (first non-empty line of the body, frontmatter
     /// skipped).
     pub fn get_title(&self) -> String {
@@ -152,6 +162,11 @@ impl NoteDetails {
     /// [`path`]: Self::path
     pub fn get_chunks_and_links(&self) -> (Vec<ContentChunk>, Vec<NoteLink>) {
         Self::chunks_and_links_of(&self.path, &self.raw_text)
+    }
+
+    /// Frontmatter properties of this note; see [`Self::properties_of`].
+    pub fn get_properties(&self) -> Vec<(String, PropertyValue)> {
+        Self::properties_of(&self.raw_text)
     }
 
     /// Rendered Markdown of this note plus its extracted links: wikilinks
