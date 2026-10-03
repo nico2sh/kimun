@@ -6,9 +6,9 @@
 use std::fmt;
 use std::str::FromStr;
 
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::NaiveDate;
 
-use super::{format_datetime, format_number, parse_datetime};
+use super::{format_number, is_tag_key, PropertyDateTime};
 use crate::dates::{format_iso_date, parse_iso_date};
 
 /// A typed frontmatter property value — the neutral model every
@@ -25,8 +25,8 @@ pub enum PropertyValue {
     Bool(bool),
     /// A calendar date with no time component.
     Date(NaiveDate),
-    /// A date and time; offset-less sources are read as UTC.
-    DateTime(DateTime<Utc>),
+    /// A date and time, local or with an offset, as written.
+    DateTime(PropertyDateTime),
     /// A list of text items (Obsidian's List type); non-text items are
     /// stringified.
     List(Vec<String>),
@@ -124,33 +124,59 @@ impl PropertyValue {
         }
     }
 
-    /// Types one user-typed value by its look, never changing what was typed:
+    /// Types one user-typed value by its look, never changing what it says:
     /// a number only when writing it back reproduces the input exactly (`5`,
     /// `4.5` — not `02134`, `1.10` or `1e3`), `true`/`false` as a bool, an exact
-    /// `YYYY-MM-DD` as a date, an RFC3339 or `YYYY-MM-DDTHH:MM[:SS]` date-time,
-    /// and anything else as text.
+    /// `YYYY-MM-DD` as a date, an RFC3339 or `YYYY-MM-DDTHH:MM[:SS]` date-time
+    /// (its offset, or lack of one, kept), and anything else as text.
     pub fn infer(raw: &str) -> PropertyValue {
-        if let Ok(n) = raw.parse::<f64>() {
-            if n.is_finite() && format_number(n) == raw {
-                return PropertyValue::Number(n);
-            }
-        }
-        match raw {
-            "true" => return PropertyValue::Bool(true),
-            "false" => return PropertyValue::Bool(false),
-            _ => {}
-        }
-        if let Some(date) = parse_iso_date(raw).filter(|d| format_iso_date(*d) == raw) {
-            return PropertyValue::Date(date);
-        }
-        match parse_datetime(raw) {
-            Some(dt) => PropertyValue::DateTime(dt),
-            None => PropertyValue::Text(raw.to_string()),
+        [
+            PropertyKind::Number,
+            PropertyKind::Bool,
+            PropertyKind::Date,
+            PropertyKind::DateTime,
+        ]
+        .into_iter()
+        .find_map(|kind| Self::parse_one_exact(kind, raw))
+        .unwrap_or_else(|| PropertyValue::Text(raw.to_string()))
+    }
+
+    /// `values` as a value of `kind`, read strictly: only input that a value
+    /// of that kind writes back unchanged (see [`Self::infer`]). A list takes
+    /// every value, any other kind exactly one.
+    fn parse_exact(kind: PropertyKind, values: &[String]) -> Option<PropertyValue> {
+        match (kind, values) {
+            (PropertyKind::List, _) => Some(PropertyValue::List(values.to_vec())),
+            (_, [raw]) => Self::parse_one_exact(kind, raw),
+            _ => None,
         }
     }
 
-    /// `values` as a value of `kind`: a list takes every value, any other kind
-    /// exactly one. `Err` is a user-facing reason (not a number, not a date, …).
+    fn parse_one_exact(kind: PropertyKind, raw: &str) -> Option<PropertyValue> {
+        match kind {
+            PropertyKind::Text => Some(PropertyValue::Text(raw.to_string())),
+            PropertyKind::Number => raw
+                .parse::<f64>()
+                .ok()
+                .filter(|n| n.is_finite() && format_number(*n) == raw)
+                .map(PropertyValue::Number),
+            PropertyKind::Bool => match raw {
+                "true" => Some(PropertyValue::Bool(true)),
+                "false" => Some(PropertyValue::Bool(false)),
+                _ => None,
+            },
+            PropertyKind::Date => parse_iso_date(raw)
+                .filter(|d| format_iso_date(*d) == raw)
+                .map(PropertyValue::Date),
+            PropertyKind::DateTime => PropertyDateTime::parse(raw).map(PropertyValue::DateTime),
+            PropertyKind::List => Some(PropertyValue::List(vec![raw.to_string()])),
+        }
+    }
+
+    /// `values` as a value of `kind`, read leniently — for a type the user
+    /// forced, where `02134` as a number means 2134. A list takes every value
+    /// (none makes an empty list), any other kind exactly one. `Err` is a
+    /// user-facing reason (not a number, not a date, …).
     pub fn parse_as(kind: PropertyKind, values: &[String]) -> Result<PropertyValue, String> {
         if kind == PropertyKind::List {
             return Ok(PropertyValue::List(values.to_vec()));
@@ -162,66 +188,106 @@ impl PropertyValue {
                 values.len()
             ));
         };
+        let raw = raw.trim();
         let invalid = || format!("\"{raw}\" is not a {}", kind.describe());
         match kind {
-            PropertyKind::Text => Ok(PropertyValue::Text(raw.clone())),
             PropertyKind::Number => raw
-                .trim()
                 .parse::<f64>()
                 .ok()
                 .filter(|n| n.is_finite())
                 .map(PropertyValue::Number)
                 .ok_or_else(invalid),
-            PropertyKind::Bool => match raw.trim().to_lowercase().as_str() {
-                "true" => Ok(PropertyValue::Bool(true)),
-                "false" => Ok(PropertyValue::Bool(false)),
-                _ => Err(invalid()),
-            },
-            PropertyKind::Date => parse_iso_date(raw.trim())
-                .map(PropertyValue::Date)
-                .ok_or_else(invalid),
-            PropertyKind::DateTime => parse_datetime(raw.trim())
-                .map(PropertyValue::DateTime)
-                .ok_or_else(invalid),
-            PropertyKind::List => unreachable!("handled above"),
+            PropertyKind::Bool => {
+                Self::parse_one_exact(kind, &raw.to_lowercase()).ok_or_else(invalid)
+            }
+            // Text keeps the input untrimmed; dates parse exactly.
+            PropertyKind::Text => Ok(PropertyValue::Text(values[0].clone())),
+            _ => Self::parse_one_exact(kind, raw).ok_or_else(invalid),
+        }
+    }
+}
+
+/// Property values as a user typed them, plus what is known of their type:
+/// *forced* (the user said so — always wins) or *implied* by the input's own
+/// shape (a JSON number, boolean or array — checked against the vault like a
+/// guess). The one shape every text front end (CLI, MCP) hands to core.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PropertyInput {
+    values: Vec<String>,
+    forced: Option<PropertyKind>,
+    implied: Option<PropertyKind>,
+}
+
+impl PropertyInput {
+    /// Input of `values`, its type to be decided.
+    pub fn new(values: Vec<String>) -> Self {
+        Self {
+            values,
+            ..Self::default()
         }
     }
 
-    /// Types user input for a key whose values elsewhere in the vault are
-    /// mostly of `vault_kind`. An explicit `kind` always wins. Otherwise the
-    /// input must fit the vault's kind (a single value for a list key becomes
-    /// a one-item list); with no vault kind, one value is [inferred](Self::infer)
-    /// and several make a list. `Err` explains a mismatch.
-    pub fn from_input(
-        values: &[String],
-        kind: Option<PropertyKind>,
+    /// The user's explicit type, if any: it always wins.
+    pub fn forced(mut self, kind: Option<PropertyKind>) -> Self {
+        self.forced = kind;
+        self
+    }
+
+    /// The type the input's own shape carries (e.g. a JSON number).
+    pub fn implied(mut self, kind: PropertyKind) -> Self {
+        self.implied = Some(kind);
+        self
+    }
+
+    /// The type the user forced, if any.
+    pub fn forced_kind(&self) -> Option<PropertyKind> {
+        self.forced
+    }
+
+    /// The value to store for `key` (normalized), whose values in other notes
+    /// are mostly of `vault_kind`:
+    /// - a forced type always wins (read leniently);
+    /// - `tags` / `tag` are always a list;
+    /// - otherwise the input must be exactly a value of the vault's type (a
+    ///   single value for a list key is a one-item list) — `Err` explains a
+    ///   mismatch;
+    /// - with no vault type, an implied type is used, else one value is
+    ///   [inferred](PropertyValue::infer) and several make a list.
+    pub fn resolve(
+        &self,
+        key: &str,
         vault_kind: Option<PropertyKind>,
     ) -> Result<PropertyValue, String> {
-        if values.is_empty() {
-            return Err("no value given".to_string());
+        if let Some(kind) = self.forced {
+            return PropertyValue::parse_as(kind, &self.values);
         }
-        if let Some(kind) = kind {
-            return Self::parse_as(kind, values);
+        if is_tag_key(key) {
+            return Ok(PropertyValue::List(self.values.clone()));
         }
-        match (vault_kind, values) {
-            (None, [raw]) => Ok(Self::infer(raw)),
-            (None, _) => Ok(PropertyValue::List(values.to_vec())),
-            (Some(vault_kind), _) => Self::parse_as(vault_kind, values).map_err(|_| {
-                let given = match values {
+        if let Some(vault_kind) = vault_kind {
+            return PropertyValue::parse_exact(vault_kind, &self.values).ok_or_else(|| {
+                let given = match self.values.as_slice() {
+                    [] => "no value was given".to_string(),
                     [raw] => format!("\"{raw}\" is not one"),
-                    _ => format!("{} values make a list", values.len()),
+                    values => format!("{} values make a list", values.len()),
                 };
                 format!(
                     "it holds {} values in this vault and {given}; set the type explicitly to store it anyway",
                     vault_kind.describe()
                 )
-            }),
+            });
+        }
+        match (self.implied, self.values.as_slice()) {
+            (Some(kind), _) => PropertyValue::parse_as(kind, &self.values),
+            (None, []) => Err("no value given".to_string()),
+            (None, [raw]) => Ok(PropertyValue::infer(raw)),
+            (None, values) => Ok(PropertyValue::List(values.to_vec())),
         }
     }
 }
 
 /// The value as plain text: canonical numbers/dates, list items joined with
-/// `, `.
+/// `, ` (an empty list as `[]`).
 impl fmt::Display for PropertyValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -229,7 +295,8 @@ impl fmt::Display for PropertyValue {
             PropertyValue::Number(n) => f.write_str(&format_number(*n)),
             PropertyValue::Bool(b) => write!(f, "{b}"),
             PropertyValue::Date(d) => f.write_str(&format_iso_date(*d)),
-            PropertyValue::DateTime(dt) => f.write_str(&format_datetime(dt)),
+            PropertyValue::DateTime(dt) => write!(f, "{dt}"),
+            PropertyValue::List(items) if items.is_empty() => f.write_str("[]"),
             PropertyValue::List(items) => f.write_str(&items.join(", ")),
         }
     }
@@ -254,7 +321,7 @@ impl serde::Serialize for PropertyValue {
 
 #[cfg(test)]
 mod tests {
-    use chrono::TimeZone;
+    use chrono::{TimeZone, Utc};
 
     use super::*;
 
@@ -264,6 +331,10 @@ mod tests {
 
     fn strings(values: &[&str]) -> Vec<String> {
         values.iter().map(|v| v.to_string()).collect()
+    }
+
+    fn dt(s: &str) -> PropertyValue {
+        PropertyValue::DateTime(PropertyDateTime::parse(s).unwrap())
     }
 
     #[test]
@@ -277,7 +348,7 @@ mod tests {
         );
         assert_eq!(
             PropertyValue::infer("2024-03-01T14:30"),
-            PropertyValue::DateTime(Utc.with_ymd_and_hms(2024, 3, 1, 14, 30, 0).unwrap())
+            dt("2024-03-01T14:30")
         );
         assert_eq!(
             PropertyValue::infer("done"),
@@ -304,10 +375,20 @@ mod tests {
                 "{raw:?} must stay text"
             );
         }
+        assert_eq!(
+            PropertyValue::infer("2024-03-01T14:30").to_string(),
+            "2024-03-01T14:30",
+            "a local date-time stays local"
+        );
+        assert_eq!(
+            PropertyValue::infer("2024-03-01T14:30:00+02:00").to_string(),
+            "2024-03-01T14:30:00+02:00",
+            "an offset is kept"
+        );
     }
 
     #[test]
-    fn parse_as_forces_a_kind() {
+    fn parse_as_forces_a_kind_leniently() {
         let one = |s: &str| strings(&[s]);
         assert_eq!(
             PropertyValue::parse_as(PropertyKind::Text, &one("2024")),
@@ -322,8 +403,9 @@ mod tests {
             Ok(PropertyValue::Bool(true))
         );
         assert_eq!(
-            PropertyValue::parse_as(PropertyKind::List, &one("a")),
-            Ok(PropertyValue::List(vec!["a".into()]))
+            PropertyValue::parse_as(PropertyKind::List, &[]),
+            Ok(PropertyValue::List(vec![])),
+            "no values make an empty list"
         );
         assert!(PropertyValue::parse_as(PropertyKind::Number, &one("high"))
             .unwrap_err()
@@ -332,38 +414,82 @@ mod tests {
         assert!(PropertyValue::parse_as(PropertyKind::Text, &strings(&["a", "b"])).is_err());
     }
 
+    fn input(values: &[&str]) -> PropertyInput {
+        PropertyInput::new(strings(values))
+    }
+
     #[test]
-    fn from_input_follows_the_vault_kind() {
-        let one = |s: &str| strings(&[s]);
+    fn resolve_follows_the_vault_kind_exactly() {
         let num = Some(PropertyKind::Number);
         assert_eq!(
-            PropertyValue::from_input(&one("5"), None, num),
+            input(&["5"]).resolve("p", num),
             Ok(PropertyValue::Number(5.0))
         );
-        let err = PropertyValue::from_input(&one("high"), None, num).unwrap_err();
+        let err = input(&["high"]).resolve("priority", num).unwrap_err();
         assert!(err.starts_with("it holds number values"), "{err}");
+        assert!(
+            input(&["02134"]).resolve("id", num).is_err(),
+            "a numeric key never rewrites text that only looks numeric"
+        );
         assert_eq!(
-            PropertyValue::from_input(&one("high"), Some(PropertyKind::Text), num),
+            input(&["high"])
+                .forced(Some(PropertyKind::Text))
+                .resolve("p", num),
             Ok(PropertyValue::Text("high".into())),
-            "an explicit kind wins"
+            "a forced kind wins"
         );
         assert_eq!(
-            PropertyValue::from_input(&one("2024"), None, Some(PropertyKind::Text)),
-            Ok(PropertyValue::Text("2024".into())),
-            "a text key keeps number-looking input as text"
+            input(&["2024"]).resolve("v", Some(PropertyKind::Text)),
+            Ok(PropertyValue::Text("2024".into()))
         );
         assert_eq!(
-            PropertyValue::from_input(&one("garden"), None, Some(PropertyKind::List)),
-            Ok(PropertyValue::List(vec!["garden".into()])),
-            "one value for a list key is a one-item list"
+            input(&["garden"]).resolve("k", Some(PropertyKind::List)),
+            Ok(PropertyValue::List(vec!["garden".into()]))
         );
-        let err = PropertyValue::from_input(&strings(&["1", "2"]), None, num).unwrap_err();
-        assert!(err.contains("2 values make a list"), "{err}");
+        assert!(input(&["1", "2"])
+            .resolve("p", num)
+            .unwrap_err()
+            .contains("2 values make a list"));
+    }
+
+    #[test]
+    fn resolve_checks_implied_kinds_against_the_vault() {
+        let as_number = |raw: &str| input(&[raw]).implied(PropertyKind::Number);
         assert_eq!(
-            PropertyValue::from_input(&strings(&["a", "b"]), None, None),
-            Ok(PropertyValue::List(vec!["a".into(), "b".into()]))
+            as_number("2134").resolve("zip", Some(PropertyKind::Text)),
+            Ok(PropertyValue::Text("2134".into())),
+            "a JSON number for a text key is stored as that key's text"
         );
-        assert!(PropertyValue::from_input(&[], None, None).is_err());
+        assert!(input(&["true"])
+            .implied(PropertyKind::Bool)
+            .resolve("n", Some(PropertyKind::Number))
+            .is_err());
+        assert_eq!(
+            as_number("7").resolve("new", None),
+            Ok(PropertyValue::Number(7.0)),
+            "with no vault kind the implied one is used"
+        );
+    }
+
+    #[test]
+    fn tags_are_always_a_list_and_lists_may_be_empty() {
+        assert_eq!(
+            input(&["garden"]).resolve("tags", None),
+            Ok(PropertyValue::List(vec!["garden".into()]))
+        );
+        assert_eq!(
+            input(&["x", "y"]).resolve("tag", Some(PropertyKind::Text)),
+            Ok(PropertyValue::List(vec!["x".into(), "y".into()]))
+        );
+        assert_eq!(
+            input(&[]).resolve("tags", None),
+            Ok(PropertyValue::List(vec![]))
+        );
+        assert_eq!(
+            input(&[]).implied(PropertyKind::List).resolve("k", None),
+            Ok(PropertyValue::List(vec![]))
+        );
+        assert!(input(&[]).resolve("k", None).is_err());
     }
 
     #[test]
@@ -380,7 +506,8 @@ mod tests {
 
     #[test]
     fn display_and_json_are_plain() {
-        let at = Utc.with_ymd_and_hms(2024, 3, 1, 14, 30, 0).unwrap();
+        let utc =
+            PropertyValue::DateTime(Utc.with_ymd_and_hms(2024, 3, 1, 14, 30, 0).unwrap().into());
         let cases = [
             (PropertyValue::Text("done".into()), "done", r#""done""#),
             (PropertyValue::Number(2.0), "2", "2"),
@@ -391,16 +518,18 @@ mod tests {
                 "2024-03-01",
                 r#""2024-03-01""#,
             ),
+            (utc, "2024-03-01T14:30:00Z", r#""2024-03-01T14:30:00Z""#),
             (
-                PropertyValue::DateTime(at),
-                "2024-03-01T14:30:00Z",
-                r#""2024-03-01T14:30:00Z""#,
+                dt("2024-03-01T14:30"),
+                "2024-03-01T14:30",
+                r#""2024-03-01T14:30""#,
             ),
             (
                 PropertyValue::List(vec!["a".into(), "b c".into()]),
                 "a, b c",
                 r#"["a","b c"]"#,
             ),
+            (PropertyValue::List(vec![]), "[]", "[]"),
         ];
         for (value, text, json) in cases {
             assert_eq!(value.to_string(), text);

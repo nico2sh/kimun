@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use color_eyre::eyre::{Result, eyre};
-use kimun_core::note::{FrontmatterFormat, PropertyKind};
+use kimun_core::note::{FrontmatterFormat, NoteMetadata, PropertyInput, PropertyKind};
 use kimun_core::{NoteVault, nfs::VaultPath};
 use rmcp::{
     ErrorData as McpError, RoleServer, ServerHandler, ServiceExt,
@@ -156,36 +156,37 @@ struct PropertiesReply {
     tags: Vec<String>,
 }
 
-/// A `set_property` JSON value as the text values and type core types input
-/// from. A JSON number, boolean or array carries its own type (unless `kind`
-/// overrides it); a string is left to core's typing rules.
-fn property_input(
-    value: &serde_json::Value,
-    kind: Option<&str>,
-) -> Result<(Vec<String>, Option<PropertyKind>), String> {
+/// A `set_property` JSON value as core's [`PropertyInput`]: a string is left
+/// to core's typing rules; a number, boolean or array *implies* its type (still
+/// checked against the key's type in the vault); `kind` forces one.
+fn property_input(value: &serde_json::Value, kind: Option<&str>) -> Result<PropertyInput, String> {
     use serde_json::Value;
-    let kind = kind.map(str::parse::<PropertyKind>).transpose()?;
-    let scalar = |v: &Value| match v {
-        Value::String(s) => Some(s.clone()),
-        Value::Number(n) => Some(n.to_string()),
-        Value::Bool(b) => Some(b.to_string()),
-        _ => None,
+    // One JSON scalar as the text core types, with the type it implies.
+    fn scalar(v: &Value) -> Option<(String, Option<PropertyKind>)> {
+        match v {
+            Value::String(s) => Some((s.clone(), None)),
+            Value::Number(n) => Some((n.to_string(), Some(PropertyKind::Number))),
+            Value::Bool(b) => Some((b.to_string(), Some(PropertyKind::Bool))),
+            _ => None,
+        }
+    }
+    let forced = kind.map(str::parse::<PropertyKind>).transpose()?;
+    let input = match value {
+        Value::Array(items) => items
+            .iter()
+            .map(|item| scalar(item).map(|(text, _)| text))
+            .collect::<Option<Vec<_>>>()
+            .map(|values| PropertyInput::new(values).implied(PropertyKind::List))
+            .ok_or("list items must be strings, numbers or true/false")?,
+        _ => match scalar(value) {
+            Some((text, Some(implied))) => PropertyInput::new(vec![text]).implied(implied),
+            Some((text, None)) => PropertyInput::new(vec![text]),
+            None => {
+                return Err("value must be a string, number, true/false or an array".to_string());
+            }
+        },
     };
-    let (values, own_kind) = match value {
-        Value::String(s) => (vec![s.clone()], None),
-        Value::Number(n) => (vec![n.to_string()], Some(PropertyKind::Number)),
-        Value::Bool(b) => (vec![b.to_string()], Some(PropertyKind::Bool)),
-        Value::Array(items) => (
-            items
-                .iter()
-                .map(scalar)
-                .collect::<Option<Vec<_>>>()
-                .ok_or("list items must be strings, numbers or true/false")?,
-            Some(PropertyKind::List),
-        ),
-        _ => return Err("value must be a string, number, true/false or an array".to_string()),
-    };
-    Ok((values, kind.or(own_kind)))
+    Ok(input.forced(forced))
 }
 
 // ---------------------------------------------------------------------------
@@ -355,17 +356,15 @@ impl KimunHandler {
         Parameters(p): Parameters<GetPropertiesParams>,
     ) -> Result<CallToolResult, McpError> {
         let vault_path = Self::resolve_path(&p.path);
-        let properties = match self.vault.get_properties(&vault_path).await {
-            Ok(properties) => properties,
-            Err(e) => return vault_err(e),
-        };
-        let tags = match self.vault.get_tags(&vault_path).await {
-            Ok(tags) => tags,
+        // Both fields from the one text read, so they can't disagree when the
+        // index lags behind an outside edit.
+        let meta = match self.vault.get_note_text(&vault_path).await {
+            Ok(text) => NoteMetadata::of(&text),
             Err(e) => return vault_err(e),
         };
         let reply = PropertiesReply {
-            properties: JsonProperties(properties),
-            tags,
+            properties: JsonProperties(meta.properties),
+            tags: meta.tags,
         };
         let json = serde_json::to_string(&reply)
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
@@ -373,7 +372,7 @@ impl KimunHandler {
     }
 
     #[tool(
-        description = "Set a frontmatter property on a note, keeping the rest of its frontmatter (format, comments, order) as is. `value` is a string, number, true/false, or an array of strings (a list). A string is typed like the key's values in other notes (a single string for a list key becomes a one-item list), or by its look for a key no other note has: 5 → number, true → true/false, 2024-03-01 → date, 2024-03-01T14:30 → date-time, else text; text that only looks numeric (02134, 1.10) stays text. A value that doesn't fit the key's type elsewhere in the vault is refused — pass `type` to store it anyway (only this note changes). A note without frontmatter gets a TOML (+++) block unless format is \"yaml\"."
+        description = "Set a frontmatter property on a note, keeping the rest of its frontmatter (format, comments, order) as is. `value` is a string, number, true/false, or an array of strings (a list). `tags` is always a list ([] clears it). Any other value must fit the type the key has in other notes — a string is read as that type (a single string for a list key becomes a one-item list), and a number, true/false or array must match it too; a value that doesn't fit is refused — pass `type` to store it anyway (only this note changes). For a key no other note has, a number/true/false/array keeps its JSON type and a string is typed by its look: 5 → number, true → true/false, 2024-03-01 → date, 2024-03-01T14:30 → date-time (local, or with its offset as written), else text; text that only looks numeric (02134, 1.10) stays text. A note without frontmatter gets a TOML (+++) block unless format is \"yaml\"."
     )]
     async fn set_property(
         &self,
@@ -388,13 +387,13 @@ impl KimunHandler {
                 .transpose()?;
             Ok((input, format.unwrap_or_default()))
         });
-        let ((values, kind), format) = match input {
+        let (input, format) = match input {
             Ok(input) => input,
             Err(msg) => return Ok(CallToolResult::error(vec![Content::text(msg)])),
         };
         match self
             .vault
-            .set_property_from_input(&vault_path, &p.key, &values, kind, format)
+            .set_property_from_input(&vault_path, &p.key, &input, format)
             .await
         {
             Ok(value) => Ok(CallToolResult::success(vec![Content::text(format!(
@@ -909,28 +908,34 @@ mod tests {
     }
 
     #[test]
-    fn json_values_carry_their_own_type() {
+    fn json_values_imply_their_type_and_type_forces_it() {
         use serde_json::json;
+        let text = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         assert_eq!(
             property_input(&json!("5"), None),
-            Ok((vec!["5".into()], None))
+            Ok(PropertyInput::new(text(&["5"])))
         );
         assert_eq!(
             property_input(&json!(5), None),
-            Ok((vec!["5".into()], Some(PropertyKind::Number)))
+            Ok(PropertyInput::new(text(&["5"])).implied(PropertyKind::Number))
         );
         assert_eq!(
             property_input(&json!(true), None),
-            Ok((vec!["true".into()], Some(PropertyKind::Bool)))
+            Ok(PropertyInput::new(text(&["true"])).implied(PropertyKind::Bool))
         );
         assert_eq!(
             property_input(&json!(["a", 2]), None),
-            Ok((vec!["a".into(), "2".into()], Some(PropertyKind::List)))
+            Ok(PropertyInput::new(text(&["a", "2"])).implied(PropertyKind::List))
+        );
+        assert_eq!(
+            property_input(&json!([]), None),
+            Ok(PropertyInput::new(vec![]).implied(PropertyKind::List))
         );
         assert_eq!(
             property_input(&json!(2024), Some("text")),
-            Ok((vec!["2024".into()], Some(PropertyKind::Text))),
-            "an explicit type wins"
+            Ok(PropertyInput::new(text(&["2024"]))
+                .implied(PropertyKind::Number)
+                .forced(Some(PropertyKind::Text)))
         );
         assert!(property_input(&json!({"a": 1}), None).is_err());
         assert!(property_input(&json!([["nested"]]), None).is_err());
@@ -1014,6 +1019,14 @@ mod tests {
         assert!(is_success(&typed), "{}", result_text(&typed));
         let bad_type = set_prop(&handler, "b", "x", serde_json::json!("1"), Some("float")).await;
         assert_eq!(bad_type.is_error, Some(true));
+        let json_bool = set_prop(&handler, "c", "priority", serde_json::json!(true), None).await;
+        assert_eq!(
+            json_bool.is_error,
+            Some(true),
+            "a JSON value's own type is still checked against the vault"
+        );
+        let cleared = set_prop(&handler, "b", "tags", serde_json::json!([]), None).await;
+        assert!(is_success(&cleared), "{}", result_text(&cleared));
     }
 
     #[tokio::test]

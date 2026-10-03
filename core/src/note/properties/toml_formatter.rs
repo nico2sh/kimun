@@ -2,11 +2,11 @@
 //! model, which keeps comments, key order and formatting of everything an
 //! edit does not touch.
 
-use chrono::{FixedOffset, NaiveDate, NaiveTime, TimeZone, Utc};
+use chrono::{FixedOffset, NaiveDate, NaiveTime, TimeZone};
 use toml_edit::{DocumentMut, Item, Value};
 
 use super::{
-    finite, format_datetime, format_number, is_integral, nested_key_error, FrontmatterError,
+    finite, format_number, is_integral, nested_key_error, FrontmatterError, PropertyDateTime,
     PropertyEntry, PropertyFormatter, PropertyValue,
 };
 use crate::dates::format_iso_date;
@@ -156,7 +156,8 @@ fn read_list_item(v: &Value) -> Option<String> {
 }
 
 /// TOML's four datetime kinds: local date → `Date`; offset and local
-/// date-time → `DateTime` (local read as UTC); local time → unsupported.
+/// date-time → `DateTime`, keeping its offset or lack of one; local time →
+/// unsupported.
 fn read_datetime(dt: &toml_edit::Datetime) -> Option<PropertyValue> {
     let date = dt.date?;
     let day = NaiveDate::from_ymd_opt(date.year.into(), date.month.into(), date.day.into())?;
@@ -170,16 +171,16 @@ fn read_datetime(dt: &toml_edit::Datetime) -> Option<PropertyValue> {
         time.nanosecond.unwrap_or(0),
     )?;
     let naive = day.and_time(clock);
-    let utc = match dt.offset {
-        None | Some(toml_edit::Offset::Z) => naive.and_utc(),
-        Some(toml_edit::Offset::Custom { minutes }) => {
-            FixedOffset::east_opt(i32::from(minutes) * 60)?
-                .from_local_datetime(&naive)
-                .single()?
-                .with_timezone(&Utc)
-        }
+    let offset_minutes = match dt.offset {
+        None => return Some(PropertyValue::DateTime(PropertyDateTime::local(naive))),
+        Some(toml_edit::Offset::Z) => 0,
+        Some(toml_edit::Offset::Custom { minutes }) => minutes,
     };
-    Some(PropertyValue::DateTime(utc))
+    let offset = FixedOffset::east_opt(i32::from(offset_minutes) * 60)?;
+    let with_offset = offset.from_local_datetime(&naive).single()?;
+    Some(PropertyValue::DateTime(PropertyDateTime::with_offset(
+        with_offset,
+    )))
 }
 
 fn write_value(value: &PropertyValue) -> Result<Value, FrontmatterError> {
@@ -194,15 +195,13 @@ fn write_value(value: &PropertyValue) -> Result<Value, FrontmatterError> {
         PropertyValue::Number(n) => (*n).into(),
         PropertyValue::Bool(b) => (*b).into(),
         PropertyValue::Date(d) => datetime(format_iso_date(*d))?,
-        PropertyValue::DateTime(dt) => datetime(format_datetime(dt))?,
+        PropertyValue::DateTime(dt) => datetime(dt.to_string_with_seconds())?,
         PropertyValue::List(items) => Value::Array(items.iter().map(String::as_str).collect()),
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use chrono::TimeZone;
-
     use super::super::tests::d;
     use super::*;
 
@@ -231,11 +230,13 @@ mod tests {
                 ("due".into(), PropertyValue::Date(d(2024, 1, 31))),
                 (
                     "at".into(),
-                    PropertyValue::DateTime(Utc.with_ymd_and_hms(2024, 1, 31, 8, 0, 0).unwrap())
+                    PropertyValue::DateTime(
+                        PropertyDateTime::parse("2024-01-31T10:00:00+02:00").unwrap()
+                    )
                 ),
                 (
                     "local".into(),
-                    PropertyValue::DateTime(Utc.with_ymd_and_hms(2024, 1, 31, 10, 0, 0).unwrap())
+                    PropertyValue::DateTime(PropertyDateTime::parse("2024-01-31T10:00").unwrap())
                 ),
                 (
                     "tags".into(),

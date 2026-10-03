@@ -8,8 +8,8 @@ use std::ops::Range;
 use yaml_rust2::{yaml::Hash, Yaml, YamlLoader};
 
 use super::{
-    finite, format_datetime, format_number, nested_key_error, parse_datetime, FrontmatterError,
-    PropertyEntry, PropertyFormatter, PropertyValue,
+    finite, format_number, nested_key_error, FrontmatterError, PropertyDateTime, PropertyEntry,
+    PropertyFormatter, PropertyValue,
 };
 use crate::dates::{format_iso_date, parse_iso_date};
 
@@ -131,7 +131,7 @@ fn verify(out: &str, key: &str, expect_present: bool) -> Result<(), FrontmatterE
 }
 
 /// Text that is exactly `YYYY-MM-DD` as a date, RFC3339 or an offset-less
-/// `YYYY-MM-DDTHH:MM[:SS[.f]]` (read as UTC — Obsidian's Date & time property
+/// `YYYY-MM-DDTHH:MM[:SS[.f]]` (a local time — Obsidian's Date & time property
 /// omits seconds and offset) as a date-time, anything else as text. For
 /// syntaxes without native dates.
 fn text_or_date(s: &str) -> PropertyValue {
@@ -140,7 +140,7 @@ fn text_or_date(s: &str) -> PropertyValue {
             return PropertyValue::Date(date);
         }
     }
-    parse_datetime(s).map_or_else(
+    PropertyDateTime::parse(s).map_or_else(
         || PropertyValue::Text(s.to_string()),
         PropertyValue::DateTime,
     )
@@ -281,7 +281,7 @@ fn render_entry(key: &str, value: &PropertyValue) -> Vec<String> {
         PropertyValue::Number(n) => vec![format!("{k}: {}", format_number(*n))],
         PropertyValue::Bool(b) => vec![format!("{k}: {b}")],
         PropertyValue::Date(d) => vec![format!("{k}: {}", format_iso_date(*d))],
-        PropertyValue::DateTime(dt) => vec![format!("{k}: {}", format_datetime(dt))],
+        PropertyValue::DateTime(dt) => vec![format!("{k}: {dt}")],
     }
 }
 
@@ -352,12 +352,14 @@ mod tests {
                 ("due".into(), PropertyValue::Date(d(2024, 1, 31))),
                 (
                     "at".into(),
-                    PropertyValue::DateTime(Utc.with_ymd_and_hms(2024, 1, 31, 10, 0, 0).unwrap())
+                    PropertyValue::DateTime(
+                        Utc.with_ymd_and_hms(2024, 1, 31, 10, 0, 0).unwrap().into()
+                    )
                 ),
                 // Obsidian's Date & time property (no seconds, no offset).
                 (
                     "obsidian_dt".into(),
-                    PropertyValue::DateTime(Utc.with_ymd_and_hms(2024, 1, 15, 14, 30, 0).unwrap())
+                    PropertyValue::DateTime(PropertyDateTime::parse("2024-01-15T14:30").unwrap())
                 ),
                 (
                     "tags".into(),

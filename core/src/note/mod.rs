@@ -1,7 +1,9 @@
 pub(crate) mod content_extractor;
 pub(crate) mod properties;
 
-pub use properties::{FrontmatterFormat, PropertyKind, PropertyValue};
+pub use properties::{
+    FrontmatterFormat, PropertyDateTime, PropertyInput, PropertyKind, PropertyValue,
+};
 
 use std::fmt::Display;
 
@@ -75,9 +77,67 @@ pub fn extract_labels(text: &str) -> Vec<String> {
 /// assert_eq!(kimun_core::note::note_tags(text), ["draft", "project", "q1"]);
 /// ```
 pub fn note_tags(text: &str) -> Vec<String> {
+    tags_with(text, &NoteDetails::property_set_of(text))
+}
+
+/// The inline labels of `text` plus the `tags` of its already-parsed
+/// frontmatter, sorted and distinct.
+fn tags_with(text: &str, frontmatter: &properties::PropertySet) -> Vec<String> {
     let mut tags: std::collections::BTreeSet<String> = extract_labels(text).into_iter().collect();
-    tags.extend(NoteDetails::property_set_of(text).tags());
+    tags.extend(frontmatter.tags());
     tags.into_iter().collect()
+}
+
+/// A heading of a note: its level (1–6) and display text.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct NoteHeading {
+    /// 1 for `#`, up to 6.
+    pub level: u8,
+    /// The heading's text, inline markup rendered to plain text.
+    pub text: String,
+}
+
+/// What a note's own text declares about it, read in one pass over its
+/// frontmatter: its labels (as [`note_tags`]), its frontmatter properties,
+/// and its headings (frontmatter and code skipped).
+///
+/// ```
+/// let text = "---\n# a comment, not a heading\nstatus: done\n---\n# Title\n```\n# code\n```\n#todo";
+/// let meta = kimun_core::note::NoteMetadata::of(text);
+/// assert_eq!(meta.tags, ["todo"]);
+/// assert_eq!(meta.properties.len(), 1);
+/// assert_eq!(meta.headings.len(), 1);
+/// assert_eq!(meta.headings[0].text, "Title");
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct NoteMetadata {
+    /// Inline `#hashtags` plus frontmatter `tags`, lowercased, sorted, distinct.
+    pub tags: Vec<String>,
+    /// Frontmatter properties in the note's order (see [`PropertyValue`]).
+    pub properties: Vec<(String, PropertyValue)>,
+    /// Headings in order.
+    pub headings: Vec<NoteHeading>,
+}
+
+impl NoteMetadata {
+    /// Reads a note body's metadata.
+    pub fn of(text: &str) -> Self {
+        let frontmatter = NoteDetails::property_set_of(text);
+        Self {
+            tags: tags_with(text, &frontmatter),
+            properties: frontmatter.into_values(),
+            headings: note_headings(text),
+        }
+    }
+}
+
+/// A note body's headings in order — frontmatter and `#` lines inside code
+/// skipped, inline markup rendered to text.
+pub fn note_headings(text: &str) -> Vec<NoteHeading> {
+    content_extractor::extract_headings(text)
+        .into_iter()
+        .map(|(level, text)| NoteHeading { level, text })
+        .collect()
 }
 
 /// A note's vault path paired with its raw, unprocessed text.
@@ -157,7 +217,7 @@ impl NoteDetails {
     /// Everything a note body's frontmatter declares — keys with or without a
     /// usable value, typed values and `tags` labels — for the index.
     pub(crate) fn property_set_of<S: AsRef<str>>(text: S) -> properties::PropertySet {
-        properties::NoteProperties::new(text.as_ref(), FrontmatterFormat::default()).entries()
+        properties::NoteProperties::new(text.as_ref(), FrontmatterFormat::default()).property_set()
     }
 
     /// Title of this note (first non-empty line of the body, frontmatter

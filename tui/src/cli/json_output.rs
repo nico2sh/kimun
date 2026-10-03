@@ -1,9 +1,9 @@
-use crate::cli::metadata_extractor::{extract_headers, extract_links, extract_tags};
+use crate::cli::metadata_extractor::extract_links;
 use chrono::Utc;
 use kimun_core::NoteVault;
 use kimun_core::nfs::NoteEntryData;
 use kimun_core::nfs::VaultPath;
-use kimun_core::note::{NoteContentData, NoteDetails, PropertyValue};
+use kimun_core::note::{NoteContentData, NoteHeading, NoteMetadata, PropertyValue};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -11,6 +11,15 @@ use std::collections::HashMap;
 pub struct JsonHeader {
     pub level: u32,
     pub text: String,
+}
+
+impl From<NoteHeading> for JsonHeader {
+    fn from(heading: NoteHeading) -> Self {
+        Self {
+            level: heading.level.into(),
+            text: heading.text,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -54,11 +63,12 @@ impl JsonNoteMetadata {
     /// Everything the JSON output reports about a note's own text: labels,
     /// links, headings and frontmatter properties.
     pub fn from_content(content: &str) -> Self {
+        let meta = NoteMetadata::of(content);
         Self {
-            tags: extract_tags(content),
+            tags: meta.tags,
             links: extract_links(content),
-            headers: extract_headers(content),
-            properties: JsonProperties(NoteDetails::properties_of(content)),
+            headers: meta.headings.into_iter().map(JsonHeader::from).collect(),
+            properties: JsonProperties(meta.properties),
         }
     }
 }

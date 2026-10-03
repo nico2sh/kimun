@@ -962,6 +962,22 @@ pub fn extract_title<S: AsRef<str>>(md_text: S) -> String {
         .unwrap_or_default()
 }
 
+/// Every heading of a note as `(level, display text)`, in order — through the
+/// same event walk as the title and the index breadcrumbs, so frontmatter and
+/// `#` lines inside code are never headings, and inline markup is rendered to
+/// its text.
+pub(crate) fn extract_headings<S: AsRef<str>>(md_text: S) -> Vec<(u8, String)> {
+    let (_frontmatter, md_text) = remove_frontmatter(md_text);
+    let mut parser = Parser::new(md_text.as_ref());
+    loop_events(&mut parser)
+        .into_iter()
+        .filter_map(|line| match line {
+            TextLine::Header(level, text) if !text.is_empty() => Some((level, text)),
+            _ => None,
+        })
+        .collect()
+}
+
 fn parse_text(md_text: &str) -> Vec<ContentChunk> {
     let mut parser = Parser::new(md_text);
     let lines = loop_events(&mut parser);
@@ -1482,7 +1498,9 @@ fn parse_tag(tag: &Tag, current_line: TextLine) -> Vec<TextLine> {
                 pulldown_cmark::CodeBlockKind::Indented => "```".to_string(),
                 pulldown_cmark::CodeBlockKind::Fenced(lang) => format!("```{}", lang),
             };
-            vec![TextLine::Text(open), TextLine::Empty]
+            // Keep the line before the fence — a heading directly above a
+            // code block used to be dropped here, losing its breadcrumb.
+            vec![current_line, TextLine::Text(open), TextLine::Empty]
         }
         Tag::List(_) => {
             let line = if let TextLine::ListItem(lvl, _) = current_line {
@@ -3206,6 +3224,22 @@ ls -la ./test
         assert!(
             chunks.iter().any(|c| c.breadcrumb_last() == Some("Nested")),
             "the chunker lists the nested heading: {chunks:?}"
+        );
+    }
+
+    #[test]
+    fn a_heading_directly_above_a_code_block_is_kept() {
+        let text = "# Setup\n```sh\nmake\n```\n## Next\ntext";
+        assert_eq!(
+            crate::note::content_extractor::extract_headings(text),
+            vec![(1, "Setup".to_string()), (2, "Next".to_string())]
+        );
+        let chunks = crate::note::content_extractor::get_content_chunks(text);
+        assert!(
+            chunks
+                .iter()
+                .any(|c| c.breadcrumb == "Setup" && c.text.contains("make")),
+            "the code is filed under its heading: {chunks:?}"
         );
     }
 }

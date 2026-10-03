@@ -177,7 +177,7 @@ Operators: `=` `!=` `<` `<=` `>` `>=`. A comparison that doesn't fit the propert
 
 Sort by a property with `or:prop:key` or `^%key`; see [Sorting](#sorting). Notes without the property always come last.
 
-Supported types: text, number, true/false, date (`2024-03-01`), date & time (`2024-03-01T14:30`), and lists of text. Nested tables are ignored. A block that fails to parse is still searchable as plain text, it just contributes no properties.
+Supported types: text, number, true/false, date (`2024-03-01`), date & time (`2024-03-01T14:30`, or with an offset such as `2024-03-01T14:30:00+02:00`; a time without an offset compares as UTC), and lists of text. Nested tables are ignored. A block that fails to parse is still searchable as plain text, it just contributes no properties.
 
 ## Excluding things
 

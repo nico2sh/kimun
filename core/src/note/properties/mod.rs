@@ -7,11 +7,13 @@
 //! contents. Reading is lenient (a malformed block yields no properties);
 //! editing is strict (a malformed block refuses the edit).
 
+mod datetime;
 mod toml_formatter;
 mod value;
 mod yaml_formatter;
 
-pub use value::{PropertyKind, PropertyValue};
+pub use datetime::PropertyDateTime;
+pub use value::{PropertyInput, PropertyKind, PropertyValue};
 
 use std::collections::HashSet;
 use std::ops::Range;
@@ -95,9 +97,9 @@ impl PropertySet {
         }
     }
 
-    /// Every key the note has, valued or not.
-    pub(crate) fn keys(&self) -> impl Iterator<Item = &str> {
-        self.entries.iter().map(|(k, _)| k.as_str())
+    /// Every key the note has, with its value when it has a usable one.
+    pub(crate) fn entries(&self) -> impl Iterator<Item = (&str, Option<&PropertyValue>)> {
+        self.entries.iter().map(|(k, v)| (k.as_str(), v.as_ref()))
     }
 
     /// The properties that have a usable value.
@@ -245,7 +247,7 @@ impl<'t> NoteProperties<'t> {
 
     /// Everything the block declares; see [`PropertySet`]. Lenient: a
     /// malformed block yields an empty set.
-    pub(crate) fn entries(&self) -> PropertySet {
+    pub(crate) fn property_set(&self) -> PropertySet {
         if self.span.is_none() {
             return PropertySet::default();
         }
@@ -300,6 +302,11 @@ pub(crate) fn normalize_key(key: &str) -> Option<String> {
 /// `tags`, and the singular `tag` older Obsidian notes use.
 const TAG_KEYS: [&str; 2] = ["tags", "tag"];
 
+/// `key` (normalized) holds a note's tags: always a list of labels.
+pub(crate) fn is_tag_key(key: &str) -> bool {
+    TAG_KEYS.contains(&key)
+}
+
 // ---- Helpers shared by the formatters ------------------------------------
 
 /// Largest integer an `f64` represents exactly (2^53).
@@ -328,21 +335,6 @@ pub(crate) fn format_datetime(dt: &DateTime<Utc>) -> String {
     dt.to_rfc3339_opts(SecondsFormat::AutoSi, true)
 }
 
-/// Text that is an RFC3339 date-time, or an offset-less
-/// `YYYY-MM-DDTHH:MM[:SS[.f]]` (read as UTC — Obsidian's Date & time property
-/// omits seconds and offset), as a UTC date-time. The `T` and `Z` are
-/// case-insensitive.
-pub(crate) fn parse_datetime(s: &str) -> Option<DateTime<Utc>> {
-    let s = s.to_uppercase();
-    if let Ok(dt) = DateTime::parse_from_rfc3339(&s) {
-        return Some(dt.with_timezone(&Utc));
-    }
-    ["%Y-%m-%dT%H:%M:%S%.f", "%Y-%m-%dT%H:%M"]
-        .iter()
-        .find_map(|f| chrono::NaiveDateTime::parse_from_str(&s, f).ok())
-        .map(|n| n.and_utc())
-}
-
 fn nested_key_error(key: &str) -> FrontmatterError {
     FrontmatterError(format!(
         "'{key}' holds a nested table, which properties cannot edit"
@@ -363,7 +355,7 @@ mod tests {
     }
 
     fn set_of(text: &str) -> PropertySet {
-        NoteProperties::new(text, FrontmatterFormat::default()).entries()
+        NoteProperties::new(text, FrontmatterFormat::default()).property_set()
     }
 
     /// The valued entries of a formatter's `parse`.
@@ -536,7 +528,17 @@ mod tests {
             ("i", PropertyValue::Number(7.0)),
             ("b", PropertyValue::Bool(true)),
             ("d", PropertyValue::Date(d(2024, 1, 31))),
-            ("dt", PropertyValue::DateTime(at)),
+            ("dt", PropertyValue::DateTime(at.into())),
+            (
+                "local_dt",
+                PropertyValue::DateTime(PropertyDateTime::parse("2024-01-31T10:00").unwrap()),
+            ),
+            (
+                "offset_dt",
+                PropertyValue::DateTime(
+                    PropertyDateTime::parse("2024-01-31T10:00:00+02:00").unwrap(),
+                ),
+            ),
             ("l", PropertyValue::List(vec!["x".into(), "y z".into()])),
             ("e", PropertyValue::List(vec![])),
         ]
@@ -731,14 +733,20 @@ mod tests {
     #[test]
     fn property_set_separates_keys_from_values() {
         let set = set_of("---\nStatus:\nstatus: x\ntags: [a]\ndue: 2024-01-01\n---\n");
-        assert_eq!(set.keys().collect::<Vec<_>>(), ["status", "tags", "due"]);
+        assert_eq!(
+            set.entries().map(|(k, _)| k).collect::<Vec<_>>(),
+            ["status", "tags", "due"]
+        );
         assert_eq!(
             set.values().map(|(k, _)| k).collect::<Vec<_>>(),
             ["tags", "due"],
             "the first of the case-duplicates wins, and it has no value"
         );
         assert_eq!(set.tags(), vec!["a"]);
-        assert!(set_of("---\nkey: [unclosed\n---\n").keys().next().is_none());
+        assert!(set_of("---\nkey: [unclosed\n---\n")
+            .entries()
+            .next()
+            .is_none());
     }
 
     #[test]
