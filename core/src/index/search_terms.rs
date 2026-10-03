@@ -94,6 +94,26 @@ impl QueryTermExtractor {
             }
         };
 
+        if is_property_element(&element_type) {
+            match quoted_property_value_len(&remaining) {
+                Some(Some(end)) => {
+                    return QueryTermExtractor {
+                        el_type: element_type,
+                        term: remaining[..end].to_string(),
+                        remainder: remaining[end..].trim().to_string(),
+                    };
+                }
+                Some(None) => {
+                    return QueryTermExtractor {
+                        el_type: ElementType::Invalid,
+                        term: String::new(),
+                        remainder: String::new(),
+                    };
+                }
+                None => {}
+            }
+        }
+
         let (sep_char, mut term) = if remaining.starts_with('"') {
             ('"', remaining.chars().skip(1).collect())
         } else if remaining.starts_with("'") {
@@ -136,6 +156,35 @@ impl QueryTermExtractor {
             }
         }
     }
+}
+
+fn is_property_element(el: &ElementType) -> bool {
+    matches!(el, ElementType::Property | ElementType::ExcludedProperty)
+}
+
+/// For a property term whose value is quoted right after the operator
+/// (`status="in progress"`), the byte length of the term through its closing
+/// quote — `Some(None)` when that quote is never closed. `None` when the term
+/// has no operator before its first space or no quote after the operator, so
+/// the ordinary token rules apply. Shared by the parser and the lexer so the
+/// two can't disagree.
+fn quoted_property_value_len(term: &str) -> Option<Option<usize>> {
+    let token_end = term.find(' ').unwrap_or(term.len());
+    let op_at = term[..token_end].find(['=', '!', '<', '>'])?;
+    let after_op = op_at
+        + term[op_at..]
+            .bytes()
+            .take_while(|b| matches!(b, b'=' | b'!' | b'<' | b'>'))
+            .count();
+    let quote = term[after_op..]
+        .chars()
+        .next()
+        .filter(|c| *c == '"' || *c == '\'')?;
+    Some(
+        term[after_op + 1..]
+            .find(quote)
+            .map(|close| after_op + 1 + close + 1),
+    )
 }
 
 /// A parsed `or:`/`^` order directive: the column to sort by together with
@@ -804,8 +853,23 @@ pub fn query_token_spans(query: &str) -> Vec<QueryTokenSpan> {
             cursor += prefix_len;
         }
 
-        // Value: quoted (only at a value start) or up to the next space.
-        if let Some(q) = value.chars().next().filter(|c| *c == '"' || *c == '\'') {
+        // Value: quoted (at a value start, or right after a property
+        // operator) or up to the next space.
+        let property_quoted = is_property_element(&el)
+            .then(|| quoted_property_value_len(value))
+            .flatten();
+        if let Some(quoted) = property_quoted {
+            let end = quoted.map_or(len, |n| cursor + n);
+            spans.push(QueryTokenSpan {
+                range: cursor..end,
+                class: if quoted.is_some() {
+                    QueryTokenClass::Quoted
+                } else {
+                    QueryTokenClass::Unterminated
+                },
+            });
+            pos = end;
+        } else if let Some(q) = value.chars().next().filter(|c| *c == '"' || *c == '\'') {
             match value[1..].find(q) {
                 Some(close_rel) => {
                     let end = cursor + 1 + close_rel + 1;
@@ -870,6 +934,20 @@ mod lexer_tests {
                 (C::Term, "n>2".into()),
             ]
         );
+    }
+
+    #[test]
+    fn lexes_quoted_property_value_as_one_span() {
+        use QueryTokenClass as C;
+        assert_eq!(
+            classes("%status=\"in progress\" x"),
+            vec![
+                (C::FieldKey, "%".into()),
+                (C::Quoted, "status=\"in progress\"".into()),
+                (C::Term, "x".into()),
+            ]
+        );
+        assert!(query_has_unterminated_quote("x %status=\"in progress"));
     }
 
     #[test]
@@ -1064,6 +1142,33 @@ mod tests {
             ]
         );
         assert!(st.terms.is_empty());
+    }
+
+    // A quote right after the operator carries spaces in the value too.
+    #[test]
+    fn quoted_property_value_keeps_spaces() {
+        let st = SearchTerms::from_query_string(
+            "%status=\"in progress\" meeting -prop:title<='b c' %n>=2",
+        );
+        assert_eq!(
+            st.properties,
+            vec![
+                pf("status", PropertyOp::Eq, "in progress"),
+                pf("n", PropertyOp::Ge, "2"),
+            ]
+        );
+        assert_eq!(
+            st.excluded_properties,
+            vec![pf("title", PropertyOp::Le, "b c")]
+        );
+        assert_eq!(st.terms, vec!["meeting"]);
+    }
+
+    #[test]
+    fn unterminated_quoted_property_value_drops_the_rest() {
+        let st = SearchTerms::from_query_string("meeting %status=\"in progress");
+        assert!(st.properties.is_empty());
+        assert_eq!(st.terms, vec!["meeting"]);
     }
 
     #[test]
