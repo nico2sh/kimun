@@ -2,6 +2,8 @@ use std::vec;
 
 use log::debug;
 
+use crate::note::properties::normalize_key;
+
 const ORDER_CHAR: &str = "^";
 const ORDER_LETTER: &str = "or";
 
@@ -221,8 +223,7 @@ impl OrderBy {
             .strip_prefix("prop:")
             .or_else(|| term.strip_prefix('%'))
         {
-            let key = key.trim().to_lowercase();
-            return (!key.is_empty()).then_some(OrderBy::Property { key, asc });
+            return normalize_key(key).map(|key| OrderBy::Property { key, asc });
         }
         match term {
             "f" => Some(OrderBy::FileName { asc }),
@@ -245,11 +246,9 @@ pub enum OrderField {
     FileName,
 }
 
-/// Comparison operator of a `prop:` filter.
+/// Comparison operator of a `prop:key<op>value` filter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PropertyOp {
-    /// No operator (`%key`) — the note has the property, whatever its value.
-    Exists,
     /// `=` — equal; on a list, "contains this item".
     Eq,
     /// `!=` — has the property but no value equal to this one.
@@ -265,11 +264,9 @@ pub enum PropertyOp {
 }
 
 impl PropertyOp {
-    /// The SQL comparison operator. [`PropertyOp::Exists`] compares nothing,
-    /// so it is the postfix `IS NOT NULL` test.
+    /// The SQL comparison operator.
     pub fn sql(self) -> &'static str {
         match self {
-            PropertyOp::Exists => "IS NOT NULL",
             PropertyOp::Eq => "=",
             PropertyOp::Ne => "!=",
             PropertyOp::Lt => "<",
@@ -280,17 +277,31 @@ impl PropertyOp {
     }
 }
 
-/// One `prop:key<op>value` / `%key<op>value` filter. Key and value are
-/// lowercased: property matching is case-insensitive.
+/// What a `prop:` filter asks of a property.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PropertyTest {
+    /// A bare key (`%due`): the note has the property, whatever its value —
+    /// including none (YAML `due:`) or an empty list.
+    Exists,
+    /// `key<op>value`: a value of the property compares true against `value`
+    /// (lowercased, without surrounding quotes).
+    Compare {
+        /// The comparison.
+        op: PropertyOp,
+        /// The value compared against.
+        value: String,
+    },
+}
+
+/// One `prop:` / `%` filter: `key<op>value`, or a bare `key` (has the
+/// property). Keys and values are lowercased: property matching is
+/// case-insensitive.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PropertyFilter {
     /// The property key.
     pub key: String,
-    /// The comparison.
-    pub op: PropertyOp,
-    /// The value compared against, without surrounding quotes; empty for
-    /// [`PropertyOp::Exists`].
-    pub value: String,
+    /// What the filter asks of the property.
+    pub test: PropertyTest,
 }
 
 impl PropertyFilter {
@@ -299,14 +310,12 @@ impl PropertyFilter {
     /// operator is present but malformed or has no value.
     pub fn parse(term: &str) -> Option<Self> {
         let Some(at) = term.find(['=', '!', '<', '>']) else {
-            let key = term.trim().to_lowercase();
-            return (!key.is_empty()).then_some(Self {
-                key,
-                op: PropertyOp::Exists,
-                value: String::new(),
+            return Some(Self {
+                key: normalize_key(term)?,
+                test: PropertyTest::Exists,
             });
         };
-        let key = term[..at].trim().to_lowercase();
+        let key = normalize_key(&term[..at])?;
         let rest = &term[at..];
         let (op, len) = [
             ("!=", PropertyOp::Ne),
@@ -324,7 +333,10 @@ impl PropertyFilter {
             .find_map(|q| raw.strip_prefix(q).and_then(|r| r.strip_suffix(q)))
             .unwrap_or(raw)
             .to_lowercase();
-        (!key.is_empty() && !value.is_empty()).then_some(Self { key, op, value })
+        (!value.is_empty()).then_some(Self {
+            key,
+            test: PropertyTest::Compare { op, value },
+        })
     }
 }
 
@@ -478,7 +490,8 @@ pub fn with_order_directive(query: &str, field: OrderField, asc: bool) -> String
 /// - `lb:` / `#` — label (lowercased and deduplicated)
 /// - `lk:` / `<` — backlinks (notes linking *to* the target)
 /// - `fwd:` / `>` — forward links (notes the target links *to*)
-/// - `prop:` / `%` — property filter (`prop:status=done`, `%priority>2`)
+/// - `prop:` / `%` — property filter: `key<op>value` (`prop:status=done`,
+///   `%priority>2`) or a bare key for "has the property" (`%due`)
 /// - `or:` / `^` — order directive (`or:title`, `^file`, …)
 ///
 /// Any prefix may be negated by a leading `-` (`-#draft`, `-lk:spec`) to
@@ -519,7 +532,7 @@ pub struct SearchTerms {
     pub excluded_links: Vec<String>,
     /// Negated `fwd:` / `>` values (`-fwd:`, `->`). Deduped, order preserved.
     pub excluded_forward_links: Vec<String>,
-    /// `prop:` / `%` filters (`key<op>value`).
+    /// `prop:` / `%` filters (`key<op>value`, or a bare `key`).
     pub properties: Vec<PropertyFilter>,
     /// Negated `prop:` / `%` filters (`-prop:`, `-%`).
     pub excluded_properties: Vec<PropertyFilter>,
@@ -1076,13 +1089,22 @@ mod lexer_tests {
 mod tests {
     use super::expand_bare_note_prefixes;
     use super::SearchTerms;
-    use super::{OrderBy, PropertyFilter, PropertyOp};
+    use super::{OrderBy, PropertyFilter, PropertyOp, PropertyTest};
 
     fn pf(key: &str, op: PropertyOp, value: &str) -> PropertyFilter {
         PropertyFilter {
             key: key.into(),
-            op,
-            value: value.into(),
+            test: PropertyTest::Compare {
+                op,
+                value: value.into(),
+            },
+        }
+    }
+
+    fn has(key: &str) -> PropertyFilter {
+        PropertyFilter {
+            key: key.into(),
+            test: PropertyTest::Exists,
         }
     }
 
@@ -1118,10 +1140,7 @@ mod tests {
             PropertyFilter::parse("k=\"v\""),
             Some(pf("k", PropertyOp::Eq, "v"))
         );
-        assert_eq!(
-            PropertyFilter::parse(" K "),
-            Some(pf("k", PropertyOp::Exists, ""))
-        );
+        assert_eq!(PropertyFilter::parse(" K "), Some(has("k")));
         assert_eq!(PropertyFilter::parse("  "), None);
         assert_eq!(PropertyFilter::parse("=v"), None);
         assert_eq!(PropertyFilter::parse("k="), None);
@@ -1198,17 +1217,8 @@ mod tests {
     #[test]
     fn bare_property_key_is_a_has_property_filter() {
         let st = SearchTerms::from_query_string("%Status prop:'due date' -%archived meeting");
-        assert_eq!(
-            st.properties,
-            vec![
-                pf("status", PropertyOp::Exists, ""),
-                pf("due date", PropertyOp::Exists, ""),
-            ]
-        );
-        assert_eq!(
-            st.excluded_properties,
-            vec![pf("archived", PropertyOp::Exists, "")]
-        );
+        assert_eq!(st.properties, vec![has("status"), has("due date"),]);
+        assert_eq!(st.excluded_properties, vec![has("archived")]);
         assert_eq!(st.terms, vec!["meeting"]);
     }
 

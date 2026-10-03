@@ -230,6 +230,7 @@ impl HelpDialog {
             ("# / lb:", "by label (tag)"),
             ("< / lk:", "links TO it (backlinks)"),
             ("> / fwd:", "it links to (forward)"),
+            ("% / prop:", "by property (%due, %k=v)"),
             ("^ / or:", "sort results (-^ = desc)"),
         ];
         const MODIFIERS: &[(&str, &str)] = &[
@@ -241,6 +242,7 @@ impl HelpDialog {
             ("#finance report", "labelled finance + text"),
             ("@work -cancelled", "Work section, not cancelled"),
             ("<kimun #project", "kimun backlinks + label"),
+            ("%status=done ^%due", "done, sorted by due"),
         ];
 
         fn section(rows: &mut Vec<HelpRow>, header: &str, entries: &[(&str, &str)]) {

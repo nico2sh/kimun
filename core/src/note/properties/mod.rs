@@ -72,6 +72,69 @@ impl FrontmatterFormat {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FrontmatterError(pub(crate) String);
 
+/// One top-level frontmatter entry: its key (lowercased) and its value, or
+/// `None` when the note has the key without a usable value (YAML `key:`, a
+/// non-finite number, a TOML local time).
+pub(crate) type PropertyEntry = (String, Option<PropertyValue>);
+
+/// What a note's frontmatter declares: its property entries in file order,
+/// the first of any case-duplicate keys winning. The one shape the index and
+/// the API read properties through — keys (for "has property"), typed values
+/// and the `tags` labels all come from here.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct PropertySet {
+    entries: Vec<PropertyEntry>,
+}
+
+impl PropertySet {
+    fn from_entries(entries: Vec<PropertyEntry>) -> Self {
+        let mut seen = HashSet::new();
+        Self {
+            entries: entries
+                .into_iter()
+                .filter(|(k, _)| seen.insert(k.clone()))
+                .collect(),
+        }
+    }
+
+    /// Every key the note has, valued or not.
+    pub(crate) fn keys(&self) -> impl Iterator<Item = &str> {
+        self.entries.iter().map(|(k, _)| k.as_str())
+    }
+
+    /// The properties that have a usable value.
+    pub(crate) fn values(&self) -> impl Iterator<Item = (&str, &PropertyValue)> {
+        self.entries
+            .iter()
+            .filter_map(|(k, v)| Some((k.as_str(), v.as_ref()?)))
+    }
+
+    /// [`Self::values`], owned.
+    pub(crate) fn into_values(self) -> Vec<(String, PropertyValue)> {
+        self.entries
+            .into_iter()
+            .filter_map(|(k, v)| Some((k, v?)))
+            .collect()
+    }
+
+    /// Label names from the `tags` property (and Obsidian's legacy singular
+    /// `tag`): a list gives one tag per item, a bare string is one tag (no
+    /// comma splitting, as in Obsidian). Trimmed, a leading `#` dropped,
+    /// lowercased, empties removed.
+    pub(crate) fn tags(&self) -> Vec<String> {
+        self.values()
+            .filter(|(k, _)| TAG_KEYS.contains(k))
+            .flat_map(|(_, v)| match v {
+                PropertyValue::List(items) => items.iter().map(String::as_str).collect(),
+                PropertyValue::Text(s) => vec![s.as_str()],
+                _ => Vec::new(),
+            })
+            .map(|t| t.trim().trim_start_matches('#').to_lowercase())
+            .filter(|t| !t.is_empty())
+            .collect()
+    }
+}
+
 /// The single contract for one frontmatter syntax. A formatter sees only the
 /// block's contents (between the delimiter lines, LF endings, empty or ending
 /// in `\n`); locating the block, choosing the formatter, leniency and splicing
@@ -79,9 +142,11 @@ pub(crate) struct FrontmatterError(pub(crate) String);
 /// `contract_*` tests in this module:
 ///
 /// - `parse` is strict: a malformed block or a non-mapping root is `Err`; an
-///   empty block is `Ok(vec![])`. Keys come back lowercased, in file order; a
-///   value that doesn't map onto [`PropertyValue`] (nested table, non-finite
-///   number, null) is skipped on its own.
+///   empty block is `Ok(vec![])`. Entries come back with keys lowercased, in
+///   file order. A key whose value doesn't map onto [`PropertyValue`] (null,
+///   non-finite number, TOML local time) is still an entry, with no value — the
+///   note visibly has that property. A nested table/mapping is not a property
+///   and yields no entry.
 /// - `set` / `remove` match keys case-insensitively, keep the spelling and
 ///   position of the first match, collapse case-duplicates, and leave every
 ///   other line of the block (comments, order, untouched entries) as it was.
@@ -97,8 +162,8 @@ pub(crate) struct FrontmatterError(pub(crate) String);
 /// - `remove` returns `Ok(None)` when the key is absent; removing the last
 ///   entry yields an empty block.
 pub(crate) trait PropertyFormatter: Send + Sync {
-    /// Every property in `block`.
-    fn parse(&self, block: &str) -> Result<Vec<(String, PropertyValue)>, FrontmatterError>;
+    /// Every property entry in `block`.
+    fn parse(&self, block: &str) -> Result<Vec<PropertyEntry>, FrontmatterError>;
     /// `block` with `key` set to `value`.
     fn set(
         &self,
@@ -180,19 +245,13 @@ impl<'t> NoteProperties<'t> {
             .map_or("", |s| &self.text[s.inner.clone()])
     }
 
-    /// Every property, keys lowercased, in file order, the first of any
-    /// case-duplicate keys winning. Lenient: a malformed block yields none.
-    pub(crate) fn list(&self) -> Vec<(String, PropertyValue)> {
+    /// Everything the block declares; see [`PropertySet`]. Lenient: a
+    /// malformed block yields an empty set.
+    pub(crate) fn entries(&self) -> PropertySet {
         if self.span.is_none() {
-            return Vec::new();
+            return PropertySet::default();
         }
-        let mut seen = HashSet::new();
-        self.formatter
-            .parse(self.block())
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|(k, _)| seen.insert(k.clone()))
-            .collect()
+        PropertySet::from_entries(self.formatter.parse(self.block()).unwrap_or_default())
     }
 
     /// The note's text with `key` (already normalized) set to `value`.
@@ -239,23 +298,9 @@ pub(crate) fn normalize_key(key: &str) -> Option<String> {
     (!key.is_empty() && !key.chars().any(char::is_control)).then(|| key.to_lowercase())
 }
 
-/// The frontmatter key whose items are unified into the label index.
-pub(crate) const TAGS_KEY: &str = "tags";
-
-/// Label names from the `tags` property: a list gives one tag per item, a bare
-/// string is one tag (no comma splitting, as in Obsidian). Trimmed, a leading
-/// `#` dropped, lowercased, empties removed.
-pub(crate) fn frontmatter_tags(props: &[(String, PropertyValue)]) -> Vec<String> {
-    let raw: Vec<&str> = match props.iter().find(|(k, _)| k == TAGS_KEY).map(|(_, v)| v) {
-        Some(PropertyValue::List(items)) => items.iter().map(String::as_str).collect(),
-        Some(PropertyValue::Text(s)) => vec![s.as_str()],
-        _ => Vec::new(),
-    };
-    raw.into_iter()
-        .map(|t| t.trim().trim_start_matches('#').to_lowercase())
-        .filter(|t| !t.is_empty())
-        .collect()
-}
+/// The frontmatter keys whose items are unified into the label index:
+/// `tags`, and the singular `tag` older Obsidian notes use.
+const TAG_KEYS: [&str; 2] = ["tags", "tag"];
 
 // ---- Helpers shared by the formatters ------------------------------------
 
@@ -316,7 +361,19 @@ mod tests {
     }
 
     fn list(text: &str) -> Vec<(String, PropertyValue)> {
-        NoteProperties::new(text, FrontmatterFormat::default()).list()
+        set_of(text).into_values()
+    }
+
+    fn set_of(text: &str) -> PropertySet {
+        NoteProperties::new(text, FrontmatterFormat::default()).entries()
+    }
+
+    /// The valued entries of a formatter's `parse`.
+    fn values(entries: Vec<PropertyEntry>) -> Vec<(String, PropertyValue)> {
+        entries
+            .into_iter()
+            .filter_map(|(k, v)| Some((k, v?)))
+            .collect()
     }
 
     // ---- NoteProperties: block location, formatter choice, splicing ----
@@ -424,17 +481,22 @@ mod tests {
 
     #[test]
     fn tags_from_list_or_bare_string() {
-        let l = list("+++\ntags = [\"Rust\", \"#notes\", \"\"]\n+++\n");
-        assert_eq!(frontmatter_tags(&l), vec!["rust", "notes"]);
-        let bare = list("+++\ntags = \"Big Project, misc\"\n+++\n");
-        assert_eq!(frontmatter_tags(&bare), vec!["big project, misc"]);
-        assert!(frontmatter_tags(&list("+++\ntags = 5\n+++\n")).is_empty());
+        let l = set_of("+++\ntags = [\"Rust\", \"#notes\", \"\"]\n+++\n");
+        assert_eq!(l.tags(), vec!["rust", "notes"]);
+        let bare = set_of("+++\ntags = \"Big Project, misc\"\n+++\n");
+        assert_eq!(bare.tags(), vec!["big project, misc"]);
+        assert!(set_of("+++\ntags = 5\n+++\n").tags().is_empty());
+        assert_eq!(
+            set_of("---\ntags: [a]\ntag: b\n---\n").tags(),
+            vec!["a", "b"],
+            "legacy singular `tag` counts too"
+        );
     }
 
     #[test]
     fn yaml_list_reads_through_the_struct() {
-        let p = list("---\ntags: [Rust, '#notes', '']\n---\n");
-        assert_eq!(frontmatter_tags(&p), vec!["rust", "notes"]);
+        let p = set_of("---\ntags: [Rust, '#notes', '']\n---\n");
+        assert_eq!(p.tags(), vec!["rust", "notes"]);
         assert!(list("---\nkey: [unclosed\n---\nbody").is_empty());
     }
 
@@ -488,7 +550,11 @@ mod tests {
     #[test]
     fn contract_empty_block_parses_to_nothing() {
         for &format in FORMATS {
-            assert_eq!(format.formatter().parse("").unwrap(), vec![], "{format:?}");
+            assert_eq!(
+                values(format.formatter().parse("").unwrap()),
+                vec![],
+                "{format:?}"
+            );
         }
     }
 
@@ -502,7 +568,7 @@ mod tests {
                 assert!(block.ends_with('\n'), "{format:?}: {block:?}");
             }
             assert_eq!(
-                f.parse(&block).unwrap(),
+                values(f.parse(&block).unwrap()),
                 sample_values(),
                 "{format:?}:\n{block}"
             );
@@ -522,9 +588,7 @@ mod tests {
             block = f
                 .set(&block, "status", &PropertyValue::Text("new".into()))
                 .unwrap();
-            let keys: Vec<String> = f
-                .parse(&block)
-                .unwrap()
+            let keys: Vec<String> = values(f.parse(&block).unwrap())
                 .into_iter()
                 .map(|(k, _)| k)
                 .collect();
@@ -554,7 +618,7 @@ mod tests {
                 .set(block, "status", &PropertyValue::Text("c".into()))
                 .unwrap();
             assert_eq!(
-                format.formatter().parse(&out).unwrap(),
+                values(format.formatter().parse(&out).unwrap()),
                 vec![("status".to_string(), PropertyValue::Text("c".into()))],
                 "{format:?}:\n{out}"
             );
@@ -589,7 +653,7 @@ mod tests {
             assert!(!out.contains("about a"), "{format:?}:\n{out}");
             assert!(out.contains("# about b"), "{format:?}:\n{out}");
             assert_eq!(
-                f.parse(&out).unwrap(),
+                values(f.parse(&out).unwrap()),
                 vec![("b".to_string(), PropertyValue::Number(2.0))]
             );
             assert_eq!(f.remove(&out, "a").unwrap(), None, "{format:?}");
@@ -652,13 +716,42 @@ mod tests {
     }
 
     #[test]
+    fn contract_valueless_key_is_an_entry_without_a_value() {
+        for &format in FORMATS {
+            let block = fixture(format, "blank = nan\nok = 1\n", "blank:\nok: 1\n");
+            assert_eq!(
+                format.formatter().parse(block).unwrap(),
+                vec![
+                    ("blank".to_string(), None),
+                    ("ok".to_string(), Some(PropertyValue::Number(1.0))),
+                ],
+                "{format:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn property_set_separates_keys_from_values() {
+        let set = set_of("---\nStatus:\nstatus: x\ntags: [a]\ndue: 2024-01-01\n---\n");
+        assert_eq!(set.keys().collect::<Vec<_>>(), ["status", "tags", "due"]);
+        assert_eq!(
+            set.values().map(|(k, _)| k).collect::<Vec<_>>(),
+            ["tags", "due"],
+            "the first of the case-duplicates wins, and it has no value"
+        );
+        assert_eq!(set.tags(), vec!["a"]);
+        assert!(set_of("---\nkey: [unclosed\n---\n").keys().next().is_none());
+    }
+
+    #[test]
     fn contract_nested_table_is_skipped_on_read_and_refused_on_write() {
         for &format in FORMATS {
             let f = format.formatter();
             let block = fixture(format, "ok = 1\n[meta]\nx = 1\n", "ok: 1\nmeta:\n  x: 1\n");
             assert_eq!(
                 f.parse(block).unwrap(),
-                vec![("ok".to_string(), PropertyValue::Number(1.0))]
+                vec![("ok".to_string(), Some(PropertyValue::Number(1.0)))],
+                "a nested table is no entry at all ({format:?})"
             );
             assert!(
                 f.set(block, "meta", &PropertyValue::Bool(true)).is_err(),

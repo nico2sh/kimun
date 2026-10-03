@@ -9,7 +9,7 @@ use yaml_rust2::{yaml::Hash, Yaml, YamlLoader};
 
 use super::{
     finite, format_datetime, format_number, nested_key_error, parse_datetime, FrontmatterError,
-    PropertyFormatter, PropertyValue,
+    PropertyEntry, PropertyFormatter, PropertyValue,
 };
 use crate::dates::{format_iso_date, parse_iso_date};
 
@@ -17,13 +17,15 @@ use crate::dates::{format_iso_date, parse_iso_date};
 pub(super) struct YamlFormatter;
 
 impl PropertyFormatter for YamlFormatter {
-    fn parse(&self, block: &str) -> Result<Vec<(String, PropertyValue)>, FrontmatterError> {
+    fn parse(&self, block: &str) -> Result<Vec<PropertyEntry>, FrontmatterError> {
         let Some(root) = root(block)? else {
             return Ok(Vec::new());
         };
+        // A nested mapping is not a property; a null (`key:`) is one, unvalued.
         Ok(root
             .iter()
-            .filter_map(|(k, v)| Some((scalar_text(k)?.to_lowercase(), read_value(v)?)))
+            .filter(|(_, v)| !matches!(v, Yaml::Hash(_)))
+            .filter_map(|(k, v)| Some((scalar_text(k)?.to_lowercase(), read_value(v))))
             .collect())
     }
 
@@ -326,7 +328,12 @@ mod tests {
     use super::*;
 
     fn parse(block: &str) -> Vec<(String, PropertyValue)> {
-        YamlFormatter.parse(block).unwrap()
+        YamlFormatter
+            .parse(block)
+            .unwrap()
+            .into_iter()
+            .filter_map(|(k, v)| Some((k, v?)))
+            .collect()
     }
 
     #[test]
