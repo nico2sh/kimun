@@ -1477,10 +1477,15 @@ fn add_properties_query(
 /// lexicographically, which orders ISO dates correctly. Ordering operators
 /// never match lists or bools; a type mismatch is simply no match. `!=` means
 /// "has the key, and no value equal to this" (so on a list: does not contain).
+/// `Exists` (`%key`) is "has the key", whatever its value — an empty list
+/// included, since it is indexed as one value-less row.
 fn property_subquery(f: &PropertyFilter, var_num: &mut usize, params: &mut Vec<String>) -> String {
     let k = *var_num;
     params.push(f.key.clone());
     *var_num += 1;
+    if f.op == PropertyOp::Exists {
+        return format!("SELECT path FROM properties WHERE key = ?{k}");
+    }
     let v = *var_num;
     // Date-times are stored as lowercased canonical RFC3339 (UTC), so a query
     // value that reads as one is compared in that form.
@@ -1529,21 +1534,24 @@ async fn property_sort_keys(
     pool: &SqlitePool,
     key: &str,
 ) -> Result<HashMap<String, PropertySortKey>, DBError> {
-    let rows: Vec<(String, String, String, Option<f64>)> = sqlx::query_as(
+    let rows: Vec<(String, String, Option<String>, Option<f64>)> = sqlx::query_as(
         "SELECT path, value_type, value_text, value_num FROM properties \
          WHERE key = ? AND list_index = 0",
     )
     .bind(key)
     .fetch_all(pool)
     .await?;
+    // An empty list's value-less row has nothing to sort by: it stays out of
+    // the map, so the note sorts with the notes missing the property.
     Ok(rows
         .into_iter()
-        .map(|(path, ty, text, num)| {
-            let k = match (ty.as_str(), num) {
-                ("number", Some(n)) => PropertySortKey::Number(n),
-                _ => PropertySortKey::Text(text),
+        .filter_map(|(path, ty, text, num)| {
+            let k = match (ty.as_str(), num, text) {
+                ("number", Some(n), _) => PropertySortKey::Number(n),
+                (_, _, Some(text)) => PropertySortKey::Text(text),
+                (_, _, None) => return None,
             };
-            (path, k)
+            Some((path, k))
         })
         .collect())
 }
@@ -1762,14 +1770,16 @@ struct PropertyRow {
     key: String,
     list_index: i64,
     value_type: &'static str,
-    /// Lowercased canonical text — matching is case-insensitive.
-    value_text: String,
+    /// Lowercased canonical text — matching is case-insensitive. `None` only
+    /// for the single row of an empty list.
+    value_text: Option<String>,
     value_num: Option<f64>,
 }
 
 impl PropertyRow {
     /// The rows one property occupies: one for a scalar, one per item for a
-    /// list (an empty list occupies none).
+    /// list, and one value-less row for an empty list (so `%key` still sees
+    /// the property while no comparison can match it).
     fn rows(path_idx: usize, key: String, value: PropertyValue) -> Vec<Self> {
         let scalar = |value_type, text: String, num| {
             vec![Self {
@@ -1777,7 +1787,7 @@ impl PropertyRow {
                 key: key.clone(),
                 list_index: 0,
                 value_type,
-                value_text: text.to_lowercase(),
+                value_text: Some(text.to_lowercase()),
                 value_num: num,
             }]
         };
@@ -1787,6 +1797,14 @@ impl PropertyRow {
             PropertyValue::Bool(b) => scalar("bool", b.to_string(), None),
             PropertyValue::Date(d) => scalar("date", crate::dates::format_iso_date(d), None),
             PropertyValue::DateTime(dt) => scalar("datetime", format_datetime(&dt), None),
+            PropertyValue::List(items) if items.is_empty() => vec![Self {
+                path_idx,
+                key: key.clone(),
+                list_index: 0,
+                value_type: "list",
+                value_text: None,
+                value_num: None,
+            }],
             PropertyValue::List(items) => items
                 .into_iter()
                 .enumerate()
@@ -1795,7 +1813,7 @@ impl PropertyRow {
                     key: key.clone(),
                     list_index: i as i64,
                     value_type: "list",
-                    value_text: item.to_lowercase(),
+                    value_text: Some(item.to_lowercase()),
                     value_num: None,
                 })
                 .collect(),

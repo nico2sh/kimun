@@ -248,6 +248,8 @@ pub enum OrderField {
 /// Comparison operator of a `prop:` filter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PropertyOp {
+    /// No operator (`%key`) — the note has the property, whatever its value.
+    Exists,
     /// `=` — equal; on a list, "contains this item".
     Eq,
     /// `!=` — has the property but no value equal to this one.
@@ -263,9 +265,11 @@ pub enum PropertyOp {
 }
 
 impl PropertyOp {
-    /// The SQL comparison operator.
+    /// The SQL comparison operator. [`PropertyOp::Exists`] compares nothing,
+    /// so it is the postfix `IS NOT NULL` test.
     pub fn sql(self) -> &'static str {
         match self {
+            PropertyOp::Exists => "IS NOT NULL",
             PropertyOp::Eq => "=",
             PropertyOp::Ne => "!=",
             PropertyOp::Lt => "<",
@@ -284,15 +288,24 @@ pub struct PropertyFilter {
     pub key: String,
     /// The comparison.
     pub op: PropertyOp,
-    /// The value compared against, without surrounding quotes.
+    /// The value compared against, without surrounding quotes; empty for
+    /// [`PropertyOp::Exists`].
     pub value: String,
 }
 
 impl PropertyFilter {
-    /// Parses `key<op>value`. The key runs up to the first `= ! < >`; `None`
-    /// when the key or value is empty or the operator is malformed.
+    /// Parses `key<op>value`, or a bare `key` as a has-property filter. The
+    /// key runs up to the first `= ! < >`; `None` when the key is empty, or an
+    /// operator is present but malformed or has no value.
     pub fn parse(term: &str) -> Option<Self> {
-        let at = term.find(['=', '!', '<', '>'])?;
+        let Some(at) = term.find(['=', '!', '<', '>']) else {
+            let key = term.trim().to_lowercase();
+            return (!key.is_empty()).then_some(Self {
+                key,
+                op: PropertyOp::Exists,
+                value: String::new(),
+            });
+        };
         let key = term[..at].trim().to_lowercase();
         let rest = &term[at..];
         let (op, len) = [
@@ -1105,7 +1118,11 @@ mod tests {
             PropertyFilter::parse("k=\"v\""),
             Some(pf("k", PropertyOp::Eq, "v"))
         );
-        assert_eq!(PropertyFilter::parse("k"), None);
+        assert_eq!(
+            PropertyFilter::parse(" K "),
+            Some(pf("k", PropertyOp::Exists, ""))
+        );
+        assert_eq!(PropertyFilter::parse("  "), None);
         assert_eq!(PropertyFilter::parse("=v"), None);
         assert_eq!(PropertyFilter::parse("k="), None);
         assert_eq!(PropertyFilter::parse("k!v"), None);
@@ -1173,9 +1190,26 @@ mod tests {
 
     #[test]
     fn malformed_property_terms_are_dropped() {
-        let st = SearchTerms::from_query_string("prop:nokey %=x");
+        let st = SearchTerms::from_query_string("%=x %k!v prop:k=");
         assert!(st.properties.is_empty());
         assert!(st.terms.is_empty());
+    }
+
+    #[test]
+    fn bare_property_key_is_a_has_property_filter() {
+        let st = SearchTerms::from_query_string("%Status prop:'due date' -%archived meeting");
+        assert_eq!(
+            st.properties,
+            vec![
+                pf("status", PropertyOp::Exists, ""),
+                pf("due date", PropertyOp::Exists, ""),
+            ]
+        );
+        assert_eq!(
+            st.excluded_properties,
+            vec![pf("archived", PropertyOp::Exists, "")]
+        );
+        assert_eq!(st.terms, vec!["meeting"]);
     }
 
     #[test]

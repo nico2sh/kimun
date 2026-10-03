@@ -164,12 +164,14 @@ prop:status=done      → status equals "done" (case-insensitive)
 %due<2024-04-01       → dates compare chronologically
 %tags=work            → a list property contains "work"
 %tags!=work           → has tags, but not "work"
+%due                  → has a due property, whatever its value
+-%due                 → has no due property
 -%status=done         → excludes notes whose status is "done" (notes with no status are kept)
 %status="in progress" → quote a value that has spaces
 prop:"due date<2025-01-01" → quote the whole term when the key has spaces
 ```
 
-A `prop:` / `%` term always needs an operator and a value: `%status` on its own is not supported and is ignored.
+A key on its own (`%due`, `prop:"due date"`) finds notes that have the property at all — an empty list (`tags = []`) counts. A key followed by an operator but no value (`%due=`) is ignored.
 
 Operators: `=` `!=` `<` `<=` `>` `>=`. A comparison that doesn't fit the property's type (for example `%due>5` on a date, or `<` on a list) matches nothing rather than erroring.
 
