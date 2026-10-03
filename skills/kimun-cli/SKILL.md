@@ -106,12 +106,13 @@ kimun note prop set "projects/garden" priority high --type text
 kimun note prop remove "projects/garden" status
 ```
 
-`set` types a value like the key's values in other notes; a value that doesn't fit
-(e.g. `high` where `priority` is a number elsewhere) is refused with a user error —
-retry with `--type text|number|bool|date|datetime|list`, which changes only that note.
-A key no other note has is typed by its look (`5` → number, `true` → bool,
-`2026-05-01` → date, else text; `02134` stays text). Query properties with
-`kimun search "%status=active"` (see the search syntax).
+`tags` is always a list (`set n tags` with no value clears it). Any other key's value
+must be exactly a value of the type the key has in other notes; one that doesn't fit
+(e.g. `high`, or `02134`, where `priority` is a number elsewhere) is refused with a user
+error — retry with `--type text|number|bool|date|datetime|list`, which changes only that
+note. A key no other note has is typed by its look (`5` → number, `true` → bool,
+`2026-05-01` → date, `2026-05-01T14:30` → date-time kept local, else text; `02134`
+stays text). Query properties with `kimun search "%status=active"` (see the search syntax).
 
 ### Automatic backups
 Every CLI/MCP edit that overwrites or deletes a note's content first copies the

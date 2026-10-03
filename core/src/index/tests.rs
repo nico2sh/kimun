@@ -2280,3 +2280,40 @@ async fn sort_by_property() {
         ["/a.md".to_string(), "/b.md".to_string()]
     );
 }
+
+#[tokio::test]
+async fn dominant_property_kind_counts_every_note_with_the_key() {
+    let (_tmp, db) = open_temp().await;
+    db.apply(added(vec![
+        note("/a.md", "+++\ntags = []\nn = 1\nmix = 1\n+++\n"),
+        note("/b.md", "+++\ntags = []\nn = 2\nmix = \"x\"\n+++\n"),
+        note("/c.md", "---\nn:\n---\n"),
+    ]))
+    .await
+    .unwrap();
+    let kind = |key: &'static str, except: &'static str| {
+        let db = &db;
+        async move {
+            db.dominant_property_kind(key, &VaultPath::note_path_from(except))
+                .await
+                .unwrap()
+        }
+    };
+    assert_eq!(
+        kind("tags", "/z.md").await,
+        Some(PropertyKind::List),
+        "empty lists count"
+    );
+    assert_eq!(
+        kind("n", "/z.md").await,
+        Some(PropertyKind::Number),
+        "unvalued keys don't"
+    );
+    assert_eq!(kind("mix", "/z.md").await, None, "a tie has no type");
+    assert_eq!(
+        kind("mix", "/b.md").await,
+        Some(PropertyKind::Number),
+        "the written note is excluded"
+    );
+    assert_eq!(kind("missing", "/z.md").await, None);
+}

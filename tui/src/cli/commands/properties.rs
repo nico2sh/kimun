@@ -7,7 +7,7 @@
 use clap::{Subcommand, ValueEnum};
 use color_eyre::eyre::{Result, eyre};
 use kimun_core::NoteVault;
-use kimun_core::note::{FrontmatterFormat, PropertyKind, PropertyValue};
+use kimun_core::note::{FrontmatterFormat, PropertyInput, PropertyKind, PropertyValue};
 
 use crate::cli::helpers::resolve_note_path;
 use crate::cli::json_output::JsonProperties;
@@ -41,15 +41,17 @@ pub enum PropSubcommand {
         format: PropFormat,
     },
     /// Set a property. One value is typed by the type the key has elsewhere in
-    /// the vault, or by its look for a new key; several values make a list.
-    /// A value that doesn't fit the vault's type is refused unless --type is given.
+    /// the vault, or by its look for a new key; several values make a list;
+    /// `tags` is always a list. A value that doesn't fit the vault's type is
+    /// refused unless --type is given.
     Set {
         /// Note path, relative to quick_note_path or absolute from vault root
         path: String,
         /// Property key (stored lowercase)
         key: String,
-        /// The value, or several for a list
-        #[arg(required = true, num_args = 1.., allow_negative_numbers = true)]
+        /// The value, or several for a list (none: an empty list, for `tags`
+        /// or with `--type list`)
+        #[arg(num_args = 0.., allow_negative_numbers = true)]
         values: Vec<String>,
         /// Force a type: text, number, bool, date, datetime or list. Changes only this note.
         #[arg(long = "type", value_parser = parse_kind)]
@@ -104,8 +106,9 @@ pub async fn run(
             } else {
                 FrontmatterFormat::Toml
             };
+            let input = PropertyInput::new(values).forced(kind);
             let value = vault
-                .set_property_from_input(&path, &key, &values, kind, new_block_format)
+                .set_property_from_input(&path, &key, &input, new_block_format)
                 .await?;
             println!("Set {key} = {value} ({}) in {path}", value.kind());
         }
@@ -205,6 +208,10 @@ mod tests {
                 vec!["a".to_string(), "b".to_string()],
                 Some(PropertyKind::List)
             )
+        );
+        assert_eq!(
+            parse_set(&["--type", "list"]),
+            (vec![], Some(PropertyKind::List))
         );
     }
 

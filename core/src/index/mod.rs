@@ -12,9 +12,10 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 pub(crate) mod file;
 use sqlx::{Row, Sqlite, Transaction};
 
-use crate::note::properties::{format_datetime, format_number, parse_datetime, PropertySet};
+use crate::note::properties::{format_datetime, format_number, PropertySet};
 use crate::note::{
-    ContentChunk, LinkType, NoteContentData, NoteDetails, PropertyKind, PropertyValue,
+    ContentChunk, LinkType, NoteContentData, NoteDetails, PropertyDateTime, PropertyKind,
+    PropertyValue,
 };
 
 /// A note change reported by the `NoteIndex` the moment it is recorded, for
@@ -124,7 +125,12 @@ use super::{
 // 0.13: Added `property_keys` (which keys each note has, valued or not, for
 //       the `%key` has-property filter). Bump forces a clean reindex so it is
 //       filled — and drops 0.12 builds' value-less empty-list rows.
-const VERSION: &str = "0.13";
+// 0.14: `property_keys.value_type` (each key's kind, `list` for an empty
+//       list) so a key's vault-wide type counts every note that has it; and a
+//       heading directly above a fenced code block is no longer dropped from
+//       its chunk's breadcrumb. Bump forces a clean reindex so both reach
+//       existing vaults.
+const VERSION: &str = "0.14";
 
 /// Tables whose rows belong to one note through a `path` column. Every save,
 /// rename and delete keeps all of them in step with the note, so a new
@@ -707,9 +713,12 @@ impl NoteIndex {
         key: &str,
         except: &VaultPath,
     ) -> Result<Option<PropertyKind>, DBError> {
+        // One `property_keys` row per note and key: a count of rows is a count
+        // of notes, empty lists included.
         let rows: Vec<(String, i64)> = sqlx::query_as(
-            "SELECT value_type, COUNT(DISTINCT path) AS notes FROM properties \
-             WHERE key = ? AND path <> ? GROUP BY value_type ORDER BY notes DESC LIMIT 2",
+            "SELECT value_type, COUNT(*) AS notes FROM property_keys \
+             WHERE key = ? AND path <> ? AND value_type IS NOT NULL \
+             GROUP BY value_type ORDER BY notes DESC LIMIT 2",
         )
         .bind(key)
         .bind(except.canonical().to_string())
@@ -998,11 +1007,14 @@ async fn create_tables(pool: &SqlitePool) -> Result<(), DBError> {
         .await?;
 
     // Every frontmatter key a note has, whether or not its value is usable
-    // (YAML `key:`, an empty list, a non-finite number): backs `%key`.
+    // (YAML `key:`, an empty list, a non-finite number): backs `%key`, and
+    // through `value_type` (NULL when there is no value; `list` for an empty
+    // list) the vault-wide type of a key.
     sqlx::query(
         "CREATE TABLE property_keys (
             path TEXT NOT NULL,
             key TEXT NOT NULL,
+            value_type TEXT,
             PRIMARY KEY (path, key)
         )",
     )
@@ -1547,9 +1559,9 @@ fn property_comparison(
     let v = *var_num;
     // Date-times are stored as lowercased canonical RFC3339 (UTC), so a query
     // value that reads as one is compared in that form.
-    params.push(parse_datetime(value).map_or_else(
+    params.push(PropertyDateTime::parse(value).map_or_else(
         || value.to_string(),
-        |dt| format_datetime(&dt).to_lowercase(),
+        |dt| format_datetime(&dt.to_utc()).to_lowercase(),
     ));
     *var_num += 1;
 
@@ -1849,12 +1861,14 @@ impl PropertyRow {
         };
         match value {
             PropertyValue::Number(n) => vec![row(0, format_number(n), Some(n))],
+            // Compared as the instant it names, a local time read as UTC.
+            PropertyValue::DateTime(dt) => vec![row(0, format_datetime(&dt.to_utc()), None)],
             PropertyValue::List(items) => items
                 .into_iter()
                 .enumerate()
                 .map(|(i, item)| row(i as i64, item, None))
                 .collect(),
-            // Text, bool, date and date-time: their canonical text.
+            // Text, bool and date: their canonical text.
             scalar => vec![row(0, scalar.to_string(), None)],
         }
     }
@@ -1864,6 +1878,8 @@ impl PropertyRow {
 struct PropertyKeyRow {
     path_idx: usize,
     key: String,
+    /// The value's kind name; `None` when the key has no usable value.
+    value_type: Option<&'static str>,
 }
 
 /// Bulk-upserts a slice of notes plus their chunks and links inside the given
@@ -1978,10 +1994,11 @@ impl NoteBatch {
                 name,
             });
         }
-        for key in properties.keys() {
+        for (key, value) in properties.entries() {
             self.property_keys.push(PropertyKeyRow {
                 path_idx: idx,
                 key: key.to_string(),
+                value_type: value.map(|v| v.kind().as_str()),
             });
         }
         for (key, value) in properties.into_values() {
@@ -2170,16 +2187,18 @@ impl BulkInsertRow for PropertyRow {
 }
 
 impl BulkInsertRow for PropertyKeyRow {
-    const HEADER: &'static str = "INSERT INTO property_keys (path, key) VALUES ";
+    const HEADER: &'static str = "INSERT INTO property_keys (path, key, value_type) VALUES ";
     const FOOTER: &'static str = " ON CONFLICT(path, key) DO NOTHING";
-    const COLS: usize = 2;
+    const COLS: usize = 3;
 
     fn bind_to<'q>(
         &'q self,
         q: sqlx::query::Query<'q, Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
         paths: &'q [String],
     ) -> sqlx::query::Query<'q, Sqlite, sqlx::sqlite::SqliteArguments<'q>> {
-        q.bind(&paths[self.path_idx]).bind(&self.key)
+        q.bind(&paths[self.path_idx])
+            .bind(&self.key)
+            .bind(self.value_type)
     }
 }
 

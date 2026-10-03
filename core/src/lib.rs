@@ -86,7 +86,7 @@ use log::{debug, warn};
 use nfs::{NoteEntryData, VaultPath};
 use note::properties;
 use note::{
-    ContentChunk, FrontmatterFormat, NoteContentData, NoteDetails, PropertyKind, PropertyValue,
+    ContentChunk, FrontmatterFormat, NoteContentData, NoteDetails, PropertyInput, PropertyValue,
 };
 use note_locks::NoteLocks;
 use note_rename::{rename_dest_err, NoteRename};
@@ -1326,32 +1326,31 @@ impl NoteVault {
         Ok(())
     }
 
-    /// Sets a property from user-typed text, as the CLI and MCP server take it.
-    /// An explicit `kind` decides the type. Without one, the input must fit
-    /// the type most other notes give `key` (a single value for a list key
-    /// becomes a one-item list); a key no other note has a value for is typed
-    /// by [`PropertyValue::infer`], and several values make a list. A mismatch
-    /// is refused with [`VaultError::InvalidProperty`] instead of drifting the
-    /// vault's types. Returns the value written; only this note changes.
+    /// Sets a property from user-typed input, as the CLI and MCP server take
+    /// it; see [`PropertyInput::resolve`] for how its type is decided. Without
+    /// a forced type the input must fit the type most other notes give `key`,
+    /// and a mismatch is refused with [`VaultError::InvalidProperty`] instead
+    /// of drifting the vault's types. Returns the value written; only this
+    /// note changes.
     pub async fn set_property_from_input(
         &self,
         path: &VaultPath,
         key: &str,
-        values: &[String],
-        kind: Option<PropertyKind>,
+        input: &PropertyInput,
         new_block_format: FrontmatterFormat,
     ) -> Result<PropertyValue, VaultError> {
         let norm = Self::property_key(key)?;
-        let vault_kind = match kind {
+        let vault_kind = match input.forced_kind() {
             Some(_) => None,
             None => self.index.dominant_property_kind(&norm, path).await?,
         };
-        let value = PropertyValue::from_input(values, kind, vault_kind).map_err(|message| {
-            VaultError::InvalidProperty {
-                key: key.to_string(),
-                message,
-            }
-        })?;
+        let value =
+            input
+                .resolve(&norm, vault_kind)
+                .map_err(|message| VaultError::InvalidProperty {
+                    key: key.to_string(),
+                    message,
+                })?;
         self.set_property(path, key, value.clone(), new_block_format)
             .await?;
         Ok(value)
@@ -4433,7 +4432,7 @@ mod saved_search_tests {
 mod property_api_tests {
     use super::*;
     use crate::nfs::VaultPath;
-    use crate::note::{FrontmatterFormat, PropertyValue};
+    use crate::note::{FrontmatterFormat, PropertyKind, PropertyValue};
 
     async fn new_vault() -> (tempfile::TempDir, NoteVault) {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -4451,25 +4450,19 @@ mod property_api_tests {
         PropertyValue::Text(s.into())
     }
 
-    fn input(values: &[&str]) -> Vec<String> {
-        values.iter().map(|v| v.to_string()).collect()
+    fn input(values: &[&str]) -> PropertyInput {
+        PropertyInput::new(values.iter().map(|v| v.to_string()).collect())
     }
 
     #[tokio::test]
     async fn input_is_inferred_for_a_new_key() {
         let (_tmp, vault) = new_vault().await;
         vault.create_note(&p("/n.md"), "body").await.unwrap();
-        let set = |key: &'static str, values: Vec<String>| {
+        let set = |key: &'static str, values: PropertyInput| {
             let vault = &vault;
             async move {
                 vault
-                    .set_property_from_input(
-                        &p("/n.md"),
-                        key,
-                        &values,
-                        None,
-                        FrontmatterFormat::Toml,
-                    )
+                    .set_property_from_input(&p("/n.md"), key, &values, FrontmatterFormat::Toml)
                     .await
                     .unwrap()
             }
@@ -4498,7 +4491,7 @@ mod property_api_tests {
             vault.create_note(&p(path), body).await.unwrap();
         }
         let set = |values: &[&str], kind: Option<PropertyKind>| {
-            let values = input(values);
+            let values = input(values).forced(kind);
             let vault = &vault;
             async move {
                 vault
@@ -4506,7 +4499,6 @@ mod property_api_tests {
                         &p("/c.md"),
                         "priority",
                         &values,
-                        kind,
                         FrontmatterFormat::Toml,
                     )
                     .await
@@ -4540,7 +4532,6 @@ mod property_api_tests {
                 &p("/c.md"),
                 "tags",
                 &input(&["garden"]),
-                None,
                 FrontmatterFormat::Toml,
             )
             .await
@@ -4560,7 +4551,6 @@ mod property_api_tests {
                 &p("/n.md"),
                 "status",
                 &input(&["open"]),
-                None,
                 FrontmatterFormat::Toml,
             )
             .await

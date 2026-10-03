@@ -394,9 +394,11 @@ kimun note prop remove "projects/garden" status
 
 #### How `set` picks a type
 
-- **A key other notes already use:** the value must fit the type most of them give it. For example, if `priority` is a number elsewhere, `2` is stored as a number and `high` is refused. A single value for a list key becomes a one-item list.
+- **`tags`** is always a list (`set n tags` with no value clears it).
+- **A key other notes already use:** the value must be exactly a value of the type most of them give it. If `priority` is a number elsewhere, `2` is stored as a number while `high` — and `02134`, which a number would rewrite — is refused. A single value for a list key becomes a one-item list.
 - **A new key:** typed by its look. `5` and `4.5` → number, `true`/`false` → true/false, `2026-05-01` → date, `2026-05-01T14:30` → date & time, anything else → text. Text that only looks numeric (`02134`, `1.10`) stays text, so it is never rewritten.
-- **`--type text|number|bool|date|datetime|list`** forces the type. Use it to store a value that doesn't fit the key's usual type; only this note changes.
+- **Date & time values keep their form:** `2026-05-01T14:30` stays a local time (written without an offset, as Obsidian does), `2026-05-01T14:30:00+02:00` keeps its offset. Searches and sorting compare them as instants, a local time read as UTC.
+- **`--type text|number|bool|date|datetime|list`** forces the type. Use it to store a value that doesn't fit the key's usual type; only this note changes. `--type list` with no value sets an empty list.
 
 #### Features
 

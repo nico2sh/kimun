@@ -1,11 +1,4 @@
 use crate::cli::json_output::JsonHeader;
-use regex::Regex;
-use std::sync::OnceLock;
-
-fn header_regex() -> &'static Regex {
-    static REGEX: OnceLock<Regex> = OnceLock::new();
-    REGEX.get_or_init(|| Regex::new(r"^(#{1,6})\s+(.+)$").unwrap())
-}
 
 /// The note's labels as the index records them — inline `#hashtags` plus
 /// the frontmatter `tags` property, TOML or YAML.
@@ -20,20 +13,12 @@ pub fn extract_links(content: &str) -> Vec<String> {
         .collect()
 }
 
+/// The note's headings — frontmatter and `#` lines inside code skipped.
 pub fn extract_headers(content: &str) -> Vec<JsonHeader> {
-    let mut headers: Vec<JsonHeader> = Vec::new();
-
-    for line in content.lines() {
-        if let Some(capture) = header_regex().captures(line)
-            && let (Some(level_match), Some(text_match)) = (capture.get(1), capture.get(2))
-        {
-            let level = level_match.as_str().len() as u32;
-            let text = text_match.as_str().trim().to_string();
-            headers.push(JsonHeader { text, level });
-        }
-    }
-
-    headers
+    kimun_core::note::note_headings(content)
+        .into_iter()
+        .map(JsonHeader::from)
+        .collect()
 }
 
 #[cfg(test)]
