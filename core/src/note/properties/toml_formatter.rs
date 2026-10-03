@@ -20,7 +20,7 @@ impl PropertyFormatter for TomlFormatter {
         // A `[table]` / `[[array]]` item is not a value, so not a property.
         Ok(doc
             .iter()
-            .filter_map(|(k, item)| Some((k.to_lowercase(), read_value(item.as_value()?))))
+            .filter_map(|(k, item)| Some((k.to_string(), read_value(item.as_value()?))))
             .collect())
     }
 
@@ -36,7 +36,17 @@ impl PropertyFormatter for TomlFormatter {
         for k in matches.iter().skip(1) {
             remove_entry(&mut doc, k);
         }
-        doc[target.as_str()] = Item::Value(write_value(value)?);
+        let mut new = write_value(value)?;
+        // A `# comment` trailing the old value stays on its line.
+        if let Some(suffix) = doc
+            .get(target.as_str())
+            .and_then(Item::as_value)
+            .and_then(|old| old.decor().suffix())
+            .filter(|s| s.as_str().is_some_and(|s| s.contains('#')))
+        {
+            new.decor_mut().set_suffix(suffix.clone());
+        }
+        doc[target.as_str()] = Item::Value(new);
         Ok(doc.to_string())
     }
 
@@ -272,5 +282,30 @@ mod tests {
             out.find("b = true").unwrap() < out.find("[meta]").unwrap(),
             "{out}"
         );
+    }
+
+    #[test]
+    fn keeps_the_inline_comment_of_a_replaced_value() {
+        let out = TomlFormatter
+            .set(
+                "a = \"x\" # why\nb = 1 # also\n",
+                "A",
+                &PropertyValue::Text("y".into()),
+            )
+            .unwrap();
+        assert_eq!(out, "a = \"y\" # why\nb = 1 # also\n");
+        let out = TomlFormatter
+            .set(
+                "tags = [\"a\"] # t\n",
+                "tags",
+                &PropertyValue::List(vec!["b".into(), "c".into()]),
+            )
+            .unwrap();
+        assert_eq!(out, "tags = [\"b\", \"c\"] # t\n");
+        // No comment, no stray whitespace.
+        let out = TomlFormatter
+            .set("a = 1\n", "a", &PropertyValue::Bool(true))
+            .unwrap();
+        assert_eq!(out, "a = true\n");
     }
 }

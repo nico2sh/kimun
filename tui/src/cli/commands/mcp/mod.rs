@@ -131,7 +131,7 @@ pub struct GetPropertiesParams {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SetPropertyParams {
     pub path: String,
-    /// Property key (stored lowercase)
+    /// Property key (case-insensitive; a new key is written as spelled)
     pub key: String,
     /// The value: a string (typed like the key's values in other notes, or by its look for a new key), a number, true/false, or an array of strings for a list
     pub value: serde_json::Value,

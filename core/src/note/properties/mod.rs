@@ -72,13 +72,13 @@ impl FrontmatterFormat {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FrontmatterError(pub(crate) String);
 
-/// One top-level frontmatter entry: its key (lowercased) and its value, or
+/// One top-level frontmatter entry: its key (as written) and its value, or
 /// `None` when the note has the key without a usable value (YAML `key:`, a
 /// non-finite number, a TOML local time).
 pub(crate) type PropertyEntry = (String, Option<PropertyValue>);
 
 /// What a note's frontmatter declares: its property entries in file order,
-/// the first of any case-duplicate keys winning. The one shape the index and
+/// keys spelled as written, the first of any case-duplicate keys winning. The one shape the index and
 /// the API read properties through — keys (for "has property"), typed values
 /// and the `tags` labels all come from here.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -92,7 +92,7 @@ impl PropertySet {
         Self {
             entries: entries
                 .into_iter()
-                .filter(|(k, _)| seen.insert(k.clone()))
+                .filter(|(k, _)| seen.insert(match_key(k)))
                 .collect(),
         }
     }
@@ -123,7 +123,7 @@ impl PropertySet {
     /// lowercased, empties removed.
     pub(crate) fn tags(&self) -> Vec<String> {
         self.values()
-            .filter(|(k, _)| TAG_KEYS.contains(k))
+            .filter(|(k, _)| is_tag_key(&match_key(k)))
             .flat_map(|(_, v)| match v {
                 PropertyValue::List(items) => items.iter().map(String::as_str).collect(),
                 PropertyValue::Text(s) => vec![s.as_str()],
@@ -142,7 +142,7 @@ impl PropertySet {
 /// `contract_*` tests in this module:
 ///
 /// - `parse` is strict: a malformed block or a non-mapping root is `Err`; an
-///   empty block is `Ok(vec![])`. Entries come back with keys lowercased, in
+///   empty block is `Ok(vec![])`. Entries come back with keys as written, in
 ///   file order. A key whose value doesn't map onto [`PropertyValue`] (null,
 ///   non-finite number, TOML local time) is still an entry, with no value — the
 ///   note visibly has that property. A nested table/mapping is not a property
@@ -150,6 +150,8 @@ impl PropertySet {
 /// - `set` / `remove` match keys case-insensitively, keep the spelling and
 ///   position of the first match, collapse case-duplicates, and leave every
 ///   other line of the block (comments, order, untouched entries) as it was.
+///   A new key is written as given (casing kept); an inline `# comment`
+///   trailing the replaced entry's first line stays with it.
 ///   The comment lines directly above an entry belong to it: removing the
 ///   entry (or collapsing it as a duplicate) removes them too. A comment
 ///   separated from the entry by a blank line does not, and stays.
@@ -285,24 +287,44 @@ impl<'t> NoteProperties<'t> {
             ),
             None => {
                 let d = self.format.delimiter();
-                format!("{d}\n{block}{d}\n{}", self.text)
+                // A byte-order mark must stay the first character of the file.
+                let (bom, body) = match self.text.strip_prefix('\u{feff}') {
+                    Some(rest) => ("\u{feff}", rest),
+                    None => ("", self.text),
+                };
+                format!("{bom}{d}\n{block}{d}\n{body}")
             }
         }
     }
 }
 
-/// A property key as stored: trimmed and lowercased. `None` when empty or
+// Key casing, one rule: keys are *matched* case-insensitively and *spelled*
+// as the user wrote them. [`match_key`] is the form every comparison, index
+// row and query uses; [`clean_key`] is the form that is written to, and read
+// back from, a note (`dueDate` stays `dueDate`).
+
+/// A property key as spelled: trimmed, casing kept. `None` when empty or
 /// containing control characters (a line break would corrupt the block).
-pub(crate) fn normalize_key(key: &str) -> Option<String> {
+pub(crate) fn clean_key(key: &str) -> Option<String> {
     let key = key.trim();
-    (!key.is_empty() && !key.chars().any(char::is_control)).then(|| key.to_lowercase())
+    (!key.is_empty() && !key.chars().any(char::is_control)).then(|| key.to_string())
+}
+
+/// The case-insensitive form of a key, for matching and indexing.
+pub(crate) fn match_key(key: &str) -> String {
+    key.to_lowercase()
+}
+
+/// A property key as matched: [`clean_key`], lowercased.
+pub(crate) fn normalize_key(key: &str) -> Option<String> {
+    clean_key(key).map(|k| match_key(&k))
 }
 
 /// The frontmatter keys whose items are unified into the label index:
 /// `tags`, and the singular `tag` older Obsidian notes use.
 const TAG_KEYS: [&str; 2] = ["tags", "tag"];
 
-/// `key` (normalized) holds a note's tags: always a list of labels.
+/// `key` (matched, see [`match_key`]) holds a note's tags: always a list of labels.
 pub(crate) fn is_tag_key(key: &str) -> bool {
     TAG_KEYS.contains(&key)
 }
@@ -400,6 +422,41 @@ mod tests {
     }
 
     #[test]
+    fn a_byte_order_mark_is_skipped_when_locating_and_kept_on_top() {
+        let y = "\u{feff}---\na: 1\n---\nbody";
+        let span = locate_frontmatter(y).unwrap();
+        assert_eq!(&y[span.inner.clone()], "a: 1\n");
+        assert_eq!(
+            NoteProperties::new(y, FrontmatterFormat::Toml)
+                .set("b", &PropertyValue::Bool(true))
+                .unwrap(),
+            "\u{feff}---\na: 1\nb: true\n---\nbody"
+        );
+        assert_eq!(
+            NoteProperties::new("\u{feff}body", FrontmatterFormat::Toml)
+                .set("b", &PropertyValue::Bool(true))
+                .unwrap(),
+            "\u{feff}+++\nb = true\n+++\nbody"
+        );
+    }
+
+    #[test]
+    fn keys_keep_their_casing_when_written_and_read() {
+        for (fmt, expect) in [
+            (FrontmatterFormat::Toml, "+++\ndueDate = 1\n+++\n"),
+            (FrontmatterFormat::Yaml, "---\ndueDate: 1\n---\n"),
+        ] {
+            let out = NoteProperties::new("", fmt)
+                .set("dueDate", &PropertyValue::Number(1.0))
+                .unwrap();
+            assert_eq!(out, expect);
+            assert_eq!(list(&out)[0].0, "dueDate");
+        }
+        assert_eq!(match_key("dueDate"), "duedate");
+        assert_eq!(clean_key(" dueDate "), Some("dueDate".into()));
+    }
+
+    #[test]
     fn set_without_block_prepends_one_in_the_requested_format() {
         let v = PropertyValue::Text("done".into());
         assert_eq!(
@@ -465,7 +522,8 @@ mod tests {
         assert!(list("no frontmatter").is_empty());
         assert_eq!(
             list("+++\nStatus = \"a\"\nstatus = \"b\"\n+++\n"),
-            vec![("status".to_string(), PropertyValue::Text("a".into()))]
+            vec![("Status".to_string(), PropertyValue::Text("a".into()))],
+            "keys read back as written; the first case variant wins"
         );
     }
 
@@ -592,7 +650,7 @@ mod tests {
                 .into_iter()
                 .map(|(k, _)| k)
                 .collect();
-            assert_eq!(keys, ["a", "status", "c"], "{format:?}:\n{block}");
+            assert_eq!(keys, ["a", "Status", "c"], "{format:?}:\n{block}");
             assert!(
                 block.contains("Status"),
                 "existing spelling kept ({format:?}):\n{block}"
@@ -619,7 +677,7 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 values(format.formatter().parse(&out).unwrap()),
-                vec![("status".to_string(), PropertyValue::Text("c".into()))],
+                vec![("Status".to_string(), PropertyValue::Text("c".into()))],
                 "{format:?}:\n{out}"
             );
         }
@@ -735,7 +793,7 @@ mod tests {
         let set = set_of("---\nStatus:\nstatus: x\ntags: [a]\ndue: 2024-01-01\n---\n");
         assert_eq!(
             set.entries().map(|(k, _)| k).collect::<Vec<_>>(),
-            ["status", "tags", "due"]
+            ["Status", "tags", "due"]
         );
         assert_eq!(
             set.values().map(|(k, _)| k).collect::<Vec<_>>(),

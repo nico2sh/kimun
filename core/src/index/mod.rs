@@ -12,7 +12,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 pub(crate) mod file;
 use sqlx::{Row, Sqlite, Transaction};
 
-use crate::note::properties::{format_datetime, format_number, PropertySet};
+use crate::note::properties::{format_datetime, format_number, match_key, PropertySet};
 use crate::note::{
     ContentChunk, LinkType, NoteContentData, NoteDetails, PropertyDateTime, PropertyKind,
     PropertyValue,
@@ -1997,12 +1997,14 @@ impl NoteBatch {
         for (key, value) in properties.entries() {
             self.property_keys.push(PropertyKeyRow {
                 path_idx: idx,
-                key: key.to_string(),
+                // The index matches keys case-insensitively: lowercase form.
+                key: match_key(key),
                 value_type: value.map(|v| v.kind().as_str()),
             });
         }
         for (key, value) in properties.into_values() {
-            self.properties.extend(PropertyRow::rows(idx, key, value));
+            self.properties
+                .extend(PropertyRow::rows(idx, match_key(&key), value));
         }
     }
 

@@ -1270,7 +1270,7 @@ impl NoteVault {
         Ok(self.index.labels_of(path).await?)
     }
 
-    /// The note's frontmatter properties in file order, keys lowercased. Read
+    /// The note's frontmatter properties in file order, keys as written. Read
     /// from the note itself; a malformed block yields none. Missing-file
     /// behaviour matches [`Self::get_note_text`].
     pub async fn get_properties(
@@ -1294,11 +1294,12 @@ impl NoteVault {
         };
         Ok(properties
             .into_iter()
-            .find_map(|(k, v)| (k == key).then_some(v)))
+            .find_map(|(k, v)| (properties::match_key(&k) == key).then_some(v)))
     }
 
     /// Sets a frontmatter property, keeping the existing block's format,
-    /// comments and key order. A note with no block gets one in
+    /// comments and key order. `key` matches an existing one case-insensitively
+    /// (that entry keeps its spelling); a new key is written as given. A note with no block gets one in
     /// `new_block_format`. Fails with [`FSError::InvalidFrontmatter`] (file
     /// untouched) when the existing block doesn't parse. Serialized per note.
     pub async fn set_property(
@@ -1308,7 +1309,7 @@ impl NoteVault {
         value: PropertyValue,
         new_block_format: FrontmatterFormat,
     ) -> Result<(), VaultError> {
-        let norm = Self::property_key(key)?;
+        let key = Self::property_key(key)?;
         if matches!(value, PropertyValue::Number(n) if !n.is_finite()) {
             return Err(VaultError::InvalidProperty {
                 key: key.to_string(),
@@ -1318,7 +1319,7 @@ impl NoteVault {
         let _guard = self.lock_note(path).await;
         let text = Self::lf(self.get_note_text(path).await?);
         let updated = properties::NoteProperties::new(&text, new_block_format)
-            .set(&norm, &value)
+            .set(&key, &value)
             .map_err(|e| Self::frontmatter_error(path, e))?;
         if updated != text {
             self.save_note_unlocked(path, updated).await?;
@@ -1339,7 +1340,8 @@ impl NoteVault {
         input: &PropertyInput,
         new_block_format: FrontmatterFormat,
     ) -> Result<PropertyValue, VaultError> {
-        let norm = Self::property_key(key)?;
+        let key = Self::property_key(key)?;
+        let norm = properties::match_key(&key);
         let vault_kind = match input.forced_kind() {
             Some(_) => None,
             None => self.index.dominant_property_kind(&norm, path).await?,
@@ -1351,7 +1353,7 @@ impl NoteVault {
                     key: key.to_string(),
                     message,
                 })?;
-        self.set_property(path, key, value.clone(), new_block_format)
+        self.set_property(path, &key, value.clone(), new_block_format)
             .await?;
         Ok(value)
     }
@@ -1360,11 +1362,11 @@ impl NoteVault {
     /// whether anything was removed. Same locking and refusal rules as
     /// [`Self::set_property`].
     pub async fn remove_property(&self, path: &VaultPath, key: &str) -> Result<bool, VaultError> {
-        let norm = Self::property_key(key)?;
+        let key = Self::property_key(key)?;
         let _guard = self.lock_note(path).await;
         let text = Self::lf(self.get_note_text(path).await?);
         match properties::NoteProperties::new(&text, FrontmatterFormat::default())
-            .remove(&norm)
+            .remove(&key)
             .map_err(|e| Self::frontmatter_error(path, e))?
         {
             Some(updated) => {
@@ -1375,8 +1377,10 @@ impl NoteVault {
         }
     }
 
+    /// The key as the user spelled it (casing kept; matching is
+    /// case-insensitive, see `properties::match_key`).
     fn property_key(key: &str) -> Result<String, VaultError> {
-        properties::normalize_key(key).ok_or_else(|| VaultError::InvalidProperty {
+        properties::clean_key(key).ok_or_else(|| VaultError::InvalidProperty {
             key: key.to_string(),
             message: "key must be non-empty and on one line".to_string(),
         })
@@ -4583,13 +4587,13 @@ mod property_api_tests {
 
         let raw = vault.get_note_text(&p("/n.md")).await.unwrap();
         assert!(
-            raw.starts_with("+++\nstatus = \"Done\"\nn = 2\n+++\n# T"),
+            raw.starts_with("+++\nStatus = \"Done\"\nn = 2\n+++\n# T"),
             "{raw}"
         );
         assert_eq!(
             vault.get_properties(&p("/n.md")).await.unwrap(),
             vec![
-                ("status".to_string(), text("Done")),
+                ("Status".to_string(), text("Done")),
                 ("n".to_string(), PropertyValue::Number(2.0))
             ]
         );
@@ -4762,6 +4766,122 @@ mod property_api_tests {
         assert_eq!(
             vault.get_note_text(&p("/n.md")).await.unwrap(),
             "---\r\na: 1\r\nb: x\r\n---\r\nbody\r\n"
+        );
+    }
+
+    /// Keys are matched case-insensitively and spelled as written: in the
+    /// file, in what reads return, and still found by any casing.
+    #[tokio::test]
+    async fn key_casing_is_kept_but_never_matters() {
+        let (_tmp, vault) = new_vault().await;
+        vault.create_note(&p("/n.md"), "body").await.unwrap();
+        vault
+            .set_property(&p("/n.md"), " dueDate ", text("x"), FrontmatterFormat::Yaml)
+            .await
+            .unwrap();
+        vault
+            .set_property(
+                &p("/n.md"),
+                "Aliases",
+                PropertyValue::List(vec!["a".into()]),
+                FrontmatterFormat::Toml,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            vault.get_note_text(&p("/n.md")).await.unwrap(),
+            "---\ndueDate: x\nAliases:\n  - a\n---\nbody"
+        );
+        // Another casing edits the same entry, keeping its spelling.
+        vault
+            .set_property(&p("/n.md"), "DUEDATE", text("y"), FrontmatterFormat::Yaml)
+            .await
+            .unwrap();
+        assert_eq!(
+            vault.get_properties(&p("/n.md")).await.unwrap(),
+            vec![
+                ("dueDate".to_string(), text("y")),
+                ("Aliases".to_string(), PropertyValue::List(vec!["a".into()]))
+            ]
+        );
+        assert_eq!(
+            vault.get_property(&p("/n.md"), "duedate").await.unwrap(),
+            Some(text("y"))
+        );
+        // The index matches by any casing.
+        for q in ["%duedate=y", "prop:DUEDATE=Y", "%dueDate", "%ALIASES=a"] {
+            assert_eq!(vault.search_notes(q).await.unwrap().len(), 1, "{q}");
+        }
+        assert_eq!(
+            vault
+                .search_notes("%duedate or:prop:DueDate")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(vault.remove_property(&p("/n.md"), "DUEdate").await.unwrap());
+        assert_eq!(
+            vault.get_note_text(&p("/n.md")).await.unwrap(),
+            "---\nAliases:\n  - a\n---\nbody"
+        );
+    }
+
+    /// A key spelled differently in two notes is still one vault-wide key.
+    #[tokio::test]
+    async fn vault_type_check_ignores_key_casing() {
+        let (_tmp, vault) = new_vault().await;
+        vault
+            .create_note(&p("/a.md"), "+++\nPriority = 1\n+++\n")
+            .await
+            .unwrap();
+        vault
+            .create_note(&p("/b.md"), "+++\npriority = 2\n+++\n")
+            .await
+            .unwrap();
+        vault.create_note(&p("/c.md"), "body").await.unwrap();
+        let err = vault
+            .set_property_from_input(
+                &p("/c.md"),
+                "PRIORITY",
+                &input(&["high"]),
+                FrontmatterFormat::Toml,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, VaultError::InvalidProperty { .. }), "{err:?}");
+    }
+
+    /// A byte-order mark (Windows editors) must not hide frontmatter, nor end
+    /// up after a block written above it.
+    #[tokio::test]
+    async fn bom_note_keeps_its_block_and_its_bom() {
+        let (tmp, vault) = new_vault().await;
+        tokio::fs::write(tmp.path().join("y.md"), "\u{feff}---\ntitle: x\n---\nbody")
+            .await
+            .unwrap();
+        tokio::fs::write(tmp.path().join("plain.md"), "\u{feff}body")
+            .await
+            .unwrap();
+        assert_eq!(
+            vault.get_properties(&p("/y.md")).await.unwrap(),
+            vec![("title".to_string(), text("x"))]
+        );
+        vault
+            .set_property(&p("/y.md"), "a", text("1"), FrontmatterFormat::Toml)
+            .await
+            .unwrap();
+        assert_eq!(
+            vault.get_note_text(&p("/y.md")).await.unwrap(),
+            "\u{feff}---\ntitle: x\na: \"1\"\n---\nbody"
+        );
+        vault
+            .set_property(&p("/plain.md"), "a", text("1"), FrontmatterFormat::Toml)
+            .await
+            .unwrap();
+        assert_eq!(
+            vault.get_note_text(&p("/plain.md")).await.unwrap(),
+            "\u{feff}+++\na = \"1\"\n+++\nbody"
         );
     }
 
