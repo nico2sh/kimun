@@ -12,7 +12,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 pub(crate) mod file;
 use sqlx::{Row, Sqlite, Transaction};
 
-use crate::note::properties::{format_datetime, format_number, match_key, PropertySet};
+use crate::note::properties::{format_datetime, format_number, search_form, PropertySet};
 use crate::note::{
     ContentChunk, LinkType, NoteContentData, NoteDetails, PropertyDateTime, PropertyKind,
     PropertyValue,
@@ -130,7 +130,10 @@ use super::{
 //       heading directly above a fenced code block is no longer dropped from
 //       its chunk's breadcrumb. Bump forces a clean reindex so both reach
 //       existing vaults.
-const VERSION: &str = "0.14";
+// 0.15: property keys and values are indexed accent-stripped as well as
+//       lowercased (`search_form`), so `e` finds `é`. Bump forces a clean
+//       reindex so existing rows are rewritten folded.
+const VERSION: &str = "0.15";
 
 /// Tables whose rows belong to one note through a `path` column. Every save,
 /// rename and delete keeps all of them in step with the note, so a new
@@ -1856,7 +1859,7 @@ impl PropertyRow {
             key: key.clone(),
             list_index,
             value_type,
-            value_text: value_text.to_lowercase(),
+            value_text: search_form(&value_text),
             value_num,
         };
         match value {
@@ -1998,13 +2001,13 @@ impl NoteBatch {
             self.property_keys.push(PropertyKeyRow {
                 path_idx: idx,
                 // The index matches keys case-insensitively: lowercase form.
-                key: match_key(key),
+                key: search_form(key),
                 value_type: value.map(|v| v.kind().as_str()),
             });
         }
         for (key, value) in properties.into_values() {
             self.properties
-                .extend(PropertyRow::rows(idx, match_key(&key), value));
+                .extend(PropertyRow::rows(idx, search_form(&key), value));
         }
     }
 

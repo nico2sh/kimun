@@ -2,7 +2,7 @@ use std::vec;
 
 use log::debug;
 
-use crate::note::properties::normalize_key;
+use crate::note::properties::{search_form, search_key};
 
 const ORDER_CHAR: &str = "^";
 const ORDER_LETTER: &str = "or";
@@ -223,7 +223,7 @@ impl OrderBy {
             .strip_prefix("prop:")
             .or_else(|| term.strip_prefix('%'))
         {
-            return normalize_key(key).map(|key| OrderBy::Property { key, asc });
+            return search_key(key).map(|key| OrderBy::Property { key, asc });
         }
         match term {
             "f" => Some(OrderBy::FileName { asc }),
@@ -311,11 +311,11 @@ impl PropertyFilter {
     pub fn parse(term: &str) -> Option<Self> {
         let Some(at) = term.find(['=', '!', '<', '>']) else {
             return Some(Self {
-                key: normalize_key(term)?,
+                key: search_key(term)?,
                 test: PropertyTest::Exists,
             });
         };
-        let key = normalize_key(&term[..at])?;
+        let key = search_key(&term[..at])?;
         let rest = &term[at..];
         let (op, len) = [
             ("!=", PropertyOp::Ne),
@@ -331,8 +331,8 @@ impl PropertyFilter {
         let value = ['"', '\'']
             .into_iter()
             .find_map(|q| raw.strip_prefix(q).and_then(|r| r.strip_suffix(q)))
-            .unwrap_or(raw)
-            .to_lowercase();
+            .unwrap_or(raw);
+        let value = search_form(value);
         (!value.is_empty()).then_some(Self {
             key,
             test: PropertyTest::Compare { op, value },

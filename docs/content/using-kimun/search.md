@@ -159,7 +159,7 @@ tags = ["work", "q1"]
 Query them with `prop:` or its short form `%`:
 
 ```
-prop:status=done      → status equals "done" (case-insensitive)
+prop:status=done      → status equals "done" (ignores case and accents: Status=DONE, état=etat)
 %priority>=2          → numeric comparison
 %due<2024-04-01       → dates compare chronologically
 %tags=work            → a list property contains "work"
