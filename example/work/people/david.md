@@ -1,3 +1,8 @@
++++
+type = "person"
+role = "Full-stack engineer"
+team = "search"
++++
 # David
 
 Full-stack engineer. Focused on search and indexing.

@@ -1,3 +1,8 @@
++++
+type = "person"
+role = "Senior backend engineer"
+team = "auth"
++++
 # Maria
 
 Senior backend engineer. Works on authentication and authorization.

@@ -1,3 +1,10 @@
+---
+type: project
+status: active
+priority: 1
+tags:
+  - software
+---
 # Kimün
 
 ![Kimün logo](../assets/logo.png)

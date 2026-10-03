@@ -19,7 +19,7 @@
 #   OpenSettings = ["F4", "ctrl&,"]     # F4 (Ctrl+, alias)
 #   NewJournal   = ["ctrl&J"]            # Ctrl+J
 #   FileOperations = ["F2"]              # F2  (open file-ops menu: delete/rename/move)
-#   Leader       = ["ctrl&G"]            # Ctrl+G  (leader gateway: Ctrl+G f f, ...)
+#   Leader       = ["ctrl&B"]            # Ctrl+B  (leader gateway: Ctrl+B f f, ...)
 #   OpenCommandPalette = ["ctrl&P"]      # Ctrl+P  (every leader command, fuzzy)
 #
 # OTHER SETTINGS
@@ -95,7 +95,7 @@ SaveCurrentQuery = ["ctrl&D"]
 OpenAsk = ["F6"]
 SwitchWorkspace = ["F5"]
 FindInBuffer = ["ctrl&F"]
-Leader = ["ctrl&G"]
+Leader = ["ctrl&B", "ctrl&G"]
 OpenCommandPalette = ["ctrl&P"]
 
 [leader]
