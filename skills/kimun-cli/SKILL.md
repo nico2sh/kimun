@@ -106,7 +106,7 @@ kimun note prop set "projects/garden" priority high --type text
 kimun note prop remove "projects/garden" status
 ```
 
-`tags` is always a list (`set n tags` with no value clears it). Any other key's value
+`tags` is always a list (comma-separated values become separate items; `set n tags` with no value clears it). Any other key's value
 must be exactly a value of the type the key has in other notes; one that doesn't fit
 (e.g. `high`, or `02134`, where `priority` is a number elsewhere) is refused with a user
 error — retry with `--type text|number|bool|date|datetime|list`, which changes only that
@@ -218,7 +218,7 @@ kimu*          # starts with "kimu"
 | `#label` | `lb:label` | note carries that label (`#label` in the body, or in the frontmatter `tags` property) |
 | `<note` | `lk:note` | notes that link **to** `note` (its backlinks) |
 | `>note` | `fwd:note` | notes that `note` links **to** (its forward links) |
-| `%key<op>value` | `prop:key<op>value` | frontmatter property compares true; op is `= != < <= > >=` (`%status=done`, `%priority>=2`, `%due<2026-05-01`, `%status="in progress"`) |
+| `%key<op>value` | `prop:key<op>value` | frontmatter property compares true; op is `= != < <= > >=` (`%status=done`, `%priority>=2`, `%due<2026-05-01`, `%status="in progress"`, `%"due date"<2026-05-01`, `%status=d*` wildcard) |
 | `%key` | `prop:key` | note has that property at all |
 | `^%key` | `or:prop:key` | sort by a property (`-^%key` descending; notes without it last) |
 | `-term` | | exclude notes containing term |

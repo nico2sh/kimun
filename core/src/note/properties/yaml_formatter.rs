@@ -8,10 +8,10 @@ use std::ops::Range;
 use yaml_rust2::{yaml::Hash, Yaml, YamlLoader};
 
 use super::{
-    finite, format_number, keys_match, nested_key_error, FrontmatterError, PropertyDateTime,
+    date_in_text, finite, format_number, keys_match, nested_key_error, FrontmatterError,
     PropertyEntry, PropertyFormatter, PropertyValue,
 };
-use crate::dates::{format_iso_date, parse_iso_date};
+use crate::dates::format_iso_date;
 
 /// The [`PropertyFormatter`] for `---` blocks.
 pub(super) struct YamlFormatter;
@@ -24,7 +24,7 @@ impl PropertyFormatter for YamlFormatter {
         // A nested mapping is not a property; a null (`key:`) is one, unvalued.
         Ok(root
             .iter()
-            .filter(|(_, v)| !matches!(v, Yaml::Hash(_)))
+            .filter(|(_, v)| !is_nested(v))
             .filter_map(|(k, v)| Some((scalar_text(k)?, read_value(v))))
             .collect())
     }
@@ -57,11 +57,15 @@ impl PropertyFormatter for YamlFormatter {
             Some((range, _)) => {
                 lines.splice(range.clone(), rendered.clone());
             }
-            None => lines.extend(rendered.clone()),
+            None => {
+                let at = append_at(&lines);
+                lines.splice(at..at, rendered.clone());
+            }
         }
         let out = join_lines(&lines);
         verify(&out, key, true)?;
         verify_value(&out, key, &rendered)?;
+        verify_others(block, &out, key)?;
         Ok(out)
     }
 
@@ -81,6 +85,7 @@ impl PropertyFormatter for YamlFormatter {
         }
         let out = join_lines(&lines);
         verify(&out, key, false)?;
+        verify_others(block, &out, key)?;
         Ok(Some(out))
     }
 }
@@ -88,11 +93,12 @@ impl PropertyFormatter for YamlFormatter {
 /// The block's root mapping; `Ok(None)` for an empty block. Anything that is
 /// not a mapping is an error.
 fn root(block: &str) -> Result<Option<Hash>, FrontmatterError> {
-    let docs = YamlLoader::load_from_str(block).map_err(|e| FrontmatterError(e.to_string()))?;
+    let docs =
+        YamlLoader::load_from_str(block).map_err(|e| FrontmatterError::Malformed(e.to_string()))?;
     match docs.into_iter().next() {
         None | Some(Yaml::Null) => Ok(None),
         Some(Yaml::Hash(h)) => Ok(Some(h)),
-        Some(_) => Err(FrontmatterError(
+        Some(_) => Err(FrontmatterError::Malformed(
             "frontmatter is not a key/value mapping".to_string(),
         )),
     }
@@ -108,19 +114,29 @@ fn check_root(block: &str, key: &str) -> Result<(), FrontmatterError> {
     if root
         .iter()
         .flatten()
-        .any(|(k, v)| key_matches(k, key) && matches!(v, Yaml::Hash(_)))
+        .any(|(k, v)| key_matches(k, key) && is_nested(v))
     {
         return Err(nested_key_error(key));
     }
     Ok(())
 }
 
+/// A mapping, or a list holding one: a nested table, not a property.
+fn is_nested(v: &Yaml) -> bool {
+    match v {
+        Yaml::Hash(_) => true,
+        Yaml::Array(items) => items.iter().any(is_nested),
+        _ => false,
+    }
+}
+
 /// The edited block must still parse and hold `key` exactly once (set) or
 /// not at all (remove) — otherwise the line splice missed (flow-style root,
 /// unusual key quoting) and the edit is refused instead of written.
 fn verify(out: &str, key: &str, expect_present: bool) -> Result<(), FrontmatterError> {
-    let root = root(out)
-        .map_err(|e| FrontmatterError(format!("edit would leave invalid YAML: {}", e.0)))?;
+    let root = root(out).map_err(|e| {
+        FrontmatterError::Refused(format!("edit would leave invalid YAML: {}", e.message()))
+    })?;
     let count = root
         .iter()
         .flatten()
@@ -129,26 +145,42 @@ fn verify(out: &str, key: &str, expect_present: bool) -> Result<(), FrontmatterE
     if count == usize::from(expect_present) {
         Ok(())
     } else {
-        Err(FrontmatterError(format!(
+        Err(FrontmatterError::Refused(format!(
             "could not edit '{key}' safely in the YAML block; edit it by hand"
         )))
     }
 }
 
-/// Text that is exactly `YYYY-MM-DD` as a date, RFC3339 or an offset-less
-/// `YYYY-MM-DDTHH:MM[:SS[.f]]` (a local time — Obsidian's Date & time property
-/// omits seconds and offset) as a date-time, anything else as text. For
-/// syntaxes without native dates.
+/// A YAML string as the date or date-time it spells ([`date_in_text`]), else
+/// as text — YAML has no date type of its own.
 fn text_or_date(s: &str) -> PropertyValue {
-    if s.len() == 10 {
-        if let Some(date) = parse_iso_date(s) {
-            return PropertyValue::Date(date);
-        }
+    date_in_text(s).unwrap_or_else(|| PropertyValue::Text(s.to_string()))
+}
+
+/// Every entry other than `key` must read back exactly as before the edit:
+/// the line splice may only ever change the entry it targets. Anything else
+/// (a misjudged entry boundary eating a neighbour's lines) refuses the edit.
+fn verify_others(before: &str, after: &str, key: &str) -> Result<(), FrontmatterError> {
+    // The raw YAML entries, so nested mappings (which aren't properties) are
+    // protected too.
+    let others = |block: &str| -> Vec<(Yaml, Yaml)> {
+        root(block)
+            .ok()
+            .flatten()
+            .map(|h| {
+                h.into_iter()
+                    .filter(|(k, _)| !key_matches(k, key))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    if others(before) == others(after) {
+        Ok(())
+    } else {
+        Err(FrontmatterError::Refused(format!(
+            "could not edit '{key}' without changing another property in the YAML block; edit it by hand"
+        )))
     }
-    PropertyDateTime::parse(s).map_or_else(
-        || PropertyValue::Text(s.to_string()),
-        PropertyValue::DateTime,
-    )
 }
 
 /// The value `key` holds in `out` must be exactly what the freshly rendered
@@ -162,7 +194,7 @@ fn verify_value(out: &str, key: &str, rendered: &[String]) -> Result<(), Frontma
     if value_of(out).is_some() && value_of(out) == value_of(&join_lines(rendered)) {
         Ok(())
     } else {
-        Err(FrontmatterError(format!(
+        Err(FrontmatterError::Refused(format!(
             "could not edit '{key}' safely in the YAML block; edit it by hand"
         )))
     }
@@ -245,13 +277,70 @@ fn opens_scalar(c: char) -> bool {
 }
 
 /// A line that continues the entry above it: indented or a `- ` list item.
+/// A line that carries part of the entry above it: indented content (not an
+/// indented comment, not whitespace) or a column-0 `- ` list item.
 fn is_continuation(line: &str) -> bool {
-    line.starts_with([' ', '\t']) || line.starts_with("- ") || line == "-"
+    let content = line.trim_start();
+    let indented = content.len() < line.len();
+    (indented && !content.is_empty() && !content.starts_with('#'))
+        || line.starts_with("- ")
+        || line == "-"
 }
 
-/// A line that sits inside an entry only if a continuation follows it.
+/// A blank or comment line (indented or not): inside an entry only if a
+/// continuation follows it.
 fn is_neutral(line: &str) -> bool {
-    line.trim().is_empty() || line.starts_with('#')
+    let content = line.trim_start();
+    content.is_empty() || content.starts_with('#')
+}
+
+/// Where a new entry goes: after the last entry (all of it — a block
+/// scalar's indented comment-looking or blank lines are its text), before the
+/// block's trailing blank and comment lines — so it never adopts a trailing
+/// comment (which, sitting right above it, would go with it on removal).
+fn append_at(lines: &[String]) -> usize {
+    let after_content = lines
+        .iter()
+        .rposition(|l| !is_neutral(l))
+        .map_or(0, |i| i + 1);
+    let after_last_entry = lines
+        .iter()
+        .rposition(|l| line_key(l).is_some())
+        .map_or(0, |i| entry_end(lines, i));
+    after_content.max(after_last_entry)
+}
+
+/// The end (exclusive) of the entry whose key line is `start`. Its indented
+/// and `- ` lines belong to it; blank and comment lines only when more of the
+/// entry follows them. A block scalar (`key: |`, `key: >-`, …) owns every
+/// indented or blank line below it, comment-looking ones included — they are
+/// its text — trailing blank lines too (a `|+` scalar keeps them).
+fn entry_end(lines: &[String], start: usize) -> usize {
+    let block_scalar = lines[start]
+        .split_once(':')
+        .map(|(_, value)| value.trim_start())
+        .is_some_and(|v| v.starts_with(['|', '>']));
+    let mut end = start + 1;
+    let mut probe = end;
+    while probe < lines.len() {
+        let line = &lines[probe];
+        let owned = if block_scalar {
+            line.trim().is_empty() || line.starts_with([' ', '\t'])
+        } else {
+            is_continuation(line)
+        };
+        if owned {
+            probe += 1;
+            if block_scalar || !line.trim().is_empty() {
+                end = probe;
+            }
+        } else if !block_scalar && is_neutral(line) {
+            probe += 1;
+        } else {
+            break;
+        }
+    }
+    end
 }
 
 /// Start of the contiguous run of column-0 comment lines directly above
@@ -274,18 +363,7 @@ fn entry_ranges(lines: &[String], key: &str) -> Vec<(Range<usize>, String)> {
     while i < lines.len() {
         match line_key(&lines[i]) {
             Some(k) if keys_match(&k, key) => {
-                let mut end = i + 1;
-                let mut probe = end;
-                while probe < lines.len() {
-                    if is_continuation(&lines[probe]) {
-                        probe += 1;
-                        end = probe;
-                    } else if is_neutral(&lines[probe]) {
-                        probe += 1;
-                    } else {
-                        break;
-                    }
-                }
+                let end = entry_end(lines, i);
                 out.push((i..end, k));
                 i = end;
             }
@@ -304,7 +382,11 @@ fn join_lines(lines: &[String]) -> String {
 }
 
 fn render_entry(key: &str, value: &PropertyValue) -> Vec<String> {
-    let k = if plain_ok(key) && !key.contains(':') {
+    // Plain only when the line reader finds the key again as written
+    // (`-foo:` reads as a list item, `#tag:` as a comment): otherwise later
+    // edits couldn't locate the entry.
+    let readable = line_key(&format!("{key}: x")).as_deref() == Some(key);
+    let k = if plain_ok(key) && !key.contains(':') && readable {
         key.to_string()
     } else {
         double_quote(key)
@@ -362,6 +444,7 @@ mod tests {
     use chrono::{TimeZone, Utc};
 
     use super::super::tests::d;
+    use super::super::PropertyDateTime;
     use super::*;
 
     fn parse(block: &str) -> Vec<(String, PropertyValue)> {
@@ -508,5 +591,96 @@ mod tests {
         let list = set("k: a # c\n", PropertyValue::List(vec!["x".into()]));
         assert_eq!(list, "k: # c\n  - x\n");
         assert_eq!(set(&list, text("a")), "k: a # c\n");
+    }
+
+    #[test]
+    fn comments_and_blank_lines_next_to_an_entry_survive_its_edit() {
+        let set = |block: &str| {
+            YamlFormatter
+                .set(block, "title", &PropertyValue::Text("Y".into()))
+                .unwrap()
+        };
+        assert_eq!(
+            set("title: X\n# draft: true\n  \n"),
+            "title: Y\n# draft: true\n  \n"
+        );
+        assert_eq!(
+            set("title: X\n  # reviewed by Ana\nnext: 1\n"),
+            "title: Y\n  # reviewed by Ana\nnext: 1\n"
+        );
+    }
+
+    #[test]
+    fn a_new_key_does_not_adopt_a_trailing_comment() {
+        let block = "a: 1\n# trailing note\n";
+        let out = YamlFormatter
+            .set(block, "b", &PropertyValue::Number(2.0))
+            .unwrap();
+        assert_eq!(out, "a: 1\nb: 2\n# trailing note\n");
+        let removed = YamlFormatter.remove(&out, "b").unwrap().unwrap();
+        assert_eq!(removed, block, "removing it again keeps the comment");
+    }
+
+    #[test]
+    fn a_key_the_line_reader_cant_see_is_written_quoted_and_stays_editable() {
+        for key in ["-foo", "#tag", "? q"] {
+            let once = YamlFormatter
+                .set("", key, &PropertyValue::Number(1.0))
+                .unwrap();
+            let twice = YamlFormatter
+                .set(&once, key, &PropertyValue::Number(2.0))
+                .unwrap_or_else(|e| panic!("{key:?} must stay editable: {e:?}\n{once}"));
+            assert_eq!(
+                YamlFormatter.parse(&twice).unwrap(),
+                vec![(key.to_string(), Some(PropertyValue::Number(2.0)))],
+                "{twice}"
+            );
+            assert!(YamlFormatter.remove(&twice, key).unwrap().is_some());
+        }
+    }
+
+    #[test]
+    fn edits_never_change_a_neighbouring_block_scalar() {
+        let entries = |block: &str| YamlFormatter.parse(block).unwrap();
+        for block in [
+            "a: 1\ndesc: |\n  text\n  # last\n",
+            "desc: |+\n  text\n\n",
+            "desc: >\n  folded\n\n  more\nnext: 1\n",
+        ] {
+            let out = YamlFormatter
+                .set(block, "b", &PropertyValue::Number(2.0))
+                .unwrap();
+            let mut expected = entries(block);
+            expected.push(("b".to_string(), Some(PropertyValue::Number(2.0))));
+            assert_eq!(entries(&out), expected, "{block:?} -> {out:?}");
+        }
+    }
+
+    #[test]
+    fn a_block_scalar_entry_is_replaced_or_removed_whole() {
+        let block = "desc: |\n  text\n  # last\nnext: 1\n";
+        assert_eq!(
+            YamlFormatter.remove(block, "desc").unwrap().unwrap(),
+            "next: 1\n"
+        );
+        let out = YamlFormatter
+            .set(block, "desc", &PropertyValue::Text("x".into()))
+            .unwrap();
+        assert_eq!(out, "desc: x\nnext: 1\n");
+    }
+
+    #[test]
+    fn an_edit_never_changes_a_nested_mapping() {
+        let block = "meta:\n  desc: |\n    x\n    # y\n";
+        let err = YamlFormatter
+            .set(block, "b", &PropertyValue::Number(2.0))
+            .map(|out| (out.clone(), root(&out).unwrap() == root(block).unwrap()));
+        // Either the edit keeps `meta` exactly, or it is refused.
+        if let Ok((out, _)) = &err {
+            let before = root(block).unwrap().unwrap();
+            let after = root(out).unwrap().unwrap();
+            let meta = Yaml::String("meta".into());
+            assert_eq!(before.get(&meta), after.get(&meta), "{out:?}");
+        }
     }
 }

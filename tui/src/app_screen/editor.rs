@@ -1371,7 +1371,9 @@ impl EditorScreen {
             // Drawer panels can't emit these under an overlay, but guard
             // anyway: never mutate panels while an overlay owns input.
             AppEvent::RunTagQuery(label) if !self.overlays.is_open() => {
-                self.open_find_with_query(format!("#{label}"), None, tx);
+                // Frontmatter labels may hold spaces: quote them as one term.
+                let term = kimun_core::quote_query_term(&label);
+                self.open_find_with_query(format!("#{term}"), None, tx);
             }
             AppEvent::JumpToHeading(heading) if !self.overlays.is_open() => {
                 if let Some(ed) = self.panels.editor_mut() {

@@ -394,7 +394,7 @@ kimun note prop remove "projects/garden" status
 
 #### How `set` picks a type
 
-- **`tags`** is always a list (`set n tags` with no value clears it).
+- **`tags`** is always a list: comma-separated values become separate items (`set n tags "work, q1"`), and `set n tags` with no value clears it. **`aliases`** and **`cssclasses`** are always lists too, with values kept as given (an alias may contain a comma).
 - **A key other notes already use:** the value must be exactly a value of the type most of them give it. If `priority` is a number elsewhere, `2` is stored as a number while `high` — and `02134`, which a number would rewrite — is refused. A single value for a list key becomes a one-item list.
 - **A new key:** typed by its look. `5` and `4.5` → number, `true`/`false` → true/false, `2026-05-01` → date, `2026-05-01T14:30` → date & time, anything else → text. Text that only looks numeric (`02134`, `1.10`) stays text, so it is never rewritten.
 - **Date & time values keep their form:** `2026-05-01T14:30` stays a local time (written without an offset, as Obsidian does), `2026-05-01T14:30:00+02:00` keeps its offset. Searches and sorting compare them as instants, a local time read as UTC.

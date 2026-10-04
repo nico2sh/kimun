@@ -780,7 +780,13 @@ async fn test_note_prop_get_list_and_remove() {
         format: PropFormat::Json,
     };
     prop(&config_path, get("STATUS")).await.unwrap();
-    assert!(prop(&config_path, get("missing")).await.is_err());
+    let missing = prop(&config_path, get("missing")).await.unwrap_err();
+    assert!(
+        missing
+            .downcast_ref::<kimun_notes::cli::UserError>()
+            .is_some(),
+        "a missing property is a user error (clean message, exit 2): {missing:?}"
+    );
     prop(
         &config_path,
         PropSubcommand::List {

@@ -2317,3 +2317,143 @@ async fn dominant_property_kind_counts_every_note_with_the_key() {
     );
     assert_eq!(kind("missing", "/z.md").await, None);
 }
+
+// A comparison only meets values of its own kind: a number meets numbers, a
+// date or date-time meets dates and date-times (as instants), anything else
+// meets text. Equality also matches the text exactly as written.
+#[tokio::test]
+async fn prop_comparisons_stay_within_their_kind() {
+    let (_tmp, db) = open_temp().await;
+    db.apply(added(vec![
+        note("/far.md", "+++\ndue = 2099-12-31\n+++\n"),
+        note("/jan.md", "+++\ndue = 2024-01-31\n+++\n"),
+        note("/tbd.md", "+++\ndue = \"tbd\"\n+++\n"),
+        note("/hugo.md", "+++\ndate = '2023-08-24T11:49:46-07:00'\n+++\n"),
+        note("/list.md", "---\ndates: [2024-03-01T14:30]\n---\n"),
+    ]))
+    .await
+    .unwrap();
+    let hits = |q: &'static str| {
+        let db = &db;
+        async move { paths(&db.search(q).await.unwrap()) }
+    };
+    assert_eq!(
+        hits("%due<today").await,
+        vec!["/tbd.md"],
+        "text meets only text (tbd < today), never the dates"
+    );
+    assert!(
+        hits("%due<2024-1-5").await.is_empty(),
+        "non-ISO text vs dates"
+    );
+    assert_eq!(
+        hits("%due>2024-01-01").await,
+        vec!["/far.md", "/jan.md"],
+        "tbd is text"
+    );
+    assert_eq!(hits("%due>a").await, vec!["/tbd.md"], "text vs text");
+    assert_eq!(
+        hits("%date=2023-08-24T11:49:46-07:00").await,
+        vec!["/hugo.md"],
+        "date-time text matches as written"
+    );
+    assert!(hits("%date!=2023-08-24T11:49:46-07:00").await.is_empty());
+    assert_eq!(hits("%dates=2024-03-01T14:30").await, vec!["/list.md"]);
+}
+
+#[tokio::test]
+async fn prop_wildcards_match_by_pattern() {
+    let (_tmp, db) = open_temp().await;
+    db.apply(added(vec![
+        note("/a.md", "+++\nstatus = \"Done\"\ntags = [\"garden\", \"q1\"]\ncode = \"a_b\"\n+++\n"),
+        note("/b.md", "+++\nstatus = \"draft\"\ntags = [\"work\"]\ncode = \"axb\"\nat = 2024-01-31T10:00:00Z\n+++\n"),
+        note("/c.md", "+++\nstatus = \"open\"\n+++\n"),
+    ]))
+    .await
+    .unwrap();
+    let hits = |q: &'static str| {
+        let db = &db;
+        async move { paths(&db.search(q).await.unwrap()) }
+    };
+    assert_eq!(hits("%status=d*").await, vec!["/a.md", "/b.md"]);
+    assert_eq!(hits("%status=*o*").await, vec!["/a.md", "/c.md"]);
+    assert_eq!(hits("%tags=gar*").await, vec!["/a.md"], "a list item");
+    assert_eq!(hits("%status!=d*").await, vec!["/c.md"]);
+    assert_eq!(hits("-%status=d*").await, vec!["/c.md"]);
+    assert_eq!(
+        hits("%code=a_*").await,
+        vec!["/a.md"],
+        "`_` is literal, not a LIKE wildcard"
+    );
+    assert_eq!(
+        hits("%at=2024-01*").await,
+        vec!["/b.md"],
+        "dates by their text"
+    );
+    assert_eq!(hits("%status=*").await, vec!["/a.md", "/b.md", "/c.md"]);
+}
+
+// Text that is exactly a date or date-time (a TOML string, Hugo's quoted
+// dates) compares as one, like YAML's bare dates; a partial date (`2024`,
+// `2024-02`) compares as the start of that period.
+#[tokio::test]
+async fn prop_date_text_and_partial_dates_compare_as_dates() {
+    let (_tmp, db) = open_temp().await;
+    db.apply(added(vec![
+        note("/tdate.md", "+++\ndue = 2024-01-31\n+++\n"),
+        note("/tstr.md", "+++\ndue = \"2024-01-31\"\n+++\n"),
+        note("/later.md", "---\ndue: 2024-03-02\n---\n"),
+        note("/hugo.md", "+++\ndate = '2023-08-24T11:49:46-07:00'\n+++\n"),
+    ]))
+    .await
+    .unwrap();
+    let hits = |q: &'static str| {
+        let db = &db;
+        async move { paths(&db.search(q).await.unwrap()) }
+    };
+    assert_eq!(hits("%due<2024-02-01").await, vec!["/tdate.md", "/tstr.md"]);
+    assert_eq!(
+        hits("%due>=2024-01-31").await,
+        vec!["/later.md", "/tdate.md", "/tstr.md"]
+    );
+    assert_eq!(
+        hits("%due<2024-02").await,
+        vec!["/tdate.md", "/tstr.md"],
+        "month prefix"
+    );
+    assert_eq!(hits("%due>=2024-02").await, vec!["/later.md"]);
+    assert_eq!(
+        hits("%due<2025").await,
+        vec!["/later.md", "/tdate.md", "/tstr.md"],
+        "year"
+    );
+    assert_eq!(hits("%date>2023-01-01").await, vec!["/hugo.md"]);
+    assert_eq!(
+        hits("%date=2023-08-24T11:49:46-07:00").await,
+        vec!["/hugo.md"]
+    );
+    assert_eq!(hits("%due=2024-01-31").await, vec!["/tdate.md", "/tstr.md"]);
+}
+
+#[tokio::test]
+async fn prop_a_quoted_value_is_literal() {
+    let (_tmp, db) = open_temp().await;
+    db.apply(added(vec![
+        note("/stars.md", "+++\nrating = \"***\"\n+++\n"),
+        note("/one.md", "+++\nrating = \"*\"\n+++\n"),
+        note("/word.md", "+++\nrating = \"good\"\n+++\n"),
+    ]))
+    .await
+    .unwrap();
+    let hits = |q: &'static str| {
+        let db = &db;
+        async move { paths(&db.search(q).await.unwrap()) }
+    };
+    assert_eq!(hits("%rating=\"***\"").await, vec!["/stars.md"]);
+    assert_eq!(hits("%rating!=\"*\"").await, vec!["/stars.md", "/word.md"]);
+    assert_eq!(
+        hits("%rating=g*").await,
+        vec!["/word.md"],
+        "unquoted * is a wildcard"
+    );
+}

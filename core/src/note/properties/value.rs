@@ -8,7 +8,7 @@ use std::str::FromStr;
 
 use chrono::NaiveDate;
 
-use super::{format_number, is_tag_key, PropertyDateTime};
+use super::{format_number, is_list_key, is_tag_key, split_tags, PropertyDateTime};
 use crate::dates::{format_iso_date, parse_iso_date};
 
 /// A typed frontmatter property value — the neutral model every
@@ -247,10 +247,12 @@ impl PropertyInput {
     /// The value to store for `key` (normalized), whose values in other notes
     /// are mostly of `vault_kind`:
     /// - a forced type always wins (read leniently);
-    /// - `tags` / `tag` are always a list;
-    /// - otherwise the input must be exactly a value of the vault's type (a
-    ///   single value for a list key is a one-item list) — `Err` explains a
-    ///   mismatch;
+    /// - `tags` / `tag` are always a list — a single comma-separated value
+    ///   split into items, several values kept as given; `aliases` and `cssclasses` are always a list, values as given;
+    /// - otherwise the input must fit the vault's type: exactly a value of it
+    ///   (a single value for a list key is a one-item list), or — when its
+    ///   implied type *is* the vault's — any value of that type; an array
+    ///   never fits a single-value key. `Err` explains a mismatch;
     /// - with no vault type, an implied type is used, else one value is
     ///   [inferred](PropertyValue::infer) and several make a list.
     pub fn resolve(
@@ -262,10 +264,37 @@ impl PropertyInput {
             return PropertyValue::parse_as(kind, &self.values);
         }
         if is_tag_key(key) {
+            // One `"work, q1"` is two tags, as it reads back from a bare
+            // string; an explicit list (several values, or an array) keeps its
+            // items as a list item does — trimmed, empties dropped.
+            let tags = match (self.implied, self.values.as_slice()) {
+                (implied, [one]) if implied != Some(PropertyKind::List) => {
+                    split_tags(one).map(str::to_string).collect()
+                }
+                (_, items) => items
+                    .iter()
+                    .map(|t| t.trim())
+                    .filter(|t| !t.is_empty())
+                    .map(str::to_string)
+                    .collect(),
+            };
+            return Ok(PropertyValue::List(tags));
+        }
+        if is_list_key(key) {
             return Ok(PropertyValue::List(self.values.clone()));
         }
         if let Some(vault_kind) = vault_kind {
-            return PropertyValue::parse_exact(vault_kind, &self.values).ok_or_else(|| {
+            let fits = match self.implied {
+                // The input's own type is the vault's: trust it (`4.0` is a
+                // JSON number, not text that only looks numeric).
+                Some(implied) if implied == vault_kind => {
+                    PropertyValue::parse_as(implied, &self.values).ok()
+                }
+                // An array never fits a key that holds single values.
+                Some(PropertyKind::List) => None,
+                _ => PropertyValue::parse_exact(vault_kind, &self.values),
+            };
+            return fits.ok_or_else(|| {
                 let given = match self.values.as_slice() {
                     [] => "no value was given".to_string(),
                     [raw] => format!("\"{raw}\" is not one"),
@@ -468,6 +497,88 @@ mod tests {
             as_number("7").resolve("new", None),
             Ok(PropertyValue::Number(7.0)),
             "with no vault kind the implied one is used"
+        );
+    }
+
+    #[test]
+    fn an_implied_kind_matching_the_vault_is_trusted() {
+        let num = Some(PropertyKind::Number);
+        for raw in ["4.0", "1e3", "-0.0"] {
+            assert!(
+                matches!(
+                    input(&[raw])
+                        .implied(PropertyKind::Number)
+                        .resolve("rating", num),
+                    Ok(PropertyValue::Number(_))
+                ),
+                "a JSON number {raw} for a number key"
+            );
+        }
+        let err = input(&["5"])
+            .implied(PropertyKind::List)
+            .resolve("rating", num)
+            .unwrap_err();
+        assert!(
+            err.contains("holds number values"),
+            "an array for a scalar key: {err}"
+        );
+        assert_eq!(
+            input(&["5"])
+                .implied(PropertyKind::Number)
+                .resolve("k", Some(PropertyKind::List)),
+            Ok(PropertyValue::List(vec!["5".into()])),
+            "a scalar for a list key is still a one-item list"
+        );
+    }
+
+    #[test]
+    fn comma_separated_tags_input_is_split_into_items() {
+        assert_eq!(
+            input(&["work, q1"]).resolve("tags", None),
+            Ok(PropertyValue::List(vec!["work".into(), "q1".into()]))
+        );
+        assert_eq!(
+            input(&["a,b", "big project"]).resolve("tags", None),
+            Ok(PropertyValue::List(vec![
+                "a,b".into(),
+                "big project".into()
+            ])),
+            "an explicit list keeps its items, as a list item reads back"
+        );
+        assert_eq!(
+            input(&["a, b"]).resolve("other", Some(PropertyKind::Text)),
+            Ok(PropertyValue::Text("a, b".into())),
+            "only tags are split"
+        );
+    }
+
+    #[test]
+    fn an_explicit_tags_list_is_cleaned_but_never_split() {
+        assert_eq!(
+            input(&["work", " q1 ", ""]).resolve("tags", None),
+            Ok(PropertyValue::List(vec!["work".into(), "q1".into()]))
+        );
+        assert_eq!(
+            input(&["a, b"])
+                .implied(PropertyKind::List)
+                .resolve("tags", None),
+            Ok(PropertyValue::List(vec!["a, b".into()])),
+            "a one-item array is a list, not a comma-separated string"
+        );
+    }
+
+    #[test]
+    fn obsidian_list_keys_are_always_lists() {
+        for key in ["aliases", "Aliases", "cssclasses", "alias", "cssclass"] {
+            assert_eq!(
+                input(&["Smith, John"]).resolve(key, Some(PropertyKind::Text)),
+                Ok(PropertyValue::List(vec!["Smith, John".into()])),
+                "{key}: a list, and only tags split on commas"
+            );
+        }
+        assert_eq!(
+            input(&["Bob", "Rob"]).resolve("aliases", None),
+            Ok(PropertyValue::List(vec!["Bob".into(), "Rob".into()]))
         );
     }
 

@@ -57,8 +57,15 @@ impl SearchRow for TagEntry {
     }
 
     fn yank_target(&self) -> Option<YankTarget> {
-        // With the `#` sigil, so the copied text is usable as-is in a note.
-        Some(YankTarget::new(format!("#{}", self.label), "tag"))
+        // With the `#` sigil, so the copied text is usable as-is in a note —
+        // unless the label can't be a hashtag (a frontmatter tag with spaces
+        // or dashes): then the label itself.
+        let text = if kimun_core::note::is_hashtag_label(&self.label) {
+            format!("#{}", self.label)
+        } else {
+            self.label.clone()
+        };
+        Some(YankTarget::new(text, "tag"))
     }
 }
 

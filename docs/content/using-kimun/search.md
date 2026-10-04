@@ -141,7 +141,7 @@ An unknown label returns zero results, not an error.
 - **Allowed characters:** letters, digits, underscores (`[A-Za-z0-9_]+`). A hashtag ends at the first character outside that set, so `#tag-with-dash` yields the label `tag`.
 - **Case-insensitive:** stored lowercase; `#Finance` and `#finance` are the same label.
 - **Not indexed as labels:** hashtags inside inline code or fenced code blocks, HTML, Markdown link spans `[text](url#fragment)`, or wikilinks `[[#section]]`. A `#word` written inside frontmatter is not a label either.
-- **Frontmatter tags count too:** a `tags` property (`tags = ["a", "b"]` in TOML, `tags: [a, b]` or a `- a` list in YAML) adds its items as labels, so `#a` finds the note. The singular `tag` key older Obsidian notes use works the same way. A plain string (`tags: big project`) is one label. Frontmatter tags may contain characters inline hashtags can't (spaces, dashes); quote them in queries: `#"big project"`.
+- **Frontmatter tags count too:** a `tags` property (`tags = ["a", "b"]` in TOML, `tags: [a, b]` or a `- a` list in YAML) adds its items as labels, so `#a` finds the note. The singular `tag` key older Obsidian notes use works the same way. A plain string is split on commas (`tags: project, urgent` is two labels); a part with spaces stays one label (`tags: big project`). Frontmatter tags may contain characters inline hashtags can't (spaces, dashes); quote them in queries: `#"big project"`.
 
 ## Properties
 
@@ -168,12 +168,16 @@ prop:status=done      → status equals "done" (ignores case and accents: Status
 -%due                 → has no due property
 -%status=done         → excludes notes whose status is "done" (notes with no status are kept)
 %status="in progress" → quote a value that has spaces
-prop:"due date<2025-01-01" → quote the whole term when the key has spaces
+%"due date"<2025-01-01 → quote a key that has spaces (the whole term works too: prop:"due date<2025-01-01")
+%status=d*            → `*` is a wildcard with = and != (also in list items and dates: %at=2024-01*; a date & time with an offset matches by its UTC form). A quoted value is literal: %rating="***"
+%due<2024-02          → a partial date (2024-02, or a year: 2024) compares as the start of that period: < is before it, >= is from it on (<= and = compare with its first day only)
+%flag="!important"    → quote a value that starts with = ! < or >
+^%"due date"          → sort by a key that has spaces
 ```
 
 A key on its own (`%due`, `prop:"due date"`) finds notes that have the property at all — even with no value: an empty list (`tags = []`) or a blank YAML entry (`due:`, which Obsidian writes for an unset property) counts, and `%due!=x` includes them too. A key followed by an operator but no value (`%due=`) is ignored.
 
-Operators: `=` `!=` `<` `<=` `>` `>=`. A comparison that doesn't fit the property's type (for example `%due>5` on a date, or `<` on a list) matches nothing rather than erroring.
+Operators: `=` `!=` `<` `<=` `>` `>=`. The value you compare with decides what it can meet: a number meets numbers, a date (`2024-04-01`) or date & time meets dates and date & times (compared as moments in time), and anything else meets text. A property of another type simply doesn't match — `%due<today` never matches a date, and `<` on a list matches nothing. A date written as text (`due = "2024-01-31"`, Hugo's `date = '2023-08-24T11:49:46-07:00'`) compares as a date, and `=` also matches a value written exactly as you typed it. A four-digit value such as `2024` meets both numbers and dates.
 
 Sort by a property with `or:prop:key` or `^%key`; see [Sorting](#sorting). Notes without the property always come last.
 

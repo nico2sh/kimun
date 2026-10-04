@@ -12,7 +12,9 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 pub(crate) mod file;
 use sqlx::{Row, Sqlite, Transaction};
 
-use crate::note::properties::{format_datetime, format_number, search_form, PropertySet};
+use crate::note::properties::{
+    date_in_text, format_datetime, format_number, search_form, PropertySet,
+};
 use crate::note::{
     ContentChunk, LinkType, NoteContentData, NoteDetails, PropertyDateTime, PropertyKind,
     PropertyValue,
@@ -133,7 +135,10 @@ use super::{
 // 0.15: property keys and values are indexed accent-stripped as well as
 //       lowercased (`search_form`), so `e` finds `é`. Bump forces a clean
 //       reindex so existing rows are rewritten folded.
-const VERSION: &str = "0.15";
+// 0.16: text that is exactly a date or date-time (a TOML string, Hugo's
+//       quoted dates) is indexed as one, as YAML's bare dates already were.
+//       Bump forces a clean reindex so those rows compare as dates.
+const VERSION: &str = "0.16";
 
 /// Tables whose rows belong to one note through a `path` column. Every save,
 /// rename and delete keeps all of them in step with the note, so a new
@@ -1215,7 +1220,7 @@ fn add_filename_query(
             if t.contains('*') {
                 // Explicit wildcard: extension-aware whole-name match, * → %.
                 // Escape first (so literal % / _ stay escaped), then * → %.
-                escape_like_pattern(&with_note_extension(t)).replace('*', "%")
+                like_pattern(&with_note_extension(t))
             } else {
                 // Substring match (unchanged behaviour).
                 format!("%{}%", escape_like_pattern(t))
@@ -1384,7 +1389,7 @@ fn link_subquery(target: &str, var_num: &mut usize, params: &mut Vec<String>) ->
     let body = if has_wildcard {
         // Escape LIKE metacharacters in the literal, then turn user `*` into
         // the SQL `%` wildcard. Destinations never contain `*`, so this is safe.
-        let pattern = escape_like_pattern(&name).replace('*', "%");
+        let pattern = like_pattern(&name);
         params.push(pattern);
         let body = if is_path_qualified {
             format!(
@@ -1463,7 +1468,7 @@ fn forward_link_subquery(
     } = normalize_link_target(target)?;
 
     let src_match = if has_wildcard {
-        let pattern = escape_like_pattern(&name).replace('*', "%");
+        let pattern = like_pattern(&name);
         params.push(pattern);
         let body = if is_path_qualified {
             format!(
@@ -1540,42 +1545,77 @@ fn property_subquery(f: &PropertyFilter, var_num: &mut usize, params: &mut Vec<S
     *var_num += 1;
     match &f.test {
         PropertyTest::Exists => format!("SELECT path FROM property_keys WHERE key = ?{k}"),
-        PropertyTest::Compare { op, value } => property_comparison(k, *op, value, var_num, params),
+        PropertyTest::Compare {
+            op,
+            value,
+            wildcard,
+        } => property_comparison(k, *op, value, *wildcard, var_num, params),
     }
 }
 
-/// `SELECT path FROM …` comparing key `?{k}`'s values with `value`. A value that parses as a finite number compares numerically
-/// against `number` rows (and, for `=`/`!=`, also textually against
-/// non-number rows, so `version=10` still finds the text "10"); any other
-/// value compares `value_text` lexicographically, which orders ISO dates
-/// correctly. Ordering operators never match lists or bools; a type mismatch is
-/// simply no match. `!=` means "has the key, and no value equal to this" —
-/// so on a list: does not contain, and a key with no value (YAML `key:`, an
-/// empty list) matches.
+/// `SELECT path FROM …` comparing key `?{k}`'s values with `value`. The
+/// query value's own kind decides which stored values it can meet:
+/// - a finite number meets `number` values (and, for `=`/`!=`, any value
+///   whose text is exactly it, so `version=10` still finds the text "10");
+/// - an exact `YYYY-MM-DD` date or a date-time meets `date` and `datetime`
+///   values as instants (a local time read as UTC) — and, for `=`/`!=`, any
+///   value whose text is exactly it; a partial date (`2024-02`, or a year
+///   `2024`, which also meets numbers) compares as the start of its period;
+/// - anything else meets text (lexicographically).
+///
+/// With `wildcard` (an unquoted value containing `*`), `=` / `!=` match any
+/// value whose stored text fits the pattern — list items and dates too; a
+/// date-time by its canonical UTC text.
+///
+/// A value of another kind is simply no match. `!=` means "has the key, and
+/// no value equal to this" — so on a list: does not contain, and a key with
+/// no value (YAML `key:`, an empty list) matches.
 fn property_comparison(
     k: usize,
     op: PropertyOp,
     value: &str,
+    wildcard: bool,
     var_num: &mut usize,
     params: &mut Vec<String>,
 ) -> String {
-    let v = *var_num;
-    // Date-times are stored as lowercased canonical RFC3339 (UTC), so a query
-    // value that reads as one is compared in that form.
-    params.push(PropertyDateTime::parse(value).map_or_else(
-        || value.to_string(),
-        |dt| format_datetime(&dt.to_utc()).to_lowercase(),
-    ));
-    *var_num += 1;
-
-    let numeric = value.parse::<f64>().is_ok_and(f64::is_finite);
-    let eq = if numeric {
-        format!(
-            "((value_type = 'number' AND value_num = CAST(?{v} AS REAL)) \
-             OR (value_type <> 'number' AND value_text = ?{v}))"
-        )
+    let mut bind = |param: String| {
+        params.push(param);
+        *var_num += 1;
+        *var_num - 1
+    };
+    let v = bind(value.to_string());
+    // Each kind the query value can meet, as a condition with an `{op}` slot.
+    let mut meets = Vec::new();
+    if value.parse::<f64>().is_ok_and(f64::is_finite) {
+        meets.push(format!(
+            "(value_type = 'number' AND value_num {{op}} CAST(?{v} AS REAL))"
+        ));
+    }
+    // A date, a date-time, or a partial date — `2024` meets numbers and dates.
+    if let Some(instant) = temporal_form(value) {
+        let t = bind(instant);
+        meets.push(format!(
+            "(value_type IN ('date', 'datetime') AND value_text {{op}} ?{t})"
+        ));
+    }
+    if meets.is_empty() {
+        meets.push(format!("(value_type = 'text' AND value_text {{op}} ?{v})"));
+    }
+    let compare = |op: &str| {
+        let alternatives: Vec<String> = meets.iter().map(|m| m.replace("{op}", op)).collect();
+        format!("({})", alternatives.join(" OR "))
+    };
+    let eq = if wildcard {
+        // `*` is a wildcard for `=`/`!=`: any value whose text matches, list
+        // items and dates included (`%status=d*`, `%at=2024-01*`).
+        let w = bind(like_pattern(value));
+        format!("(value_text LIKE ?{w} ESCAPE '\\')")
     } else {
-        format!("(value_type <> 'number' AND value_text = ?{v})")
+        // Equality also matches any non-number value written exactly as `value`.
+        format!(
+            "({} OR (value_type <> 'number' AND value_text = ?{v}))",
+            compare("=")
+        )
     };
     match op {
         PropertyOp::Eq => format!("SELECT path FROM properties WHERE key = ?{k} AND {eq}"),
@@ -1583,17 +1623,31 @@ fn property_comparison(
             "SELECT path FROM property_keys WHERE key = ?{k} \
              EXCEPT SELECT path FROM properties WHERE key = ?{k} AND {eq}"
         ),
-        PropertyOp::Lt | PropertyOp::Le | PropertyOp::Gt | PropertyOp::Ge if numeric => format!(
-            "SELECT path FROM properties WHERE key = ?{k} \
-             AND value_type = 'number' AND value_num {} CAST(?{v} AS REAL)",
-            op.sql()
-        ),
         PropertyOp::Lt | PropertyOp::Le | PropertyOp::Gt | PropertyOp::Ge => format!(
-            "SELECT path FROM properties WHERE key = ?{k} \
-             AND value_type IN ('text', 'date', 'datetime') AND value_text {} ?{v}",
-            op.sql()
+            "SELECT path FROM properties WHERE key = ?{k} AND {}",
+            compare(op.sql())
         ),
     }
+}
+
+/// A query value as the instant date and date-time values are stored as —
+/// an exact `YYYY-MM-DD` as itself, a date-time as lowercased canonical UTC
+/// RFC3339 — or `None` when it is neither.
+fn temporal_form(value: &str) -> Option<String> {
+    if value.len() == 10 && crate::dates::parse_iso_date(value).is_some() {
+        return Some(value.to_string());
+    }
+    // A partial date (`2024`, `2024-02`) compares as the start of its period:
+    // as text it sorts right before every date inside it.
+    let digits = |s: &str, len: usize| s.len() == len && s.bytes().all(|b| b.is_ascii_digit());
+    let partial = match value.split_once('-') {
+        None => digits(value, 4),
+        Some((year, month)) => digits(year, 4) && digits(month, 2),
+    };
+    if partial {
+        return Some(value.to_string());
+    }
+    PropertyDateTime::parse(value).map(|dt| format_datetime(&dt.to_utc()).to_lowercase())
 }
 
 /// A note's sort value for `or:prop:` — numbers sort before text.
@@ -1674,7 +1728,7 @@ fn path_term_conditions(
             let op = if positive { "LIKE" } else { "NOT LIKE" };
             (
                 format!("notes.basePath {} ('/' || ?{}) ESCAPE '\\'", op, var_num),
-                escape_like_pattern(term).replace('*', "%"),
+                like_pattern(term),
             )
         } else {
             match term.strip_suffix(PATH_SEPARATOR) {
@@ -1853,6 +1907,12 @@ impl PropertyRow {
     fn rows(path_idx: usize, key: String, value: PropertyValue) -> Vec<Self> {
         // `value_type` is the kind's name, so the index and `PropertyKind`
         // share one vocabulary (see `dominant_property_kind`).
+        // Text that is exactly a date or date-time (a TOML string, Hugo's
+        // quoted dates) compares as one, as YAML's bare dates already do.
+        let value = match value {
+            PropertyValue::Text(s) => date_in_text(&s).unwrap_or(PropertyValue::Text(s)),
+            other => other,
+        };
         let value_type = value.kind().as_str();
         let row = |list_index, value_text: String, value_num| Self {
             path_idx,
@@ -2311,6 +2371,12 @@ fn escape_like_pattern(s: &str) -> String {
         }
     }
     out
+}
+
+/// A user term with `*` wildcards as a `LIKE` pattern (`ESCAPE '\\'`): its
+/// own `%`, `_` and `\\` are literal, each `*` matches any run of characters.
+fn like_pattern(s: &str) -> String {
+    escape_like_pattern(s).replace('*', "%")
 }
 
 async fn rename_note(
