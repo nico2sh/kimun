@@ -496,7 +496,7 @@ impl NoteIndex {
             .map(row_to_note_entry)
             .collect::<Result<_, _>>()?;
 
-        let mut prop_sort: HashMap<String, HashMap<String, PropertySortKey>> = HashMap::new();
+        let mut prop_sort: HashMap<String, HashMap<String, PropertySortValue>> = HashMap::new();
         for ob in &order_by {
             if let OrderBy::Property { key, .. } = ob {
                 if !prop_sort.contains_key(key) {
@@ -723,6 +723,19 @@ impl NoteIndex {
                 .fetch_all(&self.pool)
                 .await?;
         Ok(rows.into_iter().map(|(k,)| k).collect())
+    }
+
+    /// Each note's sort value for `key` (already in search form), by path.
+    /// Notes without the key are absent.
+    pub(crate) async fn property_sort_values(
+        &self,
+        key: &str,
+    ) -> Result<HashMap<VaultPath, PropertySortValue>, DBError> {
+        Ok(property_sort_keys(&self.pool, key)
+            .await?
+            .into_iter()
+            .map(|(path, value)| (VaultPath::new(&path), value))
+            .collect())
     }
 
     /// The kind most notes give `key`, not counting `except` (the note about
@@ -1702,31 +1715,65 @@ fn instant_seconds(instant: chrono::DateTime<chrono::Utc>) -> f64 {
     instant.timestamp() as f64 + f64::from(instant.timestamp_subsec_nanos()) / 1e9
 }
 
-/// A note's sort value for `or:prop:` — numbers first, then dates and
-/// date-times (by instant), then text.
-#[derive(Debug, Clone, PartialEq)]
-enum PropertySortKey {
+/// One note's value for a property sort: the first value (a list's first
+/// item) of the key. Ordered exactly as a query's `or:prop:key` sorts
+/// (ascending): numbers by value, then dates and date-times by the instant
+/// they name, then text. A note without the key has no value; such notes sort
+/// after every valued one in both directions.
+#[derive(Debug, Clone)]
+pub enum PropertySortValue {
+    /// A number property.
     Number(f64),
+    /// A date (its midnight) or date-time, as seconds since the Unix epoch,
+    /// UTC. Text that is exactly a date or date-time sorts as one too.
     Instant(f64),
+    /// Any other value, in search form (case-folded, accents stripped).
     Text(String),
 }
 
-impl PropertySortKey {
-    /// The group a key sorts in: numbers, then instants, then text.
+impl PropertySortValue {
+    /// The group a value sorts in: numbers, then instants, then text.
     fn rank(&self) -> u8 {
         match self {
-            PropertySortKey::Number(_) => 0,
-            PropertySortKey::Instant(_) => 1,
-            PropertySortKey::Text(_) => 2,
+            PropertySortValue::Number(_) => 0,
+            PropertySortValue::Instant(_) => 1,
+            PropertySortValue::Text(_) => 2,
         }
     }
 }
+
+impl Ord for PropertySortValue {
+    // The single comparison the query sort uses too (`cmp_property_sort_keys`
+    // in `Index::search`), so both orders cannot drift apart.
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        use PropertySortValue::{Instant, Number, Text};
+        match (self, other) {
+            (Number(x), Number(y)) | (Instant(x), Instant(y)) => x.total_cmp(y),
+            (Text(x), Text(y)) => x.cmp(y),
+            (x, y) => x.rank().cmp(&y.rank()),
+        }
+    }
+}
+
+impl PartialOrd for PropertySortValue {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for PropertySortValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == std::cmp::Ordering::Equal
+    }
+}
+
+impl Eq for PropertySortValue {}
 
 /// Each note's first value (`list_index = 0`) of `key`, by canonical path.
 async fn property_sort_keys(
     pool: &SqlitePool,
     key: &str,
-) -> Result<HashMap<String, PropertySortKey>, DBError> {
+) -> Result<HashMap<String, PropertySortValue>, DBError> {
     let rows: Vec<(String, String, String, Option<f64>)> = sqlx::query_as(
         "SELECT path, value_type, value_text, value_num FROM properties \
          WHERE key = ? AND list_index = 0",
@@ -1738,13 +1785,13 @@ async fn property_sort_keys(
         .into_iter()
         .map(|(path, ty, text, num)| {
             let k = match (ty.as_str(), num) {
-                ("number", Some(n)) => PropertySortKey::Number(n),
-                ("date" | "datetime", Some(n)) => PropertySortKey::Instant(n),
+                ("number", Some(n)) => PropertySortValue::Number(n),
+                ("date" | "datetime", Some(n)) => PropertySortValue::Instant(n),
                 // Date-looking text sorts among the dates: a list's first
                 // item, or a YAML date-time written with a space.
                 _ => match text_instant(&text) {
-                    Some(instant) => PropertySortKey::Instant(instant),
-                    None => PropertySortKey::Text(text),
+                    Some(instant) => PropertySortValue::Instant(instant),
+                    None => PropertySortValue::Text(text),
                 },
             };
             (path, k)
@@ -1766,24 +1813,17 @@ fn text_instant(text: &str) -> Option<f64> {
 
 /// Missing values sort last in both directions; direction applies otherwise.
 fn cmp_property_sort_keys(
-    a: Option<&PropertySortKey>,
-    b: Option<&PropertySortKey>,
+    a: Option<&PropertySortValue>,
+    b: Option<&PropertySortValue>,
     asc: bool,
 ) -> std::cmp::Ordering {
     use std::cmp::Ordering::{Equal, Greater, Less};
-    use PropertySortKey::{Instant, Number, Text};
-    let ord = match (a, b) {
-        (None, None) => return Equal,
-        (None, Some(_)) => return Greater,
-        (Some(_), None) => return Less,
-        (Some(Number(x)), Some(Number(y))) | (Some(Instant(x)), Some(Instant(y))) => x.total_cmp(y),
-        (Some(Text(x)), Some(Text(y))) => x.cmp(y),
-        (Some(x), Some(y)) => x.rank().cmp(&y.rank()),
-    };
-    if asc {
-        ord
-    } else {
-        ord.reverse()
+    match (a, b) {
+        (None, None) => Equal,
+        (None, Some(_)) => Greater,
+        (Some(_), None) => Less,
+        (Some(x), Some(y)) if asc => x.cmp(y),
+        (Some(x), Some(y)) => y.cmp(x),
     }
 }
 

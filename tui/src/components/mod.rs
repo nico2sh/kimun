@@ -36,6 +36,7 @@ pub mod search_list;
 pub mod semantic_search;
 pub mod sidebar;
 pub mod single_line_input;
+pub mod sortable;
 pub mod text_editor;
 pub mod which_key;
 

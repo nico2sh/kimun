@@ -28,7 +28,7 @@ use crate::components::events::{
     AppEvent, AppTx, FileOp, InputEvent, OverlayData, SaveSource, SavedSearchFlow, ScreenEvent,
     SortTarget, UpdateFlow,
 };
-use crate::components::file_list::FileListEntry;
+use crate::components::file_list::{FileListEntry, SortField};
 use crate::components::footer_bar::FooterBar;
 use crate::components::note_browser::file_finder_provider::FileFinderProvider;
 use crate::components::note_browser::search_provider::resolving_search_source;
@@ -38,6 +38,7 @@ use crate::components::panel::PanelKind;
 use crate::components::query_panel::QueryPanel;
 use crate::components::saved_searches_modal::SavedSearchesModal;
 use crate::components::sidebar::SidebarComponent;
+use crate::components::sortable::{SortState, SortableList};
 use crate::components::text_editor::TextEditorComponent;
 use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::{ActionShortcuts, TextAction};
@@ -606,15 +607,26 @@ impl EditorScreen {
     /// The close-side mirror of `present_overlay`. `OverlayHost::close` returns
     /// `None` when nothing is open, so this is a no-op then — which is also why
     /// a selection that closed the overlay itself (and chose its own focus) is
-    /// not re-restored by a trailing `CloseOverlay`.
+    /// not re-restored by a trailing `CloseOverlay`. With an overlay parked
+    /// under the active one (the sort dialog over a browser), it restores the
+    /// parked overlay instead and leaves panel focus alone.
     fn dismiss_overlay(&mut self) {
         if let Some(opener) = self.overlays.close() {
             self.panels.focus(opener);
         }
     }
 
+    /// Close every overlay, a parked one included, and restore the opener
+    /// focus. For events that invalidate whatever the stack showed (a file
+    /// operation, a rename): a parked browser must not come back stale.
+    fn dismiss_all_overlays(&mut self) {
+        if let Some(opener) = self.overlays.close_all() {
+            self.panels.focus(opener);
+        }
+    }
+
     async fn on_entry_op(&mut self, from: VaultPath, tx: &AppTx) {
-        self.dismiss_overlay();
+        self.dismiss_all_overlays();
         // `is_like` ignores the vault-relative/absolute distinction: `from` (from
         // a sidebar/query row) is index-absolute while `self.path` may be relative.
         // A plain `==` would miss, leaving the stale autosave to
@@ -639,7 +651,7 @@ impl EditorScreen {
     /// (the in-memory text still holds the pre-rename self-links). We
     /// deliberately do NOT `try_save` — the old path no longer exists on disk.
     async fn on_note_renamed(&mut self, from: VaultPath, to: VaultPath, tx: &AppTx) {
-        self.dismiss_overlay();
+        self.dismiss_all_overlays();
         self.panels.sidebar_mut().rename_note_row(&from, &to);
         // `is_like` so an absolute `from` (index row) matches a possibly-relative
         // `self.path` — otherwise the retarget + autosave-abort below
@@ -702,6 +714,7 @@ impl EditorScreen {
             space_leads: self.panels.editor().is_some_and(|e| e.space_leads()),
             claim: self.panels.editor().map(|e| e.claim()).unwrap_or_default(),
             double_click,
+            overlay_sortable: self.overlays.active_sortable().is_some(),
         }
     }
 
@@ -960,12 +973,60 @@ impl EditorScreen {
     /// over an open overlay), build the recipe, present it. Opens that need
     /// more than construction (the Ask workspace's capability gate, drawer
     /// views) are not overlays and keep their own methods.
+    ///
+    /// The exception is [`OverlayOpen::SortBrowser`], which only opens *over*
+    /// an open sortable note browser (the Ctrl+K search browser or the Ctrl+O
+    /// file finder): it parks the browser (`OverlayHost::open_over`) so
+    /// closing the dialog brings it back with focus unchanged.
     fn open_overlay(&mut self, open: OverlayOpen, tx: &AppTx) {
-        if self.overlays.is_open() {
+        let stacks = open == OverlayOpen::SortBrowser;
+        if self.overlays.is_open() != stacks {
             return;
         }
-        let overlay = self.build_overlay(open, tx);
-        self.present_overlay(overlay);
+        let Some(overlay) = self.build_overlay(open, tx) else {
+            return;
+        };
+        if stacks {
+            self.leader.cancel();
+            self.overlays.open_over(overlay);
+        } else {
+            self.present_overlay(overlay);
+        }
+    }
+
+    /// The list a sort for `target` reads from. `None` only for the browser
+    /// target when the open overlay is not a sortable browser.
+    fn sortable(&self, target: SortTarget) -> Option<&dyn SortableList> {
+        match target {
+            SortTarget::Sidebar => Some(self.panels.sidebar()),
+            SortTarget::Query => Some(self.panels.query()),
+            SortTarget::Browser => self.overlays.active_sortable(),
+        }
+    }
+
+    /// The list a sort for `target` lands on. The browser target is the
+    /// overlay parked under the sort dialog.
+    fn sortable_mut(&mut self, target: SortTarget) -> Option<&mut dyn SortableList> {
+        match target {
+            SortTarget::Sidebar => Some(self.panels.sidebar_mut()),
+            SortTarget::Query => Some(self.panels.query_mut()),
+            SortTarget::Browser => self.overlays.parked_sortable_mut(),
+        }
+    }
+
+    /// The sort dialog for `target`, opened on that list's sort state. Every
+    /// target builds it the same way; property keys load only for lists that
+    /// can sort by a property.
+    fn sort_dialog(&self, target: SortTarget, tx: &AppTx) -> Option<Box<dyn Overlay>> {
+        let list = self.sortable(target)?;
+        let allows_property = list.allows_property();
+        Some(Box::new(ActiveDialog::sort(
+            target,
+            list.sort_state(),
+            allows_property,
+            allows_property.then(|| self.vault.clone()),
+            tx,
+        )))
     }
 
     /// The note the editor area is showing, if any — what every "+this
@@ -1062,13 +1123,52 @@ impl EditorScreen {
         });
     }
 
+    /// Apply a sort dialog selection to `target` — the one path every sort
+    /// target goes through. A browser sort with no browser parked (stale)
+    /// is dropped.
+    fn apply_sort(&mut self, target: SortTarget, state: &SortState, tx: &AppTx) {
+        if let Some(list) = self.sortable_mut(target) {
+            list.apply_sort(state, tx);
+        }
+    }
+
+    /// The sidebar's "save as default": record the already-applied sort as
+    /// the in-session default for the active context and write it to the
+    /// settings file. `is_current_journal()` is the single source of truth
+    /// for which context this save targets.
+    fn persist_sidebar_sort(&mut self, state: &SortState) {
+        let is_journal = self.panels.sidebar().is_current_journal();
+        self.panels
+            .sidebar_mut()
+            .remember_default(state.field.clone(), state.order);
+        {
+            let mut s = self.settings.write().unwrap();
+            let field = crate::settings::SortFieldSetting::from(state.field.clone());
+            let order = crate::settings::SortOrderSetting::from(state.order);
+            if is_journal {
+                s.journal_sort_field = field;
+                s.journal_sort_order = order;
+            } else {
+                s.default_sort_field = field;
+                s.default_sort_order = order;
+            }
+            if let Some(group) = state.group_dirs {
+                s.group_directories = group;
+            }
+        }
+        let snapshot = self.settings.read().unwrap().clone();
+        tokio::spawn(async move {
+            snapshot.save_to_disk().ok();
+        });
+    }
+
     /// Construction recipes for [`OverlayOpen`] — the single site answering
     /// "what overlays exist and how is each built". Reads screen state (vault,
     /// settings, open note, panel sort/order seeds) but never mutates it;
     /// presentation and the open-guard live in [`Self::open_overlay`].
-    fn build_overlay(&self, open: OverlayOpen, tx: &AppTx) -> Box<dyn Overlay> {
+    fn build_overlay(&self, open: OverlayOpen, tx: &AppTx) -> Option<Box<dyn Overlay>> {
         let s = self.settings.read().unwrap();
-        match open {
+        let overlay: Box<dyn Overlay> = match open {
             // The note-browser modal over the full-text search provider
             // (Ctrl-K and the leader's find paths).
             OverlayOpen::SearchBrowser => {
@@ -1092,15 +1192,18 @@ impl EditorScreen {
             OverlayOpen::FileFinder => {
                 let current_dir = self.path.get_parent_path().0;
                 let provider = FileFinderProvider::new(self.vault.clone(), current_dir);
-                Box::new(NoteBrowserModal::new(
-                    "Find Note",
-                    BrowserScope::Files,
-                    provider,
-                    self.vault.clone(),
-                    s.key_bindings.clone(),
-                    s.icons(),
-                    tx.clone(),
-                ))
+                Box::new(
+                    NoteBrowserModal::new(
+                        "Find Note",
+                        BrowserScope::Files,
+                        provider,
+                        self.vault.clone(),
+                        s.key_bindings.clone(),
+                        s.icons(),
+                        tx.clone(),
+                    )
+                    .with_row_sort(),
+                )
             }
             // F3 and leader `f s`.
             OverlayOpen::SavedSearches => Box::new(SavedSearchesModal::new(
@@ -1132,34 +1235,16 @@ impl EditorScreen {
             OverlayOpen::Help => Box::new(ActiveDialog::help(&s.key_bindings, &s.leader_tree())),
             OverlayOpen::QueryHelp => Box::new(ActiveDialog::query_syntax()),
             OverlayOpen::Cheatsheet => Box::new(ActiveDialog::cheatsheet(&s)),
-            OverlayOpen::SortQuery => {
-                let (field, order) = self.panels.query().current_order();
-                Box::new(ActiveDialog::sort(
-                    SortTarget::Query,
-                    field,
-                    order,
-                    false,
-                    Some(self.vault.clone()),
-                    tx,
-                ))
-            }
-            OverlayOpen::SortSidebar => {
-                let (field, order) = self.panels.sidebar().current_sort();
-                Box::new(ActiveDialog::sort(
-                    SortTarget::Sidebar,
-                    field,
-                    order,
-                    self.panels.sidebar().group_dirs(),
-                    None,
-                    tx,
-                ))
-            }
+            OverlayOpen::SortQuery => return self.sort_dialog(SortTarget::Query, tx),
+            OverlayOpen::SortSidebar => return self.sort_dialog(SortTarget::Sidebar, tx),
+            OverlayOpen::SortBrowser => return self.sort_dialog(SortTarget::Browser, tx),
             OverlayOpen::QuickNote => Box::new(ActiveDialog::quick_note(self.vault.clone())),
             // Leader `f p`.
             OverlayOpen::PinnedNotes => {
                 Box::new(ActiveDialog::pinned_notes(self.vault.clone(), tx))
             }
-        }
+        };
+        Some(overlay)
     }
 
     /// One owner for the self-update lifecycle's display half; the
@@ -1458,55 +1543,29 @@ impl EditorScreen {
                 // (OpenPath -> editor, SavedSearchSelected -> Query panel)
                 // closes the overlay itself first, so a later/!dialog
                 // CloseOverlay must not re-restore and clobber that focus.
+                // That second close is a no-op only with nothing parked:
+                // with a parked overlay (the browser under the sort dialog)
+                // the first close restores it and a second one closes it.
                 self.dismiss_overlay();
             }
             AppEvent::SortChanged {
                 target,
-                field,
-                order,
-                group_directories,
+                state,
                 persist,
             } => {
-                match target {
-                    SortTarget::Sidebar if persist => {
-                        // Update the sidebar's in-session per-context default AND
-                        // apply live. `is_current_journal()` is the single source
-                        // of truth for which context this save targets — reused
-                        // for the on-disk settings write below.
-                        let is_journal = self.panels.sidebar().is_current_journal();
-                        self.panels.sidebar_mut().save_default(
-                            field.clone(),
-                            order,
-                            group_directories,
-                        );
-                        {
-                            let mut s = self.settings.write().unwrap();
-                            if is_journal {
-                                s.journal_sort_field =
-                                    crate::settings::SortFieldSetting::from(field);
-                                s.journal_sort_order =
-                                    crate::settings::SortOrderSetting::from(order);
-                            } else {
-                                s.default_sort_field =
-                                    crate::settings::SortFieldSetting::from(field);
-                                s.default_sort_order =
-                                    crate::settings::SortOrderSetting::from(order);
-                            }
-                            s.group_directories = group_directories;
-                        }
-                        let snapshot = self.settings.read().unwrap().clone();
-                        tokio::spawn(async move {
-                            snapshot.save_to_disk().ok();
-                        });
+                self.apply_sort(target, &state, tx);
+                // Persisting is the sidebar's alone (its "save as default");
+                // the query-backed lists keep their order in the query string.
+                // A property sort is never a default: it applies, unsaved.
+                if persist && target == SortTarget::Sidebar {
+                    if matches!(state.field, SortField::Property(_)) {
+                        tx.send(AppEvent::FlashMessage(
+                            "property sort can't be saved as default".into(),
+                        ))
+                        .ok();
+                    } else {
+                        self.persist_sidebar_sort(&state);
                     }
-                    SortTarget::Sidebar => {
-                        self.panels
-                            .sidebar_mut()
-                            .apply_sort(field, order, group_directories)
-                    }
-                    // The query panel has no persisted default (the order lives
-                    // in the query string); `persist` is always false here.
-                    SortTarget::Query => self.panels.query_mut().apply_sort(field, order, tx),
                 }
             }
             AppEvent::Autosave => {
@@ -4358,7 +4417,8 @@ mod sort_routing_tests {
     use super::*;
     use crate::app_screen::AppScreen;
     use crate::components::events::SortTarget;
-    use crate::components::file_list::{SortField, SortOrder};
+    use crate::components::file_list::SortOrder;
+    use crate::components::sortable::SortState;
 
     async fn make_editor() -> (
         EditorScreen,
@@ -4382,9 +4442,11 @@ mod sort_routing_tests {
             .handle_app_message(
                 AppEvent::SortChanged {
                     target: SortTarget::Sidebar,
-                    field: SortField::Title,
-                    order: SortOrder::Descending,
-                    group_directories: true,
+                    state: SortState {
+                        field: SortField::Title,
+                        order: SortOrder::Descending,
+                        group_dirs: Some(true),
+                    },
                     persist: true,
                 },
                 &tx,
@@ -4413,9 +4475,11 @@ mod sort_routing_tests {
             .handle_app_message(
                 AppEvent::SortChanged {
                     target: SortTarget::Sidebar,
-                    field: SortField::Title,
-                    order: SortOrder::Ascending,
-                    group_directories: false,
+                    state: SortState {
+                        field: SortField::Title,
+                        order: SortOrder::Ascending,
+                        group_dirs: Some(false),
+                    },
                     persist: true,
                 },
                 &tx,
@@ -4447,9 +4511,11 @@ mod sort_routing_tests {
             .handle_app_message(
                 AppEvent::SortChanged {
                     target: SortTarget::Sidebar,
-                    field: SortField::Title,
-                    order: SortOrder::Descending,
-                    group_directories: true,
+                    state: SortState {
+                        field: SortField::Title,
+                        order: SortOrder::Descending,
+                        group_dirs: Some(true),
+                    },
                     persist: false,
                 },
                 &tx,
@@ -4465,5 +4531,177 @@ mod sort_routing_tests {
             crate::settings::SortOrderSetting::Ascending
         );
         assert!(!s.group_directories);
+    }
+
+    fn key(code: ratatui::crossterm::event::KeyCode, ctrl: bool) -> InputEvent {
+        use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
+        let mods = if ctrl {
+            KeyModifiers::CONTROL
+        } else {
+            KeyModifiers::NONE
+        };
+        InputEvent::Key(KeyEvent::new(code, mods))
+    }
+
+    /// Ctrl+R over the Ctrl+K search browser stacks the sort dialog on top of
+    /// it; a Browser sort rewrites the browser's query live; closing the
+    /// dialog brings the browser back with the rewritten query and the panel
+    /// focus untouched.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ctrl_r_sorts_the_search_browser_and_close_restores_it() {
+        use ratatui::crossterm::event::KeyCode;
+        let (mut screen, tx, _rx) = make_editor().await;
+        let focus = screen.panels.focused();
+        screen.open_overlay(OverlayOpen::SearchBrowser, &tx);
+        screen.handle_input(&key(KeyCode::Char('x'), false), &tx);
+        assert_eq!(screen.overlays.active_query(), Some("x"));
+
+        screen.handle_input(&key(KeyCode::Char('r'), true), &tx);
+        assert_eq!(screen.overlays.active_kind(), Some(OverlayKind::Dialog));
+        assert_eq!(
+            screen.overlays.parked_kind(),
+            Some(OverlayKind::NoteBrowser),
+            "the browser is parked under the dialog"
+        );
+
+        screen
+            .handle_app_message(
+                AppEvent::SortChanged {
+                    target: SortTarget::Browser,
+                    state: SortState {
+                        field: SortField::Title,
+                        order: SortOrder::Ascending,
+                        group_dirs: None,
+                    },
+                    persist: false,
+                },
+                &tx,
+            )
+            .await;
+
+        screen.handle_app_message(AppEvent::CloseOverlay, &tx).await;
+        assert_eq!(
+            screen.overlays.active_kind(),
+            Some(OverlayKind::NoteBrowser)
+        );
+        assert_eq!(screen.overlays.parked_kind(), None);
+        assert_eq!(screen.overlays.active_query(), Some("x or:title"));
+        assert_eq!(screen.panels.focused(), focus, "panel focus unchanged");
+
+        // A second close dismisses the browser to its opener.
+        screen.handle_app_message(AppEvent::CloseOverlay, &tx).await;
+        assert!(!screen.overlays.is_open());
+        assert_eq!(screen.panels.focused(), focus);
+    }
+
+    /// Ctrl+R over the Ctrl+O file finder opens the sort dialog the same
+    /// way as over the search browser: the finder is parked under it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ctrl_r_over_the_file_finder_opens_the_sort_dialog() {
+        use ratatui::crossterm::event::KeyCode;
+        let (mut screen, tx, _rx) = make_editor().await;
+        let focus = screen.panels.focused();
+        screen.open_overlay(OverlayOpen::FileFinder, &tx);
+        screen.handle_input(&key(KeyCode::Char('r'), true), &tx);
+        assert_eq!(screen.overlays.active_kind(), Some(OverlayKind::Dialog));
+        assert_eq!(
+            screen.overlays.parked_kind(),
+            Some(OverlayKind::NoteBrowser),
+            "the finder is parked under the dialog"
+        );
+        screen.handle_app_message(AppEvent::CloseOverlay, &tx).await;
+        assert_eq!(
+            screen.overlays.active_kind(),
+            Some(OverlayKind::NoteBrowser)
+        );
+        screen.handle_app_message(AppEvent::CloseOverlay, &tx).await;
+        assert!(!screen.overlays.is_open());
+        assert_eq!(screen.panels.focused(), focus);
+    }
+
+    /// A property sort is never a saved default: `s` with a Property field
+    /// applies the sort but leaves the settings alone and says why.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sidebar_property_sort_is_never_persisted() {
+        let (mut screen, tx, mut rx) = make_editor().await;
+        screen
+            .handle_app_message(
+                AppEvent::SortChanged {
+                    target: SortTarget::Sidebar,
+                    state: SortState {
+                        field: SortField::Property("due".into()),
+                        order: SortOrder::Descending,
+                        group_dirs: Some(true),
+                    },
+                    persist: true,
+                },
+                &tx,
+            )
+            .await;
+        {
+            let s = screen.settings.read().unwrap();
+            assert_eq!(
+                s.default_sort_field,
+                crate::settings::SortFieldSetting::Name
+            );
+            assert_eq!(
+                s.default_sort_order,
+                crate::settings::SortOrderSetting::Ascending
+            );
+            assert!(!s.group_directories);
+        }
+        assert_eq!(
+            screen.panels.sidebar().current_sort(),
+            (SortField::Property("due".into()), SortOrder::Descending),
+            "the sort still applies live"
+        );
+        let mut flashed = false;
+        while let Ok(evt) = rx.try_recv() {
+            if let AppEvent::FlashMessage(msg) = evt {
+                flashed |= msg.contains("can't be saved");
+            }
+        }
+        assert!(flashed, "the user is told why nothing was saved");
+    }
+
+    /// Opens the search browser with the sort dialog stacked over it.
+    async fn browser_under_sort_dialog(screen: &mut EditorScreen, tx: &AppTx) {
+        use ratatui::crossterm::event::KeyCode;
+        screen.open_overlay(OverlayOpen::SearchBrowser, tx);
+        screen.handle_input(&key(KeyCode::Char('r'), true), tx);
+        assert_eq!(
+            screen.overlays.parked_kind(),
+            Some(OverlayKind::NoteBrowser)
+        );
+    }
+
+    /// A file operation closes the whole overlay stack, parked browser too.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn entry_op_closes_the_whole_overlay_stack() {
+        let (mut screen, tx, _rx) = make_editor().await;
+        let focus = screen.panels.focused();
+        browser_under_sort_dialog(&mut screen, &tx).await;
+        screen
+            .on_entry_op(VaultPath::note_path_from("elsewhere.md"), &tx)
+            .await;
+        assert!(!screen.overlays.is_open());
+        assert_eq!(screen.overlays.parked_kind(), None);
+        assert_eq!(screen.panels.focused(), focus);
+    }
+
+    /// A rename closes the whole overlay stack, parked browser too.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn note_rename_closes_the_whole_overlay_stack() {
+        let (mut screen, tx, _rx) = make_editor().await;
+        browser_under_sort_dialog(&mut screen, &tx).await;
+        screen
+            .on_note_renamed(
+                VaultPath::note_path_from("a.md"),
+                VaultPath::note_path_from("b.md"),
+                &tx,
+            )
+            .await;
+        assert!(!screen.overlays.is_open());
+        assert_eq!(screen.overlays.parked_kind(), None);
     }
 }

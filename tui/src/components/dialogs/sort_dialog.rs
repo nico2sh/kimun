@@ -9,6 +9,7 @@ use crate::components::events::{AppEvent, AppTx, InputEvent, SortTarget};
 use crate::components::file_list::{SortField, SortOrder};
 use crate::components::key_picker::{KeyPicker, PickerOutcome};
 use crate::components::panel::{ModalSpec, modal_chrome};
+use crate::components::sortable::SortState;
 use crate::settings::themes::Theme;
 
 /// The selectable rows, in display order.
@@ -20,15 +21,19 @@ enum Row {
     GroupDirs,
 }
 
-/// Modal that edits sort field / order (+ a sidebar-only "group directories"
-/// toggle). Changes apply live: each toggle emits `AppEvent::SortChanged`
-/// (`persist = false`). `s` (sidebar only) emits the same event with
-/// `persist = true` (save as default); Enter/Esc emit `CloseOverlay`.
+/// Modal that edits one list's [`SortState`]: field / order, plus a "group
+/// directories" toggle for lists that have one. Changes apply live: each
+/// toggle emits `AppEvent::SortChanged` (`persist = false`). `s` (sidebar
+/// only) emits the same event with `persist = true` (save as default);
+/// Enter/Esc emit `CloseOverlay`.
 pub struct SortDialog {
     target: SortTarget,
     pub(crate) field: SortField,
     pub(crate) order: SortOrder,
-    group_dirs: bool,
+    /// `Some` drives the "Group directories" row.
+    group_dirs: Option<bool>,
+    /// The Field cycle reaches Property (query-backed lists only).
+    allows_property: bool,
     rows: Vec<Row>,
     selected: usize,
     picker: KeyPicker,
@@ -37,7 +42,14 @@ pub struct SortDialog {
 }
 
 impl SortDialog {
-    pub fn new(target: SortTarget, field: SortField, order: SortOrder, group_dirs: bool) -> Self {
+    /// A dialog for `target`, opened on its current `state`.
+    /// `allows_property` comes from the list's `SortableList::allows_property`.
+    pub fn new(target: SortTarget, state: SortState, allows_property: bool) -> Self {
+        let SortState {
+            field,
+            order,
+            group_dirs,
+        } = state;
         let key = match &field {
             SortField::Property(k) => k.clone(),
             _ => String::new(),
@@ -47,6 +59,7 @@ impl SortDialog {
             field,
             order,
             group_dirs,
+            allows_property,
             rows: Vec::new(),
             selected: 0,
             picker: KeyPicker::new(&key),
@@ -62,7 +75,7 @@ impl SortDialog {
         if matches!(self.field, SortField::Property(_)) {
             rows.push(Row::Key);
         }
-        if self.target == SortTarget::Sidebar {
+        if self.group_dirs.is_some() {
             rows.push(Row::GroupDirs);
         }
         self.rows = rows;
@@ -97,9 +110,11 @@ impl SortDialog {
         }
         tx.send(AppEvent::SortChanged {
             target: self.target,
-            field: self.field.clone(),
-            order: self.order,
-            group_directories: self.group_dirs,
+            state: SortState {
+                field: self.field.clone(),
+                order: self.order,
+                group_dirs: self.group_dirs,
+            },
             persist,
         })
         .ok();
@@ -108,7 +123,7 @@ impl SortDialog {
     fn toggle_selected(&mut self, tx: &AppTx) {
         match self.rows[self.selected] {
             Row::Field => {
-                self.field = self.field.cycle(self.target == SortTarget::Query);
+                self.field = self.field.cycle(self.allows_property);
                 if matches!(self.field, SortField::Property(_)) && !self.picker.value().is_empty() {
                     self.field = SortField::Property(self.picker.value().to_string());
                 }
@@ -116,7 +131,7 @@ impl SortDialog {
             }
             Row::Order => self.order = self.order.toggle(),
             Row::Key => {}
-            Row::GroupDirs => self.group_dirs = !self.group_dirs,
+            Row::GroupDirs => self.group_dirs = self.group_dirs.map(|g| !g),
         }
         self.emit(tx, false);
     }
@@ -224,7 +239,12 @@ impl SortDialog {
             ),
             Row::GroupDirs => (
                 "Group directories".to_string(),
-                if self.group_dirs { "On" } else { "Off" }.to_string(),
+                if self.group_dirs == Some(true) {
+                    "On"
+                } else {
+                    "Off"
+                }
+                .to_string(),
             ),
         }
     }
@@ -344,6 +364,7 @@ mod tests {
     use super::*;
     use crate::components::events::SortTarget;
     use crate::components::file_list::{SortField, SortOrder};
+    use crate::components::sortable::SortState;
     use ratatui::crossterm::event::{KeyCode, KeyEvent};
     use tokio::sync::mpsc::unbounded_channel;
 
@@ -351,23 +372,25 @@ mod tests {
         KeyEvent::from(code)
     }
 
+    fn state(field: SortField, group_dirs: Option<bool>) -> SortState {
+        SortState {
+            field,
+            order: SortOrder::Ascending,
+            group_dirs,
+        }
+    }
+
     fn sidebar_dialog() -> SortDialog {
         SortDialog::new(
             SortTarget::Sidebar,
-            SortField::Name,
-            SortOrder::Ascending,
+            state(SortField::Name, Some(false)),
             false,
         )
     }
 
     #[test]
     fn empty_property_field_emits_nothing() {
-        let mut d = SortDialog::new(
-            SortTarget::Query,
-            SortField::Name,
-            SortOrder::Ascending,
-            false,
-        );
+        let mut d = SortDialog::new(SortTarget::Query, state(SortField::Name, None), true);
         let (tx, mut rx) = unbounded_channel();
         d.handle_key(key(KeyCode::Char(' ')), &tx); // Name -> Title
         assert!(rx.try_recv().is_ok());
@@ -386,15 +409,13 @@ mod tests {
         match evt {
             AppEvent::SortChanged {
                 target,
-                field,
-                order,
-                group_directories,
+                state,
                 persist,
             } => {
                 assert_eq!(target, SortTarget::Sidebar);
-                assert_eq!(field, SortField::Title);
-                assert_eq!(order, SortOrder::Ascending);
-                assert!(!group_directories);
+                assert_eq!(state.field, SortField::Title);
+                assert_eq!(state.order, SortOrder::Ascending);
+                assert_eq!(state.group_dirs, Some(false));
                 assert!(!persist, "a plain toggle is not a save");
             }
             other => panic!("expected SortChanged, got {other:?}"),
@@ -413,15 +434,10 @@ mod tests {
     }
 
     #[test]
-    fn group_row_present_only_for_sidebar() {
+    fn group_row_present_only_with_group_dirs() {
         let sidebar = sidebar_dialog();
         assert_eq!(sidebar.row_count(), 3);
-        let query = SortDialog::new(
-            SortTarget::Query,
-            SortField::Name,
-            SortOrder::Ascending,
-            false,
-        );
+        let query = SortDialog::new(SortTarget::Query, state(SortField::Name, None), true);
         assert_eq!(query.row_count(), 2);
     }
 
@@ -438,12 +454,7 @@ mod tests {
             "s on the sidebar emits a persisting SortChanged"
         );
 
-        let mut q = SortDialog::new(
-            SortTarget::Query,
-            SortField::Name,
-            SortOrder::Ascending,
-            false,
-        );
+        let mut q = SortDialog::new(SortTarget::Query, state(SortField::Name, None), true);
         let (tx2, mut rx2) = unbounded_channel();
         q.handle_key(key(KeyCode::Char('s')), &tx2);
         assert!(rx2.try_recv().is_err(), "query target has no save-default");
@@ -464,7 +475,7 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend};
 
     fn query_dialog(field: SortField) -> SortDialog {
-        SortDialog::new(SortTarget::Query, field, SortOrder::Ascending, false)
+        SortDialog::new(SortTarget::Query, state(field, None), true)
     }
 
     fn draw(d: &mut SortDialog) {
@@ -503,8 +514,8 @@ mod tests {
         }
         d.handle_key(key(KeyCode::Enter), &tx); // accept "due" from the list
         match rx.try_recv() {
-            Ok(AppEvent::SortChanged { field, .. }) => {
-                assert_eq!(field, SortField::Property("due".into()))
+            Ok(AppEvent::SortChanged { state, .. }) => {
+                assert_eq!(state.field, SortField::Property("due".into()))
             }
             other => panic!("expected SortChanged, got {other:?}"),
         }
@@ -555,5 +566,43 @@ mod tests {
         d.handle_key(key(KeyCode::Down), &tx);
         d.handle_key(key(KeyCode::Enter), &tx);
         assert!(matches!(rx.try_recv(), Ok(AppEvent::CloseOverlay)));
+    }
+
+    /// The browser target: property sorts allowed, no group row, no `s`.
+    #[test]
+    fn browser_dialog_cycles_to_property_without_group_row() {
+        let mut d = SortDialog::new(SortTarget::Browser, state(SortField::Title, None), true);
+        assert_eq!(d.row_count(), 2, "no group row without group_dirs");
+        let (tx, mut rx) = unbounded_channel();
+        d.handle_key(key(KeyCode::Char(' ')), &tx);
+        assert_eq!(d.field, SortField::Property(String::new()));
+        d.handle_key(key(KeyCode::Char('s')), &tx);
+        assert!(rx.try_recv().is_err(), "browser has no save-default");
+    }
+
+    /// The sidebar sorts by property now: its dialog cycles to Property and
+    /// shows the Key row next to the group row.
+    #[test]
+    fn sidebar_dialog_cycles_to_property_with_group_row() {
+        let mut d = SortDialog::new(
+            SortTarget::Sidebar,
+            state(SortField::Title, Some(true)),
+            true,
+        );
+        assert_eq!(d.row_count(), 3);
+        let (tx, _rx) = unbounded_channel();
+        d.handle_key(key(KeyCode::Char(' ')), &tx);
+        assert_eq!(d.field, SortField::Property(String::new()));
+        assert_eq!(d.row_count(), 4, "field, order, key and group rows");
+    }
+
+    /// `allows_property = false` never reaches Property, whatever the target.
+    #[test]
+    fn disallowed_property_never_cycles_to_property() {
+        let mut d = SortDialog::new(SortTarget::Query, state(SortField::Name, None), false);
+        let (tx, _rx) = unbounded_channel();
+        d.handle_key(key(KeyCode::Char(' ')), &tx);
+        d.handle_key(key(KeyCode::Char(' ')), &tx);
+        assert_eq!(d.field, SortField::Name);
     }
 }

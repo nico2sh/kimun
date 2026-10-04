@@ -63,7 +63,9 @@ pub use index::search_terms::{
     strip_order_directive, with_order_directive, OrderBy, OrderField, PropertyFilter, PropertyOp,
     PropertyTest, QueryTokenClass, QueryTokenSpan, SearchTerms,
 };
-pub use index::{IndexDiff, IndexObserver, NoteChange, NoteSuggestion, TagSuggestion};
+pub use index::{
+    IndexDiff, IndexObserver, NoteChange, NoteSuggestion, PropertySortValue, TagSuggestion,
+};
 pub use nfs::pinned_notes::{PinToggle, PINNED_NOTES_CAP};
 pub use nfs::saved_searches::{saved_search_name_matches, SavedSearch};
 pub use nfs::vault_id::VaultId;
@@ -1305,6 +1307,21 @@ impl NoteVault {
     /// and sorted. Index-backed.
     pub async fn property_keys(&self) -> Result<Vec<String>, VaultError> {
         Ok(self.index.property_keys().await?)
+    }
+
+    /// Each indexed note's sort value for property `key` (matched in search
+    /// form, as `or:prop:key` matches it), keyed by note path. Ordering the
+    /// values with [`PropertySortValue`]'s `Ord`, notes absent from the map
+    /// last, gives the same order as the query sort. Notes without the key
+    /// (or not indexed yet) are absent. Index-backed.
+    pub async fn property_sort_values(
+        &self,
+        key: &str,
+    ) -> Result<HashMap<VaultPath, PropertySortValue>, VaultError> {
+        let Some(key) = properties::search_key(key) else {
+            return Ok(HashMap::new());
+        };
+        Ok(self.index.property_sort_values(&key).await?)
     }
 
     /// Sets a frontmatter property, keeping the existing block's format,
@@ -5421,5 +5438,75 @@ mod property_api_tests {
             vault.get_note_text(&p("/q.md")).await.unwrap(),
             "---\nother: v # c\nb: 2\n---\nbody"
         );
+    }
+
+    /// `property_sort_values` maps each note with the key to its first value;
+    /// ordering those values (missing last) gives the `or:prop:` order.
+    #[tokio::test]
+    async fn property_sort_values_match_the_query_sort() {
+        let (_tmp, vault) = new_vault().await;
+        let notes = [
+            ("/n1.md", "---\nRank: 10\n---\nbody"),
+            ("/n2.md", "---\nrank: 2\n---\nbody"),
+            ("/d1.md", "---\nrank: 2024-01-15\n---\nbody"),
+            ("/d2.md", "---\nrank: 2023-06-01T10:00:00Z\n---\nbody"),
+            ("/t1.md", "---\nrank: Beta\n---\nbody"),
+            ("/t2.md", "---\nrank: alpha\n---\nbody"),
+            ("/l.md", "---\nrank: [zulu, aaa]\n---\nbody"),
+            ("/none.md", "---\nother: 1\n---\nbody"),
+        ];
+        for (path, body) in notes {
+            vault.create_note(&p(path), body).await.unwrap();
+        }
+        let values = vault.property_sort_values("RANK").await.unwrap();
+        assert_eq!(values.len(), 7, "{values:?}");
+        assert!(!values.contains_key(&p("/none.md")));
+        assert!(values[&p("/n2.md")] < values[&p("/n1.md")], "numbers");
+        assert!(
+            values[&p("/n1.md")] < values[&p("/d2.md")],
+            "numbers before dates"
+        );
+        assert!(
+            values[&p("/d2.md")] < values[&p("/d1.md")],
+            "dates by instant"
+        );
+        assert!(
+            values[&p("/d1.md")] < values[&p("/t2.md")],
+            "dates before text"
+        );
+        assert!(
+            values[&p("/t2.md")] < values[&p("/t1.md")],
+            "text ignores case"
+        );
+        assert!(
+            values[&p("/t1.md")] < values[&p("/l.md")],
+            "a list's first item"
+        );
+        assert!(vault.property_sort_values(" ").await.unwrap().is_empty());
+
+        for asc in [true, false] {
+            let dir = if asc { "" } else { "-" };
+            let query: Vec<VaultPath> = vault
+                .search_notes(format!("body {dir}or:prop:rank"))
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|(e, _)| e.path)
+                .collect();
+            let mut ours = query.clone();
+            ours.sort_by(|a, b| match (values.get(a), values.get(b)) {
+                (Some(x), Some(y)) if asc => x.cmp(y),
+                (Some(x), Some(y)) => y.cmp(x),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            });
+            assert_eq!(ours, query, "asc={asc}");
+            assert_eq!(
+                query.last(),
+                Some(&p("/none.md")),
+                "missing last, asc={asc}"
+            );
+        }
     }
 }

@@ -7,13 +7,15 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use kimun_core::{NoteVault, nfs::VaultPath};
 
-use crate::components::file_list::{SortField, SortOrder};
+use crate::components::sortable::SortState;
 
 /// Which panel a sort selection applies to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortTarget {
     Sidebar,
     Query,
+    /// The Ctrl+K search browser (the note browser over the search source).
+    Browser,
 }
 
 /// The surface a save-current-query action sourced its query from. Carried
@@ -177,15 +179,12 @@ pub enum AppEvent {
     /// `handle_saved_search`.
     SavedSearch(SavedSearchFlow),
 
-    /// Sort selection changed in the sort dialog — apply live to `target`.
-    /// When `persist` is set (sidebar's "save as default"), also write the
-    /// choice to settings. `group_directories` is sidebar-only (the query panel
-    /// ignores it).
+    /// Sort selection changed in the sort dialog — apply live to `target`
+    /// (through its `SortableList`). When `persist` is set (sidebar's "save
+    /// as default"), also write the choice to settings.
     SortChanged {
         target: SortTarget,
-        field: SortField,
-        order: SortOrder,
-        group_directories: bool,
+        state: SortState,
         persist: bool,
     },
 }
@@ -458,19 +457,17 @@ mod tests {
     #[test]
     fn sort_events_construct() {
         use crate::components::file_list::{SortField, SortOrder};
-        let _ = AppEvent::SortChanged {
-            target: SortTarget::Sidebar,
-            field: SortField::Name,
-            order: SortOrder::Ascending,
-            group_directories: true,
-            persist: false,
-        };
-        let _ = AppEvent::SortChanged {
-            target: SortTarget::Query,
-            field: SortField::Title,
-            order: SortOrder::Descending,
-            group_directories: false,
-            persist: true,
-        };
+        use crate::components::sortable::SortState;
+        for target in [SortTarget::Sidebar, SortTarget::Query, SortTarget::Browser] {
+            let _ = AppEvent::SortChanged {
+                target,
+                state: SortState {
+                    field: SortField::Title,
+                    order: SortOrder::Descending,
+                    group_dirs: None,
+                },
+                persist: false,
+            };
+        }
     }
 }

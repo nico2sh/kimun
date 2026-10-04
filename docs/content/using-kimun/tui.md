@@ -58,7 +58,7 @@ Sequences, additions, removals, and group captions are configurable in `config.t
 
 ### FILES
 
-The workspace file tree with a breadcrumb header (click a segment to jump up), type-to-filter, and sorting (`Ctrl+R` opens the sort dialog: field, order, group-directories). Enter opens a note; typing a name that matches nothing offers a *Create* row. Right-click a row for the file-operations menu (rename / move / delete), also on `F2`.
+The workspace file tree with a breadcrumb header (click a segment to jump up), type-to-filter, and sorting (`Ctrl+R` opens the sort dialog: field, order, group-directories). Sort by **Property** to order the listing by a frontmatter key's value; notes without it (or not indexed yet) and attachments come after the rest in name order. Directories come first when group-directories is on, and otherwise join the rows without a value. A property sort applies for the session but can't be saved as the default (`s`). Enter opens a note; typing a name that matches nothing offers a *Create* row. Right-click a row for the file-operations menu (rename / move / delete), also on `F2`.
 
 ### FIND
 
@@ -92,8 +92,8 @@ A configuration overview: active theme, leader key, preferences key, which-key t
 
 Two modal pickers float over the editor, list on the left, preview on the right:
 
-- **`Ctrl+K`** — query search (same grammar as FIND); the preview shows the note with matches emphasized and a `filename · N matches` header.
-- **`Ctrl+O`** — fuzzy file finder by name; typing a new name offers a *Create* row.
+- **`Ctrl+K`** — query search (same grammar as FIND); the preview shows the note with matches emphasized and a `filename · N matches` header. `Ctrl+R` opens the sort dialog over it; the results re-sort live, and closing the dialog returns to the search. With no search terms, a sort reorders your recent notes instead of searching the whole vault.
+- **`Ctrl+O`** — fuzzy file finder by name; typing a new name offers a *Create* row. `Ctrl+R` opens the sort dialog over it, like over `Ctrl+K`: its rows re-sort by name, title or a property.
 
 Enter opens the selection (query matches stay highlighted in the editor until your first edit). `Ctrl+D` saves the current query.
 

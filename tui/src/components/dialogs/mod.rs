@@ -24,8 +24,8 @@ use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 use crate::components::Component;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, OverlayData, SaveSource, SortTarget};
-use crate::components::file_list::{SortField, SortOrder};
 use crate::components::overlay::{Overlay, OverlayKind, OverlayMsg};
+use crate::components::sortable::SortState;
 use crate::settings::themes::Theme;
 
 /// Load every property key in the background; arrives as
@@ -177,18 +177,20 @@ impl ActiveDialog {
         ActiveDialog::SaveSearch(SaveSearchDialog::new(query, provenance, source))
     }
 
+    /// The sort dialog for `target`, opened on its `state`. With a `vault`,
+    /// the property keys load in the background for the Key picker (pass one
+    /// exactly when `allows_property`).
     pub fn sort(
         target: SortTarget,
-        field: SortField,
-        order: SortOrder,
-        group_directories: bool,
+        state: SortState,
+        allows_property: bool,
         vault: Option<Arc<NoteVault>>,
         tx: &AppTx,
     ) -> Self {
         if let Some(vault) = vault {
             spawn_property_keys(vault, tx);
         }
-        ActiveDialog::Sort(SortDialog::new(target, field, order, group_directories))
+        ActiveDialog::Sort(SortDialog::new(target, state, allows_property))
     }
 
     /// The pinned-notes dialog (leader `f p`). Loads in the background and
@@ -464,14 +466,13 @@ mod tests {
         use crate::components::events::SortTarget;
         use crate::components::file_list::{SortField, SortOrder};
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let _active: ActiveDialog = ActiveDialog::sort(
-            SortTarget::Sidebar,
-            SortField::Name,
-            SortOrder::Ascending,
-            false,
-            None,
-            &tx,
-        );
+        let state = crate::components::sortable::SortState {
+            field: SortField::Name,
+            order: SortOrder::Ascending,
+            group_dirs: Some(false),
+        };
+        let _active: ActiveDialog =
+            ActiveDialog::sort(SortTarget::Sidebar, state, false, None, &tx);
     }
 
     /// Every dialog test for `PinnedNotesDialog` calls `set_rows` directly,

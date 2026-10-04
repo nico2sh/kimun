@@ -10,8 +10,6 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 use ratatui::widgets::{Block, Borders, ListItem, Paragraph};
 
-use kimun_core::{OrderBy, OrderField, with_order_directive};
-
 use crate::components::autocomplete::AutocompleteMode;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, FileOp};
@@ -23,6 +21,7 @@ use crate::components::search_list::{
     Emit, Focus, KeyReaction, ResolvingRowSource, RowSource, SearchList, SearchMouse, SearchRow,
     Unresolvable, VaultSuggestions,
 };
+use crate::components::sortable::{SortState, SortableList, order_of_query, query_with_sort};
 use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::key_combo::KeyCombo;
@@ -412,54 +411,20 @@ impl QueryPanel {
     /// Parses the query each call — cheap for the rare callers (dialog open).
     /// The per-frame render path uses the memoised `order_cache` instead.
     pub fn current_order(&self) -> (SortField, SortOrder) {
-        let st = kimun_core::SearchTerms::from_query_string(self.list.query());
-        match st.order_by.first() {
-            Some(OrderBy::Title { asc }) => (
-                SortField::Title,
-                if *asc {
-                    SortOrder::Ascending
-                } else {
-                    SortOrder::Descending
-                },
-            ),
-            Some(OrderBy::FileName { asc }) => (
-                SortField::Name,
-                if *asc {
-                    SortOrder::Ascending
-                } else {
-                    SortOrder::Descending
-                },
-            ),
-            Some(OrderBy::Property { key, asc }) => (
-                SortField::Property(key.clone()),
-                if *asc {
-                    SortOrder::Ascending
-                } else {
-                    SortOrder::Descending
-                },
-            ),
-            None => (SortField::Name, SortOrder::Ascending),
-        }
+        order_of_query(self.list.query())
     }
 
     /// Apply a sort selection from the sort dialog: rewrite the query's order
     /// directive (the query string is the single source of truth) and reload.
     pub fn apply_sort(&mut self, field: SortField, order: SortOrder, tx: &AppTx) {
-        if matches!(&field, SortField::Property(k) if k.trim().is_empty()) {
+        let Some(rewritten) = query_with_sort(self.list.query(), &field, order) else {
             return;
-        }
-        self.ensure_redraw_tx(tx);
-        let order_field = match field {
-            SortField::Name => OrderField::FileName,
-            SortField::Title => OrderField::Title,
-            SortField::Property(key) => OrderField::Property(key),
         };
-        let asc = matches!(order, SortOrder::Ascending);
-        let rewritten = with_order_directive(self.list.query(), order_field, asc);
+        self.ensure_redraw_tx(tx);
         self.list.set_query(rewritten);
         // A sort only rewrites the order directive — the breadcrumb stays
-        // (and `saved_search_breadcrumb` ignores the directive, so it is not
-        // marked edited).
+        // pinned, gaining the `• edited` marker (the stored query is saved
+        // verbatim, so a different order is an edit).
         self.reset_expand();
     }
 
@@ -1000,6 +965,25 @@ fn extract_context_multi(text: &str, needles: &[String]) -> String {
         .find(|l| !l.trim().is_empty())
         .unwrap_or("")
         .to_string()
+}
+
+impl SortableList for QueryPanel {
+    fn sort_state(&self) -> SortState {
+        let (field, order) = self.current_order();
+        SortState {
+            field,
+            order,
+            group_dirs: None,
+        }
+    }
+
+    fn apply_sort(&mut self, state: &SortState, tx: &AppTx) {
+        QueryPanel::apply_sort(self, state.field.clone(), state.order, tx);
+    }
+
+    fn allows_property(&self) -> bool {
+        true
+    }
 }
 
 // ---------------------------------------------------------------------------
