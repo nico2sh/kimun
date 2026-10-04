@@ -94,7 +94,7 @@ pub async fn run(
                 .get_property(&path, &key)
                 .await?
                 .ok_or_else(|| UserError(format!("No property '{key}' in {path}")))?;
-            println!("{}", format_value(&value, format)?);
+            println!("{}", format_value(value.as_ref(), format)?);
         }
         PropSubcommand::Set {
             path,
@@ -147,11 +147,12 @@ pub fn format_properties(properties: &[PropertyEntry], format: PropFormat) -> Re
     })
 }
 
-/// One value as plain text, or as its JSON value.
-pub fn format_value(value: &PropertyValue, format: PropFormat) -> Result<String> {
+/// One value as plain text, or as its JSON value; a key with no readable
+/// value is an empty line, or `null`.
+pub fn format_value(value: Option<&PropertyValue>, format: PropFormat) -> Result<String> {
     Ok(match format {
-        PropFormat::Text => value.to_string(),
-        PropFormat::Json => serde_json::to_string(value)?,
+        PropFormat::Text => value.map(ToString::to_string).unwrap_or_default(),
+        PropFormat::Json => serde_json::to_string(&value)?,
     })
 }
 
@@ -223,7 +224,12 @@ mod tests {
     #[test]
     fn formats_one_value() {
         let tags = PropertyValue::List(vec!["a".into()]);
-        assert_eq!(format_value(&tags, PropFormat::Text).unwrap(), "a");
-        assert_eq!(format_value(&tags, PropFormat::Json).unwrap(), "[\"a\"]");
+        assert_eq!(format_value(Some(&tags), PropFormat::Text).unwrap(), "a");
+        assert_eq!(
+            format_value(Some(&tags), PropFormat::Json).unwrap(),
+            "[\"a\"]"
+        );
+        assert_eq!(format_value(None, PropFormat::Text).unwrap(), "");
+        assert_eq!(format_value(None, PropFormat::Json).unwrap(), "null");
     }
 }

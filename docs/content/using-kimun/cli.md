@@ -382,9 +382,9 @@ kimun note delete "inbox/stale-idea" --force
 Read and edit a note's frontmatter [properties](@/using-kimun/search.md#properties) without touching the rest of the file.
 
 ```sh
-kimun note prop list "projects/garden"               # key: value lines (a key with no value: "key:")
-kimun note prop list "projects/garden" --format json # one JSON object (a key with no value: null)
-kimun note prop get "projects/garden" status         # just the value
+kimun note prop list "projects/garden"               # key: value lines ("key:" when it has no readable value)
+kimun note prop list "projects/garden" --format json # one JSON object (null when a key has no readable value)
+kimun note prop get "projects/garden" status         # just the value (empty, or null in JSON, when it has none)
 kimun note prop set "projects/garden" status active
 kimun note prop set "projects/garden" tags garden spring   # several values → a list
 kimun note prop set "projects/garden" due 2026-05-01
@@ -633,6 +633,8 @@ Both `search` and `notes` support JSON output for scripting and automation.
   ]
 }
 ```
+
+In `properties`, a key the note has with no value (YAML `due:`), or with one Kimün can't read (a TOML time of day such as `10:30:00`, `nan`), is `null`.
 
 ### Processing with jq
 

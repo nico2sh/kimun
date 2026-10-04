@@ -428,11 +428,17 @@ pub(crate) fn format_datetime(dt: &DateTime<Utc>) -> String {
     dt.to_rfc3339_opts(SecondsFormat::AutoSi, true)
 }
 
-/// A block that repeats a key — invalid in TOML and in YAML, which both
-/// parsers report in their own terms (byte offsets, quoted node dumps).
-fn duplicate_key_error(key: &str) -> FrontmatterError {
+/// A block that repeats `key`, written again at byte `at` of `block` —
+/// invalid in TOML and in YAML, which both parsers report in their own terms
+/// (byte offsets, node dumps). The line is the note's: the block starts on
+/// line 2, below its opening delimiter.
+fn duplicate_key_error(block: &str, key: &str, at: usize) -> FrontmatterError {
+    let line = block
+        .get(..at)
+        .map_or(0, |before| before.matches('\n').count())
+        + 2;
     FrontmatterError::Malformed(format!(
-        "'{key}' appears more than once; keep only one of them"
+        "'{key}' appears more than once (again on line {line}); keep only one of them"
     ))
 }
 
@@ -726,21 +732,35 @@ mod tests {
 
     #[test]
     fn contract_a_repeated_key_is_named_in_the_error() {
-        for (format, block) in [
+        use FrontmatterFormat::{Toml, Yaml};
+        for (format, block, key, line) in [
+            (Toml, "status = 'a'\nother = 1\nstatus = 'b'\n", "status", 4),
+            (Toml, "\"my key\" = 1\n\"my key\" = 2\n", "my key", 3),
             (
-                FrontmatterFormat::Toml,
-                "status = 'a'\nother = 1\nstatus = 'b'\n",
+                Toml,
+                "'say \"hi\"' = 1\n'say \"hi\"' = 2\n",
+                "say \"hi\"",
+                3,
             ),
-            (FrontmatterFormat::Toml, "\"my key\" = 1\n\"my key\" = 2\n"),
-            (FrontmatterFormat::Yaml, "status: a\nother: 1\nstatus: b\n"),
+            (Toml, "\"caf\\u00e9\" = 1\n\"caf\\u00e9\" = 2\n", "café", 3),
+            (Toml, "a = 1\n[meta]\nx = 1\nx = 2\n", "x", 5),
+            (Yaml, "status: a\nother: 1\nstatus: b\n", "status", 4),
+            // The nested repeat is the error; the top-level one comes later.
+            (Yaml, "a: 1\nb:\n  x: 1\n  x: 2\na: 2\n", "x", 5),
+            // A repeated key holding a block value.
+            (Yaml, "a:\n  x: 1\nb: 2\na:\n  y: 2\n", "a", 5),
+            (Yaml, "tags:\n  - a\ntags:\n  - b\n", "tags", 4),
+            (Yaml, "a: |\n  t\nb: 1\na: |\n  u\n", "a", 5),
+            (Yaml, "a: {x: 1}\na: {y: 2}\n", "a", 3),
+            (Yaml, "a: 1\na: 'multi\n  line'\nb: 2\n", "a", 3),
+            (Yaml, "1: a\n1: b\n", "1", 3),
+            // `"1"` and `1` differ in YAML: only `k` repeats.
+            (Yaml, "\"1\": a\n1: b\nm:\n  k: 1\n  k: 2\n", "k", 6),
         ] {
             let f = format.formatter();
-            let key = if block.contains("my key") {
-                "my key"
-            } else {
-                "status"
-            };
-            let expected = format!("'{key}' appears more than once; keep only one of them");
+            let expected = format!(
+                "'{key}' appears more than once (again on line {line}); keep only one of them"
+            );
             for result in [
                 f.parse(block).map(|_| ()),
                 f.set(block, "x", &PropertyValue::Number(1.0)).map(|_| ()),
@@ -751,6 +771,23 @@ mod tests {
                     Err(FrontmatterError::Malformed(expected.clone())),
                     "{format:?}: {block:?}"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn contract_other_parse_errors_keep_the_parsers_message() {
+        for (format, block) in [
+            (FrontmatterFormat::Toml, "a = \n"),
+            (FrontmatterFormat::Toml, "a = [1\n"),
+            (FrontmatterFormat::Yaml, "a: [1\n"),
+            (FrontmatterFormat::Yaml, "a: 1\n  b: 2\n"),
+        ] {
+            match format.formatter().parse(block) {
+                Err(FrontmatterError::Malformed(m)) => {
+                    assert!(!m.contains("appears more than once"), "{block:?}: {m}")
+                }
+                other => panic!("{format:?} {block:?}: {other:?}"),
             }
         }
     }

@@ -3,7 +3,7 @@
 //! edit does not touch.
 
 use chrono::{FixedOffset, NaiveDate, NaiveTime, TimeZone};
-use toml_edit::{DocumentMut, Item, Value};
+use toml_edit::{DocumentMut, Item, Key, Value};
 
 use super::{
     duplicate_key_error, finite, format_number, is_integral, keys_match, nested_key_error,
@@ -137,13 +137,13 @@ fn through_last_blank_line(text: &str) -> &str {
 
 fn document(block: &str) -> Result<DocumentMut, FrontmatterError> {
     block.parse::<DocumentMut>().map_err(|e| {
+        // The span covers the repeated key as written (quoted, escaped).
         let key = e
             .span()
             .filter(|_| e.message() == "duplicate key")
-            .and_then(|span| block.get(span))
-            .map(|key| key.trim().trim_matches(['"', '\'']));
+            .and_then(|span| Some((block.get(span.clone())?.parse::<Key>().ok()?, span.start)));
         match key {
-            Some(key) => duplicate_key_error(key),
+            Some((key, at)) => duplicate_key_error(block, key.get(), at),
             None => FrontmatterError::Malformed(e.to_string()),
         }
     })

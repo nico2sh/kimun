@@ -1282,23 +1282,22 @@ impl NoteVault {
         Ok(NoteDetails::properties_of(text))
     }
 
-    /// One frontmatter property's value, `key` matched case-insensitively;
-    /// `None` when the note lacks the key or has it with no usable value.
+    /// One frontmatter property, `key` matched case-insensitively: `None`
+    /// when the note lacks the key, `Some(None)` when it has the key with no
+    /// readable value (YAML `due:`), as [`Self::get_properties`] lists it.
     pub async fn get_property(
         &self,
         path: &VaultPath,
         key: &str,
-    ) -> Result<Option<PropertyValue>, VaultError> {
+    ) -> Result<Option<Option<PropertyValue>>, VaultError> {
         let properties = self.get_properties(path).await?;
-        // A key that can't be a property (empty, multi-line) is never found.
         // A key that can't be a property (empty, multi-line) is never found.
         let Some(key) = properties::clean_key(key) else {
             return Ok(None);
         };
         Ok(properties
             .into_iter()
-            .find_map(|(k, v)| properties::keys_match(&k, &key).then_some(v))
-            .flatten())
+            .find_map(|(k, v)| properties::keys_match(&k, &key).then_some(v)))
     }
 
     /// Sets a frontmatter property, keeping the existing block's format,
@@ -4503,7 +4502,7 @@ mod property_api_tests {
         );
         assert_eq!(
             vault.get_property(&p("/n.md"), "zip").await.unwrap(),
-            Some(text("02134")),
+            Some(Some(text("02134"))),
             "the typed text is stored unchanged"
         );
     }
@@ -4551,7 +4550,7 @@ mod property_api_tests {
         );
         assert_eq!(
             vault.get_property(&p("/a.md"), "priority").await.unwrap(),
-            Some(PropertyValue::Number(1.0)),
+            Some(Some(PropertyValue::Number(1.0))),
             "an explicit type changes only the note written"
         );
 
@@ -4623,7 +4622,7 @@ mod property_api_tests {
         );
         assert_eq!(
             vault.get_property(&p("/n.md"), "STATUS").await.unwrap(),
-            Some(text("Done"))
+            Some(Some(text("Done")))
         );
         assert_eq!(vault.get_property(&p("/n.md"), "nope").await.unwrap(), None);
         // The index saw the write.
@@ -4878,7 +4877,7 @@ mod property_api_tests {
         );
         assert_eq!(
             vault.get_property(&p("/n.md"), "duedate").await.unwrap(),
-            Some(text("y"))
+            Some(Some(text("y")))
         );
         // The index matches by any casing.
         for q in ["%duedate=y", "prop:DUEDATE=Y", "%dueDate", "%ALIASES=a"] {
@@ -5109,7 +5108,7 @@ mod property_api_tests {
     }
 
     /// A key with no value (Obsidian's unset `due:`) is listed, as search's
-    /// `%due` finds it, but has no value to get.
+    /// `%due` finds it, and gets as present without a value.
     #[tokio::test]
     async fn a_key_without_a_value_is_listed_with_none() {
         let (tmp, vault) = new_vault().await;
@@ -5123,7 +5122,11 @@ mod property_api_tests {
                 ("status".to_string(), Some(text("ok")))
             ]
         );
-        assert_eq!(vault.get_property(&p("/n.md"), "due").await.unwrap(), None);
+        assert_eq!(
+            vault.get_property(&p("/n.md"), "due").await.unwrap(),
+            Some(None),
+            "present, without a value"
+        );
     }
 
     /// A byte-order mark (Windows editors) must not hide frontmatter, nor end

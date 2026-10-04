@@ -34,7 +34,7 @@ pub struct JsonOutputMetadata {
 
 /// A note's frontmatter properties, serialized as one JSON object whose
 /// keys keep the note's order (`{"status": "done", "priority": 2}`); a key
-/// with no value (YAML `due:`) is `null`.
+/// with no readable value (YAML `due:`, a TOML time of day) is `null`.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct JsonProperties(pub Vec<PropertyEntry>);
 
