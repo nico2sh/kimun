@@ -349,7 +349,7 @@ impl KimunHandler {
     }
 
     #[tool(
-        description = "Return a note's frontmatter properties as JSON, in the note's order: {\"properties\": {\"status\": \"done\", \"priority\": 2, \"due\": \"2024-03-01\", \"tags\": [\"a\"]}, \"tags\": [\"a\", \"inline\"]}. `tags` is every label of the note — its inline #hashtags plus its frontmatter tags."
+        description = "Return a note's frontmatter properties as JSON, in the note's order: {\"properties\": {\"status\": \"done\", \"priority\": 2, \"due\": \"2024-03-01\", \"tags\": [\"a\"]}, \"tags\": [\"a\", \"inline\"]}. A key the note has with no value (YAML `due:`) is null. `tags` is every label of the note — its inline #hashtags plus its frontmatter tags."
     )]
     async fn get_properties(
         &self,

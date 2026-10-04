@@ -1270,18 +1270,20 @@ impl NoteVault {
         Ok(self.index.labels_of(path).await?)
     }
 
-    /// The note's frontmatter properties in file order, keys as written. Read
-    /// from the note itself; a malformed block yields none. Missing-file
-    /// behaviour matches [`Self::get_note_text`].
+    /// The note's frontmatter properties in file order, keys as written, a
+    /// key with no usable value (YAML `due:`) included with `None`. Read from
+    /// the note itself; a malformed block yields none. Missing-file behaviour
+    /// matches [`Self::get_note_text`].
     pub async fn get_properties(
         &self,
         path: &VaultPath,
-    ) -> Result<Vec<(String, PropertyValue)>, VaultError> {
+    ) -> Result<Vec<note::PropertyEntry>, VaultError> {
         let text = self.get_note_text(path).await?;
         Ok(NoteDetails::properties_of(text))
     }
 
-    /// One frontmatter property, `key` matched case-insensitively.
+    /// One frontmatter property's value, `key` matched case-insensitively;
+    /// `None` when the note lacks the key or has it with no usable value.
     pub async fn get_property(
         &self,
         path: &VaultPath,
@@ -1295,7 +1297,8 @@ impl NoteVault {
         };
         Ok(properties
             .into_iter()
-            .find_map(|(k, v)| properties::keys_match(&k, &key).then_some(v)))
+            .find_map(|(k, v)| properties::keys_match(&k, &key).then_some(v))
+            .flatten())
     }
 
     /// Sets a frontmatter property, keeping the existing block's format,
@@ -4614,8 +4617,8 @@ mod property_api_tests {
         assert_eq!(
             vault.get_properties(&p("/n.md")).await.unwrap(),
             vec![
-                ("Status".to_string(), text("Done")),
-                ("n".to_string(), PropertyValue::Number(2.0))
+                ("Status".to_string(), Some(text("Done"))),
+                ("n".to_string(), Some(PropertyValue::Number(2.0)))
             ]
         );
         assert_eq!(
@@ -4683,7 +4686,7 @@ mod property_api_tests {
         assert!(!vault.remove_property(&p("/n.md"), "a").await.unwrap());
         assert_eq!(
             vault.get_properties(&p("/n.md")).await.unwrap(),
-            vec![("b".to_string(), PropertyValue::Number(2.0))]
+            vec![("b".to_string(), Some(PropertyValue::Number(2.0)))]
         );
         assert!(vault.search_notes("prop:a=1").await.unwrap().is_empty());
     }
@@ -4866,8 +4869,11 @@ mod property_api_tests {
         assert_eq!(
             vault.get_properties(&p("/n.md")).await.unwrap(),
             vec![
-                ("dueDate".to_string(), text("y")),
-                ("Aliases".to_string(), PropertyValue::List(vec!["a".into()]))
+                ("dueDate".to_string(), Some(text("y"))),
+                (
+                    "Aliases".to_string(),
+                    Some(PropertyValue::List(vec!["a".into()]))
+                )
             ]
         );
         assert_eq!(
@@ -5102,6 +5108,24 @@ mod property_api_tests {
         assert!(matches!(err, VaultError::InvalidProperty { .. }), "{err:?}");
     }
 
+    /// A key with no value (Obsidian's unset `due:`) is listed, as search's
+    /// `%due` finds it, but has no value to get.
+    #[tokio::test]
+    async fn a_key_without_a_value_is_listed_with_none() {
+        let (tmp, vault) = new_vault().await;
+        tokio::fs::write(tmp.path().join("n.md"), "---\ndue:\nstatus: ok\n---\nbody")
+            .await
+            .unwrap();
+        assert_eq!(
+            vault.get_properties(&p("/n.md")).await.unwrap(),
+            vec![
+                ("due".to_string(), None),
+                ("status".to_string(), Some(text("ok")))
+            ]
+        );
+        assert_eq!(vault.get_property(&p("/n.md"), "due").await.unwrap(), None);
+    }
+
     /// A byte-order mark (Windows editors) must not hide frontmatter, nor end
     /// up after a block written above it.
     #[tokio::test]
@@ -5115,7 +5139,7 @@ mod property_api_tests {
             .unwrap();
         assert_eq!(
             vault.get_properties(&p("/y.md")).await.unwrap(),
-            vec![("title".to_string(), text("x"))]
+            vec![("title".to_string(), Some(text("x")))]
         );
         vault
             .set_property(&p("/y.md"), "a", text("1"), FrontmatterFormat::Toml)

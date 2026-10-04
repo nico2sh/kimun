@@ -6,8 +6,8 @@ use chrono::{FixedOffset, NaiveDate, NaiveTime, TimeZone};
 use toml_edit::{DocumentMut, Item, Value};
 
 use super::{
-    finite, format_number, is_integral, keys_match, nested_key_error, FrontmatterError,
-    PropertyDateTime, PropertyEntry, PropertyFormatter, PropertyValue,
+    duplicate_key_error, finite, format_number, is_integral, keys_match, nested_key_error,
+    FrontmatterError, PropertyDateTime, PropertyEntry, PropertyFormatter, PropertyValue,
 };
 use crate::dates::format_iso_date;
 
@@ -136,9 +136,17 @@ fn through_last_blank_line(text: &str) -> &str {
 }
 
 fn document(block: &str) -> Result<DocumentMut, FrontmatterError> {
-    block
-        .parse::<DocumentMut>()
-        .map_err(|e| FrontmatterError::Malformed(e.to_string()))
+    block.parse::<DocumentMut>().map_err(|e| {
+        let key = e
+            .span()
+            .filter(|_| e.message() == "duplicate key")
+            .and_then(|span| block.get(span))
+            .map(|key| key.trim().trim_matches(['"', '\'']));
+        match key {
+            Some(key) => duplicate_key_error(key),
+            None => FrontmatterError::Malformed(e.to_string()),
+        }
+    })
 }
 
 /// Root keys equal to `key` case-insensitively, as written. A match holding a

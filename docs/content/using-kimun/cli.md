@@ -382,8 +382,8 @@ kimun note delete "inbox/stale-idea" --force
 Read and edit a note's frontmatter [properties](@/using-kimun/search.md#properties) without touching the rest of the file.
 
 ```sh
-kimun note prop list "projects/garden"               # key: value lines
-kimun note prop list "projects/garden" --format json # one JSON object
+kimun note prop list "projects/garden"               # key: value lines (a key with no value: "key:")
+kimun note prop list "projects/garden" --format json # one JSON object (a key with no value: null)
 kimun note prop get "projects/garden" status         # just the value
 kimun note prop set "projects/garden" status active
 kimun note prop set "projects/garden" tags garden spring   # several values → a list

@@ -3,7 +3,7 @@ use chrono::Utc;
 use kimun_core::NoteVault;
 use kimun_core::nfs::NoteEntryData;
 use kimun_core::nfs::VaultPath;
-use kimun_core::note::{NoteContentData, NoteHeading, NoteMetadata, PropertyValue};
+use kimun_core::note::{NoteContentData, NoteHeading, NoteMetadata, PropertyEntry};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -33,9 +33,10 @@ pub struct JsonOutputMetadata {
 }
 
 /// A note's frontmatter properties, serialized as one JSON object whose
-/// keys keep the note's order (`{"status": "done", "priority": 2}`).
+/// keys keep the note's order (`{"status": "done", "priority": 2}`); a key
+/// with no value (YAML `due:`) is `null`.
 #[derive(Debug, Default, Clone, PartialEq)]
-pub struct JsonProperties(pub Vec<(String, PropertyValue)>);
+pub struct JsonProperties(pub Vec<PropertyEntry>);
 
 impl Serialize for JsonProperties {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {

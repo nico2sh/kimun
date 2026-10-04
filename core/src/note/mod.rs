@@ -2,7 +2,7 @@ pub(crate) mod content_extractor;
 pub(crate) mod properties;
 
 pub use properties::{
-    FrontmatterFormat, PropertyDateTime, PropertyInput, PropertyKind, PropertyValue,
+    FrontmatterFormat, PropertyDateTime, PropertyEntry, PropertyInput, PropertyKind, PropertyValue,
 };
 
 use std::fmt::Display;
@@ -131,8 +131,9 @@ pub struct NoteHeading {
 pub struct NoteMetadata {
     /// Inline `#hashtags` plus frontmatter `tags`, lowercased, sorted, distinct.
     pub tags: Vec<String>,
-    /// Frontmatter properties in the note's order (see [`PropertyValue`]).
-    pub properties: Vec<(String, PropertyValue)>,
+    /// Frontmatter properties in the note's order, a key with no usable
+    /// value included with `None` (see [`PropertyEntry`]).
+    pub properties: Vec<PropertyEntry>,
     /// Headings in order.
     pub headings: Vec<NoteHeading>,
 }
@@ -143,7 +144,7 @@ impl NoteMetadata {
         let frontmatter = NoteDetails::property_set_of(text);
         Self {
             tags: tags_with(text, &frontmatter),
-            properties: frontmatter.into_values(),
+            properties: frontmatter.into_entries(),
             headings: note_headings(text),
         }
     }
@@ -225,11 +226,12 @@ impl NoteDetails {
         content_extractor::get_chunks_and_links(path, text)
     }
 
-    /// Frontmatter properties of a note body (see [`PropertyValue`]), without
-    /// constructing a `NoteDetails`. Keys lowercased, in file order; a
-    /// malformed block yields none.
-    pub fn properties_of<S: AsRef<str>>(text: S) -> Vec<(String, PropertyValue)> {
-        Self::property_set_of(text).into_values()
+    /// Frontmatter properties of a note body (see [`PropertyEntry`]), without
+    /// constructing a `NoteDetails`. Keys as written, in file order, a key
+    /// with no usable value (YAML `due:`) included with `None`; a malformed
+    /// block yields none.
+    pub fn properties_of<S: AsRef<str>>(text: S) -> Vec<PropertyEntry> {
+        Self::property_set_of(text).into_entries()
     }
 
     /// Everything a note body's frontmatter declares — keys with or without a
@@ -264,7 +266,7 @@ impl NoteDetails {
     }
 
     /// Frontmatter properties of this note; see [`Self::properties_of`].
-    pub fn get_properties(&self) -> Vec<(String, PropertyValue)> {
+    pub fn get_properties(&self) -> Vec<PropertyEntry> {
         Self::properties_of(&self.raw_text)
     }
 
