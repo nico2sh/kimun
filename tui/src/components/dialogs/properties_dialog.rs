@@ -837,11 +837,12 @@ impl PropertyForm {
         }
         match key.code {
             KeyCode::Esc => FormAction::Cancel,
-            KeyCode::Tab => {
+            // Up/Down reach here only when the key picker's list is closed.
+            KeyCode::Tab | KeyCode::Down => {
                 self.focus_next();
                 FormAction::None
             }
-            KeyCode::BackTab => {
+            KeyCode::BackTab | KeyCode::Up => {
                 self.focus_prev();
                 FormAction::None
             }
@@ -1110,6 +1111,14 @@ impl PropertiesDialog {
     }
 
     #[cfg(test)]
+    fn form_focus(&self) -> Option<FormFocus> {
+        match &self.mode {
+            Mode::Form(form) => Some(form.focus),
+            _ => None,
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn kind_next_origin(&self) -> Option<(u16, u16)> {
         match &self.mode {
             Mode::Form(form) => form.kind_next_rect.map(|r| (r.x, r.y)),
@@ -1224,7 +1233,7 @@ impl PropertiesDialog {
         let btn_row = inner.height.saturating_sub(2);
         form.buttons.render(f, row_at(btn_row), theme);
         f.render_widget(
-            Paragraph::new("  Tab next field · ←→ type · Enter save · Esc back").style(gray),
+            Paragraph::new("  Tab/↑↓ next field · ←→ type · Enter save · Esc back").style(gray),
             row_at(inner.height.saturating_sub(1)),
         );
         // The picker renders last so its suggestion list sits on top.
@@ -1765,6 +1774,40 @@ mod tests {
         d.handle_key(k(KeyCode::Esc), &tx); // key list closed already → back to list
         assert!(matches!(d.mode, Mode::List));
         assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn arrows_move_between_form_fields() {
+        let (mut d, tx, _rx) = dialog_with(vec![]).await;
+        d.handle_key(k(KeyCode::Char('a')), &tx);
+        assert!(d.form_focus() == Some(FormFocus::Key));
+        d.handle_key(k(KeyCode::Down), &tx);
+        assert!(d.form_focus() == Some(FormFocus::Kind));
+        d.handle_key(k(KeyCode::Down), &tx);
+        assert!(d.form_focus() == Some(FormFocus::Value));
+        d.handle_key(k(KeyCode::Down), &tx);
+        assert!(d.form_focus() == Some(FormFocus::Buttons), "Value → Save");
+        d.handle_key(k(KeyCode::Up), &tx);
+        assert!(d.form_focus() == Some(FormFocus::Value));
+        d.handle_key(k(KeyCode::Up), &tx);
+        d.handle_key(k(KeyCode::Up), &tx);
+        assert!(d.form_focus() == Some(FormFocus::Key));
+    }
+
+    #[tokio::test]
+    async fn open_key_suggestions_keep_the_arrows() {
+        let (mut d, tx, _rx) = dialog_with(vec![]).await;
+        d.set_keys(vec!["due".into(), "status".into()]);
+        d.handle_key(k(KeyCode::Char('a')), &tx);
+        d.handle_key(k(KeyCode::Char('u')), &tx); // "u" matches both → list opens
+        d.handle_key(k(KeyCode::Down), &tx);
+        assert!(
+            d.form_focus() == Some(FormFocus::Key),
+            "Down moves in the open list, not to the next field"
+        );
+        d.handle_key(k(KeyCode::Esc), &tx); // close the list
+        d.handle_key(k(KeyCode::Down), &tx);
+        assert!(d.form_focus() == Some(FormFocus::Kind));
     }
 
     #[tokio::test]

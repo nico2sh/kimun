@@ -190,7 +190,7 @@ The edit form has three fields:
 - **Type** is `auto` by default, so Kimün follows the type the key has elsewhere in your vault. Cycle through `auto`, `text`, `number`, `bool`, `date`, `datetime` and `list` with `←` `→` or `Space`, or click `‹` `›`.
 - **Value** is comma-separated for list types and for keys that are always lists (`tags`, `aliases`); for other keys choose type `list` to enter several items. An empty value is refused.
 
-`Enter` saves and `Esc` goes back to the list. Renaming a key keeps its position in the frontmatter. Adding a key the note already has is refused; edit it instead. With Type `auto`, if the value does not fit the key's usual type in your vault, the form says so and offers **Store as … anyway**.
+Move between fields with `Tab` / `Shift+Tab` or `↑` `↓` (while the key suggestions are open, `↑` `↓` move through them instead). `Enter` saves and `Esc` goes back to the list. Renaming a key keeps its position in the frontmatter. Adding a key the note already has is refused; edit it instead. With Type `auto`, if the value does not fit the key's usual type in your vault, the form says so and offers **Store as … anyway**.
 
 If a note's frontmatter is malformed, the first failed write turns the dialog read-only; fix the frontmatter in the editor and reopen it.
 
