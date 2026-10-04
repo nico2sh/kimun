@@ -78,7 +78,7 @@ pub trait Overlay: Send {
         None
     }
     /// This overlay as a list the sort dialog can sort, if it is one (the
-    /// Ctrl+K search browser). Drives Ctrl+R over an open overlay. Defaults
+    /// Ctrl+K search browser or the Ctrl+O file finder). Drives Ctrl+R over an open overlay. Defaults
     /// to `None`.
     fn as_sortable(&self) -> Option<&dyn SortableList> {
         None

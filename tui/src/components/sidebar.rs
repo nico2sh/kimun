@@ -231,16 +231,14 @@ impl SidebarComponent {
     /// have not arrived yet orders by name (see [`entry_order`]).
     fn order(&self) -> OrderFn<FileListEntry> {
         let (field, order) = self.sort.clone();
-        let values = property_key(&field).and_then(|k| self.property_sort.values_for(k));
+        let values = self.property_sort.values_for_field(&field);
         entry_order(field, order, self.group_dirs, values)
     }
 
     /// Re-sort the loaded rows by the active sort (no reload). A property
     /// sort still waiting for its values keeps the current order.
     fn reorder(&mut self) {
-        let awaiting =
-            property_key(&self.sort.0).is_some_and(|k| self.property_sort.values_for(k).is_none());
-        if awaiting {
+        if self.property_sort.is_awaiting(&self.sort.0) {
             return;
         }
         let order = self.order();

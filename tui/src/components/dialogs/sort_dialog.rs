@@ -9,7 +9,7 @@ use crate::components::events::{AppEvent, AppTx, InputEvent, SortTarget};
 use crate::components::file_list::{SortField, SortOrder};
 use crate::components::key_picker::{KeyPicker, PickerOutcome};
 use crate::components::panel::{ModalSpec, modal_chrome};
-use crate::components::sortable::SortState;
+use crate::components::sortable::{SortState, is_blank_property, property_key};
 use crate::settings::themes::Theme;
 
 /// The selectable rows, in display order.
@@ -50,10 +50,7 @@ impl SortDialog {
             order,
             group_dirs,
         } = state;
-        let key = match &field {
-            SortField::Property(k) => k.clone(),
-            _ => String::new(),
-        };
+        let key = property_key(&field).unwrap_or_default().to_string();
         let mut d = Self {
             target,
             field,
@@ -105,7 +102,7 @@ impl SortDialog {
     /// (sidebar's `s` key); a plain toggle sends `persist = false` for live apply.
     fn emit(&self, tx: &AppTx, persist: bool) {
         // A property sort with no key yet is not a usable order.
-        if matches!(&self.field, SortField::Property(k) if k.trim().is_empty()) {
+        if is_blank_property(&self.field) {
             return;
         }
         tx.send(AppEvent::SortChanged {
@@ -120,19 +117,26 @@ impl SortDialog {
         .ok();
     }
 
+    /// A property sort takes the key typed in the Key row, even one never
+    /// submitted with Enter (the user moved to another row instead).
+    fn commit_typed_key(&mut self) {
+        let typed = self.picker.value().trim();
+        if matches!(self.field, SortField::Property(_)) && !typed.is_empty() {
+            self.field = SortField::Property(typed.to_string());
+        }
+    }
+
     fn toggle_selected(&mut self, tx: &AppTx) {
         match self.rows[self.selected] {
             Row::Field => {
                 self.field = self.field.cycle(self.allows_property);
-                if matches!(self.field, SortField::Property(_)) && !self.picker.value().is_empty() {
-                    self.field = SortField::Property(self.picker.value().to_string());
-                }
                 self.rebuild_rows();
             }
             Row::Order => self.order = self.order.toggle(),
             Row::Key => {}
             Row::GroupDirs => self.group_dirs = self.group_dirs.map(|g| !g),
         }
+        self.commit_typed_key();
         self.emit(tx, false);
     }
 
@@ -516,6 +520,28 @@ mod tests {
         match rx.try_recv() {
             Ok(AppEvent::SortChanged { state, .. }) => {
                 assert_eq!(state.field, SortField::Property("due".into()))
+            }
+            other => panic!("expected SortChanged, got {other:?}"),
+        }
+    }
+
+    /// A key typed but not submitted with Enter still applies once the user
+    /// moves to another row and toggles it.
+    #[test]
+    fn typed_key_applies_when_toggling_another_row() {
+        let mut d = query_dialog(SortField::Property(String::new()));
+        let (tx, mut rx) = unbounded_channel();
+        d.handle_key(key(KeyCode::Down), &tx); // Order
+        d.handle_key(key(KeyCode::Down), &tx); // Key
+        for c in "due".chars() {
+            d.handle_key(key(KeyCode::Char(c)), &tx);
+        }
+        d.handle_key(key(KeyCode::Up), &tx); // back to Order, list closed
+        d.handle_key(key(KeyCode::Char(' ')), &tx);
+        match rx.try_recv() {
+            Ok(AppEvent::SortChanged { state, .. }) => {
+                assert_eq!(state.field, SortField::Property("due".into()));
+                assert_eq!(state.order, SortOrder::Descending);
             }
             other => panic!("expected SortChanged, got {other:?}"),
         }

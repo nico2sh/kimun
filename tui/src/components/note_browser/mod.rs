@@ -214,10 +214,10 @@ impl NoteBrowserModal {
         else {
             return;
         };
-        let values = property_key(&state.field).and_then(|k| property.values_for(k));
-        if property_key(&state.field).is_some() && values.is_none() {
+        if property.is_awaiting(&state.field) {
             return;
         }
+        let values = property.values_for_field(&state.field);
         let order = entry_order(state.field.clone(), state.order, false, values);
         self.list.set_order(Some(order));
         self.refresh_preview_from_list();
