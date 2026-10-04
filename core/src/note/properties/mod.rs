@@ -182,6 +182,11 @@ pub(crate) trait PropertyFormatter: Send + Sync {
     ) -> Result<String, FrontmatterError>;
     /// `block` without `key`, or `None` when it had no such key.
     fn remove(&self, block: &str, key: &str) -> Result<Option<String>, FrontmatterError>;
+    /// `block` with the entry for `old` keyed `new` instead, in place: same
+    /// position, value, inline comment and comment lines. `None` when `old`
+    /// is absent. Callers have checked that `new` names no *other* entry.
+    fn rename(&self, block: &str, old: &str, new: &str)
+        -> Result<Option<String>, FrontmatterError>;
 }
 
 /// Where a note's frontmatter block sits in its text.
@@ -280,6 +285,24 @@ impl<'t> NoteProperties<'t> {
         }
         self.formatter
             .remove(self.block(), key)?
+            .map(|block| self.checked(&block))
+            .transpose()
+    }
+
+    /// The note's text with `old` renamed to `new` (both normalized), or
+    /// `None` when there is no such key. Refuses a `new` that names another
+    /// existing entry.
+    pub(crate) fn rename(&self, old: &str, new: &str) -> Result<Option<String>, FrontmatterError> {
+        if self.span.is_none() {
+            return Ok(None);
+        }
+        let block = crate::nfs::to_lf(self.block());
+        let entries = self.formatter.parse(&block)?;
+        if !keys_match(old, new) && entries.iter().any(|(k, _)| keys_match(k, new)) {
+            return Err(FrontmatterError::Refused(format!("'{new}' already exists")));
+        }
+        self.formatter
+            .rename(&block, old, new)?
             .map(|block| self.checked(&block))
             .transpose()
     }
@@ -390,14 +413,32 @@ pub(crate) fn is_tag_key(key: &str) -> bool {
 }
 
 /// The other keys Obsidian always treats as lists (plus their legacy
-/// singular spellings): note aliases and CSS classes. Not labels, and not
-/// split on commas — an alias may contain one.
+/// singular spellings): note aliases and CSS classes. Not labels, and core
+/// never splits their values on commas — an alias may contain one. (The TUI
+/// form does split its single comma-separated field into items for these
+/// keys; that is the form's input syntax, not a core rule.)
 const OTHER_LIST_KEYS: [&str; 4] = ["aliases", "alias", "cssclasses", "cssclass"];
 
 /// `key` always holds a list (whatever its casing): the tag keys, `aliases`,
 /// `cssclasses`.
 pub(crate) fn is_list_key(key: &str) -> bool {
     is_tag_key(key) || OTHER_LIST_KEYS.contains(&match_key(key).as_str())
+}
+
+/// Whether `key` (in any casing) is a property that always holds a list:
+/// the tag keys (`tags`, `tag`), `aliases`, `cssclasses` and their legacy
+/// singular spellings. Lets a UI split comma-separated input into list items
+/// for these keys without keeping its own copy of the key names.
+pub fn is_list_property_key(key: &str) -> bool {
+    is_list_key(key)
+}
+
+/// Whether two keys name the same property in a note (`Status` and
+/// `status` do; `résumé` and `resume` don't): the identity core uses for
+/// every edit and lookup. Lets a UI spot a key the note already has
+/// without keeping its own copy of the rule.
+pub fn property_keys_match(a: &str, b: &str) -> bool {
+    keys_match(a, b)
 }
 
 // ---- Helpers shared by the formatters ------------------------------------
@@ -452,6 +493,21 @@ fn nested_key_error(key: &str) -> FrontmatterError {
 mod tests {
     use super::*;
     use chrono::{NaiveDate, TimeZone};
+
+    #[test]
+    fn is_list_property_key_matches_core_list_keys() {
+        for key in ["tags", "Tag", "aliases", "cssclasses"] {
+            assert!(is_list_property_key(key), "{key}");
+        }
+        assert!(!is_list_property_key("status"));
+    }
+
+    #[test]
+    fn property_keys_match_follows_core_identity() {
+        assert!(property_keys_match("Status", "status"));
+        assert!(property_keys_match("TAGS", "Tags"));
+        assert!(!property_keys_match("résumé", "resume"));
+    }
 
     pub(super) fn d(y: i32, m: u32, day: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(y, m, day).unwrap()

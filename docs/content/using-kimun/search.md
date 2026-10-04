@@ -183,6 +183,8 @@ Sort by a property with `or:prop:key` or `^%key`; see [Sorting](#sorting). Notes
 
 Supported types: text, number, true/false, date (`2024-03-01`), date & time (`2024-03-01T14:30`, or with an offset such as `2024-03-01T14:30:00+02:00`; a time without an offset compares as UTC), and lists of text. Nested tables are ignored. A block that fails to parse is still searchable as plain text, it just contributes no properties.
 
+To view or edit a note's properties in the TUI, see [Properties](@/using-kimun/tui.md#properties) in the TUI guide.
+
 ## Excluding things
 
 The `-` prefix excludes. It always leads; any operator follows:
@@ -234,7 +236,7 @@ Sort keys:
 | `file` | `filename`, `f` | file name |
 | `prop:<key>` | `%<key>` | a [property](#properties) value; notes without it come last in either direction |
 
-The directive combines with any filter (`#project -#draft ^title`). The TUI sort dialog (`Ctrl+R`) writes this directive into the query for you.
+The directive combines with any filter (`#project -#draft ^title`). The TUI sort dialog (`Ctrl+R`) writes this directive into the query for you; in the query panel its **Sort by** row cycles Name, Title and **Property**, and Property adds a **Key** field that suggests the keys in your vault. Nothing applies until a key is chosen. Click a row to toggle it, or click a suggestion to pick it.
 
 ## Query variables
 

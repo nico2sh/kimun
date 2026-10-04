@@ -88,6 +88,53 @@ impl PropertyFormatter for YamlFormatter {
         verify_others(block, &out, key)?;
         Ok(Some(out))
     }
+
+    fn rename(
+        &self,
+        block: &str,
+        old: &str,
+        new: &str,
+    ) -> Result<Option<String>, FrontmatterError> {
+        check_root(block, old)?;
+        let mut lines: Vec<String> = block.lines().map(str::to_string).collect();
+        let entries = entry_ranges(&lines, old);
+        let Some((range, _)) = entries.first() else {
+            verify(block, old, false)?;
+            return Ok(None);
+        };
+        // Every root key counts, nested mappings included.
+        if !keys_match(old, new)
+            && root(block)?.is_some_and(|r| {
+                r.keys()
+                    .any(|k| scalar_text(k).is_some_and(|k| keys_match(&k, new)))
+            })
+        {
+            return Err(FrontmatterError::Refused(format!("'{new}' already exists")));
+        }
+        let line = &lines[range.start];
+        let colon = key_colon(line).ok_or_else(|| {
+            FrontmatterError::Refused(format!("cannot locate the key '{old}' on its line"))
+        })?;
+        lines[range.start] = format!("{}{}", render_key(new), &line[colon..]);
+        let out = join_lines(&lines);
+        verify(&out, new, true)?;
+        if !keys_match(old, new) {
+            verify(&out, old, false)?;
+        }
+        let before = self.parse(block)?;
+        let after = self.parse(&out)?;
+        let value_of = |es: &[PropertyEntry], k: &str| {
+            es.iter()
+                .find(|(e, _)| keys_match(e, k))
+                .map(|(_, v)| v.clone())
+        };
+        if value_of(&before, old) != value_of(&after, new) {
+            return Err(FrontmatterError::Refused(format!(
+                "renaming '{old}' would change its value; edit the frontmatter by hand"
+            )));
+        }
+        Ok(Some(out))
+    }
 }
 
 /// The block's root mapping; `Ok(None)` for an empty block. Anything that is
@@ -412,16 +459,34 @@ fn join_lines(lines: &[String]) -> String {
     }
 }
 
-fn render_entry(key: &str, value: &PropertyValue) -> Vec<String> {
-    // Plain only when the line reader finds the key again as written
-    // (`-foo:` reads as a list item, `#tag:` as a comment): otherwise later
-    // edits couldn't locate the entry.
+/// `key` as an entry line spells it: plain when the line reader finds it
+/// again as written (`-foo:` reads as a list item, `#tag:` as a comment, so
+/// those are quoted), double-quoted otherwise.
+fn render_key(key: &str) -> String {
     let readable = line_key(&format!("{key}: x")).as_deref() == Some(key);
-    let k = if plain_ok(key) && !key.contains(':') && readable {
+    if plain_ok(key) && !key.contains(':') && readable {
         key.to_string()
     } else {
         double_quote(key)
-    };
+    }
+}
+
+/// Byte offset of the `:` ending the key of top-level entry line `line`.
+fn key_colon(line: &str) -> Option<usize> {
+    for quote in ['"', '\''] {
+        if let Some(rest) = line.strip_prefix(quote) {
+            let end = rest.find(quote)? + 1; // index in `rest` past the closing quote
+            let after = &rest[end..];
+            let pad = after.len() - after.trim_start().len();
+            return after.trim_start().starts_with(':').then_some(1 + end + pad);
+        }
+    }
+    line.find(": ")
+        .or_else(|| line.strip_suffix(':').map(str::len))
+}
+
+fn render_entry(key: &str, value: &PropertyValue) -> Vec<String> {
+    let k = render_key(key);
     match value {
         PropertyValue::List(items) if items.is_empty() => vec![format!("{k}: []")],
         PropertyValue::List(items) => std::iter::once(format!("{k}:"))

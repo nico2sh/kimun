@@ -12,10 +12,12 @@ use crate::settings::{SortFieldSetting, SortOrderSetting};
 // Sort options
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 pub enum SortField {
     Name,
     Title,
+    /// Query panel only: sort by this property key (search form).
+    Property(String),
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -45,7 +47,7 @@ impl From<SortOrderSetting> for SortOrder {
 impl From<SortField> for SortFieldSetting {
     fn from(s: SortField) -> Self {
         match s {
-            SortField::Name => Self::Name,
+            SortField::Name | SortField::Property(_) => Self::Name,
             SortField::Title => Self::Title,
         }
     }
@@ -61,17 +63,21 @@ impl From<SortOrder> for SortOrderSetting {
 }
 
 impl SortField {
-    pub fn label(self) -> char {
+    pub fn label(&self) -> String {
         match self {
-            Self::Name => 'N',
-            Self::Title => 'T',
+            Self::Name => "N".to_string(),
+            Self::Title => "T".to_string(),
+            Self::Property(key) => key.clone(),
         }
     }
 
-    pub fn cycle(self) -> Self {
+    /// Next field in the dialog's cycle. `allow_property` is false for the
+    /// sidebar, which sorts directory listings with no index rows.
+    pub fn cycle(&self, allow_property: bool) -> Self {
         match self {
             Self::Name => Self::Title,
-            Self::Title => Self::Name,
+            Self::Title if allow_property => Self::Property(String::new()),
+            Self::Title | Self::Property(_) => Self::Name,
         }
     }
 }
@@ -169,14 +175,16 @@ impl FileListEntry {
     }
 
     /// Sort key for the given field.
-    pub(crate) fn sort_key(&self, field: SortField) -> String {
+    pub(crate) fn sort_key(&self, field: &SortField) -> String {
         match self {
             Self::Up { .. } => String::new(),
             Self::Note {
                 title, filename, ..
             } => match field {
                 SortField::Title => title.to_lowercase(),
-                SortField::Name => filename.to_lowercase(),
+                // A directory listing has no index rows, so a property sort
+                // falls back to the file name.
+                SortField::Name | SortField::Property(_) => filename.to_lowercase(),
             },
             Self::Directory { name, .. } => name.to_lowercase(),
             Self::Attachment { filename, .. } => filename.to_lowercase(),
@@ -379,6 +387,19 @@ mod open_marker_tests {
 mod tests {
     use super::*;
     use crate::components::search_list::SearchRow;
+
+    #[test]
+    fn sort_field_cycle_gates_property() {
+        assert_eq!(SortField::Name.cycle(false), SortField::Title);
+        assert_eq!(SortField::Title.cycle(false), SortField::Name);
+        assert_eq!(
+            SortField::Property(String::new()).cycle(false),
+            SortField::Name
+        );
+        let p = SortField::Name.cycle(true).cycle(true);
+        assert_eq!(p, SortField::Property(String::new()));
+        assert_eq!(p.cycle(true), SortField::Name);
+    }
 
     #[test]
     fn directory_match_text_is_some_name() {

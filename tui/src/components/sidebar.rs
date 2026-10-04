@@ -46,8 +46,8 @@ fn listing_order(field: SortField, order: SortOrder, group_dirs: bool) -> OrderF
             _ => 2,
         };
         rank(a).cmp(&rank(b)).then_with(|| {
-            let ka = a.sort_key(field);
-            let kb = b.sort_key(field);
+            let ka = a.sort_key(&field);
+            let kb = b.sort_key(&field);
             match order {
                 SortOrder::Ascending => ka.cmp(&kb),
                 SortOrder::Descending => kb.cmp(&ka),
@@ -166,7 +166,7 @@ impl SidebarComponent {
             list: None,
             vault,
             icons,
-            default_sort_field,
+            default_sort_field: default_sort_field.clone(),
             default_sort_order,
             journal_sort_field: SortField::from(settings.journal_sort_field),
             journal_sort_order: SortOrder::from(settings.journal_sort_order),
@@ -199,9 +199,9 @@ impl SidebarComponent {
     /// Sort field/order to apply for `dir` (journal dirs get their own).
     fn sort_for(&self, dir: &VaultPath) -> (SortField, SortOrder) {
         if dir.is_like(self.vault.journal_path()) {
-            (self.journal_sort_field, self.journal_sort_order)
+            (self.journal_sort_field.clone(), self.journal_sort_order)
         } else {
-            (self.default_sort_field, self.default_sort_order)
+            (self.default_sort_field.clone(), self.default_sort_order)
         }
     }
 
@@ -211,7 +211,7 @@ impl SidebarComponent {
     pub fn navigate(&mut self, dir: VaultPath, tx: &AppTx) {
         self.current_dir = dir.clone();
         let (sort_field, sort_order) = self.sort_for(&dir);
-        self.sort = (sort_field, sort_order);
+        self.sort = (sort_field.clone(), sort_order);
         let source = DirListingSource {
             vault: self.vault.clone(),
             dir,
@@ -324,7 +324,7 @@ impl SidebarComponent {
 
     /// Current sort field/order for the active listing.
     pub fn current_sort(&self) -> (SortField, SortOrder) {
-        self.sort
+        self.sort.clone()
     }
 
     /// Current "group directories first" flag.
@@ -335,7 +335,7 @@ impl SidebarComponent {
     /// Apply a sort selection from the sort dialog: the engine re-orders the
     /// rows it already holds — no second walk of the directory.
     pub fn apply_sort(&mut self, field: SortField, order: SortOrder, group_dirs: bool) {
-        self.sort = (field, order);
+        self.sort = (field.clone(), order);
         self.group_dirs = group_dirs;
         if let Some(list) = &mut self.list {
             list.set_order(Some(listing_order(field, order, group_dirs)));
@@ -355,10 +355,10 @@ impl SidebarComponent {
     /// restart. The caller is responsible for persisting to the settings file.
     pub fn save_default(&mut self, field: SortField, order: SortOrder, group_dirs: bool) {
         if self.is_current_journal() {
-            self.journal_sort_field = field;
+            self.journal_sort_field = field.clone();
             self.journal_sort_order = order;
         } else {
-            self.default_sort_field = field;
+            self.default_sort_field = field.clone();
             self.default_sort_order = order;
         }
         self.apply_sort(field, order, group_dirs);

@@ -20,6 +20,8 @@ pub struct DocMeta {
     vault: Arc<NoteVault>,
     /// Backlink count of the open note (status line 2), async-loaded.
     backlink_count: Option<usize>,
+    /// Frontmatter property count of the open note (status line 2).
+    property_count: Option<usize>,
     /// Workspace git summary for the status bar, `None` when unknown/absent.
     git_status: Option<String>,
     /// When the last git fetch was spawned — throttles the per-event
@@ -39,6 +41,7 @@ impl DocMeta {
         Self {
             vault,
             backlink_count: None,
+            property_count: None,
             git_status: None,
             last_git_fetch: None,
             git_unavailable_since: None,
@@ -52,6 +55,10 @@ impl DocMeta {
         self.backlink_count
     }
 
+    pub fn properties(&self) -> Option<usize> {
+        self.property_count
+    }
+
     pub fn git(&self) -> Option<&String> {
         self.git_status.as_ref()
     }
@@ -62,6 +69,7 @@ impl DocMeta {
     /// refresh the git summary.
     pub fn note_opened(&mut self, path: &VaultPath, tx: &AppTx) {
         self.backlink_count = None;
+        let path_for_props = path.clone();
         let vault = self.vault.clone();
         let path = path.clone();
         let tx2 = tx.clone();
@@ -73,7 +81,24 @@ impl DocMeta {
                 .unwrap_or_default();
             tx2.send(AppEvent::BacklinkCountLoaded { path, count }).ok();
         });
+        self.property_count = None;
+        self.refresh_properties(&path_for_props, tx);
         self.refresh_git(tx);
+    }
+
+    /// Re-read the open note's property count (note open, save, dialog write).
+    pub fn refresh_properties(&mut self, path: &VaultPath, tx: &AppTx) {
+        let vault = self.vault.clone();
+        let path = path.clone();
+        let tx2 = tx.clone();
+        tokio::spawn(async move {
+            let count = vault
+                .get_properties(&path)
+                .await
+                .map(|p| p.len())
+                .unwrap_or_default();
+            tx2.send(AppEvent::PropertyCountLoaded { path, count }).ok();
+        });
     }
 
     /// Spawn the workspace git summary fetch, throttled: at most one
@@ -174,6 +199,12 @@ impl DocMeta {
                 // Ignore stale loads for notes already navigated away from.
                 if path == *current_note {
                     self.backlink_count = Some(count);
+                }
+                None
+            }
+            AppEvent::PropertyCountLoaded { path, count } => {
+                if path == *current_note {
+                    self.property_count = Some(count);
                 }
                 None
             }
@@ -309,5 +340,27 @@ mod tests {
         let (mut dm, _dir) = meta().await;
         let back = dm.handle(AppEvent::Redraw, &note("/a.md"));
         assert!(matches!(back, Some(AppEvent::Redraw)));
+    }
+
+    #[tokio::test]
+    async fn property_count_guards_against_stale_paths() {
+        let (mut dm, _dir) = meta().await;
+        let current = note("/a.md");
+        dm.handle(
+            AppEvent::PropertyCountLoaded {
+                path: note("/old.md"),
+                count: 4,
+            },
+            &current,
+        );
+        assert_eq!(dm.properties(), None);
+        dm.handle(
+            AppEvent::PropertyCountLoaded {
+                path: current.clone(),
+                count: 2,
+            },
+            &current,
+        );
+        assert_eq!(dm.properties(), Some(2));
     }
 }
