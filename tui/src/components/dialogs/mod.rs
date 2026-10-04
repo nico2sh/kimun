@@ -177,12 +177,14 @@ impl ActiveDialog {
         ActiveDialog::SaveSearch(SaveSearchDialog::new(query, provenance, source))
     }
 
-    /// The sort dialog for `target`, opened on its `state`. With a `vault`,
-    /// the property keys load in the background for the Key picker (pass one
-    /// exactly when `allows_property`).
+    /// The sort dialog for `target`, opened on its `state` (shown as
+    /// "Unsorted" while `unsorted`). With a `vault`, the property keys load
+    /// in the background for the Key picker (pass one exactly when
+    /// `allows_property`).
     pub fn sort(
         target: SortTarget,
         state: SortState,
+        unsorted: bool,
         allows_property: bool,
         vault: Option<Arc<NoteVault>>,
         tx: &AppTx,
@@ -190,7 +192,7 @@ impl ActiveDialog {
         if let Some(vault) = vault {
             spawn_property_keys(vault, tx);
         }
-        ActiveDialog::Sort(SortDialog::new(target, state, allows_property))
+        ActiveDialog::Sort(SortDialog::new(target, state, allows_property).unsorted(unsorted))
     }
 
     /// The pinned-notes dialog (leader `f p`). Loads in the background and
@@ -472,7 +474,7 @@ mod tests {
             group_dirs: Some(false),
         };
         let _active: ActiveDialog =
-            ActiveDialog::sort(SortTarget::Sidebar, state, false, None, &tx);
+            ActiveDialog::sort(SortTarget::Sidebar, state, false, false, None, &tx);
     }
 
     /// Every dialog test for `PinnedNotesDialog` calls `set_rows` directly,

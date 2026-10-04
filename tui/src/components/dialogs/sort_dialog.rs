@@ -34,6 +34,9 @@ pub struct SortDialog {
     group_dirs: Option<bool>,
     /// The Field cycle reaches Property (query-backed lists only).
     allows_property: bool,
+    /// The list is in its natural order: the Field row says "Unsorted"
+    /// until the first Field or Order toggle picks Name (with that order).
+    unsorted: bool,
     rows: Vec<Row>,
     selected: usize,
     picker: KeyPicker,
@@ -57,6 +60,7 @@ impl SortDialog {
             order,
             group_dirs,
             allows_property,
+            unsorted: false,
             rows: Vec::new(),
             selected: 0,
             picker: KeyPicker::new(&key),
@@ -77,6 +81,12 @@ impl SortDialog {
         }
         self.rows = rows;
         self.selected = self.selected.min(self.rows.len() - 1);
+    }
+
+    /// Open on a list in its natural order (see `unsorted`).
+    pub fn unsorted(mut self, unsorted: bool) -> Self {
+        self.unsorted = unsorted;
+        self
     }
 
     pub(crate) fn set_keys(&mut self, keys: Vec<String>) {
@@ -128,6 +138,9 @@ impl SortDialog {
 
     fn toggle_selected(&mut self, tx: &AppTx) {
         match self.rows[self.selected] {
+            // Leaving "Unsorted" picks Name (below), so Name ascending is
+            // one toggle away.
+            Row::Field if self.unsorted => {}
             Row::Field => {
                 self.field = self.field.cycle(self.allows_property);
                 self.rebuild_rows();
@@ -135,6 +148,13 @@ impl SortDialog {
             Row::Order => self.order = self.order.toggle(),
             Row::Key => {}
             Row::GroupDirs => self.group_dirs = self.group_dirs.map(|g| !g),
+        }
+        // Any toggle leaves "Unsorted" on Name (an Order toggle keeps its
+        // new direction).
+        if self.unsorted {
+            self.unsorted = false;
+            self.field = SortField::Name;
+            self.rebuild_rows();
         }
         self.commit_typed_key();
         self.emit(tx, false);
@@ -228,6 +248,7 @@ impl SortDialog {
             Row::Field => (
                 "Sort by".to_string(),
                 match &self.field {
+                    _ if self.unsorted => "Unsorted".to_string(),
                     SortField::Name => "Name".to_string(),
                     SortField::Title => "Title".to_string(),
                     SortField::Property(_) => "Property".to_string(),
@@ -630,5 +651,56 @@ mod tests {
         d.handle_key(key(KeyCode::Char(' ')), &tx);
         d.handle_key(key(KeyCode::Char(' ')), &tx);
         assert_eq!(d.field, SortField::Name);
+    }
+
+    fn finder_dialog() -> SortDialog {
+        SortDialog::new(SortTarget::Browser, state(SortField::Name, None), true).unsorted(true)
+    }
+
+    fn emitted(rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>) -> SortState {
+        match rx.try_recv() {
+            Ok(AppEvent::SortChanged { state, .. }) => state,
+            other => panic!("expected SortChanged, got {other:?}"),
+        }
+    }
+
+    /// A list in its natural order (the Ctrl+O finder) shows "Unsorted"
+    /// until a sort is picked; the sidebar never does.
+    #[test]
+    fn unsorted_list_shows_unsorted_until_a_pick() {
+        let d = finder_dialog();
+        assert_eq!(d.row_label(Row::Field).1, "Unsorted");
+        assert_eq!(sidebar_dialog().row_label(Row::Field).1, "Name");
+    }
+
+    /// The first Sort-by toggle lands on Name ascending (not Title).
+    #[test]
+    fn first_field_toggle_while_unsorted_picks_name_ascending() {
+        let mut d = finder_dialog();
+        let (tx, mut rx) = unbounded_channel();
+        d.handle_key(key(KeyCode::Char(' ')), &tx);
+        let st = emitted(&mut rx);
+        assert_eq!(
+            (st.field, st.order),
+            (SortField::Name, SortOrder::Ascending)
+        );
+        assert_eq!(d.row_label(Row::Field).1, "Name");
+        d.handle_key(key(KeyCode::Char(' ')), &tx);
+        assert_eq!(emitted(&mut rx).field, SortField::Title, "then cycles");
+    }
+
+    /// Toggling Order while unsorted picks Name with the toggled order.
+    #[test]
+    fn order_toggle_while_unsorted_picks_name_descending() {
+        let mut d = finder_dialog();
+        let (tx, mut rx) = unbounded_channel();
+        d.handle_key(key(KeyCode::Down), &tx);
+        d.handle_key(key(KeyCode::Char(' ')), &tx);
+        let st = emitted(&mut rx);
+        assert_eq!(
+            (st.field, st.order),
+            (SortField::Name, SortOrder::Descending)
+        );
+        assert_eq!(d.row_label(Row::Field).1, "Name");
     }
 }

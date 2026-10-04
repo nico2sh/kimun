@@ -220,10 +220,12 @@ impl SidebarComponent {
         self.fetch_property_values(tx);
     }
 
-    /// Start a fetch of the active property sort's values, if it is one.
+    /// Start a fetch of the active property sort's values, if it is one;
+    /// any other sort forgets the cached values.
     fn fetch_property_values(&mut self, tx: &AppTx) {
-        if let Some(key) = property_key(&self.sort.0) {
-            self.property_sort.fetch(&self.vault, key, tx);
+        match property_key(&self.sort.0) {
+            Some(key) => self.property_sort.fetch(&self.vault, key, tx),
+            None => self.property_sort.clear(),
         }
     }
 
@@ -467,16 +469,17 @@ impl SortableList for SidebarComponent {
         }
     }
 
-    /// A `None` group flag keeps the current grouping. A property sort
-    /// fetches its key's values from the index and re-sorts when they land;
-    /// one with no key yet is ignored.
+    /// A `None` group flag keeps the current grouping. A property sort on a
+    /// new key fetches its values from the index and re-sorts when they
+    /// land; on the same key (an Order / Group toggle) it reuses the cached
+    /// values. One with no key yet is ignored.
     fn apply_sort(&mut self, state: &SortState, tx: &AppTx) {
         if is_blank_property(&state.field) {
             return;
         }
         let group_dirs = state.group_dirs.unwrap_or(self.group_dirs);
         SidebarComponent::apply_sort(self, state.field.clone(), state.order, group_dirs);
-        self.fetch_property_values(tx);
+        self.property_sort.sync(&self.vault, &state.field, tx);
     }
 
     fn allows_property(&self) -> bool {
@@ -1417,6 +1420,92 @@ mod tests {
             sidebar.current_sort(),
             (SortField::Property("rank".into()), SortOrder::Ascending)
         );
+        assert_eq!(note_names(&sidebar), ["alpha.md", "bravo.md", "charlie.md"]);
+    }
+
+    /// Order / Group toggles on the same property key reuse the cached
+    /// values; a new key or a listing refresh fetches them again.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn property_sort_toggles_reuse_the_cached_values() {
+        let mut sidebar = sidebar_with_bodies("sidebar-prop-cache", &RANKED).await;
+        let (tx, _rx) = unbounded_channel();
+        navigate_to_root(&mut sidebar, &tx).await;
+        SortableList::apply_sort(
+            &mut sidebar,
+            &property_state("rank", SortOrder::Ascending),
+            &tx,
+        );
+        poll_property_values(&mut sidebar).await;
+        let fetches = sidebar.property_sort.fetches;
+        assert_eq!(fetches, 1);
+
+        for order in [SortOrder::Descending, SortOrder::Ascending] {
+            SortableList::apply_sort(&mut sidebar, &property_state("Rank", order), &tx);
+        }
+        let mut grouped = property_state("rank", SortOrder::Ascending);
+        grouped.group_dirs = Some(true);
+        SortableList::apply_sort(&mut sidebar, &grouped, &tx);
+        assert_eq!(
+            sidebar.property_sort.fetches, fetches,
+            "toggles: no refetch"
+        );
+        assert!(!sidebar.property_sort.is_pending());
+        assert_eq!(note_names(&sidebar), ["bravo.md", "alpha.md", "charlie.md"]);
+
+        SortableList::apply_sort(
+            &mut sidebar,
+            &property_state("due", SortOrder::Ascending),
+            &tx,
+        );
+        assert_eq!(
+            sidebar.property_sort.fetches,
+            fetches + 1,
+            "new key fetches"
+        );
+        poll_property_values(&mut sidebar).await;
+
+        sidebar.refresh_if_showing(&VaultPath::root(), &tx);
+        assert_eq!(
+            sidebar.property_sort.fetches,
+            fetches + 2,
+            "refresh refetches"
+        );
+        poll_to_idle(&mut sidebar).await;
+        poll_property_values(&mut sidebar).await;
+    }
+
+    /// Leaving a property sort and coming back to the same key refetches:
+    /// values edited meanwhile must show up.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn returning_to_a_property_sort_refetches() {
+        let mut sidebar = sidebar_with_bodies("sidebar-prop-return", &RANKED).await;
+        let (tx, _rx) = unbounded_channel();
+        navigate_to_root(&mut sidebar, &tx).await;
+        SortableList::apply_sort(
+            &mut sidebar,
+            &property_state("rank", SortOrder::Ascending),
+            &tx,
+        );
+        poll_property_values(&mut sidebar).await;
+        assert_eq!(note_names(&sidebar), ["bravo.md", "alpha.md", "charlie.md"]);
+        sidebar
+            .vault
+            .save_note(
+                &VaultPath::note_path_from("bravo"),
+                "---\nrank: 9\n---\nbody",
+            )
+            .await
+            .unwrap();
+        let mut name = property_state("rank", SortOrder::Ascending);
+        name.field = SortField::Name;
+        SortableList::apply_sort(&mut sidebar, &name, &tx);
+        SortableList::apply_sort(
+            &mut sidebar,
+            &property_state("rank", SortOrder::Ascending),
+            &tx,
+        );
+        assert_eq!(sidebar.property_sort.fetches, 2, "back to rank refetches");
+        poll_property_values(&mut sidebar).await;
         assert_eq!(note_names(&sidebar), ["alpha.md", "bravo.md", "charlie.md"]);
     }
 

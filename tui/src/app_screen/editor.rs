@@ -1023,6 +1023,7 @@ impl EditorScreen {
         Some(Box::new(ActiveDialog::sort(
             target,
             list.sort_state(),
+            list.is_unsorted(),
             allows_property,
             allows_property.then(|| self.vault.clone()),
             tx,
@@ -1572,7 +1573,17 @@ impl EditorScreen {
                 self.spawn_autosave(tx);
             }
             AppEvent::NoteReloadFromDisk(path) => {
-                if path.is_like(&self.path) {
+                // Unsaved typing (made after the write was spawned) wins: the
+                // buffer and the autosave carrying it are kept, and the user
+                // is told the file changed underneath.
+                if path.is_like(&self.path) && self.panels.editor().is_some_and(|e| e.is_dirty()) {
+                    self.footer.flash(
+                        "properties changed on disk — reopen the note to see them".to_string(),
+                        tx,
+                    );
+                    // The footer's count follows the disk; the buffer stays.
+                    self.doc_meta.refresh_properties(&self.path, tx);
+                } else if path.is_like(&self.path) {
                     self.autosave_task.abort();
                     match self.vault.get_note_text(&self.path).await {
                         Ok(text) => {
@@ -2617,6 +2628,47 @@ mod tests {
             screen.footer.flash_text(),
             Some("reload failed — reopen the note before editing")
         );
+    }
+
+    /// Unsaved typing wins over a property write's reload: the buffer and
+    /// its pending autosave are kept, and the footer says what happened.
+    #[tokio::test]
+    async fn note_reload_keeps_a_dirty_buffer_and_its_autosave() {
+        let (mut screen, vault, tx, mut rx, _dir) = screen_on_note().await;
+        screen.handle_input(&chr('x'), &tx);
+        assert!(screen.panels.editor().unwrap().is_dirty(), "precondition");
+        screen.autosave_task.spawn(std::future::pending::<()>());
+        vault
+            .save_note(&VaultPath::new("n.md"), "+++\na = 1\n+++\nhi")
+            .await
+            .unwrap();
+        screen
+            .handle_app_message(AppEvent::NoteReloadFromDisk(VaultPath::new("n.md")), &tx)
+            .await;
+        let ed = screen.panels.editor().unwrap();
+        assert_eq!(ed.get_text(), "xhi", "the typing is kept");
+        assert!(ed.is_dirty(), "still unsaved");
+        assert!(
+            screen.autosave_task.is_in_flight(),
+            "the autosave carrying the typing is not aborted"
+        );
+        assert_eq!(
+            screen.footer.flash_text(),
+            Some("properties changed on disk — reopen the note to see them")
+        );
+        // The footer's property count still follows the disk (one property
+        // there; the open itself reported the old count of 0).
+        loop {
+            let evt = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+                .await
+                .expect("the disk count (1) is reported")
+                .expect("open channel");
+            if let AppEvent::PropertyCountLoaded { count: 1, .. } = evt {
+                break;
+            }
+        }
+        assert_eq!(screen.panels.editor().unwrap().get_text(), "xhi");
+        screen.autosave_task.abort();
     }
 
     /// Feed channel events through the screen until `done` has seen what it
@@ -4617,6 +4669,29 @@ mod sort_routing_tests {
         screen.handle_app_message(AppEvent::CloseOverlay, &tx).await;
         assert!(!screen.overlays.is_open());
         assert_eq!(screen.panels.focused(), focus);
+    }
+
+    /// Ctrl+R over a fresh Ctrl+O finder: the dialog says "Unsorted" (rows
+    /// are in recency order). The sidebar never reports unsorted.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sort_dialog_over_a_fresh_file_finder_says_unsorted() {
+        use ratatui::crossterm::event::KeyCode;
+        let (mut screen, tx, _rx) = make_editor().await;
+        assert!(!screen.panels.sidebar().is_unsorted());
+        assert!(!screen.panels.query().is_unsorted());
+        screen.open_overlay(OverlayOpen::FileFinder, &tx);
+        screen.handle_input(&key(KeyCode::Char('r'), true), &tx);
+        assert_eq!(screen.overlays.active_kind(), Some(OverlayKind::Dialog));
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40)).unwrap();
+        term.draw(|f| screen.render(f)).unwrap();
+        let text: String = term
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("Unsorted"), "dialog shows Unsorted");
     }
 
     /// A property sort is never a saved default: `s` with a Property field

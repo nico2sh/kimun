@@ -25,8 +25,7 @@ use crate::components::search_list::{
     KeyReaction, RowSource, SearchList, SearchMouse, VaultSuggestions,
 };
 use crate::components::sortable::{
-    PropertySort, SortState, SortableList, is_blank_property, order_of_query, property_key,
-    query_with_sort,
+    PropertySort, SortState, SortableList, is_blank_property, order_of_query, query_with_sort,
 };
 use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::ActionShortcuts;
@@ -400,7 +399,8 @@ impl NoteBrowserModal {
 
 impl SortableList for NoteBrowserModal {
     /// The query's order directive (search browser), or the row sort
-    /// (file finder; Name ascending until one is picked).
+    /// (file finder; Name ascending until one is picked — reported as
+    /// unsorted, see [`SortableList::is_unsorted`]).
     fn sort_state(&self) -> SortState {
         if let Some(rs) = &self.row_sort {
             return rs.state.clone().unwrap_or(SortState {
@@ -421,16 +421,15 @@ impl SortableList for NoteBrowserModal {
     /// the results re-sort live behind the sort dialog. Like the Query panel,
     /// the saved-search breadcrumb stays pinned and shows `• edited` (the
     /// stored query is saved verbatim). File finder: re-sort the rows; a
-    /// property sort fetches its key's values and re-sorts when they land.
+    /// property sort on a new key fetches its values and re-sorts when they
+    /// land (the same key reuses them).
     fn apply_sort(&mut self, state: &SortState, tx: &AppTx) {
         if let Some(rs) = &mut self.row_sort {
             if is_blank_property(&state.field) {
                 return;
             }
             rs.state = Some(state.clone());
-            if let Some(key) = property_key(&state.field) {
-                rs.property.fetch(&self.vault, key, tx);
-            }
+            rs.property.sync(&self.vault, &state.field, tx);
             self.reorder_rows();
             return;
         }
@@ -442,6 +441,16 @@ impl SortableList for NoteBrowserModal {
 
     fn allows_property(&self) -> bool {
         true
+    }
+
+    /// File finder: until a sort is picked (rows in recency / fuzzy order).
+    /// Search browser: on the empty query, which lists the recent notes in
+    /// recency order.
+    fn is_unsorted(&self) -> bool {
+        match &self.row_sort {
+            Some(rs) => rs.state.is_none(),
+            None => self.scope == BrowserScope::Query && self.list.query().trim().is_empty(),
+        }
     }
 }
 
@@ -1248,5 +1257,55 @@ mod tests {
         )]));
         assert!(!modal.on_property_sort_values("other", stale));
         assert_eq!(finder_names(&modal), ["alpha.md", "bravo.md", "charlie.md"]);
+    }
+
+    /// The finder reports "unsorted" (recency / match order) until a sort
+    /// is picked; then it reports the pick.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn file_finder_is_unsorted_until_a_sort_is_picked() {
+        let (mut modal, tx) = finder_modal("finder-unsorted").await;
+        assert!(modal.is_unsorted());
+        modal.apply_sort(&sort(SortField::Name, SortOrder::Ascending), &tx);
+        assert!(!modal.is_unsorted());
+    }
+
+    /// The Ctrl+K browser shows the recent notes in recency order for an
+    /// empty query: unsorted. A term or an order directive is not.
+    #[tokio::test]
+    async fn search_browser_is_unsorted_only_on_the_recents() {
+        let (empty, _) = search_modal(BrowserScope::Query, "").await;
+        assert!(empty.is_unsorted());
+        let (term, _) = search_modal(BrowserScope::Query, "#work").await;
+        assert!(!term.is_unsorted());
+        let (sorted, _) = search_modal(BrowserScope::Query, "or:title").await;
+        assert!(!sorted.is_unsorted());
+    }
+
+    /// Toggling the order of the same property key reuses the cached
+    /// values; another key fetches.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn file_finder_order_toggles_reuse_the_property_values() {
+        let (mut modal, tx) = finder_modal("finder-prop-cache").await;
+        let rank = SortField::Property("rank".into());
+        modal.apply_sort(&sort(rank.clone(), SortOrder::Ascending), &tx);
+        poll_finder_values(&mut modal).await;
+        let fetches = |m: &NoteBrowserModal| m.row_sort.as_ref().unwrap().property.fetches;
+        assert_eq!(fetches(&modal), 1);
+        modal.apply_sort(&sort(rank.clone(), SortOrder::Descending), &tx);
+        modal.apply_sort(&sort(rank, SortOrder::Ascending), &tx);
+        assert_eq!(fetches(&modal), 1, "order toggles: no refetch");
+        assert!(!modal.row_sort_pending());
+        assert_eq!(finder_names(&modal), ["bravo.md", "alpha.md", "charlie.md"]);
+        modal.apply_sort(
+            &sort(SortField::Property("due".into()), SortOrder::Ascending),
+            &tx,
+        );
+        assert_eq!(fetches(&modal), 2, "a new key fetches");
+        modal.apply_sort(&sort(SortField::Title, SortOrder::Ascending), &tx);
+        modal.apply_sort(
+            &sort(SortField::Property("due".into()), SortOrder::Ascending),
+            &tx,
+        );
+        assert_eq!(fetches(&modal), 3, "back to the key after Title refetches");
     }
 }
