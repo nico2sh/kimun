@@ -2,8 +2,8 @@ pub(crate) mod content_extractor;
 pub(crate) mod properties;
 
 pub use properties::{
-    is_list_property_key, property_keys_match, FrontmatterFormat, PropertyDateTime, PropertyEntry,
-    PropertyInput, PropertyKind, PropertyValue,
+    is_list_property_key, property_keys_match, property_search_key, FrontmatterFormat,
+    PropertyDateTime, PropertyEntry, PropertyInput, PropertyKind, PropertyValue,
 };
 
 use std::fmt::Display;

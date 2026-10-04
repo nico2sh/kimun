@@ -236,7 +236,7 @@ Sort keys:
 | `file` | `filename`, `f` | file name |
 | `prop:<key>` | `%<key>` | a [property](#properties) value; notes without it come last in either direction |
 
-The directive combines with any filter (`#project -#draft ^title`). The TUI sort dialog (`Ctrl+R`) writes this directive into the query for you; in the query panel its **Sort by** row cycles Name, Title and **Property**, and Property adds a **Key** field that suggests the keys in your vault. Nothing applies until a key is chosen. Click a row to toggle it, or click a suggestion to pick it.
+The directive combines with any filter (`#project -#draft ^title`). The TUI sort dialog (`Ctrl+R`, in the FIND view or the `Ctrl+K` search modal) writes this directive into the query for you; for a query its **Sort by** row cycles Name, Title and **Property**, and Property adds a **Key** field that suggests the keys in your vault. Nothing applies until a key is chosen. Click a row to toggle it, or click a suggestion to pick it. The FILES panel and the `Ctrl+O` file finder offer Property too: they re-sort their rows by the key's value, read from the index. A note the index has never seen (for example one created outside Kimün) sorts last, and a note edited outside Kimün sorts by its old value, until the next reindex.
 
 ## Query variables
 
@@ -264,7 +264,7 @@ You can also run a saved search straight from the search field, without the pick
 
 - Type `?` followed by part of a name (e.g. `?todo`) to filter the list; pick one with `Enter` or `Tab`. An empty `?` lists every saved search.
 - Accepting **expands the stored query into the field**, so you can tweak it before running like any other query.
-- The search-box border then shows the search's name as a breadcrumb (`‹ todo ›`). Edit the query and it gains an `‹ todo • edited ›` marker; clear the field to drop the breadcrumb. Changing only the [sort order](@/using-kimun/tui.md#find) does *not* count as edited.
+- The search-box border then shows the search's name as a breadcrumb (`‹ todo ›`). Edit the query and it gains an `‹ todo • edited ›` marker; clear the field to drop the breadcrumb. Changing the [sort order](@/using-kimun/tui.md#find) counts as an edit too, since it rewrites the query's sort directive.
 
 Because the field holds the query *template*, any `{note}` variable stays intact and re-resolves each time you run it.
 

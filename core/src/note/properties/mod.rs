@@ -382,6 +382,13 @@ pub(crate) fn search_key(key: &str) -> Option<String> {
     clean_key(key).map(|k| search_form(&k))
 }
 
+/// A property key in the form the index stores, filters and sorts it by
+/// (trimmed, case-folded, accents stripped), so `Rank` and `rank` are one
+/// key. `None` for a key that can't be a property (blank, multi-line).
+pub fn property_search_key(key: &str) -> Option<String> {
+    search_key(key)
+}
+
 /// The date or date-time `s` spells exactly: `YYYY-MM-DD` as a date, RFC3339
 /// or an offset-less `YYYY-MM-DDTHH:MM[:SS[.f]]` (a local time — Obsidian's
 /// Date & time property omits seconds and offset) as a date-time. How YAML

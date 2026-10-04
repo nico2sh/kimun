@@ -14,13 +14,19 @@ use crate::components::event_state::EventState;
 use crate::components::events::{
     AppEvent, AppTx, AppTxExt, InputEvent, OverlayData, redraw_callback,
 };
-use crate::components::file_list::FileListEntry;
+use crate::components::file_list::{
+    FileListEntry, PropertyValues, SortField, SortOrder, entry_order,
+};
 use crate::components::overlay::{Overlay, OverlayKind, OverlayMsg};
 use crate::components::panel::{ModalBg, ModalSpec, modal_chrome};
 use crate::components::preview_highlight;
 use crate::components::saved_search_breadcrumb::SavedSearchBreadcrumb;
 use crate::components::search_list::{
     KeyReaction, RowSource, SearchList, SearchMouse, VaultSuggestions,
+};
+use crate::components::sortable::{
+    PropertySort, SortState, SortableList, is_blank_property, order_of_query, property_key,
+    query_with_sort,
 };
 use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::ActionShortcuts;
@@ -75,6 +81,18 @@ pub struct NoteBrowserModal {
     /// Last create/open error (e.g. a failed `Create: …`), shown in the hint
     /// bar until the next keystroke. Cleared on input.
     error: Option<String>,
+    /// Row sorting for a Files-scope list (the Ctrl+O finder) — see
+    /// [`Self::with_row_sort`]. `None`: not sortable (link results), or the
+    /// Query scope, whose sort lives in the query string.
+    row_sort: Option<RowSort>,
+}
+
+/// The file finder's sort: `state` is `None` until the user picks one (rows
+/// keep the provider's order — recency, or fuzzy rank while typing).
+#[derive(Default)]
+struct RowSort {
+    state: Option<SortState>,
+    property: PropertySort,
 }
 
 impl NoteBrowserModal {
@@ -170,9 +188,67 @@ impl NoteBrowserModal {
             key_bindings,
             saved_search: SavedSearchBreadcrumb::default(),
             error: None,
+            row_sort: None,
         };
         modal.refresh_preview(None);
         modal
+    }
+
+    /// Make a Files-scope list sortable from the sort dialog (the Ctrl+O
+    /// finder): rows re-sort by name, title or a property's indexed value.
+    /// A no-op for the Query scope, which sorts through its query.
+    pub fn with_row_sort(mut self) -> Self {
+        if self.scope == BrowserScope::Files {
+            self.row_sort = Some(RowSort::default());
+        }
+        self
+    }
+
+    /// Re-sort the loaded rows by the row sort (no reload). A property sort
+    /// still waiting for its values keeps the current order.
+    fn reorder_rows(&mut self) {
+        let Some(RowSort {
+            state: Some(state),
+            property,
+        }) = &self.row_sort
+        else {
+            return;
+        };
+        let values = property_key(&state.field).and_then(|k| property.values_for(k));
+        if property_key(&state.field).is_some() && values.is_none() {
+            return;
+        }
+        let order = entry_order(state.field.clone(), state.order, false, values);
+        self.list.set_order(Some(order));
+        self.refresh_preview_from_list();
+    }
+
+    /// Property values fetched for `key` landed: re-sort if they belong to
+    /// the active sort. `false` when they are stale and were dropped.
+    pub(crate) fn on_property_sort_values(&mut self, key: &str, values: PropertyValues) -> bool {
+        let accepted = self
+            .row_sort
+            .as_mut()
+            .is_some_and(|rs| rs.property.receive(key, values));
+        if accepted {
+            self.reorder_rows();
+        }
+        accepted
+    }
+
+    /// Apply property values that arrived since the last frame. Runs from
+    /// `render`, which a parked finder (under the sort dialog) still gets.
+    fn poll_row_sort(&mut self) {
+        if let Some((key, values)) = self.row_sort.as_mut().and_then(|rs| rs.property.poll()) {
+            self.on_property_sort_values(&key, values);
+        }
+    }
+
+    #[cfg(test)]
+    fn row_sort_pending(&self) -> bool {
+        self.row_sort
+            .as_ref()
+            .is_some_and(|rs| rs.property.is_pending())
     }
 
     /// The lowercase text needles the preview emphasizes: the query's plain
@@ -298,6 +374,10 @@ impl NoteBrowserModal {
         .ok();
     }
 
+    fn is_sortable(&self) -> bool {
+        self.scope == BrowserScope::Query || self.row_sort.is_some()
+    }
+
     /// The saved-search breadcrumb label for the search border, or `None` when
     /// no saved search is active.
     #[cfg(test)]
@@ -311,6 +391,57 @@ impl NoteBrowserModal {
     #[cfg(test)]
     pub(super) fn query_text(&self) -> &str {
         self.list.query()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SortableList impl (search scope — see `Overlay::as_sortable`)
+// ---------------------------------------------------------------------------
+
+impl SortableList for NoteBrowserModal {
+    /// The query's order directive (search browser), or the row sort
+    /// (file finder; Name ascending until one is picked).
+    fn sort_state(&self) -> SortState {
+        if let Some(rs) = &self.row_sort {
+            return rs.state.clone().unwrap_or(SortState {
+                field: SortField::Name,
+                order: SortOrder::Ascending,
+                group_dirs: None,
+            });
+        }
+        let (field, order) = order_of_query(self.list.query());
+        SortState {
+            field,
+            order,
+            group_dirs: None,
+        }
+    }
+
+    /// Search browser: rewrite the query's order directive and reload, so
+    /// the results re-sort live behind the sort dialog. Like the Query panel,
+    /// the saved-search breadcrumb stays pinned and shows `• edited` (the
+    /// stored query is saved verbatim). File finder: re-sort the rows; a
+    /// property sort fetches its key's values and re-sorts when they land.
+    fn apply_sort(&mut self, state: &SortState, tx: &AppTx) {
+        if let Some(rs) = &mut self.row_sort {
+            if is_blank_property(&state.field) {
+                return;
+            }
+            rs.state = Some(state.clone());
+            if let Some(key) = property_key(&state.field) {
+                rs.property.fetch(&self.vault, key, tx);
+            }
+            self.reorder_rows();
+            return;
+        }
+        if let Some(rewritten) = query_with_sort(self.list.query(), &state.field, state.order) {
+            self.list.set_query(rewritten);
+            self.refresh_preview_from_list();
+        }
+    }
+
+    fn allows_property(&self) -> bool {
+        true
     }
 }
 
@@ -329,6 +460,17 @@ impl Overlay for NoteBrowserModal {
 
     fn saved_search_provenance(&self) -> Option<&str> {
         self.saved_search.name()
+    }
+
+    /// The search browser sorts through its query's order directive; the
+    /// file finder re-sorts its rows ([`NoteBrowserModal::with_row_sort`]).
+    /// The link-results list does not sort.
+    fn as_sortable(&self) -> Option<&dyn SortableList> {
+        self.is_sortable().then_some(self as &dyn SortableList)
+    }
+
+    fn as_sortable_mut(&mut self) -> Option<&mut dyn SortableList> {
+        if self.is_sortable() { Some(self) } else { None }
     }
 
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
@@ -403,6 +545,7 @@ impl Overlay for NoteBrowserModal {
 
     fn render(&mut self, f: &mut Frame, area: Rect, theme: &Theme) {
         self.poll_preview();
+        self.poll_row_sort();
 
         let popup_rect = crate::components::centered_rect(75, 75, area);
 
@@ -620,7 +763,9 @@ fn highlight_matches<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::file_list::{SortField, SortOrder};
     use crate::components::search_list::{Emit, RowSource};
+    use crate::components::sortable::{SortState, SortableList};
     use crate::settings::AppSettings;
     use crate::test_support::temp_vault;
     use async_trait::async_trait;
@@ -836,5 +981,272 @@ mod tests {
         // The overlay exposes the provenance so the save-search dialog can
         // pre-fill its name field.
         assert_eq!(Overlay::saved_search_provenance(&modal), Some("todo-week"));
+    }
+
+    // ── Sorting (Ctrl+R over the search browser) ──────────────────────────
+
+    async fn search_modal(scope: BrowserScope, query: &str) -> (NoteBrowserModal, AppTx) {
+        let vault = temp_vault("modal_sort").await;
+        let settings = AppSettings::default();
+        let (tx, _rx) = unbounded_channel();
+        let modal = NoteBrowserModal::with_initial_query(
+            "test",
+            scope,
+            OneNoteSource {
+                path: VaultPath::note_path_from("/a.md"),
+            },
+            vault,
+            settings.key_bindings.clone(),
+            settings.icons(),
+            tx.clone(),
+            query,
+        );
+        (modal, tx)
+    }
+
+    #[tokio::test]
+    async fn apply_sort_rewrites_the_query_order_directive() {
+        let (mut modal, tx) = search_modal(BrowserScope::Query, "#work").await;
+        let state = SortState {
+            field: SortField::Property("due".into()),
+            order: SortOrder::Descending,
+            group_dirs: None,
+        };
+        modal.apply_sort(&state, &tx);
+        assert_eq!(modal.query_text(), "#work -or:prop:due");
+        assert_eq!(modal.sort_state(), state, "sort_state reads it back");
+    }
+
+    /// Ctrl+K over the recent notes: picking a Title sort in the dialog keeps
+    /// the same recent set and only reorders it.
+    #[tokio::test]
+    async fn title_sort_reorders_the_recent_notes_in_place() {
+        use crate::components::note_browser::search_provider::resolving_search_source;
+        let vault = temp_vault("modal_sort_recents").await;
+        vault.validate_and_init().await.unwrap();
+        for (file, body) in [
+            ("a", "# Charlie\nx"),
+            ("b", "# Alpha\nx"),
+            ("c", "# Bravo\nx"),
+        ] {
+            vault
+                .create_note(&VaultPath::note_path_from(file), body)
+                .await
+                .unwrap();
+        }
+        vault
+            .create_note(&VaultPath::note_path_from("other"), "# Aaa\nx")
+            .await
+            .unwrap();
+        let recents: Vec<VaultPath> = ["c", "a", "b"]
+            .into_iter()
+            .map(VaultPath::note_path_from)
+            .collect();
+        let settings = AppSettings::default();
+        let (tx, _rx) = unbounded_channel();
+        let mut modal = NoteBrowserModal::new(
+            "test",
+            BrowserScope::Query,
+            resolving_search_source(vault.clone(), recents, None),
+            vault,
+            settings.key_bindings.clone(),
+            settings.icons(),
+            tx.clone(),
+        );
+        let listed = |m: &NoteBrowserModal| -> Vec<String> {
+            m.list
+                .visible_rows()
+                .iter()
+                .filter_map(|r| match r {
+                    FileListEntry::Note { path, .. } => Some(path.get_clean_name()),
+                    _ => None,
+                })
+                .collect()
+        };
+        modal.list.poll_until_idle().await;
+        assert_eq!(listed(&modal), ["c", "a", "b"]);
+
+        modal.apply_sort(
+            &SortState {
+                field: SortField::Title,
+                order: SortOrder::Ascending,
+                group_dirs: None,
+            },
+            &tx,
+        );
+        modal.list.poll_until_idle().await;
+        assert_eq!(modal.query_text(), "or:title");
+        assert_eq!(listed(&modal), ["b", "c", "a"], "same set, by title");
+    }
+
+    #[tokio::test]
+    async fn apply_sort_ignores_an_empty_property_key() {
+        let (mut modal, tx) = search_modal(BrowserScope::Query, "x -or:title").await;
+        for key in ["", "  "] {
+            let state = SortState {
+                field: SortField::Property(key.into()),
+                order: SortOrder::Ascending,
+                group_dirs: None,
+            };
+            modal.apply_sort(&state, &tx);
+        }
+        assert_eq!(modal.query_text(), "x -or:title");
+    }
+
+    #[tokio::test]
+    async fn sort_state_defaults_to_name_ascending() {
+        let (modal, _tx) = search_modal(BrowserScope::Query, "#work").await;
+        assert_eq!(
+            modal.sort_state(),
+            SortState {
+                field: SortField::Name,
+                order: SortOrder::Ascending,
+                group_dirs: None,
+            }
+        );
+        assert!(modal.allows_property());
+    }
+
+    /// The search browser and the file finder sort; a plain Files-scope
+    /// list (link results) does not.
+    #[tokio::test]
+    async fn the_search_browser_and_the_file_finder_are_sortable() {
+        let (mut search, _) = search_modal(BrowserScope::Query, "").await;
+        let (mut links, _) = search_modal(BrowserScope::Files, "").await;
+        let (finder, _) = search_modal(BrowserScope::Files, "").await;
+        let mut finder = finder.with_row_sort();
+        assert!(search.as_sortable().is_some());
+        assert!(search.as_sortable_mut().is_some());
+        assert!(links.as_sortable().is_none());
+        assert!(links.as_sortable_mut().is_none());
+        assert!(finder.as_sortable().is_some());
+        assert!(finder.as_sortable_mut().is_some());
+        assert!(finder.allows_property());
+    }
+
+    /// A sort counts as an edit of a pinned saved search: the breadcrumb
+    /// shows `• edited` once the order directive is rewritten.
+    #[tokio::test]
+    async fn apply_sort_marks_the_saved_search_breadcrumb_edited() {
+        let (mut modal, tx) = search_modal(BrowserScope::Query, "#todo").await;
+        modal.saved_search.set(Some("todo".into()), "#todo");
+        assert_eq!(modal.saved_search_breadcrumb().as_deref(), Some("todo"));
+        modal.apply_sort(
+            &SortState {
+                field: SortField::Title,
+                order: SortOrder::Ascending,
+                group_dirs: None,
+            },
+            &tx,
+        );
+        assert_eq!(
+            modal.saved_search_breadcrumb().as_deref(),
+            Some("todo • edited")
+        );
+    }
+
+    /// The Ctrl+O finder over a real vault, with row sorting on.
+    async fn finder_modal(prefix: &str) -> (NoteBrowserModal, AppTx) {
+        use crate::components::note_browser::file_finder_provider::FileFinderProvider;
+        let vault = temp_vault(prefix).await;
+        vault.validate_and_init().await.unwrap();
+        for (name, body) in [
+            ("alpha", "---\nrank: 3\n---\nbody"),
+            ("bravo", "---\nrank: 1\n---\nbody"),
+            ("charlie", "body"),
+        ] {
+            vault
+                .create_note(&VaultPath::note_path_from(name), body)
+                .await
+                .unwrap();
+        }
+        let settings = AppSettings::default();
+        let (tx, _rx) = unbounded_channel();
+        let provider = FileFinderProvider::new(vault.clone(), VaultPath::root());
+        let mut modal = NoteBrowserModal::new(
+            "Find Note",
+            BrowserScope::Files,
+            provider,
+            vault,
+            settings.key_bindings.clone(),
+            settings.icons(),
+            tx.clone(),
+        )
+        .with_row_sort();
+        modal.list.poll_until_idle().await;
+        (modal, tx)
+    }
+
+    fn finder_names(modal: &NoteBrowserModal) -> Vec<String> {
+        modal
+            .list
+            .visible_rows()
+            .iter()
+            .map(|r| r.path().get_name())
+            .collect()
+    }
+
+    fn sort(field: SortField, order: SortOrder) -> SortState {
+        SortState {
+            field,
+            order,
+            group_dirs: None,
+        }
+    }
+
+    /// Poll until the finder's property values have landed.
+    async fn poll_finder_values(modal: &mut NoteBrowserModal) {
+        for _ in 0..100 {
+            modal.poll_row_sort();
+            if !modal.row_sort_pending() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        panic!("property values never arrived");
+    }
+
+    /// Ctrl+R on the finder re-sorts its rows: by name, then by a property
+    /// once the values arrive (the note without the key last).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn file_finder_sorts_rows_by_name_and_property() {
+        let (mut modal, tx) = finder_modal("finder-sort").await;
+        modal.apply_sort(&sort(SortField::Name, SortOrder::Descending), &tx);
+        assert_eq!(finder_names(&modal), ["charlie.md", "bravo.md", "alpha.md"]);
+        assert_eq!(
+            modal.sort_state(),
+            sort(SortField::Name, SortOrder::Descending)
+        );
+
+        let rank = SortField::Property("rank".into());
+        modal.apply_sort(&sort(rank.clone(), SortOrder::Ascending), &tx);
+        assert_eq!(
+            finder_names(&modal),
+            ["charlie.md", "bravo.md", "alpha.md"],
+            "current order kept until the values arrive"
+        );
+        poll_finder_values(&mut modal).await;
+        assert_eq!(finder_names(&modal), ["bravo.md", "alpha.md", "charlie.md"]);
+        modal.apply_sort(&sort(rank.clone(), SortOrder::Descending), &tx);
+        assert_eq!(finder_names(&modal), ["alpha.md", "bravo.md", "charlie.md"]);
+        assert_eq!(modal.sort_state(), sort(rank, SortOrder::Descending));
+    }
+
+    /// Values for a key the finder no longer sorts by are dropped.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn file_finder_ignores_stale_property_values() {
+        use kimun_core::PropertySortValue::Number;
+        let (mut modal, tx) = finder_modal("finder-stale").await;
+        modal.apply_sort(&sort(SortField::Name, SortOrder::Ascending), &tx);
+        modal.apply_sort(
+            &sort(SortField::Property("rank".into()), SortOrder::Ascending),
+            &tx,
+        );
+        let stale = Arc::new(std::collections::HashMap::from([(
+            VaultPath::note_path_from("/charlie"),
+            Number(0.0),
+        )]));
+        assert!(!modal.on_property_sort_values("other", stale));
+        assert_eq!(finder_names(&modal), ["alpha.md", "bravo.md", "charlie.md"]);
     }
 }
