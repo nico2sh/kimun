@@ -67,7 +67,9 @@ pub struct PropertiesDialog {
     entries: Vec<PropertyEntry>,
     load_error: Option<String>,
     loading: bool,
-    /// A write is in flight: every write action is ignored.
+    /// A write is in flight: every write action is ignored, and so is every
+    /// way to close the dialog or its form — it stays up until the result
+    /// lands, so nothing typed in the editor meanwhile meets the reload.
     busy: bool,
     selected: usize,
     scroll: usize,
@@ -182,10 +184,11 @@ impl PropertiesDialog {
         self.buttons.set_enabled(BTN_ADD, writable);
         self.buttons.set_enabled(BTN_EDIT, has_row);
         self.buttons.set_enabled(BTN_DELETE, has_row);
-        self.buttons.set_enabled(BTN_CLOSE, true);
         let idle = !self.busy;
+        self.buttons.set_enabled(BTN_CLOSE, idle);
         if let Mode::Form(form) = &mut self.mode {
             form.buttons.set_enabled(0, idle);
+            form.buttons.set_enabled(1, idle);
             form.store_btn.set_enabled(0, idle);
         }
     }
@@ -199,7 +202,8 @@ impl PropertiesDialog {
 
     /// A write finished. The editor reload is not sent here: the write task
     /// sends it itself whenever the file changed, so it still arrives when
-    /// the dialog was closed before this result.
+    /// the dialog was dropped before this result (the user can't close it
+    /// while busy, but a file operation can dismiss every overlay).
     pub(crate) fn handle_written(
         &mut self,
         result: &Result<String, PropertyWriteError>,
@@ -322,7 +326,7 @@ impl PropertiesDialog {
     }
 
     fn press(&mut self, button: usize, tx: &AppTx) {
-        if button != BTN_CLOSE && !self.can_write() {
+        if self.busy || (button != BTN_CLOSE && !self.can_write()) {
             return;
         }
         match button {
@@ -364,7 +368,7 @@ impl PropertiesDialog {
         self.error = None;
         let can_write = self.can_write();
         match key.code {
-            KeyCode::Esc => {
+            KeyCode::Esc if !self.busy => {
                 tx.send(AppEvent::CloseOverlay).ok();
             }
             KeyCode::Tab | KeyCode::BackTab => {
@@ -941,6 +945,8 @@ impl PropertiesDialog {
             FormAction::None => {}
             FormAction::Submit => self.submit(None, tx),
             FormAction::StoreAnyway => self.press_store_anyway(tx),
+            // A save in flight keeps the form up until its result.
+            FormAction::Cancel if self.busy => {}
             FormAction::Cancel => self.mode = Mode::List,
         }
     }
@@ -1961,5 +1967,67 @@ mod tests {
             panic!("form")
         };
         assert_eq!(form.key.value(), "statusx");
+    }
+
+    /// Where `buttons` renders button `b` on the 80x24 test frame.
+    fn button_spot(buttons: &ButtonRow, b: usize) -> (u16, u16) {
+        (0..24u16)
+            .flat_map(|y| (0..80u16).map(move |x| (x, y)))
+            .find(|&(x, y)| buttons.hit(x, y) == Some(b))
+            .expect("button rendered")
+    }
+
+    fn closed(rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>) -> bool {
+        let mut closed = false;
+        while let Ok(evt) = rx.try_recv() {
+            closed |= matches!(evt, AppEvent::CloseOverlay);
+        }
+        closed
+    }
+
+    /// A write in flight keeps the dialog open: Esc, the Close button and a
+    /// direct press are ignored until the result lands, then Esc closes.
+    #[tokio::test]
+    async fn busy_list_cannot_be_closed_until_the_result_arrives() {
+        let (mut d, tx, mut rx) = dialog_with(sample()).await;
+        draw(&mut d);
+        let (x, y) = button_spot(&d.buttons, BTN_CLOSE);
+        d.busy = true;
+        d.sync_buttons();
+        d.handle_key(k(KeyCode::Esc), &tx);
+        d.handle_mouse(&mouse(x, y), &tx);
+        d.press(BTN_CLOSE, &tx);
+        assert!(!closed(&mut rx), "no CloseOverlay while saving");
+        d.handle_written(&Ok("property removed".into()), &tx);
+        closed(&mut rx);
+        d.handle_key(k(KeyCode::Esc), &tx);
+        assert!(closed(&mut rx), "Esc closes once the write landed");
+    }
+
+    /// The form's Cancel (Esc, the button by key or click) is ignored while
+    /// its save is in flight: the form stays up until the result.
+    #[tokio::test]
+    async fn busy_form_cancel_is_ignored_until_the_result_arrives() {
+        let (mut d, tx, mut rx) = dialog_with(sample()).await;
+        d.handle_key(k(KeyCode::Char('a')), &tx);
+        draw(&mut d);
+        let Mode::Form(form) = &d.mode else {
+            panic!("form")
+        };
+        let (x, y) = button_spot(&form.buttons, 1);
+        d.busy = true;
+        d.sync_buttons();
+        d.handle_key(k(KeyCode::Esc), &tx);
+        assert!(matches!(d.mode, Mode::Form(_)), "Esc ignored while saving");
+        d.handle_mouse(&mouse(x, y), &tx);
+        assert!(matches!(d.mode, Mode::Form(_)), "Cancel click ignored");
+        d.run_form_action(FormAction::Cancel, &tx);
+        assert!(matches!(d.mode, Mode::Form(_)), "Cancel ignored");
+        assert!(!closed(&mut rx));
+        d.handle_written(&Err(PropertyWriteError::Other("nope".into())), &tx);
+        d.handle_key(k(KeyCode::Esc), &tx);
+        assert!(matches!(d.mode, Mode::List), "Esc cancels once idle");
+        d.handle_key(k(KeyCode::Esc), &tx);
+        assert!(closed(&mut rx), "and the next Esc closes the dialog");
     }
 }

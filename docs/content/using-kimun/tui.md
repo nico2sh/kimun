@@ -92,8 +92,8 @@ A configuration overview: active theme, leader key, preferences key, which-key t
 
 Two modal pickers float over the editor, list on the left, preview on the right:
 
-- **`Ctrl+K`** — query search (same grammar as FIND); the preview shows the note with matches emphasized and a `filename · N matches` header. `Ctrl+R` opens the sort dialog over it; the results re-sort live, and closing the dialog returns to the search. With no search terms, a sort reorders your recent notes instead of searching the whole vault.
-- **`Ctrl+O`** — fuzzy file finder by name; typing a new name offers a *Create* row. `Ctrl+R` opens the sort dialog over it, like over `Ctrl+K`: its rows re-sort by name, title or a property.
+- **`Ctrl+K`** — query search (same grammar as FIND); the preview shows the note with matches emphasized and a `filename · N matches` header. `Ctrl+R` opens the sort dialog over it; the results re-sort live, and closing the dialog returns to the search. With no search terms, a sort reorders your recent notes instead of searching the whole vault (the dialog shows **Unsorted** until you pick one).
+- **`Ctrl+O`** — fuzzy file finder by name; typing a new name offers a *Create* row. `Ctrl+R` opens the sort dialog over it, like over `Ctrl+K`: its rows re-sort by name, title or a property. Until you pick a sort, the dialog shows **Unsorted** (recent or best-match order); the first toggle picks Name.
 
 Enter opens the selection (query matches stay highlighted in the editor until your first edit). `Ctrl+D` saves the current query.
 
@@ -191,6 +191,8 @@ The edit form has three fields:
 - **Value** is comma-separated for list types and for keys that are always lists (`tags`, `aliases`); for other keys choose type `list` to enter several items. An empty value is refused.
 
 Move between fields with `Tab` / `Shift+Tab` or `↑` `↓` (while the key suggestions are open, `↑` `↓` move through them instead). `Enter` saves and `Esc` goes back to the list. Renaming a key keeps its position in the frontmatter. Adding a key the note already has is refused; edit it instead. With Type `auto`, if the value does not fit the key's usual type in your vault, the form says so and offers **Store as … anyway**.
+
+While a change is being written, `Esc`, `[Close]` and `[Cancel]` wait for it to finish. If you have unsaved typing in the note when a change lands, your typing is kept and the footer asks you to reopen the note to see the new properties.
 
 If a note's frontmatter is malformed, the first failed write turns the dialog read-only; fix the frontmatter in the editor and reopen it.
 
