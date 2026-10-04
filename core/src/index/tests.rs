@@ -1816,9 +1816,15 @@ async fn saving_a_note_indexes_its_properties() {
                 0,
                 "datetime".into(),
                 "2024-01-31t10:00:00z".into(),
-                None
+                Some(1_706_695_200.0)
             ),
-            ("due".into(), 0, "date".into(), "2024-01-31".into(), None),
+            (
+                "due".into(),
+                0,
+                "date".into(),
+                "2024-01-31".into(),
+                Some(1_706_659_200.0)
+            ),
             ("flag".into(), 0, "bool".into(), "true".into(), None),
             ("priority".into(), 0, "number".into(), "2".into(), Some(2.0)),
             ("status".into(), 0, "text".into(), "done".into(), None),
@@ -2455,5 +2461,105 @@ async fn prop_a_quoted_value_is_literal() {
         hits("%rating=g*").await,
         vec!["/word.md"],
         "unquoted * is a wildcard"
+    );
+}
+
+// Dates and date-times compare as instants: a date is its own midnight (UTC),
+// and fractional seconds order correctly.
+#[tokio::test]
+async fn prop_dates_compare_and_sort_as_instants() {
+    let (_tmp, db) = open_temp().await;
+    db.apply(added(vec![
+        note("/day.md", "+++\nat = 2024-01-15\n+++\n"),
+        note("/whole.md", "+++\nat = 2024-01-15T10:00:00Z\n+++\n"),
+        note("/half.md", "+++\nat = 2024-01-15T10:00:00.5Z\n+++\n"),
+    ]))
+    .await
+    .unwrap();
+    let hits = |q: &'static str| {
+        let db = &db;
+        async move { paths(&db.search(q).await.unwrap()) }
+    };
+    assert_eq!(
+        hits("%at<2024-01-15T00:00").await,
+        Vec::<String>::new(),
+        "a date is its midnight"
+    );
+    assert_eq!(hits("%at=2024-01-15T00:00").await, vec!["/day.md"]);
+    assert_eq!(
+        hits("%at>2024-01-15T10:00:00").await,
+        vec!["/half.md"],
+        "fractional seconds"
+    );
+    assert_eq!(hits("%at<=2024-01-15").await, vec!["/day.md"]);
+    let order: Vec<String> = db
+        .search("%at or:%at")
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(e, _)| e.path.to_string())
+        .collect();
+    assert_eq!(order, ["/day.md", "/whole.md", "/half.md"]);
+}
+
+#[tokio::test]
+async fn prop_partial_dates_compare_as_their_whole_period() {
+    let (_tmp, db) = open_temp().await;
+    db.apply(added(vec![
+        note("/dec.md", "+++\nat = 2023-12-31T23:00:00Z\n+++\n"),
+        note("/jan1.md", "+++\nat = 2024-01-01\n+++\n"),
+        note("/feb.md", "+++\nat = 2024-02-10T08:00:00Z\n+++\n"),
+        note("/next.md", "+++\nat = 2025-01-01\n+++\n"),
+    ]))
+    .await
+    .unwrap();
+    let hits = |q: &'static str| {
+        let db = &db;
+        async move {
+            let mut found = paths(&db.search(q).await.unwrap());
+            found.sort();
+            found
+        }
+    };
+    assert_eq!(hits("%at=2024").await, ["/feb.md", "/jan1.md"]);
+    assert_eq!(hits("%at!=2024").await, ["/dec.md", "/next.md"]);
+    assert_eq!(hits("%at<2024").await, ["/dec.md"]);
+    assert_eq!(hits("%at>=2024").await, ["/feb.md", "/jan1.md", "/next.md"]);
+    assert_eq!(hits("%at>2024").await, ["/next.md"], "after the whole year");
+    assert_eq!(hits("%at<=2024").await, ["/dec.md", "/feb.md", "/jan1.md"]);
+    assert_eq!(hits("%at=2024-02").await, ["/feb.md"]);
+    assert_eq!(hits("%at>2024-01").await, ["/feb.md", "/next.md"]);
+    // An exact date stays one instant, its midnight.
+    assert_eq!(hits("%at=2024-01-01").await, ["/jan1.md"]);
+}
+
+#[tokio::test]
+async fn prop_sort_places_date_text_among_dates() {
+    let (_tmp, db) = open_temp().await;
+    db.apply(added(vec![
+        note("/late.md", "+++\nd = 2024-03-01\n+++\n"),
+        note("/jekyll.md", "---\nd: 2024-01-15 10:00:00\n---\n"),
+        note("/list.md", "+++\nd = [\"2024-02-01\", \"x\"]\n+++\n"),
+        note("/early.md", "+++\nd = 2024-01-01\n+++\n"),
+        note("/word.md", "+++\nd = \"soon\"\n+++\n"),
+    ]))
+    .await
+    .unwrap();
+    let order: Vec<String> = db
+        .search("%d or:%d")
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(e, _)| e.path.to_string())
+        .collect();
+    assert_eq!(
+        order,
+        [
+            "/early.md",
+            "/jekyll.md",
+            "/list.md",
+            "/late.md",
+            "/word.md"
+        ]
     );
 }

@@ -16,8 +16,7 @@ use crate::note::properties::{
     date_in_text, format_datetime, format_number, search_form, PropertySet,
 };
 use crate::note::{
-    ContentChunk, LinkType, NoteContentData, NoteDetails, PropertyDateTime, PropertyKind,
-    PropertyValue,
+    ContentChunk, LinkType, NoteContentData, NoteDetails, PropertyKind, PropertyValue,
 };
 
 /// A note change reported by the `NoteIndex` the moment it is recorded, for
@@ -138,7 +137,11 @@ use super::{
 // 0.16: text that is exactly a date or date-time (a TOML string, Hugo's
 //       quoted dates) is indexed as one, as YAML's bare dates already were.
 //       Bump forces a clean reindex so those rows compare as dates.
-const VERSION: &str = "0.16";
+// 0.17: date and date-time rows carry their instant (seconds since 1970,
+//       UTC) in `value_num`, so they compare and sort as instants; inline
+//       HTML no longer cuts headings or lines, and every line of a list item
+//       is indexed. Bump forces a clean reindex so both reach existing vaults.
+const VERSION: &str = "0.17";
 
 /// Tables whose rows belong to one note through a `path` column. Every save,
 /// rename and delete keeps all of them in step with the note, so a new
@@ -990,8 +993,8 @@ async fn create_tables(pool: &SqlitePool) -> Result<(), DBError> {
 
     // Typed frontmatter properties: one row per scalar (list_index 0) or per
     // list item (0..N). `value_text` is the canonical text in `search_form` used for
-    // equality and lexicographic (ISO date) comparison; `value_num` is set
-    // only for numbers. The PK serves per-note lookups.
+    // equality and text comparison; `value_num` holds a number's value and a
+    // date's or date-time's instant (seconds since 1970, UTC). The PK serves per-note lookups.
     sqlx::query(
         "CREATE TABLE properties (
             path TEXT NOT NULL,
@@ -1584,25 +1587,39 @@ fn property_comparison(
         *var_num - 1
     };
     let v = bind(value.to_string());
-    // Each kind the query value can meet, as a condition with an `{op}` slot.
-    let mut meets = Vec::new();
+    let num = |op: &str, var: usize| format!("value_num {op} CAST(?{var} AS REAL)");
+    // Each kind the query value can meet, as a condition for an operator
+    // (`Eq` stands for both `=` and `!=`, which negates it as a whole).
+    let mut meets: Vec<Box<dyn Fn(PropertyOp) -> String>> = Vec::new();
     if value.parse::<f64>().is_ok_and(f64::is_finite) {
-        meets.push(format!(
-            "(value_type = 'number' AND value_num {{op}} CAST(?{v} AS REAL))"
-        ));
+        meets.push(Box::new(move |op| {
+            format!("(value_type = 'number' AND {})", num(op.sql(), v))
+        }));
     }
     // A date, a date-time, or a partial date — `2024` meets numbers and dates.
-    if let Some(instant) = temporal_form(value) {
-        let t = bind(instant);
-        meets.push(format!(
-            "(value_type IN ('date', 'datetime') AND value_text {{op}} ?{t})"
-        ));
+    if let Some(temporal) = temporal_form(value) {
+        let start = bind(temporal.start.to_string());
+        let end = temporal.end.map(|end| bind(end.to_string()));
+        meets.push(Box::new(move |op| {
+            let test = match (op, end) {
+                (_, None) | (PropertyOp::Lt | PropertyOp::Ge, Some(_)) => num(op.sql(), start),
+                // A period: `=` anywhere in it, `>` after it, `<=` up to its end.
+                (PropertyOp::Eq | PropertyOp::Ne, Some(end)) => {
+                    format!("{} AND {}", num(">=", start), num("<", end))
+                }
+                (PropertyOp::Gt, Some(end)) => num(">=", end),
+                (PropertyOp::Le, Some(end)) => num("<", end),
+            };
+            format!("(value_type IN ('date', 'datetime') AND {test})")
+        }));
     }
     if meets.is_empty() {
-        meets.push(format!("(value_type = 'text' AND value_text {{op}} ?{v})"));
+        meets.push(Box::new(move |op| {
+            format!("(value_type = 'text' AND value_text {} ?{v})", op.sql())
+        }));
     }
-    let compare = |op: &str| {
-        let alternatives: Vec<String> = meets.iter().map(|m| m.replace("{op}", op)).collect();
+    let compare = |op: PropertyOp| {
+        let alternatives: Vec<String> = meets.iter().map(|meet| meet(op)).collect();
         format!("({})", alternatives.join(" OR "))
     };
     let eq = if wildcard {
@@ -1614,7 +1631,7 @@ fn property_comparison(
         // Equality also matches any non-number value written exactly as `value`.
         format!(
             "({} OR (value_type <> 'number' AND value_text = ?{v}))",
-            compare("=")
+            compare(PropertyOp::Eq)
         )
     };
     match op {
@@ -1625,36 +1642,75 @@ fn property_comparison(
         ),
         PropertyOp::Lt | PropertyOp::Le | PropertyOp::Gt | PropertyOp::Ge => format!(
             "SELECT path FROM properties WHERE key = ?{k} AND {}",
-            compare(op.sql())
+            compare(op)
         ),
     }
 }
 
-/// A query value as the instant date and date-time values are stored as —
-/// an exact `YYYY-MM-DD` as itself, a date-time as lowercased canonical UTC
-/// RFC3339 — or `None` when it is neither.
-fn temporal_form(value: &str) -> Option<String> {
-    if value.len() == 10 && crate::dates::parse_iso_date(value).is_some() {
-        return Some(value.to_string());
-    }
-    // A partial date (`2024`, `2024-02`) compares as the start of its period:
-    // as text it sorts right before every date inside it.
-    let digits = |s: &str, len: usize| s.len() == len && s.bytes().all(|b| b.is_ascii_digit());
-    let partial = match value.split_once('-') {
-        None => digits(value, 4),
-        Some((year, month)) => digits(year, 4) && digits(month, 2),
-    };
-    if partial {
-        return Some(value.to_string());
-    }
-    PropertyDateTime::parse(value).map(|dt| format_datetime(&dt.to_utc()).to_lowercase())
+/// A query value as date and date-time values are compared: by instant
+/// (seconds since 1970, UTC; see [`instant_seconds`]).
+struct TemporalForm {
+    /// An exact `YYYY-MM-DD` at its midnight, a date-time at its instant (a
+    /// local time read as UTC), a partial date at the start of its period.
+    start: f64,
+    /// Where a partial date's period (`2024`, `2024-02`) ends: the start of
+    /// the next one. `None` for a single instant.
+    end: Option<f64>,
 }
 
-/// A note's sort value for `or:prop:` — numbers sort before text.
+/// `value` as a [`TemporalForm`], or `None` when it is no date, date-time or
+/// partial date.
+fn temporal_form(value: &str) -> Option<TemporalForm> {
+    let digits = |s: &str, len: usize| s.len() == len && s.bytes().all(|b| b.is_ascii_digit());
+    let midnight =
+        |date: chrono::NaiveDate| instant_seconds(date.and_time(chrono::NaiveTime::MIN).and_utc());
+    let period = match value.split_once('-') {
+        None if digits(value, 4) => Some((format!("{value}-01-01"), 12)),
+        Some((year, month)) if digits(year, 4) && digits(month, 2) => {
+            Some((format!("{value}-01"), 1))
+        }
+        _ => None,
+    };
+    if let Some((first_day, months)) = period {
+        let start = crate::dates::parse_iso_date(&first_day)?;
+        let end = start.checked_add_months(chrono::Months::new(months))?;
+        return Some(TemporalForm {
+            start: midnight(start),
+            end: Some(midnight(end)),
+        });
+    }
+    let start = match date_in_text(value)? {
+        PropertyValue::Date(date) => midnight(date),
+        PropertyValue::DateTime(dt) => instant_seconds(dt.to_utc()),
+        _ => return None,
+    };
+    Some(TemporalForm { start, end: None })
+}
+
+/// An instant as seconds since 1970 (UTC), fractions kept — the number date
+/// and date-time values are compared and sorted by.
+fn instant_seconds(instant: chrono::DateTime<chrono::Utc>) -> f64 {
+    instant.timestamp() as f64 + f64::from(instant.timestamp_subsec_nanos()) / 1e9
+}
+
+/// A note's sort value for `or:prop:` — numbers first, then dates and
+/// date-times (by instant), then text.
 #[derive(Debug, Clone, PartialEq)]
 enum PropertySortKey {
     Number(f64),
+    Instant(f64),
     Text(String),
+}
+
+impl PropertySortKey {
+    /// The group a key sorts in: numbers, then instants, then text.
+    fn rank(&self) -> u8 {
+        match self {
+            PropertySortKey::Number(_) => 0,
+            PropertySortKey::Instant(_) => 1,
+            PropertySortKey::Text(_) => 2,
+        }
+    }
 }
 
 /// Each note's first value (`list_index = 0`) of `key`, by canonical path.
@@ -1674,11 +1730,29 @@ async fn property_sort_keys(
         .map(|(path, ty, text, num)| {
             let k = match (ty.as_str(), num) {
                 ("number", Some(n)) => PropertySortKey::Number(n),
-                _ => PropertySortKey::Text(text),
+                ("date" | "datetime", Some(n)) => PropertySortKey::Instant(n),
+                // Date-looking text sorts among the dates: a list's first
+                // item, or a YAML date-time written with a space.
+                _ => match text_instant(&text) {
+                    Some(instant) => PropertySortKey::Instant(instant),
+                    None => PropertySortKey::Text(text),
+                },
             };
             (path, k)
         })
         .collect())
+}
+
+/// The instant a date or date-time written as text names (`2024-01-15`,
+/// `2024-01-15 10:00:00`), or `None`.
+fn text_instant(text: &str) -> Option<f64> {
+    let text = match text.as_bytes().get(10) {
+        Some(b' ') => format!("{}T{}", &text[..10], &text[11..]),
+        _ => text.to_string(),
+    };
+    temporal_form(&text)
+        .filter(|form| form.end.is_none())
+        .map(|form| form.start)
 }
 
 /// Missing values sort last in both directions; direction applies otherwise.
@@ -1688,15 +1762,14 @@ fn cmp_property_sort_keys(
     asc: bool,
 ) -> std::cmp::Ordering {
     use std::cmp::Ordering::{Equal, Greater, Less};
-    use PropertySortKey::{Number, Text};
+    use PropertySortKey::{Instant, Number, Text};
     let ord = match (a, b) {
         (None, None) => return Equal,
         (None, Some(_)) => return Greater,
         (Some(_), None) => return Less,
-        (Some(Number(x)), Some(Number(y))) => x.total_cmp(y),
+        (Some(Number(x)), Some(Number(y))) | (Some(Instant(x)), Some(Instant(y))) => x.total_cmp(y),
         (Some(Text(x)), Some(Text(y))) => x.cmp(y),
-        (Some(Number(_)), Some(Text(_))) => Less,
-        (Some(Text(_)), Some(Number(_))) => Greater,
+        (Some(x), Some(y)) => x.rank().cmp(&y.rank()),
     };
     if asc {
         ord
@@ -1924,14 +1997,26 @@ impl PropertyRow {
         };
         match value {
             PropertyValue::Number(n) => vec![row(0, format_number(n), Some(n))],
-            // Compared as the instant it names, a local time read as UTC.
-            PropertyValue::DateTime(dt) => vec![row(0, format_datetime(&dt.to_utc()), None)],
+            // Dates and date-times compare by the instant they name (a date at
+            // its midnight, a local time read as UTC), kept in `value_num`.
+            PropertyValue::Date(d) => {
+                let midnight = d.and_time(chrono::NaiveTime::MIN).and_utc();
+                vec![row(
+                    0,
+                    crate::dates::format_iso_date(d),
+                    Some(instant_seconds(midnight)),
+                )]
+            }
+            PropertyValue::DateTime(dt) => {
+                let utc = dt.to_utc();
+                vec![row(0, format_datetime(&utc), Some(instant_seconds(utc)))]
+            }
             PropertyValue::List(items) => items
                 .into_iter()
                 .enumerate()
                 .map(|(i, item)| row(i as i64, item, None))
                 .collect(),
-            // Text, bool and date: their canonical text.
+            // Text and bool: their canonical text.
             scalar => vec![row(0, scalar.to_string(), None)],
         }
     }

@@ -170,7 +170,7 @@ prop:status=done      → status equals "done" (ignores case and accents: Status
 %status="in progress" → quote a value that has spaces
 %"due date"<2025-01-01 → quote a key that has spaces (the whole term works too: prop:"due date<2025-01-01")
 %status=d*            → `*` is a wildcard with = and != (also in list items and dates: %at=2024-01*; a date & time with an offset matches by its UTC form). A quoted value is literal: %rating="***"
-%due<2024-02          → a partial date (2024-02, or a year: 2024) compares as the start of that period: < is before it, >= is from it on (<= and = compare with its first day only)
+%due<2024-02          → a partial date (2024-02, or a year: 2024) is the whole period: = is within it, < is before it, > is after it, <= and >= include it
 %flag="!important"    → quote a value that starts with = ! < or >
 ^%"due date"          → sort by a key that has spaces
 ```
