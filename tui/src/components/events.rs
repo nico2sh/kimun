@@ -14,7 +14,8 @@ use crate::components::sortable::SortState;
 pub enum SortTarget {
     Sidebar,
     Query,
-    /// The Ctrl+K search browser (the note browser over the search source).
+    /// The open sortable note browser: the Ctrl+K search browser or the
+    /// Ctrl+O file finder.
     Browser,
 }
 

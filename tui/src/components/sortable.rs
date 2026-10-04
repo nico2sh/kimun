@@ -2,7 +2,7 @@
 //! Query panel, the Ctrl+K search browser and the Ctrl+O file finder. The dialog is built from a
 //! list's [`SortState`] and [`SortableList::allows_property`], and every
 //! selection it emits is applied through [`SortableList::apply_sort`], so the
-//! three targets cannot drift apart in how a sort lands.
+//! targets cannot drift apart in how a sort lands.
 
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -53,6 +53,18 @@ impl PropertySort {
         (self.key.as_deref() == Some(key.as_str()))
             .then(|| self.values.clone())
             .flatten()
+    }
+
+    /// The cached values a listing sorted by `field` orders with: `None` for
+    /// Name / Title, or while a property sort's values are still awaited.
+    pub fn values_for_field(&self, field: &SortField) -> Option<PropertyValues> {
+        property_key(field).and_then(|k| self.values_for(k))
+    }
+
+    /// A property sort whose values have not landed yet — the listing keeps
+    /// its current order until they do.
+    pub fn is_awaiting(&self, field: &SortField) -> bool {
+        property_key(field).is_some_and(|k| self.values_for(k).is_none())
     }
 
     /// Fetch `key`'s values in the background (a redraw follows the result).
@@ -168,10 +180,12 @@ pub fn directive_of_query(query: &str) -> Option<(SortField, SortOrder)> {
 /// string is the single source of truth for a query-backed list's sort.
 /// `None` for a property sort with no key yet (not a usable order).
 pub fn query_with_sort(query: &str, field: &SortField, order: SortOrder) -> Option<String> {
+    if is_blank_property(field) {
+        return None;
+    }
     let order_field = match field {
         SortField::Name => OrderField::FileName,
         SortField::Title => OrderField::Title,
-        SortField::Property(key) if key.trim().is_empty() => return None,
         SortField::Property(key) => OrderField::Property(key.clone()),
     };
     let asc = matches!(order, SortOrder::Ascending);

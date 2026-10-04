@@ -59,7 +59,8 @@ pub struct InputCtx {
     /// records the press before building this snapshot.
     pub double_click: bool,
     /// The open overlay is a list the sort dialog can sort (the Ctrl+K
-    /// search browser, not the file finder). Lets Ctrl+R over it open the
+    /// search browser or the Ctrl+O file finder, not the link results). Lets
+    /// Ctrl+R over it open the
     /// sort dialog on top instead of reaching the overlay.
     pub overlay_sortable: bool,
 }
@@ -167,7 +168,8 @@ pub enum OverlayOpen {
     Cheatsheet,
     SortQuery,
     SortSidebar,
-    /// The sort dialog stacked over the open Ctrl+K search browser — the one
+    /// The sort dialog stacked over the open sortable note browser (Ctrl+K
+    /// search browser or Ctrl+O file finder) — the one
     /// recipe that opens over an overlay instead of being refused by it.
     SortBrowser,
     QuickNote,
@@ -530,8 +532,8 @@ pub(crate) fn classify_tail(
             // a help-dialog entry.
             Some(ActionShortcuts::YankRow) => None,
             Some(ActionShortcuts::OpenSortDialog) => {
-                // Sort applies only to a list: the Ctrl+K search browser when
-                // it is the open overlay, else the focused drawer's Find /
+                // Sort applies only to a list: a sortable note browser (Ctrl+K
+                // search, Ctrl+O finder) when it is the open overlay, else the focused drawer's Find /
                 // Files view. Over any other overlay, or with the editor
                 // focused, do NOT consume — fall through (`None`) so the key
                 // reaches it (e.g. Ctrl+R is redo in the nvim editor).
@@ -1252,8 +1254,9 @@ mod tests {
         );
     }
 
-    /// Ctrl+R over the Ctrl+K search browser opens the sort dialog on top of
-    /// it; any other overlay (the file finder included) keeps the chord.
+    /// Ctrl+R over a sortable note browser opens the sort dialog on top of
+    /// it; a non-sortable browser (link results) or any other overlay keeps
+    /// the chord.
     #[test]
     fn sort_dialog_over_a_sortable_note_browser() {
         let cx = InputCtx {
@@ -1267,11 +1270,11 @@ mod tests {
             EditorIntent::OpenOverlay(OverlayOpen::SortBrowser)
         );
 
-        let finder = InputCtx {
+        let links = InputCtx {
             overlay_sortable: false,
             ..cx.clone()
         };
-        let c = classify_it(&ctrl('r'), &finder);
+        let c = classify_it(&ctrl('r'), &links);
         assert_eq!(c.intent, EditorIntent::Overlay);
 
         // A sortable flag on a non-browser overlay does not count.

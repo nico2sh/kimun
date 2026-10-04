@@ -1,7 +1,7 @@
 //! `OverlayHost` — owner of the active editor overlay (note browser, Saved
 //! Searches modal, or dialog). Owns focus save/restore and routes input /
 //! app-messages / render to the active overlay. One overlay may be *parked*
-//! under the active one (the sort dialog over the Ctrl+K search browser):
+//! under the active one (the sort dialog over a sortable note browser):
 //! it is drawn but gets no input, and closing the active overlay restores it.
 
 use std::sync::Arc;
