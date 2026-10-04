@@ -7,7 +7,9 @@
 use clap::{Subcommand, ValueEnum};
 use color_eyre::eyre::Result;
 use kimun_core::NoteVault;
-use kimun_core::note::{FrontmatterFormat, PropertyInput, PropertyKind, PropertyValue};
+use kimun_core::note::{
+    FrontmatterFormat, PropertyEntry, PropertyInput, PropertyKind, PropertyValue,
+};
 
 use crate::cli::UserError;
 use crate::cli::helpers::resolve_note_path;
@@ -125,15 +127,16 @@ pub async fn run(
     Ok(())
 }
 
-/// A property list as `key: value` lines, or one JSON object in file order.
-pub fn format_properties(
-    properties: &[(String, PropertyValue)],
-    format: PropFormat,
-) -> Result<String> {
+/// A property list as `key: value` lines (`key:` for a key with no value),
+/// or one JSON object in file order.
+pub fn format_properties(properties: &[PropertyEntry], format: PropFormat) -> Result<String> {
     Ok(match format {
         PropFormat::Text => properties
             .iter()
-            .map(|(key, value)| format!("{key}: {value}\n"))
+            .map(|(key, value)| match value {
+                Some(value) => format!("{key}: {value}\n"),
+                None => format!("{key}:\n"),
+            })
             .collect(),
         PropFormat::Json => {
             format!(
@@ -156,13 +159,14 @@ pub fn format_value(value: &PropertyValue, format: PropFormat) -> Result<String>
 mod tests {
     use super::*;
 
-    fn sample() -> Vec<(String, PropertyValue)> {
+    fn sample() -> Vec<PropertyEntry> {
         vec![
-            ("status".into(), PropertyValue::Text("done".into())),
-            ("priority".into(), PropertyValue::Number(2.0)),
+            ("status".into(), Some(PropertyValue::Text("done".into()))),
+            ("priority".into(), Some(PropertyValue::Number(2.0))),
+            ("due".into(), None),
             (
                 "tags".into(),
-                PropertyValue::List(vec!["a".into(), "b c".into()]),
+                Some(PropertyValue::List(vec!["a".into(), "b c".into()])),
             ),
         ]
     }
@@ -171,12 +175,12 @@ mod tests {
     fn lists_as_lines_or_ordered_json() {
         assert_eq!(
             format_properties(&sample(), PropFormat::Text).unwrap(),
-            "status: done\npriority: 2\ntags: a, b c\n"
+            "status: done\npriority: 2\ndue:\ntags: a, b c\n"
         );
         assert_eq!(
             format_properties(&sample(), PropFormat::Json).unwrap(),
-            "{\"status\":\"done\",\"priority\":2,\"tags\":[\"a\",\"b c\"]}\n",
-            "keys keep the note's order"
+            "{\"status\":\"done\",\"priority\":2,\"due\":null,\"tags\":[\"a\",\"b c\"]}\n",
+            "keys keep the note's order; a key with no value is null"
         );
         assert_eq!(format_properties(&[], PropFormat::Json).unwrap(), "{}\n");
     }

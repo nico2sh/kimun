@@ -90,7 +90,7 @@ impl FrontmatterError {
 /// One top-level frontmatter entry: its key (as written) and its value, or
 /// `None` when the note has the key without a usable value (YAML `key:`, a
 /// non-finite number, a TOML local time).
-pub(crate) type PropertyEntry = (String, Option<PropertyValue>);
+pub type PropertyEntry = (String, Option<PropertyValue>);
 
 /// What a note's frontmatter declares: its property entries in file order,
 /// keys spelled as written, the first of any case-duplicate keys winning. The
@@ -122,14 +122,6 @@ impl PropertySet {
         self.entries
             .iter()
             .filter_map(|(k, v)| Some((k.as_str(), v.as_ref()?)))
-    }
-
-    /// [`Self::values`], owned.
-    pub(crate) fn into_values(self) -> Vec<(String, PropertyValue)> {
-        self.entries
-            .into_iter()
-            .filter_map(|(k, v)| Some((k, v?)))
-            .collect()
     }
 
     /// Label names from the `tags` property (and Obsidian's legacy singular
@@ -436,6 +428,14 @@ pub(crate) fn format_datetime(dt: &DateTime<Utc>) -> String {
     dt.to_rfc3339_opts(SecondsFormat::AutoSi, true)
 }
 
+/// A block that repeats a key — invalid in TOML and in YAML, which both
+/// parsers report in their own terms (byte offsets, quoted node dumps).
+fn duplicate_key_error(key: &str) -> FrontmatterError {
+    FrontmatterError::Malformed(format!(
+        "'{key}' appears more than once; keep only one of them"
+    ))
+}
+
 fn nested_key_error(key: &str) -> FrontmatterError {
     FrontmatterError::Refused(format!(
         "'{key}' holds a nested table, which properties cannot edit"
@@ -452,7 +452,10 @@ mod tests {
     }
 
     fn list(text: &str) -> Vec<(String, PropertyValue)> {
-        set_of(text).into_values()
+        set_of(text)
+            .values()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect()
     }
 
     fn set_of(text: &str) -> PropertySet {
@@ -614,7 +617,7 @@ mod tests {
         for (text, value) in [(toml, "a\nb"), (yaml, "a\nb\n")] {
             assert_eq!(
                 crate::note::NoteDetails::properties_of(text),
-                vec![("desc".to_string(), PropertyValue::Text(value.into()))],
+                vec![("desc".to_string(), Some(PropertyValue::Text(value.into())))],
                 "{text:?}"
             );
         }
@@ -718,6 +721,37 @@ mod tests {
                 vec![],
                 "{format:?}"
             );
+        }
+    }
+
+    #[test]
+    fn contract_a_repeated_key_is_named_in_the_error() {
+        for (format, block) in [
+            (
+                FrontmatterFormat::Toml,
+                "status = 'a'\nother = 1\nstatus = 'b'\n",
+            ),
+            (FrontmatterFormat::Toml, "\"my key\" = 1\n\"my key\" = 2\n"),
+            (FrontmatterFormat::Yaml, "status: a\nother: 1\nstatus: b\n"),
+        ] {
+            let f = format.formatter();
+            let key = if block.contains("my key") {
+                "my key"
+            } else {
+                "status"
+            };
+            let expected = format!("'{key}' appears more than once; keep only one of them");
+            for result in [
+                f.parse(block).map(|_| ()),
+                f.set(block, "x", &PropertyValue::Number(1.0)).map(|_| ()),
+                f.remove(block, "x").map(|_| ()),
+            ] {
+                assert_eq!(
+                    result,
+                    Err(FrontmatterError::Malformed(expected.clone())),
+                    "{format:?}: {block:?}"
+                );
+            }
         }
     }
 
@@ -969,8 +1003,8 @@ mod tests {
         assert_eq!(
             NoteProperties::new(&out, FrontmatterFormat::Yaml)
                 .property_set()
-                .into_values()
-                .len(),
+                .values()
+                .count(),
             2
         );
     }

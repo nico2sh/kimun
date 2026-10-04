@@ -8,8 +8,8 @@ use std::ops::Range;
 use yaml_rust2::{yaml::Hash, Yaml, YamlLoader};
 
 use super::{
-    date_in_text, finite, format_number, keys_match, nested_key_error, FrontmatterError,
-    PropertyEntry, PropertyFormatter, PropertyValue,
+    date_in_text, duplicate_key_error, finite, format_number, keys_match, nested_key_error,
+    FrontmatterError, PropertyEntry, PropertyFormatter, PropertyValue,
 };
 use crate::dates::format_iso_date;
 
@@ -93,8 +93,12 @@ impl PropertyFormatter for YamlFormatter {
 /// The block's root mapping; `Ok(None)` for an empty block. Anything that is
 /// not a mapping is an error.
 fn root(block: &str) -> Result<Option<Hash>, FrontmatterError> {
-    let docs =
-        YamlLoader::load_from_str(block).map_err(|e| FrontmatterError::Malformed(e.to_string()))?;
+    let docs = YamlLoader::load_from_str(block).map_err(|e| {
+        match repeated_key(block).filter(|_| e.to_string().contains("duplicated key")) {
+            Some(key) => duplicate_key_error(&key),
+            None => FrontmatterError::Malformed(e.to_string()),
+        }
+    })?;
     match docs.into_iter().next() {
         None | Some(Yaml::Null) => Ok(None),
         Some(Yaml::Hash(h)) => Ok(Some(h)),
@@ -102,6 +106,15 @@ fn root(block: &str) -> Result<Option<Hash>, FrontmatterError> {
             "frontmatter is not a key/value mapping".to_string(),
         )),
     }
+}
+
+/// The first top-level key written twice in `block`, if any.
+fn repeated_key(block: &str) -> Option<String> {
+    let mut seen = std::collections::HashSet::new();
+    block
+        .lines()
+        .filter_map(line_key)
+        .find(|key| !seen.insert(key.clone()))
 }
 
 fn key_matches(k: &Yaml, key: &str) -> bool {

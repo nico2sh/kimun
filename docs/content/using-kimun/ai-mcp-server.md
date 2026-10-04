@@ -19,7 +19,7 @@ The MCP client spawns and manages the `kimun mcp` process automatically — you 
 | `replace_in_note` | Replace text in a note (literal, or a regex with `regex: true` — then `new` may use `$1`/`${name}` captures); the match must be unique unless `replace_all` is set; `preview: true` returns the result without writing (destructive) |
 | `delete_note` | Delete a note (destructive) |
 | `show_note` | Return the full markdown content of a note |
-| `get_properties` | Return a note's frontmatter properties (in the note's order) and all its labels, as JSON |
+| `get_properties` | Return a note's frontmatter properties (in the note's order; a key with no value is null) and all its labels, as JSON |
 | `set_property` | Set a frontmatter property; `value` is a string, number, true/false, or array. A string is typed like the key's values in other notes (a mismatch is refused unless `type` is given), or by its look for a new key. `format: "yaml"` picks YAML for a note with no frontmatter yet |
 | `remove_property` | Remove a frontmatter property (destructive) |
 | `search_notes` | Search the vault — same [query syntax](@/using-kimun/search.md) as the TUI and CLI |
