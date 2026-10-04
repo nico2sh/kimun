@@ -78,17 +78,8 @@ impl QueryTermExtractor {
         } else {
             // OrderBy must be checked before bare `-` so `-or:foo` and `-^foo`
             // are recognized as descending sorts, not excluded terms.
-            let order_prefix = format!("{}:", ORDER_LETTER);
-            let desc_order_prefix = format!("-{}:", ORDER_LETTER);
-            let desc_order_char = format!("-{}", ORDER_CHAR);
-            if let Some(rest) = query.strip_prefix(&desc_order_prefix) {
-                (ElementType::OrderBy { asc: false }, rest.to_string())
-            } else if let Some(rest) = query.strip_prefix(&order_prefix) {
-                (ElementType::OrderBy { asc: true }, rest.to_string())
-            } else if let Some(rest) = query.strip_prefix(&desc_order_char) {
-                (ElementType::OrderBy { asc: false }, rest.to_string())
-            } else if let Some(rest) = query.strip_prefix(ORDER_CHAR) {
-                (ElementType::OrderBy { asc: true }, rest.to_string())
+            if let Some((order, prefix_len)) = order_prefix(query) {
+                (order, query[prefix_len..].to_string())
             } else if let Some(rest) = query.strip_prefix('-') {
                 (ElementType::ExcludedTerm, rest.to_string())
             } else {
@@ -96,24 +87,24 @@ impl QueryTermExtractor {
             }
         };
 
-        if is_property_element(&element_type) {
-            match quoted_property_value_len(&remaining) {
-                Some(Some(end)) => {
-                    return QueryTermExtractor {
-                        el_type: element_type,
-                        term: remaining[..end].to_string(),
-                        remainder: remaining[end..].trim().to_string(),
-                    };
-                }
-                Some(None) => {
-                    return QueryTermExtractor {
-                        el_type: ElementType::Invalid,
-                        term: String::new(),
-                        remainder: String::new(),
-                    };
-                }
-                None => {}
+        // A term quoting carries past a space (`%"due date"<x`,
+        // `%k="in progress"`, `^%"due date"`) ends at its closing quote.
+        match quoted_term_len(&element_type, &remaining) {
+            Some(Some(end)) => {
+                return QueryTermExtractor {
+                    el_type: element_type,
+                    term: remaining[..end].to_string(),
+                    remainder: remaining[end..].trim().to_string(),
+                };
             }
+            Some(None) => {
+                return QueryTermExtractor {
+                    el_type: ElementType::Invalid,
+                    term: String::new(),
+                    remainder: String::new(),
+                };
+            }
+            None => {}
         }
 
         let (sep_char, mut term) = if remaining.starts_with('"') {
@@ -160,33 +151,75 @@ impl QueryTermExtractor {
     }
 }
 
-fn is_property_element(el: &ElementType) -> bool {
-    matches!(el, ElementType::Property | ElementType::ExcludedProperty)
+/// The quoted span a token of kind `el` carries past spaces, if any: a
+/// property term ([`property_term_len`]) or a quoted sort key
+/// ([`quoted_sort_key_len`]).
+fn quoted_term_len(el: &ElementType, term: &str) -> Option<Option<usize>> {
+    match el {
+        ElementType::Property | ElementType::ExcludedProperty => property_term_len(term),
+        ElementType::OrderBy { .. } => quoted_sort_key_len(term),
+        _ => None,
+    }
 }
 
-/// For a property term whose value is quoted right after the operator
-/// (`status="in progress"`), the byte length of the term through its closing
-/// quote — `Some(None)` when that quote is never closed. `None` when the term
-/// has no operator before its first space or no quote after the operator, so
-/// the ordinary token rules apply. Shared by the parser and the lexer so the
-/// two can't disagree.
-fn quoted_property_value_len(term: &str) -> Option<Option<usize>> {
+/// The characters a property operator is made of.
+const OPERATOR_CHARS: [char; 4] = ['=', '!', '<', '>'];
+
+/// When `s` opens with a quote: `Some(Some(len))`, the byte length through
+/// the matching closing quote, or `Some(None)` when it is never closed.
+/// `None` when `s` doesn't start with a quote.
+fn quoted_len(s: &str) -> Option<Option<usize>> {
+    let quote = s.chars().next().filter(|c| *c == '"' || *c == '\'')?;
+    Some(s[1..].find(quote).map(|close| close + 2))
+}
+
+/// `s` without one pair of matching surrounding quotes.
+fn unquote(s: &str) -> &str {
+    ['"', '\'']
+        .into_iter()
+        .find_map(|q| s.strip_prefix(q).and_then(|r| r.strip_suffix(q)))
+        .unwrap_or(s)
+}
+
+/// The byte length of a property term that quoting carries past a space: a
+/// quoted key directly followed by an operator (`"due date"<2025-01-01`,
+/// `"due date"="in progress"`), or a plain key whose value is quoted right
+/// after the operator (`status="in progress"`). `Some(None)` when such a
+/// quote is never closed; `None` when the term has neither shape, so the
+/// ordinary token rules apply (that includes whole-term quoting,
+/// `"status=in progress"`). Shared by the parser, the lexer and the bare-
+/// prefix expander so they can't disagree.
+fn property_term_len(term: &str) -> Option<Option<usize>> {
+    let op_len = |s: &str| s.chars().take_while(|c| OPERATOR_CHARS.contains(c)).count();
+    if let Some(Some(key_len)) = quoted_len(term) {
+        let rest = &term[key_len..];
+        let ops = op_len(rest);
+        if ops == 0 {
+            return None;
+        }
+        let value = &rest[ops..];
+        let value_len = match quoted_len(value) {
+            Some(Some(n)) => n,
+            Some(None) => return Some(None),
+            None => value.find(' ').unwrap_or(value.len()),
+        };
+        return Some(Some(key_len + ops + value_len));
+    }
     let token_end = term.find(' ').unwrap_or(term.len());
-    let op_at = term[..token_end].find(['=', '!', '<', '>'])?;
-    let after_op = op_at
-        + term[op_at..]
-            .bytes()
-            .take_while(|b| matches!(b, b'=' | b'!' | b'<' | b'>'))
-            .count();
-    let quote = term[after_op..]
-        .chars()
-        .next()
-        .filter(|c| *c == '"' || *c == '\'')?;
-    Some(
-        term[after_op + 1..]
-            .find(quote)
-            .map(|close| after_op + 1 + close + 1),
-    )
+    let op_at = term[..token_end].find(OPERATOR_CHARS)?;
+    let after_op = op_at + op_len(&term[op_at..]);
+    quoted_len(&term[after_op..]).map(|len| len.map(|n| after_op + n))
+}
+
+/// The byte length of a sort term whose property key is quoted
+/// (`%"due date"`, `prop:'due date'`); `Some(None)` when the quote is never
+/// closed, `None` for any other sort term.
+fn quoted_sort_key_len(term: &str) -> Option<Option<usize>> {
+    let key = term
+        .strip_prefix("prop:")
+        .or_else(|| term.strip_prefix('%'))?;
+    let prefix = term.len() - key.len();
+    quoted_len(key).map(|len| len.map(|n| prefix + n))
 }
 
 /// A parsed `or:`/`^` order directive: the column to sort by together with
@@ -223,7 +256,7 @@ impl OrderBy {
             .strip_prefix("prop:")
             .or_else(|| term.strip_prefix('%'))
         {
-            return search_key(key).map(|key| OrderBy::Property { key, asc });
+            return search_key(unquote(key)).map(|key| OrderBy::Property { key, asc });
         }
         match term {
             "f" => Some(OrderBy::FileName { asc }),
@@ -247,7 +280,7 @@ pub enum OrderField {
 }
 
 /// Comparison operator of a `prop:key<op>value` filter.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PropertyOp {
     /// `=` — equal; on a list, "contains this item".
     Eq,
@@ -278,7 +311,7 @@ impl PropertyOp {
 }
 
 /// What a `prop:` filter asks of a property.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum PropertyTest {
     /// A bare key (`%due`): the note has the property, whatever its value —
     /// including none (YAML `due:`) or an empty list.
@@ -290,13 +323,16 @@ pub enum PropertyTest {
         op: PropertyOp,
         /// The value compared against.
         value: String,
+        /// Whether `*` in `value` is a wildcard (for `=` / `!=`): true for an
+        /// unquoted value; a quoted one is matched literally (`"***"`).
+        wildcard: bool,
     },
 }
 
 /// One `prop:` / `%` filter: `key<op>value`, or a bare `key` (has the
 /// property). Keys and values are in `search_form`: property matching
 /// ignores case and accents.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PropertyFilter {
     /// The property key.
     pub key: String,
@@ -309,14 +345,23 @@ impl PropertyFilter {
     /// key runs up to the first `= ! < >`; `None` when the key is empty, or an
     /// operator is present but malformed or has no value.
     pub fn parse(term: &str) -> Option<Self> {
-        let Some(at) = term.find(['=', '!', '<', '>']) else {
-            return Some(Self {
-                key: search_key(term)?,
-                test: PropertyTest::Exists,
-            });
+        // A quoted key (`"due date"<x`) may hold any character; otherwise the
+        // key runs up to the first operator character.
+        let (key, rest) = match quoted_len(term) {
+            Some(Some(n)) if term[n..].starts_with(OPERATOR_CHARS) => {
+                (unquote(&term[..n]), &term[n..])
+            }
+            _ => match term.find(OPERATOR_CHARS) {
+                Some(at) => (&term[..at], &term[at..]),
+                None => {
+                    return Some(Self {
+                        key: search_key(unquote(term))?,
+                        test: PropertyTest::Exists,
+                    });
+                }
+            },
         };
-        let key = search_key(&term[..at])?;
-        let rest = &term[at..];
+        let key = search_key(key)?;
         let (op, len) = [
             ("!=", PropertyOp::Ne),
             ("<=", PropertyOp::Le),
@@ -328,27 +373,93 @@ impl PropertyFilter {
         .into_iter()
         .find_map(|(s, op)| rest.starts_with(s).then_some((op, s.len())))?;
         let raw = rest[len..].trim();
-        let value = ['"', '\'']
-            .into_iter()
-            .find_map(|q| raw.strip_prefix(q).and_then(|r| r.strip_suffix(q)))
-            .unwrap_or(raw);
-        let value = search_form(value);
+        // `k<>x`, `k==x`: an unquoted value can't start with another
+        // operator character — that's a malformed operator, not a value.
+        if raw.starts_with(OPERATOR_CHARS) {
+            return None;
+        }
+        let unquoted = unquote(raw);
+        let wildcard = unquoted.len() == raw.len() && unquoted.contains('*');
+        let value = search_form(unquoted);
         (!value.is_empty()).then_some(Self {
             key,
-            test: PropertyTest::Compare { op, value },
+            test: PropertyTest::Compare {
+                op,
+                value,
+                wildcard,
+            },
         })
     }
 }
 
-/// True if `token` is an order directive in any of its four forms:
-/// `or:<x>`, `-or:<x>`, `^<x>`, `-^<x>`. Allocation-free: strip an optional
-/// leading `-`, then the rest must start with `^` or `or:`.
-fn is_order_token(token: &str) -> bool {
-    let rest = token.strip_prefix('-').unwrap_or(token);
-    rest.starts_with(ORDER_CHAR)
-        || rest
-            .strip_prefix(ORDER_LETTER)
-            .is_some_and(|after| after.starts_with(':'))
+/// The order directive `token` starts with, in any of its four forms —
+/// `-or:`, `or:`, `-^`, `^` — and the directive's length.
+fn order_prefix(token: &str) -> Option<(ElementType, usize)> {
+    let (desc, rest) = match token.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, token),
+    };
+    let directive_len = if rest.starts_with(ORDER_CHAR) {
+        ORDER_CHAR.len()
+    } else if rest
+        .strip_prefix(ORDER_LETTER)
+        .is_some_and(|after| after.starts_with(':'))
+    {
+        ORDER_LETTER.len() + 1
+    } else {
+        return None;
+    };
+    Some((
+        ElementType::OrderBy { asc: !desc },
+        usize::from(desc) + directive_len,
+    ))
+}
+
+/// The query token at the start of `rest` (which has no leading
+/// whitespace), exactly as the parser reads it: its byte length, its kind
+/// (a field prefix or an order directive, `None` for a bare term) and the
+/// length of that prefix. A quoted value — or a term quoting carries past a
+/// space (`%"due date"<x`, `^%"due date"`) — ends at its closing quote, or
+/// takes the rest of the query when unterminated; anything else ends at the
+/// next ASCII space. The one tokenizer the bare-prefix expander and the
+/// order-directive helpers share with the parser's grammar.
+fn next_token(rest: &str) -> (usize, Option<ElementType>, usize) {
+    let (kind, prefix_len) = match detect_prefix(rest) {
+        Some((el, remaining)) => (Some(el), rest.len() - remaining.len()),
+        None => match order_prefix(rest) {
+            Some((el, prefix_len)) => (Some(el), prefix_len),
+            None => (None, 0),
+        },
+    };
+    let value = &rest[prefix_len..];
+    let quoted = kind
+        .as_ref()
+        .and_then(|el| quoted_term_len(el, value))
+        .or_else(|| quoted_len(value));
+    let len = match quoted {
+        Some(Some(n)) => prefix_len + n,
+        Some(None) => rest.len(),
+        None => rest.find(' ').unwrap_or(rest.len()),
+    };
+    (len, kind, prefix_len)
+}
+
+/// The tokens of `query` (see [`next_token`]) with their kinds and whether
+/// the token is an unclosed quote running to the end, whitespace between them
+/// dropped.
+fn query_tokens(query: &str) -> impl Iterator<Item = (&str, Option<ElementType>, bool)> {
+    let mut rest = query;
+    std::iter::from_fn(move || {
+        rest = rest.trim_start();
+        if rest.is_empty() {
+            return None;
+        }
+        let (len, kind, _) = next_token(rest);
+        let token = &rest[..len];
+        rest = &rest[len..];
+        let unterminated = rest.is_empty() && query_has_unterminated_quote(token);
+        Some((token, kind, unterminated))
+    })
 }
 
 /// Wrap `term` in the search DSL's quote characters when it contains
@@ -408,34 +519,13 @@ pub fn expand_bare_note_prefixes(query: &str, target: &str) -> String {
         out.push_str(&rest[..token_start]);
         rest = &rest[token_start..];
 
-        // A prefix is only meaningful at the token start; the value may then
-        // be quoted (and span spaces) or run to the next ASCII space — the
-        // parser's separator (a tab or NBSP is part of the token).
-        let detected = detect_prefix(rest);
-        let prefix_len = detected
-            .as_ref()
-            .map_or(0, |(_, remaining)| rest.len() - remaining.len());
-        let value = &rest[prefix_len..];
-        let token_len = match value.chars().next() {
-            Some(quote @ ('"' | '\'')) => {
-                // Quoted value: token ends at the closing quote, or swallows
-                // the rest of the string when unterminated (as the parser does).
-                match value[quote.len_utf8()..].find(quote) {
-                    Some(pos) => prefix_len + quote.len_utf8() * 2 + pos,
-                    None => rest.len(),
-                }
-            }
-            _ => rest.find(' ').unwrap_or(rest.len()),
-        };
-        let token = &rest[..token_len];
-        out.push_str(token);
+        // A prefix is only meaningful at the token start; the token ends
+        // where the parser ends it (`next_token`).
+        let (token_len, kind, prefix_len) = next_token(rest);
+        out.push_str(&rest[..token_len]);
         // Bare prefix: the whole token is the prefix itself.
-        if prefix_len == token_len {
-            if let Some((el, _)) = detected {
-                if is_note_element(&el) {
-                    out.push_str(target);
-                }
-            }
+        if prefix_len == token_len && kind.as_ref().is_some_and(is_note_element) {
+            out.push_str(target);
         }
         rest = &rest[token_len..];
     }
@@ -443,15 +533,28 @@ pub fn expand_bare_note_prefixes(query: &str, target: &str) -> String {
 }
 
 /// Return `query` with any order directive (`or:`/`-or:`/`^`/`-^`, in any
-/// position) removed. Other tokens keep their order; whitespace is normalised
-/// to single spaces. The DSL knowledge lives here in core so the TUI never
-/// hardcodes the directive syntax.
+/// position) removed. Other tokens keep their order and their text (a quoted
+/// value keeps its inner spaces); the whitespace between tokens becomes a
+/// single space. Tokens are read as the parser reads them, so a quoted sort
+/// key (`^%"due date"`) is removed whole. The DSL knowledge lives here in core
+/// so the TUI never hardcodes the directive syntax.
 pub fn strip_order_directive(query: &str) -> String {
-    query
-        .split_whitespace()
-        .filter(|t| !is_order_token(t))
-        .collect::<Vec<_>>()
-        .join(" ")
+    let mut kept = Vec::new();
+    for (token, kind, unterminated) in query_tokens(query) {
+        if unterminated {
+            // The parser drops everything from an unclosed quote on; strip
+            // directives word by word there, so a sort set after it replaces
+            // rather than piles up.
+            kept.extend(
+                token
+                    .split_whitespace()
+                    .filter(|w| order_prefix(w).is_none()),
+            );
+        } else if !matches!(kind, Some(ElementType::OrderBy { .. })) {
+            kept.push(token);
+        }
+    }
+    kept.join(" ")
 }
 
 /// Return `query` with its order directive replaced by `field`/`asc`.
@@ -686,6 +789,8 @@ impl SearchTerms {
         dedup_preserving_order(&mut excluded_links);
         dedup_preserving_order(&mut forward_links);
         dedup_preserving_order(&mut excluded_forward_links);
+        dedup_preserving_order(&mut properties);
+        dedup_preserving_order(&mut excluded_properties);
 
         Self {
             breadcrumb,
@@ -709,7 +814,7 @@ impl SearchTerms {
     }
 }
 
-fn dedup_preserving_order(v: &mut Vec<String>) {
+fn dedup_preserving_order<T: Eq + std::hash::Hash + Clone>(v: &mut Vec<T>) {
     let mut seen = std::collections::HashSet::new();
     v.retain(|x| seen.insert(x.clone()));
 }
@@ -881,9 +986,7 @@ pub fn query_token_spans(query: &str) -> Vec<QueryTokenSpan> {
 
         // Value: quoted (at a value start, or right after a property
         // operator) or up to the next space.
-        let property_quoted = is_property_element(&el)
-            .then(|| quoted_property_value_len(value))
-            .flatten();
+        let property_quoted = quoted_term_len(&el, value);
         if let Some(quoted) = property_quoted {
             let end = quoted.map_or(len, |n| cursor + n);
             spans.push(QueryTokenSpan {
@@ -958,6 +1061,21 @@ mod lexer_tests {
                 (C::Negation, "-".into()),
                 (C::FieldKey, "%".into()),
                 (C::Term, "n>2".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_quoted_keys_as_one_span() {
+        use QueryTokenClass as C;
+        assert_eq!(
+            classes("%\"due date\"<x y ^%\"due date\""),
+            vec![
+                (C::FieldKey, "%".into()),
+                (C::Quoted, "\"due date\"<x".into()),
+                (C::Term, "y".into()),
+                (C::FieldKey, "^".into()),
+                (C::Quoted, "%\"due date\"".into()),
             ]
         );
     }
@@ -1097,6 +1215,7 @@ mod tests {
             test: PropertyTest::Compare {
                 op,
                 value: value.into(),
+                wildcard: value.contains('*'),
             },
         }
     }
@@ -1215,6 +1334,59 @@ mod tests {
     }
 
     #[test]
+    fn a_quoted_key_takes_an_operator_and_value() {
+        let st = SearchTerms::from_query_string(
+            "%\"due date\"<2025-01-01 x -prop:'due date'=\"in progress\" %\"Due Date\">=5",
+        );
+        assert_eq!(
+            st.properties,
+            vec![
+                pf("due date", PropertyOp::Lt, "2025-01-01"),
+                pf("due date", PropertyOp::Ge, "5"),
+            ]
+        );
+        assert_eq!(
+            st.excluded_properties,
+            vec![pf("due date", PropertyOp::Eq, "in progress")]
+        );
+        assert_eq!(st.terms, vec!["x"]);
+        assert!(st.links.is_empty() && st.forward_links.is_empty() && st.filename.is_empty());
+        let has_only = SearchTerms::from_query_string("%\"due date\"");
+        assert_eq!(has_only.properties, vec![has("due date")]);
+    }
+
+    #[test]
+    fn a_quoted_sort_key_sorts_by_that_property() {
+        let st = SearchTerms::from_query_string("^%\"due date\" -or:prop:'Due Date' x");
+        assert!(
+            matches!(&st.order_by[0], OrderBy::Property { key, asc: true } if key == "due date")
+        );
+        assert!(
+            matches!(&st.order_by[1], OrderBy::Property { key, asc: false } if key == "due date")
+        );
+        assert_eq!(st.terms, vec!["x"], "no stray term");
+    }
+
+    #[test]
+    fn an_operator_run_is_not_a_value() {
+        for term in ["k<>x", "k==x", "k<>\"x\"", "k=<5", "k!=!x"] {
+            assert_eq!(PropertyFilter::parse(term), None, "{term}");
+        }
+        assert_eq!(
+            PropertyFilter::parse("k=\"<3\""),
+            Some(pf("k", PropertyOp::Eq, "<3")),
+            "a quoted value may start with an operator character"
+        );
+    }
+
+    #[test]
+    fn repeated_property_filters_are_kept_once() {
+        let st = SearchTerms::from_query_string("%a=1 %a=1 %A=1 %b -%c=2 -%c=2");
+        assert_eq!(st.properties, vec![pf("a", PropertyOp::Eq, "1"), has("b")]);
+        assert_eq!(st.excluded_properties, vec![pf("c", PropertyOp::Eq, "2")]);
+    }
+
+    #[test]
     fn bare_property_key_is_a_has_property_filter() {
         let st = SearchTerms::from_query_string("%Status prop:'due date' -%archived meeting");
         assert_eq!(st.properties, vec![has("status"), has("due date"),]);
@@ -1293,6 +1465,52 @@ mod tests {
         assert_eq!(expand_bare_note_prefixes("/", "{note}"), "/");
         assert_eq!(expand_bare_note_prefixes("in:", "{note}"), "in:");
         assert_eq!(expand_bare_note_prefixes("term", "{note}"), "term");
+    }
+
+    #[test]
+    fn changing_the_sort_after_an_unclosed_quote_replaces_it() {
+        use super::{with_order_directive, OrderField};
+        let once = with_order_directive("x\"y '", OrderField::Title, true);
+        let twice = with_order_directive(&once, OrderField::Title, false);
+        assert_eq!(twice, "x\"y ' -or:title");
+    }
+
+    #[test]
+    fn sort_directives_with_quoted_keys_are_whole_tokens() {
+        use super::{strip_order_directive, with_order_directive, OrderField};
+        assert_eq!(strip_order_directive("x ^%\"due date\" y"), "x y");
+        assert_eq!(strip_order_directive("-or:prop:'due date' x"), "x");
+        assert_eq!(
+            with_order_directive("x ^%\"due date\"", OrderField::Title, true),
+            "x or:title"
+        );
+        assert_eq!(
+            strip_order_directive("%k=\"a  b\" or:title"),
+            "%k=\"a  b\"",
+            "a quoted value keeps its inner spaces"
+        );
+        assert_eq!(
+            expand_bare_note_prefixes("^%\"a < b\" <", "{note}"),
+            "^%\"a < b\" <{note}",
+            "operators inside a quoted sort key are not expanded"
+        );
+    }
+
+    #[test]
+    fn expand_ignores_operators_inside_quoted_property_values() {
+        for query in [
+            "%flow=\"draft -> review\"",
+            "%k='x < y' #a",
+            "%\"due date\"=\"a = b\"",
+            "-prop:k=\"> spec\"",
+        ] {
+            assert_eq!(expand_bare_note_prefixes(query, "{note}"), query, "{query}");
+        }
+        assert_eq!(
+            expand_bare_note_prefixes("%\"due date\"<2025-01-01 <", "{note}"),
+            "%\"due date\"<2025-01-01 <{note}",
+            "a real bare prefix after a quoted property term is still expanded"
+        );
     }
 
     #[test]

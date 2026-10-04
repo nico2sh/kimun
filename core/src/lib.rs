@@ -1318,10 +1318,10 @@ impl NoteVault {
             });
         }
         let _guard = self.lock_note(path).await;
-        let text = Self::lf(self.get_note_text(path).await?);
+        let text = nfs::to_lf(&self.get_note_text(path).await?);
         let updated = properties::NoteProperties::new(&text, new_block_format)
             .set(&key, &value)
-            .map_err(|e| Self::frontmatter_error(path, e))?;
+            .map_err(|e| Self::frontmatter_error(path, &key, e))?;
         if updated != text {
             self.save_note_unlocked(path, updated).await?;
         }
@@ -1367,10 +1367,10 @@ impl NoteVault {
     pub async fn remove_property(&self, path: &VaultPath, key: &str) -> Result<bool, VaultError> {
         let key = Self::property_key(key)?;
         let _guard = self.lock_note(path).await;
-        let text = Self::lf(self.get_note_text(path).await?);
+        let text = nfs::to_lf(&self.get_note_text(path).await?);
         match properties::NoteProperties::new(&text, FrontmatterFormat::default())
             .remove(&key)
-            .map_err(|e| Self::frontmatter_error(path, e))?
+            .map_err(|e| Self::frontmatter_error(path, &key, e))?
         {
             Some(updated) => {
                 self.save_note_unlocked(path, updated).await?;
@@ -1389,20 +1389,25 @@ impl NoteVault {
         })
     }
 
-    fn frontmatter_error(path: &VaultPath, e: properties::FrontmatterError) -> VaultError {
-        VaultError::FSError(FSError::InvalidFrontmatter {
-            path: path.clone(),
-            message: e.0,
-        })
-    }
-
-    /// Property edits work on LF text; `save_note_unlocked` restores the
-    /// file's own line endings on write.
-    fn lf(text: String) -> String {
-        if text.contains('\r') {
-            text.replace("\r\n", "\n")
-        } else {
-            text
+    /// A malformed existing block is the note's problem
+    /// ([`FSError::InvalidFrontmatter`]); a refused edit of a sound block is the
+    /// request's ([`VaultError::InvalidProperty`]).
+    fn frontmatter_error(
+        path: &VaultPath,
+        key: &str,
+        e: properties::FrontmatterError,
+    ) -> VaultError {
+        match e {
+            properties::FrontmatterError::Malformed(message) => {
+                VaultError::FSError(FSError::InvalidFrontmatter {
+                    path: path.clone(),
+                    message,
+                })
+            }
+            properties::FrontmatterError::Refused(message) => VaultError::InvalidProperty {
+                key: key.to_string(),
+                message,
+            },
         }
     }
 
@@ -4681,6 +4686,51 @@ mod property_api_tests {
             vec![("b".to_string(), PropertyValue::Number(2.0))]
         );
         assert!(vault.search_notes("prop:a=1").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_refused_edit_of_a_sound_block_is_an_invalid_property() {
+        let (_tmp, vault) = new_vault().await;
+        let original = "+++\nmeta = { x = 1 }\n+++\nbody";
+        vault.create_note(&p("/n.md"), original).await.unwrap();
+        for err in [
+            vault
+                .set_property(&p("/n.md"), "meta", text("x"), FrontmatterFormat::Toml)
+                .await
+                .unwrap_err(),
+            vault
+                .set_property(&p("/n.md"), "d", text("a\n+++\nb"), FrontmatterFormat::Toml)
+                .await
+                .unwrap_err(),
+        ] {
+            assert!(matches!(err, VaultError::InvalidProperty { .. }), "{err:?}");
+        }
+        assert_eq!(vault.get_note_text(&p("/n.md")).await.unwrap(), original);
+    }
+
+    // A lone `\r` (an old-Mac line break) is a line break to YAML; edits must
+    // see it as one too, or a neighbouring entry on the same "line" is lost.
+    #[tokio::test]
+    async fn a_lone_carriage_return_does_not_cost_a_neighbouring_entry() {
+        let (tmp, vault) = new_vault().await;
+        tokio::fs::write(
+            tmp.path().join("n.md"),
+            "---\ntitle: Hello\nstatus: draft\rdue: 2024-01-01\n---\nbody\n",
+        )
+        .await
+        .unwrap();
+        vault
+            .set_property(&p("/n.md"), "status", text("done"), FrontmatterFormat::Toml)
+            .await
+            .unwrap();
+        let keys: Vec<String> = vault
+            .get_properties(&p("/n.md"))
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect();
+        assert_eq!(keys, ["title", "status", "due"]);
     }
 
     #[tokio::test]

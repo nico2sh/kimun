@@ -372,7 +372,7 @@ impl KimunHandler {
     }
 
     #[tool(
-        description = "Set a frontmatter property on a note, keeping the rest of its frontmatter (format, comments, order) as is. `value` is a string, number, true/false, or an array of strings (a list). `tags` is always a list ([] clears it). Any other value must fit the type the key has in other notes — a string is read as that type (a single string for a list key becomes a one-item list), and a number, true/false or array must match it too; a value that doesn't fit is refused — pass `type` to store it anyway (only this note changes). For a key no other note has, a number/true/false/array keeps its JSON type and a string is typed by its look: 5 → number, true → true/false, 2024-03-01 → date, 2024-03-01T14:30 → date-time (local, or with its offset as written), else text; text that only looks numeric (02134, 1.10) stays text. A note without frontmatter gets a TOML (+++) block unless format is \"yaml\"."
+        description = "Set a frontmatter property on a note, keeping the rest of its frontmatter (format, comments, order) as is. `value` is a string, number, true/false, or an array of strings (a list). `tags` is always a list (comma-separated text becomes separate items; [] clears it); `aliases` and `cssclasses` are always lists too, values kept as given. Any other value must fit the type the key has in other notes — a string is read as that type (a single string for a list key becomes a one-item list), and a number, true/false or array must match it too; a value that doesn't fit is refused — pass `type` to store it anyway (only this note changes). For a key no other note has, a number/true/false/array keeps its JSON type and a string is typed by its look: 5 → number, true → true/false, 2024-03-01 → date, 2024-03-01T14:30 → date-time (local, or with its offset as written), else text; text that only looks numeric (02134, 1.10) stays text. A note without frontmatter gets a TOML (+++) block unless format is \"yaml\"."
     )]
     async fn set_property(
         &self,
@@ -442,7 +442,7 @@ impl KimunHandler {
     }
 
     #[tool(
-        description = "Search notes by query. Supports =name (or name:name) to match by note name, @heading (or in:heading), /path prefix, #label (or lb:label) for hashtag-derived labels, <note (or lk:note) for notes that link to the given note (its backlinks), >note (or fwd:note) for the notes the given note links to (its forward links), %key<op>value (or prop:key<op>value) for frontmatter properties with op one of = != < <= > >= (e.g. %status=done, %priority>=2, %due<2024-04-01; numbers compare numerically, dates chronologically, on a list = means contains; quote values with spaces: %status=\"in progress\") or a bare %key for notes that have the property at all, ^%key (or or:prop:key) to sort by a property (-^%key descending; notes without it last), and - prefix for exclusion (e.g. -term, -#label, -lb:label, -=name, -@heading, -/path, -<note, -lk:note, ->note, -fwd:note, -%key, -%key=value). The link filters match by note name (the .md extension is optional, case-insensitive); a bare name matches a linked note in any folder, a path like <dir/note disambiguates, and * wildcards are allowed (<proj*). Labels (#label) come from hashtags in note body text and from the frontmatter `tags` property (a list, or one string) — hashtags written inside frontmatter, fenced code blocks, inline code, HTML, markdown link bodies, and [[wikilinks]] are not indexed. Inline label names are ASCII [A-Za-z0-9_]+; all labels are matched case-insensitively. Long queries are truncated at 8 KB."
+        description = "Search notes by query. Supports =name (or name:name) to match by note name, @heading (or in:heading), /path prefix, #label (or lb:label) for hashtag-derived labels, <note (or lk:note) for notes that link to the given note (its backlinks), >note (or fwd:note) for the notes the given note links to (its forward links), %key<op>value (or prop:key<op>value) for frontmatter properties with op one of = != < <= > >= (e.g. %status=done, %priority>=2, %due<2024-04-01; numbers compare numerically, dates chronologically, on a list = means contains; quote values or keys with spaces: %status=\"in progress\", %\"due date\"<2024-04-01; * is a wildcard with = and !=: %status=d*) or a bare %key for notes that have the property at all, ^%key (or or:prop:key; ^%\"due date\" for a key with spaces) to sort by a property (-^%key descending; notes without it last), and - prefix for exclusion (e.g. -term, -#label, -lb:label, -=name, -@heading, -/path, -<note, -lk:note, ->note, -fwd:note, -%key, -%key=value). The link filters match by note name (the .md extension is optional, case-insensitive); a bare name matches a linked note in any folder, a path like <dir/note disambiguates, and * wildcards are allowed (<proj*). Labels (#label) come from hashtags in note body text and from the frontmatter `tags` property (a list, or one string) — hashtags written inside frontmatter, fenced code blocks, inline code, HTML, markdown link bodies, and [[wikilinks]] are not indexed. Inline label names are ASCII [A-Za-z0-9_]+; all labels are matched case-insensitively. Long queries are truncated at 8 KB."
     )]
     async fn search_notes(
         &self,
@@ -995,7 +995,7 @@ mod tests {
     #[tokio::test]
     async fn test_set_property_refuses_vault_type_mismatch() {
         let (handler, _dir) = make_handler().await;
-        for path in ["a", "b"] {
+        for path in ["a", "b", "c"] {
             handler
                 .create_note(Parameters(CreateNoteParams {
                     path: path.to_string(),
@@ -1019,11 +1019,18 @@ mod tests {
         assert!(is_success(&typed), "{}", result_text(&typed));
         let bad_type = set_prop(&handler, "b", "x", serde_json::json!("1"), Some("float")).await;
         assert_eq!(bad_type.is_error, Some(true));
-        let json_bool = set_prop(&handler, "c", "priority", serde_json::json!(true), None).await;
+        // `priority` is tied number/text by now; `rating` is clearly a number.
+        set_prop(&handler, "a", "rating", serde_json::json!(4), None).await;
+        let json_bool = set_prop(&handler, "c", "rating", serde_json::json!(true), None).await;
         assert_eq!(
             json_bool.is_error,
             Some(true),
             "a JSON value's own type is still checked against the vault"
+        );
+        assert!(
+            result_text(&json_bool).contains("holds number values"),
+            "refused for its type, not for a missing note: {}",
+            result_text(&json_bool)
         );
         let cleared = set_prop(&handler, "b", "tags", serde_json::json!([]), None).await;
         assert!(is_success(&cleared), "{}", result_text(&cleared));

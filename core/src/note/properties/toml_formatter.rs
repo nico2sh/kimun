@@ -17,10 +17,11 @@ pub(super) struct TomlFormatter;
 impl PropertyFormatter for TomlFormatter {
     fn parse(&self, block: &str) -> Result<Vec<PropertyEntry>, FrontmatterError> {
         let doc = document(block)?;
-        // A `[table]` / `[[array]]` item is not a value, so not a property.
+        // A `[table]` / `[[array]]` item or an inline table is not a
+        // property: it yields no entry.
         Ok(doc
             .iter()
-            .filter_map(|(k, item)| Some((k.to_string(), read_value(item.as_value()?))))
+            .filter_map(|(k, item)| Some((k.to_string(), read_value(property_value(item)?))))
             .collect())
     }
 
@@ -94,12 +95,28 @@ fn remove_entry(doc: &mut DocumentMut, key: &str) {
     let Some((mut k, item)) = doc.as_table_mut().get_key_value_mut(&next) else {
         return;
     };
-    let decor = match item {
-        Item::Table(t) => t.decor_mut(),
-        _ => k.leaf_decor_mut(),
-    };
+    // The comment lines above a line print from: a `[table]` header's own
+    // decor, a dotted key's (`site.name`) first inner key, or the key itself.
+    match item {
+        Item::Table(t) if t.is_dotted() => prepend_to_dotted(t, &keep),
+        Item::Table(t) => prepend(t.decor_mut(), &keep),
+        _ => prepend(k.leaf_decor_mut(), &keep),
+    }
+}
+
+/// Prepends `text` to the line of dotted table `t`'s first key.
+fn prepend_to_dotted(t: &mut toml_edit::Table, text: &str) {
+    if let Some((mut k, item)) = t.iter_mut().next() {
+        match item {
+            Item::Table(inner) if inner.is_dotted() => prepend_to_dotted(inner, text),
+            _ => prepend(k.leaf_decor_mut(), text),
+        }
+    }
+}
+
+fn prepend(decor: &mut toml_edit::Decor, text: &str) {
     let prefix = format!(
-        "{keep}{}",
+        "{text}{}",
         decor.prefix().and_then(|p| p.as_str()).unwrap_or_default()
     );
     decor.set_prefix(prefix);
@@ -121,22 +138,35 @@ fn through_last_blank_line(text: &str) -> &str {
 fn document(block: &str) -> Result<DocumentMut, FrontmatterError> {
     block
         .parse::<DocumentMut>()
-        .map_err(|e| FrontmatterError(e.to_string()))
+        .map_err(|e| FrontmatterError::Malformed(e.to_string()))
 }
 
 /// Root keys equal to `key` case-insensitively, as written. A match holding a
-/// table (not a value) refuses the edit.
+/// nested table refuses the edit.
 fn matching_keys(doc: &DocumentMut, key: &str) -> Result<Vec<String>, FrontmatterError> {
     let mut keys = Vec::new();
     for (k, item) in doc.iter() {
         if keys_match(k, key) {
-            if !item.is_value() {
+            if property_value(item).is_none() {
                 return Err(nested_key_error(key));
             }
             keys.push(k.to_string());
         }
     }
     Ok(keys)
+}
+
+/// `item`'s value when it can be a property — not a nested table: a
+/// `[table]`, an inline table, or an array holding tables.
+fn property_value(item: &Item) -> Option<&Value> {
+    fn nested(v: &Value) -> bool {
+        match v {
+            Value::InlineTable(_) => true,
+            Value::Array(items) => items.iter().any(nested),
+            _ => false,
+        }
+    }
+    item.as_value().filter(|v| !nested(v))
 }
 
 fn read_value(v: &Value) -> Option<PropertyValue> {
@@ -196,7 +226,7 @@ fn write_value(value: &PropertyValue) -> Result<Value, FrontmatterError> {
     let datetime = |s: String| {
         s.parse::<toml_edit::Datetime>()
             .map(Value::from)
-            .map_err(|e| FrontmatterError(e.to_string()))
+            .map_err(|e| FrontmatterError::Refused(e.to_string()))
     };
     Ok(match value {
         PropertyValue::Text(s) => s.as_str().into(),
@@ -306,5 +336,12 @@ mod tests {
             .set("a = 1\n", "a", &PropertyValue::Bool(true))
             .unwrap();
         assert_eq!(out, "a = true\n");
+    }
+
+    #[test]
+    fn a_header_comment_survives_removal_before_a_dotted_key() {
+        let block = "# header\n\n# about a\na = 1\nsite.name = \"y\"\n";
+        let out = TomlFormatter.remove(block, "a").unwrap().unwrap();
+        assert_eq!(out, "# header\n\nsite.name = \"y\"\n");
     }
 }

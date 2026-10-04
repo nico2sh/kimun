@@ -5,10 +5,11 @@
 // parses arguments and prints.
 
 use clap::{Subcommand, ValueEnum};
-use color_eyre::eyre::{Result, eyre};
+use color_eyre::eyre::Result;
 use kimun_core::NoteVault;
 use kimun_core::note::{FrontmatterFormat, PropertyInput, PropertyKind, PropertyValue};
 
+use crate::cli::UserError;
 use crate::cli::helpers::resolve_note_path;
 use crate::cli::json_output::JsonProperties;
 
@@ -42,7 +43,7 @@ pub enum PropSubcommand {
     },
     /// Set a property. One value is typed by the type the key has elsewhere in
     /// the vault, or by its look for a new key; several values make a list;
-    /// `tags` is always a list. A value that doesn't fit the vault's type is
+    /// `tags` is always a list (comma-separated values split into items). A value that doesn't fit the vault's type is
     /// refused unless --type is given.
     Set {
         /// Note path, relative to quick_note_path or absolute from vault root
@@ -90,7 +91,7 @@ pub async fn run(
             let value = vault
                 .get_property(&path, &key)
                 .await?
-                .ok_or_else(|| eyre!("No property '{key}' in {path}"))?;
+                .ok_or_else(|| UserError(format!("No property '{key}' in {path}")))?;
             println!("{}", format_value(&value, format)?);
         }
         PropSubcommand::Set {

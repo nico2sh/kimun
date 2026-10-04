@@ -5,6 +5,21 @@ pub mod json_output;
 pub mod metadata_extractor;
 pub mod output;
 
+/// A CLI-level user error — a request about something that isn't there or
+/// isn't allowed, which core has no error for (e.g. `prop get` of a property
+/// the note doesn't have). Like a user-facing `VaultError`, it prints as one
+/// clean line and exits with code 2 instead of a full error report.
+#[derive(Debug)]
+pub struct UserError(pub String);
+
+impl std::fmt::Display for UserError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for UserError {}
+
 use clap::Subcommand;
 use color_eyre::eyre::{Result, eyre};
 use commands::JournalArgs;

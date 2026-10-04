@@ -70,7 +70,22 @@ impl FrontmatterFormat {
 
 /// Why a frontmatter read or edit was refused; the message is user-facing.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct FrontmatterError(pub(crate) String);
+pub(crate) enum FrontmatterError {
+    /// The existing block doesn't parse, or isn't a key/value mapping.
+    Malformed(String),
+    /// The block is fine, but this edit can't be made safely (a nested table,
+    /// a value that would end the block, an edit the YAML splice can't place).
+    Refused(String),
+}
+
+impl FrontmatterError {
+    /// The user-facing reason.
+    pub(crate) fn message(&self) -> &str {
+        match self {
+            FrontmatterError::Malformed(m) | FrontmatterError::Refused(m) => m,
+        }
+    }
+}
 
 /// One top-level frontmatter entry: its key (as written) and its value, or
 /// `None` when the note has the key without a usable value (YAML `key:`, a
@@ -118,15 +133,15 @@ impl PropertySet {
     }
 
     /// Label names from the `tags` property (and Obsidian's legacy singular
-    /// `tag`): a list gives one tag per item, a bare string is one tag (no
-    /// comma splitting, as in Obsidian). Trimmed, a leading `#` dropped,
-    /// lowercased, empties removed.
+    /// `tag`): a list gives one tag per item, a bare string one tag per
+    /// comma-separated part (`tags: project, urgent`, as older Obsidian notes
+    /// write it). Trimmed, a leading `#` dropped, lowercased, empties removed.
     pub(crate) fn tags(&self) -> Vec<String> {
         self.values()
             .filter(|(k, _)| is_tag_key(k))
             .flat_map(|(_, v)| match v {
                 PropertyValue::List(items) => items.iter().map(String::as_str).collect(),
-                PropertyValue::Text(s) => vec![s.as_str()],
+                PropertyValue::Text(s) => split_tags(s).collect(),
                 _ => Vec::new(),
             })
             .map(|t| t.trim().trim_start_matches('#').to_lowercase())
@@ -248,19 +263,21 @@ impl<'t> NoteProperties<'t> {
     }
 
     /// Everything the block declares; see [`PropertySet`]. Lenient: a
-    /// malformed block yields an empty set.
+    /// malformed block yields an empty set. Line endings are read as LF, so a
+    /// multi-line value never carries a `\r` (edits already get LF text).
     pub(crate) fn property_set(&self) -> PropertySet {
         if self.span.is_none() {
             return PropertySet::default();
         }
-        PropertySet::from_entries(self.formatter.parse(self.block()).unwrap_or_default())
+        let block = crate::nfs::to_lf(self.block());
+        PropertySet::from_entries(self.formatter.parse(&block).unwrap_or_default())
     }
 
     /// The note's text with `key` (already normalized) set to `value`.
     /// Strict: a malformed existing block is an error, never guessed at.
     pub(crate) fn set(&self, key: &str, value: &PropertyValue) -> Result<String, FrontmatterError> {
         let block = self.formatter.set(self.block(), key, value)?;
-        Ok(self.with_block(&block))
+        self.checked(&block)
     }
 
     /// The note's text without `key`, or `None` when there is nothing to
@@ -269,10 +286,26 @@ impl<'t> NoteProperties<'t> {
         if self.span.is_none() {
             return Ok(None);
         }
-        Ok(self
-            .formatter
+        self.formatter
             .remove(self.block(), key)?
-            .map(|block| self.with_block(&block)))
+            .map(|block| self.checked(&block))
+            .transpose()
+    }
+
+    /// The note's text with `block` in place — provided the result still
+    /// holds exactly that block. A value with a line that reads as the
+    /// delimiter (a TOML multi-line string containing `+++`) would end the
+    /// block early and turn the rest into body text; that edit is refused and
+    /// the note is left as it was.
+    fn checked(&self, block: &str) -> Result<String, FrontmatterError> {
+        let text = self.with_block(block);
+        match locate_frontmatter(&text) {
+            Some(span) if &text[span.inner.clone()] == block => Ok(text),
+            _ => Err(FrontmatterError::Refused(format!(
+                "the value has a line that reads as the frontmatter delimiter `{}`, which would end the block early; store it without that line",
+                self.format.delimiter()
+            ))),
+        }
     }
 
     /// The note's text with its block contents replaced by `block`, or with a
@@ -334,14 +367,45 @@ pub(crate) fn search_key(key: &str) -> Option<String> {
     clean_key(key).map(|k| search_form(&k))
 }
 
+/// The date or date-time `s` spells exactly: `YYYY-MM-DD` as a date, RFC3339
+/// or an offset-less `YYYY-MM-DDTHH:MM[:SS[.f]]` (a local time — Obsidian's
+/// Date & time property omits seconds and offset) as a date-time. How YAML
+/// strings are read, and how the index compares text that is a date (a TOML
+/// string, Hugo's quoted dates).
+pub(crate) fn date_in_text(s: &str) -> Option<PropertyValue> {
+    if s.len() == 10 {
+        if let Some(date) = crate::dates::parse_iso_date(s) {
+            return Some(PropertyValue::Date(date));
+        }
+    }
+    PropertyDateTime::parse(s).map(PropertyValue::DateTime)
+}
+
 /// The frontmatter keys whose items are unified into the label index:
 /// `tags`, and the singular `tag` older Obsidian notes use.
 const TAG_KEYS: [&str; 2] = ["tags", "tag"];
+
+/// The tags in one comma-separated string (`project, urgent`), trimmed,
+/// empties dropped; spaces inside a tag (`big project`) are kept.
+pub(crate) fn split_tags(s: &str) -> impl Iterator<Item = &str> {
+    s.split(',').map(str::trim).filter(|t| !t.is_empty())
+}
 
 /// `key` holds a note's tags (whatever its casing): always a list of labels.
 pub(crate) fn is_tag_key(key: &str) -> bool {
     let key = match_key(key);
     TAG_KEYS.contains(&key.as_str())
+}
+
+/// The other keys Obsidian always treats as lists (plus their legacy
+/// singular spellings): note aliases and CSS classes. Not labels, and not
+/// split on commas — an alias may contain one.
+const OTHER_LIST_KEYS: [&str; 4] = ["aliases", "alias", "cssclasses", "cssclass"];
+
+/// `key` always holds a list (whatever its casing): the tag keys, `aliases`,
+/// `cssclasses`.
+pub(crate) fn is_list_key(key: &str) -> bool {
+    is_tag_key(key) || OTHER_LIST_KEYS.contains(&match_key(key).as_str())
 }
 
 // ---- Helpers shared by the formatters ------------------------------------
@@ -373,7 +437,7 @@ pub(crate) fn format_datetime(dt: &DateTime<Utc>) -> String {
 }
 
 fn nested_key_error(key: &str) -> FrontmatterError {
-    FrontmatterError(format!(
+    FrontmatterError::Refused(format!(
         "'{key}' holds a nested table, which properties cannot edit"
     ))
 }
@@ -543,11 +607,29 @@ mod tests {
     }
 
     #[test]
+    fn windows_line_endings_never_reach_a_value() {
+        let toml = "+++\r\ndesc = \"\"\"\r\na\r\nb\"\"\"\r\n+++\r\nbody\r\n";
+        let yaml = "---\r\ndesc: |\r\n  a\r\n  b\r\n---\r\nbody\r\n";
+        // YAML's `|` keeps one trailing line break; neither keeps a `\r`.
+        for (text, value) in [(toml, "a\nb"), (yaml, "a\nb\n")] {
+            assert_eq!(
+                crate::note::NoteDetails::properties_of(text),
+                vec![("desc".to_string(), PropertyValue::Text(value.into()))],
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
     fn tags_from_list_or_bare_string() {
         let l = set_of("+++\ntags = [\"Rust\", \"#notes\", \"\"]\n+++\n");
         assert_eq!(l.tags(), vec!["rust", "notes"]);
         let bare = set_of("+++\ntags = \"Big Project, misc\"\n+++\n");
-        assert_eq!(bare.tags(), vec!["big project, misc"]);
+        assert_eq!(
+            bare.tags(),
+            vec!["big project", "misc"],
+            "a comma-separated string is a list; spaces stay inside a tag"
+        );
         assert!(set_of("+++\ntags = 5\n+++\n").tags().is_empty());
         assert_eq!(
             set_of("---\ntags: [a]\ntag: b\n---\n").tags(),
@@ -837,17 +919,59 @@ mod tests {
     fn contract_nested_table_is_skipped_on_read_and_refused_on_write() {
         for &format in FORMATS {
             let f = format.formatter();
-            let block = fixture(format, "ok = 1\n[meta]\nx = 1\n", "ok: 1\nmeta:\n  x: 1\n");
-            assert_eq!(
-                f.parse(block).unwrap(),
-                vec![("ok".to_string(), Some(PropertyValue::Number(1.0)))],
-                "a nested table is no entry at all ({format:?})"
-            );
-            assert!(
-                f.set(block, "meta", &PropertyValue::Bool(true)).is_err(),
-                "{format:?}"
-            );
-            assert!(f.remove(block, "meta").is_err(), "{format:?}");
+            let blocks = [
+                fixture(format, "ok = 1\n[meta]\nx = 1\n", "ok: 1\nmeta:\n  x: 1\n"),
+                fixture(
+                    format,
+                    "ok = 1\nmeta = { x = 1 }\n",
+                    "ok: 1\nmeta: {x: 1}\n",
+                ),
+                fixture(
+                    format,
+                    "ok = 1\nmeta = [{ name = \"a\" }]\n",
+                    "ok: 1\nmeta:\n  - name: a\n",
+                ),
+            ];
+            for block in blocks {
+                assert_eq!(
+                    f.parse(block).unwrap(),
+                    vec![("ok".to_string(), Some(PropertyValue::Number(1.0)))],
+                    "a nested table is no entry at all ({format:?}): {block:?}"
+                );
+                assert!(
+                    f.set(block, "meta", &PropertyValue::Bool(true)).is_err(),
+                    "{format:?}: {block:?}"
+                );
+                assert!(f.remove(block, "meta").is_err(), "{format:?}: {block:?}");
+            }
         }
+    }
+
+    #[test]
+    fn an_edit_that_would_break_the_block_is_refused() {
+        let fence = PropertyValue::Text("before\n+++\nafter".into());
+        let listed = PropertyValue::List(vec!["a\n+++\nb".into()]);
+        for text in ["+++\na = 1\n+++\n# Title\n", "# Title\n"] {
+            let props = NoteProperties::new(text, FrontmatterFormat::Toml);
+            for value in [&fence, &listed] {
+                let err = props.set("desc", value).unwrap_err();
+                assert!(
+                    matches!(&err, FrontmatterError::Refused(m) if m.contains("delimiter")),
+                    "{err:?}"
+                );
+            }
+        }
+        // YAML escapes line breaks, so the same text is stored safely.
+        let yaml = NoteProperties::new("---\na: 1\n---\nbody", FrontmatterFormat::Yaml);
+        let out = yaml
+            .set("desc", &PropertyValue::Text("x\n---\ny".into()))
+            .unwrap();
+        assert_eq!(
+            NoteProperties::new(&out, FrontmatterFormat::Yaml)
+                .property_set()
+                .into_values()
+                .len(),
+            2
+        );
     }
 }

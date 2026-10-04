@@ -67,6 +67,24 @@ pub fn extract_labels(text: &str) -> Vec<String> {
     seen.into_iter().collect()
 }
 
+/// Whether `label` can be written as an inline `#label` hashtag that reads
+/// back as exactly this label. Frontmatter `tags` may hold labels that can't
+/// (`big project`, `my-tag`): those are searched with `#"big project"` and
+/// can't be typed into a note as a hashtag.
+///
+/// ```
+/// use kimun_core::note::is_hashtag_label;
+/// assert!(is_hashtag_label("rust_2024"));
+/// assert!(!is_hashtag_label("big project"));
+/// assert!(!is_hashtag_label("my-tag"));
+/// ```
+pub fn is_hashtag_label(label: &str) -> bool {
+    let tag = format!("#{label}");
+    let mut found = scan::label_matches(&tag);
+    matches!(found.next(), Some(m) if m.byte_start == 0 && m.byte_end == tag.len())
+        && found.next().is_none()
+}
+
 /// Every label a note carries, exactly as the index records them: its inline
 /// `#hashtags` (see [`extract_labels`]) plus the items of its frontmatter
 /// `tags` property, in either frontmatter format. Lowercased, deduplicated,
