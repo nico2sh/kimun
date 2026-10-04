@@ -38,6 +38,8 @@ pub struct DocState<'a> {
     pub ln_col: Option<(usize, usize)>,
     /// Backlink count of the open note (async-loaded).
     pub backlinks: Option<usize>,
+    /// Property count of the open note — renders the clickable `⊞ N props`.
+    pub props: Option<usize>,
     /// Workspace git status summary, e.g. `git ✓` / `git ●3`.
     pub git: Option<String>,
     /// Result count when a query context is focused.
@@ -66,11 +68,21 @@ pub struct StatusContext<'a> {
 
 pub struct FooterBar {
     key_flash: Option<(String, Instant)>,
+    props_rect: Option<Rect>,
 }
 
 impl FooterBar {
     pub fn new() -> Self {
-        Self { key_flash: None }
+        Self {
+            key_flash: None,
+            props_rect: None,
+        }
+    }
+
+    /// The flash message being shown, if any (expiry not checked).
+    #[cfg(test)]
+    pub fn flash_text(&self) -> Option<&str> {
+        self.key_flash.as_ref().map(|(t, _)| t.as_str())
     }
 
     /// Show a key-flash message for 2 seconds. Schedules a delayed redraw so
@@ -192,6 +204,9 @@ impl FooterBar {
             } else {
                 " · ✓ saved".width()
             };
+            if let Some(n) = doc.props {
+                w += " · ".width() + props_label(n).width();
+            }
             if let Some(count) = doc.backlinks {
                 w += format!(" · {count} backlinks").width();
             }
@@ -228,6 +243,34 @@ impl FooterBar {
             Span::styled("✓ saved", Style::default().fg(theme.green.to_ratatui()))
         };
         push(&mut segments, state_span);
+        self.props_rect = None;
+        if let Some(n) = doc.props {
+            let label = props_label(n);
+            let x_before: u16 = segments
+                .iter()
+                .map(|s| s.content.width() as u16)
+                .sum::<u16>()
+                + " · ".width() as u16;
+            let x = rows[1].x + x_before;
+            let w = label.width() as u16;
+            if x < rows[1].right() {
+                self.props_rect = Some(Rect {
+                    x,
+                    y: rows[1].y,
+                    width: w.min(rows[1].right() - x),
+                    height: 1,
+                });
+            }
+            push(
+                &mut segments,
+                Span::styled(
+                    label,
+                    Style::default()
+                        .fg(theme.blue.to_ratatui())
+                        .add_modifier(Modifier::UNDERLINED),
+                ),
+            );
+        }
         if let Some(count) = doc.backlinks {
             push(
                 &mut segments,
@@ -273,6 +316,22 @@ impl FooterBar {
     }
 }
 
+fn props_label(n: usize) -> String {
+    if n == 0 {
+        "⊞ props".to_string()
+    } else {
+        format!("⊞ {n} props")
+    }
+}
+
+impl FooterBar {
+    /// Whether (col,row) is on the `⊞ props` segment from the last render.
+    pub fn props_hit(&self, col: u16, row: u16) -> bool {
+        self.props_rect
+            .is_some_and(|r| r.contains(ratatui::layout::Position { x: col, y: row }))
+    }
+}
+
 impl Default for FooterBar {
     fn default() -> Self {
         Self::new()
@@ -306,6 +365,54 @@ fn fit_path(path: &str, budget: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn props_segment_is_clickable_where_drawn() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let theme = Theme::gruvbox_dark();
+        let mut bar = FooterBar::new();
+        let mut t = Terminal::new(TestBackend::new(100, 2)).unwrap();
+        let ctx = StatusContext {
+            focus_label: "EDITOR",
+            editing: true,
+            hints: &[],
+            global_hints: &[],
+            doc: DocState {
+                path: "n.md",
+                props: Some(3),
+                ..Default::default()
+            },
+        };
+        t.draw(|f| bar.render(f, f.area(), &theme, &ctx)).unwrap();
+        let buf = t.backend().buffer().clone();
+        let line: String = (0..100).map(|x| buf[(x, 1)].symbol().to_string()).collect();
+        let col = line.find("⊞ 3 props").expect("segment drawn");
+        let col = line[..col].chars().count() as u16;
+        assert!(bar.props_hit(col, 1));
+        assert!(bar.props_hit(col + 8, 1));
+        assert!(!bar.props_hit(col.saturating_sub(2), 1));
+        assert!(!bar.props_hit(col, 0), "line 1 is not the segment");
+    }
+
+    #[test]
+    fn no_props_segment_without_count() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let theme = Theme::gruvbox_dark();
+        let mut bar = FooterBar::new();
+        let mut t = Terminal::new(TestBackend::new(100, 2)).unwrap();
+        let ctx = StatusContext {
+            focus_label: "EDITOR",
+            editing: true,
+            hints: &[],
+            global_hints: &[],
+            doc: DocState {
+                path: "n.md",
+                ..Default::default()
+            },
+        };
+        t.draw(|f| bar.render(f, f.area(), &theme, &ctx)).unwrap();
+        assert!(!(0..100).any(|c| bar.props_hit(c, 1)));
+    }
 
     #[test]
     fn short_path_returned_whole() {

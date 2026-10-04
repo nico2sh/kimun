@@ -169,6 +169,31 @@ Typing `[[` pops up a note list; `#` (not at line start) pops up tags — filter
 
 `Ctrl+V` (or the terminal's native paste) adapts to the clipboard: plain text inserts; a URL over a selection wraps it as `[selection](url)`; an image saves to `/assets/` and inserts a relative image link.
 
+## Properties
+
+Open the properties dialog for the current note with `<leader> n p`, from the command palette ("properties"), or by clicking `⊞ N props` (or `⊞ props`) in the status bar. The note is saved first; every change is written to the file immediately and the editor reloads it.
+
+| Key | Action |
+| --- | ------ |
+| `↑` `↓` / `j` `k` | Select a property |
+| `Enter` / `e` | Edit the selected property |
+| `a` | Add a property |
+| `d` / `Del` | Delete (asks `y`/`n`, or click `[Yes]`/`[No]`) |
+| `Tab` | Move between the list and the buttons |
+| `Esc` | Close |
+
+Everything is clickable: click a row to select it, click the selected row again to edit it, and use the `[+ Add] [Edit] [Delete] [Close]` buttons.
+
+The edit form has three fields:
+
+- **Key** suggests the keys other notes in your vault use.
+- **Type** is `auto` by default, so Kimün follows the type the key has elsewhere in your vault. Cycle through `auto`, `text`, `number`, `bool`, `date`, `datetime` and `list` with `←` `→` or `Space`, or click `‹` `›`.
+- **Value** is comma-separated for list types and for keys that are always lists (`tags`, `aliases`); for other keys choose type `list` to enter several items. An empty value is refused.
+
+`Enter` saves and `Esc` goes back to the list. Renaming a key keeps its position in the frontmatter. Adding a key the note already has is refused; edit it instead. With Type `auto`, if the value does not fit the key's usual type in your vault, the form says so and offers **Store as … anyway**.
+
+If a note's frontmatter is malformed, the first failed write turns the dialog read-only; fix the frontmatter in the editor and reopen it.
+
 ## Mouse
 
 Full parity with the keyboard:

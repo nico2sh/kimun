@@ -716,6 +716,15 @@ impl NoteIndex {
         Ok(rows.into_iter().map(|(n,)| n).collect())
     }
 
+    /// Every distinct property key in the vault, in search form, sorted.
+    pub(crate) async fn property_keys(&self) -> Result<Vec<String>, DBError> {
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT DISTINCT key FROM property_keys ORDER BY key")
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows.into_iter().map(|(k,)| k).collect())
+    }
+
     /// The kind most notes give `key`, not counting `except` (the note about
     /// to be written). `None` when no other note has a value for it, or when
     /// two kinds tie — then there is no vault-wide type to follow.

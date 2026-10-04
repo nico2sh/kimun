@@ -1300,6 +1300,13 @@ impl NoteVault {
             .find_map(|(k, v)| properties::keys_match(&k, &key).then_some(v)))
     }
 
+    /// Every property key any note has, in search form (lowercased, accents
+    /// stripped — the form `%key` filters and `^%key` sorts by), distinct
+    /// and sorted. Index-backed.
+    pub async fn property_keys(&self) -> Result<Vec<String>, VaultError> {
+        Ok(self.index.property_keys().await?)
+    }
+
     /// Sets a frontmatter property, keeping the existing block's format,
     /// comments and key order. `key` matches an existing one case-insensitively
     /// (that entry keeps its spelling); a new key is written as given. A note with no block gets one in
@@ -1379,6 +1386,38 @@ impl NoteVault {
                 Ok(true)
             }
             None => Ok(false),
+        }
+    }
+
+    /// Renames frontmatter property `old` to `new` in place — same position,
+    /// value and comments. A case-only change respells the key. Refused with
+    /// [`VaultError::InvalidProperty`] when `old` is missing or `new` names
+    /// another existing property; same locking and malformed-block rules as
+    /// [`Self::set_property`].
+    pub async fn rename_property(
+        &self,
+        path: &VaultPath,
+        old: &str,
+        new: &str,
+    ) -> Result<(), VaultError> {
+        let old = Self::property_key(old)?;
+        let new = Self::property_key(new)?;
+        let _guard = self.lock_note(path).await;
+        let text = nfs::to_lf(&self.get_note_text(path).await?);
+        match properties::NoteProperties::new(&text, FrontmatterFormat::default())
+            .rename(&old, &new)
+            .map_err(|e| Self::frontmatter_error(path, &new, e))?
+        {
+            Some(updated) => {
+                if updated != text {
+                    self.save_note_unlocked(path, updated).await?;
+                }
+                Ok(())
+            }
+            None => Err(VaultError::InvalidProperty {
+                key: old,
+                message: "no such property".to_string(),
+            }),
         }
     }
 
@@ -4482,6 +4521,26 @@ mod property_api_tests {
     }
 
     #[tokio::test]
+    async fn property_keys_lists_distinct_search_form_keys_sorted() {
+        let (_tmp, vault) = new_vault().await;
+        vault
+            .create_note(
+                &p("/a.md"),
+                "+++\nStatus = \"x\"\ndue = 2024-01-01\n+++\nbody",
+            )
+            .await
+            .unwrap();
+        vault
+            .create_note(&p("/b.md"), "---\nstatus: y\nRésumé: z\nempty:\n---\nbody")
+            .await
+            .unwrap();
+        assert_eq!(
+            vault.property_keys().await.unwrap(),
+            vec!["due", "empty", "resume", "status"]
+        );
+    }
+
+    #[tokio::test]
     async fn input_is_inferred_for_a_new_key() {
         let (_tmp, vault) = new_vault().await;
         vault.create_note(&p("/n.md"), "body").await.unwrap();
@@ -5196,5 +5255,171 @@ mod property_api_tests {
             .unwrap();
         vault.recreate_index().await.unwrap();
         assert_eq!(vault.search_notes("%status=open").await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn rename_keeps_position_value_and_comments_toml() {
+        let (_tmp, vault) = new_vault().await;
+        vault
+            .create_note(
+                &p("/t.md"),
+                "+++\na = 1\n# about b\nb = \"x\" # keep\nc = 3\n+++\nbody",
+            )
+            .await
+            .unwrap();
+        vault
+            .rename_property(&p("/t.md"), "B", "beta")
+            .await
+            .unwrap();
+        assert_eq!(
+            vault.get_note_text(&p("/t.md")).await.unwrap(),
+            "+++\na = 1\n# about b\nbeta = \"x\" # keep\nc = 3\n+++\nbody"
+        );
+    }
+
+    #[tokio::test]
+    async fn rename_keeps_position_value_and_comments_yaml() {
+        let (_tmp, vault) = new_vault().await;
+        vault
+            .create_note(
+                &p("/y.md"),
+                "---\na: 1\ntags: # keep\n  - x\n  - y\nc: 3\nbare:\n---\nbody",
+            )
+            .await
+            .unwrap();
+        vault
+            .rename_property(&p("/y.md"), "tags", "labels")
+            .await
+            .unwrap();
+        vault
+            .rename_property(&p("/y.md"), "bare", "due date")
+            .await
+            .unwrap();
+        assert_eq!(
+            vault.get_note_text(&p("/y.md")).await.unwrap(),
+            "---\na: 1\nlabels: # keep\n  - x\n  - y\nc: 3\ndue date:\n---\nbody"
+        );
+    }
+
+    #[tokio::test]
+    async fn rename_case_only_respells_in_place() {
+        let (_tmp, vault) = new_vault().await;
+        vault
+            .create_note(&p("/n.md"), "---\nStatus: x\nb: 2\n---\nbody")
+            .await
+            .unwrap();
+        vault
+            .rename_property(&p("/n.md"), "Status", "status")
+            .await
+            .unwrap();
+        assert_eq!(
+            vault.get_note_text(&p("/n.md")).await.unwrap(),
+            "---\nstatus: x\nb: 2\n---\nbody"
+        );
+    }
+
+    #[tokio::test]
+    async fn rename_refuses_existing_target_and_missing_source() {
+        let (_tmp, vault) = new_vault().await;
+        let original = "+++\na = 1\nb = 2\n+++\nbody";
+        vault.create_note(&p("/n.md"), original).await.unwrap();
+        let taken = vault
+            .rename_property(&p("/n.md"), "a", "B")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(taken, VaultError::InvalidProperty { .. }),
+            "{taken:?}"
+        );
+        let missing = vault
+            .rename_property(&p("/n.md"), "zzz", "q")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(missing, VaultError::InvalidProperty { .. }),
+            "{missing:?}"
+        );
+        assert_eq!(vault.get_note_text(&p("/n.md")).await.unwrap(), original);
+    }
+
+    #[tokio::test]
+    async fn rename_updates_the_index() {
+        let (_tmp, vault) = new_vault().await;
+        vault
+            .create_note(&p("/n.md"), "+++\nstatus = \"done\"\n+++\nbody")
+            .await
+            .unwrap();
+        vault
+            .rename_property(&p("/n.md"), "status", "state")
+            .await
+            .unwrap();
+        assert!(vault
+            .search_notes("prop:status=done")
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(hits(&vault, "prop:state=done").await, vec!["/n.md"]);
+    }
+
+    #[tokio::test]
+    async fn rename_onto_a_toml_table_name_is_refused() {
+        for (i, (block, new)) in [
+            ("a = 1\n\n[meta]\nx = 1\n", "meta"),
+            ("a = 1\n\n[meta]\nx = 1\n", "Meta"),
+            ("meta = {x = 1}\na = 1\n", "meta"),
+            ("a = 1\nmeta.x = 1\n", "meta"),
+            ("a = 1\n\n[[meta]]\nx = 1\n", "meta"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let (_tmp, vault) = new_vault().await;
+            let original = format!("+++\n{block}+++\nbody");
+            let path = p(&format!("/t{i}.md"));
+            vault.create_note(&path, &original).await.unwrap();
+            let err = vault.rename_property(&path, "a", new).await.unwrap_err();
+            assert!(
+                matches!(err, VaultError::InvalidProperty { .. }),
+                "{block:?}: {err:?}"
+            );
+            assert_eq!(
+                vault.get_note_text(&path).await.unwrap(),
+                original,
+                "{block:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn rename_onto_a_yaml_mapping_key_is_refused() {
+        let (_tmp, vault) = new_vault().await;
+        let original = "---\na: 1\nmeta:\n  x: 1\n---\nbody";
+        vault.create_note(&p("/y.md"), original).await.unwrap();
+        let err = vault
+            .rename_property(&p("/y.md"), "a", "meta")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, VaultError::InvalidProperty { message, .. } if message.contains("already exists")),
+            "{err:?}"
+        );
+        assert_eq!(vault.get_note_text(&p("/y.md")).await.unwrap(), original);
+    }
+
+    #[tokio::test]
+    async fn rename_a_quoted_yaml_key() {
+        let (_tmp, vault) = new_vault().await;
+        vault
+            .create_note(&p("/q.md"), "---\n\"my key\" : v # c\nb: 2\n---\nbody")
+            .await
+            .unwrap();
+        vault
+            .rename_property(&p("/q.md"), "my key", "other")
+            .await
+            .unwrap();
+        assert_eq!(
+            vault.get_note_text(&p("/q.md")).await.unwrap(),
+            "---\nother: v # c\nb: 2\n---\nbody"
+        );
     }
 }

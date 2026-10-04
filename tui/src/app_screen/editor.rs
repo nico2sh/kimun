@@ -846,6 +846,20 @@ impl EditorScreen {
             }
             EditorIntent::Overlay => self.overlays.handle_input(event, tx),
             EditorIntent::Mouse => {
+                if let InputEvent::Mouse(m) = event
+                    && matches!(
+                        m.kind,
+                        ratatui::crossterm::event::MouseEventKind::Down(
+                            ratatui::crossterm::event::MouseButton::Left
+                        )
+                    )
+                    && self.footer.props_hit(m.column, m.row)
+                {
+                    if let Some(path) = self.open_note().cloned() {
+                        tx.send(AppEvent::FileOp(FileOp::ShowProperties(path))).ok();
+                    }
+                    return EventState::Consumed;
+                }
                 // `PanelSet` hit-tests the panel columns: a click focuses the
                 // panel under the cursor (one rule for every panel) and the
                 // event is forwarded to that panel for its internal behavior.
@@ -1120,7 +1134,14 @@ impl EditorScreen {
             OverlayOpen::Cheatsheet => Box::new(ActiveDialog::cheatsheet(&s)),
             OverlayOpen::SortQuery => {
                 let (field, order) = self.panels.query().current_order();
-                Box::new(ActiveDialog::sort(SortTarget::Query, field, order, false))
+                Box::new(ActiveDialog::sort(
+                    SortTarget::Query,
+                    field,
+                    order,
+                    false,
+                    Some(self.vault.clone()),
+                    tx,
+                ))
             }
             OverlayOpen::SortSidebar => {
                 let (field, order) = self.panels.sidebar().current_sort();
@@ -1129,6 +1150,8 @@ impl EditorScreen {
                     field,
                     order,
                     self.panels.sidebar().group_dirs(),
+                    None,
+                    tx,
                 ))
             }
             OverlayOpen::QuickNote => Box::new(ActiveDialog::quick_note(self.vault.clone())),
@@ -1190,6 +1213,23 @@ impl EditorScreen {
         match op {
             FileOp::ShowMenu(path) => {
                 self.present_overlay(Box::new(ActiveDialog::file_ops_menu(path)));
+            }
+            FileOp::ShowProperties(path) => {
+                // The dialog writes the file through core; flush the buffer
+                // first so no unsaved edit is lost under it.
+                if path.is_like(&self.path) {
+                    self.try_save().await;
+                    if self.panels.editor().is_some_and(|e| e.is_dirty()) {
+                        self.footer
+                            .flash("save failed — properties not opened".to_string(), tx);
+                        return;
+                    }
+                }
+                self.present_overlay(Box::new(ActiveDialog::properties(
+                    path,
+                    self.vault.clone(),
+                    tx,
+                )));
             }
             FileOp::ShowDelete(path) => {
                 self.present_overlay(Box::new(ActiveDialog::delete(path, self.vault.clone())));
@@ -1434,9 +1474,11 @@ impl EditorScreen {
                         // of truth for which context this save targets — reused
                         // for the on-disk settings write below.
                         let is_journal = self.panels.sidebar().is_current_journal();
-                        self.panels
-                            .sidebar_mut()
-                            .save_default(field, order, group_directories);
+                        self.panels.sidebar_mut().save_default(
+                            field.clone(),
+                            order,
+                            group_directories,
+                        );
                         {
                             let mut s = self.settings.write().unwrap();
                             if is_journal {
@@ -1470,6 +1512,26 @@ impl EditorScreen {
             AppEvent::Autosave => {
                 self.spawn_autosave(tx);
             }
+            AppEvent::NoteReloadFromDisk(path) => {
+                if path.is_like(&self.path) {
+                    self.autosave_task.abort();
+                    match self.vault.get_note_text(&self.path).await {
+                        Ok(text) => {
+                            if let Some(ed) = self.panels.editor_mut() {
+                                ed.set_text(text.clone());
+                                ed.mark_saved(text);
+                            }
+                        }
+                        // The buffer still holds the old text: an edit and
+                        // autosave would revert what changed on disk.
+                        Err(_) => self.footer.flash(
+                            "reload failed — reopen the note before editing".to_string(),
+                            tx,
+                        ),
+                    }
+                    self.doc_meta.refresh_properties(&self.path, tx);
+                }
+            }
             AppEvent::AutosaveCompleted {
                 path,
                 saved_revision,
@@ -1487,6 +1549,9 @@ impl EditorScreen {
                 // The write changed the working tree — refresh the git
                 // segment (throttled).
                 self.doc_meta.refresh_git(tx);
+                if path == self.path {
+                    self.doc_meta.refresh_properties(&path, tx);
+                }
                 // `SingleSlotTask::is_in_flight()` flips to false the
                 // moment the spawned future returns (success or panic),
                 // so we don't have to clear the slot manually here —
@@ -1955,6 +2020,11 @@ impl EditorScreen {
                     tx.send(AppEvent::FileOp(FileOp::ShowMove(path))).ok();
                 }
             }
+            LeaderAction::NoteProperties => {
+                if let Some(path) = self.open_note_or_flash(tx) {
+                    tx.send(AppEvent::FileOp(FileOp::ShowProperties(path))).ok();
+                }
+            }
             LeaderAction::NoteDelete => {
                 if let Some(path) = self.open_note_or_flash(tx) {
                     tx.send(AppEvent::FileOp(FileOp::ShowDelete(path))).ok();
@@ -2321,6 +2391,7 @@ impl AppScreen for EditorScreen {
                 dirty: self.panels.editor().is_some_and(|e| e.is_dirty()),
                 ln_col,
                 backlinks: self.doc_meta.backlinks(),
+                props: self.open_note().and(self.doc_meta.properties()),
                 git: self.doc_meta.git().cloned(),
                 matches,
                 link: link_segment,
@@ -2441,6 +2512,140 @@ mod tests {
         let settings: SharedSettings = Arc::new(RwLock::new(AppSettings::default()));
         let screen = EditorScreen::new(vault.clone(), VaultPath::root(), settings.clone());
         (screen, vault, settings, dir)
+    }
+
+    /// `test_screen` with note `n.md` (text "hi") open in the editor.
+    async fn screen_on_note() -> (
+        EditorScreen,
+        Arc<NoteVault>,
+        AppTx,
+        tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+        tempfile::TempDir,
+    ) {
+        let (mut screen, vault, _settings, dir) = test_screen().await;
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        vault
+            .create_note(&VaultPath::new("n.md"), "hi")
+            .await
+            .unwrap();
+        screen.open_path(VaultPath::new("n.md"), None, &tx).await;
+        (screen, vault, tx, rx, dir)
+    }
+
+    #[tokio::test]
+    async fn note_reload_from_disk_replaces_buffer_and_marks_clean() {
+        let (mut screen, vault, tx, _rx, _dir) = screen_on_note().await;
+        vault
+            .save_note(&VaultPath::new("n.md"), "+++\na = 1\n+++\nbody")
+            .await
+            .unwrap();
+        screen
+            .handle_app_message(AppEvent::NoteReloadFromDisk(VaultPath::new("n.md")), &tx)
+            .await;
+        let ed = screen.panels.editor().unwrap();
+        assert_eq!(ed.get_text(), "+++\na = 1\n+++\nbody");
+        assert!(!ed.is_dirty());
+    }
+
+    #[tokio::test]
+    async fn note_reload_failure_flashes_instead_of_dropping() {
+        let (mut screen, vault, tx, _rx, _dir) = screen_on_note().await;
+        vault.delete_note(&VaultPath::new("n.md")).await.unwrap();
+        screen
+            .handle_app_message(AppEvent::NoteReloadFromDisk(VaultPath::new("n.md")), &tx)
+            .await;
+        assert_eq!(
+            screen.footer.flash_text(),
+            Some("reload failed — reopen the note before editing")
+        );
+    }
+
+    /// Feed channel events through the screen until `done` has seen what it
+    /// waits for (each event is offered to `done` before it is handled).
+    async fn pump_until(
+        screen: &mut EditorScreen,
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+        tx: &AppTx,
+        mut done: impl FnMut(&AppEvent) -> bool,
+    ) {
+        let mut finished = false;
+        while !finished {
+            let evt = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+                .await
+                .expect("timely event")
+                .expect("open channel");
+            finished = done(&evt);
+            screen.handle_app_message(evt, tx).await;
+        }
+    }
+
+    /// Spec: a set through the dialog lands in the file, and the editor's
+    /// buffer reloads to the file's text, clean.
+    #[tokio::test]
+    async fn properties_dialog_set_reloads_the_editor_buffer() {
+        use ratatui::crossterm::event::KeyCode;
+        let (mut screen, vault, tx, mut rx, _dir) = screen_on_note().await;
+        let path = VaultPath::new("n.md");
+        screen
+            .handle_file_op(FileOp::ShowProperties(path.clone()), &tx)
+            .await;
+        assert!(screen.overlays.is_open());
+        pump_until(&mut screen, &mut rx, &tx, |e| {
+            matches!(
+                e,
+                AppEvent::OverlayData(OverlayData::PropertiesLoaded { .. })
+            )
+        })
+        .await;
+        screen.handle_input(&chr('a'), &tx);
+        for c in "priority".chars() {
+            screen.handle_input(&chr(c), &tx);
+        }
+        screen.handle_input(&key_event(KeyCode::Tab), &tx);
+        screen.handle_input(&key_event(KeyCode::Tab), &tx);
+        screen.handle_input(&chr('2'), &tx);
+        screen.handle_input(&key_event(KeyCode::Enter), &tx);
+        let (mut reloaded, mut written) = (false, false);
+        pump_until(&mut screen, &mut rx, &tx, |e| {
+            match e {
+                AppEvent::NoteReloadFromDisk(_) => reloaded = true,
+                AppEvent::OverlayData(OverlayData::PropertyWritten { result, .. }) => {
+                    assert!(result.is_ok(), "{result:?}");
+                    written = true;
+                }
+                _ => {}
+            }
+            reloaded && written
+        })
+        .await;
+        let text = vault.get_note_text(&path).await.unwrap();
+        assert_eq!(
+            vault.get_property(&path, "priority").await.unwrap(),
+            Some(Some(kimun_core::note::PropertyValue::Number(2.0)))
+        );
+        let ed = screen.panels.editor().unwrap();
+        assert_eq!(ed.get_text(), text);
+        assert!(!ed.is_dirty());
+    }
+
+    #[tokio::test]
+    async fn properties_open_flushes_dirty_buffer() {
+        let (mut screen, vault, tx, _rx, _dir) = screen_on_note().await;
+        // `set_text` loads the buffer clean; a typed key makes a real edit.
+        assert_eq!(screen.panels.focused(), PanelKind::Editor);
+        screen.handle_input(&chr('x'), &tx);
+        assert!(
+            screen.panels.editor().unwrap().is_dirty(),
+            "precondition: unsaved edit"
+        );
+        screen
+            .handle_file_op(FileOp::ShowProperties(VaultPath::new("n.md")), &tx)
+            .await;
+        assert_eq!(
+            vault.get_note_text(&VaultPath::new("n.md")).await.unwrap(),
+            "xhi"
+        );
+        assert!(screen.overlays.is_open(), "dialog opened after a good save");
     }
 
     fn key_event(code: ratatui::crossterm::event::KeyCode) -> InputEvent {
@@ -3940,6 +4145,33 @@ mod tests {
             row,
             modifiers: KeyModifiers::NONE,
         })
+    }
+
+    #[tokio::test]
+    async fn clicking_props_segment_opens_properties() {
+        let (mut screen, _vault, tx, mut rx, _dir) = screen_on_note().await;
+        // Land the async property count so the segment renders.
+        screen
+            .handle_app_message(
+                AppEvent::PropertyCountLoaded {
+                    path: VaultPath::new("n.md"),
+                    count: 0,
+                },
+                &tx,
+            )
+            .await;
+        lay_out(&mut screen);
+        let (col, row) = (0..40u16)
+            .flat_map(|r| (0..120u16).map(move |c| (c, r)))
+            .find(|(c, r)| screen.footer.props_hit(*c, *r))
+            .expect("props segment laid out");
+        while rx.try_recv().is_ok() {}
+        screen.handle_input(&press_at(col, row), &tx);
+        let mut opened = false;
+        while let Ok(evt) = rx.try_recv() {
+            opened |= matches!(evt, AppEvent::FileOp(FileOp::ShowProperties(_)));
+        }
+        assert!(opened);
     }
 
     fn moved_at(col: u16, row: u16) -> InputEvent {

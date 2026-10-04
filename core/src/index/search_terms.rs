@@ -271,12 +271,15 @@ impl OrderBy {
 
 /// The field a query can be ordered by. The asc/desc choice is carried
 /// separately by callers; this names only the column.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OrderField {
     /// Order results by note title.
     Title,
     /// Order results by filename.
     FileName,
+    /// Order results by a frontmatter property, the key as the user wrote
+    /// it; [`with_order_directive`] quotes it when needed.
+    Property(String),
 }
 
 /// Comparison operator of a `prop:key<op>value` filter.
@@ -565,8 +568,9 @@ pub fn strip_order_directive(query: &str) -> String {
 pub fn with_order_directive(query: &str, field: OrderField, asc: bool) -> String {
     let base = strip_order_directive(query);
     let field_term = match field {
-        OrderField::Title => "title",
-        OrderField::FileName => "file",
+        OrderField::Title => "title".to_string(),
+        OrderField::FileName => "file".to_string(),
+        OrderField::Property(key) => format!("prop:{}", quote_query_term(&key)),
     };
     let directive = if asc {
         format!("{}:{}", ORDER_LETTER, field_term)
@@ -2079,5 +2083,31 @@ mod tests {
                 s.excluded_forward_links
             );
         }
+    }
+
+    #[test]
+    fn property_order_round_trips_quoted_key() {
+        use super::{with_order_directive, OrderField};
+        let q = with_order_directive("#work", OrderField::Property("due date".into()), false);
+        assert_eq!(q, "#work -or:prop:\"due date\"");
+        let st = SearchTerms::from_query_string(&q);
+        match st.order_by.as_slice() {
+            [OrderBy::Property { key, asc }] => {
+                assert_eq!(key, "due date");
+                assert!(!asc);
+            }
+            other => panic!("expected one property order, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn property_order_is_replaced_not_piled() {
+        use super::{with_order_directive, OrderField};
+        let q = with_order_directive("x", OrderField::Property("due".into()), true);
+        assert_eq!(q, "x or:prop:due");
+        let q = with_order_directive(&q, OrderField::FileName, true);
+        assert_eq!(q, "x or:file");
+        let q = with_order_directive("x ^%due", OrderField::Property("prio".into()), true);
+        assert_eq!(q, "x or:prop:prio");
     }
 }

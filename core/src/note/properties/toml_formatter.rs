@@ -62,6 +62,41 @@ impl PropertyFormatter for TomlFormatter {
         }
         Ok(Some(doc.to_string()))
     }
+
+    fn rename(
+        &self,
+        block: &str,
+        old: &str,
+        new: &str,
+    ) -> Result<Option<String>, FrontmatterError> {
+        let mut doc = document(block)?;
+        let matches = matching_keys(&doc, old)?;
+        let Some(target) = matches.first().cloned() else {
+            return Ok(None);
+        };
+        // Every root key counts, tables and dotted keys included: they are
+        // not properties, but writing over one would delete it.
+        if !keys_match(old, new) && doc.iter().any(|(k, _)| keys_match(k, new)) {
+            return Err(FrontmatterError::Refused(format!("'{new}' already exists")));
+        }
+        let order: Vec<String> = doc.iter().map(|(k, _)| k.to_string()).collect();
+        let table = doc.as_table_mut();
+        let mut entries = Vec::with_capacity(order.len());
+        for k in &order {
+            if let Some(entry) = table.remove_entry(k) {
+                entries.push(entry);
+            }
+        }
+        for (key, item) in entries {
+            let key = if key.get() == target {
+                Key::new(new).with_leaf_decor(key.leaf_decor().clone())
+            } else {
+                key
+            };
+            table.insert_formatted(&key, item);
+        }
+        Ok(Some(doc.to_string()))
+    }
 }
 
 /// Removes root key `key`. toml_edit keeps every comment above a key in its
@@ -251,6 +286,14 @@ fn write_value(value: &PropertyValue) -> Result<Value, FrontmatterError> {
 mod tests {
     use super::super::tests::d;
     use super::*;
+
+    #[test]
+    fn rename_leaves_tables_and_neighbours_alone() {
+        let block = "a = 1\n# about b\nb = 2 # keep\n\n[meta]\nx = 1\n";
+        let out = TomlFormatter.rename(block, "b", "beta").unwrap().unwrap();
+        assert_eq!(out, "a = 1\n# about b\nbeta = 2 # keep\n\n[meta]\nx = 1\n");
+        assert_eq!(TomlFormatter.rename(block, "zzz", "q").unwrap(), None);
+    }
 
     fn parse(block: &str) -> Vec<(String, PropertyValue)> {
         TomlFormatter

@@ -40,6 +40,9 @@ pub enum AppEvent {
     /// in the editor footer.
     RagStatus(crate::rag::RagStatus),
     Autosave,
+    /// A core write (the properties dialog) changed this note on disk: reload
+    /// the editor buffer from disk if it is the open note.
+    NoteReloadFromDisk(VaultPath),
     /// Background autosave task finished. `saved_revision` carries the
     /// editor's `content_revision` at the moment the save was *issued*
     /// on success, `None` if the write failed. The editor screen uses
@@ -103,6 +106,11 @@ pub enum AppEvent {
     },
     /// Async-loaded backlink count for the note at `path` (status line 2).
     BacklinkCountLoaded {
+        path: VaultPath,
+        count: usize,
+    },
+    /// Property count of a note for the status bar (async-loaded).
+    PropertyCountLoaded {
         path: VaultPath,
         count: usize,
     },
@@ -230,6 +238,8 @@ pub enum FileOp {
     ShowRename(VaultPath),
     /// Request to show the move dialog for the given entry.
     ShowMove(VaultPath),
+    /// Open the properties dialog for a note (leader `n p`, palette, status bar).
+    ShowProperties(VaultPath),
     /// Request to show the create-note dialog pre-filled with body content —
     /// the Ask "save as note" action (`e` in `ThreadPanel`). Plain
     /// creates (follow-link, missing-note open) go straight through
@@ -280,6 +290,20 @@ pub enum OverlayData {
     /// other overlay-started task (a rename confirmed just before the
     /// dialog opened) is never mistaken for the reload this dialog waits on.
     PinnedNotesLoaded(Result<Vec<PinnedRow>, String>),
+    /// Every property key in the vault (search form), for key pickers.
+    PropertyKeysLoaded(Vec<String>),
+    /// The properties dialog's note (`path`), read: entries in file order, or
+    /// the read error. A dialog ignores a result for another note.
+    PropertiesLoaded {
+        path: VaultPath,
+        result: Result<Vec<kimun_core::note::PropertyEntry>, String>,
+    },
+    /// A properties-dialog write to `path` finished: flash text, or why it
+    /// failed. A dialog ignores a result for another note.
+    PropertyWritten {
+        path: VaultPath,
+        result: Result<String, crate::components::dialogs::properties_dialog::PropertyWriteError>,
+    },
     /// An overlay-initiated operation failed; carries a human-readable
     /// error message.
     Error(String),
