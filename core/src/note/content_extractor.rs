@@ -498,8 +498,10 @@ pub fn heading_section_range(text: &str, heading: &str) -> Option<Range<usize>> 
     for line in text.split_inclusive('\n') {
         let stripped = line.strip_suffix('\n').unwrap_or(line);
         if start.is_none() {
-            if let Some(title) = atx_heading_text(stripped) {
-                let normalized = crate::note::diacritics::remove_diacritics(title);
+            // Matched by the text the chunker gives it, so a heading holding
+            // inline HTML, links or tags, or one inside a list item, is found.
+            if let Some(title) = heading_display_text(stripped) {
+                let normalized = crate::note::diacritics::remove_diacritics(&title);
                 if normalized.eq_ignore_ascii_case(&needle) {
                     start = Some(offset);
                 }
@@ -524,12 +526,13 @@ pub fn heading_section_range(text: &str, heading: &str) -> Option<Range<usize>> 
 /// reference-style link renders as written, its definition being on another
 /// line; and a `#` line inside a fenced block or frontmatter renders as a
 /// heading the chunker never lists, so it can only shadow a real heading with
-/// the same text. Leading indentation is dropped on purpose: the chunker
-/// lists a heading nested in a list item, whose own line is indented past
-/// what CommonMark allows at top level. A `#`-run not followed by whitespace
-/// is a hashtag, not a heading, and renders to `None`.
+/// the same text. Leading indentation and list or quote markers are dropped on
+/// purpose: the chunker lists a heading nested in a list item or a quote
+/// (`- # Setup`, `> # Note`), whose own line is not a top-level heading. A
+/// `#`-run not followed by whitespace is a hashtag, not a heading, and renders
+/// to `None`.
 pub fn heading_display_text(line: &str) -> Option<String> {
-    let line = line.trim_start();
+    let line = strip_block_markers(line);
     if !line.starts_with('#') {
         return None;
     }
@@ -542,6 +545,30 @@ pub fn heading_display_text(line: &str) -> Option<String> {
             TextLine::Header(_, text) => Some(text),
             _ => None,
         })
+}
+
+/// `line` past its indentation and any list (`-`, `*`, `+`, `1.`, `1)`) or
+/// quote (`>`) markers in front of its content.
+fn strip_block_markers(line: &str) -> &str {
+    let mut line = line.trim_start();
+    loop {
+        let digits = line.len() - line.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        let marker = match line.as_bytes() {
+            [b'>', ..] => 1,
+            [b'-' | b'*' | b'+', b' ' | b'\t', ..] => 1,
+            bytes
+                if (1..=9).contains(&digits)
+                    && matches!(
+                        bytes.get(digits..digits + 2),
+                        Some([b'.' | b')', b' ' | b'\t'])
+                    ) =>
+            {
+                digits + 1
+            }
+            _ => return line,
+        };
+        line = line[marker..].trim_start();
+    }
 }
 
 /// Recognizes one ATX heading line — 1 to 6 leading `#` characters, then a
@@ -957,7 +984,8 @@ pub fn extract_title<S: AsRef<str>>(md_text: S) -> String {
             TextLine::Empty => None,
             TextLine::Header(_level, text) => Some(text.to_owned()),
             TextLine::Text(text) => Some(text.to_owned()),
-            TextLine::ListItem(_level, text) => Some(text.to_owned()),
+            // A wrapped item names the note by its first line only.
+            TextLine::ListItem(_level, text) => text.lines().next().map(str::to_owned),
         })
         .unwrap_or_default()
 }
@@ -1071,8 +1099,7 @@ fn walk_indexing_events(
     ref_path: &VaultPath,
     labels: &[(usize, usize, String)],
 ) -> (Vec<TextLine>, Vec<NoteLink>) {
-    let mut text_lines: Vec<TextLine> = vec![];
-    let mut tag_stack: Vec<Tag> = vec![];
+    let mut lines = TextLines::default();
     let mut links: Vec<NoteLink> = vec![];
 
     let mut code_depth: u32 = 0;
@@ -1117,70 +1144,16 @@ fn walk_indexing_events(
             _ => {}
         }
 
-        match event {
-            Event::Start(tag) => {
-                let current_line = text_lines.pop().unwrap_or_default();
-                let new_lines = parse_tag(&tag, current_line);
-                text_lines.extend(new_lines);
-                tag_stack.push(tag);
+        lines.push(event, |text| {
+            if code_depth > 0 {
+                text.to_string()
+            } else {
+                strip_hashtags_in_text_event(text, &range, body, labels, in_link, &mut links)
             }
-            Event::End(tag_end) => {
-                let Some(start_tag) = tag_stack.pop() else {
-                    debug!("Non matching tag end (empty stack): {:?}", tag_end);
-                    continue;
-                };
-                if tag_end != start_tag.to_end() {
-                    debug!(
-                        "Non matching tags: expected {:?}, got {:?}",
-                        start_tag.to_end(),
-                        tag_end
-                    );
-                    tag_stack.push(start_tag);
-                    continue;
-                }
-                let current_line = text_lines.pop().unwrap_or_default();
-                let new_lines = parse_tag_end(&tag_end, current_line);
-                text_lines.extend(new_lines);
-            }
-            Event::Text(cow_str) => {
-                let last_text = text_lines.pop().unwrap_or_default();
-                let appended = if code_depth > 0 {
-                    cow_str.to_string()
-                } else {
-                    strip_hashtags_in_text_event(
-                        &cow_str, &range, body, labels, in_link, &mut links,
-                    )
-                };
-                text_lines.push(last_text.append_text(appended));
-            }
-            Event::Code(cow_str) => {
-                let current_line = text_lines.pop().unwrap_or_default();
-                text_lines.push(current_line.append_text(format!("`{}`", cow_str)));
-            }
-            Event::InlineMath(cow_str)
-            | Event::DisplayMath(cow_str)
-            | Event::Html(cow_str)
-            | Event::InlineHtml(cow_str)
-            | Event::FootnoteReference(cow_str) => {
-                text_lines.push(TextLine::Text(cow_str.to_string()));
-            }
-            Event::SoftBreak => {
-                text_lines.push(TextLine::Empty);
-            }
-            Event::HardBreak => {
-                text_lines.push(TextLine::Empty);
-                text_lines.push(TextLine::Empty);
-            }
-            Event::Rule => {
-                text_lines.push(TextLine::Empty);
-            }
-            Event::TaskListMarker(result) => {
-                text_lines.push(TextLine::Text(result.to_string()));
-            }
-        }
+        });
     }
 
-    (text_lines, links)
+    (lines.finish(), links)
 }
 
 /// Resolves a markdown link destination to a `NoteLink::Note` for indexing,
@@ -1402,6 +1375,7 @@ impl TextLine {
             }
             TextLine::Text(text) => text.to_owned(),
             TextLine::ListItem(level, text) => {
+                let text = text.replace('\n', " ");
                 format!("{}* {}", " ".repeat((*level as usize) * 4), text)
             }
         }
@@ -1418,69 +1392,106 @@ impl TextLine {
 }
 
 fn loop_events(parser: &mut Parser) -> Vec<TextLine> {
-    let mut text_lines: Vec<TextLine> = vec![];
-    let mut tag_stack = vec![];
-
+    let mut lines = TextLines::default();
     for event in parser.by_ref() {
+        lines.push(event, str::to_string);
+    }
+    lines.finish()
+}
+
+/// Builds the [`TextLine`] sequence from markdown events: the one event walk
+/// behind titles, headings and chunks ([`loop_events`]) and the indexing walk
+/// ([`walk_indexing_events`]), so the two can never drift apart.
+#[derive(Default)]
+struct TextLines<'a> {
+    lines: Vec<TextLine>,
+    tag_stack: Vec<Tag<'a>>,
+}
+
+impl<'a> TextLines<'a> {
+    /// Feeds one event. A text event's content is first passed through
+    /// `text` (the indexing walk strips hashtags there).
+    fn push(&mut self, event: Event<'a>, text: impl FnOnce(&str) -> String) {
         match event {
             Event::Start(tag) => {
-                let current_line = text_lines.pop().unwrap_or_default();
-                let new_lines = parse_tag(&tag, current_line);
-                text_lines.extend(new_lines);
-                tag_stack.push(tag);
+                let current_line = self.lines.pop().unwrap_or_default();
+                self.lines.extend(parse_tag(&tag, current_line));
+                self.tag_stack.push(tag);
             }
             Event::End(tag_end) => {
-                let Some(start_tag) = tag_stack.pop() else {
+                let Some(start_tag) = self.tag_stack.pop() else {
                     debug!("Non matching tag end (empty stack): {:?}", tag_end);
-                    continue;
+                    return;
                 };
-
                 if tag_end != start_tag.to_end() {
                     debug!(
                         "Non matching tags: expected {:?}, got {:?}",
                         start_tag.to_end(),
                         tag_end
                     );
-                    tag_stack.push(start_tag);
-                    continue;
+                    self.tag_stack.push(start_tag);
+                    return;
                 }
-
-                let current_line = text_lines.pop().unwrap_or_default();
-                let new_lines = parse_tag_end(&tag_end, current_line);
-                text_lines.extend(new_lines);
+                let current_line = self.lines.pop().unwrap_or_default();
+                self.lines.extend(parse_tag_end(&tag_end, current_line));
             }
             Event::Text(cow_str) => {
-                let last_text = text_lines.pop().unwrap_or_default();
-                text_lines.push(last_text.append_text(cow_str.to_string()));
+                let last_text = self.lines.pop().unwrap_or_default();
+                self.lines.push(last_text.append_text(text(&cow_str)));
             }
             Event::Code(cow_str) => {
-                let current_line = text_lines.pop().unwrap_or_default();
-                text_lines.push(current_line.append_text(format!("`{}`", cow_str)));
+                let current_line = self.lines.pop().unwrap_or_default();
+                self.lines
+                    .push(current_line.append_text(format!("`{}`", cow_str)));
+            }
+            Event::InlineHtml(cow_str) => {
+                // Inline HTML continues the line it sits in. A heading keeps
+                // only its text (`# Release <kbd>v2</kbd>` is "Release v2"),
+                // so the tags are dropped there — a `<br>` as a space.
+                let current_line = self.lines.pop().unwrap_or_default();
+                let is_break = cow_str
+                    .get(..3)
+                    .is_some_and(|tag| tag.eq_ignore_ascii_case("<br"));
+                self.lines.push(match current_line {
+                    TextLine::Header(..) if is_break => current_line.append_text(" ".to_string()),
+                    TextLine::Header(..) => current_line,
+                    other => other.append_text(cow_str.to_string()),
+                });
             }
             Event::InlineMath(cow_str)
             | Event::DisplayMath(cow_str)
             | Event::Html(cow_str)
-            | Event::InlineHtml(cow_str)
             | Event::FootnoteReference(cow_str) => {
-                text_lines.push(TextLine::Text(cow_str.to_string()));
+                self.lines.push(TextLine::Text(cow_str.to_string()));
+            }
+            // A line break inside a list item continues the item — its text
+            // and its nesting level stay together (rendered as one line, the
+            // first line alone naming a note); elsewhere it ends the line.
+            Event::SoftBreak | Event::HardBreak
+                if matches!(self.lines.last(), Some(TextLine::ListItem(..))) =>
+            {
+                let item = self.lines.pop().unwrap_or_default();
+                self.lines.push(item.append_text("\n".to_string()));
             }
             Event::SoftBreak => {
-                text_lines.push(TextLine::Empty);
+                self.lines.push(TextLine::Empty);
             }
             Event::HardBreak => {
-                text_lines.push(TextLine::Empty);
-                text_lines.push(TextLine::Empty);
+                self.lines.push(TextLine::Empty);
+                self.lines.push(TextLine::Empty);
             }
             Event::Rule => {
-                text_lines.push(TextLine::Empty);
+                self.lines.push(TextLine::Empty);
             }
             Event::TaskListMarker(result) => {
-                text_lines.push(TextLine::Text(result.to_string()));
+                self.lines.push(TextLine::Text(result.to_string()));
             }
         }
     }
 
-    text_lines
+    fn finish(self) -> Vec<TextLine> {
+        self.lines
+    }
 }
 
 fn parse_tag(tag: &Tag, current_line: TextLine) -> Vec<TextLine> {
@@ -1530,7 +1541,9 @@ fn parse_tag(tag: &Tag, current_line: TextLine) -> Vec<TextLine> {
                     vec![current_line, TextLine::ListItem(lvl, String::new())]
                 }
             }
-            _ => vec![TextLine::ListItem(0, String::new())],
+            // Keep whatever line came before (it is not an item: dropping it
+            // lost the end of a wrapped item).
+            _ => vec![current_line, TextLine::ListItem(0, String::new())],
         },
         Tag::Paragraph => {
             vec![current_line, TextLine::Empty]
@@ -1570,6 +1583,11 @@ fn parse_tag_end(tag_end: &TagEnd, current_line: TextLine) -> Vec<TextLine> {
             }
         }
         TagEnd::Paragraph => {
+            vec![current_line, TextLine::Empty]
+        }
+        // A heading's text ends with it: what follows in the same block (a
+        // heading inside a list item) starts a new line, not the heading's.
+        TagEnd::Heading(_) => {
             vec![current_line, TextLine::Empty]
         }
         _ => {
@@ -3235,6 +3253,119 @@ ls -la ./test
         assert!(
             chunks.iter().any(|c| c.breadcrumb_last() == Some("Nested")),
             "the chunker lists the nested heading: {chunks:?}"
+        );
+    }
+
+    #[test]
+    fn the_title_of_a_wrapped_list_item_is_its_first_line() {
+        assert_eq!(
+            crate::note::content_extractor::extract_title("- item one\n  #tag after soft break\n"),
+            "item one"
+        );
+        assert_eq!(
+            crate::note::content_extractor::extract_title("1. one  \n   two\n"),
+            "one"
+        );
+        // The rest of the item is still indexed.
+        let chunks = get_content_chunks("- item one\n  wraps on\n");
+        assert!(chunks[0].text.contains("item one wraps on"), "{chunks:?}");
+    }
+
+    #[test]
+    fn a_line_break_tag_in_a_heading_keeps_the_words_apart() {
+        assert_eq!(
+            crate::note::content_extractor::extract_headings(
+                "# Release<br>notes\n# Ctrl <kbd>K</kbd>\n"
+            ),
+            vec![(1, "Release notes".to_string()), (1, "Ctrl K".to_string())]
+        );
+    }
+
+    #[test]
+    fn heading_display_text_renders_a_heading_inside_a_list_or_quote() {
+        for (line, expected) in [
+            ("- # Setup", "Setup"),
+            ("  * ## Deep", "Deep"),
+            ("1. # Step", "Step"),
+            ("> # Quoted", "Quoted"),
+            ("## <a id=\"x\"></a>Install", "Install"),
+        ] {
+            assert_eq!(
+                heading_display_text(line).as_deref(),
+                Some(expected),
+                "{line:?}"
+            );
+        }
+        assert_eq!(heading_display_text("- plain item"), None);
+        assert_eq!(heading_display_text("- #tag"), None);
+        // The chunker lists the same text, so the OUTLINE can jump to it.
+        let chunks = get_content_chunks("- # Setup\n  make install\n");
+        assert!(
+            chunks.iter().any(|c| c.breadcrumb_last() == Some("Setup")),
+            "{chunks:?}"
+        );
+    }
+
+    #[test]
+    fn heading_section_range_finds_a_heading_by_its_rendered_text() {
+        let note = "# a\nfirst\n## <a id=\"x\"></a>Install\nsteps\n# c\n";
+        let r = heading_section_range(note, "Install").unwrap();
+        assert_eq!(&note[r], "## <a id=\"x\"></a>Install\nsteps\n");
+        let note = "- # Setup\n  make install\n";
+        assert!(heading_section_range(note, "Setup").is_some());
+    }
+
+    #[test]
+    fn every_line_of_a_list_item_is_kept() {
+        let text = "# Lists\n\n- a long bullet that wraps\n  onto zebra line.\n- parent\n  - nested child\n    continues here\n  - second child\n- hard break  \n  after the break\n\n1. ordered one\n   wraps too\n";
+        let chunks = crate::note::content_extractor::get_content_chunks(text);
+        let body: String = chunks.iter().map(|c| c.text.as_str()).collect();
+        for kept in [
+            "onto zebra line.",
+            "continues here",
+            "after the break",
+            "wraps too",
+        ] {
+            assert!(body.contains(kept), "{kept:?} missing from {body:?}");
+        }
+        assert!(
+            body.contains("    * second child"),
+            "a nested item keeps its level after a wrapped sibling: {body:?}"
+        );
+    }
+
+    #[test]
+    fn a_heading_inside_a_list_item_is_only_its_own_text() {
+        let text = "# Top\n\n- # Setup\n  make install\n";
+        assert_eq!(
+            crate::note::content_extractor::extract_headings(text),
+            vec![(1, "Top".to_string()), (1, "Setup".to_string())]
+        );
+        let chunks = crate::note::content_extractor::get_content_chunks(text);
+        assert!(
+            chunks
+                .iter()
+                .any(|c| c.breadcrumb == "Setup" && c.text.contains("make install")),
+            "{chunks:?}"
+        );
+    }
+
+    #[test]
+    fn inline_html_never_cuts_a_heading_or_a_line() {
+        let text = "# Release <kbd>v2</kbd> notes\n\nPress <kbd>Ctrl</kbd>+K now.\n\n## <a id=\"x\"></a>Install\nbody";
+        assert_eq!(
+            crate::note::content_extractor::extract_headings(text),
+            vec![
+                (1, "Release v2 notes".to_string()),
+                (2, "Install".to_string())
+            ]
+        );
+        let chunks = crate::note::content_extractor::get_content_chunks(text);
+        assert!(
+            chunks
+                .iter()
+                .any(|c| c.text.contains("Press <kbd>Ctrl</kbd>+K now.")),
+            "a paragraph with inline HTML stays one line: {chunks:?}"
         );
     }
 
