@@ -5,7 +5,7 @@
 
 use std::ops::Range;
 
-use yaml_rust2::{yaml::Hash, Yaml, YamlLoader};
+use yaml_rust2::{yaml::Hash, ScanError, Yaml, YamlLoader};
 
 use super::{
     date_in_text, duplicate_key_error, finite, format_number, keys_match, nested_key_error,
@@ -93,11 +93,9 @@ impl PropertyFormatter for YamlFormatter {
 /// The block's root mapping; `Ok(None)` for an empty block. Anything that is
 /// not a mapping is an error.
 fn root(block: &str) -> Result<Option<Hash>, FrontmatterError> {
-    let docs = YamlLoader::load_from_str(block).map_err(|e| {
-        match repeated_key(block).filter(|_| e.to_string().contains("duplicated key")) {
-            Some(key) => duplicate_key_error(&key),
-            None => FrontmatterError::Malformed(e.to_string()),
-        }
+    let docs = YamlLoader::load_from_str(block).map_err(|e| match duplicated_key(block, &e) {
+        Some((key, at)) => duplicate_key_error(block, &key, at),
+        None => FrontmatterError::Malformed(e.to_string()),
     })?;
     match docs.into_iter().next() {
         None | Some(Yaml::Null) => Ok(None),
@@ -108,13 +106,33 @@ fn root(block: &str) -> Result<Option<Hash>, FrontmatterError> {
     }
 }
 
-/// The first top-level key written twice in `block`, if any.
-fn repeated_key(block: &str) -> Option<String> {
-    let mut seen = std::collections::HashSet::new();
-    block
-        .lines()
-        .filter_map(line_key)
-        .find(|key| !seen.insert(key.clone()))
+/// Where a "duplicated key" error points: the key the parser names in it
+/// and the byte its line starts at — the nearest line at or above the
+/// parser's mark (which sits in or after the repeated value) that holds that
+/// key, at any depth. `None` when the error is another one, or names a key no
+/// such line holds, so a reworded message falls back to the parser's own.
+fn duplicated_key(block: &str, error: &ScanError) -> Option<(String, usize)> {
+    let named = error.info().strip_suffix(": duplicated key in mapping")?;
+    // The key's debug form: `String("due")`, `Integer(1)`.
+    let inner = named.split_once('(')?.1.strip_suffix(')')?;
+    let key = match inner.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+        Some(quoted) => quoted.replace("\\\"", "\"").replace("\\\\", "\\"),
+        None => inner.to_string(),
+    };
+    let at = error.marker().index();
+    let mut start = 0;
+    let mut found = None;
+    for line in block.split_inclusive('\n') {
+        if start > at {
+            break;
+        }
+        let content = line.trim_start().trim_start_matches("- ").trim_end();
+        if line_key(content).is_some_and(|k| k == key) {
+            found = Some(start);
+        }
+        start += line.len();
+    }
+    Some((key, found?))
 }
 
 fn key_matches(k: &Yaml, key: &str) -> bool {
