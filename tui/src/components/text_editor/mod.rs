@@ -2996,7 +2996,11 @@ mod tests {
     fn vim_normal_mode_enter_at_the_end_of_a_list_item_continues_it() {
         let mut editor = make_vim_editor();
         editor.set_text("- foo".to_string());
-        assert_eq!(vim_mode(&editor), EditorMode::Normal, "vim starts in Normal");
+        assert_eq!(
+            vim_mode(&editor),
+            EditorMode::Normal,
+            "vim starts in Normal"
+        );
         {
             let ta = get_ta(&mut editor);
             ta.move_cursor(CursorMove::End);
@@ -3045,7 +3049,10 @@ mod tests {
             &InputEvent::Key(key(KeyCode::Char('d'), KeyModifiers::NONE)),
             &tx,
         );
-        let _ = editor.handle_input(&InputEvent::Key(key(KeyCode::Enter, KeyModifiers::NONE)), &tx);
+        let _ = editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Enter, KeyModifiers::NONE)),
+            &tx,
+        );
         assert_eq!(editor.get_text(), "- foo", "d<CR> must not edit");
         assert_eq!(vim_mode(&editor), EditorMode::Normal);
         // The pending `d` is still live: `d` again completes `dd`.
@@ -3053,7 +3060,11 @@ mod tests {
             &InputEvent::Key(key(KeyCode::Char('d'), KeyModifiers::NONE)),
             &tx,
         );
-        assert_eq!(editor.get_text(), "", "the pending operator must have survived Enter");
+        assert_eq!(
+            editor.get_text(),
+            "",
+            "the pending operator must have survived Enter"
+        );
     }
 
     /// Guardrail: a pending count keeps its own meaning too (`3<CR>` is
@@ -3071,7 +3082,10 @@ mod tests {
             &InputEvent::Key(key(KeyCode::Char('3'), KeyModifiers::NONE)),
             &tx,
         );
-        let _ = editor.handle_input(&InputEvent::Key(key(KeyCode::Enter, KeyModifiers::NONE)), &tx);
+        let _ = editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Enter, KeyModifiers::NONE)),
+            &tx,
+        );
         assert_eq!(editor.get_text(), "- foo", "3<CR> must not edit");
         assert_eq!(vim_mode(&editor), EditorMode::Normal);
     }
@@ -3091,7 +3105,10 @@ mod tests {
             ta.move_cursor(CursorMove::End);
         }
         let tx = dummy_tx();
-        let _ = editor.handle_input(&InputEvent::Key(key(KeyCode::Enter, KeyModifiers::NONE)), &tx);
+        let _ = editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Enter, KeyModifiers::NONE)),
+            &tx,
+        );
         assert_eq!(editor.get_text(), "- foo\n- ");
         for c in "bar".chars() {
             send_char(&mut editor, c);
@@ -3127,7 +3144,10 @@ mod tests {
             ta.move_cursor(CursorMove::End);
         }
         let tx = dummy_tx();
-        let _ = editor.handle_input(&InputEvent::Key(key(KeyCode::Enter, KeyModifiers::NONE)), &tx);
+        let _ = editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Enter, KeyModifiers::NONE)),
+            &tx,
+        );
         let _ = editor.handle_input(&InputEvent::Key(key(KeyCode::Esc, KeyModifiers::NONE)), &tx);
         let _ = editor.handle_input(
             &InputEvent::Key(key(KeyCode::Char('.'), KeyModifiers::NONE)),
