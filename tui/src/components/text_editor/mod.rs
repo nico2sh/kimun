@@ -2983,6 +2983,47 @@ mod tests {
         assert!(editor.is_dirty());
     }
 
+    /// Regression: Enter in vim **Normal** mode (cursor merely navigated onto
+    /// the row, never typed into it this session) must continue a list the
+    /// same way Insert mode's PassThrough does. Normal mode had no arm for
+    /// `KeyCode::Enter` at all, so the key fell to the catch-all `NoOp` and
+    /// was swallowed before ever reaching `smart_enter` — reproduces the
+    /// "pressing Enter doesn't continue the list" report, which only shows up
+    /// once the cursor sits in Normal mode (e.g. after a mouse click, or Esc
+    /// back from Insert) rather than mid-typing.
+    #[test]
+    fn vim_normal_mode_enter_at_the_end_of_a_list_item_continues_it() {
+        let mut editor = make_vim_editor();
+        editor.set_text("- foo".to_string());
+        assert_eq!(vim_mode(&editor), EditorMode::Normal, "vim starts in Normal");
+        {
+            let ta = get_ta(&mut editor);
+            ta.move_cursor(CursorMove::End);
+        }
+        let tx = dummy_tx();
+        let enter = key(KeyCode::Enter, KeyModifiers::NONE);
+        let _ = editor.handle_input(&InputEvent::Key(enter), &tx);
+        assert_eq!(editor.get_text(), "- foo\n- ");
+        assert!(editor.is_dirty());
+    }
+
+    /// Guardrail for the fix above: Normal-mode Enter must stay a no-op on an
+    /// ordinary row (smart_enter declines), so it still never inserts text
+    /// outside Insert mode the way plain typing would.
+    #[test]
+    fn vim_normal_mode_enter_on_a_plain_row_still_does_nothing() {
+        let mut editor = make_vim_editor();
+        editor.set_text("foo".to_string());
+        {
+            let ta = get_ta(&mut editor);
+            ta.move_cursor(CursorMove::End);
+        }
+        let tx = dummy_tx();
+        let enter = key(KeyCode::Enter, KeyModifiers::NONE);
+        let _ = editor.handle_input(&InputEvent::Key(enter), &tx);
+        assert_eq!(editor.get_text(), "foo");
+    }
+
     #[test]
     fn a_letter_typed_after_smart_enter_starts_its_own_undo_group() {
         let mut editor = make_editor();
