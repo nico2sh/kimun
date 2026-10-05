@@ -1,3 +1,11 @@
+---
+type: project
+status: active
+priority: 2
+started: 2026-04-08
+tags:
+  - garden
+---
 # Garden Plan
 
 ## Layout

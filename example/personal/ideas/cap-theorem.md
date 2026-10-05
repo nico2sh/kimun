@@ -1,3 +1,11 @@
+---
+type: idea
+status: growing
+topic: distributed systems
+tags:
+  - systems
+  - learning
+---
 # CAP Theorem
 
 Notes on the CAP theorem and its implications for [[distributed-systems]].

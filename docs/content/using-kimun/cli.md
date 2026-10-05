@@ -124,7 +124,7 @@ kimun labels --format paths   # bare labels, one per line (pipeable)
 kimun labels --format json    # JSON with total + per-label note_count
 ```
 
-Labels come from in-text `#hashtag` tokens (see [Search](@/using-kimun/search.md#labels) for full label rules — note that frontmatter / code / HTML / link bodies / wikilinks are excluded from indexing).
+Labels come from in-text `#hashtag` tokens and from a frontmatter `tags` property (see [Search](@/using-kimun/search.md#labels) for full label rules — code / HTML / link bodies / wikilinks are excluded from indexing).
 
 ### JSON schema
 
@@ -377,6 +377,39 @@ kimun note delete "inbox/stale-idea" --force
 - Removes the note from the index as well as from disk
 - Backs up the deleted content first (see [Backups](#backups))
 
+### Properties
+
+Read and edit a note's frontmatter [properties](@/using-kimun/search.md#properties) without touching the rest of the file.
+
+```sh
+kimun note prop list "projects/garden"               # key: value lines ("key:" when it has no readable value)
+kimun note prop list "projects/garden" --format json # one JSON object (null when a key has no readable value)
+kimun note prop get "projects/garden" status         # just the value (empty, or null in JSON, when it has none)
+kimun note prop set "projects/garden" status active
+kimun note prop set "projects/garden" tags garden spring   # several values → a list
+kimun note prop set "projects/garden" due 2026-05-01
+kimun note prop set "projects/garden" priority high --type text
+kimun note prop remove "projects/garden" status
+```
+
+#### How `set` picks a type
+
+- **`tags`** is always a list: comma-separated values become separate items (`set n tags "work, q1"`), and `set n tags` with no value clears it. **`aliases`** and **`cssclasses`** are always lists too, with values kept as given (an alias may contain a comma).
+- **A key other notes already use:** the value must be exactly a value of the type most of them give it. If `priority` is a number elsewhere, `2` is stored as a number while `high` — and `02134`, which a number would rewrite — is refused. A single value for a list key becomes a one-item list.
+- **A new key:** typed by its look. `5` and `4.5` → number, `true`/`false` → true/false, `2026-05-01` → date, `2026-05-01T14:30` → date & time, anything else → text. Text that only looks numeric (`02134`, `1.10`) stays text, so it is never rewritten.
+- **Date & time values keep their form:** `2026-05-01T14:30` stays a local time (written without an offset, as Obsidian does), `2026-05-01T14:30:00+02:00` keeps its offset. Searches and sorting compare them as instants, a local time read as UTC.
+- **`--type text|number|bool|date|datetime|list`** forces the type. Use it to store a value that doesn't fit the key's usual type; only this note changes. `--type list` with no value sets an empty list.
+
+#### Features
+
+- Keeps the rest of the frontmatter (format, comments, key order) as it was
+- A note without frontmatter gets a TOML (`+++`) block; `--yaml` makes it YAML (`---`). An existing block keeps its format
+- Keys are case-insensitive but keep the spelling you give them: `set n dueDate …` writes `dueDate`, and `dueDate`, `duedate` and `DUEDATE` all reach the same property. An existing key keeps the spelling already in the note
+- Negative numbers work as values (`set n delta -5`); a text value starting with `-` goes after `--` (`set n mood -- -meh`)
+- `get` fails for a property the note doesn't have; `remove` doesn't
+- Refuses to edit a note whose existing frontmatter doesn't parse, leaving it untouched
+- Backs up the previous content first (see [Backups](#backups))
+
 ### Backups
 
 Every CLI (and MCP) edit that overwrites or deletes a note's content copies the
@@ -384,8 +417,8 @@ old content into a hidden, dated directory inside the vault before changing it.
 These backups are excluded from indexing and search, kept for 30 days, then
 purged automatically.
 
-- Covers `overwrite`, `replace`, `delete`, and the backlink rewrites performed by
-  rename/move. `create` and a first-time `append` have nothing to back up.
+- Covers `overwrite`, `replace`, `delete`, `prop set`/`prop remove`, and the
+  backlink rewrites performed by rename/move. `create` and a first-time `append` have nothing to back up.
 - Interactive TUI editing does **not** create backups (the editor has its own
   history).
 - If a backup cannot be written, the operation is aborted and the note is left
@@ -592,13 +625,16 @@ Both `search` and `notes` support JSON output for scripting and automation.
       "metadata": {
         "tags": ["rust", "cli"],
         "links": ["projects/parser", "projects/lexer"],
-        "headers": ["Overview", "Architecture", "TODO"]
+        "headers": ["Overview", "Architecture", "TODO"],
+        "properties": {"status": "active", "priority": 2, "tags": ["rust", "cli"]}
       },
       "backlinks": ["blog/rust-post.md"]
     }
   ]
 }
 ```
+
+In `properties`, a key the note has with no value (YAML `due:`), or with one Kimün can't read (a TOML time of day such as `10:30:00`, `nan`), is `null`.
 
 ### Processing with jq
 

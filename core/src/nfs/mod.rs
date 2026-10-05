@@ -681,9 +681,10 @@ impl LineEnding {
     }
 }
 
-/// Normalise any mixture of endings to LF, so `LineEnding::apply` has one thing
-/// to convert from.
-fn to_lf(text: &str) -> String {
+/// Normalise any mixture of endings to LF — `\r\n` and a lone `\r` alike — so
+/// `LineEnding::apply` has one thing to convert from, and text editors (the
+/// frontmatter property edits) see one line break.
+pub(crate) fn to_lf(text: &str) -> String {
     if !text.contains('\r') {
         return text.to_string();
     }

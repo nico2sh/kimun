@@ -385,7 +385,7 @@ mod tests {
             .await
             .unwrap();
 
-        let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let date = crate::dates::format_iso_date(chrono::Utc::now().date_naive());
         let day = backups_dir(&f.ws).join(date);
         assert_eq!(
             std::fs::read_to_string(day.join("referrer.md")).unwrap(),

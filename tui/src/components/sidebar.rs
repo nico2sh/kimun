@@ -15,9 +15,12 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use crate::components::Component;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, AppTxExt, FileOp, InputEvent, redraw_callback};
-use crate::components::file_list::{FileListEntry, SortField, SortOrder};
+use crate::components::file_list::{FileListEntry, SortField, SortOrder, entry_order};
 use crate::components::search_list::{
     Emit, Filter, KeyReaction, OrderFn, RowSource, SearchList, SearchMouse,
+};
+use crate::components::sortable::{
+    PropertySort, SortState, SortableList, is_blank_property, property_key,
 };
 use crate::keys::KeyBindings;
 use crate::settings::AppSettings;
@@ -33,27 +36,6 @@ use crate::settings::icons::Icons;
 struct DirListingSource {
     vault: Arc<NoteVault>,
     dir: VaultPath,
-}
-
-/// The listing's row order for `(field, order)`, directories first when
-/// `group_dirs` is set. `Up` sorts before everything (it is filter-exempt and
-/// pinned by the engine anyway, but a total order must place it).
-fn listing_order(field: SortField, order: SortOrder, group_dirs: bool) -> OrderFn<FileListEntry> {
-    Arc::new(move |a: &FileListEntry, b: &FileListEntry| {
-        let rank = |e: &FileListEntry| match e {
-            FileListEntry::Up { .. } => 0,
-            FileListEntry::Directory { .. } if group_dirs => 1,
-            _ => 2,
-        };
-        rank(a).cmp(&rank(b)).then_with(|| {
-            let ka = a.sort_key(field);
-            let kb = b.sort_key(field);
-            match order {
-                SortOrder::Ascending => ka.cmp(&kb),
-                SortOrder::Descending => kb.cmp(&ka),
-            }
-        })
-    })
 }
 
 #[async_trait]
@@ -127,9 +109,12 @@ pub struct SidebarComponent {
     journal_sort_field: SortField,
     journal_sort_order: SortOrder,
     /// Sort field/order of the active listing. Set per `navigate` from the
-    /// per-dir defaults; the sort shortcuts and dialog change it via
-    /// `apply_sort`, which hands the engine a new order.
+    /// per-dir defaults (kept across a refresh of the same directory); the
+    /// sort dialog changes it via `apply_sort`, which hands the engine a new
+    /// order.
     sort: (SortField, SortOrder),
+    /// Index values a property sort orders by, fetched per key.
+    property_sort: PropertySort,
     /// "Group directories first" for the active listing; see `sort`.
     group_dirs: bool,
     rendered_rect: Rect,
@@ -166,11 +151,12 @@ impl SidebarComponent {
             list: None,
             vault,
             icons,
-            default_sort_field,
+            default_sort_field: default_sort_field.clone(),
             default_sort_order,
             journal_sort_field: SortField::from(settings.journal_sort_field),
             journal_sort_order: SortOrder::from(settings.journal_sort_order),
             sort: (default_sort_field, default_sort_order),
+            property_sort: PropertySort::default(),
             group_dirs: settings.group_directories,
             rendered_rect: Rect::default(),
             breadcrumb_cells: Vec::new(),
@@ -199,40 +185,99 @@ impl SidebarComponent {
     /// Sort field/order to apply for `dir` (journal dirs get their own).
     fn sort_for(&self, dir: &VaultPath) -> (SortField, SortOrder) {
         if dir.is_like(self.vault.journal_path()) {
-            (self.journal_sort_field, self.journal_sort_order)
+            (self.journal_sort_field.clone(), self.journal_sort_order)
         } else {
-            (self.default_sort_field, self.default_sort_order)
+            (self.default_sort_field.clone(), self.default_sort_order)
         }
     }
 
     /// (Re)build the engine for `dir`, replacing any prior listing. This is the
     /// single directory-navigation entry point: changing directory = rebuild
-    /// the engine with a fresh `DirListingSource` for the new dir.
+    /// the engine with a fresh `DirListingSource` for the new dir, sorted by
+    /// that directory's default.
     pub fn navigate(&mut self, dir: VaultPath, tx: &AppTx) {
-        self.current_dir = dir.clone();
-        let (sort_field, sort_order) = self.sort_for(&dir);
-        self.sort = (sort_field, sort_order);
+        self.sort = self.sort_for(&dir);
+        self.current_dir = dir;
+        self.build_listing(tx);
+    }
+
+    /// A fresh engine over `current_dir`, ordered by the active sort. A
+    /// property sort uses the values cached for its key and fetches them
+    /// again, so edits since the last fetch show up.
+    fn build_listing(&mut self, tx: &AppTx) {
         let source = DirListingSource {
             vault: self.vault.clone(),
-            dir,
+            dir: self.current_dir.clone(),
         };
         self.list = Some(
             SearchList::builder(source, redraw_callback(tx.clone()))
                 .filter(Filter::Fuzzy)
-                .order_by(listing_order(sort_field, sort_order, self.group_dirs))
+                .order_by(self.order())
                 .yank_combos_from(&self.key_bindings)
                 .icons(self.icons.clone())
                 .build(),
         );
+        self.fetch_property_values(tx);
+    }
+
+    /// Start a fetch of the active property sort's values, if it is one;
+    /// any other sort forgets the cached values.
+    fn fetch_property_values(&mut self, tx: &AppTx) {
+        match property_key(&self.sort.0) {
+            Some(key) => self.property_sort.fetch(&self.vault, key, tx),
+            None => self.property_sort.clear(),
+        }
+    }
+
+    /// The engine order for the active sort. A property sort whose values
+    /// have not arrived yet orders by name (see [`entry_order`]).
+    fn order(&self) -> OrderFn<FileListEntry> {
+        let (field, order) = self.sort.clone();
+        let values = self.property_sort.values_for_field(&field);
+        entry_order(field, order, self.group_dirs, values)
+    }
+
+    /// Re-sort the loaded rows by the active sort (no reload). A property
+    /// sort still waiting for its values keeps the current order.
+    fn reorder(&mut self) {
+        if self.property_sort.is_awaiting(&self.sort.0) {
+            return;
+        }
+        let order = self.order();
+        if let Some(list) = &mut self.list {
+            list.set_order(Some(order));
+        }
+    }
+
+    /// Property values fetched for `key` landed: re-sort if they belong to
+    /// the active sort. `false` when they are stale and were dropped.
+    pub(crate) fn on_property_sort_values(
+        &mut self,
+        key: &str,
+        values: crate::components::file_list::PropertyValues,
+    ) -> bool {
+        let accepted = self.property_sort.receive(key, values);
+        if accepted {
+            self.reorder();
+        }
+        accepted
+    }
+
+    /// Apply property values that arrived since the last frame.
+    fn poll_property_sort(&mut self) {
+        if let Some((key, values)) = self.property_sort.poll() {
+            self.on_property_sort_values(&key, values);
+        }
     }
 
     /// Rebuild the listing only when it is currently showing `dir`, so a
     /// create/rename/delete/move in that directory is reflected without yanking
-    /// the user away from an unrelated directory they browsed to. A no-op
+    /// the user away from an unrelated directory they browsed to. The active
+    /// sort is kept (a property sort refetches its values). A no-op
     /// otherwise. Shared by every screen that hosts a sidebar.
     pub fn refresh_if_showing(&mut self, dir: &VaultPath, tx: &AppTx) {
         if dir.is_like(&self.current_dir) {
-            self.navigate(self.current_dir.clone(), tx);
+            self.build_listing(tx);
         }
     }
 
@@ -324,7 +369,7 @@ impl SidebarComponent {
 
     /// Current sort field/order for the active listing.
     pub fn current_sort(&self) -> (SortField, SortOrder) {
-        self.sort
+        self.sort.clone()
     }
 
     /// Current "group directories first" flag.
@@ -333,13 +378,13 @@ impl SidebarComponent {
     }
 
     /// Apply a sort selection from the sort dialog: the engine re-orders the
-    /// rows it already holds — no second walk of the directory.
+    /// rows it already holds — no second walk of the directory. A property
+    /// sort orders by the values cached for its key; without them the current
+    /// order stays until they arrive (see [`SortableList::apply_sort`]).
     pub fn apply_sort(&mut self, field: SortField, order: SortOrder, group_dirs: bool) {
         self.sort = (field, order);
         self.group_dirs = group_dirs;
-        if let Some(list) = &mut self.list {
-            list.set_order(Some(listing_order(field, order, group_dirs)));
-        }
+        self.reorder();
     }
 
     /// `true` when the active directory is the journal (so its sort default is
@@ -348,12 +393,13 @@ impl SidebarComponent {
         self.current_dir.is_like(self.vault.journal_path())
     }
 
-    /// Save the dialog's selection as the in-session default for the active
-    /// context (journal vs. normal), then apply it live. Without this, the
-    /// cached per-context defaults that `sort_for`/`navigate` read stay at their
-    /// construction-time values, so a saved default would have no effect until
-    /// restart. The caller is responsible for persisting to the settings file.
-    pub fn save_default(&mut self, field: SortField, order: SortOrder, group_dirs: bool) {
+    /// Record `field` / `order` as the in-session default for the active
+    /// context (journal vs. normal) without re-sorting — the sidebar's "save
+    /// as default", for callers that already applied the sort. Without it the
+    /// cached per-context defaults that `sort_for`/`navigate` read stay at
+    /// their construction-time values until restart. Never called with a
+    /// property sort (it can't be a default).
+    pub fn remember_default(&mut self, field: SortField, order: SortOrder) {
         if self.is_current_journal() {
             self.journal_sort_field = field;
             self.journal_sort_order = order;
@@ -361,7 +407,6 @@ impl SidebarComponent {
             self.default_sort_field = field;
             self.default_sort_order = order;
         }
-        self.apply_sort(field, order, group_dirs);
     }
 
     /// Number of note rows currently visible (excludes Up / dirs / create).
@@ -412,6 +457,34 @@ impl SidebarComponent {
 /// Example: "Wednesday, March 17, 2026"
 fn format_journal_date(date: NaiveDate) -> String {
     date.format("%A, %B %-d, %Y").to_string()
+}
+
+impl SortableList for SidebarComponent {
+    fn sort_state(&self) -> SortState {
+        let (field, order) = self.current_sort();
+        SortState {
+            field,
+            order,
+            group_dirs: Some(self.group_dirs),
+        }
+    }
+
+    /// A `None` group flag keeps the current grouping. A property sort on a
+    /// new key fetches its values from the index and re-sorts when they
+    /// land; on the same key (an Order / Group toggle) it reuses the cached
+    /// values. One with no key yet is ignored.
+    fn apply_sort(&mut self, state: &SortState, tx: &AppTx) {
+        if is_blank_property(&state.field) {
+            return;
+        }
+        let group_dirs = state.group_dirs.unwrap_or(self.group_dirs);
+        SidebarComponent::apply_sort(self, state.field.clone(), state.order, group_dirs);
+        self.property_sort.sync(&self.vault, &state.field, tx);
+    }
+
+    fn allows_property(&self) -> bool {
+        true
+    }
 }
 
 impl Component for SidebarComponent {
@@ -593,6 +666,7 @@ impl Component for SidebarComponent {
         if let Some(list) = &mut self.list {
             list.poll();
         }
+        self.poll_property_sort();
         self.stamp_open_marker();
         if let Some(list) = &mut self.list {
             list.render_query(f, search_inner, theme, focused);
@@ -613,6 +687,7 @@ impl SidebarComponent {
         if let Some(list) = &mut self.list {
             list.poll();
         }
+        self.poll_property_sort();
         self.stamp_open_marker();
     }
 
@@ -1190,17 +1265,18 @@ mod tests {
         );
     }
 
-    /// Regression: saving a default must survive navigation. `save_default`
-    /// updates the cached per-context default that `sort_for`/`navigate` read;
-    /// without it, navigating re-derives the construction-time default and the
-    /// saved choice is silently lost.
+    /// Regression: saving a default must survive navigation.
+    /// `remember_default` updates the cached per-context default that
+    /// `sort_for`/`navigate` read; without it, navigating re-derives the
+    /// construction-time default and the saved choice is silently lost.
     #[tokio::test(flavor = "multi_thread")]
     async fn save_default_survives_navigation() {
         let mut sidebar = sidebar_with_notes("sidebar-savedef", &["alpha", "bravo"]).await;
         let (tx, _rx) = unbounded_channel();
         navigate_to_root(&mut sidebar, &tx).await;
 
-        sidebar.save_default(SortField::Title, SortOrder::Descending, false);
+        sidebar.remember_default(SortField::Title, SortOrder::Descending);
+        sidebar.apply_sort(SortField::Title, SortOrder::Descending, false);
         poll_to_idle(&mut sidebar).await;
 
         // Re-navigate (root is non-journal) — sort_for must now yield the saved
@@ -1212,6 +1288,225 @@ mod tests {
             (SortField::Title, SortOrder::Descending),
             "saved default must persist across navigation"
         );
+    }
+
+    /// A sidebar over notes with the given frontmatter bodies, at root.
+    async fn sidebar_with_bodies(prefix: &str, notes: &[(&str, &str)]) -> SidebarComponent {
+        let vault = temp_vault(prefix).await;
+        vault.validate_and_init().await.unwrap();
+        for (name, body) in notes {
+            vault
+                .create_note(&VaultPath::note_path_from(name), body)
+                .await
+                .unwrap();
+        }
+        let settings = AppSettings::default();
+        SidebarComponent::new(
+            settings.key_bindings.clone(),
+            vault,
+            settings.icons(),
+            &settings,
+        )
+    }
+
+    const RANKED: [(&str, &str); 3] = [
+        ("alpha", "---\nrank: 3\n---\nbody"),
+        ("bravo", "---\nrank: 1\n---\nbody"),
+        ("charlie", "body"),
+    ];
+
+    fn property_state(key: &str, order: SortOrder) -> SortState {
+        SortState {
+            field: SortField::Property(key.into()),
+            order,
+            group_dirs: Some(false),
+        }
+    }
+
+    /// Poll until the property values for the active sort have landed.
+    async fn poll_property_values(sidebar: &mut SidebarComponent) {
+        for _ in 0..100 {
+            sidebar.poll_for_test();
+            if !sidebar.property_sort.is_pending() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        panic!("property values never arrived");
+    }
+
+    /// A property sort keeps the current order until the values arrive, then
+    /// re-sorts by them: valued notes first, the note without the key last.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn property_sort_reorders_once_values_arrive() {
+        let mut sidebar = sidebar_with_bodies("sidebar-prop", &RANKED).await;
+        let (tx, _rx) = unbounded_channel();
+        navigate_to_root(&mut sidebar, &tx).await;
+        assert!(SortableList::allows_property(&sidebar));
+        assert_eq!(note_names(&sidebar), ["alpha.md", "bravo.md", "charlie.md"]);
+
+        SortableList::apply_sort(
+            &mut sidebar,
+            &property_state("Rank", SortOrder::Ascending),
+            &tx,
+        );
+        assert_eq!(
+            note_names(&sidebar),
+            ["alpha.md", "bravo.md", "charlie.md"],
+            "current order kept until the values arrive"
+        );
+        poll_property_values(&mut sidebar).await;
+        assert_eq!(note_names(&sidebar), ["bravo.md", "alpha.md", "charlie.md"]);
+
+        // Same key again: the cached values apply at once.
+        SortableList::apply_sort(
+            &mut sidebar,
+            &property_state("Rank", SortOrder::Descending),
+            &tx,
+        );
+        assert_eq!(note_names(&sidebar), ["alpha.md", "bravo.md", "charlie.md"]);
+    }
+
+    /// Values delivered for a key the sort no longer uses are dropped.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stale_property_values_are_ignored() {
+        use kimun_core::PropertySortValue::Number;
+        let mut sidebar = sidebar_with_bodies("sidebar-stale", &RANKED).await;
+        let (tx, _rx) = unbounded_channel();
+        navigate_to_root(&mut sidebar, &tx).await;
+        SortableList::apply_sort(
+            &mut sidebar,
+            &property_state("rank", SortOrder::Ascending),
+            &tx,
+        );
+        let stale = Arc::new(std::collections::HashMap::from([(
+            VaultPath::note_path_from("/charlie"),
+            Number(0.0),
+        )]));
+        assert!(!sidebar.on_property_sort_values("other", stale.clone()));
+        assert_eq!(note_names(&sidebar), ["alpha.md", "bravo.md", "charlie.md"]);
+        // The same map for the active key lands.
+        assert!(sidebar.on_property_sort_values("rank", stale));
+        assert_eq!(note_names(&sidebar), ["charlie.md", "alpha.md", "bravo.md"]);
+    }
+
+    /// A refresh of the shown directory keeps the property sort and fetches
+    /// the values again, so an edited value moves its row.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn refresh_keeps_the_property_sort_and_refetches() {
+        let mut sidebar = sidebar_with_bodies("sidebar-prop-refresh", &RANKED).await;
+        let (tx, _rx) = unbounded_channel();
+        navigate_to_root(&mut sidebar, &tx).await;
+        SortableList::apply_sort(
+            &mut sidebar,
+            &property_state("rank", SortOrder::Ascending),
+            &tx,
+        );
+        poll_property_values(&mut sidebar).await;
+        assert_eq!(note_names(&sidebar), ["bravo.md", "alpha.md", "charlie.md"]);
+
+        sidebar
+            .vault
+            .save_note(
+                &VaultPath::note_path_from("bravo"),
+                "---\nrank: 9\n---\nbody",
+            )
+            .await
+            .unwrap();
+        sidebar.refresh_if_showing(&VaultPath::root(), &tx);
+        poll_to_idle(&mut sidebar).await;
+        poll_property_values(&mut sidebar).await;
+        assert_eq!(
+            sidebar.current_sort(),
+            (SortField::Property("rank".into()), SortOrder::Ascending)
+        );
+        assert_eq!(note_names(&sidebar), ["alpha.md", "bravo.md", "charlie.md"]);
+    }
+
+    /// Order / Group toggles on the same property key reuse the cached
+    /// values; a new key or a listing refresh fetches them again.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn property_sort_toggles_reuse_the_cached_values() {
+        let mut sidebar = sidebar_with_bodies("sidebar-prop-cache", &RANKED).await;
+        let (tx, _rx) = unbounded_channel();
+        navigate_to_root(&mut sidebar, &tx).await;
+        SortableList::apply_sort(
+            &mut sidebar,
+            &property_state("rank", SortOrder::Ascending),
+            &tx,
+        );
+        poll_property_values(&mut sidebar).await;
+        let fetches = sidebar.property_sort.fetches;
+        assert_eq!(fetches, 1);
+
+        for order in [SortOrder::Descending, SortOrder::Ascending] {
+            SortableList::apply_sort(&mut sidebar, &property_state("Rank", order), &tx);
+        }
+        let mut grouped = property_state("rank", SortOrder::Ascending);
+        grouped.group_dirs = Some(true);
+        SortableList::apply_sort(&mut sidebar, &grouped, &tx);
+        assert_eq!(
+            sidebar.property_sort.fetches, fetches,
+            "toggles: no refetch"
+        );
+        assert!(!sidebar.property_sort.is_pending());
+        assert_eq!(note_names(&sidebar), ["bravo.md", "alpha.md", "charlie.md"]);
+
+        SortableList::apply_sort(
+            &mut sidebar,
+            &property_state("due", SortOrder::Ascending),
+            &tx,
+        );
+        assert_eq!(
+            sidebar.property_sort.fetches,
+            fetches + 1,
+            "new key fetches"
+        );
+        poll_property_values(&mut sidebar).await;
+
+        sidebar.refresh_if_showing(&VaultPath::root(), &tx);
+        assert_eq!(
+            sidebar.property_sort.fetches,
+            fetches + 2,
+            "refresh refetches"
+        );
+        poll_to_idle(&mut sidebar).await;
+        poll_property_values(&mut sidebar).await;
+    }
+
+    /// Leaving a property sort and coming back to the same key refetches:
+    /// values edited meanwhile must show up.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn returning_to_a_property_sort_refetches() {
+        let mut sidebar = sidebar_with_bodies("sidebar-prop-return", &RANKED).await;
+        let (tx, _rx) = unbounded_channel();
+        navigate_to_root(&mut sidebar, &tx).await;
+        SortableList::apply_sort(
+            &mut sidebar,
+            &property_state("rank", SortOrder::Ascending),
+            &tx,
+        );
+        poll_property_values(&mut sidebar).await;
+        assert_eq!(note_names(&sidebar), ["bravo.md", "alpha.md", "charlie.md"]);
+        sidebar
+            .vault
+            .save_note(
+                &VaultPath::note_path_from("bravo"),
+                "---\nrank: 9\n---\nbody",
+            )
+            .await
+            .unwrap();
+        let mut name = property_state("rank", SortOrder::Ascending);
+        name.field = SortField::Name;
+        SortableList::apply_sort(&mut sidebar, &name, &tx);
+        SortableList::apply_sort(
+            &mut sidebar,
+            &property_state("rank", SortOrder::Ascending),
+            &tx,
+        );
+        assert_eq!(sidebar.property_sort.fetches, 2, "back to rank refetches");
+        poll_property_values(&mut sidebar).await;
+        assert_eq!(note_names(&sidebar), ["alpha.md", "bravo.md", "charlie.md"]);
     }
 
     // ── A slow filesystem: streamed rows on the test's schedule ──────────
@@ -1252,7 +1547,7 @@ mod tests {
             Arc::new(|| {}) as Arc<dyn Fn() + Send + Sync>,
         )
         .filter(Filter::Fuzzy)
-        .order_by(listing_order(field, order, group_dirs))
+        .order_by(entry_order(field, order, group_dirs, None))
         .build();
         let emit = loop {
             if let Some(e) = slot.lock().unwrap().clone() {
@@ -1371,10 +1666,11 @@ mod tests {
         assert_eq!(highlighted(&list).as_deref(), Some("bravo"));
 
         // The user flips to descending while rows are still arriving.
-        list.set_order(Some(listing_order(
+        list.set_order(Some(entry_order(
             SortField::Name,
             SortOrder::Descending,
             false,
+            None,
         )));
         assert_eq!(labels(&list), ["delta", "bravo"]);
         assert_eq!(
@@ -1409,10 +1705,11 @@ mod tests {
         list.select_next(); // "delta", by the user's own keys
         assert_eq!(highlighted(&list).as_deref(), Some("delta"));
 
-        list.set_order(Some(listing_order(
+        list.set_order(Some(entry_order(
             SortField::Name,
             SortOrder::Descending,
             false,
+            None,
         )));
         assert_eq!(labels(&list), ["delta", "bravo"]);
         assert_eq!(highlighted(&list).as_deref(), Some("delta"));

@@ -1,3 +1,11 @@
+---
+type: project
+status: active
+priority: 3
+currently_reading:
+  - Designing Data-Intensive Applications
+  - The Overstory
+---
 # Reading List
 
 ## Currently Reading

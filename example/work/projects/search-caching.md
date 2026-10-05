@@ -1,3 +1,9 @@
++++
+type = "project"
+status = "rolling out"
+priority = 1
+latency_before_ms = 120
++++
 # Search Caching Design
 
 ## Problem

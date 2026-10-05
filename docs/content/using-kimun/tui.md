@@ -58,7 +58,7 @@ Sequences, additions, removals, and group captions are configurable in `config.t
 
 ### FILES
 
-The workspace file tree with a breadcrumb header (click a segment to jump up), type-to-filter, and sorting (`Ctrl+R` opens the sort dialog: field, order, group-directories). Enter opens a note; typing a name that matches nothing offers a *Create* row. Right-click a row for the file-operations menu (rename / move / delete), also on `F2`.
+The workspace file tree with a breadcrumb header (click a segment to jump up), type-to-filter, and sorting (`Ctrl+R` opens the sort dialog: field, order, group-directories). Sort by **Property** to order the listing by a frontmatter key's value; notes without it (or not indexed yet) and attachments come after the rest in name order. Directories come first when group-directories is on, and otherwise join the rows without a value. A property sort applies for the session but can't be saved as the default (`s`). Enter opens a note; typing a name that matches nothing offers a *Create* row. Right-click a row for the file-operations menu (rename / move / delete), also on `F2`.
 
 ### FIND
 
@@ -92,8 +92,8 @@ A configuration overview: active theme, leader key, preferences key, which-key t
 
 Two modal pickers float over the editor, list on the left, preview on the right:
 
-- **`Ctrl+K`** — query search (same grammar as FIND); the preview shows the note with matches emphasized and a `filename · N matches` header.
-- **`Ctrl+O`** — fuzzy file finder by name; typing a new name offers a *Create* row.
+- **`Ctrl+K`** — query search (same grammar as FIND); the preview shows the note with matches emphasized and a `filename · N matches` header. `Ctrl+R` opens the sort dialog over it; the results re-sort live, and closing the dialog returns to the search. With no search terms, a sort reorders your recent notes instead of searching the whole vault (the dialog shows **Unsorted** until you pick one).
+- **`Ctrl+O`** — fuzzy file finder by name; typing a new name offers a *Create* row. `Ctrl+R` opens the sort dialog over it, like over `Ctrl+K`: its rows re-sort by name, title or a property. Until you pick a sort, the dialog shows **Unsorted** (recent or best-match order); the first toggle picks Name.
 
 Enter opens the selection (query matches stay highlighted in the editor until your first edit). `Ctrl+D` saves the current query.
 
@@ -168,6 +168,33 @@ Typing `[[` pops up a note list; `#` (not at line start) pops up tags — filter
 ### Pasting
 
 `Ctrl+V` (or the terminal's native paste) adapts to the clipboard: plain text inserts; a URL over a selection wraps it as `[selection](url)`; an image saves to `/assets/` and inserts a relative image link.
+
+## Properties
+
+Open the properties dialog for the current note with `<leader> n p`, from the command palette ("properties"), or by clicking `⊞ N props` (or `⊞ props`) in the status bar. The note is saved first; every change is written to the file immediately and the editor reloads it.
+
+| Key | Action |
+| --- | ------ |
+| `↑` `↓` / `j` `k` | Select a property |
+| `Enter` / `e` | Edit the selected property |
+| `a` | Add a property |
+| `d` / `Del` | Delete (asks `y`/`n`, or click `[Yes]`/`[No]`) |
+| `Tab` | Move between the list and the buttons |
+| `Esc` | Close |
+
+Everything is clickable: click a row to select it, click the selected row again to edit it, and use the `[+ Add] [Edit] [Delete] [Close]` buttons.
+
+The edit form has three fields:
+
+- **Key** suggests the keys other notes in your vault use.
+- **Type** is `auto` by default, so Kimün follows the type the key has elsewhere in your vault. Cycle through `auto`, `text`, `number`, `bool`, `date`, `datetime` and `list` with `←` `→` or `Space`, or click `‹` `›`.
+- **Value** is comma-separated for list types and for keys that are always lists (`tags`, `aliases`); for other keys choose type `list` to enter several items. An empty value is refused.
+
+Move between fields with `Tab` / `Shift+Tab` or `↑` `↓` (while the key suggestions are open, `↑` `↓` move through them instead). `Enter` saves and `Esc` goes back to the list. Renaming a key keeps its position in the frontmatter. Adding a key the note already has is refused; edit it instead. With Type `auto`, if the value does not fit the key's usual type in your vault, the form says so and offers **Store as … anyway**.
+
+While a change is being written, `Esc`, `[Close]` and `[Cancel]` wait for it to finish. If you have unsaved typing in the note when a change lands, your typing is kept and the footer asks you to reopen the note to see the new properties.
+
+If a note's frontmatter is malformed, the first failed write turns the dialog read-only; fix the frontmatter in the editor and reopen it.
 
 ## Mouse
 

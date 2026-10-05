@@ -10,8 +10,6 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 use ratatui::widgets::{Block, Borders, ListItem, Paragraph};
 
-use kimun_core::{OrderBy, OrderField, with_order_directive};
-
 use crate::components::autocomplete::AutocompleteMode;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, FileOp};
@@ -23,6 +21,7 @@ use crate::components::search_list::{
     Emit, Focus, KeyReaction, ResolvingRowSource, RowSource, SearchList, SearchMouse, SearchRow,
     Unresolvable, VaultSuggestions,
 };
+use crate::components::sortable::{SortState, SortableList, order_of_query, query_with_sort};
 use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::key_combo::KeyCombo;
@@ -412,42 +411,20 @@ impl QueryPanel {
     /// Parses the query each call — cheap for the rare callers (dialog open).
     /// The per-frame render path uses the memoised `order_cache` instead.
     pub fn current_order(&self) -> (SortField, SortOrder) {
-        let st = kimun_core::SearchTerms::from_query_string(self.list.query());
-        match st.order_by.first() {
-            Some(OrderBy::Title { asc }) => (
-                SortField::Title,
-                if *asc {
-                    SortOrder::Ascending
-                } else {
-                    SortOrder::Descending
-                },
-            ),
-            Some(OrderBy::FileName { asc }) => (
-                SortField::Name,
-                if *asc {
-                    SortOrder::Ascending
-                } else {
-                    SortOrder::Descending
-                },
-            ),
-            None => (SortField::Name, SortOrder::Ascending),
-        }
+        order_of_query(self.list.query())
     }
 
     /// Apply a sort selection from the sort dialog: rewrite the query's order
     /// directive (the query string is the single source of truth) and reload.
     pub fn apply_sort(&mut self, field: SortField, order: SortOrder, tx: &AppTx) {
-        self.ensure_redraw_tx(tx);
-        let order_field = match field {
-            SortField::Name => OrderField::FileName,
-            SortField::Title => OrderField::Title,
+        let Some(rewritten) = query_with_sort(self.list.query(), &field, order) else {
+            return;
         };
-        let asc = matches!(order, SortOrder::Ascending);
-        let rewritten = with_order_directive(self.list.query(), order_field, asc);
+        self.ensure_redraw_tx(tx);
         self.list.set_query(rewritten);
         // A sort only rewrites the order directive — the breadcrumb stays
-        // (and `saved_search_breadcrumb` ignores the directive, so it is not
-        // marked edited).
+        // pinned, gaining the `• edited` marker (the stored query is saved
+        // verbatim, so a different order is an edit).
         self.reset_expand();
     }
 
@@ -728,8 +705,11 @@ impl QueryPanel {
             self.is_default_cache = is_default_query(self.list.query());
             self.order_cache_query = self.list.query().to_string();
         }
-        let (sort_field, sort_order) = self.order_cache;
-        let sort_indicator = format!("{}{}", sort_field.label(), sort_order.label());
+        let (sort_field, sort_order) = &self.order_cache;
+        let sort_indicator = match sort_field {
+            SortField::Property(key) => format!("sorted by {key} {}", sort_order.label()),
+            other => format!("{}{}", other.label(), sort_order.label()),
+        };
         // The saved-search name lives on the query searchbox border (the
         // breadcrumb below), not here, so the outer title stays generic.
         // `is_default_query` ignores the order directive and recognizes every
@@ -985,6 +965,25 @@ fn extract_context_multi(text: &str, needles: &[String]) -> String {
         .find(|l| !l.trim().is_empty())
         .unwrap_or("")
         .to_string()
+}
+
+impl SortableList for QueryPanel {
+    fn sort_state(&self) -> SortState {
+        let (field, order) = self.current_order();
+        SortState {
+            field,
+            order,
+            group_dirs: None,
+        }
+    }
+
+    fn apply_sort(&mut self, state: &SortState, tx: &AppTx) {
+        QueryPanel::apply_sort(self, state.field.clone(), state.order, tx);
+    }
+
+    fn allows_property(&self) -> bool {
+        true
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1392,6 +1391,48 @@ mod tests {
             panel.current_order(),
             (SortField::Name, SortOrder::Ascending)
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn current_order_reports_a_property_sort() {
+        let vault = crate::test_support::temp_vault("qp-prop-order").await;
+        vault.validate_and_init().await.unwrap();
+        let mut panel = make_panel(vault);
+        panel.set_active_query("#work -^%due".to_string());
+        assert_eq!(
+            panel.current_order(),
+            (SortField::Property("due".into()), SortOrder::Descending)
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn apply_sort_ignores_empty_property_key() {
+        let vault = crate::test_support::temp_vault("qp-prop-empty").await;
+        vault.validate_and_init().await.unwrap();
+        let mut panel = make_panel(vault);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        panel.set_active_query("x -or:title".to_string());
+        panel.apply_sort(
+            SortField::Property(String::new()),
+            SortOrder::Ascending,
+            &tx,
+        );
+        panel.apply_sort(SortField::Property("  ".into()), SortOrder::Ascending, &tx);
+        assert_eq!(panel.active_query(), "x -or:title");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn property_sort_survives_order_toggle() {
+        let vault = crate::test_support::temp_vault("qp-prop-toggle").await;
+        vault.validate_and_init().await.unwrap();
+        let mut panel = make_panel(vault);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        panel.set_active_query("x ^%\"due date\"".to_string());
+        let (field, order) = panel.current_order();
+        panel.apply_sort(field, order.toggle(), &tx);
+        assert_eq!(panel.active_query(), "x -or:prop:\"due date\"");
+        panel.apply_sort(SortField::Name, SortOrder::Ascending, &tx);
+        assert_eq!(panel.active_query(), "x or:file");
     }
 
     /// The wheel over the half-height Context preview scrolls the preview

@@ -1753,3 +1753,813 @@ async fn browse_vault_stream_yields_entries_then_marks_synced() {
         "stream drained — the whole-vault browse has marked the index synced"
     );
 }
+
+type PropRow = (String, i64, String, String, Option<f64>);
+
+/// Every `properties` row of `path`, ordered by key then list position.
+async fn prop_rows(db: &NoteIndex, path: &str) -> Vec<PropRow> {
+    sqlx::query_as(
+        "SELECT key, list_index, value_type, value_text, value_num FROM properties \
+         WHERE path = ? ORDER BY key, list_index",
+    )
+    .bind(path)
+    .fetch_all(db.pool())
+    .await
+    .unwrap()
+}
+
+/// Every `property_keys` key of `path`, sorted.
+async fn key_rows(db: &NoteIndex, path: &str) -> Vec<String> {
+    let rows: Vec<(String,)> =
+        sqlx::query_as("SELECT key FROM property_keys WHERE path = ? ORDER BY key")
+            .bind(path)
+            .fetch_all(db.pool())
+            .await
+            .unwrap();
+    rows.into_iter().map(|(k,)| k).collect()
+}
+
+#[tokio::test]
+async fn properties_table_and_indexes_exist() {
+    let (_tmp, db) = open_temp().await;
+    for (kind, name) in [
+        ("table", "properties"),
+        ("index", "properties_by_key_text"),
+        ("index", "properties_by_key_num"),
+        ("table", "property_keys"),
+        ("index", "property_keys_by_key"),
+    ] {
+        let row: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM sqlite_master WHERE type = ? AND name = ?")
+                .bind(kind)
+                .bind(name)
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        assert_eq!(row.0, 1, "{kind} {name} should exist");
+    }
+}
+
+#[tokio::test]
+async fn saving_a_note_indexes_its_properties() {
+    let (_tmp, db) = open_temp().await;
+    let body = "+++\nStatus = \"Done\"\npriority = 2\nflag = true\ndue = 2024-01-31\n\
+                at = 2024-01-31T10:00:00Z\naliases = [\"A\", \"b\"]\n+++\n# T\n";
+    db.apply(added(vec![note("/n.md", body)])).await.unwrap();
+    assert_eq!(
+        prop_rows(&db, "/n.md").await,
+        vec![
+            ("aliases".into(), 0, "list".into(), "a".into(), None),
+            ("aliases".into(), 1, "list".into(), "b".into(), None),
+            (
+                "at".into(),
+                0,
+                "datetime".into(),
+                "2024-01-31t10:00:00z".into(),
+                Some(1_706_695_200.0)
+            ),
+            (
+                "due".into(),
+                0,
+                "date".into(),
+                "2024-01-31".into(),
+                Some(1_706_659_200.0)
+            ),
+            ("flag".into(), 0, "bool".into(), "true".into(), None),
+            ("priority".into(), 0, "number".into(), "2".into(), Some(2.0)),
+            ("status".into(), 0, "text".into(), "done".into(), None),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn every_key_is_recorded_valued_or_not() {
+    let (_tmp, db) = open_temp().await;
+    db.apply(added(vec![note(
+        "/n.md",
+        "---\nstatus:\ntags: []\nn: .nan\nok: 1\nmeta:\n  x: 1\n---\n",
+    )]))
+    .await
+    .unwrap();
+    assert_eq!(key_rows(&db, "/n.md").await, ["n", "ok", "status", "tags"]);
+    let valued: Vec<String> = prop_rows(&db, "/n.md")
+        .await
+        .into_iter()
+        .map(|r| r.0)
+        .collect();
+    assert_eq!(valued, ["ok"], "only usable values get value rows");
+}
+
+#[tokio::test]
+async fn resaving_without_a_key_removes_its_rows() {
+    let (_tmp, db) = open_temp().await;
+    db.apply(added(vec![note("/n.md", "+++\na = 1\nb = 2\n+++\n")]))
+        .await
+        .unwrap();
+    db.apply(modified(vec![note("/n.md", "+++\nb = 2\n+++\n")]))
+        .await
+        .unwrap();
+    let keys: Vec<String> = prop_rows(&db, "/n.md")
+        .await
+        .into_iter()
+        .map(|r| r.0)
+        .collect();
+    assert_eq!(keys, vec!["b".to_string()]);
+    assert_eq!(key_rows(&db, "/n.md").await, ["b"]);
+}
+
+#[tokio::test]
+async fn malformed_frontmatter_still_indexes_the_note() {
+    let (_tmp, db) = open_temp().await;
+    db.apply(added(vec![note(
+        "/n.md",
+        "---\nkey: [unclosed\n---\nbody #tag",
+    )]))
+    .await
+    .unwrap();
+    assert!(prop_rows(&db, "/n.md").await.is_empty());
+    assert_eq!(
+        sorted_paths(db.notes_with_label("tag").await.unwrap()),
+        vec!["/n.md".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn frontmatter_tags_unify_with_inline_labels() {
+    let (_tmp, db) = open_temp().await;
+    db.apply(added(vec![
+        note(
+            "/a.md",
+            "---\ntags: [Rust, shared]\n---\nbody #shared #inline",
+        ),
+        note("/b.md", "+++\ntags = \"Solo Tag\"\n+++\n"),
+        note("/c.md", "nothing here"),
+    ]))
+    .await
+    .unwrap();
+    assert_eq!(
+        db.labels_of(&VaultPath::note_path_from("/a.md"))
+            .await
+            .unwrap(),
+        vec!["inline", "rust", "shared"]
+    );
+    assert_eq!(
+        db.labels_of(&VaultPath::note_path_from("/b.md"))
+            .await
+            .unwrap(),
+        vec!["solo tag"]
+    );
+    assert!(db
+        .labels_of(&VaultPath::note_path_from("/c.md"))
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        paths(&db.search("#rust").await.unwrap()),
+        vec!["/a.md".to_string()]
+    );
+    // `tags` is also an ordinary property row.
+    assert_eq!(prop_rows(&db, "/a.md").await.len(), 2);
+}
+
+// Every row-lifecycle path (add, update, rename, delete) carries the properties table.
+#[tokio::test]
+async fn properties_follow_note_rename_and_delete() {
+    let (_tmp, db) = open_temp().await;
+    db.apply(added(vec![note("/old.md", "+++\na = 1\n+++\n")]))
+        .await
+        .unwrap();
+    db.rename_note(
+        &VaultPath::note_path_from("/old.md"),
+        &VaultPath::note_path_from("/new.md"),
+        &[],
+    )
+    .await
+    .unwrap();
+    assert!(prop_rows(&db, "/old.md").await.is_empty());
+    assert!(key_rows(&db, "/old.md").await.is_empty());
+    assert_eq!(prop_rows(&db, "/new.md").await.len(), 1);
+    assert_eq!(key_rows(&db, "/new.md").await, ["a"]);
+
+    db.delete_notes(&[VaultPath::note_path_from("/new.md")])
+        .await
+        .unwrap();
+    assert!(prop_rows(&db, "/new.md").await.is_empty());
+    assert!(key_rows(&db, "/new.md").await.is_empty());
+}
+
+#[tokio::test]
+async fn properties_follow_directory_rename_and_delete() {
+    let (_tmp, db) = open_temp().await;
+    db.apply(added(vec![note("/old_dir/n.md", "+++\na = 1\n+++\n")]))
+        .await
+        .unwrap();
+    db.rename_directory(&VaultPath::new("/old_dir"), &VaultPath::new("/new_dir"))
+        .await
+        .unwrap();
+    assert!(prop_rows(&db, "/old_dir/n.md").await.is_empty());
+    assert!(key_rows(&db, "/old_dir/n.md").await.is_empty());
+    assert_eq!(prop_rows(&db, "/new_dir/n.md").await.len(), 1);
+    assert_eq!(key_rows(&db, "/new_dir/n.md").await, ["a"]);
+
+    db.delete_directories(&[VaultPath::new("/new_dir")])
+        .await
+        .unwrap();
+    assert!(prop_rows(&db, "/new_dir/n.md").await.is_empty());
+    assert!(key_rows(&db, "/new_dir/n.md").await.is_empty());
+}
+
+#[tokio::test]
+async fn stale_schema_version_rebuilds_with_properties_table() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let file = file::IndexFile::at(crate::system::sys(tmp.path().join("kimun.sqlite")));
+    let db = NoteIndex::open(&file).await.unwrap();
+    // A 0.12 index: properties but no property_keys.
+    sqlx::query("UPDATE appData SET value = '0.12' WHERE name = 'version'")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    sqlx::query("DROP TABLE property_keys")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    db.close().await;
+
+    let db = NoteIndex::open(&file).await.unwrap();
+    assert!(
+        !db.ready(),
+        "version mismatch must self-heal and await a resync"
+    );
+    db.apply(added(vec![note("/n.md", "+++\na = 1\n+++\n")]))
+        .await
+        .unwrap();
+    assert_eq!(prop_rows(&db, "/n.md").await.len(), 1);
+    assert_eq!(key_rows(&db, "/n.md").await, ["a"]);
+    db.close().await;
+}
+
+async fn prop_fixture() -> (tempfile::TempDir, NoteIndex) {
+    let (tmp, db) = open_temp().await;
+    db.apply(added(vec![
+        note("/a.md", "+++\nstatus = \"Done\"\npriority = 1\ndue = 2024-01-10\ndone = true\ntags = [\"x\", \"y\"]\nlabel = \"in progress\"\n+++\n"),
+        note("/b.md", "---\nstatus: open\npriority: 3\ndue: 2024-03-01\ndone: false\ntags: [y]\n---\n"),
+        note("/c.md", "+++\npriority = 2.5\nversion = \"10\"\n+++\n"),
+        note("/d.md", "no properties"),
+    ]))
+    .await
+    .unwrap();
+    (tmp, db)
+}
+
+#[tokio::test]
+async fn prop_has_property() {
+    let (_tmp, db) = prop_fixture().await;
+    assert_eq!(
+        paths(&db.search("%status").await.unwrap()),
+        vec!["/a.md", "/b.md"]
+    );
+    assert_eq!(
+        paths(&db.search("prop:TAGS").await.unwrap()),
+        vec!["/a.md", "/b.md"]
+    );
+    assert_eq!(
+        paths(&db.search("-%status").await.unwrap()),
+        vec!["/c.md", "/d.md"]
+    );
+    assert_eq!(
+        paths(&db.search("%priority -%tags").await.unwrap()),
+        vec!["/c.md"]
+    );
+    assert!(db.search("%missing").await.unwrap().is_empty());
+}
+
+// A YAML key with no value (`status:`, Obsidian's unset property) is a
+// property the note has, without a value to compare.
+#[tokio::test]
+async fn prop_valueless_yaml_key_counts_as_present() {
+    let (_tmp, db) = prop_fixture().await;
+    db.apply(added(vec![note("/f.md", "---\nstatus:\n---\n")]))
+        .await
+        .unwrap();
+    assert_eq!(
+        paths(&db.search("%status").await.unwrap()),
+        vec!["/a.md", "/b.md", "/f.md"]
+    );
+    assert_eq!(
+        paths(&db.search("-%status").await.unwrap()),
+        vec!["/c.md", "/d.md"]
+    );
+    assert_eq!(
+        paths(&db.search("%status!=done").await.unwrap()),
+        vec!["/b.md", "/f.md"],
+        "has status, and it isn't done"
+    );
+    assert_eq!(
+        paths(&db.search("%status=done").await.unwrap()),
+        vec!["/a.md"]
+    );
+}
+
+// An empty list is still a property the note has, but holds no values.
+#[tokio::test]
+async fn prop_empty_list_counts_as_present() {
+    let (_tmp, db) = prop_fixture().await;
+    db.apply(added(vec![note("/e.md", "+++\ntags = []\n+++\n")]))
+        .await
+        .unwrap();
+    assert_eq!(
+        paths(&db.search("%tags").await.unwrap()),
+        vec!["/a.md", "/b.md", "/e.md"]
+    );
+    assert_eq!(
+        paths(&db.search("%tags=y").await.unwrap()),
+        vec!["/a.md", "/b.md"]
+    );
+    assert_eq!(
+        paths(&db.search("%tags!=x").await.unwrap()),
+        vec!["/b.md", "/e.md"],
+        "has tags, none equal x"
+    );
+    assert!(db.search("%tags>a").await.unwrap().is_empty());
+    // Sorting treats an empty list like a missing value: last.
+    let order: Vec<String> = db
+        .search("%tags or:%tags")
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(e, _)| e.path.to_string())
+        .collect();
+    assert_eq!(order.last().map(String::as_str), Some("/e.md"));
+}
+
+#[tokio::test]
+async fn prop_equality_per_type() {
+    let (_tmp, db) = prop_fixture().await;
+    assert_eq!(
+        paths(&db.search("prop:status=done").await.unwrap()),
+        vec!["/a.md"]
+    );
+    assert_eq!(
+        paths(&db.search("%status=DONE").await.unwrap()),
+        vec!["/a.md"]
+    );
+    assert_eq!(
+        paths(&db.search("%priority=3").await.unwrap()),
+        vec!["/b.md"]
+    );
+    assert_eq!(
+        paths(&db.search("%priority=2.5").await.unwrap()),
+        vec!["/c.md"]
+    );
+    assert_eq!(
+        paths(&db.search("%due=2024-03-01").await.unwrap()),
+        vec!["/b.md"]
+    );
+    assert_eq!(
+        paths(&db.search("%done=true").await.unwrap()),
+        vec!["/a.md"]
+    );
+    assert_eq!(
+        paths(&db.search("%version=10").await.unwrap()),
+        vec!["/c.md"],
+        "numeric-looking query still matches text"
+    );
+    assert!(db.search("%missing=x").await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn prop_ordering_numeric_and_date() {
+    let (_tmp, db) = prop_fixture().await;
+    assert_eq!(
+        paths(&db.search("%priority>1").await.unwrap()),
+        vec!["/b.md", "/c.md"]
+    );
+    assert_eq!(
+        paths(&db.search("%priority>=2.5").await.unwrap()),
+        vec!["/b.md", "/c.md"]
+    );
+    assert_eq!(
+        paths(&db.search("%priority<2").await.unwrap()),
+        vec!["/a.md"]
+    );
+    assert_eq!(
+        paths(&db.search("%priority<=1").await.unwrap()),
+        vec!["/a.md"]
+    );
+    assert_eq!(
+        paths(&db.search("%due<2024-02-01").await.unwrap()),
+        vec!["/a.md"]
+    );
+    assert_eq!(
+        paths(&db.search("%due>=2024-01-10").await.unwrap()),
+        vec!["/a.md", "/b.md"]
+    );
+}
+
+#[tokio::test]
+async fn prop_datetime_values_are_normalized() {
+    let (_tmp, db) = open_temp().await;
+    db.apply(added(vec![
+        note("/o.md", "---\nm: 2024-01-15T14:30\n---\n"),
+        note("/z.md", "---\nat: 2024-01-31T10:00:00Z\n---\n"),
+    ]))
+    .await
+    .unwrap();
+    // Obsidian's offset-less form compares as the canonical UTC date-time.
+    assert_eq!(
+        paths(&db.search("%m=2024-01-15T14:30").await.unwrap()),
+        vec!["/o.md"]
+    );
+    assert_eq!(
+        paths(&db.search("%m<=2024-01-15T14:30").await.unwrap()),
+        vec!["/o.md"]
+    );
+    assert!(db.search("%m>2024-01-15T14:30").await.unwrap().is_empty());
+    // An offset value is converted to UTC before comparing:
+    // 11:00+02:00 is 09:00Z, so 10:00Z is after it.
+    assert_eq!(
+        paths(&db.search("%at>2024-01-31T11:00:00+02:00").await.unwrap()),
+        vec!["/z.md"]
+    );
+    assert!(db
+        .search("%at<2024-01-31T11:00:00+02:00")
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        paths(&db.search("%at=2024-01-31T12:00:00+02:00").await.unwrap()),
+        vec!["/z.md"]
+    );
+}
+
+#[tokio::test]
+async fn prop_type_mismatch_is_no_match() {
+    let (_tmp, db) = prop_fixture().await;
+    assert!(
+        db.search("%due>5").await.unwrap().is_empty(),
+        "number vs date"
+    );
+    assert!(
+        db.search("%tags>a").await.unwrap().is_empty(),
+        "ordering on a list"
+    );
+    assert!(
+        db.search("%done>a").await.unwrap().is_empty(),
+        "ordering on a bool"
+    );
+}
+
+#[tokio::test]
+async fn prop_list_contains_and_not_contains() {
+    let (_tmp, db) = prop_fixture().await;
+    assert_eq!(paths(&db.search("%tags=x").await.unwrap()), vec!["/a.md"]);
+    assert_eq!(
+        paths(&db.search("%tags=y").await.unwrap()),
+        vec!["/a.md", "/b.md"]
+    );
+    assert_eq!(
+        paths(&db.search("%tags!=x").await.unwrap()),
+        vec!["/b.md"],
+        "has tags, none equal x"
+    );
+    assert_eq!(
+        paths(&db.search("%status!=done").await.unwrap()),
+        vec!["/b.md"]
+    );
+}
+
+#[tokio::test]
+async fn prop_exclusion() {
+    let (_tmp, db) = prop_fixture().await;
+    assert_eq!(
+        paths(&db.search("-prop:status=done").await.unwrap()),
+        vec!["/b.md", "/c.md", "/d.md"]
+    );
+    assert_eq!(
+        paths(&db.search("-%tags=y").await.unwrap()),
+        vec!["/c.md", "/d.md"]
+    );
+    assert_eq!(
+        paths(&db.search("%priority>0 -%status=open").await.unwrap()),
+        vec!["/a.md", "/c.md"]
+    );
+}
+
+// Values with spaces survive quoting — of the whole term or of the value
+// alone — through the whole pipeline.
+#[tokio::test]
+async fn prop_quoted_value_with_spaces() {
+    let (_tmp, db) = prop_fixture().await;
+    for query in [
+        "prop:\"label=in progress\"",
+        "prop:label=\"in progress\"",
+        "%label='in progress'",
+    ] {
+        assert_eq!(
+            paths(&db.search(query).await.unwrap()),
+            vec!["/a.md"],
+            "{query}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn sort_by_property() {
+    let (_tmp, db) = prop_fixture().await;
+    let order = |rows: Vec<(NoteEntryData, NoteContentData)>| {
+        rows.into_iter()
+            .map(|(e, _)| e.path.to_string())
+            .collect::<Vec<_>>()
+    };
+    // `-#zzz` matches every note (exclusion of an unused label).
+    assert_eq!(
+        order(db.search("-#zzz or:prop:priority").await.unwrap()),
+        vec!["/a.md", "/c.md", "/b.md", "/d.md"]
+    );
+    assert_eq!(
+        order(db.search("-#zzz -or:%priority").await.unwrap()),
+        vec!["/b.md", "/c.md", "/a.md", "/d.md"],
+        "missing values stay last when descending"
+    );
+    assert_eq!(
+        order(db.search("-#zzz or:%due").await.unwrap())[..2],
+        ["/a.md".to_string(), "/b.md".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn dominant_property_kind_counts_every_note_with_the_key() {
+    let (_tmp, db) = open_temp().await;
+    db.apply(added(vec![
+        note("/a.md", "+++\ntags = []\nn = 1\nmix = 1\n+++\n"),
+        note("/b.md", "+++\ntags = []\nn = 2\nmix = \"x\"\n+++\n"),
+        note("/c.md", "---\nn:\n---\n"),
+    ]))
+    .await
+    .unwrap();
+    let kind = |key: &'static str, except: &'static str| {
+        let db = &db;
+        async move {
+            db.dominant_property_kind(key, &VaultPath::note_path_from(except))
+                .await
+                .unwrap()
+        }
+    };
+    assert_eq!(
+        kind("tags", "/z.md").await,
+        Some(PropertyKind::List),
+        "empty lists count"
+    );
+    assert_eq!(
+        kind("n", "/z.md").await,
+        Some(PropertyKind::Number),
+        "unvalued keys don't"
+    );
+    assert_eq!(kind("mix", "/z.md").await, None, "a tie has no type");
+    assert_eq!(
+        kind("mix", "/b.md").await,
+        Some(PropertyKind::Number),
+        "the written note is excluded"
+    );
+    assert_eq!(kind("missing", "/z.md").await, None);
+}
+
+// A comparison only meets values of its own kind: a number meets numbers, a
+// date or date-time meets dates and date-times (as instants), anything else
+// meets text. Equality also matches the text exactly as written.
+#[tokio::test]
+async fn prop_comparisons_stay_within_their_kind() {
+    let (_tmp, db) = open_temp().await;
+    db.apply(added(vec![
+        note("/far.md", "+++\ndue = 2099-12-31\n+++\n"),
+        note("/jan.md", "+++\ndue = 2024-01-31\n+++\n"),
+        note("/tbd.md", "+++\ndue = \"tbd\"\n+++\n"),
+        note("/hugo.md", "+++\ndate = '2023-08-24T11:49:46-07:00'\n+++\n"),
+        note("/list.md", "---\ndates: [2024-03-01T14:30]\n---\n"),
+    ]))
+    .await
+    .unwrap();
+    let hits = |q: &'static str| {
+        let db = &db;
+        async move { paths(&db.search(q).await.unwrap()) }
+    };
+    assert_eq!(
+        hits("%due<today").await,
+        vec!["/tbd.md"],
+        "text meets only text (tbd < today), never the dates"
+    );
+    assert!(
+        hits("%due<2024-1-5").await.is_empty(),
+        "non-ISO text vs dates"
+    );
+    assert_eq!(
+        hits("%due>2024-01-01").await,
+        vec!["/far.md", "/jan.md"],
+        "tbd is text"
+    );
+    assert_eq!(hits("%due>a").await, vec!["/tbd.md"], "text vs text");
+    assert_eq!(
+        hits("%date=2023-08-24T11:49:46-07:00").await,
+        vec!["/hugo.md"],
+        "date-time text matches as written"
+    );
+    assert!(hits("%date!=2023-08-24T11:49:46-07:00").await.is_empty());
+    assert_eq!(hits("%dates=2024-03-01T14:30").await, vec!["/list.md"]);
+}
+
+#[tokio::test]
+async fn prop_wildcards_match_by_pattern() {
+    let (_tmp, db) = open_temp().await;
+    db.apply(added(vec![
+        note("/a.md", "+++\nstatus = \"Done\"\ntags = [\"garden\", \"q1\"]\ncode = \"a_b\"\n+++\n"),
+        note("/b.md", "+++\nstatus = \"draft\"\ntags = [\"work\"]\ncode = \"axb\"\nat = 2024-01-31T10:00:00Z\n+++\n"),
+        note("/c.md", "+++\nstatus = \"open\"\n+++\n"),
+    ]))
+    .await
+    .unwrap();
+    let hits = |q: &'static str| {
+        let db = &db;
+        async move { paths(&db.search(q).await.unwrap()) }
+    };
+    assert_eq!(hits("%status=d*").await, vec!["/a.md", "/b.md"]);
+    assert_eq!(hits("%status=*o*").await, vec!["/a.md", "/c.md"]);
+    assert_eq!(hits("%tags=gar*").await, vec!["/a.md"], "a list item");
+    assert_eq!(hits("%status!=d*").await, vec!["/c.md"]);
+    assert_eq!(hits("-%status=d*").await, vec!["/c.md"]);
+    assert_eq!(
+        hits("%code=a_*").await,
+        vec!["/a.md"],
+        "`_` is literal, not a LIKE wildcard"
+    );
+    assert_eq!(
+        hits("%at=2024-01*").await,
+        vec!["/b.md"],
+        "dates by their text"
+    );
+    assert_eq!(hits("%status=*").await, vec!["/a.md", "/b.md", "/c.md"]);
+}
+
+// Text that is exactly a date or date-time (a TOML string, Hugo's quoted
+// dates) compares as one, like YAML's bare dates; a partial date (`2024`,
+// `2024-02`) compares as the start of that period.
+#[tokio::test]
+async fn prop_date_text_and_partial_dates_compare_as_dates() {
+    let (_tmp, db) = open_temp().await;
+    db.apply(added(vec![
+        note("/tdate.md", "+++\ndue = 2024-01-31\n+++\n"),
+        note("/tstr.md", "+++\ndue = \"2024-01-31\"\n+++\n"),
+        note("/later.md", "---\ndue: 2024-03-02\n---\n"),
+        note("/hugo.md", "+++\ndate = '2023-08-24T11:49:46-07:00'\n+++\n"),
+    ]))
+    .await
+    .unwrap();
+    let hits = |q: &'static str| {
+        let db = &db;
+        async move { paths(&db.search(q).await.unwrap()) }
+    };
+    assert_eq!(hits("%due<2024-02-01").await, vec!["/tdate.md", "/tstr.md"]);
+    assert_eq!(
+        hits("%due>=2024-01-31").await,
+        vec!["/later.md", "/tdate.md", "/tstr.md"]
+    );
+    assert_eq!(
+        hits("%due<2024-02").await,
+        vec!["/tdate.md", "/tstr.md"],
+        "month prefix"
+    );
+    assert_eq!(hits("%due>=2024-02").await, vec!["/later.md"]);
+    assert_eq!(
+        hits("%due<2025").await,
+        vec!["/later.md", "/tdate.md", "/tstr.md"],
+        "year"
+    );
+    assert_eq!(hits("%date>2023-01-01").await, vec!["/hugo.md"]);
+    assert_eq!(
+        hits("%date=2023-08-24T11:49:46-07:00").await,
+        vec!["/hugo.md"]
+    );
+    assert_eq!(hits("%due=2024-01-31").await, vec!["/tdate.md", "/tstr.md"]);
+}
+
+#[tokio::test]
+async fn prop_a_quoted_value_is_literal() {
+    let (_tmp, db) = open_temp().await;
+    db.apply(added(vec![
+        note("/stars.md", "+++\nrating = \"***\"\n+++\n"),
+        note("/one.md", "+++\nrating = \"*\"\n+++\n"),
+        note("/word.md", "+++\nrating = \"good\"\n+++\n"),
+    ]))
+    .await
+    .unwrap();
+    let hits = |q: &'static str| {
+        let db = &db;
+        async move { paths(&db.search(q).await.unwrap()) }
+    };
+    assert_eq!(hits("%rating=\"***\"").await, vec!["/stars.md"]);
+    assert_eq!(hits("%rating!=\"*\"").await, vec!["/stars.md", "/word.md"]);
+    assert_eq!(
+        hits("%rating=g*").await,
+        vec!["/word.md"],
+        "unquoted * is a wildcard"
+    );
+}
+
+// Dates and date-times compare as instants: a date is its own midnight (UTC),
+// and fractional seconds order correctly.
+#[tokio::test]
+async fn prop_dates_compare_and_sort_as_instants() {
+    let (_tmp, db) = open_temp().await;
+    db.apply(added(vec![
+        note("/day.md", "+++\nat = 2024-01-15\n+++\n"),
+        note("/whole.md", "+++\nat = 2024-01-15T10:00:00Z\n+++\n"),
+        note("/half.md", "+++\nat = 2024-01-15T10:00:00.5Z\n+++\n"),
+    ]))
+    .await
+    .unwrap();
+    let hits = |q: &'static str| {
+        let db = &db;
+        async move { paths(&db.search(q).await.unwrap()) }
+    };
+    assert_eq!(
+        hits("%at<2024-01-15T00:00").await,
+        Vec::<String>::new(),
+        "a date is its midnight"
+    );
+    assert_eq!(hits("%at=2024-01-15T00:00").await, vec!["/day.md"]);
+    assert_eq!(
+        hits("%at>2024-01-15T10:00:00").await,
+        vec!["/half.md"],
+        "fractional seconds"
+    );
+    assert_eq!(hits("%at<=2024-01-15").await, vec!["/day.md"]);
+    let order: Vec<String> = db
+        .search("%at or:%at")
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(e, _)| e.path.to_string())
+        .collect();
+    assert_eq!(order, ["/day.md", "/whole.md", "/half.md"]);
+}
+
+#[tokio::test]
+async fn prop_partial_dates_compare_as_their_whole_period() {
+    let (_tmp, db) = open_temp().await;
+    db.apply(added(vec![
+        note("/dec.md", "+++\nat = 2023-12-31T23:00:00Z\n+++\n"),
+        note("/jan1.md", "+++\nat = 2024-01-01\n+++\n"),
+        note("/feb.md", "+++\nat = 2024-02-10T08:00:00Z\n+++\n"),
+        note("/next.md", "+++\nat = 2025-01-01\n+++\n"),
+    ]))
+    .await
+    .unwrap();
+    let hits = |q: &'static str| {
+        let db = &db;
+        async move {
+            let mut found = paths(&db.search(q).await.unwrap());
+            found.sort();
+            found
+        }
+    };
+    assert_eq!(hits("%at=2024").await, ["/feb.md", "/jan1.md"]);
+    assert_eq!(hits("%at!=2024").await, ["/dec.md", "/next.md"]);
+    assert_eq!(hits("%at<2024").await, ["/dec.md"]);
+    assert_eq!(hits("%at>=2024").await, ["/feb.md", "/jan1.md", "/next.md"]);
+    assert_eq!(hits("%at>2024").await, ["/next.md"], "after the whole year");
+    assert_eq!(hits("%at<=2024").await, ["/dec.md", "/feb.md", "/jan1.md"]);
+    assert_eq!(hits("%at=2024-02").await, ["/feb.md"]);
+    assert_eq!(hits("%at>2024-01").await, ["/feb.md", "/next.md"]);
+    // An exact date stays one instant, its midnight.
+    assert_eq!(hits("%at=2024-01-01").await, ["/jan1.md"]);
+}
+
+#[tokio::test]
+async fn prop_sort_places_date_text_among_dates() {
+    let (_tmp, db) = open_temp().await;
+    db.apply(added(vec![
+        note("/late.md", "+++\nd = 2024-03-01\n+++\n"),
+        note("/jekyll.md", "---\nd: 2024-01-15 10:00:00\n---\n"),
+        note("/list.md", "+++\nd = [\"2024-02-01\", \"x\"]\n+++\n"),
+        note("/early.md", "+++\nd = 2024-01-01\n+++\n"),
+        note("/word.md", "+++\nd = \"soon\"\n+++\n"),
+    ]))
+    .await
+    .unwrap();
+    let order: Vec<String> = db
+        .search("%d or:%d")
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(e, _)| e.path.to_string())
+        .collect();
+    assert_eq!(
+        order,
+        [
+            "/early.md",
+            "/jekyll.md",
+            "/list.md",
+            "/late.md",
+            "/word.md"
+        ]
+    );
+}
