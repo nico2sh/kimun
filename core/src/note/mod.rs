@@ -1,4 +1,10 @@
 pub(crate) mod content_extractor;
+pub(crate) mod properties;
+
+pub use properties::{
+    is_list_property_key, property_keys_match, property_search_key, FrontmatterFormat,
+    PropertyDateTime, PropertyEntry, PropertyInput, PropertyKind, PropertyValue,
+};
 
 use std::fmt::Display;
 
@@ -60,6 +66,98 @@ pub fn extract_labels(text: &str) -> Vec<String> {
         }
     }
     seen.into_iter().collect()
+}
+
+/// Whether `label` can be written as an inline `#label` hashtag that reads
+/// back as exactly this label. Frontmatter `tags` may hold labels that can't
+/// (`big project`, `my-tag`): those are searched with `#"big project"` and
+/// can't be typed into a note as a hashtag.
+///
+/// ```
+/// use kimun_core::note::is_hashtag_label;
+/// assert!(is_hashtag_label("rust_2024"));
+/// assert!(!is_hashtag_label("big project"));
+/// assert!(!is_hashtag_label("my-tag"));
+/// ```
+pub fn is_hashtag_label(label: &str) -> bool {
+    let tag = format!("#{label}");
+    let mut found = scan::label_matches(&tag);
+    matches!(found.next(), Some(m) if m.byte_start == 0 && m.byte_end == tag.len())
+        && found.next().is_none()
+}
+
+/// Every label a note carries, exactly as the index records them: its inline
+/// `#hashtags` (see [`extract_labels`]) plus the items of its frontmatter
+/// `tags` property, in either frontmatter format. Lowercased, deduplicated,
+/// sorted.
+///
+/// ```
+/// let text = "+++\ntags = [\"Project\", \"q1\"]\n+++\nNotes #q1 #draft";
+/// assert_eq!(kimun_core::note::note_tags(text), ["draft", "project", "q1"]);
+/// ```
+pub fn note_tags(text: &str) -> Vec<String> {
+    tags_with(text, &NoteDetails::property_set_of(text))
+}
+
+/// The inline labels of `text` plus the `tags` of its already-parsed
+/// frontmatter, sorted and distinct.
+fn tags_with(text: &str, frontmatter: &properties::PropertySet) -> Vec<String> {
+    let mut tags: std::collections::BTreeSet<String> = extract_labels(text).into_iter().collect();
+    tags.extend(frontmatter.tags());
+    tags.into_iter().collect()
+}
+
+/// A heading of a note: its level (1–6) and display text.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct NoteHeading {
+    /// 1 for `#`, up to 6.
+    pub level: u8,
+    /// The heading's text, inline markup rendered to plain text.
+    pub text: String,
+}
+
+/// What a note's own text declares about it, read in one pass over its
+/// frontmatter: its labels (as [`note_tags`]), its frontmatter properties,
+/// and its headings (frontmatter and code skipped).
+///
+/// ```
+/// let text = "---\n# a comment, not a heading\nstatus: done\n---\n# Title\n```\n# code\n```\n#todo";
+/// let meta = kimun_core::note::NoteMetadata::of(text);
+/// assert_eq!(meta.tags, ["todo"]);
+/// assert_eq!(meta.properties.len(), 1);
+/// assert_eq!(meta.headings.len(), 1);
+/// assert_eq!(meta.headings[0].text, "Title");
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct NoteMetadata {
+    /// Inline `#hashtags` plus frontmatter `tags`, lowercased, sorted, distinct.
+    pub tags: Vec<String>,
+    /// Frontmatter properties in the note's order, a key with no usable
+    /// value included with `None` (see [`PropertyEntry`]).
+    pub properties: Vec<PropertyEntry>,
+    /// Headings in order.
+    pub headings: Vec<NoteHeading>,
+}
+
+impl NoteMetadata {
+    /// Reads a note body's metadata.
+    pub fn of(text: &str) -> Self {
+        let frontmatter = NoteDetails::property_set_of(text);
+        Self {
+            tags: tags_with(text, &frontmatter),
+            properties: frontmatter.into_entries(),
+            headings: note_headings(text),
+        }
+    }
+}
+
+/// A note body's headings in order — frontmatter and `#` lines inside code
+/// skipped, inline markup rendered to text.
+pub fn note_headings(text: &str) -> Vec<NoteHeading> {
+    content_extractor::extract_headings(text)
+        .into_iter()
+        .map(|(level, text)| NoteHeading { level, text })
+        .collect()
 }
 
 /// A note's vault path paired with its raw, unprocessed text.
@@ -129,6 +227,20 @@ impl NoteDetails {
         content_extractor::get_chunks_and_links(path, text)
     }
 
+    /// Frontmatter properties of a note body (see [`PropertyEntry`]), without
+    /// constructing a `NoteDetails`. Keys as written, in file order, a key
+    /// with no usable value (YAML `due:`) included with `None`; a malformed
+    /// block yields none.
+    pub fn properties_of<S: AsRef<str>>(text: S) -> Vec<PropertyEntry> {
+        Self::property_set_of(text).into_entries()
+    }
+
+    /// Everything a note body's frontmatter declares — keys with or without a
+    /// usable value, typed values and `tags` labels — for the index.
+    pub(crate) fn property_set_of<S: AsRef<str>>(text: S) -> properties::PropertySet {
+        properties::NoteProperties::new(text.as_ref(), FrontmatterFormat::default()).property_set()
+    }
+
     /// Title of this note (first non-empty line of the body, frontmatter
     /// skipped).
     pub fn get_title(&self) -> String {
@@ -152,6 +264,11 @@ impl NoteDetails {
     /// [`path`]: Self::path
     pub fn get_chunks_and_links(&self) -> (Vec<ContentChunk>, Vec<NoteLink>) {
         Self::chunks_and_links_of(&self.path, &self.raw_text)
+    }
+
+    /// Frontmatter properties of this note; see [`Self::properties_of`].
+    pub fn get_properties(&self) -> Vec<PropertyEntry> {
+        Self::properties_of(&self.raw_text)
     }
 
     /// Rendered Markdown of this note plus its extracted links: wikilinks

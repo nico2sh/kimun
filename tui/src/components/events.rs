@@ -7,13 +7,16 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use kimun_core::{NoteVault, nfs::VaultPath};
 
-use crate::components::file_list::{SortField, SortOrder};
+use crate::components::sortable::SortState;
 
 /// Which panel a sort selection applies to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortTarget {
     Sidebar,
     Query,
+    /// The open sortable note browser: the Ctrl+K search browser or the
+    /// Ctrl+O file finder.
+    Browser,
 }
 
 /// The surface a save-current-query action sourced its query from. Carried
@@ -40,6 +43,9 @@ pub enum AppEvent {
     /// in the editor footer.
     RagStatus(crate::rag::RagStatus),
     Autosave,
+    /// A core write (the properties dialog) changed this note on disk: reload
+    /// the editor buffer from disk if it is the open note.
+    NoteReloadFromDisk(VaultPath),
     /// Background autosave task finished. `saved_revision` carries the
     /// editor's `content_revision` at the moment the save was *issued*
     /// on success, `None` if the write failed. The editor screen uses
@@ -106,6 +112,11 @@ pub enum AppEvent {
         path: VaultPath,
         count: usize,
     },
+    /// Property count of a note for the status bar (async-loaded).
+    PropertyCountLoaded {
+        path: VaultPath,
+        count: usize,
+    },
     /// Async-loaded workspace git summary for the status bar, `None` when
     /// the workspace is not a git repository.
     GitStatusLoaded(Option<String>),
@@ -169,15 +180,12 @@ pub enum AppEvent {
     /// `handle_saved_search`.
     SavedSearch(SavedSearchFlow),
 
-    /// Sort selection changed in the sort dialog — apply live to `target`.
-    /// When `persist` is set (sidebar's "save as default"), also write the
-    /// choice to settings. `group_directories` is sidebar-only (the query panel
-    /// ignores it).
+    /// Sort selection changed in the sort dialog — apply live to `target`
+    /// (through its `SortableList`). When `persist` is set (sidebar's "save
+    /// as default"), also write the choice to settings.
     SortChanged {
         target: SortTarget,
-        field: SortField,
-        order: SortOrder,
-        group_directories: bool,
+        state: SortState,
         persist: bool,
     },
 }
@@ -230,6 +238,8 @@ pub enum FileOp {
     ShowRename(VaultPath),
     /// Request to show the move dialog for the given entry.
     ShowMove(VaultPath),
+    /// Open the properties dialog for a note (leader `n p`, palette, status bar).
+    ShowProperties(VaultPath),
     /// Request to show the create-note dialog pre-filled with body content —
     /// the Ask "save as note" action (`e` in `ThreadPanel`). Plain
     /// creates (follow-link, missing-note open) go straight through
@@ -280,6 +290,20 @@ pub enum OverlayData {
     /// other overlay-started task (a rename confirmed just before the
     /// dialog opened) is never mistaken for the reload this dialog waits on.
     PinnedNotesLoaded(Result<Vec<PinnedRow>, String>),
+    /// Every property key in the vault (search form), for key pickers.
+    PropertyKeysLoaded(Vec<String>),
+    /// The properties dialog's note (`path`), read: entries in file order, or
+    /// the read error. A dialog ignores a result for another note.
+    PropertiesLoaded {
+        path: VaultPath,
+        result: Result<Vec<kimun_core::note::PropertyEntry>, String>,
+    },
+    /// A properties-dialog write to `path` finished: flash text, or why it
+    /// failed. A dialog ignores a result for another note.
+    PropertyWritten {
+        path: VaultPath,
+        result: Result<String, crate::components::dialogs::properties_dialog::PropertyWriteError>,
+    },
     /// An overlay-initiated operation failed; carries a human-readable
     /// error message.
     Error(String),
@@ -434,19 +458,17 @@ mod tests {
     #[test]
     fn sort_events_construct() {
         use crate::components::file_list::{SortField, SortOrder};
-        let _ = AppEvent::SortChanged {
-            target: SortTarget::Sidebar,
-            field: SortField::Name,
-            order: SortOrder::Ascending,
-            group_directories: true,
-            persist: false,
-        };
-        let _ = AppEvent::SortChanged {
-            target: SortTarget::Query,
-            field: SortField::Title,
-            order: SortOrder::Descending,
-            group_directories: false,
-            persist: true,
-        };
+        use crate::components::sortable::SortState;
+        for target in [SortTarget::Sidebar, SortTarget::Query, SortTarget::Browser] {
+            let _ = AppEvent::SortChanged {
+                target,
+                state: SortState {
+                    field: SortField::Title,
+                    order: SortOrder::Descending,
+                    group_dirs: None,
+                },
+                persist: false,
+            };
+        }
     }
 }

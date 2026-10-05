@@ -1,3 +1,9 @@
+---
+type: project
+status: active
+priority: 3
+region: Southern California
+---
 # Hiking Trails
 
 Trails to explore, mostly around Southern California.

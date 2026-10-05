@@ -1,9 +1,14 @@
+use std::cmp::Ordering;
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use kimun_core::nfs::VaultPath;
-use kimun_core::{ResultType, SearchResult};
+use kimun_core::{PropertySortValue, ResultType, SearchResult};
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::ListItem;
 
 use crate::components::rich_row::RichRow;
+use crate::components::search_list::OrderFn;
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
 use crate::settings::{SortFieldSetting, SortOrderSetting};
@@ -12,10 +17,14 @@ use crate::settings::{SortFieldSetting, SortOrderSetting};
 // Sort options
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 pub enum SortField {
     Name,
     Title,
+    /// Sort by this property key (search form). Query-backed lists put it
+    /// in the query; listings order by values fetched from the index (see
+    /// [`entry_order`]).
+    Property(String),
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -45,7 +54,7 @@ impl From<SortOrderSetting> for SortOrder {
 impl From<SortField> for SortFieldSetting {
     fn from(s: SortField) -> Self {
         match s {
-            SortField::Name => Self::Name,
+            SortField::Name | SortField::Property(_) => Self::Name,
             SortField::Title => Self::Title,
         }
     }
@@ -61,17 +70,21 @@ impl From<SortOrder> for SortOrderSetting {
 }
 
 impl SortField {
-    pub fn label(self) -> char {
+    pub fn label(&self) -> String {
         match self {
-            Self::Name => 'N',
-            Self::Title => 'T',
+            Self::Name => "N".to_string(),
+            Self::Title => "T".to_string(),
+            Self::Property(key) => key.clone(),
         }
     }
 
-    pub fn cycle(self) -> Self {
+    /// Next field in the dialog's cycle. `allow_property` comes from the
+    /// list's `SortableList::allows_property`.
+    pub fn cycle(&self, allow_property: bool) -> Self {
         match self {
             Self::Name => Self::Title,
-            Self::Title => Self::Name,
+            Self::Title if allow_property => Self::Property(String::new()),
+            Self::Title | Self::Property(_) => Self::Name,
         }
     }
 }
@@ -90,6 +103,51 @@ impl SortOrder {
             Self::Descending => Self::Ascending,
         }
     }
+}
+
+/// Each note's value for a property sort, as fetched from the index by
+/// `NoteVault::property_sort_values`. Notes without the key are absent.
+pub type PropertyValues = Arc<HashMap<VaultPath, PropertySortValue>>;
+
+/// The row order for a listing sorted by `field` / `order`. `Up` always comes
+/// first, then directories when `group_dirs` is on. A property sort puts the
+/// rows with a value (from `values`) first, ordered by it, and everything
+/// without one — directories, attachments, notes missing the key or not yet
+/// indexed, or every row while `values` is `None` — after them in name order,
+/// in both directions. Grouped directories sort among themselves by name.
+pub fn entry_order(
+    field: SortField,
+    order: SortOrder,
+    group_dirs: bool,
+    values: Option<PropertyValues>,
+) -> OrderFn<FileListEntry> {
+    let directed = move |ord: Ordering| match order {
+        SortOrder::Ascending => ord,
+        SortOrder::Descending => ord.reverse(),
+    };
+    Arc::new(move |a: &FileListEntry, b: &FileListEntry| {
+        let rank = |e: &FileListEntry| match e {
+            FileListEntry::Up { .. } => 0,
+            FileListEntry::Directory { .. } if group_dirs => 1,
+            _ => 2,
+        };
+        rank(a).cmp(&rank(b)).then_with(|| {
+            let by_name = || a.sort_key(&field).cmp(&b.sort_key(&field));
+            if !matches!(field, SortField::Property(_)) {
+                return directed(by_name());
+            }
+            let value = |e: &FileListEntry| match e {
+                FileListEntry::Note { path, .. } => values.as_ref().and_then(|v| v.get(path)),
+                _ => None,
+            };
+            match (value(a), value(b)) {
+                (Some(x), Some(y)) => directed(x.cmp(y)).then_with(by_name),
+                (Some(_), None) => Ordering::Less,
+                (None, Some(_)) => Ordering::Greater,
+                (None, None) => by_name(),
+            }
+        })
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -169,14 +227,16 @@ impl FileListEntry {
     }
 
     /// Sort key for the given field.
-    pub(crate) fn sort_key(&self, field: SortField) -> String {
+    pub(crate) fn sort_key(&self, field: &SortField) -> String {
         match self {
             Self::Up { .. } => String::new(),
             Self::Note {
                 title, filename, ..
             } => match field {
                 SortField::Title => title.to_lowercase(),
-                SortField::Name => filename.to_lowercase(),
+                // A property sort's rows without a value fall back to the
+                // file name (see `entry_order`).
+                SortField::Name | SortField::Property(_) => filename.to_lowercase(),
             },
             Self::Directory { name, .. } => name.to_lowercase(),
             Self::Attachment { filename, .. } => filename.to_lowercase(),
@@ -379,6 +439,134 @@ mod open_marker_tests {
 mod tests {
     use super::*;
     use crate::components::search_list::SearchRow;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    #[test]
+    fn sort_field_cycle_gates_property() {
+        assert_eq!(SortField::Name.cycle(false), SortField::Title);
+        assert_eq!(SortField::Title.cycle(false), SortField::Name);
+        assert_eq!(
+            SortField::Property(String::new()).cycle(false),
+            SortField::Name
+        );
+        let p = SortField::Name.cycle(true).cycle(true);
+        assert_eq!(p, SortField::Property(String::new()));
+        assert_eq!(p.cycle(true), SortField::Name);
+    }
+
+    fn note(name: &str) -> FileListEntry {
+        FileListEntry::Note {
+            path: VaultPath::note_path_from(name),
+            title: name.to_string(),
+            filename: format!("{name}.md"),
+            journal_date: None,
+            is_open: false,
+        }
+    }
+
+    fn dir(name: &str) -> FileListEntry {
+        FileListEntry::Directory {
+            path: VaultPath::new(name),
+            name: name.to_string(),
+        }
+    }
+
+    fn names(rows: &[FileListEntry]) -> Vec<String> {
+        rows.iter()
+            .map(|r| match r {
+                FileListEntry::Up { .. } => "..".to_string(),
+                FileListEntry::Note { title, .. } => title.clone(),
+                FileListEntry::Directory { name, .. } => format!("{name}/"),
+                FileListEntry::Attachment { filename, .. } => filename.clone(),
+                FileListEntry::CreateNote { filename, .. } => filename.clone(),
+            })
+            .collect()
+    }
+
+    /// `rows` sorted by a property sort on `values`.
+    fn sorted(order: SortOrder, group_dirs: bool, values: Option<PropertyValues>) -> Vec<String> {
+        let mut rows = vec![
+            note("delta"),
+            dir("zdir"),
+            note("alpha"),
+            FileListEntry::Attachment {
+                path: VaultPath::new("pic.png"),
+                filename: "pic.png".into(),
+            },
+            note("charlie"),
+            FileListEntry::Up {
+                parent: VaultPath::root(),
+            },
+            dir("adir"),
+            note("bravo"),
+        ];
+        let cmp = entry_order(
+            SortField::Property("rank".into()),
+            order,
+            group_dirs,
+            values,
+        );
+        rows.sort_by(|a, b| cmp(a, b));
+        names(&rows)
+    }
+
+    fn rank_values() -> PropertyValues {
+        use kimun_core::PropertySortValue::{Number, Text};
+        Arc::new(HashMap::from([
+            (VaultPath::note_path_from("delta"), Number(1.0)),
+            (VaultPath::note_path_from("bravo"), Number(5.0)),
+            (VaultPath::note_path_from("charlie"), Text("x".into())),
+        ]))
+    }
+
+    #[test]
+    fn property_order_ascending_puts_missing_last_in_name_order() {
+        assert_eq!(
+            sorted(SortOrder::Ascending, false, Some(rank_values())),
+            [
+                "..", "delta", "bravo", "charlie", "adir/", "alpha", "pic.png", "zdir/"
+            ]
+        );
+    }
+
+    #[test]
+    fn property_order_descending_still_puts_missing_last() {
+        assert_eq!(
+            sorted(SortOrder::Descending, false, Some(rank_values())),
+            [
+                "..", "charlie", "bravo", "delta", "adir/", "alpha", "pic.png", "zdir/"
+            ]
+        );
+    }
+
+    #[test]
+    fn property_order_groups_directories_first_by_name() {
+        assert_eq!(
+            sorted(SortOrder::Descending, true, Some(rank_values())),
+            [
+                "..", "adir/", "zdir/", "charlie", "bravo", "delta", "alpha", "pic.png"
+            ]
+        );
+    }
+
+    #[test]
+    fn property_order_without_values_is_name_order() {
+        assert_eq!(
+            sorted(SortOrder::Descending, false, None),
+            [
+                "..", "adir/", "alpha", "bravo", "charlie", "delta", "pic.png", "zdir/"
+            ]
+        );
+    }
+
+    #[test]
+    fn name_order_still_follows_the_direction() {
+        let mut rows = vec![note("alpha"), dir("bdir"), note("charlie")];
+        let cmp = entry_order(SortField::Name, SortOrder::Descending, false, None);
+        rows.sort_by(|a, b| cmp(a, b));
+        assert_eq!(names(&rows), ["charlie", "bdir/", "alpha"]);
+    }
 
     #[test]
     fn directory_match_text_is_some_name() {

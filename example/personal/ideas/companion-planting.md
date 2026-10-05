@@ -1,3 +1,9 @@
+---
+type: idea
+status: growing
+tags:
+  - garden
+---
 # Companion Planting
 
 Notes from research on companion planting for the [[garden-plan]].

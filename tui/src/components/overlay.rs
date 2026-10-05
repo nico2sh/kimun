@@ -10,6 +10,7 @@ use ratatui::layout::Rect;
 
 use crate::components::event_state::EventState;
 use crate::components::events::{AppTx, InputEvent, OverlayData};
+use crate::components::sortable::SortableList;
 use crate::settings::themes::Theme;
 
 /// Identifies which overlay is active — used for toggle, focus label, and hints.
@@ -74,6 +75,17 @@ pub trait Overlay: Send {
     /// provenance), if any. Used to pre-fill the save-search dialog's name.
     /// Defaults to `None` for overlays without a breadcrumb.
     fn saved_search_provenance(&self) -> Option<&str> {
+        None
+    }
+    /// This overlay as a list the sort dialog can sort, if it is one (the
+    /// Ctrl+K search browser or the Ctrl+O file finder). Drives Ctrl+R over an open overlay. Defaults
+    /// to `None`.
+    fn as_sortable(&self) -> Option<&dyn SortableList> {
+        None
+    }
+    /// Mutable twin of [`Self::as_sortable`], for applying a sort to the
+    /// overlay parked under the sort dialog.
+    fn as_sortable_mut(&mut self) -> Option<&mut dyn SortableList> {
         None
     }
 }

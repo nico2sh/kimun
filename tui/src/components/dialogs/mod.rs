@@ -4,6 +4,7 @@ pub use file_ops_menu::FileOpsMenuDialog;
 pub use help_dialog::HelpDialog;
 pub use move_dialog::MoveDialog;
 pub use pinned_notes_dialog::PinnedNotesDialog;
+pub use properties_dialog::PropertiesDialog;
 pub use quick_note_modal::QuickNoteModal;
 pub use rename_dialog::RenameDialog;
 pub use save_search_dialog::SaveSearchDialog;
@@ -23,9 +24,21 @@ use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 use crate::components::Component;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, OverlayData, SaveSource, SortTarget};
-use crate::components::file_list::{SortField, SortOrder};
 use crate::components::overlay::{Overlay, OverlayKind, OverlayMsg};
+use crate::components::sortable::SortState;
 use crate::settings::themes::Theme;
+
+/// Load every property key in the background; arrives as
+/// [`OverlayData::PropertyKeysLoaded`]. A failed read leaves pickers empty.
+pub(crate) fn spawn_property_keys(vault: Arc<NoteVault>, tx: &AppTx) {
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        if let Ok(keys) = vault.property_keys().await {
+            tx.send(AppEvent::OverlayData(OverlayData::PropertyKeysLoaded(keys)))
+                .ok();
+        }
+    });
+}
 
 // ---------------------------------------------------------------------------
 // ValidationState — shared by RenameDialog and MoveDialog
@@ -50,6 +63,7 @@ pub mod file_ops_menu;
 pub mod help_dialog;
 pub mod move_dialog;
 pub mod pinned_notes_dialog;
+pub mod properties_dialog;
 pub mod quick_note_modal;
 pub mod rename_dialog;
 pub mod save_search_dialog;
@@ -72,6 +86,7 @@ pub enum ActiveDialog {
     PinnedNotes(PinnedNotesDialog),
     ThemePicker(ThemePickerDialog),
     UpdateAvailable(UpdateAvailableDialog),
+    Properties(PropertiesDialog),
 }
 
 impl ActiveDialog {
@@ -90,6 +105,7 @@ impl ActiveDialog {
             ActiveDialog::PinnedNotes(_) => {} // no error state: its own failures arrive as PinnedNotesLoaded(Err) and flash
             ActiveDialog::ThemePicker(_) => {} // no error state
             ActiveDialog::UpdateAvailable(_) => {} // no error state
+            ActiveDialog::Properties(d) => d.error = Some(msg),
         }
     }
 
@@ -161,19 +177,32 @@ impl ActiveDialog {
         ActiveDialog::SaveSearch(SaveSearchDialog::new(query, provenance, source))
     }
 
+    /// The sort dialog for `target`, opened on its `state` (shown as
+    /// "Unsorted" while `unsorted`). With a `vault`, the property keys load
+    /// in the background for the Key picker (pass one exactly when
+    /// `allows_property`).
     pub fn sort(
         target: SortTarget,
-        field: SortField,
-        order: SortOrder,
-        group_directories: bool,
+        state: SortState,
+        unsorted: bool,
+        allows_property: bool,
+        vault: Option<Arc<NoteVault>>,
+        tx: &AppTx,
     ) -> Self {
-        ActiveDialog::Sort(SortDialog::new(target, field, order, group_directories))
+        if let Some(vault) = vault {
+            spawn_property_keys(vault, tx);
+        }
+        ActiveDialog::Sort(SortDialog::new(target, state, allows_property).unsorted(unsorted))
     }
 
     /// The pinned-notes dialog (leader `f p`). Loads in the background and
     /// arrives via [`OverlayData::PinnedNotesLoaded`].
     pub fn pinned_notes(vault: Arc<NoteVault>, tx: &AppTx) -> Self {
         ActiveDialog::PinnedNotes(PinnedNotesDialog::new(vault, tx))
+    }
+
+    pub fn properties(path: kimun_core::nfs::VaultPath, vault: Arc<NoteVault>, tx: &AppTx) -> Self {
+        ActiveDialog::Properties(PropertiesDialog::new(path, vault, tx))
     }
 
     pub fn file_ops_menu(path: kimun_core::nfs::VaultPath) -> Self {
@@ -217,6 +246,26 @@ impl Overlay for ActiveDialog {
                         ValidationState::Taken
                     };
                     d.validation_task = None;
+                }
+                OverlayMsg::Consumed
+            }
+            OverlayData::PropertyKeysLoaded(keys) => {
+                match self {
+                    ActiveDialog::Sort(d) => d.set_keys(keys.clone()),
+                    ActiveDialog::Properties(d) => d.set_keys(keys.clone()),
+                    _ => {}
+                }
+                OverlayMsg::Consumed
+            }
+            OverlayData::PropertiesLoaded { path, result } => {
+                if let ActiveDialog::Properties(d) = self {
+                    d.on_loaded(path, result);
+                }
+                OverlayMsg::Consumed
+            }
+            OverlayData::PropertyWritten { path, result } => {
+                if let ActiveDialog::Properties(d) = self {
+                    d.on_written(path, result, tx);
                 }
                 OverlayMsg::Consumed
             }
@@ -282,8 +331,18 @@ impl Overlay for ActiveDialog {
 
 impl Component for ActiveDialog {
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
-        let InputEvent::Key(key) = event else {
-            return EventState::NotConsumed;
+        let key = match event {
+            InputEvent::Key(key) => key,
+            InputEvent::Mouse(m) => {
+                return match self {
+                    ActiveDialog::Sort(d) => d.handle_mouse(m, tx),
+                    ActiveDialog::Properties(d) => d.handle_mouse(m, tx),
+                    // Modal: a click on a dialog without mouse support is
+                    // swallowed rather than reaching the panels behind it.
+                    _ => EventState::Consumed,
+                };
+            }
+            InputEvent::Paste(_) => return EventState::NotConsumed,
         };
         match self {
             ActiveDialog::Menu(d) => d.handle_key(*key, tx),
@@ -299,6 +358,7 @@ impl Component for ActiveDialog {
             ActiveDialog::PinnedNotes(d) => d.handle_input(event, tx),
             ActiveDialog::ThemePicker(d) => d.handle_key(*key, tx),
             ActiveDialog::UpdateAvailable(d) => d.handle_key(*key, tx),
+            ActiveDialog::Properties(d) => d.handle_key(*key, tx),
         }
     }
 
@@ -317,6 +377,7 @@ impl Component for ActiveDialog {
             ActiveDialog::PinnedNotes(d) => d.render(f, rect, theme, focused),
             ActiveDialog::ThemePicker(d) => d.render(f, rect, theme, focused),
             ActiveDialog::UpdateAvailable(d) => d.render(f, rect, theme, focused),
+            ActiveDialog::Properties(d) => d.render(f, rect, theme),
         }
     }
 }
@@ -406,12 +467,14 @@ mod tests {
     fn active_dialog_sort_variant_compiles() {
         use crate::components::events::SortTarget;
         use crate::components::file_list::{SortField, SortOrder};
-        let _active: ActiveDialog = ActiveDialog::sort(
-            SortTarget::Sidebar,
-            SortField::Name,
-            SortOrder::Ascending,
-            false,
-        );
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let state = crate::components::sortable::SortState {
+            field: SortField::Name,
+            order: SortOrder::Ascending,
+            group_dirs: Some(false),
+        };
+        let _active: ActiveDialog =
+            ActiveDialog::sort(SortTarget::Sidebar, state, false, false, None, &tx);
     }
 
     /// Every dialog test for `PinnedNotesDialog` calls `set_rows` directly,

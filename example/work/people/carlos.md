@@ -1,3 +1,8 @@
++++
+type = "person"
+role = "Infrastructure engineer"
+team = "infra"
++++
 # Carlos
 
 Infrastructure engineer. Manages Redis, databases, and deployment pipelines.

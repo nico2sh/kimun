@@ -1,3 +1,10 @@
+---
+type: idea
+status: evergreen
+last_fed: 2026-04-11
+tags:
+  - baking
+---
 # Sourdough Starter
 
 ## Feeding Schedule

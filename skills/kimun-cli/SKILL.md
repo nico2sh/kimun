@@ -16,6 +16,10 @@ Kimün is a local-first, terminal notes app. Notes are plain Markdown files inde
 | Overwrite a note | `kimun note overwrite "path" "content" --force` |
 | Replace text in a note | `kimun note replace "path" "old" "new" [--all] [--regex] [--preview]` |
 | Delete a note | `kimun note delete "path" --force` |
+| List a note's properties | `kimun note prop list "path" [--format json]` |
+| Read one property | `kimun note prop get "path" key` |
+| Set a property | `kimun note prop set "path" key value… [--type KIND] [--yaml]` |
+| Remove a property | `kimun note prop remove "path" key` |
 | Log to today's journal | `kimun journal "text"` |
 | Log to a specific date | `kimun journal --date YYYY-MM-DD "text"` |
 | Show today's journal | `kimun journal show` |
@@ -90,11 +94,31 @@ Removes a note. Requires `--force`.
 kimun note delete "inbox/stale-idea" --force
 ```
 
+### Properties
+Read and edit frontmatter properties without touching the rest of the note.
+
+```sh
+kimun note prop list "projects/garden" --format json
+kimun note prop get "projects/garden" status
+kimun note prop set "projects/garden" status active
+kimun note prop set "projects/garden" tags garden spring    # several values → list
+kimun note prop set "projects/garden" priority high --type text
+kimun note prop remove "projects/garden" status
+```
+
+`tags` is always a list (comma-separated values become separate items; `set n tags` with no value clears it). Any other key's value
+must be exactly a value of the type the key has in other notes; one that doesn't fit
+(e.g. `high`, or `02134`, where `priority` is a number elsewhere) is refused with a user
+error — retry with `--type text|number|bool|date|datetime|list`, which changes only that
+note. A key no other note has is typed by its look (`5` → number, `true` → bool,
+`2026-05-01` → date, `2026-05-01T14:30` → date-time kept local, else text; `02134`
+stays text). Query properties with `kimun search "%status=active"` (see the search syntax).
+
 ### Automatic backups
 Every CLI/MCP edit that overwrites or deletes a note's content first copies the
 old content into a hidden, dated backup inside the vault (excluded from search).
 Backups are kept for 30 days, then purged automatically. This covers `overwrite`,
-`replace`, `delete`, and the backlink rewrites done by rename/move. `create` and
+`replace`, `delete`, `prop set`/`prop remove`, and the backlink rewrites done by rename/move. `create` and
 `append` of a new note have nothing to back up. Interactive TUI editing does not
 back up (the editor has its own history). If a backup can't be written, the edit
 is aborted (fail-closed) — the note is left untouched.
@@ -191,9 +215,12 @@ kimu*          # starts with "kimu"
 | `=term` | `name:term` | note name contains term |
 | `@term` | `in:term` | Markdown section heading contains term |
 | `/term` | `pt:term` | note path (directory) contains term |
-| `#label` | `lb:label` | note carries that hashtag label (from `#label` in body) |
+| `#label` | `lb:label` | note carries that label (`#label` in the body, or in the frontmatter `tags` property) |
 | `<note` | `lk:note` | notes that link **to** `note` (its backlinks) |
 | `>note` | `fwd:note` | notes that `note` links **to** (its forward links) |
+| `%key<op>value` | `prop:key<op>value` | frontmatter property compares true; op is `= != < <= > >=` (`%status=done`, `%priority>=2`, `%due<2026-05-01`, `%status="in progress"`, `%"due date"<2026-05-01`, `%status=d*` wildcard) |
+| `%key` | `prop:key` | note has that property at all |
+| `^%key` | `or:prop:key` | sort by a property (`-^%key` descending; notes without it last) |
 | `-term` | | exclude notes containing term |
 
 **Hashtag labels** — any `#name` token in a note body (letters/digits/underscore) is indexed as a label and is case-insensitive. Hashtags inside frontmatter, code spans, fenced blocks, HTML, link bodies, and wikilinks are NOT indexed. Multiple `#` filters AND together.

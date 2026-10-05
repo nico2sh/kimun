@@ -1,14 +1,17 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use kimun_core::NoteVault;
 use kimun_core::nfs::{NoteEntryData, VaultPath};
 use kimun_core::note::NoteContentData;
+use kimun_core::{NoteVault, strip_order_directive};
 
 use super::format_journal_date;
-use crate::components::file_list::FileListEntry;
+use crate::components::file_list::{FileListEntry, SortField, SortOrder, entry_order};
 use crate::components::query_vars::QueryContext;
 use crate::components::search_list::{Emit, ResolvingRowSource, RowSource, Unresolvable};
+use crate::components::sortable::{directive_of_query, is_blank_property, property_key};
+use kimun_core::PropertySortValue;
+use std::collections::HashMap;
 
 /// Build the note-browser search source: a `SearchNotesProvider` wrapped so it
 /// resolves `{note}` against `current_note` and falls back to the recent-notes
@@ -68,7 +71,11 @@ impl RowSource<FileListEntry> for SearchNotesProvider {
         // `{note}` and maps the purely-note-dependent-but-no-note case to the
         // empty query ([`Unresolvable::AsEmptyQuery`]), which falls here into
         // the recent-notes branch — a dead-end core search is never run.
-        let entries: Vec<FileListEntry> = if query.is_empty() {
+        // A sort-only query (an order directive and nothing else — what the
+        // sort dialog writes over the recents) keeps the recent notes and
+        // reorders them; any real term or filter is a core search.
+        let sort_only = !query.trim().is_empty() && strip_order_directive(query).trim().is_empty();
+        let mut entries: Vec<FileListEntry> = if query.trim().is_empty() || sort_only {
             // Build a lookup map from all indexed notes so we can resolve each
             // last_path to its full metadata in O(1).
             let all_notes = self.vault.get_all_notes().await.unwrap_or_default();
@@ -96,8 +103,52 @@ impl RowSource<FileListEntry> for SearchNotesProvider {
                 .map(|(entry, content)| self.to_entry(entry, content))
                 .collect()
         };
+        if sort_only {
+            self.sort_recents(query, &mut entries).await;
+        }
         emit.replace(entries);
     }
+}
+
+impl SearchNotesProvider {
+    /// Reorder the recent notes by `query`'s order directive, with the same
+    /// comparison the FILES panel uses ([`entry_order`]). A property sort
+    /// waits for its indexed values; notes without the key go last, in name
+    /// order, in both directions. A blank property key, or values that can't
+    /// be read, leave the recency order.
+    async fn sort_recents(&self, query: &str, entries: &mut [FileListEntry]) {
+        let Some((field, order)) = directive_of_query(query) else {
+            return;
+        };
+        if is_blank_property(&field) {
+            return;
+        }
+        let values = match property_key(&field) {
+            Some(key) => Some(self.vault.property_sort_values(key).await),
+            None => None,
+        };
+        order_recents(entries, field, order, values);
+    }
+}
+
+/// Sort `entries` by `field`; `values` is the property read for a property
+/// sort. A failed read is logged and leaves the entries as they are.
+fn order_recents<E: std::fmt::Display>(
+    entries: &mut [FileListEntry],
+    field: SortField,
+    order: SortOrder,
+    values: Option<Result<HashMap<VaultPath, PropertySortValue>, E>>,
+) {
+    let values = match values {
+        Some(Ok(values)) => Some(Arc::new(values)),
+        Some(Err(e)) => {
+            tracing::warn!("property sort values for recents: {e}");
+            return;
+        }
+        None => None,
+    };
+    let cmp = entry_order(field, order, false, values);
+    entries.sort_by(|a, b| cmp(a, b));
 }
 
 #[cfg(test)]
@@ -224,5 +275,154 @@ mod tests {
             !has_note_named(&rows, "other"),
             "mixed query must not fall back to recent notes"
         );
+    }
+
+    // ── Sort-only query: the recent notes, reordered ─────────────────────
+
+    fn note_names(rows: &[&FileListEntry]) -> Vec<String> {
+        rows.iter()
+            .filter_map(|r| match r {
+                FileListEntry::Note { path, .. } => Some(path.get_clean_name()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Recents (most recent first: c, a, b) over three notes whose titles
+    /// run opposite to their file names, plus an unrelated fourth note that
+    /// is not in the recent set.
+    async fn recents_vault(
+        name: &str,
+        bodies: [&str; 3],
+    ) -> (std::sync::Arc<NoteVault>, Vec<VaultPath>) {
+        let vault = temp_vault(name).await;
+        vault.validate_and_init().await.unwrap();
+        for (file, body) in ["a", "b", "c"].into_iter().zip(bodies) {
+            vault
+                .create_note(&VaultPath::note_path_from(file), body)
+                .await
+                .unwrap();
+        }
+        vault
+            .create_note(&VaultPath::note_path_from("zz_not_recent"), "# Aaa\nx")
+            .await
+            .unwrap();
+        let recents = ["c", "a", "b"]
+            .into_iter()
+            .map(VaultPath::note_path_from)
+            .collect();
+        (vault, recents)
+    }
+
+    async fn names_for(
+        vault: &std::sync::Arc<NoteVault>,
+        recents: &[VaultPath],
+        query: &str,
+    ) -> Vec<String> {
+        let (tx, _rx) = unbounded_channel();
+        let source = resolving_search_source(vault.clone(), recents.to_vec(), None);
+        let mut list = SearchList::builder(source, redraw_callback(tx))
+            .initial_query(query)
+            .build();
+        list.poll_until_idle().await;
+        note_names(&list.visible_rows())
+    }
+
+    #[tokio::test]
+    async fn sort_only_query_orders_the_recent_notes_by_title() {
+        // titles: a = Charlie, b = Alpha, c = Bravo
+        let (vault, recents) = recents_vault(
+            "sp_sort_title",
+            ["# Charlie\nx", "# Alpha\nx", "# Bravo\nx"],
+        )
+        .await;
+        assert_eq!(names_for(&vault, &recents, "").await, ["c", "a", "b"]);
+        assert_eq!(
+            names_for(&vault, &recents, "or:title").await,
+            ["b", "c", "a"]
+        );
+        assert_eq!(
+            names_for(&vault, &recents, "-or:title").await,
+            ["a", "c", "b"]
+        );
+    }
+
+    #[tokio::test]
+    async fn sort_only_query_orders_the_recent_notes_by_file_name() {
+        let (vault, recents) =
+            recents_vault("sp_sort_file", ["# Charlie\nx", "# Alpha\nx", "# Bravo\nx"]).await;
+        assert_eq!(
+            names_for(&vault, &recents, "or:file").await,
+            ["a", "b", "c"]
+        );
+        assert_eq!(
+            names_for(&vault, &recents, "-or:file").await,
+            ["c", "b", "a"]
+        );
+    }
+
+    #[tokio::test]
+    async fn sort_only_query_orders_the_recent_notes_by_property_missing_last() {
+        let (vault, recents) = recents_vault(
+            "sp_sort_prop",
+            [
+                "---\nrank: 10\n---\nx",
+                "---\nother: 1\n---\nx",
+                "---\nrank: 2\n---\nx",
+            ],
+        )
+        .await;
+        // a = 10, b = missing, c = 2
+        assert_eq!(
+            names_for(&vault, &recents, "or:prop:rank").await,
+            ["c", "a", "b"]
+        );
+        assert_eq!(
+            names_for(&vault, &recents, "-or:prop:rank").await,
+            ["a", "c", "b"],
+            "descending keeps the missing note last"
+        );
+    }
+
+    #[tokio::test]
+    async fn sort_directive_with_a_term_still_runs_the_core_search() {
+        let (vault, recents) =
+            recents_vault("sp_sort_term", ["# Charlie\nx", "# Alpha\nx", "# Bravo\nx"]).await;
+        // `Aaa` only matches the note that is NOT in the recent set.
+        let names = names_for(&vault, &recents, "Aaa or:title").await;
+        assert_eq!(names, ["zz_not_recent"]);
+    }
+
+    #[tokio::test]
+    async fn blank_property_key_keeps_recency_order() {
+        let (vault, recents) = recents_vault(
+            "sp_sort_blank",
+            ["# Charlie\nx", "# Alpha\nx", "# Bravo\nx"],
+        )
+        .await;
+        assert_eq!(
+            names_for(&vault, &recents, "or:prop:").await,
+            ["c", "a", "b"]
+        );
+    }
+
+    #[test]
+    fn a_failed_values_read_keeps_recency_order() {
+        let note = |n: &str| FileListEntry::Note {
+            path: VaultPath::note_path_from(n),
+            title: n.to_string(),
+            filename: n.to_string(),
+            journal_date: None,
+            is_open: false,
+        };
+        let mut rows = vec![note("c"), note("a"), note("b")];
+        order_recents(
+            &mut rows,
+            SortField::Property("rank".into()),
+            SortOrder::Ascending,
+            Some(Err::<HashMap<_, _>, _>("boom")),
+        );
+        let refs: Vec<&FileListEntry> = rows.iter().collect();
+        assert_eq!(note_names(&refs), ["c", "a", "b"]);
     }
 }

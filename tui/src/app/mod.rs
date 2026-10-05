@@ -79,8 +79,9 @@ async fn entry() -> Result<ExitCode> {
 /// A user error (missing/existing note, bad input) prints a clean message and
 /// exits with code 2 — distinct from an internal failure, which keeps the full
 /// color_eyre report (exit 1). The recoverable/internal split is core's
-/// `VaultError::user_message`; the boundary lives here so every CLI command
-/// propagates the typed `VaultError` (via `?`) and renders identically.
+/// `VaultError::user_message` (plus the CLI's own [`crate::cli::UserError`]
+/// for requests core has no error for); the boundary lives here so every CLI
+/// command propagates the typed error (via `?`) and renders identically.
 async fn run_cli_command(
     command: crate::cli::CliCommand,
     config: Option<PathBuf>,
@@ -88,10 +89,15 @@ async fn run_cli_command(
     match crate::cli::run_cli(command, config).await {
         Ok(()) => Ok(ExitCode::SUCCESS),
         Err(report) => {
-            if let Some(msg) = report
+            let user_message = report
                 .downcast_ref::<kimun_core::error::VaultError>()
                 .and_then(|ve| ve.user_message())
-            {
+                .or_else(|| {
+                    report
+                        .downcast_ref::<crate::cli::UserError>()
+                        .map(ToString::to_string)
+                });
+            if let Some(msg) = user_message {
                 // Returned, not `process::exit`ed: the code unwinds back
                 // through `entry`, so the runtime and the log guard are
                 // dropped normally on the way out.

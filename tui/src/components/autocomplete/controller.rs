@@ -455,6 +455,9 @@ impl AutocompleteController {
         let tx = self.result_tx.clone();
         let redraw = self.redraw_cb.clone();
         let suggestions = self.suggestions.clone();
+        // In a note, only labels that can be typed as a `#hashtag` are useful;
+        // a search field can take any label (quoted on accept).
+        let hashtag_labels_only = !matches!(self.mode, AutocompleteMode::SearchQuery);
         let limit = self.fetch_limit;
         let debounce = if instant {
             Duration::ZERO
@@ -485,10 +488,23 @@ impl AutocompleteController {
                         secondary: item.secondary,
                     })
                     .collect(),
+                // Filtering happens after the fetch, so fetch more than shown
+                // when some labels may be dropped.
                 TriggerKind::Hashtag => suggestions
-                    .tags_by_prefix(&query, limit)
+                    .tags_by_prefix(
+                        &query,
+                        if hashtag_labels_only {
+                            limit * 4
+                        } else {
+                            limit
+                        },
+                    )
                     .await
                     .into_iter()
+                    .filter(|item| {
+                        !hashtag_labels_only || kimun_core::note::is_hashtag_label(&item.display)
+                    })
+                    .take(limit)
                     .map(|item| Suggestion {
                         display: item.display,
                         secondary: item.secondary,
@@ -576,10 +592,16 @@ impl AutocompleteController {
                 })
             }
             TriggerKind::Hashtag | TriggerKind::LinkFilter => {
-                let new_cursor_byte = range.start.saturating_add(suggestion.display.len());
+                // A label or note name with spaces is one quoted query term.
+                let new_text = if matches!(self.mode, AutocompleteMode::SearchQuery) {
+                    kimun_core::quote_query_term(&suggestion.display)
+                } else {
+                    suggestion.display
+                };
+                let new_cursor_byte = range.start.saturating_add(new_text.len());
                 Some(AcceptAction {
                     range,
-                    new_text: suggestion.display,
+                    new_text,
                     new_cursor_byte,
                     saved_search_name: None,
                 })
@@ -1152,6 +1174,70 @@ mod tests {
         host.apply(&action);
         assert_eq!(host.buffer, "about #projects");
         assert_eq!(host.cursor, host.buffer.len());
+    }
+
+    // Frontmatter tags may hold labels a `#hashtag` can't spell.
+    const SPACED_TAGS: &str = "---\ntags: [big project, big_one]\n---\nbody";
+
+    #[tokio::test]
+    async fn editor_only_suggests_labels_that_work_as_hashtags() {
+        let (_tmp, vault) = new_vault_with(&[], &[("a", SPACED_TAGS)]).await;
+        let mut c = make_controller(vault, AutocompleteMode::Both);
+        let host = FakeHost::new("about #big", 10);
+        c.sync(&host);
+        drain_results(&mut c).await;
+        let labels: Vec<&str> = c
+            .state()
+            .unwrap()
+            .items
+            .iter()
+            .map(|s| s.display.as_str())
+            .collect();
+        assert_eq!(labels, ["big_one"]);
+    }
+
+    #[tokio::test]
+    async fn search_field_quotes_a_label_with_spaces_on_accept() {
+        let (_tmp, vault) = new_vault_with(&[], &[("a", SPACED_TAGS)]).await;
+        let mut c = make_controller(vault, AutocompleteMode::SearchQuery);
+        let mut host = FakeHost::new("#big p", 6);
+        host.buffer = "#big".into();
+        host.cursor = 4;
+        c.sync(&host);
+        drain_results(&mut c).await;
+        let st = c.state().unwrap();
+        assert!(st.items.iter().any(|s| s.display == "big project"));
+        let index = st
+            .items
+            .iter()
+            .position(|s| s.display == "big project")
+            .unwrap();
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        for _ in 0..index {
+            c.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &host);
+        }
+        let outcome = c.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &host);
+        let HandleKeyOutcome::Accepted(action) = outcome else {
+            panic!("expected Accepted, got {:?}", outcome);
+        };
+        host.apply(&action);
+        assert_eq!(host.buffer, "#\"big project\"");
+    }
+
+    #[tokio::test]
+    async fn search_field_quotes_a_note_name_with_spaces_on_accept() {
+        let (_tmp, vault) = new_vault_with(&["my note"], &[]).await;
+        let mut c = make_controller(vault, AutocompleteMode::SearchQuery);
+        let mut host = FakeHost::new(">my", 3);
+        c.sync(&host);
+        drain_results(&mut c).await;
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let outcome = c.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &host);
+        let HandleKeyOutcome::Accepted(action) = outcome else {
+            panic!("expected Accepted, got {:?}", outcome);
+        };
+        host.apply(&action);
+        assert_eq!(host.buffer, ">\"my note\"");
     }
 
     #[tokio::test]

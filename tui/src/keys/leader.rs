@@ -32,6 +32,7 @@ pub enum LeaderAction {
     NoteRename,
     NoteMove,
     NoteDelete,
+    NoteProperties,
     // +links (for the open note)
     LinksTab(LinksTab),
     LinksGraph,
@@ -117,6 +118,7 @@ impl LeaderAction {
             LeaderAction::NoteRename => "note.rename",
             LeaderAction::NoteMove => "note.move",
             LeaderAction::NoteDelete => "note.delete",
+            LeaderAction::NoteProperties => "note.properties",
             LeaderAction::LinksTab(LinksTab::Backlinks) => "links.backlinks",
             LeaderAction::LinksTab(LinksTab::Outgoing) => "links.outgoing",
             LeaderAction::LinksTab(LinksTab::Unlinked) => "links.unlinked",
@@ -170,7 +172,7 @@ impl LeaderAction {
     }
 
     /// Every action, for id lookup and docs.
-    pub const ALL: [LeaderAction; 66] = [
+    pub const ALL: [LeaderAction; 67] = [
         LeaderAction::OpenDrawer(DrawerView::Files),
         LeaderAction::OpenDrawer(DrawerView::Find),
         LeaderAction::OpenDrawer(DrawerView::Tags),
@@ -190,6 +192,7 @@ impl LeaderAction {
         LeaderAction::NoteRename,
         LeaderAction::NoteMove,
         LeaderAction::NoteDelete,
+        LeaderAction::NoteProperties,
         LeaderAction::LinksTab(LinksTab::Backlinks),
         LeaderAction::LinksTab(LinksTab::Outgoing),
         LeaderAction::LinksTab(LinksTab::Unlinked),
@@ -272,6 +275,7 @@ impl LeaderAction {
             LeaderAction::NoteRename => "rename",
             LeaderAction::NoteMove => "move",
             LeaderAction::NoteDelete => "delete",
+            LeaderAction::NoteProperties => "properties",
             LeaderAction::LinksTab(_) => "links",
             LeaderAction::LinksGraph => "local graph",
             LeaderAction::GitStatus => "git status",
@@ -451,6 +455,7 @@ pub fn leader_tree() -> LeaderNode {
                         ('t', leaf("from template", A::NoteFromTemplate)),
                         ('r', leaf("rename", A::NoteRename)),
                         ('m', leaf("move", A::NoteMove)),
+                        ('p', leaf("properties", A::NoteProperties)),
                         ('D', leaf("delete", A::NoteDelete)),
                         ('w', leaf("write (save now)", A::NoteSave)),
                     ],
@@ -1135,5 +1140,21 @@ mod tests {
         // A group without the run passes through one row per child.
         let find = tree.child('f').unwrap();
         assert_eq!(find.display_children().len(), find.children().len());
+    }
+
+    #[test]
+    fn n_p_fires_note_properties() {
+        let mut e = LeaderEngine::new();
+        e.start();
+        e.feed('n');
+        assert_eq!(
+            e.feed('p'),
+            LeaderOutcome::Fired(LeaderAction::NoteProperties)
+        );
+        assert_eq!(LeaderAction::NoteProperties.id(), "note.properties");
+        assert_eq!(
+            LeaderAction::from_id("note.properties"),
+            Some(LeaderAction::NoteProperties)
+        );
     }
 }

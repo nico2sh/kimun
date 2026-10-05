@@ -5,7 +5,7 @@ weight = 13
 
 # Search
 
-Search is Kimün's superpower. Every Markdown file in your workspace is indexed, and a small query language lets you slice by content, name, section, path, label, and links.
+Search is Kimün's superpower. Every Markdown file in your workspace is indexed, and a small query language lets you slice by content, name, section, path, label, property, and links.
 
 (Everything here is exact-match search over the local index. For finding notes by *meaning* — and asking questions answered from your notes — see [Semantic Search & Ask](@/using-kimun/server.md).)
 
@@ -18,8 +18,10 @@ The whole grammar fits in one table:
 | By section heading | `@` | `in:` | `@personal` |
 | By path | `/` | `pt:` | `/journal/2024` |
 | By label (hashtag) | `#` | `lb:` | `#finance` |
+| By property | `%` | `prop:` | `%priority>=2` |
 | Notes linking **to** X | `<` | `lk:` | `<projects` |
 | Notes X links **to** | `>` | `fwd:` | `>projects` |
+| Sort results | `^` | `or:` | `^title`, `-^title` |
 | Exclude anything | `-` prefix | | `-#draft`, `-@temp` |
 
 Space between terms = AND. There is no OR. That's the whole precedence story.
@@ -138,7 +140,50 @@ An unknown label returns zero results, not an error.
 
 - **Allowed characters:** letters, digits, underscores (`[A-Za-z0-9_]+`). A hashtag ends at the first character outside that set, so `#tag-with-dash` yields the label `tag`.
 - **Case-insensitive:** stored lowercase; `#Finance` and `#finance` are the same label.
-- **Not indexed as labels:** hashtags inside inline code or fenced code blocks, YAML/TOML frontmatter, HTML, Markdown link spans `[text](url#fragment)`, or wikilinks `[[#section]]`.
+- **Not indexed as labels:** hashtags inside inline code or fenced code blocks, HTML, Markdown link spans `[text](url#fragment)`, or wikilinks `[[#section]]`. A `#word` written inside frontmatter is not a label either.
+- **Frontmatter tags count too:** a `tags` property (`tags = ["a", "b"]` in TOML, `tags: [a, b]` or a `- a` list in YAML) adds its items as labels, so `#a` finds the note. The singular `tag` key older Obsidian notes use works the same way. A plain string is split on commas (`tags: project, urgent` is two labels); a part with spaces stays one label (`tags: big project`). Frontmatter tags may contain characters inline hashtags can't (spaces, dashes); quote them in queries: `#"big project"`.
+
+## Properties
+
+Notes can carry typed properties in a frontmatter block at the very top — TOML between `+++` lines (Kimün's default) or YAML between `---` lines (what Obsidian writes):
+
+```toml
++++
+status = "in progress"
+priority = 2
+due = 2024-03-01
+tags = ["work", "q1"]
++++
+```
+
+Query them with `prop:` or its short form `%`:
+
+```
+prop:status=done      → status equals "done" (ignores case and accents: Status=DONE, état=etat)
+%priority>=2          → numeric comparison
+%due<2024-04-01       → dates compare chronologically
+%tags=work            → a list property contains "work"
+%tags!=work           → has tags, but not "work"
+%due                  → has a due property, whatever its value
+-%due                 → has no due property
+-%status=done         → excludes notes whose status is "done" (notes with no status are kept)
+%status="in progress" → quote a value that has spaces
+%"due date"<2025-01-01 → quote a key that has spaces (the whole term works too: prop:"due date<2025-01-01")
+%status=d*            → `*` is a wildcard with = and != (also in list items and dates: %at=2024-01*; a date & time with an offset matches by its UTC form). A quoted value is literal: %rating="***"
+%due<2024-02          → a partial date (2024-02, or a year: 2024) is the whole period: = is within it, < is before it, > is after it, <= and >= include it
+%flag="!important"    → quote a value that starts with = ! < or >
+^%"due date"          → sort by a key that has spaces
+```
+
+A key on its own (`%due`, `prop:"due date"`) finds notes that have the property at all — even with no value: an empty list (`tags = []`) or a blank YAML entry (`due:`, which Obsidian writes for an unset property) counts, and `%due!=x` includes them too. A key followed by an operator but no value (`%due=`) is ignored.
+
+Operators: `=` `!=` `<` `<=` `>` `>=`. The value you compare with decides what it can meet: a number meets numbers, a date (`2024-04-01`) or date & time meets dates and date & times (compared as moments in time), and anything else meets text. A property of another type simply doesn't match — `%due<today` never matches a date, and `<` on a list matches nothing. A date written as text (`due = "2024-01-31"`, Hugo's `date = '2023-08-24T11:49:46-07:00'`) compares as a date, and `=` also matches a value written exactly as you typed it. A four-digit value such as `2024` meets both numbers and dates.
+
+Sort by a property with `or:prop:key` or `^%key`; see [Sorting](#sorting). Notes without the property always come last.
+
+Supported types: text, number, true/false, date (`2024-03-01`), date & time (`2024-03-01T14:30`, or with an offset such as `2024-03-01T14:30:00+02:00`; a time without an offset compares as UTC), and lists of text. Nested tables are ignored. A block that fails to parse is still searchable as plain text, it just contributes no properties.
+
+To view or edit a note's properties in the TUI, see [Properties](@/using-kimun/tui.md#properties) in the TUI guide.
 
 ## Excluding things
 
@@ -171,6 +216,28 @@ screen* =notes                     → starts with "screen", in name "notes"
 #project -#archived @work          → labelled "project", not "archived", under "Work"
 ```
 
+## Sorting
+
+Results come back in the default order unless you add a sort directive: `or:` (long) or `^` (short), followed by a key. Prefix the directive with `-` for descending order.
+
+```
+^title               → by note title, ascending (same as or:title)
+-^title              → by note title, descending (same as -or:title)
+or:file              → by file name
+^%due                → by the "due" property, ascending
+-or:prop:priority    → by the "priority" property, descending
+```
+
+Sort keys:
+
+| Key | Aliases | Sorts by |
+|---|---|---|
+| `title` | `t` | note title |
+| `file` | `filename`, `f` | file name |
+| `prop:<key>` | `%<key>` | a [property](#properties) value; notes without it come last in either direction |
+
+The directive combines with any filter (`#project -#draft ^title`). The TUI sort dialog (`Ctrl+R`, in the FIND view or the `Ctrl+K` search modal) writes this directive into the query for you; for a query its **Sort by** row cycles Name, Title and **Property**, and Property adds a **Key** field that suggests the keys in your vault. Nothing applies until a key is chosen. Click a row to toggle it, or click a suggestion to pick it. The FILES panel and the `Ctrl+O` file finder offer Property too: they re-sort their rows by the key's value, read from the index. A note the index has never seen (for example one created outside Kimün) sorts last, and a note edited outside Kimün sorts by its old value, until the next reindex.
+
 ## Query variables
 
 Some queries contain a `{name}` placeholder that the TUI fills in at run time, before the query reaches the search engine. The first (and currently only) variable is `{note}`:
@@ -197,7 +264,7 @@ You can also run a saved search straight from the search field, without the pick
 
 - Type `?` followed by part of a name (e.g. `?todo`) to filter the list; pick one with `Enter` or `Tab`. An empty `?` lists every saved search.
 - Accepting **expands the stored query into the field**, so you can tweak it before running like any other query.
-- The search-box border then shows the search's name as a breadcrumb (`‹ todo ›`). Edit the query and it gains an `‹ todo • edited ›` marker; clear the field to drop the breadcrumb. Changing only the [sort order](@/using-kimun/tui.md#find) does *not* count as edited.
+- The search-box border then shows the search's name as a breadcrumb (`‹ todo ›`). Edit the query and it gains an `‹ todo • edited ›` marker; clear the field to drop the breadcrumb. Changing the [sort order](@/using-kimun/tui.md#find) counts as an edit too, since it rewrites the query's sort directive.
 
 Because the field holds the query *template*, any `{note}` variable stays intact and re-resolves each time you run it.
 
@@ -247,6 +314,9 @@ The simple but great note taking app!
 | `<spec -<draft` | notes linking to "spec" but not to "draft" | backlink inclusion + exclusion |
 | `>kimun` | notes that the note "kimun" links to | forward link filter |
 | `fwd:spec #project` | notes that "spec" links to and labelled "project" | forward link + label |
+| `%status=done` | notes whose status is "done" | property filter |
+| `%priority>=2 #work ^%due` | work notes with priority 2 or more, soonest due first | property + label + sort |
+| `#project -^title` | project notes, titles Z to A | sort descending |
 
 ## Edge cases
 

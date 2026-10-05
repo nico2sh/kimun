@@ -40,6 +40,8 @@ futures-channel = "0.3"
 futures-util = "0.3"
 ## Async stuff
 tokio = { workspace = true }
+toml_edit = "0.25.15"
+yaml-rust2 = "0.13.0"
 
 # Restart Manager, to name the process holding a file kimün cannot rename or
 # delete. Windows refuses those operations while any handle is open and its
