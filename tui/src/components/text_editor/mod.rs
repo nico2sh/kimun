@@ -3032,12 +3032,56 @@ mod tests {
         assert_eq!(vim_mode(&editor), EditorMode::Insert);
     }
 
-    /// `.` must reproduce the Enter action — not skip it — at wherever the
-    /// cursor now sits, the same way it reproduces `o`. Routing Enter through
-    /// `Command::EnterInsert(InsertEntry::SmartEnter)` (the same door `o`/`O`
-    /// use) gives this for free: the structural part (continue the list, or
-    /// split the row) re-runs fresh, and the captured typed text replays
-    /// after it.
+    /// Guardrail: a pending operator keeps its own meaning for Enter rather
+    /// than SmartEnter guessing one (`d<CR>` is unmapped here, not a
+    /// surprise edit). Enter must stay inert and the operator must stay
+    /// pending, exactly like today's behaviour for any other unmapped key.
+    #[test]
+    fn vim_normal_mode_enter_with_a_pending_operator_stays_unmapped() {
+        let mut editor = make_vim_editor();
+        editor.set_text("- foo".to_string());
+        let tx = dummy_tx();
+        let _ = editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('d'), KeyModifiers::NONE)),
+            &tx,
+        );
+        let _ = editor.handle_input(&InputEvent::Key(key(KeyCode::Enter, KeyModifiers::NONE)), &tx);
+        assert_eq!(editor.get_text(), "- foo", "d<CR> must not edit");
+        assert_eq!(vim_mode(&editor), EditorMode::Normal);
+        // The pending `d` is still live: `d` again completes `dd`.
+        let _ = editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('d'), KeyModifiers::NONE)),
+            &tx,
+        );
+        assert_eq!(editor.get_text(), "", "the pending operator must have survived Enter");
+    }
+
+    /// Guardrail: a pending count keeps its own meaning too (`3<CR>` is
+    /// unmapped here, not "continue the list 3 times").
+    #[test]
+    fn vim_normal_mode_enter_with_a_pending_count_stays_unmapped() {
+        let mut editor = make_vim_editor();
+        editor.set_text("- foo".to_string());
+        {
+            let ta = get_ta(&mut editor);
+            ta.move_cursor(CursorMove::End);
+        }
+        let tx = dummy_tx();
+        let _ = editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('3'), KeyModifiers::NONE)),
+            &tx,
+        );
+        let _ = editor.handle_input(&InputEvent::Key(key(KeyCode::Enter, KeyModifiers::NONE)), &tx);
+        assert_eq!(editor.get_text(), "- foo", "3<CR> must not edit");
+        assert_eq!(vim_mode(&editor), EditorMode::Normal);
+    }
+
+    /// `.` must reproduce the Enter action — not skip it — the same way it
+    /// reproduces `o`. The natural workflow: continue a list, type the item,
+    /// Esc, `.` to add another — with NO repositioning in between. Esc's
+    /// usual one-column step back (vim: cursor settles on the last typed
+    /// char, not past it) must not make the replay's `smart_enter` call
+    /// decline for being "mid-row" and silently split the word instead.
     #[test]
     fn vim_dot_repeats_the_enter_action() {
         let mut editor = make_vim_editor();
@@ -3055,18 +3099,41 @@ mod tests {
         assert_eq!(editor.get_text(), "- foo\n- bar");
         let _ = editor.handle_input(&InputEvent::Key(key(KeyCode::Esc, KeyModifiers::NONE)), &tx);
         assert_eq!(vim_mode(&editor), EditorMode::Normal);
-
-        // `$` back to the row's end — a fresh Normal-mode position, not a
-        // continuation of the Insert session above.
-        let _ = editor.handle_input(
-            &InputEvent::Key(key(KeyCode::Char('$'), KeyModifiers::NONE)),
-            &tx,
+        assert_eq!(
+            get_ta(&mut editor).cursor(),
+            (1, 4),
+            "Esc lands one column short of the row's true end (len 5) — the exact state that broke dot-repeat"
         );
+
         let _ = editor.handle_input(
             &InputEvent::Key(key(KeyCode::Char('.'), KeyModifiers::NONE)),
             &tx,
         );
         assert_eq!(editor.get_text(), "- foo\n- bar\n- bar");
+    }
+
+    /// Dot-repeat where nothing was typed before Esc: replaying at the
+    /// current row re-evaluates `smart_enter` fresh there, same as a second,
+    /// literal Enter press would. The row IS the just-opened, still-empty
+    /// bullet, so that re-evaluation clears it rather than opening a third —
+    /// correct (it matches a real second keypress at that spot), not a
+    /// repeat of the previous continuation.
+    #[test]
+    fn vim_dot_repeats_an_empty_enter_by_clearing_the_still_empty_bullet() {
+        let mut editor = make_vim_editor();
+        editor.set_text("- foo".to_string());
+        {
+            let ta = get_ta(&mut editor);
+            ta.move_cursor(CursorMove::End);
+        }
+        let tx = dummy_tx();
+        let _ = editor.handle_input(&InputEvent::Key(key(KeyCode::Enter, KeyModifiers::NONE)), &tx);
+        let _ = editor.handle_input(&InputEvent::Key(key(KeyCode::Esc, KeyModifiers::NONE)), &tx);
+        let _ = editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('.'), KeyModifiers::NONE)),
+            &tx,
+        );
+        assert_eq!(editor.get_text(), "- foo\n");
     }
 
     #[test]

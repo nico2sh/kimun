@@ -5,7 +5,7 @@ weight = 15
 
 # Vim Mode
 
-Kimün ships a built-in vim emulation: vim's modal editing layered directly over the built-in editor — no external process, no plugins to load. Insert mode keeps every editor feature (autocomplete, auto-surround, smart-Enter, the styled markdown view); Normal, Visual, and Replace modes run the vim engine.
+Kimün ships a built-in vim emulation: vim's modal editing layered directly over the built-in editor — no external process, no plugins to load. Insert mode keeps every editor feature (autocomplete, auto-surround, smart-Enter, the styled markdown view); Normal, Visual, and Replace modes run the vim engine — except bare `Enter` in Normal mode, which is a **kimün twist** rather than vim's own `<CR>` motion: see [Editing](#editing).
 
 Enable it in `config.toml`:
 
@@ -95,6 +95,7 @@ Text objects are single-line for now.
 | `u` / `Ctrl+r` | undo / redo |
 | `.` | repeat the last change — works for operators, `x`, `r`, paste, indents, inserts (`ihello<Esc>`), `cw`+typed text, `cc`, `s`, `R`, … |
 | `p` `P` | paste after / before (linewise yanks paste as lines) |
+| `Enter` | **kimün twist**: continues a list (or carries/dedents an indent) the same way Insert mode's Enter does, falling back to a plain split of the row at the cursor; either way it drops into Insert, like `o`. Real vim's `<CR>` is a motion (next line's first non-blank) — not implemented, since this already covers why people reach for Enter in a notes app. A count or pending operator (`3<CR>`, `d<CR>`) leaves it unmapped instead |
 
 ## Visual mode
 
