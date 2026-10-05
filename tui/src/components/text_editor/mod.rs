@@ -2985,12 +2985,13 @@ mod tests {
 
     /// Regression: Enter in vim **Normal** mode (cursor merely navigated onto
     /// the row, never typed into it this session) must continue a list the
-    /// same way Insert mode's PassThrough does. Normal mode had no arm for
-    /// `KeyCode::Enter` at all, so the key fell to the catch-all `NoOp` and
-    /// was swallowed before ever reaching `smart_enter` — reproduces the
-    /// "pressing Enter doesn't continue the list" report, which only shows up
-    /// once the cursor sits in Normal mode (e.g. after a mouse click, or Esc
-    /// back from Insert) rather than mid-typing.
+    /// same way Insert mode's PassThrough does, and — like `o`/`O` — drop
+    /// into Insert so the next item can be typed right away. Normal mode had
+    /// no arm for `KeyCode::Enter` at all, so the key fell to the catch-all
+    /// `NoOp` and was swallowed before ever reaching `smart_enter` —
+    /// reproduces the "pressing Enter doesn't continue the list" report,
+    /// which only shows up once the cursor sits in Normal mode (e.g. after a
+    /// mouse click, or Esc back from Insert) rather than mid-typing.
     #[test]
     fn vim_normal_mode_enter_at_the_end_of_a_list_item_continues_it() {
         let mut editor = make_vim_editor();
@@ -3005,23 +3006,67 @@ mod tests {
         let _ = editor.handle_input(&InputEvent::Key(enter), &tx);
         assert_eq!(editor.get_text(), "- foo\n- ");
         assert!(editor.is_dirty());
+        assert_eq!(
+            vim_mode(&editor),
+            EditorMode::Insert,
+            "continuing a list is also where o/O leave you: ready to type the next item"
+        );
     }
 
-    /// Guardrail for the fix above: Normal-mode Enter must stay a no-op on an
-    /// ordinary row (smart_enter declines), so it still never inserts text
-    /// outside Insert mode the way plain typing would.
+    /// Enter on an ordinary row — where `smart_enter` has nothing to
+    /// continue — falls back to a plain split at the cursor, same as Insert
+    /// mode's own Enter. It must not stay a no-op: a note-taking app's Enter
+    /// always makes a new line, continuing a list only when there is one.
     #[test]
-    fn vim_normal_mode_enter_on_a_plain_row_still_does_nothing() {
+    fn vim_normal_mode_enter_on_a_plain_row_splits_it_like_insert_mode() {
         let mut editor = make_vim_editor();
-        editor.set_text("foo".to_string());
+        editor.set_text("foobar".to_string());
+        {
+            let ta = get_ta(&mut editor);
+            ta.jump_to(0, 3);
+        }
+        let tx = dummy_tx();
+        let enter = key(KeyCode::Enter, KeyModifiers::NONE);
+        let _ = editor.handle_input(&InputEvent::Key(enter), &tx);
+        assert_eq!(editor.get_text(), "foo\nbar");
+        assert_eq!(vim_mode(&editor), EditorMode::Insert);
+    }
+
+    /// `.` must reproduce the Enter action — not skip it — at wherever the
+    /// cursor now sits, the same way it reproduces `o`. Routing Enter through
+    /// `Command::EnterInsert(InsertEntry::SmartEnter)` (the same door `o`/`O`
+    /// use) gives this for free: the structural part (continue the list, or
+    /// split the row) re-runs fresh, and the captured typed text replays
+    /// after it.
+    #[test]
+    fn vim_dot_repeats_the_enter_action() {
+        let mut editor = make_vim_editor();
+        editor.set_text("- foo".to_string());
         {
             let ta = get_ta(&mut editor);
             ta.move_cursor(CursorMove::End);
         }
         let tx = dummy_tx();
-        let enter = key(KeyCode::Enter, KeyModifiers::NONE);
-        let _ = editor.handle_input(&InputEvent::Key(enter), &tx);
-        assert_eq!(editor.get_text(), "foo");
+        let _ = editor.handle_input(&InputEvent::Key(key(KeyCode::Enter, KeyModifiers::NONE)), &tx);
+        assert_eq!(editor.get_text(), "- foo\n- ");
+        for c in "bar".chars() {
+            send_char(&mut editor, c);
+        }
+        assert_eq!(editor.get_text(), "- foo\n- bar");
+        let _ = editor.handle_input(&InputEvent::Key(key(KeyCode::Esc, KeyModifiers::NONE)), &tx);
+        assert_eq!(vim_mode(&editor), EditorMode::Normal);
+
+        // `$` back to the row's end — a fresh Normal-mode position, not a
+        // continuation of the Insert session above.
+        let _ = editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('$'), KeyModifiers::NONE)),
+            &tx,
+        );
+        let _ = editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('.'), KeyModifiers::NONE)),
+            &tx,
+        );
+        assert_eq!(editor.get_text(), "- foo\n- bar\n- bar");
     }
 
     #[test]

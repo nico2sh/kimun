@@ -111,6 +111,10 @@ pub enum InsertEntry {
     LineEnd,   // A
     OpenBelow, // o
     OpenAbove, // O
+    /// Bare `<CR>` — not a vim mnemonic; the host's smart-Enter (continue a
+    /// list, carry/dedent an indent) falling back to a plain split of the
+    /// row at the cursor when none of those apply.
+    SmartEnter,
 }
 
 /// What a Visual operator key does to the selection.
@@ -1327,24 +1331,6 @@ impl VimEngine {
     // ── Normal mode: keys → parse → Command → execute/apply ───────
 
     fn handle_normal(&mut self, key: &KeyEvent, ta: &mut RopeBuffer) -> VimKeyOutcome {
-        // Bare Enter has no vim motion of its own here, so it fell to the
-        // catch-all `Nothing`/`NoOp` below and was swallowed — meaning a list
-        // continued on Enter only from Insert mode's PassThrough, never once
-        // the cursor had simply been navigated (click, Esc, hjkl) onto the
-        // row. Smart-Enter is already the host's convenience layered over
-        // Insert; giving Normal mode the same gate — and only the gate, so a
-        // plain row where `smart_enter` declines still does nothing — extends
-        // that without inventing a motion vim never had.
-        if key.code == KeyCode::Enter
-            && key.modifiers.is_empty()
-            && self.pending_count.is_none()
-            && self.pending_op_count.is_none()
-            && self.pending_operator.is_none()
-            && self.awaiting.is_none()
-            && markdown_edits::smart_enter(ta)
-        {
-            return VimKeyOutcome::TextMutated;
-        }
         match self.parse_normal(key) {
             Parsed::Pending | Parsed::Nothing => VimKeyOutcome::NoOp,
             Parsed::Cancel => {
@@ -1398,6 +1384,20 @@ impl VimEngine {
                 }
                 _ => {}
             }
+        }
+
+        // Bare Enter has no vim motion of its own here (real vim's `<CR>` is a
+        // linewise motion we don't implement), so route it through the same
+        // door `o`/`O` use: a count or pending operator keeps today's
+        // behaviour (unmapped) rather than guess at a meaning for `d<CR>` or
+        // `3<CR>`.
+        if key.code == KeyCode::Enter
+            && key.modifiers.is_empty()
+            && self.pending_count.is_none()
+            && self.pending_op_count.is_none()
+            && self.pending_operator.is_none()
+        {
+            return Parsed::Cmd(Command::EnterInsert(InsertEntry::SmartEnter));
         }
 
         let plain = key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT;
@@ -1784,6 +1784,8 @@ impl VimEngine {
     /// Plain insert entries (i/a/I/A, R) don't — an aborted insert is not a
     /// change in vim. o/O do (the opened line IS the change), and the
     /// Change family does (the cut already happened before Insert began).
+    /// SmartEnter joins o/O: the continued list / split row IS the change,
+    /// same as if it had typed nothing after.
     /// Exhaustive on purpose, like `repeatable` — a new command must decide.
     fn records_when_empty(cmd: &Command) -> bool {
         match cmd {
@@ -1794,7 +1796,9 @@ impl VimEngine {
                 | InsertEntry::LineEnd,
             )
             | Command::EnterReplace => false,
-            Command::EnterInsert(InsertEntry::OpenBelow | InsertEntry::OpenAbove)
+            Command::EnterInsert(
+                InsertEntry::OpenBelow | InsertEntry::OpenAbove | InsertEntry::SmartEnter,
+            )
             | Command::Move(..)
             | Command::OperateMotion(..)
             | Command::OperateLine(..)
@@ -2019,6 +2023,12 @@ impl VimEngine {
                 ta.move_cursor(CursorMove::Head);
                 ta.insert_newline();
                 ta.move_cursor(CursorMove::Up);
+                true
+            }
+            InsertEntry::SmartEnter => {
+                if !markdown_edits::smart_enter(ta) {
+                    ta.insert_newline();
+                }
                 true
             }
         };
