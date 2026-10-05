@@ -1,6 +1,7 @@
 //! Built-in vim emulation: a modal input interpreter over the **rope buffer**.
 //! Pure over `&mut RopeBuffer` — no component state, no async.
 
+use super::markdown_edits;
 use super::rope_buffer::{CursorMove, RopeBuffer};
 use super::snapshot::EditorMode;
 use super::vim_objects::{self as objects, TextObject};
@@ -110,6 +111,10 @@ pub enum InsertEntry {
     LineEnd,   // A
     OpenBelow, // o
     OpenAbove, // O
+    /// Bare `<CR>` — not a vim mnemonic; the host's smart-Enter (continue a
+    /// list, carry/dedent an indent) falling back to a plain split of the
+    /// row at the cursor when none of those apply.
+    SmartEnter,
 }
 
 /// What a Visual operator key does to the selection.
@@ -347,15 +352,23 @@ impl VimEngine {
         self.mode.label().to_string()
     }
 
+    /// Whether a Normal-mode count, operator, or one-key continuation is
+    /// mid-sequence — the shared gate behind the footer hint, the Space
+    /// leader, and bare Enter's smart-continue (a count or pending operator
+    /// keeps its own meaning, e.g. `3d` or a future `d<CR>`, rather than
+    /// having Enter guess one).
+    fn nothing_pending(&self) -> bool {
+        self.pending_count.is_none()
+            && self.pending_op_count.is_none()
+            && self.pending_operator.is_none()
+            && self.awaiting.is_none()
+    }
+
     /// The in-progress command sequence, for the footer hint (e.g. "2d", "f").
     /// Returns `None` when nothing is pending (no display needed).
     pub fn pending_hint(&self) -> Option<String> {
         // Fast path: nothing pending — skip all allocation (common idle-frame case).
-        if self.pending_count.is_none()
-            && self.pending_op_count.is_none()
-            && self.pending_operator.is_none()
-            && self.awaiting.is_none()
-        {
+        if self.nothing_pending() {
             return None;
         }
         let mut s = String::new();
@@ -423,11 +436,7 @@ impl VimEngine {
     /// pending (so `d<Space>`, `f<Space>`, counts etc. still take Space as an
     /// argument/motion, not the leader).
     pub fn space_leads(&self) -> bool {
-        self.mode == EditorMode::Normal
-            && self.pending_count.is_none()
-            && self.pending_op_count.is_none()
-            && self.pending_operator.is_none()
-            && self.awaiting.is_none()
+        self.mode == EditorMode::Normal && self.nothing_pending()
     }
 
     /// Interpret one key. In Insert mode everything except `Esc` is
@@ -1381,6 +1390,18 @@ impl VimEngine {
             }
         }
 
+        // Bare Enter has no vim motion of its own here (real vim's `<CR>` is a
+        // linewise motion we don't implement), so route it through the same
+        // door `o`/`O` use: a count or pending operator keeps today's
+        // behaviour (unmapped) rather than guess at a meaning for `d<CR>` or
+        // `3<CR>`. `awaiting` is already spent by the `take()` above, so
+        // `nothing_pending`'s check of it here is always true — kept anyway
+        // so this reads as the same gate `space_leads`/`pending_hint` use,
+        // not a hand-picked subset of it.
+        if key.code == KeyCode::Enter && key.modifiers.is_empty() && self.nothing_pending() {
+            return Parsed::Cmd(Command::EnterInsert(InsertEntry::SmartEnter));
+        }
+
         let plain = key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT;
         match key.code {
             KeyCode::Char(c) if plain => self.parse_normal_char(c),
@@ -1765,6 +1786,8 @@ impl VimEngine {
     /// Plain insert entries (i/a/I/A, R) don't — an aborted insert is not a
     /// change in vim. o/O do (the opened line IS the change), and the
     /// Change family does (the cut already happened before Insert began).
+    /// SmartEnter joins o/O: the continued list / split row IS the change,
+    /// same as if it had typed nothing after.
     /// Exhaustive on purpose, like `repeatable` — a new command must decide.
     fn records_when_empty(cmd: &Command) -> bool {
         match cmd {
@@ -1775,7 +1798,9 @@ impl VimEngine {
                 | InsertEntry::LineEnd,
             )
             | Command::EnterReplace => false,
-            Command::EnterInsert(InsertEntry::OpenBelow | InsertEntry::OpenAbove)
+            Command::EnterInsert(
+                InsertEntry::OpenBelow | InsertEntry::OpenAbove | InsertEntry::SmartEnter,
+            )
             | Command::Move(..)
             | Command::OperateMotion(..)
             | Command::OperateLine(..)
@@ -2000,6 +2025,27 @@ impl VimEngine {
                 ta.move_cursor(CursorMove::Head);
                 ta.insert_newline();
                 ta.move_cursor(CursorMove::Up);
+                true
+            }
+            InsertEntry::SmartEnter => {
+                // Dot-repeat only: anchor to this row's true end first, the
+                // same way OpenBelow/LineEnd ignore wherever the cursor
+                // started. `exit_to_normal`'s step-back always leaves the
+                // cursor one column short of that after typing — which
+                // would otherwise make `smart_enter`'s strict end-of-row
+                // check decline and silently split mid-word instead of
+                // continuing the list (confirmed: typing "bar" after
+                // continuing "- foo" into "- bar", Esc, then bare `.` with
+                // no repositioning corrupted the text into "- ba\nbarr").
+                // A first press gets no such anchor — the live cursor
+                // column is the whole point: it is what lets Enter split
+                // mid-row instead of only ever continuing a list.
+                if inserted.is_some() {
+                    ta.move_cursor(CursorMove::End);
+                }
+                if !markdown_edits::smart_enter(ta) {
+                    ta.insert_newline();
+                }
                 true
             }
         };
