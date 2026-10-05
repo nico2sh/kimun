@@ -1,6 +1,6 @@
 use kimun_core::nfs::VaultPath;
 use ratatui::Frame;
-use ratatui::crossterm::event::KeyCode;
+use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseEvent};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::Paragraph;
@@ -8,6 +8,7 @@ use ratatui::widgets::Paragraph;
 use crate::components::Component;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, FileOp};
+use crate::components::hint_row::{HintRow, is_press_outside, key_at};
 use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::settings::themes::Theme;
 
@@ -32,12 +33,39 @@ pub struct FileOpsMenuDialog {
     pub path: VaultPath,
     /// Pre-computed `"  {path}"` for zero-allocation rendering.
     pub path_display: String,
+    /// The popup's outer rect from the last render; a press outside it
+    /// cancels the menu.
+    popup_rect: Rect,
+    /// Each action's whole column from the last render, with its key.
+    action_rects: Vec<(Rect, KeyCode)>,
+    hints: HintRow,
 }
 
 impl FileOpsMenuDialog {
     pub fn new(path: VaultPath) -> Self {
         let path_display = format!("  {}", path);
-        Self { path, path_display }
+        Self {
+            path,
+            path_display,
+            popup_rect: Rect::default(),
+            action_rects: Vec::new(),
+            hints: HintRow::new(&[(KeyCode::Esc, "Esc", "Cancel")]),
+        }
+    }
+
+    /// Clicking an action runs its key; a press outside the menu cancels it.
+    /// Modal: every mouse event is consumed.
+    pub fn handle_mouse(&mut self, m: &MouseEvent, tx: &AppTx) -> EventState {
+        if is_press_outside(m, self.popup_rect) {
+            return self.handle_key(KeyEvent::from(KeyCode::Esc), tx);
+        }
+        if let Some(key) = self.hints.hit(m) {
+            return self.handle_key(key, tx);
+        }
+        if let Some(key) = key_at(&self.action_rects, m) {
+            return self.handle_key(key, tx);
+        }
+        EventState::Consumed
     }
 
     /// Handle a raw key event. Returns `Consumed` for all recognised keys so
@@ -82,6 +110,7 @@ impl Component for FileOpsMenuDialog {
         // Border (2) + spacer + path + separator + actions + spacer + hint + spacer = 9 inner rows → 11 total
         // But keep it tight: border(2) + 7 inner rows = 9
         let popup_area = super::fixed_centered_rect(46, 9, rect);
+        self.popup_rect = popup_area;
 
         let inner = modal_chrome(
             f,
@@ -145,11 +174,13 @@ impl Component for FileOpsMenuDialog {
             .add_modifier(Modifier::BOLD);
         let label_style = Style::default().fg(fg).bg(bg);
 
-        for (col, (key, label)) in
-            action_cols
-                .iter()
-                .zip([("[D]", " Delete"), ("[R]", " Rename"), ("[M]", " Move  ")])
-        {
+        self.action_rects.clear();
+        for (col, (key, label, code)) in action_cols.iter().zip([
+            ("[D]", " Delete", KeyCode::Char('d')),
+            ("[R]", " Rename", KeyCode::Char('r')),
+            ("[M]", " Move  ", KeyCode::Char('m')),
+        ]) {
+            self.action_rects.push((*col, code));
             let chunks = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([
@@ -164,10 +195,8 @@ impl Component for FileOpsMenuDialog {
         }
 
         // Row 5: hint
-        f.render_widget(
-            Paragraph::new("  [Esc] Cancel").style(Style::default().fg(gray).bg(bg)),
-            rows[5],
-        );
+        self.hints
+            .render(f, rows[5], Style::default().fg(gray).bg(bg));
     }
 }
 

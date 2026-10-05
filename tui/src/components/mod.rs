@@ -15,6 +15,7 @@ pub mod event_state;
 pub mod events;
 pub mod file_list;
 pub mod footer_bar;
+pub mod hint_row;
 pub mod hints;
 pub mod indexing;
 pub mod key_picker;

@@ -63,6 +63,11 @@ pub struct InputCtx {
     /// Ctrl+R over it open the
     /// sort dialog on top instead of reaching the overlay.
     pub overlay_sortable: bool,
+    /// A mouse event landed on the editor column. The classifier cannot
+    /// hit-test, and an **editor claim** only owns presses inside the editor:
+    /// a click on the rail, the drawer or the footer must reach them even
+    /// while the find bar is open. Meaningless for non-mouse events.
+    pub pointer_on_editor: bool,
 }
 
 impl InputCtx {
@@ -226,7 +231,10 @@ pub fn classify(event: &InputEvent, bindings: &KeyBindings, ctx: &InputCtx) -> C
     // An **editor claim** only holds while the editor is the active panel: the
     // bar is inside it, so a drawer click or an open overlay outranks it.
     // Without this the filter would swallow every click anywhere in the app.
-    let claim = if ctx.editor_active() {
+    // Focus alone is not enough for the mouse: the editor stays focused until
+    // a press lands elsewhere, so that press must be judged by where it lands.
+    let off_editor = matches!(event, InputEvent::Mouse(_)) && !ctx.pointer_on_editor;
+    let claim = if ctx.editor_active() && !off_editor {
         ctx.claim
     } else {
         EditorClaim::None
@@ -701,6 +709,7 @@ mod tests {
             claim: EditorClaim::None,
             double_click: false,
             overlay_sortable: false,
+            pointer_on_editor: true,
         }
     }
 
@@ -858,6 +867,26 @@ mod tests {
             classify_it(&at(MouseEventKind::ScrollUp), &ctx_find_bar()).intent,
             EditorIntent::Mouse,
             "scrolling still works"
+        );
+    }
+
+    /// The claim lives inside the editor. A press elsewhere — the rail, the
+    /// drawer, the footer — is that surface's, even while the editor still
+    /// holds focus; consuming it froze every click in the app while the bar
+    /// was open.
+    #[test]
+    fn a_find_bar_claim_does_not_own_presses_off_the_editor() {
+        let off = InputCtx {
+            pointer_on_editor: false,
+            ..ctx_find_bar()
+        };
+        assert_eq!(classify_it(&press(), &off).intent, EditorIntent::Mouse);
+        assert_eq!(
+            classify_it(&key(KeyCode::Enter, KeyModifiers::CONTROL), &off).intent,
+            EditorIntent::Panel {
+                fallback: PanelFallback::None
+            },
+            "keys still belong to the bar"
         );
     }
 

@@ -5,8 +5,8 @@ use kimun_core::nfs::VaultPath;
 use nucleo::Utf32String;
 use nucleo::pattern::{CaseMatching, Normalization, Pattern};
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
+use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use tokio::task::JoinHandle;
@@ -15,6 +15,7 @@ use crate::components::Component;
 use crate::components::dialogs::ValidationState;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, FileOp, OverlayData};
+use crate::components::hint_row::{HintRow, list_index_at};
 use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::components::single_line_input::{InputOutcome, SingleLineInput};
 use crate::settings::themes::Theme;
@@ -55,6 +56,10 @@ pub struct MoveDialog {
     pub validation_task: Option<JoinHandle<()>>,
     /// Optional error message surfaced from a failed move attempt.
     pub error: Option<String>,
+    /// The destination list's inner rect (inside its border) from the last
+    /// render — where its rows are hit-tested.
+    list_rect: Rect,
+    hints: HintRow,
 }
 
 impl MoveDialog {
@@ -76,6 +81,8 @@ impl MoveDialog {
             dest_validation: ValidationState::Idle,
             validation_task: None,
             error: None,
+            list_rect: Rect::default(),
+            hints: super::confirm_hints("Move here"),
         };
         dialog.schedule_load(tx);
         dialog
@@ -219,6 +226,34 @@ impl MoveDialog {
     // Input handling
     // -----------------------------------------------------------------------
 
+    /// Clicking a destination selects it, the wheel moves the selection, and
+    /// a click on a hint chip runs its key. Modal: every mouse event is
+    /// consumed.
+    pub fn handle_mouse(&mut self, m: &MouseEvent, tx: &AppTx) -> EventState {
+        if let Some(key) = self.hints.hit(m) {
+            return self.handle_key(key, tx);
+        }
+        let over_list = self.list_rect.contains(Position::new(m.column, m.row));
+        match m.kind {
+            MouseEventKind::ScrollUp if over_list => {
+                self.handle_key(KeyEvent::from(KeyCode::Up), tx);
+            }
+            MouseEventKind::ScrollDown if over_list => {
+                self.handle_key(KeyEvent::from(KeyCode::Down), tx);
+            }
+            _ => {
+                let len = self.results().len();
+                if let Some(idx) = list_index_at(m, self.list_rect, self.list_state.offset(), len)
+                    && self.list_state.selected() != Some(idx)
+                {
+                    self.list_state.select(Some(idx));
+                    self.spawn_validation(tx);
+                }
+            }
+        }
+        EventState::Consumed
+    }
+
     /// Handle a raw [`KeyEvent`].  Returns [`EventState::Consumed`] for keys
     /// this dialog acts on; callers should forward only key events.
     pub fn handle_key(&mut self, key: KeyEvent, tx: &AppTx) -> EventState {
@@ -306,6 +341,11 @@ impl MoveDialog {
 // ---------------------------------------------------------------------------
 // Component trait
 // ---------------------------------------------------------------------------
+
+/// The rows area of a bordered list block.
+fn list_block_inner(rect: Rect) -> Rect {
+    Block::default().borders(Borders::ALL).inner(rect)
+}
 
 impl Component for MoveDialog {
     fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, _focused: bool) {
@@ -416,6 +456,7 @@ impl Component for MoveDialog {
             )
             .highlight_symbol(">> ");
 
+        self.list_rect = list_block_inner(rows[5]);
         f.render_stateful_widget(list, rows[5], &mut self.list_state);
 
         // Row 6: validation status.
@@ -434,11 +475,19 @@ impl Component for MoveDialog {
         f.render_widget(Paragraph::new(status_text).style(status_style), rows[6]);
 
         // Row 7: hint line.  Dim Enter when there's no valid selection.
-        super::render_confirm_hint(
+        // Enter moves unless the destination is Taken — also while the check
+        // is still Idle/Pending — so the chip must too.
+        let enter_acts = self.dest_validation != ValidationState::Taken
+            && self
+                .list_state
+                .selected()
+                .is_some_and(|i| i < self.results().len());
+        super::render_confirm_hints(
             f,
             rows[7],
-            "  [Enter] Move here",
+            &mut self.hints,
             self.dest_validation == ValidationState::Available,
+            enter_acts,
             fg,
             gray,
             bg,

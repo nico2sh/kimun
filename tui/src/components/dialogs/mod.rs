@@ -17,13 +17,15 @@ use std::sync::Arc;
 
 use kimun_core::NoteVault;
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::crossterm::event::KeyCode;
+use ratatui::layout::Rect;
+use ratatui::style::{Color, Style};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
 use crate::components::Component;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, OverlayData, SaveSource, SortTarget};
+use crate::components::hint_row::HintRow;
 use crate::components::overlay::{Overlay, OverlayKind, OverlayMsg};
 use crate::components::sortable::SortState;
 use crate::settings::themes::Theme;
@@ -333,13 +335,25 @@ impl Component for ActiveDialog {
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
         let key = match event {
             InputEvent::Key(key) => key,
+            // Exhaustive on purpose: a new dialog must decide what the mouse
+            // does in it. Each one consumes every mouse event — it is modal,
+            // and a click must never reach the panels behind it.
             InputEvent::Mouse(m) => {
                 return match self {
                     ActiveDialog::Sort(d) => d.handle_mouse(m, tx),
                     ActiveDialog::Properties(d) => d.handle_mouse(m, tx),
-                    // Modal: a click on a dialog without mouse support is
-                    // swallowed rather than reaching the panels behind it.
-                    _ => EventState::Consumed,
+                    ActiveDialog::Delete(d) => d.handle_mouse(m, tx),
+                    ActiveDialog::Menu(d) => d.handle_mouse(m, tx),
+                    ActiveDialog::Rename(d) => d.handle_mouse(m, tx),
+                    ActiveDialog::Move(d) => d.handle_mouse(m, tx),
+                    ActiveDialog::SaveSearch(d) => d.handle_input(event, tx),
+                    ActiveDialog::CreateNote(d) => d.handle_mouse(m, tx),
+                    ActiveDialog::QuickNote(d) => d.handle_mouse(m, tx),
+                    ActiveDialog::WorkspaceSwitcher(d) => d.handle_mouse(m, tx),
+                    ActiveDialog::UpdateAvailable(d) => d.handle_mouse(m, tx),
+                    ActiveDialog::ThemePicker(d) => d.handle_mouse(m, tx),
+                    ActiveDialog::Help(d) => d.handle_mouse(m, tx),
+                    ActiveDialog::PinnedNotes(d) => d.handle_mouse(m, tx),
                 };
             }
             InputEvent::Paste(_) => return EventState::NotConsumed,
@@ -415,34 +429,42 @@ pub(super) fn render_error_row(f: &mut Frame, rect: Rect, msg: &str, theme: &The
     );
 }
 
-/// Renders `{enter_text}  [Esc] Cancel` split into two horizontal columns.
-/// The Enter part is dimmed when `enter_active` is `false`.
-pub(super) fn render_confirm_hint(
+/// The `[Enter] {action}   [Esc] Cancel` row shared by the form dialogs.
+/// Each chip is clickable and runs its key.
+pub(super) fn confirm_hints(action: &str) -> HintRow {
+    HintRow::new(&[
+        (KeyCode::Enter, "Enter", action),
+        (KeyCode::Esc, "Esc", "Cancel"),
+    ])
+    .with_gap(3)
+}
+
+/// Draw a [`confirm_hints`] row. `enter_active` is only the *look*: `fg`
+/// when ready, gray otherwise. `enter_clickable` must mirror exactly when the
+/// Enter key acts — a dialog whose Enter still runs while it looks not-ready
+/// (Move before validation lands, Save search while names load) passes
+/// `true`, so the click never does less than the key.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn render_confirm_hints(
     f: &mut Frame,
     rect: Rect,
-    enter_text: &str,
+    hints: &mut HintRow,
     enter_active: bool,
+    enter_clickable: bool,
     fg: Color,
     gray: Color,
     bg: Color,
 ) {
-    let enter_style = if enter_active {
-        Style::default().fg(fg).bg(bg)
-    } else {
-        Style::default().fg(gray).bg(bg).add_modifier(Modifier::DIM)
-    };
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(enter_text.len() as u16 + 1),
-            Constraint::Min(1),
-        ])
-        .split(rect);
-    f.render_widget(Paragraph::new(enter_text).style(enter_style), chunks[0]);
-    f.render_widget(
-        Paragraph::new("  [Esc] Cancel").style(Style::default().fg(gray).bg(bg)),
-        chunks[1],
+    hints.set_enabled(0, enter_clickable);
+    hints.set_style(
+        0,
+        Some(if enter_active {
+            Style::default().fg(fg).bg(bg)
+        } else {
+            Style::default().fg(gray).bg(bg)
+        }),
     );
+    hints.render(f, rect, Style::default().fg(gray).bg(bg));
 }
 
 // ---------------------------------------------------------------------------
@@ -456,6 +478,386 @@ pub(super) use crate::components::fixed_centered_rect;
 mod tests {
     use super::*;
     use crate::keys::KeyBindings;
+
+    /// Render `dialog` on a 100×40 screen, left-click the first cell of
+    /// `text`, and return the events the click sent. Panics if `text` is not
+    /// drawn — a chip that moved off-screen should fail loudly.
+    pub(crate) fn click_text(dialog: &mut ActiveDialog, text: &str) -> Vec<AppEvent> {
+        let (col, row) = draw_and_find(dialog, text);
+        click_at(dialog, col, row)
+    }
+
+    /// Render `dialog` and return the cell where `text` starts.
+    pub(crate) fn draw_and_find(dialog: &mut ActiveDialog, text: &str) -> (u16, u16) {
+        use ratatui::{Terminal, backend::TestBackend};
+        let theme = Theme::gruvbox_dark();
+        let mut t = Terminal::new(TestBackend::new(100, 40)).unwrap();
+        t.draw(|f| <ActiveDialog as Component>::render(dialog, f, f.area(), &theme, true))
+            .unwrap();
+        let buf = t.backend().buffer().clone();
+        for y in 0..40u16 {
+            let cells: Vec<String> = (0..100u16)
+                .map(|x| buf[(x, y)].symbol().to_string())
+                .collect();
+            let line: String = cells.concat();
+            if let Some(byte) = line.find(text) {
+                // Map the byte offset back to a cell index.
+                let mut acc = 0;
+                for (x, c) in cells.iter().enumerate() {
+                    if acc == byte {
+                        return (x as u16, y);
+                    }
+                    acc += c.len();
+                }
+            }
+        }
+        panic!("{text:?} not drawn");
+    }
+
+    /// Left-click (col,row) and return the events sent.
+    pub(crate) fn click_at(dialog: &mut ActiveDialog, col: u16, row: u16) -> Vec<AppEvent> {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        Overlay::handle_input(dialog, &crate::test_support::mouse_down_at(col, row), &tx);
+        let mut out = Vec::new();
+        while let Ok(e) = rx.try_recv() {
+            out.push(e);
+        }
+        out
+    }
+
+    fn closed(events: &[AppEvent]) -> bool {
+        events.iter().any(|e| matches!(e, AppEvent::CloseOverlay))
+    }
+
+    fn has(events: &[AppEvent], pred: impl Fn(&AppEvent) -> bool) -> bool {
+        events.iter().any(pred)
+    }
+
+    #[test]
+    fn menu_actions_are_clickable() {
+        use crate::components::events::FileOp;
+        let path = kimun_core::nfs::VaultPath::new("a.md");
+        let mut d = ActiveDialog::Menu(FileOpsMenuDialog::new(path));
+        assert!(has(&click_text(&mut d, "[D]"), |e| matches!(
+            e,
+            AppEvent::FileOp(FileOp::ShowDelete(_))
+        )));
+        assert!(has(&click_text(&mut d, "Rename"), |e| matches!(
+            e,
+            AppEvent::FileOp(FileOp::ShowRename(_))
+        )));
+        assert!(has(&click_text(&mut d, "Move"), |e| matches!(
+            e,
+            AppEvent::FileOp(FileOp::ShowMove(_))
+        )));
+        assert!(closed(&click_text(&mut d, "[Esc] Cancel")));
+        assert!(closed(&click_at(&mut d, 0, 0)), "outside press cancels");
+        assert!(
+            !closed(&click_text(&mut d, "a.md")),
+            "inside press does not"
+        );
+    }
+
+    #[tokio::test]
+    async fn rename_chips_are_clickable() {
+        let vault = crate::test_support::temp_vault("dlg-rename-click").await;
+        let mut d = ActiveDialog::Rename(RenameDialog::new(
+            kimun_core::nfs::VaultPath::new("a.md"),
+            vault,
+        ));
+        // Enter is inert until the name validates, like the key.
+        assert!(click_text(&mut d, "[Enter] Rename").is_empty());
+        assert!(closed(&click_text(&mut d, "[Esc] Cancel")));
+    }
+
+    #[tokio::test]
+    async fn move_list_rows_select_and_cancel_chip_closes() {
+        let vault = crate::test_support::temp_vault("dlg-move-click").await;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut m = MoveDialog::new(kimun_core::nfs::VaultPath::new("a.md"), vault, &tx);
+        m.all_dirs = vec![
+            kimun_core::nfs::VaultPath::root(),
+            kimun_core::nfs::VaultPath::new("projects"),
+        ];
+        m.list_state.select(Some(0));
+        let mut d = ActiveDialog::Move(m);
+        click_text(&mut d, "projects");
+        let ActiveDialog::Move(m) = &d else {
+            unreachable!()
+        };
+        assert_eq!(m.list_state.selected(), Some(1), "click selects the row");
+        assert!(closed(&click_text(&mut d, "[Esc] Cancel")));
+    }
+
+    /// The Enter key moves while validation is still Idle/Pending, so the
+    /// chip must too — a click may never do less than the key.
+    #[tokio::test]
+    async fn move_enter_chip_acts_before_validation_lands() {
+        let vault = crate::test_support::temp_vault("dlg-move-enter").await;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut m = MoveDialog::new(kimun_core::nfs::VaultPath::new("a.md"), vault, &tx);
+        m.all_dirs = vec![kimun_core::nfs::VaultPath::new("projects")];
+        m.list_state.select(Some(0));
+        assert_eq!(m.dest_validation, ValidationState::Idle);
+        let mut d = ActiveDialog::Move(m);
+        let (col, row) = draw_and_find(&mut d, "[Enter] Move here");
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        Overlay::handle_input(&mut d, &crate::test_support::mouse_down_at(col, row), &tx);
+        // The move itself runs on a task; `a.md` does not exist, so it
+        // reports an error — proof the click reached the move.
+        let ev = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("the click started the move");
+        assert!(matches!(
+            ev,
+            Some(AppEvent::OverlayData(OverlayData::Error(_))) | Some(AppEvent::FileOp(_))
+        ));
+    }
+
+    #[test]
+    fn save_search_chips_are_clickable() {
+        use crate::components::events::SavedSearchFlow;
+        let mut d = ActiveDialog::SaveSearch(SaveSearchDialog::new(
+            "#tag".into(),
+            None,
+            SaveSource::QueryPanel,
+        ));
+        if let ActiveDialog::SaveSearch(s) = &mut d {
+            s.set_existing_names(vec![]);
+        }
+        let ev = click_text(&mut d, "[Enter] Save new");
+        assert!(has(&ev, |e| matches!(
+            e,
+            AppEvent::SavedSearch(SavedSearchFlow::Confirmed { .. })
+        )));
+        assert!(closed(&click_text(&mut d, "[Esc] Cancel")));
+    }
+
+    #[tokio::test]
+    async fn create_note_chips_are_clickable() {
+        let vault = crate::test_support::temp_vault("dlg-create-click").await;
+        let mut d = ActiveDialog::CreateNote(CreateNoteDialog::new(
+            kimun_core::nfs::VaultPath::new("new.md"),
+            vault,
+            None,
+        ));
+        assert!(closed(&click_text(&mut d, "[Esc] Cancel")));
+    }
+
+    #[tokio::test]
+    async fn quick_note_chips_are_clickable() {
+        let vault = crate::test_support::temp_vault("dlg-quick-click").await;
+        let mut d = ActiveDialog::QuickNote(QuickNoteModal::new(vault));
+        // Empty input: Enter closes, same as the key.
+        assert!(closed(&click_text(&mut d, "[Enter] Save")));
+        assert!(closed(&click_text(&mut d, "[Shift+Enter]")));
+        assert!(closed(&click_text(&mut d, "[Esc] Cancel")));
+    }
+
+    #[test]
+    fn workspace_switcher_rows_and_outside_click() {
+        let mut d = ActiveDialog::WorkspaceSwitcher(WorkspaceSwitcherModal::with_workspaces(vec![
+            ("alpha".into(), true),
+            ("beta".into(), false),
+        ]));
+        assert!(click_text(&mut d, "beta").is_empty(), "first click selects");
+        let ev = click_text(&mut d, "beta");
+        assert!(
+            has(
+                &ev,
+                |e| matches!(e, AppEvent::WorkspaceSwitched(n) if n == "beta")
+            ),
+            "clicking the selected row switches"
+        );
+        assert!(closed(&click_text(&mut d, "[Esc] Cancel")));
+        assert!(closed(&click_at(&mut d, 0, 0)), "outside press cancels");
+    }
+
+    #[test]
+    fn update_actions_are_clickable() {
+        use crate::components::events::UpdateFlow;
+        let status = crate::update::UpdateStatus {
+            current: "0.1.0".into(),
+            latest: "9.9.9".into(),
+            channel: crate::update::InstallChannel::Script,
+            update_available: true,
+            dismissed: false,
+        };
+        let mut d = ActiveDialog::update(&status);
+        assert!(has(&click_text(&mut d, "Update now"), |e| matches!(
+            e,
+            AppEvent::Update(UpdateFlow::Apply)
+        )));
+        assert!(has(&click_text(&mut d, "[S]"), |e| matches!(
+            e,
+            AppEvent::Update(UpdateFlow::Dismiss(_))
+        )));
+        assert!(closed(&click_text(&mut d, "[Esc] Close")));
+        assert!(closed(&click_at(&mut d, 0, 0)), "outside press closes");
+        assert!(
+            !closed(&click_text(&mut d, "Releases:")),
+            "inside press does not"
+        );
+    }
+
+    #[test]
+    fn theme_picker_click_previews_then_keeps() {
+        let settings = crate::settings::AppSettings::default();
+        let mut d = ActiveDialog::theme_picker(&settings);
+        // Any theme other than the current one.
+        let name = {
+            let current = settings.effective_theme_name();
+            settings
+                .theme_list()
+                .into_iter()
+                .map(|t| t.name)
+                .find(|n| *n != current)
+                .expect("more than one theme")
+        };
+        let ev = click_text(&mut d, &name);
+        assert!(has(&ev, |e| matches!(
+            e,
+            AppEvent::ApplyTheme { persist: false, .. }
+        )));
+        assert!(!closed(&ev), "first click only previews");
+        let ev = click_text(&mut d, &name);
+        assert!(has(&ev, |e| matches!(
+            e,
+            AppEvent::ApplyTheme { persist: true, .. }
+        )));
+        assert!(closed(&ev), "clicking the previewed theme keeps it");
+    }
+
+    #[test]
+    fn theme_picker_outside_click_reverts() {
+        let settings = crate::settings::AppSettings::default();
+        let mut d = ActiveDialog::theme_picker(&settings);
+        let name = {
+            let current = settings.effective_theme_name();
+            settings
+                .theme_list()
+                .into_iter()
+                .map(|t| t.name)
+                .find(|n| *n != current)
+                .expect("more than one theme")
+        };
+        click_text(&mut d, &name);
+        let ev = click_at(&mut d, 0, 0);
+        assert!(
+            has(&ev, |e| matches!(
+                e,
+                AppEvent::ApplyTheme { persist: false, .. }
+            )),
+            "reverts the preview"
+        );
+        assert!(closed(&ev));
+    }
+
+    #[test]
+    fn help_close_chip_and_outside_click_close() {
+        let mut d = ActiveDialog::cheatsheet(&crate::settings::AppSettings::default());
+        assert!(closed(&click_text(&mut d, "[Esc] Close")));
+        assert!(
+            !closed(&click_text(&mut d, "Scroll")),
+            "the scroll hint is inert"
+        );
+        assert!(closed(&click_at(&mut d, 0, 0)));
+    }
+
+    #[test]
+    fn help_wheel_scrolls() {
+        use ratatui::crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
+        let mut d = ActiveDialog::cheatsheet(&crate::settings::AppSettings::default());
+        let (col, row) = draw_and_find(&mut d, "[Esc] Close");
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        Overlay::handle_input(
+            &mut d,
+            &InputEvent::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: col,
+                row,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &tx,
+        );
+        let ActiveDialog::Help(h) = &d else {
+            unreachable!()
+        };
+        assert!(h.scroll() > 0);
+    }
+
+    #[tokio::test]
+    async fn pinned_rows_and_chips_are_clickable() {
+        use crate::components::events::PinnedRow;
+        use kimun_core::nfs::VaultPath;
+        let vault = crate::test_support::temp_vault("dlg-pinned-click").await;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut p = PinnedNotesDialog::new(vault, &tx);
+        p.set_rows(vec![
+            PinnedRow {
+                path: VaultPath::new("alpha.md"),
+                missing: false,
+            },
+            PinnedRow {
+                path: VaultPath::new("beta.md"),
+                missing: false,
+            },
+        ]);
+        let mut d = ActiveDialog::PinnedNotes(p);
+        assert!(
+            click_text(&mut d, "beta.md").is_empty(),
+            "first click selects"
+        );
+        let ActiveDialog::PinnedNotes(p) = &d else {
+            unreachable!()
+        };
+        assert_eq!(p.selected, 1);
+        assert!(
+            !click_text(&mut d, "beta.md").is_empty(),
+            "second click opens"
+        );
+        assert!(closed(&click_text(&mut d, "[Esc] Close")));
+        assert!(closed(&click_at(&mut d, 0, 0)));
+    }
+
+    fn sidebar_sort() -> ActiveDialog {
+        use crate::components::file_list::{SortField, SortOrder};
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let state = SortState {
+            field: SortField::Name,
+            order: SortOrder::Ascending,
+            group_dirs: Some(false),
+        };
+        ActiveDialog::sort(SortTarget::Sidebar, state, false, false, None, &tx)
+    }
+
+    #[test]
+    fn sort_footer_chips_save_and_close() {
+        let mut d = sidebar_sort();
+        assert!(has(&click_text(&mut d, "[s] Save default"), |e| matches!(
+            e,
+            AppEvent::SortChanged { persist: true, .. }
+        )));
+        assert!(closed(&click_text(&mut d, "[Esc] Close")));
+        assert!(
+            click_text(&mut d, "[Space] Toggle").is_empty(),
+            "informational chips are inert"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_cancel_chip_closes() {
+        let vault = crate::test_support::temp_vault("dlg-delete-click").await;
+        let mut d = ActiveDialog::Delete(DeleteConfirmDialog::new(
+            kimun_core::nfs::VaultPath::new("a.md"),
+            vault,
+        ));
+        assert!(closed(&click_text(&mut d, "[Esc] Cancel")));
+        assert!(
+            !closed(&click_text(&mut d, "This cannot")),
+            "body text is inert"
+        );
+    }
 
     #[test]
     fn active_dialog_help_variant_compiles() {

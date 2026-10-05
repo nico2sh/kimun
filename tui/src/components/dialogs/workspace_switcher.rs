@@ -1,11 +1,12 @@
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseEvent, MouseEventKind};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph};
 
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx};
+use crate::components::hint_row::{HintRow, is_press_outside, list_index_at};
 use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::settings::AppSettings;
 use crate::settings::themes::Theme;
@@ -13,6 +14,11 @@ use crate::settings::themes::Theme;
 pub struct WorkspaceSwitcherModal {
     workspaces: Vec<(String, bool)>, // (name, is_current)
     list_state: ListState,
+    /// Outer popup rect from the last render; a press outside cancels.
+    popup_rect: Rect,
+    /// Where the rows were drawn in the last render.
+    list_rect: Rect,
+    hints: HintRow,
 }
 
 impl WorkspaceSwitcherModal {
@@ -37,7 +43,59 @@ impl WorkspaceSwitcherModal {
         Self {
             workspaces,
             list_state,
+            popup_rect: Rect::default(),
+            list_rect: Rect::default(),
+            hints: HintRow::new(&[
+                (KeyCode::Enter, "Enter", "Switch"),
+                (KeyCode::Esc, "Esc", "Cancel"),
+            ]),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_workspaces(workspaces: Vec<(String, bool)>) -> Self {
+        let mut list_state = ListState::default();
+        list_state.select(workspaces.iter().position(|(_, cur)| *cur));
+        Self {
+            workspaces,
+            list_state,
+            popup_rect: Rect::default(),
+            list_rect: Rect::default(),
+            hints: HintRow::new(&[
+                (KeyCode::Enter, "Enter", "Switch"),
+                (KeyCode::Esc, "Esc", "Cancel"),
+            ]),
+        }
+    }
+
+    /// Click a row to select it, click the selected row to switch; the wheel
+    /// moves the selection; a press outside the popup cancels. Modal: every
+    /// mouse event is consumed.
+    pub fn handle_mouse(&mut self, m: &MouseEvent, tx: &AppTx) -> EventState {
+        if is_press_outside(m, self.popup_rect) {
+            return self.handle_key(KeyEvent::from(KeyCode::Esc), tx);
+        }
+        if let Some(key) = self.hints.hit(m) {
+            return self.handle_key(key, tx);
+        }
+        match m.kind {
+            MouseEventKind::ScrollUp => {
+                self.handle_key(KeyEvent::from(KeyCode::Up), tx);
+            }
+            MouseEventKind::ScrollDown => {
+                self.handle_key(KeyEvent::from(KeyCode::Down), tx);
+            }
+            _ => {
+                let len = self.workspaces.len();
+                if let Some(idx) = list_index_at(m, self.list_rect, self.list_state.offset(), len) {
+                    if self.list_state.selected() == Some(idx) {
+                        return self.handle_key(KeyEvent::from(KeyCode::Enter), tx);
+                    }
+                    self.list_state.select(Some(idx));
+                }
+            }
+        }
+        EventState::Consumed
     }
 
     pub fn handle_key(&mut self, key: KeyEvent, tx: &AppTx) -> EventState {
@@ -88,6 +146,7 @@ impl WorkspaceSwitcherModal {
         let height = (self.workspaces.len() as u16 + 5).min(rect.height.saturating_sub(4));
         let width = 50u16.min(rect.width.saturating_sub(4));
         let popup = super::fixed_centered_rect(width, height, rect);
+        self.popup_rect = popup;
 
         let inner = modal_chrome(
             f,
@@ -135,12 +194,10 @@ impl WorkspaceSwitcherModal {
             .style(Style::default().bg(bg))
             .highlight_style(Style::default().bg(theme.selection_bg.to_ratatui()));
 
+        self.list_rect = rows[0];
         f.render_stateful_widget(list, rows[0], &mut self.list_state);
 
-        f.render_widget(
-            Paragraph::new("  [Enter] Switch  [Esc] Cancel")
-                .style(Style::default().fg(gray).bg(bg)),
-            rows[1],
-        );
+        self.hints
+            .render(f, rows[1], Style::default().fg(gray).bg(bg));
     }
 }

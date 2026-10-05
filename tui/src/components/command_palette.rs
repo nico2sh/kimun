@@ -4,13 +4,14 @@
 //! the leader sequences fire, never a second implementation.
 
 use ratatui::Frame;
+use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
-use ratatui::text::{Line, Span};
 use ratatui::widgets::{ListItem, Paragraph};
 
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, redraw_callback};
+use crate::components::hint_row::{HintRow, is_press_outside};
 use crate::components::overlay::{Overlay, OverlayKind};
 use crate::components::panel::{ModalBg, ModalSpec, modal_chrome};
 use crate::components::rich_row::RichRow;
@@ -91,6 +92,9 @@ pub fn command_entries(tree: &LeaderNode, gateway: &str) -> Vec<CommandEntry> {
 /// The palette modal — same engine as the note browser, command rows.
 pub struct CommandPaletteModal {
     list: SearchList<CommandEntry>,
+    /// Outer popup rect from the last render; a press outside closes.
+    popup_rect: Rect,
+    hints: HintRow,
 }
 
 impl CommandPaletteModal {
@@ -101,7 +105,16 @@ impl CommandPaletteModal {
             .filter(Filter::Fuzzy)
             .icons(icons)
             .build_with_rows(command_entries(tree, gateway));
-        Self { list }
+        Self {
+            list,
+            popup_rect: Rect::default(),
+            hints: HintRow::new(&[
+                (KeyCode::Null, "↑↓", "Move"),
+                (KeyCode::Enter, "⏎", "Run"),
+                (KeyCode::Esc, "Esc", "Close"),
+            ])
+            .with_indent(0),
+        }
     }
 
     fn execute_selected(&self, tx: &AppTx) {
@@ -141,6 +154,13 @@ impl Overlay for CommandPaletteModal {
                 _ => EventState::Consumed,
             },
             InputEvent::Mouse(mouse) => {
+                if is_press_outside(mouse, self.popup_rect) {
+                    tx.send(AppEvent::CloseOverlay).ok();
+                    return EventState::Consumed;
+                }
+                if let Some(key) = self.hints.hit(mouse) {
+                    return self.handle_input(&InputEvent::Key(key), tx);
+                }
                 if let SearchMouse::Activated(_) = self.list.handle_mouse(mouse) {
                     self.execute_selected(tx);
                 }
@@ -152,6 +172,7 @@ impl Overlay for CommandPaletteModal {
 
     fn render(&mut self, f: &mut Frame, area: Rect, theme: &Theme) {
         let popup = crate::components::centered_rect(60, 60, area);
+        self.popup_rect = popup;
         let inner = modal_chrome(
             f,
             popup,
@@ -189,13 +210,8 @@ impl Overlay for CommandPaletteModal {
         self.list.set_list_rect(rows[1]);
         self.list.set_panel_rect(popup);
 
-        f.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                "↑↓ move · ⏎ run · Esc close",
-                Style::default().fg(theme.gray.to_ratatui()),
-            ))),
-            rows[2],
-        );
+        self.hints
+            .render(f, rows[2], Style::default().fg(theme.gray.to_ratatui()));
 
         self.list.render_autocomplete(f, popup, theme);
     }
@@ -208,6 +224,56 @@ impl Overlay for CommandPaletteModal {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn palette() -> (CommandPaletteModal, AppTx) {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let p = CommandPaletteModal::new(
+            &crate::keys::leader::leader_tree(),
+            "Ctrl+B",
+            Icons::new(false),
+            tx.clone(),
+        );
+        (p, tx)
+    }
+
+    fn drawn(p: &mut CommandPaletteModal) -> ratatui::buffer::Buffer {
+        use ratatui::{Terminal, backend::TestBackend};
+        let theme = Theme::gruvbox_dark();
+        let mut t = Terminal::new(TestBackend::new(100, 40)).unwrap();
+        t.draw(|f| p.render(f, f.area(), &theme)).unwrap();
+        t.backend().buffer().clone()
+    }
+
+    fn click(p: &mut CommandPaletteModal, col: u16, row: u16) -> Vec<AppEvent> {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        p.handle_input(&crate::test_support::mouse_down_at(col, row), &tx);
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    }
+
+    #[test]
+    fn outside_press_and_close_chip_close_the_palette() {
+        let (mut p, _tx) = palette();
+        drawn(&mut p);
+        assert!(
+            click(&mut p, 0, 0)
+                .iter()
+                .any(|e| matches!(e, AppEvent::CloseOverlay))
+        );
+        let buf = drawn(&mut p);
+        let (col, row) = (0..40u16)
+            .flat_map(|y| (0..100u16).map(move |x| (x, y)))
+            .find(|&(x, y)| {
+                buf[(x, y)].symbol() == "["
+                    && (1..5)
+                        .all(|i| buf[(x + i, y)].symbol() == ["E", "s", "c", "]"][i as usize - 1])
+            })
+            .expect("[Esc] chip drawn");
+        assert!(
+            click(&mut p, col, row)
+                .iter()
+                .any(|e| matches!(e, AppEvent::CloseOverlay))
+        );
+    }
 
     #[test]
     fn entries_cover_every_leader_leaf() {
