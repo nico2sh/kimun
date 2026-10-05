@@ -49,7 +49,7 @@ use std::time::{Duration, Instant};
 /// Shorter than `TypingRun::IDLE`, which measures something else: that is a
 /// *pause* (how long before a human stops feeling they are still typing), this
 /// is a *deliberate burst*. macOS and Windows default to 500ms, GNOME to 400ms.
-const WINDOW: Duration = Duration::from_millis(400);
+pub(crate) const WINDOW: Duration = Duration::from_millis(400);
 
 /// The clicks currently forming one gesture.
 #[derive(Debug, Default)]

@@ -1,5 +1,5 @@
 use ratatui::Frame;
-use ratatui::crossterm::event::KeyCode;
+use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseEvent};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::Paragraph;
@@ -7,9 +7,11 @@ use ratatui::widgets::Paragraph;
 use crate::components::Component;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, UpdateFlow};
+use crate::components::hint_row::{HintRow, is_press_outside, key_at};
 use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::settings::themes::Theme;
 use crate::update::UpdateStatus;
+use unicode_width::UnicodeWidthStr;
 
 /// Dialog shown when a newer release is available. On self-update-eligible
 /// channels it offers an in-place update; otherwise it shows the package
@@ -33,6 +35,11 @@ pub struct UpdateAvailableDialog {
     eligible: bool,
     /// Upgrade command for package-manager channels (e.g. `brew upgrade kimun`).
     upgrade_hint: Option<String>,
+    /// Outer popup rect from the last render; a press outside closes.
+    popup_rect: Rect,
+    /// Each drawn `[U]`/`[S]` action with its key, from the last render.
+    action_rects: Vec<(Rect, KeyCode)>,
+    close_hint: HintRow,
 }
 
 impl UpdateAvailableDialog {
@@ -42,7 +49,25 @@ impl UpdateAvailableDialog {
             latest: status.latest.clone(),
             eligible: status.channel.self_update_eligible(),
             upgrade_hint: status.channel.upgrade_hint().map(str::to_string),
+            popup_rect: Rect::default(),
+            action_rects: Vec::new(),
+            close_hint: HintRow::new(&[(KeyCode::Esc, "Esc", "Close")]),
         }
+    }
+
+    /// Clicking an action runs its key; a press outside the popup closes it.
+    /// Modal: every mouse event is consumed.
+    pub fn handle_mouse(&mut self, m: &MouseEvent, tx: &AppTx) -> EventState {
+        if is_press_outside(m, self.popup_rect) {
+            return self.handle_key(KeyEvent::from(KeyCode::Esc), tx);
+        }
+        if let Some(key) = self.close_hint.hit(m) {
+            return self.handle_key(key, tx);
+        }
+        if let Some(key) = key_at(&self.action_rects, m) {
+            return self.handle_key(key, tx);
+        }
+        EventState::Consumed
     }
 
     pub fn handle_key(
@@ -74,6 +99,8 @@ impl UpdateAvailableDialog {
 impl Component for UpdateAvailableDialog {
     fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, _focused: bool) {
         let popup_area = super::fixed_centered_rect(58, 11, rect);
+        self.popup_rect = popup_area;
+        self.action_rects.clear();
 
         let inner = modal_chrome(
             f,
@@ -131,8 +158,9 @@ impl Component for UpdateAvailableDialog {
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Length(24), Constraint::Min(1)])
                 .split(rows[3]);
-            render_action(f, cols[0], "  [U]", " Update now", key_style, label_style);
-            render_action(
+            let r = render_action(f, cols[0], "  [U]", " Update now", key_style, label_style);
+            self.action_rects.push((r, KeyCode::Char('u')));
+            let r = render_action(
                 f,
                 cols[1],
                 "[S]",
@@ -140,6 +168,7 @@ impl Component for UpdateAvailableDialog {
                 key_style,
                 label_style,
             );
+            self.action_rects.push((r, KeyCode::Char('s')));
         } else {
             // Package-manager channel: show the upgrade command instead.
             let hint = self
@@ -150,7 +179,7 @@ impl Component for UpdateAvailableDialog {
                 Paragraph::new(format!("  Run: {hint}")).style(label_style),
                 rows[3],
             );
-            render_action(
+            let r = render_action(
                 f,
                 rows[4],
                 "  [S]",
@@ -158,6 +187,7 @@ impl Component for UpdateAvailableDialog {
                 key_style,
                 label_style,
             );
+            self.action_rects.push((r, KeyCode::Char('s')));
         }
 
         // Row 5: release notes URL.
@@ -168,13 +198,13 @@ impl Component for UpdateAvailableDialog {
         );
 
         // Row 6: close hint.
-        f.render_widget(
-            Paragraph::new("  [Esc] Close").style(Style::default().fg(gray).bg(bg)),
-            rows[6],
-        );
+        self.close_hint
+            .render(f, rows[6], Style::default().fg(gray).bg(bg));
     }
 }
 
+/// Draw `key label` into `area` and return the drawn text's rect — the
+/// action's click target (leading indent excluded).
 fn render_action(
     f: &mut Frame,
     area: Rect,
@@ -182,7 +212,7 @@ fn render_action(
     label: &str,
     key_style: Style,
     label_style: Style,
-) {
+) -> Rect {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(key.len() as u16), Constraint::Min(1)])
@@ -192,6 +222,15 @@ fn render_action(
         Paragraph::new(label.to_string()).style(label_style),
         chunks[1],
     );
+    let indent = (key.len() - key.trim_start().len()) as u16;
+    let x = area.x.saturating_add(indent);
+    let text_w = (key.trim_start().width() + label.trim_end().width()) as u16;
+    Rect {
+        x,
+        y: area.y,
+        width: text_w.min(area.right().saturating_sub(x)),
+        height: 1,
+    }
 }
 
 #[cfg(test)]

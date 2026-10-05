@@ -5,6 +5,7 @@ use ratatui::widgets::Paragraph;
 
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, SaveSource, SavedSearchFlow};
+use crate::components::hint_row::HintRow;
 use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::components::single_line_input::{InputOutcome, SingleLineInput};
 use crate::settings::themes::Theme;
@@ -46,6 +47,7 @@ pub struct SaveSearchDialog {
     /// `None` until the load lands —
     /// the hint shows [`SaveHint::Pending`] rather than guessing "save new".
     existing: Option<Vec<String>>,
+    hints: HintRow,
 }
 
 impl SaveSearchDialog {
@@ -60,6 +62,7 @@ impl SaveSearchDialog {
             provenance,
             source,
             existing: None,
+            hints: super::confirm_hints("Save"),
         }
     }
 
@@ -104,8 +107,17 @@ impl SaveSearchDialog {
     }
 
     pub fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
-        let InputEvent::Key(key) = event else {
-            return EventState::NotConsumed;
+        let key = match event {
+            InputEvent::Key(key) => key,
+            // A click on a hint chip runs its key. Modal: every mouse event
+            // is consumed.
+            InputEvent::Mouse(m) => {
+                if let Some(key) = self.hints.hit(m) {
+                    self.handle_input(&InputEvent::Key(key), tx);
+                }
+                return EventState::Consumed;
+            }
+            InputEvent::Paste(_) => return EventState::NotConsumed,
         };
         match self.name.handle_key(key) {
             InputOutcome::Submit => {
@@ -187,11 +199,15 @@ impl SaveSearchDialog {
             SaveHint::Pending => ("Save".to_string(), false, true),
         };
         let enter_fg = if warn { theme.yellow.to_ratatui() } else { fg };
-        super::render_confirm_hint(
+        self.hints.set_label(0, "Enter", &action);
+        // Enter saves even while the existing names are still loading, so
+        // the chip stays clickable while it looks pending.
+        super::render_confirm_hints(
             f,
             rows[5],
-            &format!("  [Enter] {action}"),
+            &mut self.hints,
             !pending,
+            true,
             enter_fg,
             gray,
             bg,

@@ -29,7 +29,7 @@ use crate::components::events::{
     SortTarget, UpdateFlow,
 };
 use crate::components::file_list::{FileListEntry, SortField};
-use crate::components::footer_bar::FooterBar;
+use crate::components::footer_bar::{FooterBar, FooterTarget};
 use crate::components::note_browser::file_finder_provider::FileFinderProvider;
 use crate::components::note_browser::search_provider::resolving_search_source;
 use crate::components::note_browser::{BrowserScope, NoteBrowserModal};
@@ -715,6 +715,20 @@ impl EditorScreen {
             claim: self.panels.editor().map(|e| e.claim()).unwrap_or_default(),
             double_click,
             overlay_sortable: self.overlays.active_sortable().is_some(),
+            pointer_on_editor: false,
+        }
+    }
+
+    /// [`Self::input_ctx`] for a specific event: a mouse event also records
+    /// whether it landed on the editor column, which the classifier cannot
+    /// hit-test for itself.
+    fn input_ctx_for(&self, event: &InputEvent, double_click: bool) -> InputCtx {
+        InputCtx {
+            pointer_on_editor: match event {
+                InputEvent::Mouse(m) => self.panels.pointer_on_editor(m.column, m.row),
+                _ => false,
+            },
+            ..self.input_ctx(double_click)
         }
     }
 
@@ -806,7 +820,7 @@ impl EditorScreen {
                     // already applied by the probe classification, so the
                     // tail must not re-cancel (`cancel_leader = false`).
                     // A key path (Ctrl+V): no press to pair, so no double.
-                    let ctx = self.input_ctx(false);
+                    let ctx = self.input_ctx_for(event, false);
                     let classification = {
                         let s = self.settings.read().unwrap();
                         crate::app_screen::editor_input::classify_tail(
@@ -866,10 +880,17 @@ impl EditorScreen {
                             ratatui::crossterm::event::MouseButton::Left
                         )
                     )
-                    && self.footer.props_hit(m.column, m.row)
+                    && let Some(target) = self.footer.target_at(m.column, m.row)
                 {
-                    if let Some(path) = self.open_note().cloned() {
-                        tx.send(AppEvent::FileOp(FileOp::ShowProperties(path))).ok();
+                    match target {
+                        FooterTarget::Props => {
+                            if let Some(path) = self.open_note().cloned() {
+                                tx.send(AppEvent::FileOp(FileOp::ShowProperties(path))).ok();
+                            }
+                        }
+                        FooterTarget::Update => {
+                            tx.send(AppEvent::Update(UpdateFlow::ShowDialog)).ok();
+                        }
                     }
                     return EventState::Consumed;
                 }
@@ -2304,7 +2325,7 @@ impl AppScreen for EditorScreen {
         // input-relevant state the event itself advances, and the classifier
         // cannot advance it and stay pure. Nothing user-visible moves here.
         let double_click = self.track_click(event, std::time::Instant::now());
-        let ctx = self.input_ctx(double_click);
+        let ctx = self.input_ctx_for(event, double_click);
         // The settings lock guards the key bindings, which only the
         // shortcut tier reads — never lock for mouse/paste traffic (mouse
         // motion is high-frequency).
@@ -4274,7 +4295,66 @@ mod tests {
         lay_out(&mut screen);
         let (col, row) = (0..40u16)
             .flat_map(|r| (0..120u16).map(move |c| (c, r)))
-            .find(|(c, r)| screen.footer.props_hit(*c, *r))
+            .find(|(c, r)| screen.footer.target_at(*c, *r) == Some(FooterTarget::Props))
+            .expect("props segment laid out");
+        while rx.try_recv().is_ok() {}
+        screen.handle_input(&press_at(col, row), &tx);
+        let mut opened = false;
+        while let Ok(evt) = rx.try_recv() {
+            opened |= matches!(evt, AppEvent::FileOp(FileOp::ShowProperties(_)));
+        }
+        assert!(opened);
+    }
+
+    /// The `⬆ x available` segment promises the update dialog; a click
+    /// delivers it through the same `ShowDialog` flow a manual check uses.
+    #[tokio::test]
+    async fn clicking_update_segment_opens_update_dialog() {
+        let (mut screen, _vault, tx, mut rx, _dir) = screen_on_note().await;
+        screen.update = Some(crate::update::UpdateStatus {
+            current: "0.1.0".into(),
+            latest: "9.9.9".into(),
+            channel: crate::update::InstallChannel::Cargo,
+            update_available: true,
+            dismissed: false,
+        });
+        lay_out(&mut screen);
+        let (col, row) = (0..40u16)
+            .flat_map(|r| (0..120u16).map(move |c| (c, r)))
+            .find(|(c, r)| screen.footer.target_at(*c, *r) == Some(FooterTarget::Update))
+            .expect("update segment laid out");
+        while rx.try_recv().is_ok() {}
+        screen.handle_input(&press_at(col, row), &tx);
+        let mut shown = false;
+        while let Ok(evt) = rx.try_recv() {
+            shown |= matches!(evt, AppEvent::Update(UpdateFlow::ShowDialog));
+        }
+        assert!(shown);
+    }
+
+    /// An open find bar owns presses inside the editor only. The footer is
+    /// outside it, so the props segment still opens properties.
+    #[tokio::test]
+    async fn find_bar_does_not_swallow_footer_clicks() {
+        let (mut screen, _vault, tx, mut rx, _dir) = screen_on_note().await;
+        screen
+            .handle_app_message(
+                AppEvent::PropertyCountLoaded {
+                    path: VaultPath::new("n.md"),
+                    count: 0,
+                },
+                &tx,
+            )
+            .await;
+        screen.run_op(EditorOp::FindInBuffer, &tx);
+        assert_eq!(
+            screen.panels.editor().map(|e| e.claim()),
+            Some(crate::components::text_editor::EditorClaim::FindBar)
+        );
+        lay_out(&mut screen);
+        let (col, row) = (0..40u16)
+            .flat_map(|r| (0..120u16).map(move |c| (c, r)))
+            .find(|(c, r)| screen.footer.target_at(*c, *r) == Some(FooterTarget::Props))
             .expect("props segment laid out");
         while rx.try_recv().is_ok() {}
         screen.handle_input(&press_at(col, row), &tx);

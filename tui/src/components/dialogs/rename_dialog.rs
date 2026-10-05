@@ -3,7 +3,7 @@ use std::sync::Arc;
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 use ratatui::Frame;
-use ratatui::crossterm::event::KeyEvent;
+use ratatui::crossterm::event::{KeyEvent, MouseEvent};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Paragraph};
@@ -13,6 +13,7 @@ use crate::components::Component;
 use crate::components::dialogs::ValidationState;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, FileOp, OverlayData};
+use crate::components::hint_row::HintRow;
 use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::components::single_line_input::{InputOutcome, SingleLineInput};
 use crate::settings::themes::Theme;
@@ -42,6 +43,7 @@ pub struct RenameDialog {
     pub validation_task: Option<JoinHandle<()>>,
     /// Optional error message surfaced from a failed rename attempt.
     pub error: Option<String>,
+    hints: HintRow,
 }
 
 impl RenameDialog {
@@ -59,6 +61,7 @@ impl RenameDialog {
             validation_state: ValidationState::Idle,
             validation_task: None,
             error: None,
+            hints: super::confirm_hints("Rename"),
         }
     }
 
@@ -104,6 +107,15 @@ impl RenameDialog {
     // -----------------------------------------------------------------------
     // Input handling
     // -----------------------------------------------------------------------
+
+    /// A click on a hint chip runs its key. Modal: every mouse event is
+    /// consumed.
+    pub fn handle_mouse(&mut self, m: &MouseEvent, tx: &AppTx) -> EventState {
+        if let Some(key) = self.hints.hit(m) {
+            self.handle_key(key, tx);
+        }
+        EventState::Consumed
+    }
 
     /// Handle a raw [`KeyEvent`].  Returns [`EventState::Consumed`] for keys
     /// this dialog acts on; callers should forward only key events.
@@ -277,10 +289,12 @@ impl Component for RenameDialog {
         f.render_widget(Paragraph::new(status_text).style(status_style), rows[5]);
 
         // Row 7: hint.  Dim the Enter part unless rename is available.
-        super::render_confirm_hint(
+        super::render_confirm_hints(
             f,
             rows[7],
-            "  [Enter] Rename",
+            &mut self.hints,
+            self.validation_state == ValidationState::Available,
+            // Enter renames only once the name is Available.
             self.validation_state == ValidationState::Available,
             fg,
             gray,
