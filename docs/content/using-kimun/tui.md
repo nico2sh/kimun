@@ -198,12 +198,15 @@ If a note's frontmatter is malformed, the first failed write turns the dialog re
 
 ## Mouse
 
-Full parity with the keyboard:
+Full parity with the keyboard. Buttons, dialog `[key]` hints, status-bar segments, the sort label and `≡ Commands` are drawn in the theme's blue; everything you can click except list rows lights up when the pointer is over it.
 
 | Gesture | Effect |
 | ------- | ------ |
 | Click | focus the panel / select the row |
-| Click the selected row again | open it |
+| Click the selected row again | open it (in FIND and Ask Sources: step the preview) |
+| Double-click a row | open it — in FIND and Ask Sources too |
+| Click a search / filter box | type into it (leaves list focus) |
+| Click a suggestion in an autocomplete popup | insert it (same as `Tab`); scroll over it to move the highlight |
 | Click in the editor | place the cursor |
 | Double-click a `[[link]]` / `#tag` in the editor | follow it / run the tag query (same as `Ctrl+N`) — Textarea and Vim backends only |
 | Right-click a file or note row | file-operations menu |
@@ -215,6 +218,12 @@ Full parity with the keyboard:
 | Click a `[key] action` hint in a dialog | same as pressing that key (e.g. `[Esc] Cancel`) |
 | Click outside a menu, picker, help or the command palette | close it (same as `Esc`) — dialogs you type into stay open |
 | Click `⊞ props` / `⬆ x available` in the status bar | open properties / the update dialog |
+| Click `N backlinks` / `→ target` in the status bar | open LINKS on backlinks / follow the link (same as `Ctrl+N`) |
+| Click the sort label (`Name ↑`) on the FILES or FIND search box | open the sort dialog (same as `Ctrl+R`) |
+| Click `≡ Commands` / the workspace name in the title bar | open the command palette / the workspace switcher |
+| Click a chip under an Ask answer | send, copy, save as note, regenerate, or start a new conversation |
+| Click `Open externally` in an attachment | open it with the default program |
+| In Preferences: click a section, a checkbox, `◀`/`▶`, a `[value]`, a button or a `[key]` hint | switch to it / toggle / step / cycle / press it — clicking the selected row runs it too |
 | Click `t theme picker` / `p preferences` in CFG | open them |
 | Scroll | scroll the pane under the cursor |
 

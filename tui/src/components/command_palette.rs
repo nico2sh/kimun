@@ -161,7 +161,10 @@ impl Overlay for CommandPaletteModal {
                 if let Some(key) = self.hints.hit(mouse) {
                     return self.handle_input(&InputEvent::Key(key), tx);
                 }
-                if let SearchMouse::Activated(_) = self.list.handle_mouse(mouse) {
+                if let SearchMouse::Activated(_)
+                | SearchMouse::DoubleClicked { repeat: false, .. } =
+                    self.list.handle_mouse(mouse)
+                {
                     self.execute_selected(tx);
                 }
                 EventState::Consumed
@@ -210,8 +213,12 @@ impl Overlay for CommandPaletteModal {
         self.list.set_list_rect(rows[1]);
         self.list.set_panel_rect(popup);
 
-        self.hints
-            .render(f, rows[2], Style::default().fg(theme.gray.to_ratatui()));
+        self.hints.render(
+            f,
+            rows[2],
+            Style::default().fg(theme.gray.to_ratatui()),
+            theme,
+        );
 
         self.list.render_autocomplete(f, popup, theme);
     }
@@ -260,14 +267,7 @@ mod tests {
                 .any(|e| matches!(e, AppEvent::CloseOverlay))
         );
         let buf = drawn(&mut p);
-        let (col, row) = (0..40u16)
-            .flat_map(|y| (0..100u16).map(move |x| (x, y)))
-            .find(|&(x, y)| {
-                buf[(x, y)].symbol() == "["
-                    && (1..5)
-                        .all(|i| buf[(x + i, y)].symbol() == ["E", "s", "c", "]"][i as usize - 1])
-            })
-            .expect("[Esc] chip drawn");
+        let (col, row) = crate::test_support::find_text(&buf, "[Esc]").expect("[Esc] chip drawn");
         assert!(
             click(&mut p, col, row)
                 .iter()

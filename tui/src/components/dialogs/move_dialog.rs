@@ -489,8 +489,7 @@ impl Component for MoveDialog {
             self.dest_validation == ValidationState::Available,
             enter_acts,
             fg,
-            gray,
-            bg,
+            theme,
         );
 
         // Row 8 (optional): error message.

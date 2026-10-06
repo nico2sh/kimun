@@ -139,7 +139,7 @@ impl Component for DeleteConfirmDialog {
 
         // Row 5: hint
         self.hints
-            .render(f, rows[5], Style::default().fg(gray).bg(bg));
+            .render(f, rows[5], Style::default().fg(gray).bg(bg), theme);
 
         // Row 6: error (optional)
         if let Some(msg) = &self.error {

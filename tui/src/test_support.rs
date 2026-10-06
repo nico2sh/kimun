@@ -59,3 +59,18 @@ pub fn mouse_down_at(col: u16, row: u16) -> InputEvent {
         modifiers: KeyModifiers::NONE,
     })
 }
+
+/// The first cell where `text` is drawn in `buf` (matched cell by cell, so
+/// wide glyphs line up), or `None`.
+pub fn find_text(buf: &ratatui::buffer::Buffer, text: &str) -> Option<(u16, u16)> {
+    let want: Vec<String> = text.chars().map(|c| c.to_string()).collect();
+    let area = buf.area;
+    (area.y..area.bottom())
+        .flat_map(|y| (area.x..area.right()).map(move |x| (x, y)))
+        .find(|&(x, y)| {
+            want.iter().enumerate().all(|(i, c)| {
+                let cx = x + i as u16;
+                cx < area.right() && buf[(cx, y)].symbol() == c
+            })
+        })
+}

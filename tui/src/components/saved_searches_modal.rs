@@ -254,7 +254,7 @@ impl Overlay for SavedSearchesModal {
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
         match event {
             InputEvent::Mouse(mouse) => match self.list.handle_mouse(mouse) {
-                SearchMouse::Activated(_) => {
+                SearchMouse::Activated(_) | SearchMouse::DoubleClicked { repeat: false, .. } => {
                     if let Some(item) = self.list.selected_row() {
                         tx.send(AppEvent::SavedSearch(SavedSearchFlow::Selected {
                             query: item.query.clone(),
@@ -272,6 +272,10 @@ impl Overlay for SavedSearchesModal {
                 SearchMouse::ContentScrollUp | SearchMouse::ContentScrollDown => {
                     EventState::Consumed
                 }
+                // A repeat double-click: its first press already activated.
+                SearchMouse::InputFocused
+                | SearchMouse::Autocomplete { .. }
+                | SearchMouse::DoubleClicked { repeat: true, .. } => EventState::Consumed,
                 SearchMouse::None => EventState::NotConsumed,
             },
             InputEvent::Key(key) => match self.list.handle_key(key) {

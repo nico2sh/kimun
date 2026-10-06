@@ -180,7 +180,8 @@ impl<S: ListPanelSpec> QueryListPanel<S> {
                     return EventState::NotConsumed;
                 };
                 match list.handle_mouse(mouse) {
-                    SearchMouse::Activated(_) => self.submit_selected(tx),
+                    SearchMouse::Activated(_)
+                    | SearchMouse::DoubleClicked { repeat: false, .. } => self.submit_selected(tx),
                     SearchMouse::Context(_) => {
                         if let Some(event) = list.selected_row().and_then(S::context_event) {
                             tx.send(event).ok();

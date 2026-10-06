@@ -12,6 +12,9 @@ use crate::components::single_line_input::{InputOutcome, SingleLineInput};
 use crate::settings::AppSettings;
 use crate::settings::themes::Theme;
 
+use super::{ClickMap, SectionMouse};
+use crate::components::hint_row::HintRow;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Mode {
     Normal,
@@ -27,6 +30,11 @@ pub struct WorkspacesSection {
     mode: Mode,
     input: SingleLineInput,
     error: Option<String>,
+    clicks: ClickMap,
+    /// The Normal-mode action chips.
+    actions: HintRow,
+    /// The `[y] Yes  [n] No` chips of the delete prompt.
+    confirm: HintRow,
 }
 
 impl WorkspacesSection {
@@ -37,6 +45,20 @@ impl WorkspacesSection {
             mode: Mode::Normal,
             input: SingleLineInput::new(),
             error: None,
+            clicks: ClickMap::default(),
+            actions: HintRow::new(&[
+                (KeyCode::Enter, "Enter", "Switch"),
+                (KeyCode::Char('n'), "n", "New"),
+                (KeyCode::Char('r'), "r", "Rename"),
+                (KeyCode::Char('d'), "d", "Delete"),
+                (KeyCode::Char('b'), "b", "Browse path"),
+            ])
+            .with_indent(1),
+            confirm: HintRow::new(&[
+                (KeyCode::Char('y'), "y", "Yes"),
+                (KeyCode::Char('n'), "n/Esc", "No"),
+            ])
+            .with_indent(1),
         };
         section.refresh(settings);
         section
@@ -84,6 +106,37 @@ impl WorkspacesSection {
         } else {
             let prev = self.list_state.selected().unwrap_or(0);
             self.list_state.select(Some(prev.min(max - 1)));
+        }
+    }
+
+    /// Resolve a click: in the list a row selects, re-clicking it switches
+    /// to it; the action chips (and the delete prompt's) run their keys.
+    /// While a name is being typed only the keyboard edits it. Returns the
+    /// key the click stands for, for the screen's key path.
+    pub fn handle_mouse(&mut self, m: &ratatui::crossterm::event::MouseEvent) -> Option<KeyEvent> {
+        match self.mode {
+            Mode::Normal => {
+                if let Some(key) = self.actions.hit(m) {
+                    return Some(key);
+                }
+                match self
+                    .clicks
+                    .resolve(m, self.list_state.selected(), Some(KeyCode::Enter))
+                {
+                    SectionMouse::Select(row) => {
+                        self.list_state.select(Some(row));
+                        None
+                    }
+                    SectionMouse::Key(row, key) => {
+                        self.list_state.select(Some(row));
+                        Some(key)
+                    }
+                    SectionMouse::Wheel(key) => Some(key),
+                    SectionMouse::None => None,
+                }
+            }
+            Mode::ConfirmDelete => self.confirm.hit(m),
+            Mode::Creating | Mode::Renaming => None,
         }
     }
 
@@ -287,12 +340,27 @@ impl Component for WorkspacesSection {
 
             f.render_stateful_widget(list, rows[0], &mut self.list_state);
         }
+        // Rows map from the offset the list settled on while rendering.
+        self.clicks.clear();
+        if self.mode == Mode::Normal {
+            let offset = self.list_state.offset();
+            for (i, row) in (offset..self.entries.len()).enumerate() {
+                let y = rows[0].y + i as u16;
+                if y >= rows[0].bottom() {
+                    break;
+                }
+                self.clicks
+                    .row(Rect::new(rows[0].x, y, rows[0].width, 1), row);
+            }
+        }
 
         // --- Hint line ---
         let hint_idx = 1;
+        let hint_style = Style::default().fg(gray).bg(bg);
         let hint_text = match &self.mode {
             Mode::Normal => {
-                " [Enter] Switch  [n] New  [r] Rename  [d] Delete  [b] Browse path".to_string()
+                self.actions.render(f, rows[hint_idx], hint_style, theme);
+                String::new()
             }
             Mode::Creating => {
                 let display = format!(" Name: {}", self.input.value());
@@ -315,14 +383,19 @@ impl Component for WorkspacesSection {
                 display
             }
             Mode::ConfirmDelete => {
-                let name = self.selected_name().unwrap_or("?");
-                format!(" Delete workspace '{}'? [y] Yes  [n/Esc] No", name)
+                let prompt = format!(
+                    "Delete workspace '{}'? ",
+                    self.selected_name().unwrap_or("?")
+                );
+                self.confirm.set_prefix(&prompt);
+                self.confirm.render(f, rows[hint_idx], hint_style, theme);
+                String::new()
             }
         };
-        f.render_widget(
-            Paragraph::new(hint_text).style(Style::default().fg(gray).bg(bg)),
-            rows[hint_idx],
-        );
+        // The text-entry modes draw their field as plain text.
+        if !hint_text.is_empty() {
+            f.render_widget(Paragraph::new(hint_text).style(hint_style), rows[hint_idx]);
+        }
 
         // --- Error line ---
         if let Some(ref err) = self.error {

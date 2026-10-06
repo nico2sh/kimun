@@ -79,7 +79,7 @@ impl ConfigPanel {
         let info = &self.info;
         let label = Style::default().fg(theme.gray.to_ratatui());
         let value = Style::default().fg(theme.fg.to_ratatui());
-        let keycap = Style::default().fg(theme.yellow.to_ratatui());
+        let keycap = theme.action();
         let mut lines = vec![
             ratatui::text::Line::from(vec![
                 ratatui::text::Span::styled(" theme    ", label),
@@ -113,14 +113,12 @@ impl ConfigPanel {
         for (key, text) in [('t', "theme picker"), ('p', "preferences")] {
             let y = inner.y + lines.len() as u16;
             if y < inner.bottom() {
-                self.launchers.push((
-                    Rect {
-                        y,
-                        height: 1,
-                        ..inner
-                    },
-                    KeyCode::Char(key),
-                ));
+                // The drawn text is the target — what lights up is what
+                // clicks.
+                let w = (3 + text.len() as u16).min(inner.width);
+                let r = Rect::new(inner.x, y, w, 1);
+                crate::components::clickable::register(r);
+                self.launchers.push((r, KeyCode::Char(key)));
             }
             lines.push(ratatui::text::Line::from(vec![
                 ratatui::text::Span::styled(format!(" {key} "), keycap),

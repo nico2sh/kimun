@@ -8,6 +8,10 @@ use crate::components::events::{AppTx, InputEvent};
 use crate::settings::EditorBackendSetting;
 use crate::settings::themes::Theme;
 
+use super::{ClickMap, SectionMouse, text_rect};
+use ratatui::text::{Line, Span};
+use unicode_width::UnicodeWidthStr;
+
 const MIN_AUTOSAVE_SECS: u64 = 5;
 const MAX_AUTOSAVE_SECS: u64 = 300;
 const STEP: u64 = 5;
@@ -20,6 +24,7 @@ pub struct EditorSection {
     pub autosave_interval_secs: u64,
     pub editor_backend: EditorBackendSetting,
     selected_row: usize,
+    clicks: ClickMap,
 }
 
 impl EditorSection {
@@ -28,7 +33,47 @@ impl EditorSection {
             autosave_interval_secs,
             editor_backend,
             selected_row: ROW_AUTOSAVE,
+            clicks: ClickMap::default(),
         }
+    }
+
+    /// Resolve a click: a setting's label or value selects it, `◀`/`▶`
+    /// step it, re-clicking the backend cycles it. Returns the key the
+    /// click stands for.
+    pub fn handle_mouse(
+        &mut self,
+        m: &ratatui::crossterm::event::MouseEvent,
+    ) -> Option<ratatui::crossterm::event::KeyEvent> {
+        use ratatui::crossterm::event::KeyCode;
+        let activate = (self.selected_row == ROW_BACKEND).then_some(KeyCode::Enter);
+        match self.clicks.resolve(m, Some(self.selected_row), activate) {
+            SectionMouse::Select(row) => {
+                self.selected_row = row;
+                None
+            }
+            SectionMouse::Key(row, key) => {
+                self.selected_row = row;
+                Some(key)
+            }
+            SectionMouse::Wheel(key) => Some(key),
+            SectionMouse::None => None,
+        }
+    }
+
+    /// `  ◀  value  ▶` with both arrows as click targets for `row`.
+    fn stepper(&mut self, r: Rect, row: usize, value: &str, theme: &Theme) -> Line<'static> {
+        use ratatui::crossterm::event::KeyCode;
+        let right_col = format!("  ◀  {value}  ").width() as u16;
+        self.clicks.control(text_rect(r, 2, 1), row, KeyCode::Left);
+        self.clicks
+            .control(text_rect(r, right_col, 1), row, KeyCode::Right);
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled("◀", theme.action()),
+            Span::raw(format!("  {value}  ")),
+            Span::styled("▶", theme.action()),
+            Span::raw("   (←/→ to change)"),
+        ])
     }
 
     fn cycle_backend(b: EditorBackendSetting, forward: bool) -> EditorBackendSetting {
@@ -139,24 +184,33 @@ impl Component for EditorSection {
             }
         };
 
+        let autosave_style = value_style(ROW_AUTOSAVE);
+        let backend_style = value_style(ROW_BACKEND);
+        self.clicks.clear();
+        for (label_row, value_row, row) in [(0, 1, ROW_AUTOSAVE), (3, 4, ROW_BACKEND)] {
+            self.clicks.row(rows[label_row], row);
+            self.clicks.row(rows[value_row], row);
+        }
+
         let label = Paragraph::new("Autosave Interval").style(theme.base_style());
         f.render_widget(label, rows[0]);
-        let autosave = format!("  ◀  {}s  ▶   (←/→ to change)", self.autosave_interval_secs);
-        f.render_widget(
-            Paragraph::new(autosave).style(value_style(ROW_AUTOSAVE)),
+        let autosave = self.stepper(
             rows[1],
+            ROW_AUTOSAVE,
+            &format!("{}s", self.autosave_interval_secs),
+            theme,
         );
+        f.render_widget(Paragraph::new(autosave).style(autosave_style), rows[1]);
 
         let label = Paragraph::new("Editor Backend").style(theme.base_style());
         f.render_widget(label, rows[3]);
-        let backend = format!(
-            "  ◀  {}  ▶   (←/→ to change)",
-            Self::backend_label(self.editor_backend)
-        );
-        f.render_widget(
-            Paragraph::new(backend).style(value_style(ROW_BACKEND)),
+        let backend = self.stepper(
             rows[4],
+            ROW_BACKEND,
+            Self::backend_label(self.editor_backend),
+            theme,
         );
+        f.render_widget(Paragraph::new(backend).style(backend_style), rows[4]);
         let hint = Paragraph::new("  applies when a note is opened").style(
             ratatui::style::Style::default()
                 .fg(theme.gray.to_ratatui())

@@ -22,6 +22,8 @@ pub struct BrowseScreen {
     sidebar: SidebarComponent,
     theme: Theme,
     settings: SharedSettings,
+    /// Last mouse position, for the hover highlight (`components::clickable`).
+    pointer: Option<ratatui::layout::Position>,
 }
 
 impl BrowseScreen {
@@ -33,10 +35,14 @@ impl BrowseScreen {
         // The sidebar's `current_dir` is the single source of truth for the
         // browsed directory; seed it so `on_enter` opens at `path`.
         sidebar.set_current_dir(path);
+        // Browse hosts no overlays, so it cannot open the sort dialog: the
+        // label would be a click target that does nothing.
+        sidebar.set_sort_chip(false);
         Self {
             sidebar,
             theme,
             settings,
+            pointer: None,
         }
     }
 
@@ -60,6 +66,9 @@ impl AppScreen for BrowseScreen {
     }
 
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
+        if let InputEvent::Mouse(m) = event {
+            self.pointer = Some(ratatui::layout::Position::new(m.column, m.row));
+        }
         // Intercept the journal shortcut (Ctrl+J by default) so today's entry
         // can be opened straight from Browse; everything else feeds the sidebar.
         if let InputEvent::Key(key) = event
@@ -120,6 +129,7 @@ impl AppScreen for BrowseScreen {
             ),
             rows[1],
         );
+        crate::components::clickable::apply_hover(f.buffer_mut(), self.pointer, &self.theme);
     }
 
     async fn try_open_path(
@@ -154,6 +164,25 @@ mod tests {
 
     async fn make_vault() -> Arc<NoteVault> {
         temp_vault("browse").await
+    }
+
+    /// Browse cannot open the sort dialog, so it must not draw a sort label
+    /// that looks clickable.
+    #[tokio::test]
+    async fn browse_draws_no_sort_label() {
+        let vault = make_vault().await;
+        let mut screen = BrowseScreen::new(vault, VaultPath::root(), make_settings_with_defaults());
+        let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 20)).unwrap();
+        t.draw(|f| screen.render(f)).unwrap();
+        let text: String = t
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("Search"), "the search box is drawn");
+        assert!(!text.contains("Name ↑"), "but no sort label");
     }
 
     #[tokio::test]

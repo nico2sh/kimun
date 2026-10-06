@@ -74,12 +74,16 @@ pub enum FooterTarget {
     Props,
     /// `⬆ x.y.z` — opens the update dialog.
     Update,
+    /// `N backlinks` — opens the LINKS drawer on its backlinks tab.
+    Backlinks,
+    /// `→ target` — follows the link under the cursor (the mouse's Ctrl+N).
+    Link,
 }
 
 pub struct FooterBar {
     key_flash: Option<(String, Instant)>,
     /// Clickable segments from the last render, clipped to the row.
-    targets: Vec<(FooterTarget, Rect)>,
+    targets: Vec<(Rect, FooterTarget)>,
 }
 
 impl FooterBar {
@@ -275,23 +279,16 @@ impl FooterBar {
         if let Some(n) = doc.props {
             let label = props_label(n);
             if let Some(r) = target_rect(&segments, &label) {
-                self.targets.push((FooterTarget::Props, r));
+                self.targets.push((r, FooterTarget::Props));
             }
-            push(
-                &mut segments,
-                Span::styled(
-                    label,
-                    Style::default()
-                        .fg(theme.blue.to_ratatui())
-                        .add_modifier(Modifier::UNDERLINED),
-                ),
-            );
+            push(&mut segments, Span::styled(label, theme.action()));
         }
         if let Some(count) = doc.backlinks {
-            push(
-                &mut segments,
-                Span::styled(format!("{count} backlinks"), muted),
-            );
+            let label = format!("{count} backlinks");
+            if let Some(r) = target_rect(&segments, &label) {
+                self.targets.push((r, FooterTarget::Backlinks));
+            }
+            push(&mut segments, Span::styled(label, theme.action()));
         }
         if let Some(git) = &doc.git {
             push(&mut segments, Span::styled(git.clone(), muted));
@@ -306,23 +303,18 @@ impl FooterBar {
             );
         }
         if let Some(link) = &doc.link {
-            push(
-                &mut segments,
-                Span::styled(link.clone(), Style::default().fg(theme.blue.to_ratatui())),
-            );
+            if let Some(r) = target_rect(&segments, link) {
+                self.targets.push((r, FooterTarget::Link));
+            }
+            push(&mut segments, Span::styled(link.clone(), theme.action()));
         }
         if let Some(update) = &doc.update {
             if let Some(r) = target_rect(&segments, update) {
-                self.targets.push((FooterTarget::Update, r));
+                self.targets.push((r, FooterTarget::Update));
             }
             push(
                 &mut segments,
-                Span::styled(
-                    update.clone(),
-                    Style::default()
-                        .fg(theme.accent.to_ratatui())
-                        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-                ),
+                Span::styled(update.clone(), theme.action().add_modifier(Modifier::BOLD)),
             );
         }
         if let Some(rag) = &doc.rag {
@@ -330,6 +322,9 @@ impl FooterBar {
                 &mut segments,
                 Span::styled(rag.clone(), Style::default().fg(theme.green.to_ratatui())),
             );
+        }
+        for (r, _) in &self.targets {
+            crate::components::clickable::register(*r);
         }
         f.render_widget(Paragraph::new(Line::from(segments)), rows[1]);
     }
@@ -346,11 +341,7 @@ fn props_label(n: usize) -> String {
 impl FooterBar {
     /// The clickable segment under (col,row) from the last render.
     pub fn target_at(&self, col: u16, row: u16) -> Option<FooterTarget> {
-        let pos = ratatui::layout::Position { x: col, y: row };
-        self.targets
-            .iter()
-            .find(|(_, r)| r.contains(pos))
-            .map(|(t, _)| *t)
+        crate::components::clickable::target_at(&self.targets, col, row)
     }
 }
 
@@ -442,6 +433,38 @@ mod tests {
         assert_eq!(bar.target_at(col, 1), Some(FooterTarget::Update));
         assert_eq!(bar.target_at(col + 6, 1), Some(FooterTarget::Update));
         assert_eq!(bar.target_at(col.saturating_sub(2), 1), None);
+    }
+
+    #[test]
+    fn backlinks_and_link_segments_are_clickable() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let theme = Theme::gruvbox_dark();
+        let mut bar = FooterBar::new();
+        let mut t = Terminal::new(TestBackend::new(120, 2)).unwrap();
+        let ctx = StatusContext {
+            focus_label: "EDITOR",
+            editing: true,
+            hints: &[],
+            global_hints: &[],
+            doc: DocState {
+                path: "n.md",
+                backlinks: Some(4),
+                link: Some("→ other".into()),
+                ..Default::default()
+            },
+        };
+        t.draw(|f| bar.render(f, f.area(), &theme, &ctx)).unwrap();
+        let buf = t.backend().buffer().clone();
+        let line: String = (0..120).map(|x| buf[(x, 1)].symbol().to_string()).collect();
+        let at = |s: &str| line[..line.find(s).expect("drawn")].chars().count() as u16;
+        assert_eq!(
+            bar.target_at(at("4 backlinks"), 1),
+            Some(FooterTarget::Backlinks)
+        );
+        assert_eq!(
+            bar.target_at(at("→ other") + 2, 1),
+            Some(FooterTarget::Link)
+        );
     }
 
     #[test]

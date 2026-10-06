@@ -14,7 +14,9 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::components::Component;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, AppTxExt, FileOp, InputEvent, redraw_callback};
+use crate::components::events::{
+    AppEvent, AppTx, AppTxExt, FileOp, InputEvent, SortTarget, redraw_callback,
+};
 use crate::components::file_list::{FileListEntry, SortField, SortOrder, entry_order};
 use crate::components::search_list::{
     Emit, Filter, KeyReaction, OrderFn, RowSource, SearchList, SearchMouse,
@@ -121,6 +123,11 @@ pub struct SidebarComponent {
     /// Screen cell each breadcrumb segment was drawn into on the last render,
     /// with the directory it navigates to — clickable breadcrumb hit-test.
     breadcrumb_cells: Vec<(Rect, VaultPath)>,
+    /// The sort chip (`Name ↑`) on the search box border from the last render.
+    sort_chip: Option<Rect>,
+    /// Whether to draw the sort chip at all — off where the host cannot open
+    /// the sort dialog (Browse).
+    show_sort_chip: bool,
     key_bindings: KeyBindings,
 }
 
@@ -160,6 +167,8 @@ impl SidebarComponent {
             group_dirs: settings.group_directories,
             rendered_rect: Rect::default(),
             breadcrumb_cells: Vec::new(),
+            sort_chip: None,
+            show_sort_chip: true,
             key_bindings,
         }
     }
@@ -363,6 +372,12 @@ impl SidebarComponent {
     /// Seed the directory the sidebar will show before its first `navigate`.
     /// Lets a screen open at a non-root path while keeping `current_dir` the
     /// single source of truth for the browsed directory.
+    /// Draw (and accept clicks on) the sort chip — on by default; off for a
+    /// host that cannot open the sort dialog.
+    pub fn set_sort_chip(&mut self, show: bool) {
+        self.show_sort_chip = show;
+    }
+
     pub fn set_current_dir(&mut self, dir: VaultPath) {
         self.current_dir = dir;
     }
@@ -508,6 +523,13 @@ impl Component for SidebarComponent {
                 tx.send(AppEvent::open(dir.clone())).ok();
                 return EventState::Consumed;
             }
+            // A click on the sort chip opens the sort dialog.
+            if crate::components::hint_row::is_left_press(mouse)
+                && self.sort_chip.is_some_and(|r| r.contains(pos))
+            {
+                tx.send(AppEvent::OpenSortDialog(SortTarget::Sidebar)).ok();
+                return EventState::Consumed;
+            }
             // Click-to-focus is handled centrally by `PanelSet::handle_mouse`;
             // only the sidebar's internal behavior lives here. The engine
             // hit-tests the wheel against the recorded panel rect (the whole
@@ -515,7 +537,9 @@ impl Component for SidebarComponent {
             // the list rect.
             if let Some(list) = &mut self.list {
                 match list.handle_mouse(mouse) {
-                    SearchMouse::Activated(_) => self.activate_selected_entry(tx),
+                    SearchMouse::Activated(_) | SearchMouse::DoubleClicked { repeat: false, .. } => {
+                        self.activate_selected_entry(tx)
+                    }
                     // Right-click on a file/dir row → context menu (spec §10).
                     SearchMouse::Context(_) => {
                         if let Some(entry) = list.selected_row()
@@ -534,6 +558,10 @@ impl Component for SidebarComponent {
                     | SearchMouse::Scrolled
                     | SearchMouse::ContentScrollUp
                     | SearchMouse::ContentScrollDown
+                    | SearchMouse::InputFocused
+                    // A repeat double-click: its first press already activated.
+                    | SearchMouse::DoubleClicked { repeat: true, .. }
+                    | SearchMouse::Autocomplete { .. }
                     | SearchMouse::None => {}
                 }
             }
@@ -619,8 +647,9 @@ impl Component for SidebarComponent {
                 // segments must not be clickable.
                 if *x < header_inner.right() {
                     let visible = w.min(header_inner.right() - *x);
-                    self.breadcrumb_cells
-                        .push((Rect::new(*x, header_inner.y, visible, 1), dir));
+                    let r = Rect::new(*x, header_inner.y, visible, 1);
+                    crate::components::clickable::register(r);
+                    self.breadcrumb_cells.push((r, dir));
                 }
                 spans.push(Span::styled(label, seg_style));
                 *x += w;
@@ -645,11 +674,26 @@ impl Component for SidebarComponent {
         spans.push(Span::styled(count, sep_style));
         f.render_widget(Paragraph::new(Line::from(spans)), header_inner);
 
-        let search_block = Block::default()
-            .title(" Search")
+        // The sort chip sits on the search box, next to what it orders.
+        let mut search_block = Block::default().title(" Search");
+        self.sort_chip = None;
+        if self.show_sort_chip {
+            let (field, order) = self.current_sort();
+            let chip = crate::components::sortable::sort_chip_label(&field, order);
+            self.sort_chip = crate::components::sortable::top_right_title_rect(
+                rows[1],
+                unicode_width::UnicodeWidthStr::width(chip.as_str()) as u16,
+            );
+            search_block =
+                search_block.title(Line::from(Span::styled(chip, theme.action())).right_aligned());
+        }
+        let search_block = search_block
             .borders(Borders::ALL)
             .border_style(border_style)
             .style(theme.panel_style());
+        if let Some(r) = self.sort_chip {
+            crate::components::clickable::register(r);
+        }
         let search_inner = search_block.inner(rows[1]);
         f.render_widget(search_block, rows[1]);
 

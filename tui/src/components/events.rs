@@ -82,6 +82,11 @@ pub enum AppEvent {
     /// Jump the editor cursor to the first heading whose rendered text (as
     /// the OUTLINE shows it) is this (sent by the OUTLINE drawer).
     JumpToHeading(String),
+    /// Open the shown attachment with the OS default program (sent by the
+    /// attachment view's `Open externally` chip; the key is `FollowLink`).
+    OpenAttachmentExternally,
+    /// Open the sort dialog for a list (sent by a click on its sort chip).
+    OpenSortDialog(SortTarget),
     /// Run a leader-tree action (sent by the command palette after it has
     /// closed itself, so the action sees no open overlay).
     ExecuteLeaderAction(crate::keys::leader::LeaderAction),

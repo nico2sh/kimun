@@ -4,16 +4,18 @@ use async_trait::async_trait;
 use kimun_core::error::VaultError;
 use kimun_core::{NoteVault, NotesValidation, VaultConfig};
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyModifiers};
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
+use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use throbber_widgets_tui::ThrobberState;
 
 use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::Component;
+use crate::components::button_row::ButtonRow;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent};
+use crate::components::hint_row::{HintRow, is_press_outside, list_index_at};
 use crate::components::indexing::{
     IndexingProgressState, fixed_centered_rect, render_indexing_overlay, spawn_running,
 };
@@ -100,6 +102,25 @@ pub struct PreferencesScreen {
     pub overlay: Overlay,
     pub pending_save_after_index: bool,
     throbber_state: ThrobberState,
+    /// Last mouse position, for the hover highlight (`components::clickable`).
+    pointer: Option<Position>,
+    /// Section-list rows from the last render (inside its border).
+    sidebar_rows: Rect,
+    /// The section content area from the last render.
+    content_rect: Rect,
+    /// The footer's `[Esc] Save & Close  [Tab] …` chips.
+    footer: HintRow,
+    /// The open overlay's outer rect from the last render; a press outside
+    /// it cancels, like Esc.
+    overlay_rect: Rect,
+    /// When the open overlay first drew. A press inside the double-click
+    /// window after that is the tail of the gesture that opened it.
+    overlay_opened_at: Option<std::time::Instant>,
+    /// The folder picker's list rows and chips from the last render.
+    browser_rows: Rect,
+    browser_hints: HintRow,
+    /// The two buttons of the Full Reindex / Save confirmations.
+    confirm_buttons: ButtonRow,
 }
 
 impl PreferencesScreen {
@@ -160,6 +181,24 @@ impl PreferencesScreen {
             overlay: Overlay::None,
             pending_save_after_index: false,
             throbber_state: ThrobberState::default(),
+            pointer: None,
+            sidebar_rows: Rect::default(),
+            content_rect: Rect::default(),
+            footer: HintRow::new(&[
+                (KeyCode::Esc, "Esc", "Save & Close"),
+                (KeyCode::Tab, "Tab", "Switch sidebar/content"),
+            ]),
+            overlay_rect: Rect::default(),
+            overlay_opened_at: None,
+            browser_rows: Rect::default(),
+            browser_hints: HintRow::new(&[
+                (KeyCode::Enter, "⏎", "Open"),
+                (KeyCode::Char('c'), "c", "Choose this folder"),
+                (KeyCode::Esc, "Esc", "Cancel"),
+                (KeyCode::Null, "a-z", "Jump"),
+            ])
+            .with_indent(0),
+            confirm_buttons: ButtonRow::new(&["Cancel", "Confirm"]),
         }
     }
 
@@ -272,6 +311,222 @@ impl PreferencesScreen {
     }
 }
 
+impl PreferencesScreen {
+    /// Write the current section's edited values into the shared settings
+    /// (and, for Appearance, preview the theme). One place for keys and
+    /// clicks, so a click that only moves a selection — a theme row —
+    /// previews exactly like the arrow key does. Workspaces and Indexing
+    /// act through their own key flows and have nothing to sync here.
+    fn sync_section(&mut self) {
+        use crate::settings::workspace_config::WorkspaceConfig;
+        match self.section {
+            PreferencesSection::Appearance => {
+                // Take the theme straight from the section's already-loaded
+                // list: `get_theme()` would re-read custom themes from disk
+                // and rebuild every built-in on each step.
+                let theme = self.appearance_section.selected_theme().clone();
+                if self.settings.read().unwrap().theme != theme.name {
+                    self.settings.write().unwrap().set_theme(theme.name.clone());
+                    self.theme = theme.adapt_to_terminal();
+                }
+            }
+            PreferencesSection::Display => {
+                let mut s = self.settings.write().unwrap();
+                s.use_nerd_fonts = self.display_section.use_nerd_fonts;
+                let global = &mut s
+                    .workspace_config
+                    .get_or_insert_with(WorkspaceConfig::new_empty)
+                    .global;
+                global.update_check = self.display_section.update_check;
+                global.mouse = self.display_section.mouse;
+                s.leader_timeout_ms = self.display_section.leader_timeout_ms;
+            }
+            PreferencesSection::Sorting => {
+                let mut s = self.settings.write().unwrap();
+                s.default_sort_field = self.sorting_section.default_sort_field;
+                s.default_sort_order = self.sorting_section.default_sort_order;
+                s.journal_sort_field = self.sorting_section.journal_sort_field;
+                s.journal_sort_order = self.sorting_section.journal_sort_order;
+            }
+            PreferencesSection::Editor => {
+                let mut s = self.settings.write().unwrap();
+                s.autosave_interval_secs = self.editor_section.autosave_interval_secs;
+                s.editor_backend = self.editor_section.editor_backend;
+            }
+            PreferencesSection::Server => {
+                self.settings
+                    .write()
+                    .unwrap()
+                    .workspace_config
+                    .get_or_insert_with(WorkspaceConfig::new_empty)
+                    .global
+                    .kimun_server_url = self.server_section.server_url.clone();
+            }
+            PreferencesSection::Workspaces | PreferencesSection::Indexing => {}
+        }
+    }
+
+    /// Run `code` through the key path, exactly as if it had been pressed.
+    fn press(&mut self, key: KeyEvent, tx: &AppTx) -> EventState {
+        self.handle_input(&InputEvent::Key(key), tx)
+    }
+
+    /// Every click is turned into the key it stands for and run through
+    /// [`AppScreen::handle_input`] — settings write-back and the workspace
+    /// create/rename/delete flows included — so a click can never do
+    /// something the key would not.
+    fn handle_mouse(&mut self, m: &MouseEvent, tx: &AppTx) -> EventState {
+        let press = matches!(m.kind, MouseEventKind::Down(_));
+        if !matches!(self.overlay, Overlay::None) {
+            // The second press of the double-click that opened the overlay
+            // is not aimed at it.
+            if press
+                && self
+                    .overlay_opened_at
+                    .is_some_and(|at| at.elapsed() < crate::components::DOUBLE_CLICK)
+            {
+                return EventState::Consumed;
+            }
+            return self.handle_overlay_mouse(m, tx);
+        }
+        let pos = Position::new(m.column, m.row);
+        if let Some(key) = self.footer.hit(m) {
+            return self.press(key, tx);
+        }
+        // The section list: a row picks that section.
+        if press && self.sidebar_rows.contains(pos) {
+            self.focus = PreferencesFocus::Sidebar;
+            if let Some(idx) = list_index_at(m, self.sidebar_rows, 0, SECTIONS.len()) {
+                self.section = SECTIONS[idx];
+            }
+            return EventState::Consumed;
+        }
+        if !self.content_rect.contains(pos) {
+            return EventState::NotConsumed;
+        }
+        if press {
+            self.focus = PreferencesFocus::Content;
+        }
+        let key = match self.section {
+            PreferencesSection::Workspaces => self.workspaces_section.handle_mouse(m),
+            PreferencesSection::Appearance => self.appearance_section.handle_mouse(m),
+            PreferencesSection::Display => self.display_section.handle_mouse(m),
+            PreferencesSection::Sorting => self.sorting_section.handle_mouse(m),
+            PreferencesSection::Indexing => self.indexing_section.handle_mouse(m),
+            PreferencesSection::Editor => self.editor_section.handle_mouse(m),
+            // A click on the field just focuses it; typing edits it.
+            PreferencesSection::Server => None,
+        };
+        // A key runs through the key path (which syncs settings itself); a
+        // selection-only click — a theme row — still needs syncing.
+        match key {
+            Some(key) => self.press(key, tx),
+            None => {
+                self.sync_section();
+                EventState::Consumed
+            }
+        }
+    }
+
+    fn handle_overlay_mouse(&mut self, m: &MouseEvent, tx: &AppTx) -> EventState {
+        let esc = KeyEvent::from(KeyCode::Esc);
+        let enter = KeyEvent::from(KeyCode::Enter);
+        let press = matches!(m.kind, MouseEventKind::Down(_));
+        match &mut self.overlay {
+            Overlay::None => EventState::NotConsumed,
+            // Nothing to click while the reindex runs.
+            Overlay::IndexingProgress(IndexingProgressState::Running { .. }) => {
+                EventState::Consumed
+            }
+            // One button (`[ OK ]`): any press dismisses.
+            Overlay::IndexingProgress(_) | Overlay::VaultConflict(_) => {
+                if press {
+                    return self.press(enter, tx);
+                }
+                EventState::Consumed
+            }
+            Overlay::FileBrowser(fb) => {
+                if is_press_outside(m, self.overlay_rect) {
+                    return self.press(esc, tx);
+                }
+                if let Some(key) = self.browser_hints.hit(m) {
+                    return self.press(key, tx);
+                }
+                let total = fb.entries.len() + usize::from(fb.has_parent);
+                match m.kind {
+                    MouseEventKind::ScrollUp => self.press(KeyEvent::from(KeyCode::Up), tx),
+                    MouseEventKind::ScrollDown => self.press(KeyEvent::from(KeyCode::Down), tx),
+                    _ => {
+                        if let Some(idx) =
+                            list_index_at(m, self.browser_rows, fb.list_state.offset(), total)
+                        {
+                            // Click selects; clicking the selected folder
+                            // opens it, like Enter.
+                            if fb.list_state.selected() == Some(idx) {
+                                return self.press(enter, tx);
+                            }
+                            fb.list_state.select(Some(idx));
+                        }
+                        EventState::Consumed
+                    }
+                }
+            }
+            Overlay::ConfirmFullReindex { focused_button } => {
+                if is_press_outside(m, self.overlay_rect) {
+                    return self.press(esc, tx);
+                }
+                match self.confirm_buttons.hit(m.column, m.row) {
+                    Some(idx) if press => {
+                        *focused_button = if idx == 0 {
+                            ConfirmButton::Cancel
+                        } else {
+                            ConfirmButton::Confirm
+                        };
+                        self.press(enter, tx)
+                    }
+                    _ => EventState::Consumed,
+                }
+            }
+            Overlay::ConfirmSave { focused_button } => {
+                if is_press_outside(m, self.overlay_rect) {
+                    return self.press(esc, tx);
+                }
+                match self.confirm_buttons.hit(m.column, m.row) {
+                    Some(idx) if press => {
+                        *focused_button = if idx == 0 {
+                            SaveButton::Save
+                        } else {
+                            SaveButton::Discard
+                        };
+                        self.press(enter, tx)
+                    }
+                    _ => EventState::Consumed,
+                }
+            }
+        }
+    }
+}
+
+/// The button line of a confirmation dialog: the fourth inner row (blank,
+/// message, blank, buttons), clipped to the dialog.
+fn button_line(inner: Rect) -> Rect {
+    if inner.height < 4 {
+        return Rect::default();
+    }
+    Rect::new(inner.x + 1, inner.y + 3, inner.width.saturating_sub(1), 1)
+}
+
+/// The sections in sidebar order.
+const SECTIONS: [PreferencesSection; 7] = [
+    PreferencesSection::Workspaces,
+    PreferencesSection::Appearance,
+    PreferencesSection::Display,
+    PreferencesSection::Sorting,
+    PreferencesSection::Indexing,
+    PreferencesSection::Editor,
+    PreferencesSection::Server,
+];
+
 // ── AppScreen impl ────────────────────────────────────────────────────────────
 
 #[async_trait]
@@ -281,6 +536,10 @@ impl AppScreen for PreferencesScreen {
     }
 
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
+        if let InputEvent::Mouse(m) = event {
+            self.pointer = Some(Position::new(m.column, m.row));
+            return self.handle_mouse(m, tx);
+        }
         // Route to active overlay first.
         match &mut self.overlay {
             Overlay::None => {}
@@ -521,43 +780,20 @@ impl AppScreen for PreferencesScreen {
                     match self.section {
                         PreferencesSection::Appearance => {
                             let r = self.appearance_section.handle_input(&app_event, tx);
-                            // Live theme preview on every navigation step. Take the
-                            // theme straight from the section's already-loaded list:
-                            // `get_theme()` would re-read custom themes from disk and
-                            // rebuild every built-in on each keypress.
+                            // Live theme preview on every navigation step.
                             if r.is_consumed() {
-                                let theme = self.appearance_section.selected_theme().clone();
-                                self.settings.write().unwrap().set_theme(theme.name.clone());
-                                self.theme = theme.adapt_to_terminal();
+                                self.sync_section();
                             }
                             r
                         }
                         PreferencesSection::Display => {
                             let r = self.display_section.handle_input(&app_event, tx);
-                            {
-                                let mut s = self.settings.write().unwrap();
-                                s.use_nerd_fonts = self.display_section.use_nerd_fonts;
-                                let global = &mut s
-                                    .workspace_config
-                                    .get_or_insert_with(
-                                        crate::settings::workspace_config::WorkspaceConfig::new_empty,
-                                    )
-                                    .global;
-                                global.update_check = self.display_section.update_check;
-                                global.mouse = self.display_section.mouse;
-                                s.leader_timeout_ms = self.display_section.leader_timeout_ms;
-                            }
+                            self.sync_section();
                             r
                         }
                         PreferencesSection::Sorting => {
                             let r = self.sorting_section.handle_input(&app_event, tx);
-                            {
-                                let mut s = self.settings.write().unwrap();
-                                s.default_sort_field = self.sorting_section.default_sort_field;
-                                s.default_sort_order = self.sorting_section.default_sort_order;
-                                s.journal_sort_field = self.sorting_section.journal_sort_field;
-                                s.journal_sort_order = self.sorting_section.journal_sort_order;
-                            }
+                            self.sync_section();
                             r
                         }
                         PreferencesSection::Workspaces => {
@@ -696,21 +932,13 @@ impl AppScreen for PreferencesScreen {
                         }
                         PreferencesSection::Editor => {
                             let r = self.editor_section.handle_input(&app_event, tx);
-                            let mut s = self.settings.write().unwrap();
-                            s.autosave_interval_secs = self.editor_section.autosave_interval_secs;
-                            s.editor_backend = self.editor_section.editor_backend;
+                            self.sync_section();
                             r
                         }
                         PreferencesSection::Server => {
                             let r = self.server_section.handle_input(&app_event, tx);
                             if r.is_consumed() {
-                                let mut s = self.settings.write().unwrap();
-                                s.workspace_config
-                                    .get_or_insert_with(
-                                        crate::settings::workspace_config::WorkspaceConfig::new_empty,
-                                    )
-                                    .global
-                                    .kimun_server_url = self.server_section.server_url.clone();
+                                self.sync_section();
                             }
                             r
                         }
@@ -816,14 +1044,14 @@ impl AppScreen for PreferencesScreen {
             .title_style(Style::default().fg(theme.accent.to_ratatui()));
         f.render_widget(header, rows[0]);
 
-        // Footer hint
-        f.render_widget(
-            Paragraph::new("  [Esc] Save & Close  [Tab] Switch sidebar/content").style(
-                Style::default()
-                    .fg(theme.gray.to_ratatui())
-                    .bg(theme.bg.to_ratatui()),
-            ),
+        // Footer hint — clickable chips.
+        self.footer.render(
+            f,
             rows[2],
+            Style::default()
+                .fg(theme.gray.to_ratatui())
+                .bg(theme.bg.to_ratatui()),
+            &theme,
         );
 
         let cols = Layout::default()
@@ -868,8 +1096,10 @@ impl AppScreen for PreferencesScreen {
             .borders(Borders::ALL)
             .border_style(theme.border_style(sidebar_focused))
             .style(theme.panel_style());
+        self.sidebar_rows = sidebar_block.inner(cols[0]);
         let sidebar_list = List::new(items).block(sidebar_block);
         f.render_widget(sidebar_list, cols[0]);
+        self.content_rect = cols[1];
 
         // Content panel
         let content_focused = self.focus == PreferencesFocus::Content;
@@ -904,7 +1134,17 @@ impl AppScreen for PreferencesScreen {
             }
         }
 
+        // An overlay is modal: what it covers is not clickable, so it
+        // must not light up on hover either.
+        if matches!(self.overlay, Overlay::None) {
+            self.overlay_opened_at = None;
+        } else {
+            crate::components::clickable::clear();
+            self.overlay_opened_at
+                .get_or_insert_with(std::time::Instant::now);
+        }
         self.render_overlay(f, &theme);
+        crate::components::clickable::apply_hover(f.buffer_mut(), self.pointer, &theme);
     }
 }
 
@@ -915,6 +1155,7 @@ impl PreferencesScreen {
 
             Overlay::FileBrowser(fb) => {
                 let area = crate::components::centered_rect(60, 80, f.area());
+                self.overlay_rect = area;
                 f.render_widget(Clear, area);
                 let block = Block::default()
                     .title("Select Vault Directory")
@@ -960,15 +1201,14 @@ impl PreferencesScreen {
                     .highlight_symbol("▶ ")
                     .highlight_style(Style::default().add_modifier(Modifier::BOLD));
                 f.render_stateful_widget(list, rows[1], &mut fb.list_state);
-                f.render_widget(
-                    Paragraph::new("Enter: open  c: confirm  Esc: cancel  a-z: jump")
-                        .style(theme.base_style()),
-                    rows[2],
-                );
+                self.browser_rows = rows[1];
+                self.browser_hints
+                    .render(f, rows[2], theme.base_style(), theme);
             }
 
             Overlay::ConfirmFullReindex { focused_button } => {
                 let area = fixed_centered_rect(44, 6, f.area());
+                self.overlay_rect = area;
                 f.render_widget(Clear, area);
                 let block = Block::default()
                     .title("Full Reindex")
@@ -977,28 +1217,22 @@ impl PreferencesScreen {
                     .style(theme.base_style());
                 let inner = block.inner(area);
                 f.render_widget(block, area);
-                let cancel = if *focused_button == ConfirmButton::Cancel {
-                    "[ Cancel ]"
-                } else {
-                    "  Cancel  "
-                };
-                let confirm = if *focused_button == ConfirmButton::Confirm {
-                    "[ Confirm ]"
-                } else {
-                    "  Confirm  "
-                };
                 f.render_widget(
-                    Paragraph::new(format!(
-                        "\n  This may take a while.\n\n  {}    {}",
-                        cancel, confirm
-                    ))
-                    .style(theme.base_style()),
+                    Paragraph::new("\n  This may take a while.").style(theme.base_style()),
                     inner,
                 );
+                let focused = match focused_button {
+                    ConfirmButton::Cancel => 0,
+                    ConfirmButton::Confirm => 1,
+                };
+                self.confirm_buttons = ButtonRow::new(&["Cancel", "Confirm"]);
+                self.confirm_buttons.set_focused(Some(focused));
+                self.confirm_buttons.render(f, button_line(inner), theme);
             }
 
             Overlay::ConfirmSave { focused_button } => {
                 let area = fixed_centered_rect(44, 6, f.area());
+                self.overlay_rect = area;
                 f.render_widget(Clear, area);
                 let block = Block::default()
                     .title("Save Preferences?")
@@ -1007,24 +1241,17 @@ impl PreferencesScreen {
                     .style(theme.base_style());
                 let inner = block.inner(area);
                 f.render_widget(block, area);
-                let save = if *focused_button == SaveButton::Save {
-                    "[ Save ]"
-                } else {
-                    "  Save  "
-                };
-                let discard = if *focused_button == SaveButton::Discard {
-                    "[ Discard ]"
-                } else {
-                    "  Discard  "
-                };
                 f.render_widget(
-                    Paragraph::new(format!(
-                        "\n  You have unsaved changes.\n\n  {}    {}",
-                        save, discard
-                    ))
-                    .style(theme.base_style()),
+                    Paragraph::new("\n  You have unsaved changes.").style(theme.base_style()),
                     inner,
                 );
+                let focused = match focused_button {
+                    SaveButton::Save => 0,
+                    SaveButton::Discard => 1,
+                };
+                self.confirm_buttons = ButtonRow::new(&["Save", "Discard"]);
+                self.confirm_buttons.set_focused(Some(focused));
+                self.confirm_buttons.render(f, button_line(inner), theme);
             }
 
             Overlay::IndexingProgress(state) => {
@@ -1367,5 +1594,206 @@ mod settings_screen_tests {
             }
             _ => panic!("expected Overlay::VaultConflict(...)"),
         }
+    }
+}
+
+#[cfg(test)]
+mod mouse_tests {
+    use std::sync::{Arc, RwLock};
+
+    use super::*;
+    use crate::components::events::AppEvent;
+    use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
+
+    fn screen() -> PreferencesScreen {
+        PreferencesScreen::new(Arc::new(RwLock::new(AppSettings::default())))
+    }
+
+    fn draw(s: &mut PreferencesScreen) -> ratatui::buffer::Buffer {
+        let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        t.draw(|f| s.render(f)).unwrap();
+        t.backend().buffer().clone()
+    }
+
+    /// Render, then left-click the first cell of `text` shifted by `dx`.
+    fn click(s: &mut PreferencesScreen, text: &str, dx: u16) -> UnboundedReceiver<AppEvent> {
+        let buf = draw(s);
+        let (x, y) = crate::test_support::find_text(&buf, text)
+            .unwrap_or_else(|| panic!("{text:?} not drawn"));
+        let (tx, rx) = unbounded_channel();
+        s.handle_input(&crate::test_support::mouse_down_at(x + dx, y), &tx);
+        rx
+    }
+
+    /// Let an overlay that just opened accept clicks (past the guard that
+    /// drops the tail of the gesture which opened it).
+    fn settle_overlay(s: &mut PreferencesScreen) {
+        draw(s);
+        s.overlay_opened_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn clicking_a_section_switches_to_it() {
+        let mut s = screen();
+        click(&mut s, "Display", 0);
+        assert_eq!(s.section, PreferencesSection::Display);
+        assert_eq!(s.focus, PreferencesFocus::Sidebar);
+    }
+
+    #[test]
+    fn display_checkbox_and_stepper_write_settings() {
+        let mut s = screen();
+        s.section = PreferencesSection::Display;
+        let before = s.settings.read().unwrap().use_nerd_fonts;
+        // `  Use Nerd Fonts  [x]` — the checkbox sits 16 cells after the label.
+        click(&mut s, "Use Nerd Fonts", 16);
+        assert_eq!(s.settings.read().unwrap().use_nerd_fonts, !before);
+        assert_eq!(s.focus, PreferencesFocus::Content);
+
+        let delay = s.settings.read().unwrap().leader_timeout_ms;
+        click(&mut s, "▶", 0);
+        assert_eq!(s.settings.read().unwrap().leader_timeout_ms, delay + 50);
+    }
+
+    #[test]
+    fn clicking_a_theme_previews_it() {
+        let mut s = screen();
+        s.section = PreferencesSection::Appearance;
+        let current = s.settings.read().unwrap().theme.clone();
+        let other = s
+            .settings
+            .read()
+            .unwrap()
+            .theme_list()
+            .into_iter()
+            .map(|t| t.name)
+            .find(|n| *n != current)
+            .unwrap();
+        click(&mut s, &other, 0);
+        assert_eq!(s.settings.read().unwrap().theme, other);
+    }
+
+    #[test]
+    fn sorting_value_cycles_on_click() {
+        let mut s = screen();
+        s.section = PreferencesSection::Sorting;
+        let before = s.settings.read().unwrap().default_sort_field;
+        click(&mut s, "[Name]", 1);
+        assert_ne!(s.settings.read().unwrap().default_sort_field, before);
+    }
+
+    #[test]
+    fn editor_backend_steps_on_click() {
+        let mut s = screen();
+        s.section = PreferencesSection::Editor;
+        let before = s.settings.read().unwrap().editor_backend;
+        // The second `▶` on screen is the backend's.
+        let buf = draw(&mut s);
+        let (_, y) = crate::test_support::find_text(&buf, "Editor Backend").unwrap();
+        let col = (0..100u16)
+            .find(|&c| buf[(c, y + 1)].symbol() == "▶")
+            .unwrap();
+        let (tx, _rx) = unbounded_channel();
+        s.handle_input(&crate::test_support::mouse_down_at(col, y + 1), &tx);
+        assert_ne!(s.settings.read().unwrap().editor_backend, before);
+    }
+
+    #[test]
+    fn reindex_buttons_run_their_reindex() {
+        let mut s = screen();
+        s.section = PreferencesSection::Indexing;
+        s.indexing_section = IndexingSection::new(true);
+        let mut rx = click(&mut s, "Full Reindex", 0);
+        assert!(matches!(rx.try_recv(), Ok(AppEvent::TriggerFullReindex)));
+        let mut rx = click(&mut s, "Fast Reindex", 0);
+        assert!(matches!(rx.try_recv(), Ok(AppEvent::TriggerFastReindex)));
+    }
+
+    /// The folder picker: a click selects a folder, clicking it again opens
+    /// it, and `[c] Choose this folder` picks the folder being shown.
+    #[test]
+    fn folder_picker_rows_and_choose_chip() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(dir.path().join("inner")).unwrap();
+        let mut s = screen();
+        s.overlay = Overlay::FileBrowser(FileBrowserState::load(dir.path().to_path_buf()));
+        settle_overlay(&mut s);
+        click(&mut s, "inner/", 0);
+        click(&mut s, "inner/", 0);
+        let Overlay::FileBrowser(fb) = &s.overlay else {
+            panic!("picker still open")
+        };
+        assert!(fb.current_path.ends_with("inner"), "re-click opened it");
+
+        click(&mut s, "[c] Choose this folder", 0);
+        assert!(
+            matches!(s.overlay, Overlay::None),
+            "choosing closes the picker"
+        );
+    }
+
+    #[test]
+    fn workspace_new_chip_starts_creating() {
+        let mut s = screen();
+        click(&mut s, "[n] New", 0);
+        assert_eq!(*s.workspaces_section.mode(), WorkspaceMode::Creating);
+    }
+
+    /// The footer's `[Esc]` closes when nothing changed; with a change the
+    /// save prompt opens, and its `Discard` button rolls the change back.
+    #[test]
+    fn footer_esc_and_discard_button() {
+        let mut s = screen();
+        let mut rx = click(&mut s, "[Esc] Save & Close", 0);
+        assert!(matches!(rx.try_recv(), Ok(AppEvent::ClosePreferences)));
+
+        s.section = PreferencesSection::Display;
+        click(&mut s, "Use Nerd Fonts", 16);
+        click(&mut s, "[Esc] Save & Close", 0);
+        assert!(matches!(s.overlay, Overlay::ConfirmSave { .. }));
+        settle_overlay(&mut s);
+        let mut rx = click(&mut s, "Discard", 0);
+        assert!(matches!(rx.try_recv(), Ok(AppEvent::ClosePreferences)));
+        assert_eq!(*s.settings.read().unwrap(), s.initial_settings);
+    }
+
+    /// The second press of the double-click that opened an overlay must not
+    /// land on it; a press outside a settled overlay cancels it.
+    #[test]
+    fn overlay_guard_and_outside_press() {
+        let mut s = screen();
+        s.overlay = Overlay::ConfirmSave {
+            focused_button: SaveButton::Save,
+        };
+        let mut rx = click(&mut s, "Discard", 0);
+        assert!(
+            rx.try_recv().is_err(),
+            "the opening gesture's tail is dropped"
+        );
+        assert!(matches!(s.overlay, Overlay::ConfirmSave { .. }));
+
+        settle_overlay(&mut s);
+        let (tx, _rx) = unbounded_channel();
+        s.handle_input(&crate::test_support::mouse_down_at(0, 0), &tx);
+        assert!(matches!(s.overlay, Overlay::None), "outside press cancels");
+    }
+
+    #[test]
+    fn hovering_a_control_highlights_it() {
+        let mut s = screen();
+        let buf = draw(&mut s);
+        let (x, y) = crate::test_support::find_text(&buf, "[n] New").unwrap();
+        let (tx, _rx) = unbounded_channel();
+        s.handle_input(
+            &InputEvent::Mouse(ratatui::crossterm::event::MouseEvent {
+                kind: MouseEventKind::Moved,
+                column: x + 1,
+                row: y,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &tx,
+        );
+        let buf = draw(&mut s);
+        assert_eq!(buf[(x, y)].bg, s.theme.hover().bg.unwrap());
     }
 }

@@ -44,12 +44,10 @@
 use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use std::time::{Duration, Instant};
 
-/// How close together two clicks on a cell have to be to read as one gesture.
-///
-/// Shorter than `TypingRun::IDLE`, which measures something else: that is a
-/// *pause* (how long before a human stops feeling they are still typing), this
-/// is a *deliberate burst*. macOS and Windows default to 500ms, GNOME to 400ms.
-pub(crate) const WINDOW: Duration = Duration::from_millis(400);
+/// How close together two clicks on a cell have to be to read as one gesture
+/// — [`DOUBLE_CLICK`](crate::components::DOUBLE_CLICK), shared with the
+/// list engine's double-click.
+pub(crate) const WINDOW: Duration = crate::components::DOUBLE_CLICK;
 
 /// The clicks currently forming one gesture.
 #[derive(Debug, Default)]

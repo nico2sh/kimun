@@ -148,7 +148,6 @@ impl Component for FileOpsMenuDialog {
         let bg = theme.bg_panel.to_ratatui();
         let fg = theme.fg.to_ratatui();
         let gray = theme.gray.to_ratatui();
-        let fg_accent = theme.selection_fg.to_ratatui();
 
         // Row 1: path
         super::render_path_row(f, rows[1], &self.path_display, fg, bg);
@@ -169,8 +168,8 @@ impl Component for FileOpsMenuDialog {
             .split(rows[3]);
 
         let key_style = Style::default()
-            .fg(fg_accent)
             .bg(bg)
+            .patch(theme.action())
             .add_modifier(Modifier::BOLD);
         let label_style = Style::default().fg(fg).bg(bg);
 
@@ -180,7 +179,11 @@ impl Component for FileOpsMenuDialog {
             ("[R]", " Rename", KeyCode::Char('r')),
             ("[M]", " Move  ", KeyCode::Char('m')),
         ]) {
-            self.action_rects.push((*col, code));
+            // The drawn text is the target — what lights up is what clicks.
+            let text_w = (key.len() + label.trim_end().len()) as u16;
+            let r = Rect::new(col.x + 1, col.y, text_w.min(col.width.saturating_sub(1)), 1);
+            crate::components::clickable::register(r);
+            self.action_rects.push((r, code));
             let chunks = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([
@@ -196,7 +199,7 @@ impl Component for FileOpsMenuDialog {
 
         // Row 5: hint
         self.hints
-            .render(f, rows[5], Style::default().fg(gray).bg(bg));
+            .render(f, rows[5], Style::default().fg(gray).bg(bg), theme);
     }
 }
 
