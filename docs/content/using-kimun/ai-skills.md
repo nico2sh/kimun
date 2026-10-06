@@ -5,7 +5,7 @@ weight = 21
 
 # CLI Skill
 
-Kimün ships with a ready-made **skill** for AI coding assistants. A skill is a short reference file that tells an AI agent which CLI commands are available and how to use them correctly, so it can manage your notes on your behalf without guessing.
+Kimün ships with a skill for AI coding assistants. A skill is a short reference file that tells an AI agent which CLI commands are available and how to use them correctly, so it can manage your notes on your behalf without guessing.
 
 With the skill installed, an AI assistant can:
 
@@ -14,7 +14,7 @@ With the skill installed, an AI assistant can:
 - Search your vault for context before starting a task
 - Read specific notes on request
 
-Destructive edits are [backed up automatically](@/using-kimun/cli.md#backups), so an overenthusiastic agent can't lose your notes.
+Destructive edits are [backed up automatically](@/using-kimun/cli.md#backups), so an agent's mistakes can be undone.
 
 ## Installation
 
@@ -26,7 +26,7 @@ Copy the skill to your Claude skills directory:
 cp -r skills/kimun-cli ~/.claude/skills
 ```
 
-Claude Code picks it up automatically — no further configuration needed. From any session, Claude can invoke `kimun note create`, `kimun note append`, `kimun journal`, `kimun search`, and related commands on your behalf.
+Claude Code picks it up automatically, with no further configuration. From any session, Claude can invoke `kimun note create`, `kimun note append`, `kimun journal`, `kimun search`, and related commands on your behalf.
 
 ### Other AI tools
 
@@ -40,14 +40,14 @@ Copy `skills/kimun-cli/SKILL.md` to wherever your tool loads skills from and fol
 
 ## What the skill teaches
 
-The skill covers the full CLI surface that is useful for automation:
+The skill covers the CLI commands that are useful for automation:
 
-- **Write commands** — `note create`, `note append`, `note overwrite`, `note replace`, `note delete`, and `journal`, including stdin piping, `--force` gating for destructive operations, and path resolution rules
-- **Search** — query syntax (`@`, `>`, `-` modifiers) and output formats (`--format json`, `--format paths`)
-- **Read** — `note show` and `notes` listing with JSON output
-- **Common patterns** — ready-to-use recipes for logging findings, capturing command output, and searching for context
+- **Write commands**: `note create`, `note append`, `note overwrite`, `note replace`, `note delete`, and `journal`, including stdin piping, `--force` for destructive operations, and path resolution rules
+- **Search**: query syntax (`@`, `>`, `-` modifiers) and output formats (`--format json`, `--format paths`)
+- **Read**: `note show` and `notes` listing with JSON output
+- **Common patterns**: recipes for logging findings, capturing command output, and searching for context
 
-The skill also documents the key behavioral differences an agent needs to know — for example, that `create` fails if a note exists while `append` is always safe, that `overwrite` and `delete` require `--force`, that `replace` needs a unique match (or `--all`), and that every destructive edit is backed up first.
+It also documents behavior an agent needs to know. For example, `create` fails if a note exists while `append` is always safe, that `overwrite` and `delete` require `--force`, that `replace` needs a unique match (or `--all`), and that every destructive edit is backed up first.
 
 ## Example session
 
@@ -59,7 +59,7 @@ Once installed, you can ask Claude Code things like:
 
 > "Create a note in inbox/ with the output of this command"
 
-Claude will use the kimun CLI directly, so notes end up in your vault as plain Markdown files alongside everything else.
+Claude runs the kimun CLI directly, so the notes end up in your vault as plain Markdown files.
 
 ## The skill file
 

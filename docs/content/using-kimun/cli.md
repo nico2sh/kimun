@@ -5,7 +5,7 @@ weight = 12
 
 # CLI
 
-Everything Kimün does, scriptable from your shell — quick captures, searches, workspace juggling, and note surgery. Pipe in, pipe out, put it in a cron job.
+The `kimun` command gives you Kimün's features from the shell. Commands read content from stdin and write plain text or JSON to stdout, so you can use them in scripts, pipelines, and cron jobs.
 
 ## Global Configuration
 
@@ -24,12 +24,12 @@ Without `--config`, Kimün uses the default location:
 
 On first use, choose one of these approaches:
 
-**Option A — CLI First:**
+**Option A: start from the CLI**
 ```sh
 kimun workspace init --name default /path/to/notes
 ```
 
-**Option B — TUI First:**
+**Option B: start from the TUI**
 ```sh
 kimun
 ```
@@ -39,9 +39,9 @@ Legacy single-workspace configurations are automatically migrated to multi-works
 
 ## Workspaces
 
-Multi-workspace support allows you to manage separate note directories.
+You can keep several workspaces, each with its own notes directory.
 
-For full workspace management reference, see the [Workspaces](@/getting-started/workspaces.md) page.
+For the full workspace reference, see the [Workspaces](@/getting-started/workspaces.md) page.
 
 **Quick reference:**
 ```sh
@@ -68,13 +68,13 @@ kimun search "rust" --format json                # JSON output
 
 ### Flags
 
-- `--format json` — Output as JSON. Useful for scripting with `jq`.
-- `--format paths` — Output bare paths only (one per line). Ideal for piping into `kimun note show` or `fzf`.
-- `--workspace <name>` — Search a specific workspace (if applicable).
+- `--format json`: output as JSON, for use with `jq` in scripts.
+- `--format paths`: output bare paths only, one per line. Use it to pipe results into `kimun note show` or `fzf`.
+- `--workspace <name>`: search a specific workspace instead of the current one.
 
 ### Query Syntax
 
-The same query language as the TUI. Quick reminder:
+The CLI uses the same query language as the TUI:
 
 | Want | Operator | Example |
 |---|---|---|
@@ -87,7 +87,7 @@ The same query language as the TUI. Quick reminder:
 | Forward links | `>` / `fwd:` | `>projects` |
 | Exclude | `-` prefix | `-#draft`, `-@temp` |
 
-Space = AND, `*` = wildcard, case and accents ignored. The full grammar — wildcards per operator, link matching rules, query variables — lives on the [Search](@/using-kimun/search.md) page.
+Space means AND, `*` is a wildcard, and case and accents are ignored. The full grammar (wildcards per operator, link matching rules, query variables) is on the [Search](@/using-kimun/search.md) page.
 
 ### Examples
 
@@ -124,7 +124,7 @@ kimun labels --format paths   # bare labels, one per line (pipeable)
 kimun labels --format json    # JSON with total + per-label note_count
 ```
 
-Labels come from in-text `#hashtag` tokens and from a frontmatter `tags` property (see [Search](@/using-kimun/search.md#labels) for full label rules — code / HTML / link bodies / wikilinks are excluded from indexing).
+Labels come from in-text `#hashtag` tokens and from a frontmatter `tags` property. Hashtags inside code, HTML, link bodies, and wikilinks are not indexed. See [Search](@/using-kimun/search.md#labels) for the full label rules.
 
 ### JSON schema
 
@@ -178,9 +178,9 @@ kimun notes --format json                        # JSON output
 
 ### Flags
 
-- `--path <prefix>` — Filter notes by path prefix (e.g., `journal/`, `projects/`).
-- `--format json` — Output as JSON. Useful for scripting with `jq`.
-- `--format paths` — Output bare paths only (one per line). Ideal for piping into `kimun note show` or `fzf`.
+- `--path <prefix>`: filter notes by path prefix (e.g., `journal/`, `projects/`).
+- `--format json`: output as JSON, for use with `jq` in scripts.
+- `--format paths`: output bare paths only, one per line. Use it to pipe results into `kimun note show` or `fzf`.
 
 ### Examples
 
@@ -209,7 +209,7 @@ kimun note show "path/to/note" "another/note"   # Multiple notes
 
 ### Flags
 
-- `--format json` — Output as JSON (default: text).
+- `--format json`: output as JSON (default: text).
 
 ### Features
 
@@ -319,7 +319,7 @@ kimun search "rust" --format paths | kimun note append "inbox/rust-refs"
 
 ### Overwrite
 
-Replace a note's **entire** body with new content. Because it discards the old
+Replace a note's entire body with new content. Because it discards the old
 body, it requires `--force`.
 
 ```sh
@@ -331,12 +331,12 @@ echo "New body" | kimun note overwrite "projects/roadmap" --force
 
 - Accepts content as a second argument or from stdin (when stdin is not a TTY)
 - Requires `--force`; without it the command refuses to run (there is no
-  interactive prompt — the CLI is built for automation)
+  interactive prompt, because the CLI is built for automation)
 - Backs up the previous content first (see [Backups](#backups))
 
 ### Replace
 
-Swap text for new text, leaving the rest of the note intact. The find text is a
+Replace one piece of text in a note and leave the rest of it unchanged. The find text is a
 literal substring by default, or a regular expression with `--regex`.
 
 ```sh
@@ -349,18 +349,18 @@ kimun note replace "projects/roadmap" "TODO" "DONE" --all --preview
 
 #### Features
 
-- The find text must match **exactly once**; the command errors if it is missing
+- The find text must match exactly once; the command errors if it is missing
   or appears more than once, so it never edits the wrong place
 - `--all` replaces every occurrence on purpose
 - `--regex` treats the find text as a regular expression; the replacement may
   then reference capture groups (`$1`, `${name}`; use `$$` for a literal `$`,
   and `${1}`/`${name}` when the next character is alphanumeric, e.g. `${1}_`).
-  Use inline flags for line/case behaviour — `(?m)`, `(?s)`, `(?i)`. An invalid
+  Use inline flags for line/case behaviour: `(?m)`, `(?s)`, `(?i)`. An invalid
   pattern errors without touching the note.
 - `--preview` is a dry run: it prints the resulting note content to stdout (the
-  match count goes to stderr) and writes **nothing**. Pipe it to compare, e.g.
+  match count goes to stderr) and writes nothing. Pipe it to compare, e.g.
   `kimun note replace … --preview | diff <(kimun note show "…") -`
-- No `--force` needed — it is a targeted, scriptable edit
+- Does not require `--force`, because it only changes the matched text
 - Backs up the previous content first (see [Backups](#backups))
 
 ### Delete
@@ -395,7 +395,7 @@ kimun note prop remove "projects/garden" status
 #### How `set` picks a type
 
 - **`tags`** is always a list: comma-separated values become separate items (`set n tags "work, q1"`), and `set n tags` with no value clears it. **`aliases`** and **`cssclasses`** are always lists too, with values kept as given (an alias may contain a comma).
-- **A key other notes already use:** the value must be exactly a value of the type most of them give it. If `priority` is a number elsewhere, `2` is stored as a number while `high` — and `02134`, which a number would rewrite — is refused. A single value for a list key becomes a one-item list.
+- **A key other notes already use:** the value must be exactly a value of the type most of them give it. If `priority` is a number elsewhere, `2` is stored as a number, while `high` is refused. So is `02134`, which storing as a number would rewrite. A single value for a list key becomes a one-item list.
 - **A new key:** typed by its look. `5` and `4.5` → number, `true`/`false` → true/false, `2026-05-01` → date, `2026-05-01T14:30` → date & time, anything else → text. Text that only looks numeric (`02134`, `1.10`) stays text, so it is never rewritten.
 - **Date & time values keep their form:** `2026-05-01T14:30` stays a local time (written without an offset, as Obsidian does), `2026-05-01T14:30:00+02:00` keeps its offset. Searches and sorting compare them as instants, a local time read as UTC.
 - **`--type text|number|bool|date|datetime|list`** forces the type. Use it to store a value that doesn't fit the key's usual type; only this note changes. `--type list` with no value sets an empty list.
@@ -419,14 +419,14 @@ purged automatically.
 
 - Covers `overwrite`, `replace`, `delete`, `prop set`/`prop remove`, and the
   backlink rewrites performed by rename/move. `create` and a first-time `append` have nothing to back up.
-- Interactive TUI editing does **not** create backups (the editor has its own
+- Interactive TUI editing does not create backups (the editor has its own
   history).
 - If a backup cannot be written, the operation is aborted and the note is left
   untouched (fail-closed).
 
 ## Quick Note
 
-Capture a thought instantly. The note is saved in the inbox directory with a timestamp-based filename.
+Capture a thought as a new note. It is saved in the inbox directory with a timestamp-based filename.
 
 ```sh
 kimun note quick "My quick thought"
@@ -532,8 +532,8 @@ kimun journal show [--date YYYY-MM-DD] [--format text|json]
 
 ### Flags
 
-- `--date <YYYY-MM-DD>` — Show a specific date's entry (defaults to today).
-- `--format json` — Output as JSON. Useful for scripting with `jq`.
+- `--date <YYYY-MM-DD>`: show a specific date's entry (defaults to today).
+- `--format json`: output as JSON, for use with `jq` in scripts.
 
 ### Examples
 
@@ -562,7 +562,7 @@ Run it when a key seems to do nothing, or the wrong thing, and paste the output
 into a bug report.
 
 Terminals send `Ctrl` chords as single bytes, and some of those bytes already
-belong to real keys — `Ctrl+I` is `Tab`, `Ctrl+M` is `Enter`, `Ctrl+[` is
+belong to real keys: `Ctrl+I` is `Tab`, `Ctrl+M` is `Enter`, `Ctrl+[` is
 `Esc`. `doctor` names every binding that cannot arrive on *this* terminal, and
 which key it arrives as instead:
 
@@ -582,23 +582,23 @@ Key bindings
 Every bound action has a key this terminal can send.
 ```
 
-An unreachable chord is fine as long as the action has another one — above,
-`Ctrl+,` cannot arrive but `F4` opens Preferences regardless. The last line is
-the one that matters: it names any action left with no usable key at all.
+An unreachable chord is fine as long as the action has another key. In the
+example above, `Ctrl+,` cannot arrive, but `F4` still opens Preferences. Check
+the last line: it names any action left with no usable key at all.
 
-Two of these answers come from the terminal itself, so run `doctor` **in** the
-terminal you use Kimün in. Redirected to a file or a pipe there is nobody to
-answer the query, and `doctor` says so rather than guessing.
+Two of these answers come from the terminal itself, so run `doctor` in the
+terminal you use Kimün in. If you redirect its output to a file or a pipe,
+nothing answers the query, and `doctor` reports that instead of guessing.
 
 The default keymap always keeps a reachable key for every action, so a
-complaint here is almost always about a `[key_bindings]` override — see [Key
+complaint here is almost always about a `[key_bindings]` override. See [Key
 Bindings](@/getting-started/configuration.md#key-bindings). The one exception
 is `ctrl_h = "backspace"`, which gives up the `Ctrl+H` chord by design; any
 action bound only to it is listed here, and `doctor` says so when that is why.
 
 ## JSON Output
 
-Both `search` and `notes` support JSON output for scripting and automation.
+Both `search` and `notes` support JSON output for scripting.
 
 ### Output Structure
 

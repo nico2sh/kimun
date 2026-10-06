@@ -6,6 +6,6 @@ sort_by = "weight"
 
 # Using Kimün
 
-Everything Kimün can do: the full Terminal UI, the scriptable CLI, search, themes, hooking up your favorite AI tool via the [CLI skill](@/using-kimun/ai-skills.md) or the [MCP Server](@/using-kimun/ai-mcp-server.md), and adding semantic search and question-answering with the [Kimün server](@/using-kimun/server.md). New here? Read the TUI walkthrough first — the rest is reference you can dip into when you need it.
+This section covers the Terminal UI, the CLI, search, and themes. It also explains how to connect an AI tool through the [CLI skill](@/using-kimun/ai-skills.md) or the [MCP Server](@/using-kimun/ai-mcp-server.md), and how to add semantic search and question answering with the [Kimün server](@/using-kimun/server.md). If you are new, read the TUI page first. The other pages are reference material.
 
 **Start here:** [Terminal UI](@/using-kimun/tui.md)
