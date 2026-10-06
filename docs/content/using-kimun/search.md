@@ -5,11 +5,11 @@ weight = 13
 
 # Search
 
-Search is Kimün's superpower. Every Markdown file in your workspace is indexed, and a small query language lets you slice by content, name, section, path, label, property, and links.
+Kimün indexes every Markdown file in your workspace. A small query language lets you filter notes by content, name, section, path, label, property, and links.
 
-(Everything here is exact-match search over the local index. For finding notes by *meaning* — and asking questions answered from your notes — see [Semantic Search & Ask](@/using-kimun/server.md).)
+This page covers exact-match search over the local index. To find notes by meaning, or to ask questions answered from your notes, see [Semantic Search & Ask](@/using-kimun/server.md).
 
-The whole grammar fits in one table:
+The full query syntax:
 
 | Want | Short | Long | Example |
 |---|---|---|---|
@@ -19,12 +19,12 @@ The whole grammar fits in one table:
 | By path | `/` | `pt:` | `/journal/2024` |
 | By label (hashtag) | `#` | `lb:` | `#finance` |
 | By property | `%` | `prop:` | `%priority>=2` |
-| Notes linking **to** X | `<` | `lk:` | `<projects` |
-| Notes X links **to** | `>` | `fwd:` | `>projects` |
+| Notes linking to X | `<` | `lk:` | `<projects` |
+| Notes X links to | `>` | `fwd:` | `>projects` |
 | Sort results | `^` | `or:` | `^title`, `-^title` |
 | Exclude anything | `-` prefix | | `-#draft`, `-@temp` |
 
-Space between terms = AND. There is no OR. That's the whole precedence story.
+Terms separated by spaces are combined with AND. There is no OR operator.
 
 ## Opening search
 
@@ -46,7 +46,7 @@ Free text looks across note content and filenames at once. Searches are:
 
 - **Case-insensitive:** `kimun` matches `Kimün`, `KIMÜN`, `kimun`
 - **Diacritics-ignored:** `kimun` matches `Kimün`
-- **Wildcard-friendly:** `*` matches patterns
+- **Wildcards:** `*` matches any run of characters
 
 ### Wildcard patterns
 
@@ -58,7 +58,7 @@ kimu*            → anything starting with "kimu" (kimun, kimune, kimurei)
 
 ## Operators
 
-Each operator has a short form (symbol) and a long form (colon-prefixed). Pick whichever your fingers prefer.
+Each operator has a short form (a symbol) and a long form (a word followed by a colon). The two forms are interchangeable.
 
 ### `=` or `name:` — note name
 
@@ -80,7 +80,7 @@ in:personal      → same (long form)
 
 Filters by Markdown sections (`#`, `##`, `###`, …). The search term must appear within that section. Section names match heading text case-insensitively; a note matches if any of its sections contain the term.
 
-> **Wildcards on `@` are prefix-only.** The section filter is full-text indexed, so `*` works only at the **end** of a term (`@meet*` matches "meeting", "meetup") and matches whole words. Unlike `=`, `<`, `>`, and `/` — which support `*` anywhere (`*report`, `ta*sk`) — the section filter does **not** support leading or mid-term `*`.
+> **Wildcards on `@` are prefix-only.** The section filter is full-text indexed, so `*` works only at the end of a term (`@meet*` matches "meeting", "meetup") and matches whole words. The `=`, `<`, `>`, and `/` filters accept `*` anywhere (`*report`, `ta*sk`), but the section filter does not accept a leading or mid-term `*`.
 
 ### `/` or `pt:` — path
 
@@ -100,10 +100,10 @@ lk:projects      → same (long form)
 <projects.md     → same (the .md extension is optional)
 ```
 
-Finds the notes that **link to** a given note, via `[[wikilink]]` or Markdown link. Matching rules:
+Finds the notes that link to a given note, via `[[wikilink]]` or Markdown link. Matching rules:
 
-- **By note identity, not substring:** `<projects` matches links to `projects`, but not to `projects-archive`
-- **Case-insensitive,** matched by note name; a bare name matches a note in any folder, so add a path to disambiguate (`<work/projects`) and use `*` wildcards freely (`<proj*`)
+- **Whole note names:** `<projects` matches links to `projects` but not to `projects-archive`
+- **Case-insensitive:** matched by note name. A bare name matches a note in any folder; add a path to disambiguate (`<work/projects`). `*` wildcards work anywhere (`<proj*`)
 - **Only note links count:** attachments, images, and external URLs are ignored
 
 ### `>` or `fwd:` — forward links
@@ -114,7 +114,7 @@ fwd:projects     → same (long form)
 >projects.md     → same (the .md extension is optional)
 ```
 
-The mirror image of `<`: the notes a given note **links to**. Same matching rules as backlinks.
+The reverse of `<`: finds the notes that a given note links to. The matching rules are the same as for backlinks.
 
 ## Labels
 
@@ -145,7 +145,7 @@ An unknown label returns zero results, not an error.
 
 ## Properties
 
-Notes can carry typed properties in a frontmatter block at the very top — TOML between `+++` lines (Kimün's default) or YAML between `---` lines (what Obsidian writes):
+Notes can carry typed properties in a frontmatter block at the very top: TOML between `+++` lines (Kimün's default) or YAML between `---` lines (what Obsidian writes).
 
 ```toml
 +++
@@ -175,13 +175,13 @@ prop:status=done      → status equals "done" (ignores case and accents: Status
 ^%"due date"          → sort by a key that has spaces
 ```
 
-A key on its own (`%due`, `prop:"due date"`) finds notes that have the property at all — even with no value: an empty list (`tags = []`) or a blank YAML entry (`due:`, which Obsidian writes for an unset property) counts, and `%due!=x` includes them too. A key followed by an operator but no value (`%due=`) is ignored.
+A key on its own (`%due`, `prop:"due date"`) finds notes that have the property at all, even with no value. An empty list (`tags = []`) or a blank YAML entry (`due:`, which Obsidian writes for an unset property) counts, and `%due!=x` includes them too. A key followed by an operator but no value (`%due=`) is ignored.
 
-Operators: `=` `!=` `<` `<=` `>` `>=`. The value you compare with decides what it can meet: a number meets numbers, a date (`2024-04-01`) or date & time meets dates and date & times (compared as moments in time), and anything else meets text. A property of another type simply doesn't match — `%due<today` never matches a date, and `<` on a list matches nothing. A date written as text (`due = "2024-01-31"`, Hugo's `date = '2023-08-24T11:49:46-07:00'`) compares as a date, and `=` also matches a value written exactly as you typed it. A four-digit value such as `2024` meets both numbers and dates.
+Operators: `=` `!=` `<` `<=` `>` `>=`. The value you compare with decides what it can meet: a number meets numbers, a date (`2024-04-01`) or date & time meets dates and date & times (compared as moments in time), and anything else meets text. A property of another type doesn't match: `%due<today` never matches a date, and `<` on a list matches nothing. A date written as text (`due = "2024-01-31"`, Hugo's `date = '2023-08-24T11:49:46-07:00'`) compares as a date, and `=` also matches a value written exactly as you typed it. A four-digit value such as `2024` meets both numbers and dates.
 
 Sort by a property with `or:prop:key` or `^%key`; see [Sorting](#sorting). Notes without the property always come last.
 
-Supported types: text, number, true/false, date (`2024-03-01`), date & time (`2024-03-01T14:30`, or with an offset such as `2024-03-01T14:30:00+02:00`; a time without an offset compares as UTC), and lists of text. Nested tables are ignored. A block that fails to parse is still searchable as plain text, it just contributes no properties.
+Supported types: text, number, true/false, date (`2024-03-01`), date & time (`2024-03-01T14:30`, or with an offset such as `2024-03-01T14:30:00+02:00`; a time without an offset compares as UTC), and lists of text. Nested tables are ignored. A block that fails to parse is still searchable as plain text but contributes no properties.
 
 To view or edit a note's properties in the TUI, see [Properties](@/using-kimun/tui.md#properties) in the TUI guide.
 
@@ -201,11 +201,11 @@ The `-` prefix excludes. It always leads; any operator follows:
 
 Long forms work the same: `-in:draft`, `-name:temp`, `-pt:private`, `-lb:draft`, `-lk:draft`, `-fwd:draft`.
 
-Exclusion-only searches are fine too — `-cancelled` alone returns every note *except* those containing "cancelled".
+Exclusion-only searches work too: `-cancelled` on its own returns every note except those containing "cancelled".
 
 ## Combining filters
 
-Everything composes. Space = AND, each term must match:
+Any filters can be combined. Every term must match:
 
 ```
 =tasks @work report                → name "tasks", has "Work" section, contains "report"
@@ -240,21 +240,21 @@ The directive combines with any filter (`#project -#draft ^title`). The TUI sort
 
 ## Query variables
 
-Some queries contain a `{name}` placeholder that the TUI fills in at run time, before the query reaches the search engine. The first (and currently only) variable is `{note}`:
+Some queries contain a `{name}` placeholder that the TUI fills in at run time, before the query reaches the search engine. Currently the only variable is `{note}`:
 
-- `{note}` resolves to the **clean name** of the note open in the editor (its filename without the extension).
-- A bare note operator — `<`, `>` or `=` with no target, including the long forms `lk:` / `fwd:` / `name:` and the `-` exclusion variants — is shorthand for `<{note}`, `>{note}` or `={note}`: the backlinks of the current note, its forward links, or the note itself by name. Operators inside quoted terms are not expanded.
+- `{note}` resolves to the clean name of the note open in the editor (its filename without the extension).
+- A bare note operator (`<`, `>` or `=` with no target, including the long forms `lk:` / `fwd:` / `name:` and the `-` exclusion variants) is shorthand for `<{note}`, `>{note}` or `={note}`: the backlinks of the current note, its forward links, or the note itself by name. Operators inside quoted terms are not expanded.
 
 With `spec.md` open, `<{note}` runs as `<spec` (the notes that link to `spec`). When no note is open, `{note}` resolves to an empty string.
 
-Variables are resolved wherever the query runs — both the FIND drawer view and the `Ctrl+K` search modal substitute `{note}` against the open note. Because [saved searches](#saved-searches) store the *template* (the unresolved `{note}`), a saved `<{note}` re-targets to whatever note is open each time you run it.
+Both the FIND drawer view and the `Ctrl+K` search modal substitute `{note}` with the open note. Because [saved searches](#saved-searches) store the template (the unresolved `{note}`), a saved `<{note}` re-targets to whatever note is open each time you run it.
 
 ## Saved searches
 
-A saved search stores a query under a name so you can re-run it without retyping — common filters, project views, or backlink queries. Saved searches live with the workspace and are managed from the TUI:
+A saved search stores a query under a name so you can re-run it without retyping it. Saved searches belong to the workspace and are managed from the TUI:
 
-- **Save** the current query with `Ctrl+D` — from the [FIND view](@/using-kimun/tui.md#find) or the `Ctrl+K` search modal — then give it a name.
-- **Open** the Saved Searches picker with `F3` to run a saved search (`Enter`), quick-select with `1`–`9`, or remove one with `Delete`.
+- To save the current query, press `Ctrl+D` in the [FIND view](@/using-kimun/tui.md#find) or the `Ctrl+K` search modal, then give it a name.
+- Press `F3` to open the Saved Searches picker. Press `Enter` to run the selected search, `1`–`9` to quick-select one, or `Delete` to remove it.
 
 Running a saved search loads its results in the FIND view. See [Saved Searches](@/using-kimun/tui.md#saved-searches) in the TUI guide for the full workflow.
 
@@ -263,10 +263,10 @@ Running a saved search loads its results in the FIND view. See [Saved Searches](
 You can also run a saved search straight from the search field, without the picker. In the [FIND view](@/using-kimun/tui.md#find) or the `Ctrl+K` search modal, type `?` as the first character to autocomplete saved-search names:
 
 - Type `?` followed by part of a name (e.g. `?todo`) to filter the list; pick one with `Enter` or `Tab`. An empty `?` lists every saved search.
-- Accepting **expands the stored query into the field**, so you can tweak it before running like any other query.
+- Accepting a name expands the stored query into the field, so you can edit it before running it.
 - The search-box border then shows the search's name as a breadcrumb (`‹ todo ›`). Edit the query and it gains an `‹ todo • edited ›` marker; clear the field to drop the breadcrumb. Changing the [sort order](@/using-kimun/tui.md#find) counts as an edit too, since it rewrites the query's sort directive.
 
-Because the field holds the query *template*, any `{note}` variable stays intact and re-resolves each time you run it.
+Because the field holds the query template, any `{note}` variable stays intact and re-resolves each time you run it.
 
 ## Example queries
 
@@ -322,7 +322,6 @@ The simple but great note taking app!
 
 - **Wildcards with operators:** `=task* @work` matches notes named starting with "task" that have a "Work" section
 - **Operator prefixes are case-insensitive:** `@Personal` ≡ `@personal`, `=Tasks` ≡ `=tasks`
-- **Multiple operators of the same type:** `@work @personal` is AND — both sections must exist
-- **Empty results:** if nothing matches, you get an empty list, never an error
-- **Unknown labels:** `#nonexistent` returns zero results, not an error
+- **Multiple operators of the same type:** `@work @personal` is AND, so both sections must exist
+- **Empty results:** if nothing matches, you get an empty list, not an error
 - **Hashtags in code:** `` `#tag` `` and hashtags inside fenced code blocks are not treated as labels

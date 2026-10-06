@@ -7,7 +7,7 @@ weight = 1
 
 ## What is a journal entry in kimun?
 
-Kimün treats any note under a `journal/` directory as a journal entry. The filename should follow the format `YYYY-MM-DD.md` for date detection (e.g., `journal/2024-01-15.md`). This allows kimun to extract the journal date and include it in search results and JSON output.
+Kimün treats any note under a `journal/` directory as a journal entry. Name the file `YYYY-MM-DD.md` (e.g., `journal/2024-01-15.md`) so Kimün can read the journal date from it and include it in search results and JSON output.
 
 ## Creating a journal entry
 
@@ -25,7 +25,7 @@ kimun journal show          # Display today's entry
 
 ### Piping content
 
-`kimun journal` reads from stdin when no content argument is provided and stdin is not a terminal. This makes it easy to capture command output directly into your journal:
+`kimun journal` reads from stdin when no content argument is provided and stdin is not a terminal, so you can pipe command output into your journal:
 
 ```sh
 # Pipe a timestamped line
@@ -53,7 +53,7 @@ echo "Late addition" | kimun journal --date 2024-01-15
 
 ## Writing in the editor
 
-Once a journal entry is open, write freely in Markdown. Use headers to organise your entry:
+A journal entry is a regular Markdown note. Headings help organise it:
 
 ```markdown
 # 2024-01-15
@@ -75,7 +75,7 @@ kimun journal --date 2024-01-15 "Retroactive note for January 15th"
 kimun journal --date 2025-12-31 "New Year's Eve plans"
 ```
 
-The entry will be created if it doesn't exist. The date must be in `YYYY-MM-DD` format.
+The entry is created if it doesn't exist. The date must be in `YYYY-MM-DD` format.
 
 ## Browsing journal entries
 
@@ -99,9 +99,9 @@ kimun search "=2024"                # All journal entries from 2024
 
 ## Quick notes and the inbox
 
-For thoughts that don't belong in today's journal, use **quick notes** (`Ctrl+W` in the TUI or `kimun note quick` in the CLI). These are saved with a timestamp filename in the `/inbox` directory.
+For thoughts that don't belong in today's journal, use quick notes (`Ctrl+W` in the TUI or `kimun note quick` in the CLI). Each one is saved in the `/inbox` directory with a timestamp as its filename.
 
-Later, you can triage inbox notes and move relevant ones into the journal. If you use the [MCP server](@/using-kimun/ai-mcp-server.md), the `triage_inbox` prompt can help organize accumulated inbox notes automatically.
+Later, you can go through the inbox and move notes into the journal. If you use the [MCP server](@/using-kimun/ai-mcp-server.md), the `triage_inbox` prompt asks the AI to suggest where each inbox note should go: into the journal, into a proper note, or left in the inbox.
 
 ### Search within sections
 
@@ -112,6 +112,6 @@ kimun search "/journal @tasks -done" # Tasks sections without "done"
 
 ## Tips
 
-- Use consistent heading names across entries (e.g. always `## Tasks`) to make section search effective
+- Use the same heading names across entries (e.g. always `## Tasks`) so section search finds them
 - The `*` wildcard helps with partial dates: `=2024-0*` matches Jan–Sep 2024
-- Combine with JSON output for automation: `kimun search "/journal" --format json | jq '.notes[] | {date: .journal_date, title: .title}'`
+- For scripts, use JSON output: `kimun search "/journal" --format json | jq '.notes[] | {date: .journal_date, title: .title}'`

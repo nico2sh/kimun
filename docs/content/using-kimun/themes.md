@@ -5,9 +5,9 @@ weight = 14
 
 # Themes
 
-Kimün ships with 21 built-in themes — all the classics — and lets you write your own as a small TOML file.
+Kimün ships with 21 built-in themes, and you can write your own as a small TOML file.
 
-The fastest way to pick one is the **live theme picker** — `Ctrl+B v t` (or the CFG drawer's `t`): moving the selection restyles the whole app instantly, Enter persists, Esc reverts. Or set it in your config:
+To pick one, open the theme picker with `Ctrl+B v t` (or `t` in the CFG drawer). Moving the selection restyles the app as you go; Enter saves the choice and Esc reverts it. You can also set the theme in your config:
 
 ```toml
 theme = "Nord"
@@ -28,11 +28,11 @@ theme = "Nord"
 | Kanagawa | Kanagawa Wave | Kanagawa Lotus |
 | Nord | Nord | — |
 | Monokai | Monokai | — |
-| ANSI | *adapts to your terminal's 16-color palette — works light or dark* | |
+| ANSI | *uses your terminal's 16-color palette, light or dark* | |
 
 ### Color depth
 
-Themes adapt automatically to what your terminal supports: truecolor where available, quantized to 256 colors, or mapped onto the 16 ANSI slots on basic terminals (where every theme effectively becomes the **ANSI** theme, following your terminal's palette).
+Themes adapt to what your terminal supports: truecolor where available, quantized to 256 colors otherwise, or mapped onto the 16 ANSI slots on basic terminals. On a 16-color terminal every theme behaves like the ANSI theme and follows your terminal's palette.
 
 ## Creating a Custom Theme
 
@@ -43,11 +43,11 @@ Place custom theme files in the `themes/` subdirectory of your Kimün config dir
 - **Linux / macOS:** `~/.config/kimun/themes/`
 - **Windows:** `%USERPROFILE%\kimun\themes\`
 
-Each file must have a `.toml` extension. The filename is not significant — the theme's display name comes from the `name` field inside the file.
+Each file must have a `.toml` extension. The filename doesn't matter; the theme's display name comes from the `name` field inside the file.
 
 ### Theme File Format
 
-A theme file is a TOML file with a `name` field and up to 27 color roles. **Only `name` and the core roles you want to change are required** — anything omitted derives from a sensible sibling (e.g. `bg_hard`/`bg_soft` derive from `bg`, `focus_border` from `green`, `selection_fg` from `fg_bright`), so a minimal theme can be just a handful of lines.
+A theme file is a TOML file with a `name` field and up to 27 color roles. Only `name` and the core roles you want to change are required. Any role you omit is derived from a related one (for example, `bg_hard` and `bg_soft` derive from `bg`, `focus_border` from `green`, and `selection_fg` from `fg_bright`), so a minimal theme can be a few lines long.
 
 ```toml
 name = "My Theme"
@@ -91,11 +91,11 @@ code_bg            = "#181825"  # fenced/indented code-block background
 color_replace_preview = "#3e3450"  # background behind replace-preview text
 ```
 
-`color_replace_preview` is a **background**, so give it a muted shade rather than an accent colour. It marks text the replace preview is showing in place of a match — text that is not in the note yet — so it should be clearly distinct from `selection_bg` and `code_bg`. Omit it and it falls back to `accent`, which is chromatic and will read as a very loud highlight.
+`color_replace_preview` is a background color, so give it a muted shade rather than an accent color. It marks the text the replace preview shows in place of a match (text that is not in the note yet), so it should be clearly distinct from `selection_bg` and `code_bg`. If you omit it, it falls back to `accent`, which makes a very loud highlight.
 
 ### Color Formats
 
-Colors can be specified in the following formats:
+Colors can use these formats:
 
 | Format | Example | Notes |
 |---|---|---|
@@ -117,7 +117,7 @@ The name must match the `name` field in your `.toml` file exactly.
 
 ### Overriding the Default Theme
 
-If you save a file named `default.toml` in the themes directory, it will be loaded as an additional theme option. It does not replace the built-in default — to make it the active theme, set it in `[global]` as shown above.
+If you save a file named `default.toml` in the themes directory, it will be loaded as an additional theme option. It does not replace the built-in default. To make it the active theme, set it in `[global]` as shown above.
 
 ## Example: Ayu Dark Theme (minimal)
 
@@ -146,6 +146,4 @@ orange = "#ff8f40"
 
 Save this as `~/.config/kimun/themes/ayu-dark.toml` and set `theme = "Ayu Dark"` in your config.
 
----
-
-Made a theme you like? Themes are just TOML — easy to share. And if you're now in the mood to customize everything else too, head to [Configuration](@/getting-started/configuration.md).
+Theme files are plain TOML, so you can share them by copying the file. For other settings, see [Configuration](@/getting-started/configuration.md).
