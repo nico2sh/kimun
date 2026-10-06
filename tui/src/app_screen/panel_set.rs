@@ -581,6 +581,14 @@ impl PanelSet {
             && self.editor.covers(column, row)
     }
 
+    /// Whether a mouse event at this cell belongs to the editor column — the
+    /// region an **editor claim** may own. False mid divider-drag, so a drag
+    /// that sweeps across the editor keeps resizing the drawer.
+    pub fn pointer_on_editor(&self, column: u16, row: u16) -> bool {
+        !self.dragging_divider
+            && kind_at(&self.column_rects, column, row) == Some(PanelKind::Editor)
+    }
+
     /// The divider hit zone: the drawer's right border column (the cell
     /// between drawer content and editor).
     fn on_divider(&self, column: u16, row: u16) -> bool {

@@ -17,7 +17,8 @@ use kimun_core::{AttachmentContent, AttachmentDetails};
 
 use crate::components::Component;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppTx, InputEvent};
+use crate::components::events::{AppEvent, AppTx, InputEvent};
+use crate::components::hint_row::HintRow;
 use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::settings::icons::Icons;
@@ -36,6 +37,8 @@ pub struct AttachmentView {
     viewport_height: u16,
     /// Total preview lines, computed once from the content.
     total_lines: u16,
+    /// The `[<key>] Open externally` chip under the header.
+    open_chip: HintRow,
 }
 
 impl AttachmentView {
@@ -52,6 +55,12 @@ impl AttachmentView {
             }
             AttachmentContent::Binary => 0,
         };
+        let key = key_bindings
+            .first_combo_for(&ActionShortcuts::FollowLink)
+            .unwrap_or_else(|| "open".to_string());
+        // The chip's key only marks it clickable; a click sends the open
+        // request itself (the bound key is a chord the chip cannot carry).
+        let open_chip = HintRow::new(&[(KeyCode::Enter, &key, "Open externally")]).with_indent(0);
         Self {
             details,
             icons,
@@ -59,6 +68,7 @@ impl AttachmentView {
             scroll: 0,
             viewport_height: 0,
             total_lines,
+            open_chip,
         }
     }
 
@@ -119,7 +129,13 @@ impl AttachmentView {
 }
 
 impl Component for AttachmentView {
-    fn handle_input(&mut self, event: &InputEvent, _tx: &AppTx) -> EventState {
+    fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
+        if let InputEvent::Mouse(m) = event
+            && self.open_chip.hit(m).is_some()
+        {
+            tx.send(AppEvent::OpenAttachmentExternally).ok();
+            return EventState::Consumed;
+        }
         let page = self.viewport_height.saturating_sub(PAGE_OVERLAP).max(1) as i32;
         match event {
             InputEvent::Key(key) => match key.code {
@@ -156,6 +172,12 @@ impl Component for AttachmentView {
             .split(rect);
 
         f.render_widget(Paragraph::new(header), chunks[0]);
+        self.open_chip.render(
+            f,
+            chunks[1],
+            Style::default().fg(theme.blue.to_ratatui()),
+            theme,
+        );
 
         let body = chunks[2];
         match &self.details.content {
@@ -264,6 +286,23 @@ mod tests {
             },
         };
         AttachmentView::new(details, Icons::new(false), KeyBindings::empty())
+    }
+
+    #[test]
+    fn open_externally_chip_requests_the_open() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut v = text_view("a\nb");
+        let theme = Theme::default();
+        let mut t = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        t.draw(|f| v.render(f, f.area(), &theme, true)).unwrap();
+        let (x, y) = crate::test_support::find_text(t.backend().buffer(), "Open externally")
+            .expect("chip drawn");
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        v.handle_input(&crate::test_support::mouse_down_at(x, y), &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AppEvent::OpenAttachmentExternally)
+        ));
     }
 
     #[test]

@@ -35,7 +35,7 @@ All default key bindings. To change a binding, see [Configuration → Key Bindin
 | Switch workspace | `F5` |
 | Focus right / left | `Ctrl+L` / `Ctrl+H` |
 | Bold / Italic / Strikethrough | `Ctrl+B t b` / `t i` / `t s` (see below¹) |
-| Help | `F1` (cheatsheet: `Ctrl+B ?`) |
+| Help | `F1` (cheatsheet: `Ctrl+B ?`). Over FIND or the `Ctrl+K` search, it shows the query syntax |
 
 ¹ Formatting has no `Ctrl` chord by design. `Ctrl+I` and `Tab` send the same
 byte (`0x09`) on every terminal without the [kitty keyboard

@@ -243,6 +243,7 @@ impl ActivityRail {
             // item — insert at the FRONT so hit-testing favors the
             // most-recently drawn (topmost) cell.
             rows.insert(0, (view, cell));
+            crate::components::clickable::register(cell);
         };
 
         let mut y = inner.y;
