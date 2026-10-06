@@ -151,32 +151,17 @@ pub fn smart_enter(buf: &mut RopeBuffer) -> bool {
     true
 }
 
-/// Move the cursor to the `occurrence`-th (0-based) heading whose rendered
-/// text equals `heading`, at any level — the OUTLINE drawer's jump. `false`,
-/// cursor untouched, when none matches.
-///
-/// The headings are read from the live buffer by the same core function that
-/// built the OUTLINE (`note_headings`), so text and position agree with it —
-/// frontmatter and fenced code skipped, setext headings included — however
-/// far lines moved since the OUTLINE was last refreshed. Keyed by occurrence,
-/// not line, for that reason: `# Notes` over `## Notes` stay apart. Should a
-/// same-named heading have gone since, the last one left is taken.
-pub fn jump_to_heading(buf: &mut RopeBuffer, heading: &str, occurrence: usize) -> bool {
-    let row = kimun_core::note::note_headings(&buf.text().to_string())
-        .into_iter()
-        .filter(|h| h.text == heading)
-        .take(occurrence + 1)
-        .last()
-        .map(|h| h.line);
-    match row {
-        Some(row) => {
-            // A jump is a cursor move, not a selection gesture: drop any live
-            // selection (a mouse click leaves a zero-width one) before moving.
-            buf.cancel_selection();
-            buf.jump_to(row, 0)
-        }
-        None => false,
+/// Move the cursor to the start of `row` — the OUTLINE drawer's jump, once
+/// the drawer has resolved which row its heading is on. `false`, cursor
+/// untouched, when the buffer has no such row.
+pub fn jump_to_row(buf: &mut RopeBuffer, row: usize) -> bool {
+    if row >= buf.row_count() {
+        return false;
     }
+    // A jump is a cursor move, not a selection gesture: drop any live
+    // selection (a mouse click leaves a zero-width one) before moving.
+    buf.cancel_selection();
+    buf.jump_to(row, 0)
 }
 
 /// If `marker` is an ordered-list marker like `"3. "`, the next one (`"4. "`).
@@ -479,77 +464,28 @@ mod tests {
     // ── heading jump ──────────────────────────────────────────────────────
 
     #[test]
-    fn jump_to_heading_finds_any_level_and_normalises_markup() {
-        let mut buf = buffer("intro\n# Top\nbody\n## **Sub** One ##\nmore\n");
-        assert!(jump_to_heading(&mut buf, "Sub One", 0));
-        assert_eq!(buf.cursor(), (3, 0));
-        assert!(jump_to_heading(&mut buf, "Top", 0));
+    fn jump_to_row_moves_to_the_row_start() {
+        let mut buf = buffer("intro\n# Top\nbody\n");
+        assert!(buf.jump_to(2, 2));
+        assert!(jump_to_row(&mut buf, 1));
         assert_eq!(buf.cursor(), (1, 0));
     }
 
     #[test]
-    fn jump_to_heading_tells_same_named_headings_apart() {
-        let mut buf = buffer("# Notes\n## Notes\nbody\n\n## Notes\n");
-        assert!(jump_to_heading(&mut buf, "Notes", 1));
-        assert_eq!(buf.cursor(), (1, 0));
-        assert!(jump_to_heading(&mut buf, "Notes", 2));
-        assert_eq!(buf.cursor(), (4, 0));
-        assert!(jump_to_heading(&mut buf, "Notes", 0));
-        assert_eq!(buf.cursor(), (0, 0));
-        // One gone since the OUTLINE was read: the last one left.
-        assert!(jump_to_heading(&mut buf, "Notes", 7));
-        assert_eq!(buf.cursor(), (4, 0));
-    }
-
-    #[test]
-    fn jump_to_heading_skips_code_and_frontmatter_and_finds_setext() {
-        let mut buf = buffer("---\n# meta\n---\n```\n# Top\n```\nTop\n===\n# Top\n");
-        assert!(jump_to_heading(&mut buf, "Top", 0));
-        assert_eq!(buf.cursor(), (6, 0));
-        assert!(jump_to_heading(&mut buf, "Top", 1));
-        assert_eq!(buf.cursor(), (8, 0));
-    }
-
-    #[test]
-    fn an_unknown_heading_leaves_the_cursor_where_it_was() {
+    fn a_row_past_the_end_leaves_the_cursor_where_it_was() {
         let mut buf = buffer("intro\n# Top\nbody");
         assert!(buf.jump_to(2, 1));
-        assert!(!jump_to_heading(&mut buf, "Nope", 0));
+        assert!(!jump_to_row(&mut buf, 9));
         assert_eq!(buf.cursor(), (2, 1));
     }
 
     #[test]
-    fn jump_to_heading_drops_a_live_selection_instead_of_extending_it() {
+    fn jump_to_row_drops_a_live_selection_instead_of_extending_it() {
         let mut buf = buffer("intro\n# Top\nbody");
         assert!(buf.jump_to(2, 1));
         buf.start_selection(); // the zero-width anchor a mouse click leaves
-        assert!(jump_to_heading(&mut buf, "Top", 0));
+        assert!(jump_to_row(&mut buf, 1));
         assert_eq!(buf.cursor(), (1, 0));
         assert_eq!(buf.selection_range(), None);
-    }
-
-    #[test]
-    fn a_hash_inside_a_row_is_not_a_heading() {
-        let mut buf = buffer("see #tag here\n# Real");
-        assert!(jump_to_heading(&mut buf, "Real", 0));
-        assert_eq!(buf.cursor(), (1, 0));
-        assert!(!jump_to_heading(&mut buf, "tag here", 0));
-    }
-
-    #[test]
-    fn jump_to_heading_finds_headings_holding_links_and_tags() {
-        // What the OUTLINE lists for these rows, per core's chunker.
-        let mut buf =
-            buffer("# See [[other note]]\na\n# Sprint #42\nb\n# Docs [here](https://x.y)\nc\n");
-        assert!(jump_to_heading(&mut buf, "Docs here", 0));
-        assert_eq!(buf.cursor(), (4, 0));
-        assert!(jump_to_heading(&mut buf, "Sprint 42", 0));
-        assert_eq!(buf.cursor(), (2, 0));
-        assert!(jump_to_heading(&mut buf, "See other note", 0));
-        assert_eq!(buf.cursor(), (0, 0));
-        assert!(
-            !jump_to_heading(&mut buf, "See [[other note]]", 0),
-            "raw source is not what the OUTLINE shows"
-        );
     }
 }

@@ -1605,22 +1605,22 @@ impl EditorScreen {
                 let term = kimun_core::quote_query_term(&label);
                 self.open_find_with_query(format!("#{term}"), None, tx);
             }
-            AppEvent::JumpToHeading {
-                heading,
-                occurrence,
-            } if !self.overlays.is_open() => {
-                let jumped = self
-                    .panels
-                    .editor_mut()
-                    .is_none_or(|ed| ed.jump_to_heading(&heading, occurrence));
-                if !jumped {
-                    self.footer.flash(
-                        format!("heading \"{heading}\" is no longer in the note"),
-                        tx,
-                    );
-                }
-                // The list may predate the edit that moved or renamed it.
+            AppEvent::JumpToHeading(target) if !self.overlays.is_open() => {
+                // The row may predate edits that moved, renamed or added
+                // headings: bring the OUTLINE up to the buffer, then resolve
+                // the row against it — one parse for both.
                 self.panels.sync_outline(&self.path, tx);
+                let row = self.panels.outline_mut().resolve(&target);
+                match (self.panels.editor_mut(), row) {
+                    (Some(ed), Some(row)) => ed.jump_to_row(row),
+                    // An attachment or the Ask workspace took the editor's
+                    // place; the sync above already emptied the list.
+                    (None, _) => self.footer.flash("no note open".to_string(), tx),
+                    (Some(_), None) => self.footer.flash(
+                        format!("heading \"{}\" is no longer in the note", target.text),
+                        tx,
+                    ),
+                }
                 self.focus_editor();
             }
             AppEvent::OpenDrawerView(view) => {
@@ -3283,6 +3283,37 @@ mod tests {
         );
     }
 
+    /// An OUTLINE row left over from a note, entered while an attachment is
+    /// shown: says why nothing moved, and the list empties to match.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn jumping_from_the_outline_with_an_attachment_shown_flashes() {
+        use crate::components::drawer_views::HeadingTarget;
+        let (mut screen, vault, _, _dir) = test_screen().await;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let note = VaultPath::note_path_from("alpha");
+        vault.create_note(&note, "# Alpha\n").await.unwrap();
+        screen.open_path(note, None, &tx).await;
+        screen.open_drawer_view(DrawerView::Outline, &tx);
+        assert_eq!(screen.panels.outline_mut().headings_for_test(), ["Alpha"]);
+        vault
+            .save_attachment(&VaultPath::new("assets/diagram.png"), &[1, 2, 3])
+            .await
+            .unwrap();
+        screen
+            .try_open_attachment(VaultPath::new("assets/diagram.png"), &tx)
+            .await;
+
+        let jump = AppEvent::JumpToHeading(HeadingTarget {
+            text: "Alpha".to_string(),
+            occurrence: 0,
+            count: 1,
+            line: 0,
+        });
+        screen.handle_app_message(jump, &tx).await;
+        assert_eq!(screen.footer.flash_text(), Some("no note open"));
+        assert!(screen.panels.outline_mut().headings_for_test().is_empty());
+    }
+
     /// The Ask workspace counts as "no note open" even though `self.path`
     /// still names the note that was open before switching to Ask — the
     /// editor area is not showing it.
@@ -4006,6 +4037,7 @@ mod tests {
     /// the cursor stays, the footer says why, and the list catches up.
     #[tokio::test(flavor = "multi_thread")]
     async fn jumping_to_a_stale_outline_row_refreshes_the_outline() {
+        use crate::components::drawer_views::HeadingTarget;
         let vault = crate::test_support::temp_vault("editor-outline-stale").await;
         vault.validate_and_init().await.unwrap();
         let path = VaultPath::note_path_from("alpha");
@@ -4027,10 +4059,12 @@ mod tests {
             .editor_mut()
             .unwrap()
             .set_text("# Alpha\n## Bar\n".to_string());
-        let jump = AppEvent::JumpToHeading {
-            heading: "Foo".to_string(),
+        let jump = AppEvent::JumpToHeading(HeadingTarget {
+            text: "Foo".to_string(),
             occurrence: 0,
-        };
+            count: 1,
+            line: 1,
+        });
         screen.handle_app_message(jump, &tx).await;
 
         assert_eq!(screen.panels.editor().unwrap().view_snapshot().cursor.0, 0);
@@ -4046,10 +4080,12 @@ mod tests {
         );
 
         // A live row still jumps.
-        let jump = AppEvent::JumpToHeading {
-            heading: "Bar".to_string(),
+        let jump = AppEvent::JumpToHeading(HeadingTarget {
+            text: "Bar".to_string(),
             occurrence: 0,
-        };
+            count: 1,
+            line: 1,
+        });
         screen.handle_app_message(jump, &tx).await;
         assert_eq!(screen.panels.editor().unwrap().view_snapshot().cursor.0, 1);
     }

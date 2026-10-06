@@ -79,13 +79,9 @@ pub enum AppEvent {
     OpenDrawerView(crate::components::drawer::DrawerView),
     /// Run the query `#<label>` in the FIND drawer (sent by the TAGS drawer).
     RunTagQuery(String),
-    /// Jump the editor cursor to the `occurrence`-th (0-based) heading whose
-    /// rendered text (as the OUTLINE shows it) is `heading` (sent by the
-    /// OUTLINE drawer).
-    JumpToHeading {
-        heading: String,
-        occurrence: usize,
-    },
+    /// Jump the editor cursor to the heading an OUTLINE row stands for (sent
+    /// by the OUTLINE drawer).
+    JumpToHeading(crate::components::drawer_views::HeadingTarget),
     /// Open the search query syntax reference (sent by the `[F1]` syntax
     /// chips on the FIND query box and the Ctrl+K browser).
     OpenQueryHelp,

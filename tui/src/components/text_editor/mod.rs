@@ -1141,18 +1141,15 @@ impl TextEditorComponent {
         true
     }
 
-    /// The OUTLINE drawer's jump — [`markdown_edits::jump_to_heading`] on the
-    /// live buffer. `false` when the buffer has no such heading (any more).
-    /// No-op on the Nvim backend.
-    pub fn jump_to_heading(&mut self, heading: &str, occurrence: usize) -> bool {
+    /// The OUTLINE drawer's jump — [`markdown_edits::jump_to_row`] on the
+    /// live buffer. No-op on the Nvim backend.
+    pub fn jump_to_row(&mut self, row: usize) {
         let Some(ta) = self.backend.as_textarea_mut() else {
-            return true;
+            return;
         };
-        let jumped = markdown_edits::jump_to_heading(ta, heading, occurrence);
-        if jumped {
+        if markdown_edits::jump_to_row(ta, row) {
             self.sync_highlight();
         }
-        jumped
     }
 
     /// Indent or dedent whole rows by one **indent step** — the cursor's row,
@@ -3017,26 +3014,18 @@ mod tests {
     }
 
     #[test]
-    fn jump_to_heading_moves_the_view_cursor() {
+    fn jump_to_row_moves_the_view_cursor() {
         // The OUTLINE drawer reads the position back through the view snapshot.
         let mut ed = make_editor();
         ed.set_text("intro\n# Top\nbody\n## Sub One\nmore\n".to_string());
-        ed.jump_to_heading("Sub One", 0);
+        ed.jump_to_row(3);
         assert_eq!(ed.view_snapshot().cursor.0, 3);
-        ed.jump_to_heading("Top", 0);
-        assert_eq!(ed.view_snapshot().cursor.0, 1);
         // A click's zero-width selection must not turn the jump into a span
         // the next keystroke replaces.
         select_range(&mut ed, (2, 1), (2, 1));
-        ed.jump_to_heading("Top", 0);
+        ed.jump_to_row(1);
         assert_eq!(ed.selection, None);
         assert_eq!(ed.view_snapshot().cursor.0, 1);
-        ed.jump_to_heading("Nope", 0);
-        assert_eq!(
-            ed.view_snapshot().cursor.0,
-            1,
-            "an unknown heading leaves the cursor"
-        );
     }
 
     #[test]

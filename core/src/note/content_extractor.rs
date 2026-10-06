@@ -103,7 +103,7 @@ pub fn wikilink_char_spans(text: &str) -> Vec<LinkSpan> {
             let start = cursor.advance_to(m.start());
             let end = cursor.advance_to(m.end());
             let inner = &caps["link_text"];
-            let target = inner.split('|').next().unwrap_or(inner).to_string();
+            let target = wikilink_parts(inner).0.to_string();
             LinkSpan {
                 start,
                 end,
@@ -128,7 +128,7 @@ pub fn link_char_spans(text: &str) -> Vec<LinkSpan> {
     for caps in WIKILINK_RX.captures_iter(text) {
         let m = caps.get(0).unwrap();
         let inner = &caps["link_text"];
-        let target = inner.split('|').next().unwrap_or(inner).to_string();
+        let target = wikilink_parts(inner).0.to_string();
         raw.push((m.start(), m.end(), LinkSpanKind::WikiLink, target));
     }
     for caps in MD_LINK_RX.captures_iter(text) {
@@ -286,6 +286,16 @@ pub fn get_chunks_and_links<S: AsRef<str>>(
     (chunks, links)
 }
 
+/// A wikilink's `(target, display text)` from what sits between `[[` and
+/// `]]`: `target|text`, or the target alone shown as itself. Extra pipes
+/// are dropped. The one reading of a wikilink's parts every walker uses.
+fn wikilink_parts(inner: &str) -> (&str, &str) {
+    let mut parts = inner.split('|');
+    let link = parts.next().unwrap_or(inner);
+    let text = parts.next().unwrap_or(link);
+    (link, text)
+}
+
 /// Collapses wikilinks to their display text while recording the byte
 /// ranges in the output string that originated from a wikilink. Pushes
 /// `NoteLink::Note` for every wikilink whose target resolves to a valid
@@ -310,14 +320,7 @@ fn collapse_wikilinks_with_display_ranges(
             .get(0)
             .expect("captures_iter never yields without group 0");
         out.push_str(&body[last..m.start()]);
-        let items = &caps["link_text"];
-        let parts: Vec<&str> = items.split('|').collect();
-        let (link, text) = match parts.len() {
-            1 => (parts[0], parts[0]),
-            // Extra pipes: keep the first part as link, second as display
-            // text, drop the rest — matches `process_wikilinks` semantics.
-            _ => (parts[0], parts[1]),
-        };
+        let (link, text) = wikilink_parts(&caps["link_text"]);
         if VaultPath::is_valid(link) {
             let link_path = VaultPath::note_path_from(link);
             links.push(NoteLink::note(&link_path, text));
@@ -360,7 +363,8 @@ pub fn get_content_chunks<S: AsRef<str>>(md_text: S) -> Vec<ContentChunk> {
 /// the one rendering the chunker, the heading walk ([`extract_outline`]) and
 /// [`heading_display_text`] share, so a heading reads the same in all three.
 fn collapse_inline_links(md_text: &str) -> String {
-    collapse_inline_links_tracking_lines(md_text).0
+    let text = process_wikilinks(md_text, |_link, _text| None);
+    cleanup_hashtags(&text)
 }
 
 /// [`collapse_inline_links`], plus where it removed line breaks: a wikilink
@@ -395,10 +399,16 @@ fn process_wikilinks<F>(md_text: &str, handler: F) -> String
 where
     F: Fn(&str, &str) -> Option<String>,
 {
-    process_wikilinks_tracking_lines(md_text, handler).0
+    WIKILINK_RX
+        .replace_all(md_text, |caps: &Captures| {
+            let (link, text) = wikilink_parts(&caps["link_text"]);
+            handler(link, text).unwrap_or_else(|| text.to_string())
+        })
+        .into_owned()
 }
 
-/// [`process_wikilinks`], plus the line breaks each replacement removed.
+/// [`process_wikilinks`], plus the line breaks each replacement removed —
+/// for the heading walk alone, so no other caller pays the counting.
 fn process_wikilinks_tracking_lines<F>(md_text: &str, handler: F) -> (String, DroppedBreaks)
 where
     F: Fn(&str, &str) -> Option<String>,
@@ -413,14 +423,7 @@ where
         out.push_str(before);
         row += before.matches('\n').count();
 
-        let items = &caps["link_text"];
-        let parts: Vec<&str> = items.split('|').collect();
-        let (link, text) = match parts.len() {
-            1 => (parts[0], parts[0]),
-            2 => (parts[0], parts[1]),
-            // Extra pipes: use first part as link, second as display text, ignore rest
-            _ => (parts[0], parts[1]),
-        };
+        let (link, text) = wikilink_parts(&caps["link_text"]);
         let replacement = handler(link, text).unwrap_or_else(|| text.to_string());
 
         let kept = replacement.matches('\n').count();
@@ -1052,6 +1055,8 @@ pub fn extract_title<S: AsRef<str>>(md_text: S) -> String {
 /// inline markup gone), through the same event walk; frontmatter and `#`
 /// lines inside code are never headings. Unlike the chunker, a heading whose
 /// section has no body (`# Title` straight followed by `## Sub`) is kept.
+/// A setext heading (`Title` over `===`) counts; one whose text runs over
+/// several lines is named by its first line alone, the rest reading as body.
 ///
 /// `line` is the 0-based row of the heading in `md_text`, frontmatter
 /// included, counting `\n` line breaks.
@@ -1391,7 +1396,9 @@ fn split_frontmatter(text: &str) -> (String, String, usize) {
     let first_line = split_bom(first_line).1;
 
     if first_line != "---" && first_line != "+++" {
-        return (String::new(), text.to_string(), 0);
+        // A byte-order mark is not text: left in, it would hide a heading on
+        // the first line.
+        return (String::new(), split_bom(text).1.to_string(), 0);
     }
 
     let delimiter = first_line;
@@ -3412,6 +3419,18 @@ ls -la ./test
         for (line, heading) in text.lines().filter(|l| l.starts_with('#')).zip(&headings) {
             assert_eq!(heading_display_text(line).as_ref(), Some(heading));
         }
+    }
+
+    #[test]
+    fn a_byte_order_mark_does_not_hide_the_first_heading() {
+        assert_eq!(
+            crate::note::content_extractor::extract_outline("\u{feff}# Title\n## B\n"),
+            vec![(1, "Title".to_string(), 0), (2, "B".to_string(), 1)]
+        );
+        assert_eq!(
+            crate::note::content_extractor::extract_title("\u{feff}# Title\n"),
+            "Title"
+        );
     }
 
     #[test]
