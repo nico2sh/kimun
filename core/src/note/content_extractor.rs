@@ -520,13 +520,15 @@ pub fn heading_section_range(text: &str, heading: &str) -> Option<Range<usize>> 
     start.map(|s| s..text.len())
 }
 
-/// The text the OUTLINE shows for `line` when it is an ATX heading — rendered
-/// exactly as `get_content_chunks` renders a chunk's breadcrumb (wikilinks
-/// and links collapsed to their text, hashtag markers dropped, emphasis and
-/// the ATX markers gone) — or `None` for any other line.
+/// The text `line` has as a heading when it is an ATX one — rendered exactly
+/// as `get_content_chunks` renders a chunk's breadcrumb (wikilinks and links
+/// collapsed to their text, hashtag markers dropped, emphasis and the ATX
+/// markers gone) — or `None` for any other line.
 ///
-/// One line at a time, so a caller holding an editor buffer can find the row
-/// an OUTLINE entry came from without re-chunking the note. Rendering a line
+/// One line at a time, so a caller can match a heading title against raw text
+/// without re-chunking the note ([`heading_section_range`]); a caller holding
+/// the whole note wants [`crate::note::note_outline`], which has line numbers
+/// and none of the limits below. Rendering a line
 /// alone has limits the whole-note chunker does not, all of them fail-safe: a
 /// setext heading (`Title` over `=====`) has no `#` and renders to `None`; a
 /// reference-style link renders as written, its definition being on another
@@ -995,14 +997,50 @@ pub fn extract_title<S: AsRef<str>>(md_text: S) -> String {
         .unwrap_or_default()
 }
 
-/// Every heading of a note as `(level, display text)`, in order, rendered
-/// exactly as [`get_content_chunks`] renders a breadcrumb segment (wikilinks
-/// collapsed to their text, hashtag markers dropped) — so each text matches
-/// [`heading_display_text`] of its line. Unlike the chunker, a heading whose
-/// section has no body (`# Title` straight followed by `## Sub`) is kept.
-pub(crate) fn extract_outline<S: AsRef<str>>(md_text: S) -> Vec<(u8, String)> {
-    let (_frontmatter, text) = remove_frontmatter(md_text.as_ref());
-    headings_in(&collapse_inline_links(&text))
+/// Every heading of a note as `(level, display text, line)`, in order,
+/// rendered exactly as [`get_content_chunks`] renders a breadcrumb segment
+/// (wikilinks collapsed to their text, hashtag markers dropped) — so each text
+/// matches [`heading_display_text`] of its line. Unlike the chunker, a heading
+/// whose section has no body (`# Title` straight followed by `## Sub`) is
+/// kept.
+///
+/// `line` is the 0-based row of the heading in `md_text`, frontmatter
+/// included. A wikilink broken across lines collapses onto one, so a heading
+/// below one reads a little high — a position hint, not an address.
+pub(crate) fn extract_outline<S: AsRef<str>>(md_text: S) -> Vec<(u8, String, usize)> {
+    let md_text = md_text.as_ref();
+    let (_frontmatter, body) = remove_frontmatter(md_text);
+    // The body is a suffix of the note's lines.
+    let first_body_line = md_text.lines().count() - body.lines().count();
+    let body = collapse_inline_links(&body);
+
+    // One walk: every `Start(Heading)` opens exactly one `TextLine::Header`,
+    // so the n-th start offset belongs to the n-th header.
+    let mut lines = TextLines::default();
+    let mut starts = Vec::new();
+    for (event, range) in Parser::new(&body).into_offset_iter() {
+        if matches!(event, Event::Start(Tag::Heading { .. })) {
+            starts.push(range.start);
+        }
+        lines.push(event, str::to_string);
+    }
+    let mut row = first_body_line;
+    let mut scanned = 0;
+    lines
+        .finish()
+        .into_iter()
+        .filter_map(|line| match line {
+            TextLine::Header(level, text) => Some((level, text)),
+            _ => None,
+        })
+        .zip(starts)
+        .filter(|((_, text), _)| !text.is_empty())
+        .map(|((level, text), start)| {
+            row += body[scanned..start].matches('\n').count();
+            scanned = start;
+            (level, text, row)
+        })
+        .collect()
 }
 
 /// Every heading of a note as `(level, display text)`, in order — through the
@@ -3291,30 +3329,53 @@ ls -la ./test
         assert!(chunks[0].text.contains("item one wraps on"), "{chunks:?}");
     }
 
-    #[test]
-    fn the_outline_keeps_body_less_headings_rendered_like_their_lines() {
-        let text = "---\ntitle: x\n---\n# Title\n## [[target|Shown]] #tag\nbody\n### Empty\n";
+    /// Each outline entry is what the editor's jump looks for, on the line it
+    /// claims.
+    fn assert_outline_lines(text: &str, expected: &[(u8, &str, usize)]) {
         let outline = crate::note::content_extractor::extract_outline(text);
-        assert_eq!(
-            outline,
-            vec![
-                (1, "Title".to_string()),
-                (2, "Shown tag".to_string()),
-                (3, "Empty".to_string()),
-            ]
-        );
-        // Each entry is what the editor's jump looks for on its line.
-        for (line, (_, heading)) in text
-            .lines()
-            .skip(3)
-            .filter(|l| l.starts_with('#'))
-            .zip(&outline)
-        {
+        let expected: Vec<(u8, String, usize)> = expected
+            .iter()
+            .map(|(l, t, r)| (*l, t.to_string(), *r))
+            .collect();
+        assert_eq!(outline, expected, "{text:?}");
+        for (_, heading, row) in &outline {
+            let line = text.lines().nth(*row).unwrap();
             assert_eq!(
                 heading_display_text(line).as_deref(),
-                Some(heading.as_str())
+                Some(heading.as_str()),
+                "row {row} of {text:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_outline_keeps_body_less_headings_rendered_like_their_lines() {
+        assert_outline_lines(
+            "---\ntitle: x\n---\n# Title\n## [[target|Shown]] #tag\nbody\n### Empty\n",
+            &[(1, "Title", 3), (2, "Shown tag", 4), (3, "Empty", 6)],
+        );
+    }
+
+    #[test]
+    fn the_outline_gives_each_same_named_heading_its_own_line() {
+        assert_outline_lines(
+            "# Notes\n## Notes\nbody\n\n## Notes\n",
+            &[(1, "Notes", 0), (2, "Notes", 1), (2, "Notes", 4)],
+        );
+    }
+
+    #[test]
+    fn the_outline_lines_skip_code_and_count_nested_headings() {
+        assert_outline_lines(
+            "intro\n```\n# not a heading\n```\n- # Setup\n> # Quoted\n\n# Last\n",
+            &[(1, "Setup", 4), (1, "Quoted", 5), (1, "Last", 7)],
+        );
+        // An unclosed frontmatter fence is body text after its first line.
+        assert_outline_lines("---\n# A\n", &[(1, "A", 1)]);
+        assert_outline_lines(
+            "+++\na = 1\n+++\n\n\n# A\r\n## B\r\n",
+            &[(1, "A", 5), (2, "B", 6)],
+        );
     }
 
     #[test]

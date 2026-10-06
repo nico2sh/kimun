@@ -160,14 +160,27 @@ pub fn note_headings(text: &str) -> Vec<NoteHeading> {
         .collect()
 }
 
+/// A heading as the OUTLINE lists it: [`NoteHeading`] plus where it sits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutlineHeading {
+    /// 1 for `#`, up to 6.
+    pub level: u8,
+    /// The heading's text, rendered as [`scan::heading_display_text`]
+    /// renders its line.
+    pub text: String,
+    /// 0-based line of the heading in the note text, frontmatter included.
+    /// A hint for finding it again: two headings may share a text.
+    pub line: usize,
+}
+
 /// A note body's OUTLINE: every heading in order, one with an empty section
 /// included, each text rendered as a content chunk's breadcrumb renders it
 /// (wikilinks collapsed, hashtag markers dropped) so it matches
 /// [`scan::heading_display_text`] of its own line.
-pub fn note_outline(text: &str) -> Vec<NoteHeading> {
+pub fn note_outline(text: &str) -> Vec<OutlineHeading> {
     content_extractor::extract_outline(text)
         .into_iter()
-        .map(|(level, text)| NoteHeading { level, text })
+        .map(|(level, text, line)| OutlineHeading { level, text, line })
         .collect()
 }
 
