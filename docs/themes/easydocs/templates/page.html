@@ -31,3 +31,52 @@
             {%- endif -%}
         </footer>
     {% endblock content %}
+
+{% block outline %}
+    {#- A page with a single h1 lists everything under it; unwrap so the outline starts at h2 -#}
+    {%- set _toc = page.toc -%}
+    {%- if _toc | length == 1 and _toc[0].level == 1 -%}
+        {%- set _toc = _toc[0].children -%}
+    {%- endif -%}
+    {%- if _toc -%}
+        {# Count headings; only show an outline when the page is long enough to need one #}
+        {%- set_global header_count = 0 -%}
+        {%- for h2 in _toc -%}
+            {%- set_global header_count = header_count + 1 -%}
+            {%- for h3 in h2.children -%}
+                {%- set_global header_count = header_count + 1 -%}
+                {%- for h4 in h3.children -%}
+                    {%- set_global header_count = header_count + 1 -%}
+                {%- endfor -%}
+            {%- endfor -%}
+        {%- endfor -%}
+
+        {#- Undefined or 0 falls back to 5; 1 already includes any heading so 0 is not needed -#}
+        {%- if not config.extra.easydocs_heading_threshold -%}
+            {%- set _threshold = 5 -%}
+        {%- else -%}
+            {%- set _threshold = config.extra.easydocs_heading_threshold -%}
+        {%- endif -%}
+
+        {%- if header_count >= _threshold -%}
+            <aside id="page-outline" aria-label="On this page">
+                <details id="outline-details" open>
+                    <summary>On this page</summary>
+                    <ul id="toc">
+                        {%- for h2 in _toc %}
+                            <li><a href="{{ h2.permalink | safe }}">{{ h2.title }}</a>
+                                {%- if h2.children %}
+                                    <ul>
+                                        {%- for h3 in h2.children %}
+                                            <li><a href="{{ h3.permalink | safe }}">{{ h3.title }}</a></li>
+                                        {%- endfor %}
+                                    </ul>
+                                {%- endif %}
+                            </li>
+                        {%- endfor %}
+                    </ul>
+                </details>
+            </aside>
+        {%- endif -%}
+    {%- endif -%}
+{% endblock outline %}

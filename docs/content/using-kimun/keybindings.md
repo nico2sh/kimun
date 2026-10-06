@@ -5,11 +5,11 @@ weight = 11
 
 # Keybindings
 
-Everything on one screen. Looking for how to *change* a binding? That's in [Configuration → Key Bindings](@/getting-started/configuration.md#key-bindings).
+All default key bindings. To change a binding, see [Configuration → Key Bindings](@/getting-started/configuration.md#key-bindings).
 
-> In the app itself: `F1` opens help, and `Ctrl+B ?` shows this same cheatsheet — with your custom bindings applied.
+> In the app, `F1` opens help and `Ctrl+B ?` shows this cheatsheet with your custom bindings applied.
 
-> **Overriding replaces, it doesn't merge.** A `[key_bindings]` section in your config defines the *entire* keymap — any action you don't list ends up unbound (only `Quit` is auto-restored). To change one key, copy the full table below into your config and edit just the lines you want. Details in [Configuration → Key Bindings](@/getting-started/configuration.md#replace-not-merge).
+> A `[key_bindings]` section in your config replaces the entire keymap instead of merging with the defaults. Any action you don't list ends up unbound (only `Quit` is restored automatically). To change one key, copy the full table below into your config and edit the lines you want. Details in [Configuration → Key Bindings](@/getting-started/configuration.md#overrides-replace-the-defaults).
 
 ## Defaults
 
@@ -34,18 +34,18 @@ Everything on one screen. Looking for how to *change* a binding? That's in [Conf
 | File operations | `F2` |
 | Switch workspace | `F5` |
 | Focus right / left | `Ctrl+L` / `Ctrl+H` |
-| Bold / Italic / Strikethrough | `Ctrl+B t b` / `t i` / `t s` — see below¹ |
-| Help | `F1` (cheatsheet: `Ctrl+B ?`); over FIND or the `Ctrl+K` search it shows the query syntax |
+| Bold / Italic / Strikethrough | `Ctrl+B t b` / `t i` / `t s` (see below¹) |
+| Help | `F1` (cheatsheet: `Ctrl+B ?`). Over FIND or the `Ctrl+K` search, it shows the query syntax |
 
-¹ Formatting has no `Ctrl` chord, on purpose. `Ctrl+I` and `Tab` are the same
+¹ Formatting has no `Ctrl` chord by design. `Ctrl+I` and `Tab` send the same
 byte (`0x09`) on every terminal without the [kitty keyboard
-protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/), so it could
-never be the route that works everywhere — and `Ctrl+B` and `Ctrl+S` working
-while `Ctrl+I` quietly indented was worse than one consistent route. All three
-live in the leader's `+text` group, which works in every terminal.
+protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/), so `Ctrl+I`
+can't work everywhere. Having `Ctrl+B` and `Ctrl+S` format text while `Ctrl+I`
+indented would be inconsistent, so all three live in the leader's `+text`
+group, which works in every terminal.
 
-Want a chord back? Bind one — the actions are still bindable (just not on
-`Ctrl+B`, which is the leader gateway by default):
+You can still bind a chord to these actions, except `Ctrl+B`, which is the
+leader key by default:
 
 ```toml
 [key_bindings]
@@ -53,7 +53,7 @@ TextEditor-Bold = ["ctrl&S"]
 ```
 
 Remember that a `[key_bindings]` section [replaces the whole
-keymap](@/getting-started/configuration.md#replace-not-merge).
+keymap](@/getting-started/configuration.md#overrides-replace-the-defaults).
 
 ## The Leader Tree
 
@@ -74,4 +74,4 @@ Everything else lives behind the leader: press `Ctrl+B`, then a short sequence. 
 | `?` | help / cheatsheet |
 | `1`–`9` | open pinned note 1–9 |
 
-How the leader works — and how to remap the whole tree — is covered in the [TUI guide](@/using-kimun/tui.md#the-leader-key) and [Leader Tree Overrides](@/getting-started/configuration.md#leader-tree-overrides).
+How the leader works, and how to remap the whole tree, is covered in the [TUI guide](@/using-kimun/tui.md#the-leader-key) and [Leader Tree Overrides](@/getting-started/configuration.md#leader-tree-overrides).

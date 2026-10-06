@@ -260,6 +260,16 @@ document.addEventListener("DOMContentLoaded", function () {
     });
   }
 
+  // Outline: always open beside the content on wide screens, collapsed
+  // above it on narrower ones so it doesn't push the page down.
+  const outline = document.querySelector("#outline-details");
+  if (outline) {
+    const wide = window.matchMedia("(min-width: 1280px)");
+    const sync = function () { outline.open = wide.matches; };
+    sync();
+    wide.addEventListener("change", sync);
+  }
+
   // Scroll-spy: highlight the TOC entry for the section currently in view.
   // The observer is only a trigger; the active heading is always recomputed
   // from scratch (last heading above the 40%-viewport line), so there is a

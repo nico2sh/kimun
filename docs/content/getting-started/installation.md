@@ -7,20 +7,19 @@ weight = 2
 
 ## Install Kimün
 
-### Install script (recommended — macOS & Linux)
+### Install script (macOS and Linux, recommended)
 
 ```sh
 curl -fsSL https://kimun.2co.dev/install.sh | sh
 ```
 
-This is the preferred way to install Kimün. The script downloads the latest
-stable release, verifies its SHA-256 checksum before installing, and drops the
-binary into `~/.local/bin` (override with the `KIMUN_INSTALL_DIR` environment
-variable). It also records an install marker that enables **in-app
-self-update**, so you can upgrade from inside Kimün rather than re-running the
-installer.
+The script downloads the latest stable release, verifies its SHA-256 checksum,
+and installs the binary into `~/.local/bin` (override with the
+`KIMUN_INSTALL_DIR` environment variable). It also records an install marker
+that enables in-app self-update, so you can upgrade from inside Kimün instead
+of re-running the installer.
 
-Prefer to read the script before running it? Download and inspect it first:
+To read the script before running it, download it first:
 
 ```sh
 curl -fsSLO https://kimun.2co.dev/install.sh && less install.sh && sh install.sh
@@ -47,15 +46,15 @@ cargo install kimun-notes
 
 ## Updating
 
-If you installed with the **install script**, Kimün can update itself in place —
-the install marker tells the app it's on the `script` channel. Just re-run the
-install command at any time to pull the latest stable release:
+If you installed with the install script, Kimün can update itself in place,
+because the install marker tells the app it is on the `script` channel. You can
+also re-run the install command at any time to get the latest stable release:
 
 ```sh
 curl -fsSL https://kimun.2co.dev/install.sh | sh
 ```
 
-Installed via **Homebrew** or **Cargo**? Update through the same tool you used:
+If you installed with Homebrew or Cargo, update with the same tool:
 
 ```sh
 brew upgrade kimun        # Homebrew
@@ -64,7 +63,7 @@ cargo install kimun-notes # Cargo (reinstalls the latest)
 
 ## First Run
 
-When you launch Kimün for the first time with no workspace configured, a **guided setup** dialog walks you through choosing a notes directory, Nerd Fonts, a theme, and an editor. Everything is applied in one shot at the end — nothing is written until you confirm.
+When you launch Kimün for the first time with no workspace configured, a guided setup dialog walks you through choosing a notes directory, Nerd Fonts, a theme, and an editor. Nothing is written until you confirm at the end.
 
 ```sh
 kimun
@@ -87,7 +86,7 @@ kimun --config /path/to/my-config.toml
 
 ## Workspace Index
 
-Kimün creates a per-workspace SQLite search index — `<config_dir>/<workspace>.kimuncache` by default. It's the index, not your notes. Your actual notes are plain `.md` files inside the workspace directory. The cache file can be safely deleted; it will be rebuilt automatically the next time Kimün runs.
+Kimün creates a SQLite search index for each workspace, at `<config_dir>/<workspace>.kimuncache` by default. It holds only the index. Your notes are plain `.md` files inside the workspace directory. You can delete the cache file safely, and Kimün rebuilds it the next time it runs.
 
 ```
 ~/.config/kimun/                ← Config directory
@@ -103,16 +102,15 @@ your-workspace/                 ← Your workspace directory
     └── my-project.md
 ```
 
-The cache and history locations are configurable — see [Configuration → Files Kimün Stores on Disk](@/getting-started/configuration.md#files-kimun-stores-on-disk).
+The cache and history locations are configurable. See [Configuration → Files Kimün Stores on Disk](@/getting-started/configuration.md#files-kimun-stores-on-disk).
 
 ## Optional: the Kimün Server
 
-Kimün can pair with an optional companion server that adds **semantic search**
-and **AI question-answering** over your notes. It's a separate binary,
-currently installed with Cargo only — see
-[Semantic Search & Ask](@/using-kimun/server.md) for installation and setup.
+An optional companion server adds semantic search and AI question answering
+over your notes. It is a separate binary, currently installed with Cargo only.
+See [Semantic Search & Ask](@/using-kimun/server.md) for installation and setup.
 Kimün works fully without it.
 
 ## What's Next
 
-You're installed. Now learn your way around the [Terminal UI](@/using-kimun/tui.md), or set up separate [Workspaces](@/getting-started/workspaces.md) for work and personal notes.
+Next, learn your way around the [Terminal UI](@/using-kimun/tui.md), or set up separate [Workspaces](@/getting-started/workspaces.md) for work and personal notes.
