@@ -248,6 +248,29 @@ pub(in crate::note) fn wikilink_parts(inner: &str) -> (&str, &str) {
     (link, text)
 }
 
+/// A link target split into the note it points to and the part inside that
+/// note: `note#section` and `note^block` are `("note", "#section")` and
+/// `("note", "^block")`. Spaces and tabs around the note part are trimmed
+/// (`[[ spaced ]]` links to `spaced`), not line breaks: a target that ends
+/// at a line break (`[[target⏎|Shown]]`) stays invalid. The fragment is kept
+/// as written. `#` and `^` are not valid in
+/// a vault path, so nothing a path could hold is cut. The one reading of a
+/// fragment: the walk indexes and renders wikilinks by it, the editor
+/// follows links by it.
+///
+/// ```
+/// use kimun_core::note::scan::split_link_fragment;
+/// assert_eq!(split_link_fragment("Plan#Goals"), ("Plan", "#Goals"));
+/// assert_eq!(split_link_fragment("a^blk"), ("a", "^blk"));
+/// assert_eq!(split_link_fragment(" spaced "), ("spaced", ""));
+/// assert_eq!(split_link_fragment("#tag"), ("", "#tag"));
+/// assert_eq!(split_link_fragment("target\n"), ("target\n", ""));
+/// ```
+pub fn split_link_fragment(target: &str) -> (&str, &str) {
+    let at = target.find(['#', '^']).unwrap_or(target.len());
+    (target[..at].trim_matches([' ', '\t']), &target[at..])
+}
+
 /// Content data, chunks and index links from one walk over the note.
 pub fn get_index_data<S: AsRef<str>>(
     reference_path: &VaultPath,
@@ -744,15 +767,24 @@ pub(in crate::note) fn frontmatter_delimiter(text: &str) -> Option<(&str, usize)
 /// Returns the byte offset of the first character after the closing delimiter
 /// of a YAML/TOML frontmatter block (`---` or `+++`), or `0` if no valid
 /// frontmatter is present. Tolerates both LF and CRLF line endings.
-pub(in crate::note) fn frontmatter_end_byte(text: &str) -> usize {
-    frontmatter_bounds(text).map_or(0, |(_, end)| end)
+fn frontmatter_end_byte(text: &str) -> usize {
+    frontmatter_bounds(text).map_or(0, |bounds| bounds.end)
 }
 
-/// A closed YAML/TOML frontmatter block of `text`: the byte range between
-/// its fences (just after the opening line's `\n` up to the start of the
-/// closing line) and the byte just after the closing line. `None` when there
-/// is no block or it is never closed. Tolerates both LF and CRLF.
-pub(in crate::note) fn frontmatter_bounds(text: &str) -> Option<(Range<usize>, usize)> {
+/// Where a closed YAML/TOML frontmatter block sits in a note.
+pub(in crate::note) struct FrontmatterBounds<'t> {
+    /// The fence, `---` or `+++` (without `\r`).
+    pub delimiter: &'t str,
+    /// The bytes between the fences: just after the opening line's `\n` up
+    /// to the start of the closing line.
+    pub inner: Range<usize>,
+    /// The byte just after the closing line.
+    pub end: usize,
+}
+
+/// A closed YAML/TOML frontmatter block of `text`; `None` when there is no
+/// block or it is never closed. Tolerates both LF and CRLF.
+pub(in crate::note) fn frontmatter_bounds(text: &str) -> Option<FrontmatterBounds<'_>> {
     let (delimiter, start) = frontmatter_delimiter(text)?;
     let mut offset = start;
     for line in text[start..].split('\n') {
@@ -762,7 +794,11 @@ pub(in crate::note) fn frontmatter_bounds(text: &str) -> Option<(Range<usize>, u
             if text.as_bytes().get(end) == Some(&b'\n') {
                 end += 1;
             }
-            return Some((start..offset, end));
+            return Some(FrontmatterBounds {
+                delimiter,
+                inner: start..offset,
+                end,
+            });
         }
         offset += line.len() + 1; // +1 for '\n'
     }

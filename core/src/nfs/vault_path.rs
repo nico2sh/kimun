@@ -396,13 +396,16 @@ impl VaultPath {
     /// Absolute targets are returned flattened as-is. A bare filename with no
     /// directory part (e.g. `anton.md`) is returned unchanged so callers can
     /// fall back to a vault-wide name lookup (wiki-style links).
+    ///
+    /// `note_path`'s last component is always taken for the note's name, so
+    /// a folder path resolves against its parent; see
+    /// [`Self::resolve_against_note`] for a reference that may be a folder.
     pub fn resolve_link_in_note(&self, note_path: &VaultPath) -> VaultPath {
-        let resolved = self.resolve_against_note(note_path);
         if self.is_note_file() {
-            resolved
-        } else {
-            resolved.absolute()
+            return self.clone();
         }
+        let (parent, _) = note_path.flatten().get_parent_path();
+        parent.append(self).flatten().absolute()
     }
 
     /// Resolve `self` as a link target written inside `note_path`, without
@@ -410,7 +413,8 @@ impl VaultPath {
     /// returned unchanged for a vault-wide name lookup; anything else is
     /// appended to the note's folder (or to `note_path` itself when it is a
     /// folder) and flattened, so a relative note path gives a relative result.
-    /// [`Self::resolve_link_in_note`] is this plus [`Self::absolute`].
+    /// For a note path this is [`Self::resolve_link_in_note`] without
+    /// [`Self::absolute`]; unlike it, a folder `note_path` is the base itself.
     ///
     /// ```
     /// use kimun_core::nfs::VaultPath;
@@ -1024,6 +1028,18 @@ mod tests {
             "anton.md",
             VaultPath::new("anton.md")
                 .resolve_against_note(&relative)
+                .to_string()
+        );
+    }
+
+    #[test]
+    fn resolve_link_in_note_resolves_against_the_parent_of_a_folder_path() {
+        // As it always did: the last component of `note_path` is dropped,
+        // whether or not it is a note.
+        assert_eq!(
+            "/a/b.md",
+            VaultPath::new("a/b.md")
+                .resolve_link_in_note(&VaultPath::new("/journal"))
                 .to_string()
         );
     }

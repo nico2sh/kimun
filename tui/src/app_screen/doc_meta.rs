@@ -149,11 +149,8 @@ impl DocMeta {
                     if let Some(tx) = tx {
                         // Resolve like follow_link does: strip a `#fragment`,
                         // then resolve relative targets against this note.
-                        let target_clean = target
-                            .split('#')
-                            .next()
-                            .unwrap_or(target)
-                            .trim_end()
+                        let target_clean = kimun_core::note::scan::split_link_fragment(target)
+                            .0
                             .to_string();
                         let vault = self.vault.clone();
                         let t2 = target.clone();

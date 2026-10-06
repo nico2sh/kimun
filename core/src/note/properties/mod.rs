@@ -20,7 +20,7 @@ use std::ops::Range;
 
 use chrono::{DateTime, SecondsFormat, Utc};
 
-use super::content_extractor::{frontmatter_bounds, frontmatter_delimiter, split_bom};
+use super::content_extractor::{frontmatter_bounds, split_bom};
 use toml_formatter::TomlFormatter;
 use yaml_formatter::YamlFormatter;
 
@@ -201,14 +201,16 @@ struct FrontmatterSpan {
 /// (`frontmatter_bounds`): the first line is exactly `---` or `+++` and a
 /// later line is exactly the same delimiter (CRLF tolerated).
 fn locate_frontmatter(text: &str) -> Option<FrontmatterSpan> {
-    let (delimiter, _) = frontmatter_delimiter(text)?;
-    let (inner, _) = frontmatter_bounds(text)?;
-    let format = if delimiter == FrontmatterFormat::Toml.delimiter() {
+    let bounds = frontmatter_bounds(text)?;
+    let format = if bounds.delimiter == FrontmatterFormat::Toml.delimiter() {
         FrontmatterFormat::Toml
     } else {
         FrontmatterFormat::Yaml
     };
-    Some(FrontmatterSpan { format, inner })
+    Some(FrontmatterSpan {
+        format,
+        inner: bounds.inner,
+    })
 }
 
 /// A note's properties — the one door for reading and editing them, whatever

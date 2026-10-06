@@ -15588,6 +15588,7 @@ body with [real](real.md)
 -- index chunks
 [Review 2 rows] "A markdown link in an HTML block:\n<details>\n\nSee [doc](doc.md) and [deep](sub/deep.md)\n\n</details>\n\n<div>[x](y.md)</div>\n\nEscaped [[a]] x and markup a *b* c and section S.\nEmbeds pic.png and sub/pic.png and sub/e.\nA code span in a label a `]` b."
 -- index links (sorted)
+Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "S"
 Note(VaultPath { absolute: false, slices: [PathSlice("doc.md")] }) "doc.md" ""
 Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("deep.md")] }) "folder/sub/deep.md" ""
 Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("x.md")] }) "folder/sub/x.md" ""
@@ -15600,6 +15601,7 @@ Note(VaultPath { absolute: false, slices: [PathSlice("y.md")] }) "y.md" ""
 Note(VaultPath { absolute: false, slices: [PathSlice("doc.md")] }) "doc.md" "doc"
 Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("deep.md")] }) "folder/sub/deep.md" "deep"
 Note(VaultPath { absolute: false, slices: [PathSlice("y.md")] }) "y.md" "x"
+Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "S"
 Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("x.md")] }) "folder/sub/x.md" "a `]` b"
 -- markdown
 # Review 2 rows
@@ -15612,11 +15614,90 @@ See [doc](doc.md) and [deep](folder/sub/deep.md)
 
 <div>[x](y.md)</div>
 
-Escaped \[[a]] x and markup [[a *b* c]] and section [[a#sec|S]].
+Escaped \[[a]] x and markup [[a *b* c]] and section [S](a.md#sec).
 
 Embeds ![pic.png](pic.png) and ![sub/pic.png](sub/pic.png) and ![sub/e](sub/e.md).
 
 A code span in a label [a `]` b](folder/sub/x.md).
+
+
+=== tests/fixtures/walk/review3_rows.md
+-- title "Review 3 rows"
+-- headings
+1 0 "Review 3 rows"
+-- chunks
+[Review 3 rows] "Section note#section, alias goals, block a^blk, padded  spaced .\nStill no vault path #tag.\nUse top.\nParens t, draft Note (draft), triple a [tri] b, escaped v.\nPadded u, entity v, tab w, angle x, title t.\n<div>\n\nHTML [p]( sub/c.md ) and [[note#sec|S]]\n\n</div>\n\nInline <span title=\"[[x|one\ntwo]]\">z</span> tag.\nSpaced section g, broken target Shown stays text.\n<div>\n\n    Indented [i](sub/i.md) and [[ind]]\n\n</div>\n"
+-- index chunks
+[Review 3 rows] "Section note#section, alias goals, block a^blk, padded  spaced .\nStill no vault path #tag.\nUse top.\nParens t, draft Note (draft), triple a [tri] b, escaped v.\nPadded u, entity v, tab w, angle x, title t.\n<div>\n\nHTML [p]( sub/c.md ) and [[note#sec|S]]\n\n</div>\n\nInline <span title=\"[[x|one\ntwo]]\">z</span> tag.\nSpaced section g, broken target Shown stays text.\n<div>\n\n    Indented [i](sub/i.md) and [[ind]]\n\n</div>\n"
+-- index links (sorted)
+Note(VaultPath { absolute: false, slices: [PathSlice("a(b).md")] }) "a(b).md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "a^blk"
+Note(VaultPath { absolute: false, slices: [PathSlice("d_e.md")] }) "d_e.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("a&b.md")] }) "folder/sub/a&b.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("c.md")] }) "folder/sub/c.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("c.md")] }) "folder/sub/c.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("i.md")] }) "folder/sub/i.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("x.md")] }) "folder/sub/x.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("ind.md")] }) "ind.md" "ind"
+Note(VaultPath { absolute: false, slices: [PathSlice("my note.md")] }) "my note.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("note (draft).md")] }) "note (draft).md" "Note (draft)"
+Note(VaultPath { absolute: false, slices: [PathSlice("note.md")] }) "note.md" "S"
+Note(VaultPath { absolute: false, slices: [PathSlice("note.md")] }) "note.md" "note#section"
+Note(VaultPath { absolute: false, slices: [PathSlice("plan.md")] }) "plan.md" "g"
+Note(VaultPath { absolute: false, slices: [PathSlice("plan.md")] }) "plan.md" "goals"
+Note(VaultPath { absolute: false, slices: [PathSlice("spaced.md")] }) "spaced.md" " spaced "
+Note(VaultPath { absolute: false, slices: [PathSlice("tri.md")] }) "tri.md" "tri"
+Note(VaultPath { absolute: false, slices: [PathSlice("x.md")] }) "x.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("x.md")] }) "x.md" "one\ntwo"
+-- tags []
+-- markdown links
+Note(VaultPath { absolute: false, slices: [PathSlice("note.md")] }) "note.md" "note#section"
+Note(VaultPath { absolute: false, slices: [PathSlice("plan.md")] }) "plan.md" "goals"
+Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "a^blk"
+Note(VaultPath { absolute: false, slices: [PathSlice("spaced.md")] }) "spaced.md" " spaced "
+Note(VaultPath { absolute: false, slices: [PathSlice("a(b).md")] }) "a(b).md" "t"
+Note(VaultPath { absolute: false, slices: [PathSlice("note (draft).md")] }) "note (draft).md" "Note (draft)"
+Note(VaultPath { absolute: false, slices: [PathSlice("tri.md")] }) "tri.md" "tri"
+Note(VaultPath { absolute: false, slices: [PathSlice("d_e.md")] }) "d_e.md" "v"
+Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("c.md")] }) "folder/sub/c.md" "u"
+Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("a&b.md")] }) "folder/sub/a&b.md" "v"
+Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("x.md")] }) "folder/sub/x.md" "w"
+Note(VaultPath { absolute: false, slices: [PathSlice("my note.md")] }) "my note.md" "x"
+Note(VaultPath { absolute: false, slices: [PathSlice("x.md")] }) "x.md" "t"
+Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("c.md")] }) "folder/sub/c.md" "p"
+Note(VaultPath { absolute: false, slices: [PathSlice("note.md")] }) "note.md" "S"
+Note(VaultPath { absolute: false, slices: [PathSlice("x.md")] }) "x.md" "one\ntwo"
+Note(VaultPath { absolute: false, slices: [PathSlice("plan.md")] }) "plan.md" "g"
+Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("i.md")] }) "folder/sub/i.md" "i"
+Note(VaultPath { absolute: false, slices: [PathSlice("ind.md")] }) "ind.md" "ind"
+-- markdown
+# Review 3 rows
+
+Section [note#section](note.md#section), alias [goals](plan.md#Goals), block [a^blk](a.md#^blk), padded [ spaced ](spaced.md).
+
+Still no vault path [[#tag]].
+
+[top]: #anchor
+
+Use [top].
+
+Parens [t](a(b).md), draft [Note (draft)](<note (draft).md>), triple a [[tri](tri.md)] b, escaped [v](d_e.md).
+
+Padded [u](folder/sub/c.md), entity [v](folder/sub/a&b.md), tab [w](folder/sub/x.md), angle [x](<my note.md>), title [t](x.md "Title").
+
+<div>
+HTML [p](folder/sub/c.md) and [[note#sec|S]]
+</div>
+
+Inline <span title="[[x|one
+two]]">z</span> tag.
+
+Spaced section [g](<plan.md#My Goals>), broken target [[target
+|Shown]] stays text.
+
+<div>
+    Indented [i](folder/sub/i.md) and [[ind]]
+</div>
 
 
 === tests/fixtures/walk/setext_hashtag.md
