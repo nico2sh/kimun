@@ -528,7 +528,16 @@ impl SourcesPanel {
                 self.ensure_loaded(tx);
                 EventState::Consumed
             }
-            SearchMouse::InputFocused | SearchMouse::Autocomplete { .. } => EventState::Consumed,
+            // A clicked suggestion edits the filter exactly like a Tab-accept,
+            // so it refreshes the preview the same way.
+            SearchMouse::Autocomplete { edited: true } => {
+                self.sync_preview();
+                self.ensure_loaded(tx);
+                EventState::Consumed
+            }
+            SearchMouse::InputFocused | SearchMouse::Autocomplete { edited: false } => {
+                EventState::Consumed
+            }
             SearchMouse::Selected(_) | SearchMouse::Scrolled | SearchMouse::Context(_) => {
                 self.sync_preview();
                 self.ensure_loaded(tx);

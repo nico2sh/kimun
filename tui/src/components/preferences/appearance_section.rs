@@ -104,6 +104,8 @@ impl Component for AppearanceSection {
                 ListItem::new(format!("{}{}", prefix, t.name))
             })
             .collect();
+        // Rows are hit-tested inside the block actually drawn.
+        let inner = block.inner(rect);
         let list = List::new(items)
             .block(block)
             .style(theme.base_style())
@@ -112,7 +114,6 @@ impl Component for AppearanceSection {
                     .fg(theme.selection_fg.to_ratatui())
                     .bg(theme.selection_bg.to_ratatui()),
             );
-        let inner = Block::default().borders(Borders::ALL).inner(rect);
         f.render_stateful_widget(list, rect, &mut self.list_state);
         // After rendering: the list may have scrolled to keep the selection
         // in view, and rows map from the offset it settled on.

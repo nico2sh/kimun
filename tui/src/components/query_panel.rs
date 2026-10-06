@@ -580,10 +580,12 @@ impl QueryPanel {
                     self.toggle_expand();
                     return EventState::Consumed;
                 }
-                _ => {
+                // A press elsewhere dismisses the popup; motion leaves it.
+                MouseEventKind::Down(_) => {
                     self.list.close_autocomplete();
                     return EventState::Consumed;
                 }
+                _ => return EventState::Consumed,
             }
         }
         let prev_query = self.list.query().to_string();

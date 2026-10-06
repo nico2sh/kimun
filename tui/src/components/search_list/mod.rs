@@ -1006,10 +1006,16 @@ impl<R: SearchRow> SearchList<R> {
                 }
             }
         }
-        // Any other mouse interaction dismisses an open autocomplete popup
-        // (matches the old modal: a click on the preview/border closes a
-        // stale popup).
-        self.close_autocomplete();
+        // A press or a scroll anywhere else dismisses an open popup (a click
+        // on the preview/border closes a stale popup). Pointer motion does
+        // not: the terminal reports every move, and closing on those would
+        // drop the popup before the pointer could reach it.
+        if matches!(
+            m.kind,
+            MouseEventKind::Down(_) | MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+        ) {
+            self.close_autocomplete();
+        }
         let pos = Position {
             x: m.column,
             y: m.row,
@@ -1915,6 +1921,51 @@ mod tests {
         }
         let _ = list.handle_key(&key(KeyCode::Tab));
         assert_eq!(list.query(), "#projects");
+    }
+
+    /// Pointer motion must not close the popup — the terminal reports every
+    /// move, so the popup would vanish before the pointer reached it.
+    #[tokio::test]
+    async fn moving_the_pointer_keeps_the_popup_open() {
+        struct Mem;
+        #[async_trait::async_trait]
+        impl crate::components::search_list::SuggestionSource for Mem {
+            async fn notes_by_prefix(&self, _p: &str, _n: usize) -> Vec<SuggestionItem> {
+                vec![]
+            }
+            async fn tags_by_prefix(&self, _p: &str, _n: usize) -> Vec<SuggestionItem> {
+                vec![SuggestionItem::plain("projects")]
+            }
+        }
+        let src = VecSource {
+            rows: vec![],
+            reload: true,
+        };
+        let mut list = SearchList::builder(src, noop_redraw())
+            .autocomplete(
+                std::sync::Arc::new(Mem),
+                crate::components::autocomplete::AutocompleteMode::SearchQuery,
+            )
+            .debounce(std::time::Duration::ZERO)
+            .build();
+        for c in ['#', 'p'] {
+            let _ = list.handle_key(&key(KeyCode::Char(c)));
+        }
+        for _ in 0..50 {
+            tokio::task::yield_now().await;
+            list.poll();
+        }
+        assert!(list.autocomplete_is_open());
+        let moved = ratatui::crossterm::event::MouseEvent {
+            kind: ratatui::crossterm::event::MouseEventKind::Moved,
+            column: 30,
+            row: 30,
+            modifiers: KeyModifiers::NONE,
+        };
+        list.handle_mouse(&moved);
+        assert!(list.autocomplete_is_open(), "motion keeps it");
+        list.handle_mouse(&mouse_down_at(30, 30));
+        assert!(!list.autocomplete_is_open(), "a press elsewhere closes it");
     }
 
     /// A click on a suggestion accepts it — the same rewrite Tab makes —

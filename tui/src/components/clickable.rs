@@ -10,9 +10,10 @@
 //! new target gets hover by registering — no per-widget pointer tracking.
 //!
 //! The registry is per frame and per thread (rendering is single-threaded;
-//! tests on separate threads stay isolated). A modal overlay calls [`clear`]
-//! before drawing itself: the panels under it are not clickable, so they
-//! must not light up through it either.
+//! tests on separate threads stay isolated). Every screen that draws click
+//! targets calls [`clear`] first thing in its `render`, and a modal overlay
+//! calls it again before drawing itself: the panels under it are not
+//! clickable, so they must not light up through it either.
 //!
 //! [`Theme::action`]: crate::settings::themes::Theme::action
 //! [`Theme::hover`]: crate::settings::themes::Theme::hover
@@ -38,6 +39,58 @@ pub fn clear() {
 pub fn register(rect: Rect) {
     if !rect.is_empty() {
         TARGETS.with(|t| t.borrow_mut().push(rect));
+    }
+}
+
+/// Drops the tail of the gesture that opened a modal layer: the second
+/// press of a double-click on whatever opened it. Without this, a popup that
+/// closes on a press outside it would open and close in one double-click,
+/// and a dialog could take a press aimed at what was under it.
+///
+/// Armed only when the layer was opened by a mouse press — a keyboard open
+/// is not a gesture with a tail — and only for [`DOUBLE_CLICK`] after.
+///
+/// [`DOUBLE_CLICK`]: crate::components::DOUBLE_CLICK
+#[derive(Debug, Default)]
+pub struct OpenGuard {
+    armed_at: Option<std::time::Instant>,
+    last_input_was_press: bool,
+}
+
+impl OpenGuard {
+    /// Record each input before it is handled: an open that follows a
+    /// mouse press (directly, or via the app message it sent) arms.
+    pub fn observe_input(&mut self, event: &crate::components::events::InputEvent) {
+        self.last_input_was_press = matches!(
+            event,
+            crate::components::events::InputEvent::Mouse(m)
+                if matches!(m.kind, ratatui::crossterm::event::MouseEventKind::Down(_))
+        );
+    }
+
+    /// A layer opened at `now`.
+    pub fn opened(&mut self, now: std::time::Instant) {
+        self.armed_at = self.last_input_was_press.then_some(now);
+    }
+
+    /// The layer closed.
+    pub fn closed(&mut self) {
+        self.armed_at = None;
+    }
+
+    /// Whether `event` is the opening gesture's tail, to be dropped.
+    pub fn swallows(
+        &self,
+        event: &crate::components::events::InputEvent,
+        now: std::time::Instant,
+    ) -> bool {
+        matches!(
+            event,
+            crate::components::events::InputEvent::Mouse(m)
+                if matches!(m.kind, ratatui::crossterm::event::MouseEventKind::Down(_))
+        ) && self
+            .armed_at
+            .is_some_and(|at| now.duration_since(at) < crate::components::DOUBLE_CLICK)
     }
 }
 
@@ -92,6 +145,29 @@ mod tests {
         assert_eq!(hovered(Position::new(1, 3)), None);
         clear();
         assert_eq!(hovered(Position::new(1, 0)), None);
+    }
+
+    #[test]
+    fn the_open_guard_arms_only_for_mouse_opens() {
+        use crate::components::events::InputEvent;
+        let press = crate::test_support::mouse_down_at(1, 1);
+        let key = InputEvent::Key(ratatui::crossterm::event::KeyEvent::from(
+            ratatui::crossterm::event::KeyCode::Enter,
+        ));
+        let t0 = std::time::Instant::now();
+        let mut g = OpenGuard::default();
+
+        g.observe_input(&key);
+        g.opened(t0);
+        assert!(!g.swallows(&press, t0), "a keyboard open has no tail");
+
+        g.observe_input(&press);
+        g.opened(t0);
+        assert!(g.swallows(&press, t0 + crate::components::DOUBLE_CLICK / 2));
+        assert!(!g.swallows(&key, t0), "keys are never held back");
+        assert!(!g.swallows(&press, t0 + crate::components::DOUBLE_CLICK));
+        g.closed();
+        assert!(!g.swallows(&press, t0));
     }
 
     #[test]

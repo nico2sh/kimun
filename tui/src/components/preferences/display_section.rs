@@ -149,16 +149,9 @@ impl Component for DisplaySection {
         let fg = Style::default().fg(theme.fg.to_ratatui());
         let action = theme.action();
         let inner = block.inner(rect);
-        self.clicks.clear();
-        let offset = self.list_state.offset();
-        let row_rect = |row: usize| {
-            let y = inner.y as usize + row.saturating_sub(offset);
-            if row < offset || y >= inner.bottom() as usize {
-                Rect::default()
-            } else {
-                Rect::new(inner.x, y as u16, inner.width, 1)
-            }
-        };
+        // Controls per row, as (row, column, width, key) — mapped to screen
+        // rects after rendering, once the list has settled its offset.
+        let mut controls: Vec<(usize, u16, u16, KeyCode)> = Vec::new();
         let mut items = Vec::new();
         // Checkbox rows: label, then a clickable `[x]`.
         for (row, label, on) in [
@@ -166,10 +159,7 @@ impl Component for DisplaySection {
             (1, "  Check for updates on startup  ", self.update_check),
             (2, "  Capture mouse (restart to apply)  ", self.mouse),
         ] {
-            let r = row_rect(row);
-            self.clicks.row(r, row);
-            self.clicks
-                .control(text_rect(r, label.width() as u16, 3), row, KeyCode::Enter);
+            controls.push((row, label.width() as u16, 3, KeyCode::Enter));
             items.push(
                 ListItem::new(Line::from(vec![
                     Span::raw(label),
@@ -181,17 +171,10 @@ impl Component for DisplaySection {
         // Stepper row: `◀` and `▶` step the delay.
         let label = "  Which-key Delay  ";
         let value = format!(" {}ms ", self.leader_timeout_ms);
-        let r = row_rect(ROW_LEADER_TIMEOUT);
-        self.clicks.row(r, ROW_LEADER_TIMEOUT);
         let left_col = label.width() as u16;
         let right_col = left_col + 1 + value.width() as u16;
-        self.clicks
-            .control(text_rect(r, left_col, 1), ROW_LEADER_TIMEOUT, KeyCode::Left);
-        self.clicks.control(
-            text_rect(r, right_col, 1),
-            ROW_LEADER_TIMEOUT,
-            KeyCode::Right,
-        );
+        controls.push((ROW_LEADER_TIMEOUT, left_col, 1, KeyCode::Left));
+        controls.push((ROW_LEADER_TIMEOUT, right_col, 1, KeyCode::Right));
         items.push(
             ListItem::new(Line::from(vec![
                 Span::raw(label),
@@ -212,6 +195,25 @@ impl Component for DisplaySection {
                     .bg(theme.selection_bg.to_ratatui()),
             );
         f.render_stateful_widget(list, rect, &mut self.list_state);
+
+        // Rows map from the offset the list settled on while rendering.
+        self.clicks.clear();
+        let offset = self.list_state.offset();
+        let row_rect = |row: usize| {
+            let y = inner.y as usize + row.saturating_sub(offset);
+            if row < offset || y >= inner.bottom() as usize {
+                Rect::default()
+            } else {
+                Rect::new(inner.x, y as u16, inner.width, 1)
+            }
+        };
+        for row in 0..ROW_COUNT {
+            self.clicks.row(row_rect(row), row);
+        }
+        for (row, col, width, key) in controls {
+            self.clicks
+                .control(text_rect(row_rect(row), col, width), row, key);
+        }
     }
 }
 
