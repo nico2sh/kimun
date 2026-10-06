@@ -10,7 +10,7 @@ use crate::components::event_state::EventState;
 use crate::components::events::{AppTx, InputEvent};
 use crate::settings::themes::Theme;
 
-use super::{ClickMap, SectionMouse, text_rect};
+use super::{ClickMap, text_rect};
 
 /// Number of selectable rows in this section.
 const ROW_COUNT: usize = 4;
@@ -62,18 +62,9 @@ impl DisplaySection {
         use ratatui::crossterm::event::KeyCode;
         let selected = self.list_state.selected();
         let activate = (selected != Some(ROW_LEADER_TIMEOUT)).then_some(KeyCode::Enter);
-        match self.clicks.resolve(m, selected, activate) {
-            SectionMouse::Select(row) => {
-                self.list_state.select(Some(row));
-                None
-            }
-            SectionMouse::Key(row, key) => {
-                self.list_state.select(Some(row));
-                Some(key)
-            }
-            SectionMouse::Wheel(key) => Some(key),
-            SectionMouse::None => None,
-        }
+        self.clicks
+            .resolve(m, selected, activate)
+            .into_key(|row| self.list_state.select(Some(row)))
     }
 
     /// Toggle the currently selected row.

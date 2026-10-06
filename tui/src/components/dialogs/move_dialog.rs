@@ -12,10 +12,11 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use tokio::task::JoinHandle;
 
 use crate::components::Component;
+use crate::components::clickable::list_index_at;
 use crate::components::dialogs::ValidationState;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, FileOp, OverlayData};
-use crate::components::hint_row::{HintRow, list_index_at};
+use crate::components::hint_row::HintRow;
 use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::components::single_line_input::{InputOutcome, SingleLineInput};
 use crate::settings::themes::Theme;

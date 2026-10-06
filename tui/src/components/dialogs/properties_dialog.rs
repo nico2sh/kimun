@@ -414,14 +414,14 @@ impl PropertiesDialog {
             MouseEventKind::ScrollUp => self.selected = self.selected.saturating_sub(1),
             MouseEventKind::Down(MouseButton::Left) => {
                 if let Mode::ConfirmDelete(_) = self.mode {
-                    match self.confirm.hit(ev.column, ev.row) {
+                    match self.confirm.hit(ev) {
                         Some(0) => self.confirm_delete(tx),
                         Some(_) => self.mode = Mode::List,
                         None => {}
                     }
                     return EventState::Consumed;
                 }
-                if let Some(b) = self.buttons.hit(ev.column, ev.row) {
+                if let Some(b) = self.buttons.hit(ev) {
                     self.press(b, tx);
                     return EventState::Consumed;
                 }
@@ -907,10 +907,10 @@ impl PropertyForm {
             self.cycle_kind(hit(self.kind_next_rect));
             return FormAction::None;
         }
-        if self.store_anyway.is_some() && self.store_btn.hit(col, row).is_some() {
+        if self.store_anyway.is_some() && self.store_btn.hit_at(col, row).is_some() {
             return FormAction::StoreAnyway;
         }
-        match self.buttons.hit(col, row) {
+        match self.buttons.hit_at(col, row) {
             Some(0) => FormAction::Submit,
             Some(_) => FormAction::Cancel,
             None => FormAction::None,
@@ -1869,7 +1869,7 @@ mod tests {
             .map(|b| {
                 let (x, y) = (0..24u16)
                     .flat_map(|y| (0..80u16).map(move |x| (x, y)))
-                    .find(|&(x, y)| d.buttons.hit(x, y) == Some(b))
+                    .find(|&(x, y)| d.buttons.hit_at(x, y) == Some(b))
                     .expect("button rendered");
                 (b, x, y)
             })
@@ -1973,7 +1973,7 @@ mod tests {
     fn button_spot(buttons: &ButtonRow, b: usize) -> (u16, u16) {
         (0..24u16)
             .flat_map(|y| (0..80u16).map(move |x| (x, y)))
-            .find(|&(x, y)| buttons.hit(x, y) == Some(b))
+            .find(|&(x, y)| buttons.hit_at(x, y) == Some(b))
             .expect("button rendered")
     }
 

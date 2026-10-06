@@ -7,7 +7,7 @@ use crate::components::event_state::EventState;
 use crate::components::events::{AppTx, InputEvent};
 use crate::settings::themes::Theme;
 
-use super::{ClickMap, SectionMouse};
+use super::ClickMap;
 
 pub struct AppearanceSection {
     themes: Vec<Theme>,
@@ -37,14 +37,10 @@ impl AppearanceSection {
         &mut self,
         m: &ratatui::crossterm::event::MouseEvent,
     ) -> Option<ratatui::crossterm::event::KeyEvent> {
-        match self.clicks.resolve(m, self.list_state.selected(), None) {
-            SectionMouse::Select(row) | SectionMouse::Key(row, _) => {
-                self.list_state.select(Some(row));
-                None
-            }
-            SectionMouse::Wheel(key) => Some(key),
-            SectionMouse::None => None,
-        }
+        // No controls and no re-click action: a row click only selects.
+        self.clicks
+            .resolve(m, self.list_state.selected(), None)
+            .into_key(|row| self.list_state.select(Some(row)))
     }
 
     pub fn selected_theme_name(&self) -> &str {
@@ -118,14 +114,8 @@ impl Component for AppearanceSection {
         // After rendering: the list may have scrolled to keep the selection
         // in view, and rows map from the offset it settled on.
         self.clicks.clear();
-        let offset = self.list_state.offset();
-        for (i, row) in (offset..self.themes.len()).enumerate() {
-            let y = inner.y + i as u16;
-            if y >= inner.bottom() {
-                break;
-            }
-            self.clicks.row(Rect::new(inner.x, y, inner.width, 1), row);
-        }
+        self.clicks
+            .list_rows(inner, self.list_state.offset(), self.themes.len());
     }
 }
 

@@ -398,9 +398,7 @@ mod tests {
         };
         t.draw(|f| bar.render(f, f.area(), &theme, &ctx)).unwrap();
         let buf = t.backend().buffer().clone();
-        let line: String = (0..100).map(|x| buf[(x, 1)].symbol().to_string()).collect();
-        let col = line.find("⊞ 3 props").expect("segment drawn");
-        let col = line[..col].chars().count() as u16;
+        let (col, _) = crate::test_support::find_text(&buf, "⊞ 3 props").expect("segment drawn");
         assert_eq!(bar.target_at(col, 1), Some(FooterTarget::Props));
         assert_eq!(bar.target_at(col + 8, 1), Some(FooterTarget::Props));
         assert_eq!(bar.target_at(col.saturating_sub(2), 1), None);
@@ -427,9 +425,7 @@ mod tests {
         };
         t.draw(|f| bar.render(f, f.area(), &theme, &ctx)).unwrap();
         let buf = t.backend().buffer().clone();
-        let line: String = (0..100).map(|x| buf[(x, 1)].symbol().to_string()).collect();
-        let col = line.find("⬆ 9.9.9").expect("segment drawn");
-        let col = line[..col].chars().count() as u16;
+        let (col, _) = crate::test_support::find_text(&buf, "⬆ 9.9.9").expect("segment drawn");
         assert_eq!(bar.target_at(col, 1), Some(FooterTarget::Update));
         assert_eq!(bar.target_at(col + 6, 1), Some(FooterTarget::Update));
         assert_eq!(bar.target_at(col.saturating_sub(2), 1), None);
@@ -455,8 +451,7 @@ mod tests {
         };
         t.draw(|f| bar.render(f, f.area(), &theme, &ctx)).unwrap();
         let buf = t.backend().buffer().clone();
-        let line: String = (0..120).map(|x| buf[(x, 1)].symbol().to_string()).collect();
-        let at = |s: &str| line[..line.find(s).expect("drawn")].chars().count() as u16;
+        let at = |s: &str| crate::test_support::find_text(&buf, s).expect("drawn").0;
         assert_eq!(
             bar.target_at(at("4 backlinks"), 1),
             Some(FooterTarget::Backlinks)

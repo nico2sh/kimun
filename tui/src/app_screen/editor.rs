@@ -716,6 +716,41 @@ enum TitleTarget {
 }
 
 impl EditorScreen {
+    /// Run the title-bar or status-bar target at (col,row), if any.
+    fn click_chrome(&mut self, col: u16, row: u16, tx: &AppTx) -> bool {
+        if let Some(target) = self.title_target_at(col, row) {
+            let open = match target {
+                TitleTarget::Palette => OverlayOpen::CommandPalette,
+                TitleTarget::Workspace => OverlayOpen::WorkspaceSwitcher,
+            };
+            self.open_overlay(open, tx);
+            return true;
+        }
+        let Some(target) = self.footer.target_at(col, row) else {
+            return false;
+        };
+        match target {
+            FooterTarget::Props => {
+                if let Some(path) = self.open_note().cloned() {
+                    tx.send(AppEvent::FileOp(FileOp::ShowProperties(path))).ok();
+                }
+            }
+            FooterTarget::Update => {
+                tx.send(AppEvent::Update(UpdateFlow::ShowDialog)).ok();
+            }
+            FooterTarget::Backlinks => {
+                self.execute_leader_action(
+                    LeaderAction::LinksTab(crate::components::drawer_views::LinksTab::Backlinks),
+                    tx,
+                );
+            }
+            FooterTarget::Link => {
+                self.follow_link_at_cursor(tx);
+            }
+        }
+        true
+    }
+
     /// The title-bar target under (col,row) from the last render.
     fn title_target_at(&self, col: u16, row: u16) -> Option<TitleTarget> {
         crate::components::clickable::target_at(&self.title_targets, col, row)
@@ -737,6 +772,7 @@ impl EditorScreen {
             claim: self.panels.editor().map(|e| e.claim()).unwrap_or_default(),
             double_click,
             overlay_sortable: self.overlays.active_sortable().is_some(),
+            overlay_query: self.overlays.active_takes_query_syntax(),
             pointer_on_editor: false,
         }
     }
@@ -895,52 +931,12 @@ impl EditorScreen {
             }
             EditorIntent::Overlay => self.overlays.handle_input(event, tx),
             EditorIntent::Mouse => {
+                // The title bar and status bar sit outside the panels; a left
+                // press on one of their targets is theirs.
                 if let InputEvent::Mouse(m) = event
-                    && matches!(
-                        m.kind,
-                        ratatui::crossterm::event::MouseEventKind::Down(
-                            ratatui::crossterm::event::MouseButton::Left
-                        )
-                    )
-                    && let Some(target) = self.title_target_at(m.column, m.row)
+                    && crate::components::clickable::is_left_press(m)
+                    && self.click_chrome(m.column, m.row, tx)
                 {
-                    let open = match target {
-                        TitleTarget::Palette => OverlayOpen::CommandPalette,
-                        TitleTarget::Workspace => OverlayOpen::WorkspaceSwitcher,
-                    };
-                    self.open_overlay(open, tx);
-                    return EventState::Consumed;
-                }
-                if let InputEvent::Mouse(m) = event
-                    && matches!(
-                        m.kind,
-                        ratatui::crossterm::event::MouseEventKind::Down(
-                            ratatui::crossterm::event::MouseButton::Left
-                        )
-                    )
-                    && let Some(target) = self.footer.target_at(m.column, m.row)
-                {
-                    match target {
-                        FooterTarget::Props => {
-                            if let Some(path) = self.open_note().cloned() {
-                                tx.send(AppEvent::FileOp(FileOp::ShowProperties(path))).ok();
-                            }
-                        }
-                        FooterTarget::Update => {
-                            tx.send(AppEvent::Update(UpdateFlow::ShowDialog)).ok();
-                        }
-                        FooterTarget::Backlinks => {
-                            self.execute_leader_action(
-                                LeaderAction::LinksTab(
-                                    crate::components::drawer_views::LinksTab::Backlinks,
-                                ),
-                                tx,
-                            );
-                        }
-                        FooterTarget::Link => {
-                            self.follow_link_at_cursor(tx);
-                        }
-                    }
                     return EventState::Consumed;
                 }
                 // `PanelSet` hit-tests the panel columns: a click focuses the
@@ -1049,7 +1045,10 @@ impl EditorScreen {
     /// file finder): it parks the browser (`OverlayHost::open_over`) so
     /// closing the dialog brings it back with focus unchanged.
     fn open_overlay(&mut self, open: OverlayOpen, tx: &AppTx) {
-        let stacks = open == OverlayOpen::SortBrowser;
+        let stacks = matches!(
+            open,
+            OverlayOpen::SortBrowser | OverlayOpen::QueryHelpOverBrowser
+        );
         if self.overlays.is_open() != stacks {
             return;
         }
@@ -1304,7 +1303,9 @@ impl EditorScreen {
             // stays on the OpenSettings binding.
             OverlayOpen::ThemePicker => Box::new(ActiveDialog::theme_picker(&s)),
             OverlayOpen::Help => Box::new(ActiveDialog::help(&s.key_bindings, &s.leader_tree())),
-            OverlayOpen::QueryHelp => Box::new(ActiveDialog::query_syntax()),
+            OverlayOpen::QueryHelp | OverlayOpen::QueryHelpOverBrowser => {
+                Box::new(ActiveDialog::query_syntax())
+            }
             OverlayOpen::Cheatsheet => Box::new(ActiveDialog::cheatsheet(&s)),
             OverlayOpen::SortQuery => return self.sort_dialog(SortTarget::Query, tx),
             OverlayOpen::SortSidebar => return self.sort_dialog(SortTarget::Sidebar, tx),
@@ -1540,17 +1541,35 @@ impl EditorScreen {
                 self.footer.flash(msg, tx);
             }
             AppEvent::OpenAttachmentExternally => self.open_attachment_externally(tx),
+            AppEvent::OpenQueryHelp => {
+                // Over the Ctrl+K browser it stacks on top of it; from the
+                // FIND panel it opens on its own.
+                let open = if self.overlays.active_takes_query_syntax() {
+                    Some(OverlayOpen::QueryHelpOverBrowser)
+                } else if !self.overlays.is_open() {
+                    Some(OverlayOpen::QueryHelp)
+                } else {
+                    None
+                };
+                if let Some(open) = open {
+                    self.open_overlay(open, tx);
+                }
+            }
             AppEvent::OpenSortDialog(target) => {
-                // The chip is drawn on a panel, so no overlay can be open
-                // over it when clicked; `Browser` has no chip.
+                // A panel's chip can only be clicked with no overlay open;
+                // the browser's is on the open browser itself, and its sort
+                // dialog stacks over it (the same recipe as Ctrl+R there).
                 let open = match target {
+                    SortTarget::Sidebar | SortTarget::Query if self.overlays.is_open() => None,
                     SortTarget::Sidebar => Some(OverlayOpen::SortSidebar),
                     SortTarget::Query => Some(OverlayOpen::SortQuery),
-                    SortTarget::Browser => None,
+                    SortTarget::Browser => self
+                        .overlays
+                        .active_sortable()
+                        .is_some()
+                        .then_some(OverlayOpen::SortBrowser),
                 };
-                if let Some(open) = open
-                    && !self.overlays.is_open()
-                {
+                if let Some(open) = open {
                     self.open_overlay(open, tx);
                 }
             }
@@ -4387,15 +4406,7 @@ mod tests {
         corner
     }
 
-    fn press_at(col: u16, row: u16) -> InputEvent {
-        use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-        InputEvent::Mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: col,
-            row,
-            modifiers: KeyModifiers::NONE,
-        })
-    }
+    use crate::test_support::mouse_down_at as press_at;
 
     #[tokio::test]
     async fn clicking_props_segment_opens_properties() {
@@ -4505,15 +4516,7 @@ mod tests {
         assert!(opened);
     }
 
-    fn moved_at(col: u16, row: u16) -> InputEvent {
-        use ratatui::crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
-        InputEvent::Mouse(MouseEvent {
-            kind: MouseEventKind::Moved,
-            column: col,
-            row,
-            modifiers: KeyModifiers::NONE,
-        })
-    }
+    use crate::test_support::mouse_moved_at as moved_at;
 
     /// A fixed origin, so the tests describe gaps rather than wall-clock time.
     fn at(millis: u64) -> std::time::Instant {
@@ -4642,7 +4645,8 @@ mod tests {
         screen.handle_input(&press_at(col, row), &tx);
         screen.handle_input(&press_at(col, row), &tx);
 
-        let followed = std::iter::from_fn(|| rx.try_recv().ok())
+        let followed = crate::test_support::drain(&mut rx)
+            .into_iter()
             .find_map(|ev| match ev {
                 AppEvent::FollowLink(target) => Some(target),
                 _ => None,
@@ -4668,7 +4672,8 @@ mod tests {
         screen.handle_input(&press_at(col + 6, row), &tx);
 
         assert!(
-            !std::iter::from_fn(|| rx.try_recv().ok())
+            !crate::test_support::drain(&mut rx)
+                .into_iter()
                 .any(|ev| matches!(ev, AppEvent::FollowLink(_))),
             "one click is a cursor placement, not a navigation"
         );
@@ -4748,15 +4753,7 @@ mod sort_routing_tests {
         term.backend().buffer().clone()
     }
 
-    fn moved_to(col: u16, row: u16) -> InputEvent {
-        use ratatui::crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
-        InputEvent::Mouse(MouseEvent {
-            kind: MouseEventKind::Moved,
-            column: col,
-            row,
-            modifiers: KeyModifiers::NONE,
-        })
-    }
+    use crate::test_support::mouse_moved_at as moved_to;
 
     /// The pointer over a click target paints it with the hover style — only
     /// that target — and moving away clears it.
@@ -4823,7 +4820,8 @@ mod sort_routing_tests {
         while rx.try_recv().is_ok() {}
         screen.handle_input(&crate::test_support::mouse_down_at(col, row), &tx);
         assert!(
-            std::iter::from_fn(|| rx.try_recv().ok())
+            crate::test_support::drain(&mut rx)
+                .into_iter()
                 .any(|e| matches!(e, AppEvent::OpenSortDialog(SortTarget::Query)))
         );
     }
@@ -4855,6 +4853,97 @@ mod sort_routing_tests {
                 .iter()
                 .any(|(_, t)| *t == TitleTarget::Palette)
         );
+    }
+
+    use crate::test_support::drain as events;
+
+    /// The Ctrl+K browser shows its sort; clicking it stacks the sort
+    /// dialog over the browser, like Ctrl+R there.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_search_browser_sort_label_opens_a_stacked_sort_dialog() {
+        let (mut screen, tx, mut rx) = make_editor().await;
+        screen.open_overlay(OverlayOpen::SearchBrowser, &tx);
+        let (col, row) = find_drawn(&mut screen, "Unsorted").expect("browser shows its sort");
+        events(&mut rx);
+        screen.handle_input(&crate::test_support::mouse_down_at(col, row), &tx);
+        let sent = events(&mut rx);
+        assert!(
+            sent.iter()
+                .any(|e| matches!(e, AppEvent::OpenSortDialog(SortTarget::Browser)))
+        );
+        screen
+            .handle_app_message(AppEvent::OpenSortDialog(SortTarget::Browser), &tx)
+            .await;
+        assert_eq!(screen.overlays.active_kind(), Some(OverlayKind::Dialog));
+        assert_eq!(
+            screen.overlays.parked_kind(),
+            Some(OverlayKind::NoteBrowser),
+            "stacked over the browser, not replacing it"
+        );
+    }
+
+    /// `[F1] Query syntax` in the Ctrl+K browser — and F1 itself — open the
+    /// syntax reference over the browser.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_search_browser_opens_query_syntax_over_itself() {
+        use ratatui::crossterm::event::KeyCode;
+        let (mut screen, tx, mut rx) = make_editor().await;
+        screen.open_overlay(OverlayOpen::SearchBrowser, &tx);
+        let (col, row) = find_drawn(&mut screen, "[F1] Query syntax").expect("chip drawn");
+        events(&mut rx);
+        screen.handle_input(&crate::test_support::mouse_down_at(col, row), &tx);
+        assert!(
+            events(&mut rx)
+                .iter()
+                .any(|e| matches!(e, AppEvent::OpenQueryHelp))
+        );
+        screen
+            .handle_app_message(AppEvent::OpenQueryHelp, &tx)
+            .await;
+        assert_eq!(screen.overlays.active_kind(), Some(OverlayKind::Dialog));
+        assert_eq!(
+            screen.overlays.parked_kind(),
+            Some(OverlayKind::NoteBrowser)
+        );
+
+        // The key does the same.
+        screen.overlays.close();
+        assert_eq!(
+            screen.overlays.active_kind(),
+            Some(OverlayKind::NoteBrowser)
+        );
+        screen.handle_input(&key(KeyCode::F(1), false), &tx);
+        assert_eq!(
+            screen.overlays.parked_kind(),
+            Some(OverlayKind::NoteBrowser)
+        );
+    }
+
+    /// The Ctrl+O finder takes fuzzy names, not the query syntax.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_file_finder_has_no_syntax_chip() {
+        let (mut screen, tx, _rx) = make_editor().await;
+        screen.open_overlay(OverlayOpen::FileFinder, &tx);
+        assert!(find_drawn(&mut screen, "Query syntax").is_none());
+        assert!(find_drawn(&mut screen, "[Esc] Close").is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_find_syntax_chip_opens_the_reference() {
+        let (mut screen, tx, mut rx) = make_editor().await;
+        screen.panels.open_drawer_view(DrawerView::Find);
+        let (col, row) = find_drawn(&mut screen, "[F1] Syntax").expect("chip drawn");
+        events(&mut rx);
+        screen.handle_input(&crate::test_support::mouse_down_at(col, row), &tx);
+        assert!(
+            events(&mut rx)
+                .iter()
+                .any(|e| matches!(e, AppEvent::OpenQueryHelp))
+        );
+        screen
+            .handle_app_message(AppEvent::OpenQueryHelp, &tx)
+            .await;
+        assert_eq!(screen.overlays.active_kind(), Some(OverlayKind::Dialog));
     }
 
     /// The title bar's `≡ Commands` opens the palette and the workspace
@@ -4898,7 +4987,8 @@ mod sort_routing_tests {
         while rx.try_recv().is_ok() {}
         screen.handle_input(&crate::test_support::mouse_down_at(col, row), &tx);
         assert!(
-            std::iter::from_fn(|| rx.try_recv().ok())
+            crate::test_support::drain(&mut rx)
+                .into_iter()
                 .any(|e| matches!(e, AppEvent::OpenSortDialog(SortTarget::Query)))
         );
     }

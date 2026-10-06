@@ -6,9 +6,10 @@ use ratatui::style::{Modifier, Style};
 use ratatui::widgets::Paragraph;
 
 use crate::components::Component;
+use crate::components::clickable::{is_press_outside, key_at};
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, FileOp};
-use crate::components::hint_row::{HintRow, is_press_outside, key_at};
+use crate::components::hint_row::HintRow;
 use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::settings::themes::Theme;
 

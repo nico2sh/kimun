@@ -55,23 +55,16 @@ fn truncate_cells(s: &str, max: usize) -> std::borrow::Cow<'_, str> {
     std::borrow::Cow::Owned(out)
 }
 
-/// Where a right-aligned title of `width` cells lands on `block`'s top
-/// border (ratatui keeps the corner cells clear), clipped to the border.
-/// `None` when the block is too narrow to show any of it.
-pub fn top_right_title_rect(
-    block: ratatui::layout::Rect,
-    width: u16,
-) -> Option<ratatui::layout::Rect> {
-    let inner_w = block.width.saturating_sub(2);
-    if inner_w == 0 || width == 0 {
-        return None;
-    }
-    let w = width.min(inner_w);
-    Some(ratatui::layout::Rect::new(
-        block.right() - 1 - w,
-        block.y,
-        w,
-        1,
+/// [`sort_chip_label`] as a border-title line in the theme's action style,
+/// ready for a [`BorderChip`](crate::components::clickable::BorderChip).
+pub fn sort_chip_line(
+    field: &SortField,
+    order: SortOrder,
+    theme: &crate::settings::themes::Theme,
+) -> ratatui::text::Line<'static> {
+    ratatui::text::Line::from(ratatui::text::Span::styled(
+        sort_chip_label(field, order),
+        theme.action(),
     ))
 }
 

@@ -8,7 +8,7 @@ use crate::components::events::{AppTx, InputEvent};
 use crate::settings::EditorBackendSetting;
 use crate::settings::themes::Theme;
 
-use super::{ClickMap, SectionMouse, text_rect};
+use super::{ClickMap, text_rect};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
@@ -46,18 +46,9 @@ impl EditorSection {
     ) -> Option<ratatui::crossterm::event::KeyEvent> {
         use ratatui::crossterm::event::KeyCode;
         let activate = (self.selected_row == ROW_BACKEND).then_some(KeyCode::Enter);
-        match self.clicks.resolve(m, Some(self.selected_row), activate) {
-            SectionMouse::Select(row) => {
-                self.selected_row = row;
-                None
-            }
-            SectionMouse::Key(row, key) => {
-                self.selected_row = row;
-                Some(key)
-            }
-            SectionMouse::Wheel(key) => Some(key),
-            SectionMouse::None => None,
-        }
+        self.clicks
+            .resolve(m, Some(self.selected_row), activate)
+            .into_key(|row| self.selected_row = row)
     }
 
     /// `  ◀  value  ▶` with both arrows as click targets for `row`.

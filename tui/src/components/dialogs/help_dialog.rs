@@ -7,9 +7,10 @@ use ratatui::style::{Modifier, Style};
 use ratatui::widgets::Paragraph;
 
 use crate::components::Component;
+use crate::components::clickable::is_press_outside;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent};
-use crate::components::hint_row::{HintRow, is_press_outside};
+use crate::components::hint_row::HintRow;
 use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::ShortcutCategory;
@@ -40,7 +41,7 @@ pub struct HelpDialog {
     last_body_height: u16,
     /// Outer popup rect from the last render; a press outside closes.
     popup_rect: Rect,
-    close_hint: HintRow,
+    footer: HintRow,
 }
 
 impl HelpDialog {
@@ -131,7 +132,7 @@ impl HelpDialog {
             scroll: 0,
             last_body_height: 20,
             popup_rect: Rect::default(),
-            close_hint: close_hint(),
+            footer: footer_hints(),
         }
     }
 
@@ -219,7 +220,7 @@ impl HelpDialog {
             scroll: 0,
             last_body_height: 20,
             popup_rect: Rect::default(),
-            close_hint: close_hint(),
+            footer: footer_hints(),
         }
     }
 
@@ -276,7 +277,7 @@ impl HelpDialog {
             scroll: 0,
             last_body_height: 20,
             popup_rect: Rect::default(),
-            close_hint: close_hint(),
+            footer: footer_hints(),
         }
     }
 
@@ -317,7 +318,7 @@ impl HelpDialog {
         if is_press_outside(m, self.popup_rect) {
             return self.handle_key(KeyEvent::from(KeyCode::Esc), tx);
         }
-        if let Some(key) = self.close_hint.hit(m) {
+        if let Some(key) = self.footer.hit(m) {
             return self.handle_key(key, tx);
         }
         match m.kind {
@@ -351,11 +352,14 @@ impl HelpDialog {
 const OUTER_WIDTH: u16 = 50;
 /// Rows one wheel notch scrolls.
 const WHEEL_ROWS: usize = 3;
-const SCROLL_HINT: &str = "  [↑↓ PgUp/PgDn] Scroll";
 
-fn close_hint() -> HintRow {
-    // Drawn in its own rect right after the (inert) scroll hint.
-    HintRow::new(&[(KeyCode::Esc, "Esc", "Close")]).with_indent(0)
+/// The footer: an informational scroll chip, then `[Esc] Close`.
+fn footer_hints() -> HintRow {
+    HintRow::new(&[
+        (KeyCode::Null, "↑↓ PgUp/PgDn", "Scroll"),
+        (KeyCode::Esc, "Esc", "Close"),
+    ])
+    .with_gap(3)
 }
 const KEYS_COL_WIDTH: u16 = 18;
 
@@ -461,15 +465,7 @@ impl Component for HelpDialog {
         }
 
         let hint_style = Style::default().fg(gray).bg(bg);
-        f.render_widget(Paragraph::new(SCROLL_HINT).style(hint_style), footer_area);
-        let off =
-            (unicode_width::UnicodeWidthStr::width(SCROLL_HINT) as u16 + 3).min(footer_area.width);
-        let close_area = Rect {
-            x: footer_area.x + off,
-            width: footer_area.width - off,
-            ..footer_area
-        };
-        self.close_hint.render(f, close_area, hint_style, theme);
+        self.footer.render(f, footer_area, hint_style, theme);
     }
 }
 

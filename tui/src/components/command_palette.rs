@@ -9,9 +9,10 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::{ListItem, Paragraph};
 
+use crate::components::clickable::is_press_outside;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, redraw_callback};
-use crate::components::hint_row::{HintRow, is_press_outside};
+use crate::components::hint_row::HintRow;
 use crate::components::overlay::{Overlay, OverlayKind};
 use crate::components::panel::{ModalBg, ModalSpec, modal_chrome};
 use crate::components::rich_row::RichRow;
@@ -254,7 +255,7 @@ mod tests {
     fn click(p: &mut CommandPaletteModal, col: u16, row: u16) -> Vec<AppEvent> {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         p.handle_input(&crate::test_support::mouse_down_at(col, row), &tx);
-        std::iter::from_fn(|| rx.try_recv().ok()).collect()
+        crate::test_support::drain(&mut rx).into_iter().collect()
     }
 
     #[test]

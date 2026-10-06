@@ -82,6 +82,9 @@ pub enum AppEvent {
     /// Jump the editor cursor to the first heading whose rendered text (as
     /// the OUTLINE shows it) is this (sent by the OUTLINE drawer).
     JumpToHeading(String),
+    /// Open the search query syntax reference (sent by the `[F1]` syntax
+    /// chips on the FIND query box and the Ctrl+K browser).
+    OpenQueryHelp,
     /// Open the shown attachment with the OS default program (sent by the
     /// attachment view's `Open externally` chip; the key is `FollowLink`).
     OpenAttachmentExternally,

@@ -502,11 +502,7 @@ mod tests {
     pub(crate) fn click_at(dialog: &mut ActiveDialog, col: u16, row: u16) -> Vec<AppEvent> {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         Overlay::handle_input(dialog, &crate::test_support::mouse_down_at(col, row), &tx);
-        let mut out = Vec::new();
-        while let Ok(e) = rx.try_recv() {
-            out.push(e);
-        }
-        out
+        crate::test_support::drain(&mut rx)
     }
 
     fn closed(events: &[AppEvent]) -> bool {

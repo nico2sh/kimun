@@ -15,6 +15,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
+use crate::components::clickable::is_left_press;
 use crate::settings::themes::Theme;
 
 struct Chip {
@@ -79,6 +80,12 @@ impl HintRow {
     pub fn with_prefix(mut self, prefix: &str) -> Self {
         self.prefix = prefix.to_string();
         self
+    }
+
+    /// Not drawn this frame (e.g. an error line replaced it): forget the
+    /// last render's rects so no invisible chip stays clickable.
+    pub fn hide(&mut self) {
+        self.rects.clear();
     }
 
     /// Replace the prefix text (it can change per frame, e.g. a name).
@@ -176,41 +183,6 @@ impl HintRow {
     }
 }
 
-/// A left-button press — the one mouse kind dialogs act on.
-pub fn is_left_press(m: &MouseEvent) -> bool {
-    use ratatui::crossterm::event::{MouseButton, MouseEventKind};
-    matches!(m.kind, MouseEventKind::Down(MouseButton::Left))
-}
-
-/// The key of the `(rect, key)` target under a left press — for click
-/// targets that are not chips (menu actions, launcher rows).
-pub fn key_at(targets: &[(Rect, KeyCode)], m: &MouseEvent) -> Option<KeyEvent> {
-    if !is_left_press(m) {
-        return None;
-    }
-    crate::components::clickable::target_at(targets, m.column, m.row).map(KeyEvent::from)
-}
-
-/// The index of the ratatui `List` row under a left press: `rect` is where
-/// the rows are drawn (inside any border), `offset` the list state's first
-/// visible index, `len` the item count.
-pub fn list_index_at(m: &MouseEvent, rect: Rect, offset: usize, len: usize) -> Option<usize> {
-    if !is_left_press(m) || !rect.contains(Position::new(m.column, m.row)) {
-        return None;
-    }
-    let idx = offset + (m.row - rect.y) as usize;
-    (idx < len).then_some(idx)
-}
-
-/// A press of any button outside `rect` — how a read-only popup is dismissed.
-/// An empty `rect` (not rendered yet) is never "outside".
-pub fn is_press_outside(m: &MouseEvent, rect: Rect) -> bool {
-    use ratatui::crossterm::event::MouseEventKind;
-    matches!(m.kind, MouseEventKind::Down(_))
-        && !rect.is_empty()
-        && !rect.contains(Position::new(m.column, m.row))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -295,13 +267,5 @@ mod tests {
     fn nothing_hits_before_render() {
         let row = HintRow::new(&[(KeyCode::Enter, "Enter", "Go")]);
         assert_eq!(row.hit(&press(3, 0)), None);
-    }
-
-    #[test]
-    fn outside_press_needs_a_rendered_rect() {
-        let rect = Rect::new(10, 10, 5, 5);
-        assert!(is_press_outside(&press(0, 0), rect));
-        assert!(!is_press_outside(&press(11, 11), rect));
-        assert!(!is_press_outside(&press(0, 0), Rect::default()));
     }
 }

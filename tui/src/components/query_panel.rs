@@ -22,7 +22,7 @@ use crate::components::search_list::{
     Unresolvable, VaultSuggestions,
 };
 use crate::components::sortable::{
-    SortState, SortableList, order_of_query, query_with_sort, sort_chip_label, top_right_title_rect,
+    SortState, SortableList, order_of_query, query_with_sort, sort_chip_line,
 };
 use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::ActionShortcuts;
@@ -160,7 +160,9 @@ pub struct QueryPanel {
     preview: PreviewPane,
     /// The sort chip (`Name ↑`) on the query box border from the last render; `None`
     /// while no query runs (nothing to sort).
-    sort_chip: Option<Rect>,
+    sort_chip: crate::components::clickable::BorderChip,
+    /// The `[F1] Syntax` chip on the query box's bottom border.
+    syntax_chip: crate::components::clickable::BorderChip,
     key_bindings: KeyBindings,
     /// Shared sender filled the first time a `tx` arrives. The engine's redraw
     /// callback reads this slot, so async loads/autocomplete wake the render
@@ -253,7 +255,8 @@ impl QueryPanel {
             current_note,
             saved_search: SavedSearchBreadcrumb::default(),
             preview: PreviewPane::new(),
-            sort_chip: None,
+            sort_chip: Default::default(),
+            syntax_chip: Default::default(),
             key_bindings,
             redraw_tx,
             follow_link_combos,
@@ -535,13 +538,18 @@ impl QueryPanel {
         use ratatui::crossterm::event::{MouseButton, MouseEventKind};
         use ratatui::layout::Position;
         self.ensure_redraw_tx(tx);
+        // The autocomplete popup draws over the query box's border, so a
+        // press on it belongs to the popup, never to a chip under it.
+        let on_popup = self.list.popup_contains(mouse.column, mouse.row);
+        // The `[F1] Syntax` chip opens the query syntax reference.
+        if !on_popup && self.syntax_chip.hit(mouse) {
+            self.list.close_autocomplete();
+            tx.send(AppEvent::OpenQueryHelp).ok();
+            return EventState::Consumed;
+        }
         // The sort chip on the query box border opens the sort dialog, in any
         // expand state.
-        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
-            && self
-                .sort_chip
-                .is_some_and(|r| r.contains(Position::new(mouse.column, mouse.row)))
-        {
+        if !on_popup && self.sort_chip.hit(mouse) {
             self.list.close_autocomplete();
             tx.send(AppEvent::OpenSortDialog(SortTarget::Query)).ok();
             return EventState::Consumed;
@@ -797,22 +805,31 @@ impl QueryPanel {
         // and opens the sort dialog. Added last so it is the rightmost
         // right-aligned title (ratatui stacks them leftward), clear of a
         // parse-error segment.
-        let chip = querying.then(|| sort_chip_label(sort_field, *sort_order));
-        self.sort_chip = chip.as_ref().and_then(|c| {
-            top_right_title_rect(
+        use crate::components::clickable::Edge;
+        if querying {
+            search_block = self.sort_chip.place(
+                search_block,
                 rows[0],
-                unicode_width::UnicodeWidthStr::width(c.as_str()) as u16,
-            )
-        });
-        if let Some(chip) = chip {
-            search_block = search_block.title(
-                ratatui::text::Line::from(ratatui::text::Span::styled(chip, theme.action()))
-                    .right_aligned(),
+                Edge::Top,
+                sort_chip_line(sort_field, *sort_order, theme),
             );
+        } else {
+            self.sort_chip.hide();
         }
-        if let Some(r) = self.sort_chip {
-            crate::components::clickable::register(r);
-        }
+        // `[F1] Syntax` on the bottom border: the query grammar is one
+        // click away.
+        search_block = self.syntax_chip.place(
+            search_block,
+            rows[0],
+            Edge::Bottom,
+            ratatui::text::Line::from(vec![
+                ratatui::text::Span::styled("[F1]", theme.action()),
+                ratatui::text::Span::styled(
+                    " Syntax ",
+                    Style::default().fg(theme.gray.to_ratatui()),
+                ),
+            ]),
+        );
         let search_inner = search_block.inner(rows[0]);
         f.render_widget(search_block, rows[0]);
         self.list.render_query(f, search_inner, theme, focused);
@@ -1745,7 +1762,8 @@ mod tests {
         };
         panel.handle_mouse(&press, &tx);
         panel.handle_mouse(&press, &tx);
-        let opened = std::iter::from_fn(|| rx.try_recv().ok())
+        let opened = crate::test_support::drain(&mut rx)
+            .into_iter()
             .any(|e| matches!(e, AppEvent::OpenPath { .. }));
         assert!(opened, "a double-click opens the result");
         assert!(

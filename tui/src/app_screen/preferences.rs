@@ -13,9 +13,10 @@ use throbber_widgets_tui::ThrobberState;
 use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::Component;
 use crate::components::button_row::ButtonRow;
+use crate::components::clickable::{is_press_outside, list_index_at};
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent};
-use crate::components::hint_row::{HintRow, is_press_outside, list_index_at};
+use crate::components::hint_row::HintRow;
 use crate::components::indexing::{
     IndexingProgressState, fixed_centered_rect, render_indexing_overlay, spawn_running,
 };
@@ -114,15 +115,18 @@ pub struct PreferencesScreen {
     /// it cancels, like Esc.
     overlay_rect: Rect,
     /// Drops the tail of the double-click that opened an overlay (see
-    /// [`OpenGuard`](crate::components::clickable::OpenGuard)); `overlay_shown`
-    /// tracks when one first draws, which is when it counts as opened.
+    /// [`OpenGuard`](crate::components::clickable::OpenGuard)).
+    /// `shown_overlay` is the kind drawn last frame: a change of kind — one
+    /// overlay replacing another included — is an open.
     open_guard: crate::components::clickable::OpenGuard,
-    overlay_shown: bool,
+    shown_overlay: Option<std::mem::Discriminant<Overlay>>,
     /// The folder picker's list rows and chips from the last render.
     browser_rows: Rect,
     browser_hints: HintRow,
-    /// The two buttons of the Full Reindex / Save confirmations.
-    confirm_buttons: ButtonRow,
+    /// The Full Reindex confirmation's `[ Cancel ] [ Confirm ]`.
+    reindex_buttons: ButtonRow,
+    /// The Save confirmation's `[ Save ] [ Discard ]`.
+    save_buttons: ButtonRow,
 }
 
 impl PreferencesScreen {
@@ -192,7 +196,7 @@ impl PreferencesScreen {
             ]),
             overlay_rect: Rect::default(),
             open_guard: Default::default(),
-            overlay_shown: false,
+            shown_overlay: None,
             browser_rows: Rect::default(),
             browser_hints: HintRow::new(&[
                 (KeyCode::Enter, "⏎", "Open"),
@@ -201,7 +205,8 @@ impl PreferencesScreen {
                 (KeyCode::Null, "a-z", "Jump"),
             ])
             .with_indent(0),
-            confirm_buttons: ButtonRow::new(&["Cancel", "Confirm"]),
+            reindex_buttons: ButtonRow::new(&["Cancel", "Confirm"]),
+            save_buttons: ButtonRow::new(&["Save", "Discard"]),
         }
     }
 
@@ -477,36 +482,36 @@ impl PreferencesScreen {
                     }
                 }
             }
-            Overlay::ConfirmFullReindex { focused_button } => {
+            // The two confirmations: a button focuses itself and is pressed
+            // with Enter (the key path does the rest); outside cancels.
+            Overlay::ConfirmFullReindex { .. } | Overlay::ConfirmSave { .. } => {
                 if is_press_outside(m, self.overlay_rect) {
                     return self.press(esc, tx);
                 }
-                match self.confirm_buttons.hit(m.column, m.row) {
-                    Some(idx) if press => {
-                        *focused_button = if idx == 0 {
-                            ConfirmButton::Cancel
-                        } else {
-                            ConfirmButton::Confirm
-                        };
-                        self.press(enter, tx)
+                let first = match &mut self.overlay {
+                    Overlay::ConfirmFullReindex { focused_button } => {
+                        self.reindex_buttons.hit(m).map(|idx| {
+                            *focused_button = if idx == 0 {
+                                ConfirmButton::Cancel
+                            } else {
+                                ConfirmButton::Confirm
+                            };
+                        })
                     }
-                    _ => EventState::Consumed,
-                }
-            }
-            Overlay::ConfirmSave { focused_button } => {
-                if is_press_outside(m, self.overlay_rect) {
-                    return self.press(esc, tx);
-                }
-                match self.confirm_buttons.hit(m.column, m.row) {
-                    Some(idx) if press => {
-                        *focused_button = if idx == 0 {
-                            SaveButton::Save
-                        } else {
-                            SaveButton::Discard
-                        };
-                        self.press(enter, tx)
+                    Overlay::ConfirmSave { focused_button } => {
+                        self.save_buttons.hit(m).map(|idx| {
+                            *focused_button = if idx == 0 {
+                                SaveButton::Save
+                            } else {
+                                SaveButton::Discard
+                            };
+                        })
                     }
-                    _ => EventState::Consumed,
+                    _ => None,
+                };
+                match first {
+                    Some(()) => self.press(enter, tx),
+                    None => EventState::Consumed,
                 }
             }
         }
@@ -1145,14 +1150,15 @@ impl AppScreen for PreferencesScreen {
 
         // An overlay is modal: what it covers is not clickable, so it
         // must not light up on hover either.
-        if matches!(self.overlay, Overlay::None) {
-            if std::mem::take(&mut self.overlay_shown) {
-                self.open_guard.closed();
-            }
-        } else {
+        let shown =
+            (!matches!(self.overlay, Overlay::None)).then(|| std::mem::discriminant(&self.overlay));
+        if shown.is_some() {
             crate::components::clickable::clear();
-            if !std::mem::replace(&mut self.overlay_shown, true) {
-                self.open_guard.opened(std::time::Instant::now());
+        }
+        if std::mem::replace(&mut self.shown_overlay, shown) != shown {
+            match shown {
+                Some(_) => self.open_guard.opened(std::time::Instant::now()),
+                None => self.open_guard.closed(),
             }
         }
         self.render_overlay(f, &theme);
@@ -1237,9 +1243,8 @@ impl PreferencesScreen {
                     ConfirmButton::Cancel => 0,
                     ConfirmButton::Confirm => 1,
                 };
-                self.confirm_buttons = ButtonRow::new(&["Cancel", "Confirm"]);
-                self.confirm_buttons.set_focused(Some(focused));
-                self.confirm_buttons.render(f, button_line(inner), theme);
+                self.reindex_buttons.set_focused(Some(focused));
+                self.reindex_buttons.render(f, button_line(inner), theme);
             }
 
             Overlay::ConfirmSave { focused_button } => {
@@ -1261,9 +1266,8 @@ impl PreferencesScreen {
                     SaveButton::Save => 0,
                     SaveButton::Discard => 1,
                 };
-                self.confirm_buttons = ButtonRow::new(&["Save", "Discard"]);
-                self.confirm_buttons.set_focused(Some(focused));
-                self.confirm_buttons.render(f, button_line(inner), theme);
+                self.save_buttons.set_focused(Some(focused));
+                self.save_buttons.render(f, button_line(inner), theme);
             }
 
             Overlay::IndexingProgress(state) => {
@@ -1793,6 +1797,31 @@ mod mouse_tests {
         let mut rx = click(&mut s, "Discard", 0);
         assert!(matches!(rx.try_recv(), Ok(AppEvent::ClosePreferences)));
         assert_eq!(*s.settings.read().unwrap(), s.initial_settings);
+    }
+
+    /// Only a left click presses a button: a right-click on `Discard` must
+    /// not throw the changes away.
+    #[test]
+    fn a_right_click_presses_no_button() {
+        let mut s = screen();
+        s.overlay = Overlay::ConfirmSave {
+            focused_button: SaveButton::Save,
+        };
+        settle_overlay(&mut s);
+        let buf = draw(&mut s);
+        let (x, y) = crate::test_support::find_text(&buf, "Discard").unwrap();
+        let (tx, mut rx) = unbounded_channel();
+        s.handle_input(
+            &InputEvent::Mouse(ratatui::crossterm::event::MouseEvent {
+                kind: MouseEventKind::Down(ratatui::crossterm::event::MouseButton::Right),
+                column: x,
+                row: y,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &tx,
+        );
+        assert!(rx.try_recv().is_err());
+        assert!(matches!(s.overlay, Overlay::ConfirmSave { .. }));
     }
 
     /// The second press of the double-click that opened an overlay must not

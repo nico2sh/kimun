@@ -1408,7 +1408,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("{text:?} not drawn"));
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
             p.handle_input(&crate::test_support::mouse_down_at(x, y), &tx);
-            std::iter::from_fn(|| rx.try_recv().ok()).collect()
+            crate::test_support::drain(&mut rx).into_iter().collect()
         }
 
         /// The chips act on the selected turn whatever holds the keyboard —

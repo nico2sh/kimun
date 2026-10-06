@@ -51,6 +51,34 @@ pub fn key_event(code: KeyCode) -> InputEvent {
     })
 }
 
+/// A left press at (col,row) as a raw `MouseEvent`, for widgets that take
+/// one directly ([`mouse_down_at`] wraps the same press in an `InputEvent`).
+pub fn left_press(col: u16, row: u16) -> MouseEvent {
+    MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: col,
+        row,
+        modifiers: KeyModifiers::NONE,
+    }
+}
+
+/// Pointer motion to (col,row) — hover, with no button.
+pub fn mouse_moved_at(col: u16, row: u16) -> InputEvent {
+    InputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Moved,
+        column: col,
+        row,
+        modifiers: KeyModifiers::NONE,
+    })
+}
+
+/// Every event sent so far on `rx`.
+pub fn drain(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::components::events::AppEvent>,
+) -> Vec<crate::components::events::AppEvent> {
+    std::iter::from_fn(|| rx.try_recv().ok()).collect()
+}
+
 pub fn mouse_down_at(col: u16, row: u16) -> InputEvent {
     InputEvent::Mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
