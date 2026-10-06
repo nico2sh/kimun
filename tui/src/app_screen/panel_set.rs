@@ -515,6 +515,21 @@ impl PanelSet {
     pub fn outline_mut(&mut self) -> &mut crate::components::drawer_views::OutlinePanel {
         self.drawer.outline_mut()
     }
+    /// Bring the OUTLINE in step with the editor buffer for `note` — empty
+    /// while no note editor is shown. Parses only when the buffer revision
+    /// moved; see [`OutlinePanel::sync`].
+    ///
+    /// [`OutlinePanel::sync`]: crate::components::drawer_views::OutlinePanel::sync
+    pub fn sync_outline(&mut self, note: &kimun_core::nfs::VaultPath, tx: &AppTx) {
+        let editor = matches!(self.content, EditorAreaContent::Note).then_some(&self.editor);
+        let revision = editor.map(|e| e.content_revision());
+        self.drawer.outline_mut().sync(
+            note,
+            revision,
+            || editor.map(|e| e.get_text()).unwrap_or_default(),
+            tx,
+        );
+    }
     pub fn drawer_set_config_info(&mut self, info: crate::components::drawer::ConfigInfo) {
         self.drawer.set_config_info(info);
     }
@@ -773,7 +788,6 @@ mod tests {
             settings.yank_combos(),
         );
         let outline = crate::components::drawer_views::OutlinePanel::new(
-            vault.clone(),
             settings.icons(),
             settings.yank_combos(),
         );

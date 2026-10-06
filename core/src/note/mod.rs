@@ -160,6 +160,17 @@ pub fn note_headings(text: &str) -> Vec<NoteHeading> {
         .collect()
 }
 
+/// A note body's OUTLINE: every heading in order, one with an empty section
+/// included, each text rendered as a content chunk's breadcrumb renders it
+/// (wikilinks collapsed, hashtag markers dropped) so it matches
+/// [`scan::heading_display_text`] of its own line.
+pub fn note_outline(text: &str) -> Vec<NoteHeading> {
+    content_extractor::extract_outline(text)
+        .into_iter()
+        .map(|(level, text)| NoteHeading { level, text })
+        .collect()
+}
+
 /// A note's vault path paired with its raw, unprocessed text.
 ///
 /// This is the entry point for whole-note content extraction: title, hash,

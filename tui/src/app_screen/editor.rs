@@ -126,7 +126,7 @@ impl EditorScreen {
         );
         let tags = TagsPanel::new(vault.clone(), s.icons(), s.yank_combos());
         let links = LinksPanel::new(vault.clone(), s.icons(), s.yank_combos());
-        let outline = OutlinePanel::new(vault.clone(), s.icons(), s.yank_combos());
+        let outline = OutlinePanel::new(s.icons(), s.yank_combos());
         let drawer = DrawerHost::new(
             vault.clone(),
             &kb,
@@ -1725,6 +1725,12 @@ impl EditorScreen {
                 self.doc_meta.refresh_git(tx);
                 if path == self.path {
                     self.doc_meta.refresh_properties(&path, tx);
+                    // Autosave fires on a pause in typing: the OUTLINE's
+                    // cue to catch up with the buffer. A failed save changed
+                    // nothing worth a re-read.
+                    if saved_revision.is_some() && self.drawer_open_on(DrawerView::Outline) {
+                        self.panels.sync_outline(&path, tx);
+                    }
                 }
                 // `SingleSlotTask::is_in_flight()` flips to false the
                 // moment the spawned future returns (success or panic),
@@ -1792,7 +1798,7 @@ impl EditorScreen {
         if self.panels.is_visible(PanelKind::Drawer) {
             match self.panels.active_drawer_view() {
                 DrawerView::Links => self.panels.links_mut().set_note(path.clone(), tx),
-                DrawerView::Outline => self.panels.outline_mut().set_note(path, tx),
+                DrawerView::Outline => self.panels.sync_outline(&path, tx),
                 _ => {}
             }
         }
@@ -1904,7 +1910,7 @@ impl EditorScreen {
             DrawerView::Semantic => self.panels.semantic_mut().ensure_source(tx),
             DrawerView::Tags => self.panels.tags_mut().refresh(tx),
             DrawerView::Links => self.panels.links_mut().set_note(self.path.clone(), tx),
-            DrawerView::Outline => self.panels.outline_mut().set_note(self.path.clone(), tx),
+            DrawerView::Outline => self.panels.sync_outline(&self.path, tx),
             _ => {}
         }
     }
@@ -3932,6 +3938,55 @@ mod tests {
             !screen.panels.editor().unwrap().is_dirty(),
             "reloaded buffer is clean (won't clobber the renamed file)"
         );
+    }
+
+    /// The OUTLINE follows the editor buffer, not the file: it catches up
+    /// when a save lands (the pause in typing), ignores a failed save, and is
+    /// current whenever it is revealed — unsaved headings included.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn outline_follows_the_buffer_at_save_and_reveal() {
+        let vault = crate::test_support::temp_vault("editor-outline-buffer").await;
+        vault.validate_and_init().await.unwrap();
+        let path = VaultPath::note_path_from("alpha");
+        vault.create_note(&path, "# Alpha\n").await.unwrap();
+        let settings = std::sync::Arc::new(std::sync::RwLock::new(
+            crate::settings::AppSettings::default(),
+        ));
+        let mut screen = EditorScreen::new(vault.clone(), path.clone(), settings);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        screen.on_enter(&tx).await;
+        let headings = |screen: &mut EditorScreen| screen.panels.outline_mut().headings_for_test();
+        let edit = |screen: &mut EditorScreen, text: &str| {
+            let ed = screen.panels.editor_mut().unwrap();
+            ed.set_text(text.to_string());
+            ed.content_revision()
+        };
+        let saved = |path: &VaultPath, rev| AppEvent::AutosaveCompleted {
+            path: path.clone(),
+            saved_revision: rev,
+            title: rev.map(|_| "Alpha".to_string()),
+        };
+
+        screen.open_drawer_view(DrawerView::Outline, &tx);
+        assert_eq!(headings(&mut screen), ["Alpha"]);
+
+        // Typing alone does not re-parse; the save landing does.
+        let rev = edit(&mut screen, "# Alpha\n## Beta\n");
+        assert_eq!(headings(&mut screen), ["Alpha"]);
+        screen
+            .handle_app_message(saved(&path, Some(rev)), &tx)
+            .await;
+        assert_eq!(headings(&mut screen), ["Alpha", "Beta"]);
+
+        // A failed save leaves it alone.
+        edit(&mut screen, "# Alpha\n## Beta\n## Gamma\n");
+        screen.handle_app_message(saved(&path, None), &tx).await;
+        assert_eq!(headings(&mut screen), ["Alpha", "Beta"]);
+
+        // Revealing OUTLINE reads the buffer, unsaved headings included.
+        screen.open_drawer_view(DrawerView::Files, &tx);
+        screen.open_drawer_view(DrawerView::Outline, &tx);
+        assert_eq!(headings(&mut screen), ["Alpha", "Beta", "Gamma"]);
     }
 
     /// Opening a note marks its sidebar row; saving it (AutosaveCompleted with a

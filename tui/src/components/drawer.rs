@@ -253,7 +253,6 @@ mod tests {
             settings.yank_combos(),
         );
         let outline = crate::components::drawer_views::OutlinePanel::new(
-            vault.clone(),
             settings.icons(),
             settings.yank_combos(),
         );

@@ -342,9 +342,7 @@ pub fn get_content_data<S: AsRef<str>>(md_text: S) -> NoteContentData {
 pub fn get_content_chunks<S: AsRef<str>>(md_text: S) -> Vec<ContentChunk> {
     let (frontmatter, text) = remove_frontmatter(md_text.as_ref());
 
-    // Clean up wikilinks and hashtags for indexing
-    let text = process_wikilinks(&text, |_link, _text| None);
-    let text = cleanup_hashtags(&text);
+    let text = collapse_inline_links(&text);
 
     let mut content_chunks = parse_text(&text);
 
@@ -356,6 +354,14 @@ pub fn get_content_chunks<S: AsRef<str>>(md_text: S) -> Vec<ContentChunk> {
     }
 
     content_chunks
+}
+
+/// Wikilinks collapsed to their display text and hashtag markers dropped —
+/// the one rendering the chunker, the OUTLINE ([`extract_outline`]) and
+/// [`heading_display_text`] share, so a heading reads the same in all three.
+fn collapse_inline_links(md_text: &str) -> String {
+    let text = process_wikilinks(md_text, |_link, _text| None);
+    cleanup_hashtags(&text)
 }
 
 /// Process wikilinks with a custom handler function
@@ -536,8 +542,7 @@ pub fn heading_display_text(line: &str) -> Option<String> {
     if !line.starts_with('#') {
         return None;
     }
-    let text = process_wikilinks(line, |_link, _text| None);
-    let text = cleanup_hashtags(&text);
+    let text = collapse_inline_links(line);
     let mut parser = Parser::new(&text);
     loop_events(&mut parser)
         .into_iter()
@@ -990,13 +995,28 @@ pub fn extract_title<S: AsRef<str>>(md_text: S) -> String {
         .unwrap_or_default()
 }
 
+/// Every heading of a note as `(level, display text)`, in order, rendered
+/// exactly as [`get_content_chunks`] renders a breadcrumb segment (wikilinks
+/// collapsed to their text, hashtag markers dropped) — so each text matches
+/// [`heading_display_text`] of its line. Unlike the chunker, a heading whose
+/// section has no body (`# Title` straight followed by `## Sub`) is kept.
+pub(crate) fn extract_outline<S: AsRef<str>>(md_text: S) -> Vec<(u8, String)> {
+    let (_frontmatter, text) = remove_frontmatter(md_text.as_ref());
+    headings_in(&collapse_inline_links(&text))
+}
+
 /// Every heading of a note as `(level, display text)`, in order — through the
 /// same event walk as the title and the index breadcrumbs, so frontmatter and
 /// `#` lines inside code are never headings, and inline markup is rendered to
 /// its text.
 pub(crate) fn extract_headings<S: AsRef<str>>(md_text: S) -> Vec<(u8, String)> {
     let (_frontmatter, md_text) = remove_frontmatter(md_text);
-    let mut parser = Parser::new(md_text.as_ref());
+    headings_in(&md_text)
+}
+
+/// The headings of frontmatter-free markdown, empty ones skipped.
+fn headings_in(md_text: &str) -> Vec<(u8, String)> {
+    let mut parser = Parser::new(md_text);
     loop_events(&mut parser)
         .into_iter()
         .filter_map(|line| match line {
@@ -3269,6 +3289,32 @@ ls -la ./test
         // The rest of the item is still indexed.
         let chunks = get_content_chunks("- item one\n  wraps on\n");
         assert!(chunks[0].text.contains("item one wraps on"), "{chunks:?}");
+    }
+
+    #[test]
+    fn the_outline_keeps_body_less_headings_rendered_like_their_lines() {
+        let text = "---\ntitle: x\n---\n# Title\n## [[target|Shown]] #tag\nbody\n### Empty\n";
+        let outline = crate::note::content_extractor::extract_outline(text);
+        assert_eq!(
+            outline,
+            vec![
+                (1, "Title".to_string()),
+                (2, "Shown tag".to_string()),
+                (3, "Empty".to_string()),
+            ]
+        );
+        // Each entry is what the editor's jump looks for on its line.
+        for (line, (_, heading)) in text
+            .lines()
+            .skip(3)
+            .filter(|l| l.starts_with('#'))
+            .zip(&outline)
+        {
+            assert_eq!(
+                heading_display_text(line).as_deref(),
+                Some(heading.as_str())
+            );
+        }
     }
 
     #[test]
