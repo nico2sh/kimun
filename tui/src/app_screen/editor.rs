@@ -2181,6 +2181,7 @@ impl EditorScreen {
             LeaderAction::NoteDaily => {
                 tx.send(AppEvent::OpenJournal).ok();
             }
+            LeaderAction::NoteQuick => self.open_overlay(OverlayOpen::QuickNote, tx),
             LeaderAction::NoteFromTemplate => {
                 self.footer.flash("templates — coming soon".to_string(), tx);
             }
@@ -3582,6 +3583,33 @@ mod tests {
             "focus should remain on the FIND drawer after select + close"
         );
         assert!(!screen.overlays.is_open(), "overlay should be closed");
+    }
+
+    /// The `n q` leader leaf (and its command-palette row) opens the same
+    /// quick-note dialog as the `Ctrl+W` chord.
+    #[tokio::test]
+    async fn leader_note_quick_opens_quick_note_dialog() {
+        use crate::settings::AppSettings;
+        use kimun_core::VaultConfig;
+        use std::sync::RwLock;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let vault = Arc::new(
+            NoteVault::new(VaultConfig::new(crate::test_support::sys(dir.path())))
+                .await
+                .unwrap(),
+        );
+        let settings: SharedSettings = Arc::new(RwLock::new(AppSettings::default()));
+        let mut screen = EditorScreen::new(vault.clone(), VaultPath::root(), settings.clone());
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        assert!(!screen.overlays.is_open(), "precondition: no overlay");
+        screen.execute_leader_action(LeaderAction::NoteQuick, &tx);
+        assert_eq!(
+            screen.overlays.active_kind(),
+            Some(OverlayKind::Dialog),
+            "NoteQuick must open the quick-note dialog"
+        );
     }
 
     /// Capture-all guard: while an overlay is open, an opener action

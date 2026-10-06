@@ -28,6 +28,8 @@ pub enum LeaderAction {
     // +note
     NoteNew,
     NoteDaily,
+    /// Open the quick-note dialog (also the `QuickNote` chord, `Ctrl+W`).
+    NoteQuick,
     NoteFromTemplate,
     NoteRename,
     NoteMove,
@@ -114,6 +116,7 @@ impl LeaderAction {
             LeaderAction::FindHeadings => "find.headings",
             LeaderAction::NoteNew => "note.new",
             LeaderAction::NoteDaily => "note.daily",
+            LeaderAction::NoteQuick => "note.quick",
             LeaderAction::NoteFromTemplate => "note.template",
             LeaderAction::NoteRename => "note.rename",
             LeaderAction::NoteMove => "note.move",
@@ -172,7 +175,7 @@ impl LeaderAction {
     }
 
     /// Every action, for id lookup and docs.
-    pub const ALL: [LeaderAction; 67] = [
+    pub const ALL: [LeaderAction; 68] = [
         LeaderAction::OpenDrawer(DrawerView::Files),
         LeaderAction::OpenDrawer(DrawerView::Find),
         LeaderAction::OpenDrawer(DrawerView::Tags),
@@ -188,6 +191,7 @@ impl LeaderAction {
         LeaderAction::FindHeadings,
         LeaderAction::NoteNew,
         LeaderAction::NoteDaily,
+        LeaderAction::NoteQuick,
         LeaderAction::NoteFromTemplate,
         LeaderAction::NoteRename,
         LeaderAction::NoteMove,
@@ -271,6 +275,7 @@ impl LeaderAction {
             LeaderAction::FindHeadings => "headings",
             LeaderAction::NoteNew => "new note",
             LeaderAction::NoteDaily => "daily",
+            LeaderAction::NoteQuick => "quick note",
             LeaderAction::NoteFromTemplate => "from template",
             LeaderAction::NoteRename => "rename",
             LeaderAction::NoteMove => "move",
@@ -452,6 +457,7 @@ pub fn leader_tree() -> LeaderNode {
                     children: vec![
                         ('n', leaf("new", A::NoteNew)),
                         ('d', leaf("daily", A::NoteDaily)),
+                        ('q', leaf("quick note", A::NoteQuick)),
                         ('t', leaf("from template", A::NoteFromTemplate)),
                         ('r', leaf("rename", A::NoteRename)),
                         ('m', leaf("move", A::NoteMove)),
@@ -1017,6 +1023,20 @@ mod tests {
         }
         assert_eq!(LeaderAction::from_id("help"), Some(LeaderAction::Help));
         assert_eq!(LeaderAction::from_id("nope"), None);
+    }
+
+    /// Quick note is a chord (`Ctrl+W`) and also a leader leaf, so the
+    /// command palette — which lists leader leaves only — can reach it.
+    #[test]
+    fn quick_note_is_a_note_leaf() {
+        let mut e = LeaderEngine::new();
+        e.start();
+        e.feed('n');
+        assert_eq!(e.feed('q'), LeaderOutcome::Fired(LeaderAction::NoteQuick));
+        assert_eq!(
+            LeaderAction::from_id("note.quick"),
+            Some(LeaderAction::NoteQuick)
+        );
     }
 
     #[test]
