@@ -141,7 +141,12 @@ use super::{
 //       UTC) in `value_num`, so they compare and sort as instants; inline
 //       HTML no longer cuts headings or lines, and every line of a list item
 //       is indexed. Bump forces a clean reindex so both reach existing vaults.
-const VERSION: &str = "0.17";
+// 0.18: chunks, links and tags come from one walk over the note as written
+//       (wikilinks parsed by pulldown-cmark, hashtags handled inside it):
+//       wikilinks in code are no longer links, reference links and autolinks
+//       are recorded, a `#`-prefixed setext heading is kept, and a title
+//       renders like its heading or line. Bump forces a clean reindex.
+const VERSION: &str = "0.18";
 
 /// Tables whose rows belong to one note through a `path` column. Every save,
 /// rename and delete keeps all of them in step with the note, so a new

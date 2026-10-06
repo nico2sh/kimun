@@ -1,5 +1,6 @@
 pub(crate) mod content_extractor;
 pub(crate) mod properties;
+mod walk;
 
 pub use properties::{
     is_list_property_key, property_keys_match, property_search_key, FrontmatterFormat,
@@ -53,19 +54,10 @@ pub mod scan {
 }
 
 /// Returns the deduplicated lowercase label names extracted from `text`
-/// according to the same rules used by the indexer (skips frontmatter,
-/// code, HTML, markdown links, wikilinks; applies word-boundary on both
-/// sides of the match).
+/// by the note walk the indexer reads (skips frontmatter, code, HTML, link
+/// text and wikilinks; applies word-boundary on both sides of the match).
 pub fn extract_labels(text: &str) -> Vec<String> {
-    let path = crate::nfs::VaultPath::root();
-    let (_md, links) = content_extractor::get_markdown_and_links(&path, text);
-    let mut seen = std::collections::BTreeSet::new();
-    for l in links {
-        if let LinkType::Hashtag = l.ltype {
-            seen.insert(l.text.to_lowercase());
-        }
-    }
-    seen.into_iter().collect()
+    walk::walk(text).tag_names()
 }
 
 /// Whether `label` can be written as an inline `#label` hashtag that reads
@@ -96,15 +88,28 @@ pub fn is_hashtag_label(label: &str) -> bool {
 /// assert_eq!(kimun_core::note::note_tags(text), ["draft", "project", "q1"]);
 /// ```
 pub fn note_tags(text: &str) -> Vec<String> {
-    tags_with(text, &NoteDetails::property_set_of(text))
+    tags_with(
+        walk::walk(text).tag_names(),
+        &NoteDetails::property_set_of(text),
+    )
 }
 
-/// The inline labels of `text` plus the `tags` of its already-parsed
+/// `labels` (a note's inline hashtags) plus the `tags` of its already-parsed
 /// frontmatter, sorted and distinct.
-fn tags_with(text: &str, frontmatter: &properties::PropertySet) -> Vec<String> {
-    let mut tags: std::collections::BTreeSet<String> = extract_labels(text).into_iter().collect();
+fn tags_with(labels: Vec<String>, frontmatter: &properties::PropertySet) -> Vec<String> {
+    let mut tags: std::collections::BTreeSet<String> = labels.into_iter().collect();
     tags.extend(frontmatter.tags());
     tags.into_iter().collect()
+}
+
+/// Every link target of a note in document order — wikilink targets, markdown
+/// and image destinations, autolinks — frontmatter and code skipped.
+pub fn note_link_targets(text: &str) -> Vec<String> {
+    walk::walk(text)
+        .links
+        .into_iter()
+        .map(|l| l.target)
+        .collect()
 }
 
 /// A heading of a note: its level (1–6), display text and line.
@@ -147,10 +152,11 @@ impl NoteMetadata {
     /// Reads a note body's metadata.
     pub fn of(text: &str) -> Self {
         let frontmatter = NoteDetails::property_set_of(text);
+        let walked = walk::walk(text);
         Self {
-            tags: tags_with(text, &frontmatter),
+            tags: tags_with(walked.tag_names(), &frontmatter),
             properties: frontmatter.into_entries(),
-            headings: note_headings(text),
+            headings: walked.headings(text),
         }
     }
 }
@@ -160,10 +166,7 @@ impl NoteMetadata {
 /// the CLI, the OUTLINE and its jump all read headings here, through the same
 /// walk the content chunks' breadcrumbs come from.
 pub fn note_headings(text: &str) -> Vec<NoteHeading> {
-    content_extractor::extract_outline(text)
-        .into_iter()
-        .map(|(level, text, line)| NoteHeading { level, text, line })
-        .collect()
+    walk::walk(text).headings(text)
 }
 
 /// A note's vault path paired with its raw, unprocessed text.
