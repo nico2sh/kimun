@@ -5,6 +5,7 @@
 //! directory.
 
 use std::collections::HashSet;
+use std::num::NonZeroU64;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -502,11 +503,32 @@ impl LinksPanel {
 // OUTLINE
 // ---------------------------------------------------------------------------
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct OutlineEntry {
     pub heading: String,
-    /// 1-based heading depth (H1 = 1).
+    /// 1-based nesting depth: how many headings enclose this one, plus one.
+    /// Not the markdown level — `## A` over `#### B` is depth 1 and 2.
     pub depth: usize,
+}
+
+impl OutlineEntry {
+    /// The OUTLINE rows of a note body, in document order.
+    fn all_of(text: &str) -> Vec<Self> {
+        // Depth counts the open ancestors with a lower level, as a breadcrumb
+        // does.
+        let mut open_levels: Vec<u8> = Vec::new();
+        kimun_core::note::note_outline(text)
+            .into_iter()
+            .map(|heading| {
+                open_levels.retain(|lvl| *lvl < heading.level);
+                open_levels.push(heading.level);
+                OutlineEntry {
+                    heading: heading.text,
+                    depth: open_levels.len(),
+                }
+            })
+            .collect()
+    }
 }
 
 impl SearchRow for OutlineEntry {
@@ -532,46 +554,6 @@ impl SearchRow for OutlineEntry {
     }
 }
 
-struct OutlineSource {
-    vault: Arc<NoteVault>,
-    note: VaultPath,
-}
-
-#[async_trait]
-impl RowSource<OutlineEntry> for OutlineSource {
-    async fn load(&self, _query: &str, emit: Emit<OutlineEntry>) {
-        if self.note.is_root_or_empty() {
-            emit.replace(Vec::new());
-            return;
-        }
-        // Read the note and take the heading hierarchy from its content
-        // chunks (document order). Each chunk's breadcrumb is the heading
-        // path to it; the innermost part is the chunk's own heading.
-        let Ok(details) = self.vault.load_note(&self.note).await else {
-            emit.replace(Vec::new());
-            return;
-        };
-        // One chunk per heading section (core contract), in document order;
-        // a headingless preamble chunk has an empty breadcrumb and is skipped.
-        let entries: Vec<OutlineEntry> = details
-            .get_content_chunks()
-            .into_iter()
-            .filter_map(|chunk| {
-                let depth = chunk.breadcrumb_parts().count();
-                chunk.breadcrumb_last().map(|heading| OutlineEntry {
-                    heading: heading.to_string(),
-                    depth,
-                })
-            })
-            .collect();
-        emit.replace(entries);
-    }
-
-    fn reload_on_query(&self) -> bool {
-        false
-    }
-}
-
 /// Spec: Enter / click jumps the editor to the heading.
 pub struct OutlineSpec;
 
@@ -588,38 +570,50 @@ impl ListPanelSpec for OutlineSpec {
     }
 }
 
-/// The OUTLINE drawer: the open note's headings as an indented tree.
+/// The OUTLINE drawer: the open note's headings as an indented tree, read
+/// from the editor buffer (not the file), so it never lags a pending save.
 pub struct OutlinePanel {
-    vault: Arc<NoteVault>,
     note: VaultPath,
+    /// Buffer revision `entries` was computed at; `None` = unknown, re-parse.
+    revision: Option<NonZeroU64>,
+    entries: Vec<OutlineEntry>,
     body: QueryListPanel<OutlineSpec>,
 }
 
 impl OutlinePanel {
-    pub fn new(vault: Arc<NoteVault>, icons: Icons, yank_combos: Vec<KeyCombo>) -> Self {
+    pub fn new(icons: Icons, yank_combos: Vec<KeyCombo>) -> Self {
         Self {
-            vault,
             note: VaultPath::empty(),
+            revision: None,
+            entries: Vec::new(),
             body: QueryListPanel::new(icons, yank_combos),
         }
     }
 
-    pub fn set_note(&mut self, note: VaultPath, tx: &AppTx) {
-        if note != self.note || !self.body.is_loaded() {
-            self.note = note;
-            self.refresh(tx);
+    /// Show `note`'s headings from its buffer `text` (asked for only when
+    /// needed) at `revision` (`None` when unknown, e.g. a buffer just
+    /// replaced). Cheap to call often: an unchanged revision skips the parse,
+    /// and unchanged headings keep the list — and so its filter and
+    /// selection — as they are.
+    pub fn sync(
+        &mut self,
+        note: &VaultPath,
+        revision: Option<NonZeroU64>,
+        text: impl FnOnce() -> String,
+        tx: &AppTx,
+    ) {
+        let same_note = *note == self.note && self.body.is_loaded();
+        if same_note && revision.is_some() && revision == self.revision {
+            return;
         }
-    }
-
-    /// Re-read the headings (e.g. after the buffer was saved).
-    pub fn refresh(&mut self, tx: &AppTx) {
-        self.body.set_source(
-            OutlineSource {
-                vault: self.vault.clone(),
-                note: self.note.clone(),
-            },
-            tx,
-        );
+        let entries = OutlineEntry::all_of(&text());
+        self.revision = revision;
+        if same_note && entries == self.entries {
+            return;
+        }
+        self.note = note.clone();
+        self.entries = entries;
+        self.body.set_rows(self.entries.clone(), tx);
     }
 
     pub fn hint_shortcuts(&self) -> Vec<(String, String)> {
@@ -632,6 +626,15 @@ impl OutlinePanel {
 
     pub fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
         self.body.render(f, rect, theme, focused);
+    }
+
+    /// The listed headings.
+    #[cfg(test)]
+    pub fn headings_for_test(&self) -> Vec<String> {
+        self.body
+            .list()
+            .map(|l| l.visible_rows().iter().map(|r| r.heading.clone()).collect())
+            .unwrap_or_default()
     }
 }
 
@@ -754,33 +757,114 @@ mod tests {
         );
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn outline_panel_lists_headings_in_order() {
-        let vault = temp_vault("outline-panel").await;
-        vault.validate_and_init().await.unwrap();
-        vault
-            .save_note(
-                &VaultPath::note_path_from("doc"),
-                "# Top\nintro\n## Sub One\nbody\n## Sub Two\nmore\n# Second\nend\n",
-            )
-            .await
-            .unwrap();
+    fn outline_panel() -> OutlinePanel {
+        OutlinePanel::new(Icons::new(false), vec![crate::keys::default_yank_combo()])
+    }
 
-        let mut panel = OutlinePanel::new(
-            vault,
-            Icons::new(false),
-            vec![crate::keys::default_yank_combo()],
+    fn rows(panel: &OutlinePanel) -> Vec<(String, usize)> {
+        panel
+            .body
+            .list()
+            .unwrap()
+            .visible_rows()
+            .iter()
+            .map(|r| (r.heading.clone(), r.depth))
+            .collect()
+    }
+
+    fn sync(panel: &mut OutlinePanel, revision: Option<u64>, text: &str, tx: &AppTx) {
+        let text = text.to_string();
+        panel.sync(
+            &VaultPath::note_path_from("doc"),
+            revision.and_then(NonZeroU64::new),
+            move || text,
+            tx,
         );
+    }
+
+    fn owned(rows: &[(&str, usize)]) -> Vec<(String, usize)> {
+        rows.iter().map(|(h, d)| (h.to_string(), *d)).collect()
+    }
+
+    #[test]
+    fn outline_panel_lists_headings_in_order() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        panel.set_note(VaultPath::note_path_from("doc"), &tx);
-        drain(panel.body.list_mut().unwrap()).await;
-
-        let rows = panel.body.list().unwrap().visible_rows();
-        let headings: Vec<(&str, usize)> =
-            rows.iter().map(|r| (r.heading.as_str(), r.depth)).collect();
+        let mut panel = outline_panel();
+        let text = "# Top\nintro\n## Sub One\nbody\n## Sub Two\nmore\n# Second\nend\n";
+        sync(&mut panel, Some(1), text, &tx);
         assert_eq!(
-            headings,
-            vec![("Top", 1), ("Sub One", 2), ("Sub Two", 2), ("Second", 1)]
+            rows(&panel),
+            owned(&[("Top", 1), ("Sub One", 2), ("Sub Two", 2), ("Second", 1)])
         );
+    }
+
+    #[test]
+    fn outline_panel_lists_a_heading_with_no_body() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut panel = outline_panel();
+        let text = "# Title\n## Title2\nbody\n### Skipped [[link|Shown]] #tag\n";
+        sync(&mut panel, Some(1), text, &tx);
+        // Rendered like `heading_display_text`, so Enter still jumps to it.
+        assert_eq!(
+            rows(&panel),
+            owned(&[("Title", 1), ("Title2", 2), ("Skipped Shown tag", 3)])
+        );
+    }
+
+    #[test]
+    fn outline_depth_is_nesting_not_heading_level() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut panel = outline_panel();
+        sync(&mut panel, Some(1), "## A\n#### B\n# C\n", &tx);
+        assert_eq!(rows(&panel), owned(&[("A", 1), ("B", 2), ("C", 1)]));
+    }
+
+    #[test]
+    fn outline_sync_keeps_filter_and_selection_while_headings_are_unchanged() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut panel = outline_panel();
+        sync(&mut panel, Some(1), "# A\n## Beta\n## Bet\n", &tx);
+        let list = panel.body.list_mut().unwrap();
+        list.set_query("bet");
+        list.select_next();
+        let picked = list.selected_row().unwrap().heading.clone();
+
+        // A body edit: new revision, same headings — the list stays as it is.
+        sync(&mut panel, Some(2), "# A\nnew body\n## Beta\n## Bet\n", &tx);
+        let list = panel.body.list().unwrap();
+        assert_eq!(list.input_value(), "bet");
+        assert_eq!(list.selected_row().unwrap().heading, picked);
+
+        // A heading edit rebuilds it.
+        sync(&mut panel, Some(3), "# A\n## Beta\n## Bet\n## Gamma\n", &tx);
+        assert_eq!(panel.body.list().unwrap().input_value(), "");
+        assert_eq!(rows(&panel).len(), 4);
+    }
+
+    #[test]
+    fn outline_sync_skips_the_parse_at_an_unchanged_revision() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut panel = outline_panel();
+        let note = VaultPath::note_path_from("doc");
+        let rev = NonZeroU64::new(7);
+        panel.sync(&note, rev, || "# A\n".to_string(), &tx);
+        panel.sync(
+            &note,
+            rev,
+            || panic!("parsed at an unchanged revision"),
+            &tx,
+        );
+        // An unknown revision always re-reads.
+        let mut read = false;
+        panel.sync(
+            &note,
+            None,
+            || {
+                read = true;
+                "# A\n".to_string()
+            },
+            &tx,
+        );
+        assert!(read);
     }
 }
