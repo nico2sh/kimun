@@ -198,6 +198,6 @@ impl WorkspaceSwitcherModal {
         f.render_stateful_widget(list, rows[0], &mut self.list_state);
 
         self.hints
-            .render(f, rows[1], Style::default().fg(gray).bg(bg));
+            .render(f, rows[1], Style::default().fg(gray).bg(bg), theme);
     }
 }

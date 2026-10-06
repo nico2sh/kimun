@@ -130,7 +130,6 @@ impl Component for UpdateAvailableDialog {
         let bg = theme.bg_panel.to_ratatui();
         let fg = theme.fg.to_ratatui();
         let gray = theme.gray.to_ratatui();
-        let key_fg = theme.selection_fg.to_ratatui();
         let accent = theme.accent.to_ratatui();
 
         // Row 1: version transition.
@@ -149,8 +148,8 @@ impl Component for UpdateAvailableDialog {
 
         // Row 3: actions.
         let key_style = Style::default()
-            .fg(key_fg)
             .bg(bg)
+            .patch(theme.action())
             .add_modifier(Modifier::BOLD);
         let label_style = Style::default().fg(fg).bg(bg);
         if self.eligible {
@@ -190,6 +189,10 @@ impl Component for UpdateAvailableDialog {
             self.action_rects.push((r, KeyCode::Char('s')));
         }
 
+        for (r, _) in &self.action_rects {
+            crate::components::clickable::register(*r);
+        }
+
         // Row 5: release notes URL.
         f.render_widget(
             Paragraph::new(format!("  Releases: {}", crate::update::releases_url()))
@@ -199,7 +202,7 @@ impl Component for UpdateAvailableDialog {
 
         // Row 6: close hint.
         self.close_hint
-            .render(f, rows[6], Style::default().fg(gray).bg(bg));
+            .render(f, rows[6], Style::default().fg(gray).bg(bg), theme);
     }
 }
 

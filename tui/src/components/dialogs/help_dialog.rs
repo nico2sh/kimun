@@ -469,7 +469,7 @@ impl Component for HelpDialog {
             width: footer_area.width - off,
             ..footer_area
         };
-        self.close_hint.render(f, close_area, hint_style);
+        self.close_hint.render(f, close_area, hint_style, theme);
     }
 }
 

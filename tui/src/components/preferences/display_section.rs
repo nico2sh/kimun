@@ -1,12 +1,16 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
+use unicode_width::UnicodeWidthStr;
 
 use crate::components::Component;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppTx, InputEvent};
 use crate::settings::themes::Theme;
+
+use super::{ClickMap, SectionMouse, text_rect};
 
 /// Number of selectable rows in this section.
 const ROW_COUNT: usize = 4;
@@ -26,6 +30,7 @@ pub struct DisplaySection {
     /// the instant the leader sequence arms.
     pub leader_timeout_ms: u64,
     list_state: ListState,
+    clicks: ClickMap,
 }
 
 impl DisplaySection {
@@ -43,6 +48,31 @@ impl DisplaySection {
             mouse,
             leader_timeout_ms,
             list_state,
+            clicks: ClickMap::default(),
+        }
+    }
+
+    /// Resolve a click: a row selects it, a checkbox toggles, `◀`/`▶` step
+    /// the delay, clicking the selected row toggles it. Returns the key the
+    /// click stands for, for the screen to run through its key path.
+    pub fn handle_mouse(
+        &mut self,
+        m: &ratatui::crossterm::event::MouseEvent,
+    ) -> Option<ratatui::crossterm::event::KeyEvent> {
+        use ratatui::crossterm::event::KeyCode;
+        let selected = self.list_state.selected();
+        let activate = (selected != Some(ROW_LEADER_TIMEOUT)).then_some(KeyCode::Enter);
+        match self.clicks.resolve(m, selected, activate) {
+            SectionMouse::Select(row) => {
+                self.list_state.select(Some(row));
+                None
+            }
+            SectionMouse::Key(row, key) => {
+                self.list_state.select(Some(row));
+                Some(key)
+            }
+            SectionMouse::Wheel(key) => Some(key),
+            SectionMouse::None => None,
         }
     }
 
@@ -114,30 +144,64 @@ impl Component for DisplaySection {
             .border_style(border_style)
             .style(theme.base_style());
 
+        use ratatui::crossterm::event::KeyCode;
         let checkbox = |on: bool| if on { "[x]" } else { "[ ]" };
         let fg = Style::default().fg(theme.fg.to_ratatui());
-        let items = vec![
-            ListItem::new(format!(
-                "  Use Nerd Fonts  {}",
-                checkbox(self.use_nerd_fonts)
-            ))
+        let action = theme.action();
+        let inner = block.inner(rect);
+        self.clicks.clear();
+        let offset = self.list_state.offset();
+        let row_rect = |row: usize| {
+            let y = inner.y as usize + row.saturating_sub(offset);
+            if row < offset || y >= inner.bottom() as usize {
+                Rect::default()
+            } else {
+                Rect::new(inner.x, y as u16, inner.width, 1)
+            }
+        };
+        let mut items = Vec::new();
+        // Checkbox rows: label, then a clickable `[x]`.
+        for (row, label, on) in [
+            (0, "  Use Nerd Fonts  ", self.use_nerd_fonts),
+            (1, "  Check for updates on startup  ", self.update_check),
+            (2, "  Capture mouse (restart to apply)  ", self.mouse),
+        ] {
+            let r = row_rect(row);
+            self.clicks.row(r, row);
+            self.clicks
+                .control(text_rect(r, label.width() as u16, 3), row, KeyCode::Enter);
+            items.push(
+                ListItem::new(Line::from(vec![
+                    Span::raw(label),
+                    Span::styled(checkbox(on), action),
+                ]))
+                .style(fg),
+            );
+        }
+        // Stepper row: `◀` and `▶` step the delay.
+        let label = "  Which-key Delay  ";
+        let value = format!(" {}ms ", self.leader_timeout_ms);
+        let r = row_rect(ROW_LEADER_TIMEOUT);
+        self.clicks.row(r, ROW_LEADER_TIMEOUT);
+        let left_col = label.width() as u16;
+        let right_col = left_col + 1 + value.width() as u16;
+        self.clicks
+            .control(text_rect(r, left_col, 1), ROW_LEADER_TIMEOUT, KeyCode::Left);
+        self.clicks.control(
+            text_rect(r, right_col, 1),
+            ROW_LEADER_TIMEOUT,
+            KeyCode::Right,
+        );
+        items.push(
+            ListItem::new(Line::from(vec![
+                Span::raw(label),
+                Span::styled("◀", action),
+                Span::raw(value),
+                Span::styled("▶", action),
+                Span::raw("  (←/→ to change)"),
+            ]))
             .style(fg),
-            ListItem::new(format!(
-                "  Check for updates on startup  {}",
-                checkbox(self.update_check)
-            ))
-            .style(fg),
-            ListItem::new(format!(
-                "  Capture mouse (restart to apply)  {}",
-                checkbox(self.mouse)
-            ))
-            .style(fg),
-            ListItem::new(format!(
-                "  Which-key Delay  ◀ {}ms ▶  (←/→ to change)",
-                self.leader_timeout_ms
-            ))
-            .style(fg),
-        ];
+        );
 
         let list = List::new(items)
             .block(block)

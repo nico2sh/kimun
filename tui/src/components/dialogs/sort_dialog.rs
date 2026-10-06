@@ -405,7 +405,7 @@ impl crate::components::Component for SortDialog {
         } else {
             &mut self.row_hints
         };
-        hints.render(f, footer_area, Style::default().fg(gray).bg(bg));
+        hints.render(f, footer_area, Style::default().fg(gray).bg(bg), theme);
 
         // Last, so the suggestion list draws over the rows and footer below.
         if let Some((field, focused)) = key_field {

@@ -489,7 +489,13 @@ impl SourcesPanel {
         // reveal, anything else is swallowed.
         if was_full {
             match mouse.kind {
+                // The wheel, and a click on the filter input or its
+                // autocomplete popup (drawn in every reveal state), go on to
+                // the engine.
                 MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {}
+                MouseEventKind::Down(MouseButton::Left)
+                    if self.list.input_contains(mouse.column, mouse.row)
+                        || self.list.popup_contains(mouse.column, mouse.row) => {}
                 MouseEventKind::Down(MouseButton::Left)
                     if self.preview.full_header_rect().contains(Position {
                         x: mouse.column,
@@ -511,11 +517,18 @@ impl SourcesPanel {
                 self.preview.scroll_down();
                 EventState::Consumed
             }
+            // A fast double-click opens the source note; a slow click-click
+            // steps the preview.
+            SearchMouse::DoubleClicked { .. } => {
+                self.open_selected(tx);
+                EventState::Consumed
+            }
             SearchMouse::Activated(_) => {
                 self.preview.toggle(self.selected_path());
                 self.ensure_loaded(tx);
                 EventState::Consumed
             }
+            SearchMouse::InputFocused | SearchMouse::Autocomplete { .. } => EventState::Consumed,
             SearchMouse::Selected(_) | SearchMouse::Scrolled | SearchMouse::Context(_) => {
                 self.sync_preview();
                 self.ensure_loaded(tx);
@@ -1292,6 +1305,28 @@ mod tests {
             Some(VaultPath::new("b.md")),
             "opened the selected source"
         );
+    }
+
+    /// A fast double-click on a source opens it, like `o`.
+    #[tokio::test]
+    async fn double_click_on_a_source_opens_it() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut p = test_panel().await;
+        two_source_panel(&mut p).await;
+        let theme = crate::settings::themes::Theme::default();
+        let mut t = Terminal::new(TestBackend::new(40, 20)).unwrap();
+        t.draw(|f| p.render(f, f.area(), &theme, true)).unwrap();
+        let (x, y) =
+            crate::test_support::find_text(t.backend().buffer(), "b.md").expect("b.md row drawn");
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let press = crate::test_support::mouse_down_at(x, y);
+        p.handle_input(&press, &tx);
+        p.handle_input(&press, &tx);
+        let opened = std::iter::from_fn(|| rx.try_recv().ok()).find_map(|e| match e {
+            AppEvent::OpenPath { path, .. } => Some(path),
+            _ => None,
+        });
+        assert_eq!(opened, Some(VaultPath::new("b.md")));
     }
 
     #[tokio::test]

@@ -444,7 +444,6 @@ pub(super) fn confirm_hints(action: &str) -> HintRow {
 /// Enter key acts — a dialog whose Enter still runs while it looks not-ready
 /// (Move before validation lands, Save search while names load) passes
 /// `true`, so the click never does less than the key.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn render_confirm_hints(
     f: &mut Frame,
     rect: Rect,
@@ -452,9 +451,10 @@ pub(super) fn render_confirm_hints(
     enter_active: bool,
     enter_clickable: bool,
     fg: Color,
-    gray: Color,
-    bg: Color,
+    theme: &Theme,
 ) {
+    let gray = theme.gray.to_ratatui();
+    let bg = theme.bg_panel.to_ratatui();
     hints.set_enabled(0, enter_clickable);
     hints.set_style(
         0,
@@ -464,7 +464,7 @@ pub(super) fn render_confirm_hints(
             Style::default().fg(gray).bg(bg)
         }),
     );
-    hints.render(f, rect, Style::default().fg(gray).bg(bg));
+    hints.render(f, rect, Style::default().fg(gray).bg(bg), theme);
 }
 
 // ---------------------------------------------------------------------------
@@ -494,24 +494,8 @@ mod tests {
         let mut t = Terminal::new(TestBackend::new(100, 40)).unwrap();
         t.draw(|f| <ActiveDialog as Component>::render(dialog, f, f.area(), &theme, true))
             .unwrap();
-        let buf = t.backend().buffer().clone();
-        for y in 0..40u16 {
-            let cells: Vec<String> = (0..100u16)
-                .map(|x| buf[(x, y)].symbol().to_string())
-                .collect();
-            let line: String = cells.concat();
-            if let Some(byte) = line.find(text) {
-                // Map the byte offset back to a cell index.
-                let mut acc = 0;
-                for (x, c) in cells.iter().enumerate() {
-                    if acc == byte {
-                        return (x as u16, y);
-                    }
-                    acc += c.len();
-                }
-            }
-        }
-        panic!("{text:?} not drawn");
+        crate::test_support::find_text(t.backend().buffer(), text)
+            .unwrap_or_else(|| panic!("{text:?} not drawn"))
     }
 
     /// Left-click (col,row) and return the events sent.

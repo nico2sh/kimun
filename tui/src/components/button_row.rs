@@ -100,16 +100,20 @@ impl ButtonRow {
             } else if self.focused == Some(i) {
                 focus
             } else {
-                normal
+                normal.patch(theme.action())
             };
             // Clip to the row: a button past the right edge is not clickable.
             let visible = rect.right().saturating_sub(x).min(w);
-            self.rects.push(Rect {
+            let r = Rect {
                 x,
                 y: rect.y,
                 width: visible,
                 height: 1,
-            });
+            };
+            self.rects.push(r);
+            if self.enabled[i] {
+                crate::components::clickable::register(r);
+            }
             spans.push(Span::styled(text, style));
             x += w;
         }

@@ -297,8 +297,7 @@ impl Component for RenameDialog {
             // Enter renames only once the name is Available.
             self.validation_state == ValidationState::Available,
             fg,
-            gray,
-            bg,
+            theme,
         );
 
         // Row 8 (optional): error message.

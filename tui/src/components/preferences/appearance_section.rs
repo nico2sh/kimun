@@ -7,9 +7,12 @@ use crate::components::event_state::EventState;
 use crate::components::events::{AppTx, InputEvent};
 use crate::settings::themes::Theme;
 
+use super::{ClickMap, SectionMouse};
+
 pub struct AppearanceSection {
     themes: Vec<Theme>,
     list_state: ListState,
+    clicks: ClickMap,
 }
 
 impl AppearanceSection {
@@ -20,7 +23,28 @@ impl AppearanceSection {
             .unwrap_or(0);
         let mut list_state = ListState::default();
         list_state.select(Some(idx));
-        Self { themes, list_state }
+        Self {
+            themes,
+            list_state,
+            clicks: ClickMap::default(),
+        }
+    }
+
+    /// Resolve a click: a theme row selects (and so previews) it; the wheel
+    /// steps through themes. Returns the key a wheel notch stands for; a
+    /// row click changes the selection directly (the screen syncs it).
+    pub fn handle_mouse(
+        &mut self,
+        m: &ratatui::crossterm::event::MouseEvent,
+    ) -> Option<ratatui::crossterm::event::KeyEvent> {
+        match self.clicks.resolve(m, self.list_state.selected(), None) {
+            SectionMouse::Select(row) | SectionMouse::Key(row, _) => {
+                self.list_state.select(Some(row));
+                None
+            }
+            SectionMouse::Wheel(key) => Some(key),
+            SectionMouse::None => None,
+        }
     }
 
     pub fn selected_theme_name(&self) -> &str {
@@ -88,7 +112,19 @@ impl Component for AppearanceSection {
                     .fg(theme.selection_fg.to_ratatui())
                     .bg(theme.selection_bg.to_ratatui()),
             );
+        let inner = Block::default().borders(Borders::ALL).inner(rect);
         f.render_stateful_widget(list, rect, &mut self.list_state);
+        // After rendering: the list may have scrolled to keep the selection
+        // in view, and rows map from the offset it settled on.
+        self.clicks.clear();
+        let offset = self.list_state.offset();
+        for (i, row) in (offset..self.themes.len()).enumerate() {
+            let y = inner.y + i as u16;
+            if y >= inner.bottom() {
+                break;
+            }
+            self.clicks.row(Rect::new(inner.x, y, inner.width, 1), row);
+        }
     }
 }
 

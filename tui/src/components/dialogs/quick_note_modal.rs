@@ -145,8 +145,8 @@ impl QuickNoteModal {
         super::render_separator(f, rows[2], gray, bg);
 
         let hint_style = Style::default().fg(gray).bg(bg);
-        self.save_hints.render(f, rows[3], hint_style);
-        self.cancel_hint.render(f, rows[4], hint_style);
+        self.save_hints.render(f, rows[3], hint_style, theme);
+        self.cancel_hint.render(f, rows[4], hint_style, theme);
 
         if let Some(msg) = &self.error {
             super::render_error_row(f, rows[5], msg, theme);

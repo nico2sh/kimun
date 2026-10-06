@@ -419,7 +419,7 @@ impl crate::components::Component for PinnedNotesDialog {
         }
 
         self.hints
-            .render(f, footer_area, Style::default().fg(gray).bg(bg));
+            .render(f, footer_area, Style::default().fg(gray).bg(bg), theme);
     }
 }
 

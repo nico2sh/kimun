@@ -167,6 +167,9 @@ impl<F> OverlayHost<F> {
             o.render(f, area, theme);
         }
         if let Some(o) = &mut self.active {
+            // Modal: nothing under the overlay is clickable, so nothing under
+            // it may light up on hover either (`components::clickable`).
+            crate::components::clickable::clear();
             o.render(f, area, theme);
         }
     }

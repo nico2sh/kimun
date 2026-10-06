@@ -202,16 +202,7 @@ impl SaveSearchDialog {
         self.hints.set_label(0, "Enter", &action);
         // Enter saves even while the existing names are still loading, so
         // the chip stays clickable while it looks pending.
-        super::render_confirm_hints(
-            f,
-            rows[5],
-            &mut self.hints,
-            !pending,
-            true,
-            enter_fg,
-            gray,
-            bg,
-        );
+        super::render_confirm_hints(f, rows[5], &mut self.hints, !pending, true, enter_fg, theme);
     }
 }
 

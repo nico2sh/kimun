@@ -9,12 +9,17 @@ use crate::components::events::{AppTx, InputEvent};
 use crate::settings::themes::Theme;
 use crate::settings::{SortFieldSetting, SortOrderSetting};
 
+use super::{ClickMap, SectionMouse, text_rect};
+use ratatui::text::{Line, Span};
+use unicode_width::UnicodeWidthStr;
+
 pub struct SortingSection {
     pub default_sort_field: SortFieldSetting,
     pub default_sort_order: SortOrderSetting,
     pub journal_sort_field: SortFieldSetting,
     pub journal_sort_order: SortOrderSetting,
     list_state: ListState,
+    clicks: ClickMap,
 }
 
 impl SortingSection {
@@ -32,7 +37,63 @@ impl SortingSection {
             journal_sort_field,
             journal_sort_order,
             list_state,
+            clicks: ClickMap::default(),
         }
+    }
+
+    /// Resolve a click: a row selects it, its `[value]` (or a re-click on
+    /// the selected row) cycles it. Returns the key the click stands for.
+    pub fn handle_mouse(
+        &mut self,
+        m: &ratatui::crossterm::event::MouseEvent,
+    ) -> Option<ratatui::crossterm::event::KeyEvent> {
+        use ratatui::crossterm::event::KeyCode;
+        match self
+            .clicks
+            .resolve(m, self.list_state.selected(), Some(KeyCode::Enter))
+        {
+            SectionMouse::Select(row) => {
+                self.list_state.select(Some(row));
+                None
+            }
+            SectionMouse::Key(row, key) => {
+                self.list_state.select(Some(row));
+                Some(key)
+            }
+            SectionMouse::Wheel(key) => Some(key),
+            SectionMouse::None => None,
+        }
+    }
+
+    /// `  Sort field:  [Name]` with the `[value]` as a click target for
+    /// `row`, drawn at `y` in `block_rect`'s inner area.
+    fn value_row(
+        &mut self,
+        block_rect: Rect,
+        line: usize,
+        row: usize,
+        label: &'static str,
+        value: &str,
+        theme: &Theme,
+    ) -> ListItem<'static> {
+        let inner = Block::default().borders(Borders::ALL).inner(block_rect);
+        let r = if (line as u16) < inner.height {
+            Rect::new(inner.x, inner.y + line as u16, inner.width, 1)
+        } else {
+            Rect::default()
+        };
+        let chip = format!("[{value}]");
+        self.clicks.row(r, row);
+        self.clicks.control(
+            text_rect(r, label.width() as u16, chip.width() as u16),
+            row,
+            ratatui::crossterm::event::KeyCode::Enter,
+        );
+        ListItem::new(Line::from(vec![
+            Span::raw(label),
+            Span::styled(chip, theme.action()),
+        ]))
+        .style(Style::default().fg(theme.fg.to_ratatui()))
     }
 
     const ROW_COUNT: usize = 4;
@@ -125,17 +186,24 @@ impl Component for SortingSection {
             .bg(theme.selection_bg.to_ratatui());
 
         // ── Default sub-block (rows 0–1) ───────────────────────────────────
+        self.clicks.clear();
         let default_items = vec![
-            ListItem::new(format!(
-                "  Sort field:  [{}]",
-                Self::field_label(self.default_sort_field)
-            ))
-            .style(Style::default().fg(theme.fg.to_ratatui())),
-            ListItem::new(format!(
-                "  Sort order:  [{}]",
-                Self::order_label(self.default_sort_order)
-            ))
-            .style(Style::default().fg(theme.fg.to_ratatui())),
+            self.value_row(
+                halves[0],
+                0,
+                0,
+                "  Sort field:  ",
+                Self::field_label(self.default_sort_field),
+                theme,
+            ),
+            self.value_row(
+                halves[0],
+                1,
+                1,
+                "  Sort order:  ",
+                Self::order_label(self.default_sort_order),
+                theme,
+            ),
         ];
         let mut default_state = ListState::default();
         default_state.select(if selected < 2 { Some(selected) } else { None });
@@ -154,16 +222,22 @@ impl Component for SortingSection {
 
         // ── Journal sub-block (rows 2–3) ────────────────────────────────────
         let journal_items = vec![
-            ListItem::new(format!(
-                "  Sort field:  [{}]",
-                Self::field_label(self.journal_sort_field)
-            ))
-            .style(Style::default().fg(theme.fg.to_ratatui())),
-            ListItem::new(format!(
-                "  Sort order:  [{}]",
-                Self::order_label(self.journal_sort_order)
-            ))
-            .style(Style::default().fg(theme.fg.to_ratatui())),
+            self.value_row(
+                halves[1],
+                0,
+                2,
+                "  Sort field:  ",
+                Self::field_label(self.journal_sort_field),
+                theme,
+            ),
+            self.value_row(
+                halves[1],
+                1,
+                3,
+                "  Sort order:  ",
+                Self::order_label(self.journal_sort_order),
+                theme,
+            ),
         ];
         let mut journal_state = ListState::default();
         journal_state.select(if selected >= 2 {

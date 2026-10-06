@@ -15,9 +15,14 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
+use crate::settings::themes::Theme;
+
 struct Chip {
     key: KeyEvent,
-    text: String,
+    /// `[key]` — drawn in the action colour when the chip is clickable.
+    key_text: String,
+    /// ` label` — drawn in the row (or override) style.
+    label_text: String,
     enabled: bool,
     /// Replaces the row style for this chip when set.
     style: Option<Style>,
@@ -45,7 +50,8 @@ impl HintRow {
                 .iter()
                 .map(|(code, key, label)| Chip {
                     key: KeyEvent::new(*code, KeyModifiers::NONE),
-                    text: format!("[{key}] {label}"),
+                    key_text: format!("[{key}]"),
+                    label_text: format!(" {label}"),
                     enabled: true,
                     style: None,
                 })
@@ -75,6 +81,11 @@ impl HintRow {
         self
     }
 
+    /// Replace the prefix text (it can change per frame, e.g. a name).
+    pub fn set_prefix(&mut self, prefix: &str) {
+        self.prefix = prefix.to_string();
+    }
+
     /// Give chip `idx` a modified key (e.g. `Shift+Enter`).
     pub fn with_modifiers(mut self, idx: usize, modifiers: KeyModifiers) -> Self {
         if let Some(c) = self.chips.get_mut(idx) {
@@ -100,13 +111,16 @@ impl HintRow {
     /// Change chip `idx`'s action label, keeping its key.
     pub fn set_label(&mut self, idx: usize, key: &str, label: &str) {
         if let Some(c) = self.chips.get_mut(idx) {
-            c.text = format!("[{key}] {label}");
+            c.key_text = format!("[{key}]");
+            c.label_text = format!(" {label}");
         }
     }
 
     /// Draw the chips left-aligned in `rect` with `style`; disabled chips
-    /// get `style` dimmed.
-    pub fn render(&mut self, f: &mut Frame, rect: Rect, style: Style) {
+    /// get `style` dimmed. A clickable chip's `[key]` takes the theme's
+    /// action colour and the chip registers for hover (see
+    /// `components::clickable`); informational chips stay plain.
+    pub fn render(&mut self, f: &mut Frame, rect: Rect, style: Style, theme: &Theme) {
         self.rects.clear();
         let mut spans = vec![Span::styled(" ".repeat(self.indent as usize), style)];
         let mut x = rect.x.saturating_add(self.indent);
@@ -119,21 +133,30 @@ impl HintRow {
                 spans.push(Span::styled(" ".repeat(self.gap as usize), style));
                 x = x.saturating_add(self.gap);
             }
-            let w = chip.text.width() as u16;
+            let w = (chip.key_text.width() + chip.label_text.width()) as u16;
             // Clip to the row: a chip past the right edge is not clickable.
-            self.rects.push(Rect {
+            let r = Rect {
                 x,
                 y: rect.y,
                 width: rect.right().saturating_sub(x).min(w),
                 height: 1,
-            });
-            let base = chip.style.unwrap_or(style);
-            let s = if chip.enabled {
-                base
-            } else {
-                base.add_modifier(Modifier::DIM)
             };
-            spans.push(Span::styled(chip.text.clone(), s));
+            self.rects.push(r);
+            let clickable = chip.enabled && chip.key.code != KeyCode::Null;
+            if clickable {
+                crate::components::clickable::register(r);
+            }
+            let base = chip.style.unwrap_or(style);
+            let (key_style, label_style) = if !chip.enabled {
+                let dim = base.add_modifier(Modifier::DIM);
+                (dim, dim)
+            } else if clickable {
+                (base.patch(theme.action()), base)
+            } else {
+                (base, base)
+            };
+            spans.push(Span::styled(chip.key_text.clone(), key_style));
+            spans.push(Span::styled(chip.label_text.clone(), label_style));
             x = x.saturating_add(w);
         }
         f.render_widget(Paragraph::new(Line::from(spans)).style(style), rect);
@@ -165,11 +188,7 @@ pub fn key_at(targets: &[(Rect, KeyCode)], m: &MouseEvent) -> Option<KeyEvent> {
     if !is_left_press(m) {
         return None;
     }
-    let pos = Position::new(m.column, m.row);
-    targets
-        .iter()
-        .find(|(r, _)| r.contains(pos))
-        .map(|(_, code)| KeyEvent::from(*code))
+    crate::components::clickable::target_at(targets, m.column, m.row).map(KeyEvent::from)
 }
 
 /// The index of the ratatui `List` row under a left press: `rect` is where
@@ -209,7 +228,7 @@ mod tests {
 
     fn drawn(row: &mut HintRow) -> String {
         let mut t = Terminal::new(TestBackend::new(40, 1)).unwrap();
-        t.draw(|f| row.render(f, f.area(), Style::default()))
+        t.draw(|f| row.render(f, f.area(), Style::default(), &Theme::gruvbox_dark()))
             .unwrap();
         let buf = t.backend().buffer().clone();
         (0..40).map(|x| buf[(x, 0)].symbol().to_string()).collect()

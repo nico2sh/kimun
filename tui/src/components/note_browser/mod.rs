@@ -458,6 +458,20 @@ impl SortableList for NoteBrowserModal {
 // Overlay impl
 // ---------------------------------------------------------------------------
 
+impl NoteBrowserModal {
+    /// After the query changed (a key, or a clicked suggestion): forward the
+    /// event to the breadcrumb — a `?name` expansion pins it, an emptied
+    /// field clears it, a manual edit keeps it (sticky) — and refresh the
+    /// preview.
+    fn after_query_edit(&mut self) {
+        let accepted = self.list.take_accepted_saved_search();
+        let blank = self.list.query().trim().is_empty();
+        self.saved_search
+            .on_query_consumed(accepted, self.list.query(), blank);
+        self.refresh_preview_from_list();
+    }
+}
+
 impl Overlay for NoteBrowserModal {
     fn kind(&self) -> OverlayKind {
         OverlayKind::NoteBrowser
@@ -485,7 +499,7 @@ impl Overlay for NoteBrowserModal {
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
         match event {
             InputEvent::Mouse(mouse) => match self.list.handle_mouse(mouse) {
-                SearchMouse::Activated(_) => {
+                SearchMouse::Activated(_) | SearchMouse::DoubleClicked { repeat: false, .. } => {
                     self.open_selected(tx);
                     EventState::Consumed
                 }
@@ -498,6 +512,15 @@ impl Overlay for NoteBrowserModal {
                 SearchMouse::ContentScrollUp | SearchMouse::ContentScrollDown => {
                     EventState::Consumed
                 }
+                SearchMouse::Autocomplete { edited: true } => {
+                    self.after_query_edit();
+                    EventState::Consumed
+                }
+                // The repeat half of a double-click whose first press already
+                // opened: acting again would open twice.
+                SearchMouse::InputFocused
+                | SearchMouse::Autocomplete { edited: false }
+                | SearchMouse::DoubleClicked { repeat: true, .. } => EventState::Consumed,
                 SearchMouse::None => EventState::NotConsumed,
             },
             InputEvent::Key(key) => {
@@ -513,14 +536,7 @@ impl Overlay for NoteBrowserModal {
                         EventState::Consumed
                     }
                     KeyReaction::Consumed => {
-                        // Forward the query event to the breadcrumb: a `?name`
-                        // expansion pins it, an emptied field clears it, a manual
-                        // edit keeps it (sticky).
-                        let accepted = self.list.take_accepted_saved_search();
-                        let blank = self.list.query().trim().is_empty();
-                        self.saved_search
-                            .on_query_consumed(accepted, self.list.query(), blank);
-                        self.refresh_preview_from_list();
+                        self.after_query_edit();
                         EventState::Consumed
                     }
                     KeyReaction::Yank(target) => {

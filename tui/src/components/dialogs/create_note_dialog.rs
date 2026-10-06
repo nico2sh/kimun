@@ -142,7 +142,7 @@ impl Component for CreateNoteDialog {
             rows[3],
         );
         self.hints
-            .render(f, rows[5], Style::default().fg(gray).bg(bg));
+            .render(f, rows[5], Style::default().fg(gray).bg(bg), theme);
         if let Some(msg) = &self.error {
             super::render_error_row(f, rows[6], msg, theme);
         }

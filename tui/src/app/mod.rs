@@ -554,7 +554,12 @@ where
 
     loop {
         terminal
-            .draw(|f| app.current_screen.render(f))
+            .draw(|f| {
+                // Click targets register while a frame draws; start each
+                // frame empty whatever the screen (`components::clickable`).
+                crate::components::clickable::clear();
+                app.current_screen.render(f)
+            })
             // A `From` bound into `io::Error` would exclude `TestBackend`
             // (`Error = Infallible`), which the headless loop tests use.
             // Wrapping through `io::Error::other` keeps the source error and
