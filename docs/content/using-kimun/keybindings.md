@@ -9,7 +9,7 @@ All default key bindings. To change a binding, see [Configuration → Key Bindin
 
 > In the app, `F1` opens help and `Ctrl+B ?` shows this cheatsheet with your custom bindings applied.
 
-> A `[key_bindings]` section in your config replaces the entire keymap instead of merging with the defaults. Any action you don't list ends up unbound (only `Quit` is restored automatically). To change one key, copy the full table below into your config and edit the lines you want. Details in [Configuration → Key Bindings](@/getting-started/configuration.md#replace-not-merge).
+> A `[key_bindings]` section in your config replaces the entire keymap instead of merging with the defaults. Any action you don't list ends up unbound (only `Quit` is restored automatically). To change one key, copy the full table below into your config and edit the lines you want. Details in [Configuration → Key Bindings](@/getting-started/configuration.md#overrides-replace-the-defaults).
 
 ## Defaults
 
@@ -53,7 +53,7 @@ TextEditor-Bold = ["ctrl&S"]
 ```
 
 Remember that a `[key_bindings]` section [replaces the whole
-keymap](@/getting-started/configuration.md#replace-not-merge).
+keymap](@/getting-started/configuration.md#overrides-replace-the-defaults).
 
 ## The Leader Tree
 

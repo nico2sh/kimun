@@ -3,7 +3,7 @@ title = "Semantic Search & Ask (Server)"
 weight = 23
 +++
 
-# Semantic Search & Ask — the Kimün Server
+# Kimün Server: Semantic Search and Ask
 
 > **Experimental.** The server and its TUI integration are under active
 > development; configuration and behavior may change between releases.

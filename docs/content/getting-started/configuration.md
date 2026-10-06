@@ -74,7 +74,7 @@ inbox_path = "/inbox"
 # A [key_bindings] section REPLACES the whole default keymap — it does not
 # merge. Anything you omit ends up unbound (except Quit, which is restored).
 # The five lines below are illustrative; a real override should list every
-# binding you want to keep. See "Key Bindings → Replace, Not Merge" below.
+# binding you want to keep. See "Key Bindings → Overrides Replace the Defaults" below.
 [key_bindings]
 Quit = ["ctrl&Q"]
 SearchNotes = ["ctrl&K"]
@@ -83,7 +83,7 @@ NewJournal = ["ctrl&J"]
 QuickNote = ["ctrl&W"]
 ```
 
-## The Settings You'll Actually Touch
+## Common Settings
 
 Most edits are one of these:
 
@@ -249,7 +249,7 @@ FileOperations = ["F2"]
 TextEditor-Bold = ["ctrl&S"]
 ```
 
-#### Replace, Not Merge
+#### Overrides Replace the Defaults
 
 A `[key_bindings]` section replaces the entire default keymap; it does not merge with it. Kimün binds only the actions you list, and every action you leave out has no shortcut. Taken literally, the snippet above would unbind everything except those six actions: Preferences, focus movement, and the rest would stop responding.
 

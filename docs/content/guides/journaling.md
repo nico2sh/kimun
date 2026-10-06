@@ -5,7 +5,7 @@ weight = 1
 
 # Journaling Workflow Guide
 
-## What is a journal entry in kimun?
+## Journal Entries
 
 Kimün treats any note under a `journal/` directory as a journal entry. Name the file `YYYY-MM-DD.md` (e.g., `journal/2024-01-15.md`) so Kimün can read the journal date from it and include it in search results and JSON output.
 

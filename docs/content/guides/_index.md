@@ -8,6 +8,6 @@ sort_by = "weight"
 
 These guides walk through common workflows and show how to use Kimün together with your other tools.
 
-They cover journaling, scripting Kimün, and piping output through the CLI, and assume you have read *Getting Started* and *Using Kimün*. My favorite is setting up a single-character alias to capture quick ideas from the terminal.
+They cover journaling, scripting Kimün, and piping output through the CLI, and assume you have read *Getting Started* and *Using Kimün*.
 
 **Start here:** [Journaling](@/guides/journaling.md)

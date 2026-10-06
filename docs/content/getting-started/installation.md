@@ -7,7 +7,7 @@ weight = 2
 
 ## Install Kimün
 
-### Install script (recommended — macOS & Linux)
+### Install script (macOS and Linux, recommended)
 
 ```sh
 curl -fsSL https://kimun.2co.dev/install.sh | sh
