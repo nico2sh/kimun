@@ -99,6 +99,8 @@ impl AppScreen for BrowseScreen {
     }
 
     fn render(&mut self, f: &mut Frame) {
+        // Each screen starts its frame's click targets empty.
+        crate::components::clickable::clear();
         f.render_widget(Block::default().style(self.theme.base_style()), f.area());
 
         // Split into content area + one-line hint bar at the bottom.

@@ -66,17 +66,16 @@ impl SortingSection {
     }
 
     /// `  Sort field:  [Name]` with the `[value]` as a click target for
-    /// `row`, drawn at `y` in `block_rect`'s inner area.
+    /// `row`, on `line` of `inner` (the drawn block's inner area).
     fn value_row(
         &mut self,
-        block_rect: Rect,
+        inner: Rect,
         line: usize,
         row: usize,
         label: &'static str,
         value: &str,
         theme: &Theme,
     ) -> ListItem<'static> {
-        let inner = Block::default().borders(Borders::ALL).inner(block_rect);
         let r = if (line as u16) < inner.height {
             Rect::new(inner.x, inner.y + line as u16, inner.width, 1)
         } else {
@@ -187,9 +186,15 @@ impl Component for SortingSection {
 
         // ── Default sub-block (rows 0–1) ───────────────────────────────────
         self.clicks.clear();
+        let default_block = Block::default()
+            .title("Default")
+            .borders(Borders::ALL)
+            .border_style(theme.border_style(focused && selected < 2))
+            .style(theme.base_style());
+        let default_inner = default_block.inner(halves[0]);
         let default_items = vec![
             self.value_row(
-                halves[0],
+                default_inner,
                 0,
                 0,
                 "  Sort field:  ",
@@ -197,7 +202,7 @@ impl Component for SortingSection {
                 theme,
             ),
             self.value_row(
-                halves[0],
+                default_inner,
                 1,
                 1,
                 "  Sort order:  ",
@@ -207,11 +212,6 @@ impl Component for SortingSection {
         ];
         let mut default_state = ListState::default();
         default_state.select(if selected < 2 { Some(selected) } else { None });
-        let default_block = Block::default()
-            .title("Default")
-            .borders(Borders::ALL)
-            .border_style(theme.border_style(focused && selected < 2))
-            .style(theme.base_style());
         f.render_stateful_widget(
             List::new(default_items)
                 .block(default_block)
@@ -221,9 +221,15 @@ impl Component for SortingSection {
         );
 
         // ── Journal sub-block (rows 2–3) ────────────────────────────────────
+        let journal_block = Block::default()
+            .title("Journal")
+            .borders(Borders::ALL)
+            .border_style(theme.border_style(focused && selected >= 2))
+            .style(theme.base_style());
+        let journal_inner = journal_block.inner(halves[1]);
         let journal_items = vec![
             self.value_row(
-                halves[1],
+                journal_inner,
                 0,
                 2,
                 "  Sort field:  ",
@@ -231,7 +237,7 @@ impl Component for SortingSection {
                 theme,
             ),
             self.value_row(
-                halves[1],
+                journal_inner,
                 1,
                 3,
                 "  Sort order:  ",
@@ -245,11 +251,6 @@ impl Component for SortingSection {
         } else {
             None
         });
-        let journal_block = Block::default()
-            .title("Journal")
-            .borders(Borders::ALL)
-            .border_style(theme.border_style(focused && selected >= 2))
-            .style(theme.base_style());
         f.render_stateful_widget(
             List::new(journal_items)
                 .block(journal_block)

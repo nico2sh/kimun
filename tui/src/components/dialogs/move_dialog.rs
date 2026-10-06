@@ -342,11 +342,6 @@ impl MoveDialog {
 // Component trait
 // ---------------------------------------------------------------------------
 
-/// The rows area of a bordered list block.
-fn list_block_inner(rect: Rect) -> Rect {
-    Block::default().borders(Borders::ALL).inner(rect)
-}
-
 impl Component for MoveDialog {
     fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, _focused: bool) {
         let popup_area = crate::components::centered_rect(50, 60, rect);
@@ -446,6 +441,8 @@ impl Component for MoveDialog {
             .border_style(Style::default().fg(gray))
             .style(Style::default().bg(bg));
 
+        // Rows are hit-tested inside the block actually drawn.
+        self.list_rect = list_block.inner(rows[5]);
         let list = List::new(list_items)
             .block(list_block)
             .highlight_style(
@@ -456,7 +453,6 @@ impl Component for MoveDialog {
             )
             .highlight_symbol(">> ");
 
-        self.list_rect = list_block_inner(rows[5]);
         f.render_stateful_widget(list, rows[5], &mut self.list_state);
 
         // Row 6: validation status.

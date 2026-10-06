@@ -369,15 +369,15 @@ impl SidebarComponent {
         }
     }
 
-    /// Seed the directory the sidebar will show before its first `navigate`.
-    /// Lets a screen open at a non-root path while keeping `current_dir` the
-    /// single source of truth for the browsed directory.
     /// Draw (and accept clicks on) the sort chip — on by default; off for a
     /// host that cannot open the sort dialog.
     pub fn set_sort_chip(&mut self, show: bool) {
         self.show_sort_chip = show;
     }
 
+    /// Seed the directory the sidebar will show before its first `navigate`.
+    /// Lets a screen open at a non-root path while keeping `current_dir` the
+    /// single source of truth for the browsed directory.
     pub fn set_current_dir(&mut self, dir: VaultPath) {
         self.current_dir = dir;
     }

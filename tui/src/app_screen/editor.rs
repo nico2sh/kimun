@@ -2391,6 +2391,7 @@ impl AppScreen for EditorScreen {
         if let InputEvent::Mouse(m) = event {
             self.pointer = Some(ratatui::layout::Position::new(m.column, m.row));
         }
+        self.overlays.observe_input(event);
         let double_click = self.track_click(event, std::time::Instant::now());
         let ctx = self.input_ctx_for(event, double_click);
         // The settings lock guards the key bindings, which only the
@@ -2406,7 +2407,8 @@ impl AppScreen for EditorScreen {
     }
 
     fn render(&mut self, f: &mut ratatui::Frame) {
-        // Click targets register while drawing; hover is painted last.
+        // Each screen starts its frame's click targets empty
+        // (`components::clickable`); hover is painted last.
         crate::components::clickable::clear();
         let theme = &self.theme;
         f.render_widget(
@@ -2441,10 +2443,29 @@ impl AppScreen for EditorScreen {
                 ])
             })
         };
-        // The palette door, so every leader command is a click away.
-        let palette_label = "≡ Commands";
-        let palette_w = unicode_width::UnicodeWidthStr::width(palette_label) as u16;
+        // The palette door, so every leader command is a click away. The
+        // right side never takes more than half the row, so the note path
+        // keeps room: on a narrow terminal it degrades to `≡ <workspace>`,
+        // then to `≡` alone.
         const GAP: u16 = 3;
+        let budget = rows[0].width / 2;
+        let badge_w_full = workspace_badge
+            .as_ref()
+            .map(|b| b.width() as u16)
+            .unwrap_or_default();
+        let width_of = |palette: &str, badge: u16| {
+            unicode_width::UnicodeWidthStr::width(palette) as u16
+                + if badge > 0 { GAP + badge } else { 0 }
+                + 2
+        };
+        let (palette_label, workspace_badge) = if width_of("≡ Commands", badge_w_full) <= budget {
+            ("≡ Commands", workspace_badge)
+        } else if width_of("≡", badge_w_full) <= budget {
+            ("≡", workspace_badge)
+        } else {
+            ("≡", None)
+        };
+        let palette_w = unicode_width::UnicodeWidthStr::width(palette_label) as u16;
         let badge_w = workspace_badge
             .as_ref()
             .map(|b| b.width() as u16)
@@ -4804,6 +4825,35 @@ mod sort_routing_tests {
         assert!(
             std::iter::from_fn(|| rx.try_recv().ok())
                 .any(|e| matches!(e, AppEvent::OpenSortDialog(SortTarget::Query)))
+        );
+    }
+
+    /// On a narrow terminal the title bar's right side shrinks instead of
+    /// squeezing out the note path: the palette door survives as `≡`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_narrow_title_bar_keeps_room_for_the_path() {
+        let (mut screen, _tx, _rx) = make_editor().await;
+        screen.settings.write().unwrap().workspace_config =
+            Some(crate::settings::workspace_config::WorkspaceConfig::new_empty());
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(24, 20)).unwrap();
+        term.draw(|f| screen.render(f)).unwrap();
+        let row: String = (0..24u16)
+            .map(|x| term.backend().buffer()[(x, 0)].symbol().to_string())
+            .collect();
+        assert!(
+            row.contains("Kimün"),
+            "the left side keeps its room: {row:?}"
+        );
+        assert!(row.contains('≡'), "the palette door stays: {row:?}");
+        assert!(
+            !row.contains("Commands"),
+            "but shrinks to the glyph: {row:?}"
+        );
+        assert!(
+            screen
+                .title_targets
+                .iter()
+                .any(|(_, t)| *t == TitleTarget::Palette)
         );
     }
 

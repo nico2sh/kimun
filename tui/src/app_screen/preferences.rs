@@ -113,9 +113,11 @@ pub struct PreferencesScreen {
     /// The open overlay's outer rect from the last render; a press outside
     /// it cancels, like Esc.
     overlay_rect: Rect,
-    /// When the open overlay first drew. A press inside the double-click
-    /// window after that is the tail of the gesture that opened it.
-    overlay_opened_at: Option<std::time::Instant>,
+    /// Drops the tail of the double-click that opened an overlay (see
+    /// [`OpenGuard`](crate::components::clickable::OpenGuard)); `overlay_shown`
+    /// tracks when one first draws, which is when it counts as opened.
+    open_guard: crate::components::clickable::OpenGuard,
+    overlay_shown: bool,
     /// The folder picker's list rows and chips from the last render.
     browser_rows: Rect,
     browser_hints: HintRow,
@@ -189,7 +191,8 @@ impl PreferencesScreen {
                 (KeyCode::Tab, "Tab", "Switch sidebar/content"),
             ]),
             overlay_rect: Rect::default(),
-            overlay_opened_at: None,
+            open_guard: Default::default(),
+            overlay_shown: false,
             browser_rows: Rect::default(),
             browser_hints: HintRow::new(&[
                 (KeyCode::Enter, "⏎", "Open"),
@@ -380,10 +383,9 @@ impl PreferencesScreen {
         if !matches!(self.overlay, Overlay::None) {
             // The second press of the double-click that opened the overlay
             // is not aimed at it.
-            if press
-                && self
-                    .overlay_opened_at
-                    .is_some_and(|at| at.elapsed() < crate::components::DOUBLE_CLICK)
+            if self
+                .open_guard
+                .swallows(&InputEvent::Mouse(*m), std::time::Instant::now())
             {
                 return EventState::Consumed;
             }
@@ -417,12 +419,16 @@ impl PreferencesScreen {
             // A click on the field just focuses it; typing edits it.
             PreferencesSection::Server => None,
         };
-        // A key runs through the key path (which syncs settings itself); a
-        // selection-only click — a theme row — still needs syncing.
+        // A key runs through the key path, which syncs settings itself. The
+        // one selection-only click that changes a setting is a theme row
+        // (the live preview); every other section's selection is just a
+        // cursor, and motion must never write settings.
         match key {
             Some(key) => self.press(key, tx),
             None => {
-                self.sync_section();
+                if press && self.section == PreferencesSection::Appearance {
+                    self.sync_section();
+                }
                 EventState::Consumed
             }
         }
@@ -536,6 +542,7 @@ impl AppScreen for PreferencesScreen {
     }
 
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
+        self.open_guard.observe_input(event);
         if let InputEvent::Mouse(m) = event {
             self.pointer = Some(Position::new(m.column, m.row));
             return self.handle_mouse(m, tx);
@@ -1024,6 +1031,8 @@ impl AppScreen for PreferencesScreen {
     }
 
     fn render(&mut self, f: &mut Frame) {
+        // Each screen starts its frame's click targets empty.
+        crate::components::clickable::clear();
         let theme = self.theme.clone();
         f.render_widget(Block::default().style(theme.base_style()), f.area());
 
@@ -1137,11 +1146,14 @@ impl AppScreen for PreferencesScreen {
         // An overlay is modal: what it covers is not clickable, so it
         // must not light up on hover either.
         if matches!(self.overlay, Overlay::None) {
-            self.overlay_opened_at = None;
+            if std::mem::take(&mut self.overlay_shown) {
+                self.open_guard.closed();
+            }
         } else {
             crate::components::clickable::clear();
-            self.overlay_opened_at
-                .get_or_insert_with(std::time::Instant::now);
+            if !std::mem::replace(&mut self.overlay_shown, true) {
+                self.open_guard.opened(std::time::Instant::now());
+            }
         }
         self.render_overlay(f, &theme);
         crate::components::clickable::apply_hover(f.buffer_mut(), self.pointer, &theme);
@@ -1629,7 +1641,7 @@ mod mouse_tests {
     /// drops the tail of the gesture which opened it).
     fn settle_overlay(s: &mut PreferencesScreen) {
         draw(s);
-        s.overlay_opened_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+        s.open_guard.closed();
     }
 
     #[test]
@@ -1732,6 +1744,32 @@ mod mouse_tests {
         );
     }
 
+    /// Moving the pointer over a section is not an edit: settings stay
+    /// untouched, so Esc does not ask to save.
+    #[test]
+    fn hovering_sections_changes_no_settings() {
+        let mut s = screen();
+        for section in SECTIONS {
+            s.section = section;
+            draw(&mut s);
+            let (tx, _rx) = unbounded_channel();
+            for y in (0..30u16).step_by(3) {
+                for x in (0..100u16).step_by(7) {
+                    s.handle_input(
+                        &InputEvent::Mouse(ratatui::crossterm::event::MouseEvent {
+                            kind: MouseEventKind::Moved,
+                            column: x,
+                            row: y,
+                            modifiers: KeyModifiers::NONE,
+                        }),
+                        &tx,
+                    );
+                }
+            }
+        }
+        assert_eq!(*s.settings.read().unwrap(), s.initial_settings);
+    }
+
     #[test]
     fn workspace_new_chip_starts_creating() {
         let mut s = screen();
@@ -1762,6 +1800,9 @@ mod mouse_tests {
     #[test]
     fn overlay_guard_and_outside_press() {
         let mut s = screen();
+        // A click opened it (the guard arms only for mouse opens).
+        s.open_guard
+            .observe_input(&crate::test_support::mouse_down_at(5, 5));
         s.overlay = Overlay::ConfirmSave {
             focused_button: SaveButton::Save,
         };
