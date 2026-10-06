@@ -11,7 +11,7 @@ pub mod workspaces_section;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
 
-use crate::components::hint_row::is_left_press;
+use crate::components::clickable::is_left_press;
 
 /// What a click in a preferences section asks for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,7 +48,39 @@ pub enum SectionMouse {
     None,
 }
 
+impl SectionMouse {
+    /// Apply the outcome: `select` any row it names, and return the key the
+    /// click stands for (for the screen's key path).
+    pub fn into_key(self, mut select: impl FnMut(usize)) -> Option<KeyEvent> {
+        match self {
+            SectionMouse::Select(row) => {
+                select(row);
+                None
+            }
+            SectionMouse::Key(row, key) => {
+                select(row);
+                Some(key)
+            }
+            SectionMouse::Wheel(key) => Some(key),
+            SectionMouse::None => None,
+        }
+    }
+}
+
 impl ClickMap {
+    /// Record the visible rows of a scrolled list drawn in `inner`: item
+    /// `offset` on the first line, up to `len` items or the bottom edge.
+    /// Call after rendering, once the list has settled its offset.
+    pub fn list_rows(&mut self, inner: Rect, offset: usize, len: usize) {
+        for (line, row) in (offset..len).enumerate() {
+            let y = inner.y as usize + line;
+            if y >= inner.bottom() as usize {
+                break;
+            }
+            self.row(Rect::new(inner.x, y as u16, inner.width, 1), row);
+        }
+    }
+
     /// Forget the last render's targets — call at the top of `render`.
     pub fn clear(&mut self) {
         self.targets.clear();

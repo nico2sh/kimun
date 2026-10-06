@@ -63,6 +63,9 @@ pub struct InputCtx {
     /// Ctrl+R over it open the
     /// sort dialog on top instead of reaching the overlay.
     pub overlay_sortable: bool,
+    /// The open overlay takes the query syntax (the Ctrl+K search browser):
+    /// F1 over it opens the syntax reference stacked on top.
+    pub overlay_query: bool,
     /// A mouse event landed on the editor column. The classifier cannot
     /// hit-test, and an **editor claim** only owns presses inside the editor:
     /// a click on the rail, the drawer or the footer must reach them even
@@ -177,6 +180,9 @@ pub enum OverlayOpen {
     /// search browser or Ctrl+O file finder) — the one
     /// recipe that opens over an overlay instead of being refused by it.
     SortBrowser,
+    /// The query syntax reference stacked over the open Ctrl+K browser —
+    /// the other recipe that opens over an overlay.
+    QueryHelpOverBrowser,
     QuickNote,
     /// The pinned-notes dialog (leader `f p`).
     PinnedNotes,
@@ -584,7 +590,11 @@ pub(crate) fn classify_tail(
                     // F1 opens the help modal. Over the Find panel it surfaces
                     // query syntax instead of the flat key-bindings help. All
                     // F-keys are consumed and never forwarded to the editor.
-                    if combo.key == KeyStrike::F1 && combo.modifiers.is_empty() {
+                    if combo.key == KeyStrike::F1 && combo.modifiers.is_empty() && ctx.overlay_query
+                    {
+                        // Over the Ctrl+K browser: its syntax, on top of it.
+                        Some(EditorIntent::OpenOverlay(OverlayOpen::QueryHelpOverBrowser))
+                    } else if combo.key == KeyStrike::F1 && combo.modifiers.is_empty() {
                         Some(EditorIntent::OpenOverlay(if ctx.find_panel_focused() {
                             OverlayOpen::QueryHelp
                         } else {
@@ -709,6 +719,7 @@ mod tests {
             claim: EditorClaim::None,
             double_click: false,
             overlay_sortable: false,
+            overlay_query: false,
             pointer_on_editor: true,
         }
     }

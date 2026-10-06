@@ -95,6 +95,11 @@ impl<F> OverlayHost<F> {
         self.active.as_ref().and_then(|o| o.as_sortable())
     }
 
+    /// Whether the active overlay takes the query syntax.
+    pub fn active_takes_query_syntax(&self) -> bool {
+        self.active.as_ref().is_some_and(|o| o.takes_query_syntax())
+    }
+
     /// The parked overlay as a sortable list, if it is one — where a sort
     /// chosen in the dialog stacked over it lands.
     pub fn parked_sortable_mut(&mut self) -> Option<&mut dyn SortableList> {

@@ -49,7 +49,7 @@ impl ConfigPanel {
 
     pub fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
         if let InputEvent::Mouse(m) = event {
-            if let Some(key) = crate::components::hint_row::key_at(&self.launchers, m) {
+            if let Some(key) = crate::components::clickable::key_at(&self.launchers, m) {
                 return self.handle_input(&InputEvent::Key(key), tx);
             }
             return EventState::NotConsumed;

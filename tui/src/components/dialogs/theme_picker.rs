@@ -9,9 +9,9 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
+use crate::components::clickable::{is_press_outside, list_index_at};
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx};
-use crate::components::hint_row::{is_press_outside, list_index_at};
 use crate::settings::AppSettings;
 use crate::settings::themes::Theme;
 

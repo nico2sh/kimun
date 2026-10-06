@@ -18,9 +18,10 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::Paragraph;
 
+use crate::components::clickable::{is_press_outside, list_index_at};
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, OverlayData, PinnedRow};
-use crate::components::hint_row::{HintRow, is_press_outside, list_index_at};
+use crate::components::hint_row::HintRow;
 use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::settings::themes::Theme;
 

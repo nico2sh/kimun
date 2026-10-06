@@ -12,7 +12,7 @@ use crate::components::single_line_input::{InputOutcome, SingleLineInput};
 use crate::settings::AppSettings;
 use crate::settings::themes::Theme;
 
-use super::{ClickMap, SectionMouse};
+use super::ClickMap;
 use crate::components::hint_row::HintRow;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -119,21 +119,9 @@ impl WorkspacesSection {
                 if let Some(key) = self.actions.hit(m) {
                     return Some(key);
                 }
-                match self
-                    .clicks
+                self.clicks
                     .resolve(m, self.list_state.selected(), Some(KeyCode::Enter))
-                {
-                    SectionMouse::Select(row) => {
-                        self.list_state.select(Some(row));
-                        None
-                    }
-                    SectionMouse::Key(row, key) => {
-                        self.list_state.select(Some(row));
-                        Some(key)
-                    }
-                    SectionMouse::Wheel(key) => Some(key),
-                    SectionMouse::None => None,
-                }
+                    .into_key(|row| self.list_state.select(Some(row)))
             }
             Mode::ConfirmDelete => self.confirm.hit(m),
             Mode::Creating | Mode::Renaming => None,
@@ -343,15 +331,8 @@ impl Component for WorkspacesSection {
         // Rows map from the offset the list settled on while rendering.
         self.clicks.clear();
         if self.mode == Mode::Normal {
-            let offset = self.list_state.offset();
-            for (i, row) in (offset..self.entries.len()).enumerate() {
-                let y = rows[0].y + i as u16;
-                if y >= rows[0].bottom() {
-                    break;
-                }
-                self.clicks
-                    .row(Rect::new(rows[0].x, y, rows[0].width, 1), row);
-            }
+            self.clicks
+                .list_rows(rows[0], self.list_state.offset(), self.entries.len());
         }
 
         // --- Hint line ---

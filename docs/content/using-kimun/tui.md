@@ -219,7 +219,8 @@ Full parity with the keyboard. Buttons, dialog `[key]` hints, status-bar segment
 | Click outside a menu, picker, help or the command palette | close it (same as `Esc`) — dialogs you type into stay open |
 | Click `⊞ props` / `⬆ x available` in the status bar | open properties / the update dialog |
 | Click `N backlinks` / `→ target` in the status bar | open LINKS on backlinks / follow the link (same as `Ctrl+N`) |
-| Click the sort label (`Name ↑`) on the FILES or FIND search box | open the sort dialog (same as `Ctrl+R`) |
+| Click the sort label (`Name ↑`) on a search box — FILES, FIND, the `Ctrl+K` search and the `Ctrl+O` finder | open the sort dialog (same as `Ctrl+R`) |
+| Click `[F1] Syntax` on the FIND query box, or `[F1] Query syntax` in the `Ctrl+K` search | open the search query syntax reference (`F1` there does the same) |
 | Click `≡ Commands` / the workspace name in the title bar | open the command palette / the workspace switcher |
 | Click a chip under an Ask answer | send, copy, save as note, regenerate, or start a new conversation |
 | Click `Open externally` in an attachment | open it with the default program |

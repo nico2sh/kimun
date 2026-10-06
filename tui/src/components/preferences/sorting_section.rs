@@ -9,7 +9,7 @@ use crate::components::events::{AppTx, InputEvent};
 use crate::settings::themes::Theme;
 use crate::settings::{SortFieldSetting, SortOrderSetting};
 
-use super::{ClickMap, SectionMouse, text_rect};
+use super::{ClickMap, text_rect};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
@@ -48,21 +48,9 @@ impl SortingSection {
         m: &ratatui::crossterm::event::MouseEvent,
     ) -> Option<ratatui::crossterm::event::KeyEvent> {
         use ratatui::crossterm::event::KeyCode;
-        match self
-            .clicks
+        self.clicks
             .resolve(m, self.list_state.selected(), Some(KeyCode::Enter))
-        {
-            SectionMouse::Select(row) => {
-                self.list_state.select(Some(row));
-                None
-            }
-            SectionMouse::Key(row, key) => {
-                self.list_state.select(Some(row));
-                Some(key)
-            }
-            SectionMouse::Wheel(key) => Some(key),
-            SectionMouse::None => None,
-        }
+            .into_key(|row| self.list_state.select(Some(row)))
     }
 
     /// `  Sort field:  [Name]` with the `[value]` as a click target for

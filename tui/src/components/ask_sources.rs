@@ -1331,10 +1331,12 @@ mod tests {
         let press = crate::test_support::mouse_down_at(x, y);
         p.handle_input(&press, &tx);
         p.handle_input(&press, &tx);
-        let opened = std::iter::from_fn(|| rx.try_recv().ok()).find_map(|e| match e {
-            AppEvent::OpenPath { path, .. } => Some(path),
-            _ => None,
-        });
+        let opened = crate::test_support::drain(&mut rx)
+            .into_iter()
+            .find_map(|e| match e {
+                AppEvent::OpenPath { path, .. } => Some(path),
+                _ => None,
+            });
         assert_eq!(opened, Some(VaultPath::new("b.md")));
     }
 

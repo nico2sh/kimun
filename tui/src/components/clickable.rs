@@ -21,6 +21,7 @@
 use std::cell::RefCell;
 
 use ratatui::buffer::Buffer;
+use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseEvent};
 use ratatui::layout::{Position, Rect};
 
 use crate::settings::themes::Theme;
@@ -131,9 +132,156 @@ pub fn apply_hover(buf: &mut Buffer, pointer: Option<Position>, theme: &Theme) {
     }
 }
 
+// ── Hit-testing primitives ──────────────────────────────────────────────────
+
+/// A left-button press — the one mouse kind dialogs act on.
+pub fn is_left_press(m: &MouseEvent) -> bool {
+    use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+    matches!(m.kind, MouseEventKind::Down(MouseButton::Left))
+}
+
+/// The key of the `(rect, key)` target under a left press — for click
+/// targets that are not chips (menu actions, launcher rows).
+pub fn key_at(targets: &[(Rect, KeyCode)], m: &MouseEvent) -> Option<KeyEvent> {
+    if !is_left_press(m) {
+        return None;
+    }
+    target_at(targets, m.column, m.row).map(KeyEvent::from)
+}
+
+/// The index of the ratatui `List` row under a left press: `rect` is where
+/// the rows are drawn (inside any border), `offset` the list state's first
+/// visible index, `len` the item count.
+pub fn list_index_at(m: &MouseEvent, rect: Rect, offset: usize, len: usize) -> Option<usize> {
+    if !is_left_press(m) || !rect.contains(Position::new(m.column, m.row)) {
+        return None;
+    }
+    let idx = offset + (m.row - rect.y) as usize;
+    (idx < len).then_some(idx)
+}
+
+/// A press of any button outside `rect` — how a read-only popup is dismissed.
+/// An empty `rect` (not rendered yet) is never "outside".
+pub fn is_press_outside(m: &MouseEvent, rect: Rect) -> bool {
+    use ratatui::crossterm::event::MouseEventKind;
+    matches!(m.kind, MouseEventKind::Down(_))
+        && !rect.is_empty()
+        && !rect.contains(Position::new(m.column, m.row))
+}
+
+/// Which border a [`BorderChip`] sits on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Edge {
+    Top,
+    Bottom,
+}
+
+/// A click target drawn as a right-aligned title on a block's border — the
+/// sort label (`Name ↑`), `[F1] Syntax`. One place for its geometry,
+/// hover registration and hit-test, so the border chips cannot drift.
+///
+/// Ratatui stacks right-aligned titles leftward in the order they are
+/// added, so place a chip *after* any other right-aligned title on the
+/// same edge: its rect assumes it is the rightmost.
+#[derive(Debug, Default)]
+pub struct BorderChip {
+    rect: Option<Rect>,
+}
+
+impl BorderChip {
+    /// Put `line` on `block`'s `edge` border (`area` is where the block is
+    /// drawn), record and register its rect, and return the block.
+    pub fn place<'a>(
+        &mut self,
+        block: ratatui::widgets::Block<'a>,
+        area: Rect,
+        edge: Edge,
+        line: ratatui::text::Line<'a>,
+    ) -> ratatui::widgets::Block<'a> {
+        // Ratatui keeps the corner cells clear of titles.
+        let inner_w = area.width.saturating_sub(2);
+        let w = (line.width() as u16).min(inner_w);
+        let fits = w > 0 && (edge == Edge::Top || area.height >= 2);
+        self.rect = fits.then(|| {
+            let y = match edge {
+                Edge::Top => area.y,
+                Edge::Bottom => area.bottom() - 1,
+            };
+            Rect::new(area.right() - 1 - w, y, w, 1)
+        });
+        let Some(r) = self.rect else {
+            return block;
+        };
+        register(r);
+        let line = line.right_aligned();
+        match edge {
+            Edge::Top => block.title(line),
+            Edge::Bottom => block.title_bottom(line),
+        }
+    }
+
+    /// Not drawn this frame: nothing to click.
+    pub fn hide(&mut self) {
+        self.rect = None;
+    }
+
+    /// A left press on the chip as last drawn.
+    pub fn hit(&self, m: &MouseEvent) -> bool {
+        is_left_press(m)
+            && self
+                .rect
+                .is_some_and(|r| r.contains(Position::new(m.column, m.row)))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn rect(&self) -> Option<Rect> {
+        self.rect
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_border_chip_sits_rightmost_on_its_edge() {
+        clear();
+        let area = Rect::new(0, 0, 20, 3);
+        let mut chip = BorderChip::default();
+        let _ = chip.place(
+            ratatui::widgets::Block::default(),
+            area,
+            Edge::Bottom,
+            ratatui::text::Line::from("[F1] x"),
+        );
+        assert_eq!(chip.rect(), Some(Rect::new(13, 2, 6, 1)));
+        assert!(chip.hit(&crate::test_support::left_press(14, 2)));
+        assert!(!chip.hit(&crate::test_support::left_press(14, 1)));
+        assert!(
+            hovered(Position::new(14, 2)).is_some(),
+            "registered for hover"
+        );
+        chip.hide();
+        assert!(!chip.hit(&crate::test_support::left_press(14, 2)));
+        clear();
+    }
+
+    #[test]
+    fn outside_press_needs_a_rendered_rect() {
+        let rect = Rect::new(10, 10, 5, 5);
+        assert!(is_press_outside(
+            &crate::test_support::left_press(0, 0),
+            rect
+        ));
+        assert!(!is_press_outside(
+            &crate::test_support::left_press(11, 11),
+            rect
+        ));
+        assert!(!is_press_outside(
+            &crate::test_support::left_press(0, 0),
+            Rect::default()
+        ));
+    }
 
     #[test]
     fn the_last_registered_target_wins_and_clear_forgets() {

@@ -124,7 +124,7 @@ pub struct SidebarComponent {
     /// with the directory it navigates to — clickable breadcrumb hit-test.
     breadcrumb_cells: Vec<(Rect, VaultPath)>,
     /// The sort chip (`Name ↑`) on the search box border from the last render.
-    sort_chip: Option<Rect>,
+    sort_chip: crate::components::clickable::BorderChip,
     /// Whether to draw the sort chip at all — off where the host cannot open
     /// the sort dialog (Browse).
     show_sort_chip: bool,
@@ -167,7 +167,7 @@ impl SidebarComponent {
             group_dirs: settings.group_directories,
             rendered_rect: Rect::default(),
             breadcrumb_cells: Vec::new(),
-            sort_chip: None,
+            sort_chip: Default::default(),
             show_sort_chip: true,
             key_bindings,
         }
@@ -524,9 +524,7 @@ impl Component for SidebarComponent {
                 return EventState::Consumed;
             }
             // A click on the sort chip opens the sort dialog.
-            if crate::components::hint_row::is_left_press(mouse)
-                && self.sort_chip.is_some_and(|r| r.contains(pos))
-            {
+            if self.sort_chip.hit(mouse) {
                 tx.send(AppEvent::OpenSortDialog(SortTarget::Sidebar)).ok();
                 return EventState::Consumed;
             }
@@ -676,24 +674,21 @@ impl Component for SidebarComponent {
 
         // The sort chip sits on the search box, next to what it orders.
         let mut search_block = Block::default().title(" Search");
-        self.sort_chip = None;
         if self.show_sort_chip {
             let (field, order) = self.current_sort();
-            let chip = crate::components::sortable::sort_chip_label(&field, order);
-            self.sort_chip = crate::components::sortable::top_right_title_rect(
+            search_block = self.sort_chip.place(
+                search_block,
                 rows[1],
-                unicode_width::UnicodeWidthStr::width(chip.as_str()) as u16,
+                crate::components::clickable::Edge::Top,
+                crate::components::sortable::sort_chip_line(&field, order, theme),
             );
-            search_block =
-                search_block.title(Line::from(Span::styled(chip, theme.action())).right_aligned());
+        } else {
+            self.sort_chip.hide();
         }
         let search_block = search_block
             .borders(Borders::ALL)
             .border_style(border_style)
             .style(theme.panel_style());
-        if let Some(r) = self.sort_chip {
-            crate::components::clickable::register(r);
-        }
         let search_inner = search_block.inner(rows[1]);
         f.render_widget(search_block, rows[1]);
 
