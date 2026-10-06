@@ -27,8 +27,8 @@ pub mod scan {
     pub use super::content_extractor::{
         heading_display_text, heading_section_range, is_inside_code_link_or_frontmatter,
         is_inside_exclusion_zone, is_remote_url, link_char_spans, link_target_filename,
-        target_looks_like_image, url_with_allowed_scheme, wikilink_char_spans, ExclusionZones,
-        LinkSpan, LinkSpanKind,
+        split_link_fragment, target_looks_like_image, url_with_allowed_scheme, wikilink_char_spans,
+        ExclusionZones, LinkSpan, LinkSpanKind,
     };
 
     /// A label token detected in note text, with byte-offset range and the
@@ -102,9 +102,24 @@ fn tags_with(labels: Vec<String>, frontmatter: &properties::PropertySet) -> Vec<
     tags.into_iter().collect()
 }
 
-/// Every link target of a note in document order, as written — wikilink
-/// targets to valid vault paths, markdown and image destinations, autolinks —
-/// frontmatter and code skipped.
+/// Every link target of a note in document order, **as written** — wikilink
+/// targets whose note is a valid vault path (a `#section` or `^block` kept:
+/// `note#section`), markdown and image destinations, autolinks — frontmatter
+/// and code skipped.
+///
+/// These are strings, not resolved vault paths: vault targets and URLs side
+/// by side, relative paths unresolved, wikilinks without the note extension.
+/// For the notes a link resolves to, build a [`VaultPath`] from the target
+/// (e.g. [`VaultPath::note_path_from`] and [`VaultPath::resolve_link_in_note`])
+/// or read the note's links from the index.
+///
+/// ```
+/// let text = "[[Plan#Goals|goals]] [doc](../doc.md) <https://x.y>";
+/// assert_eq!(
+///     kimun_core::note::note_link_targets(text),
+///     ["Plan#Goals", "../doc.md", "https://x.y"]
+/// );
+/// ```
 pub fn note_link_targets(text: &str) -> Vec<String> {
     walk::walk(text).link_targets()
 }
@@ -145,7 +160,8 @@ pub struct NoteMetadata {
     pub properties: Vec<PropertyEntry>,
     /// Headings in order.
     pub headings: Vec<NoteHeading>,
-    /// Link targets in document order, as [`note_link_targets`] returns them.
+    /// Link targets in document order, as written — strings mixing vault
+    /// targets and URLs, not resolved vault paths; see [`note_link_targets`].
     pub links: Vec<String>,
 }
 

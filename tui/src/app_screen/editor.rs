@@ -311,9 +311,10 @@ impl EditorScreen {
         }
 
         // Note reference — look it up in the vault.
-        // Strip any `#fragment` suffix before resolving (e.g. `notes/design.md#goals`
-        // should resolve to `notes/design.md`, not `notes/design.md#goals.md`).
-        let target_clean = target.split('#').next().unwrap_or(&target).trim_end();
+        // Strip any `#section` / `^block` suffix before resolving (e.g.
+        // `notes/design.md#goals` resolves to `notes/design.md`, not
+        // `notes/design.md#goals.md`) — the same split the index uses.
+        let (target_clean, _) = kimun_core::note::scan::split_link_fragment(&target);
         // Resolve the (possibly relative, e.g. `../work/anton.md`) target
         // against this note's directory so the existence lookup uses the same
         // absolute path the note is stored under. Bare names stay name-lookups.

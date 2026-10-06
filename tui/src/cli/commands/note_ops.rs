@@ -339,7 +339,6 @@ async fn run_show(
     use crate::cli::json_output::{
         JsonNoteEntry, JsonNoteMetadata, JsonOutput, JsonOutputMetadata,
     };
-    use crate::cli::metadata_extractor::{extract_links, extract_tags};
     use crate::cli::output::OutputFormat;
     use chrono::Utc;
 
@@ -402,14 +401,14 @@ async fn run_show(
 
         match &mut acc {
             Accumulator::Text(entries) => {
-                let tags = extract_tags(content);
-                let links = extract_links(content);
+                // Tags and links from one walk over the note.
+                let meta = kimun_core::note::NoteMetadata::of(content);
                 entries.push(format_note_show_text(
                     &vault_path,
                     content,
                     &content_data.title,
-                    &tags,
-                    &links,
+                    &meta.tags,
+                    &meta.links,
                     &backlink_paths,
                 ));
             }
