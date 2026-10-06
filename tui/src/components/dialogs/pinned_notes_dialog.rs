@@ -1,7 +1,9 @@
 //! The pinned-notes dialog: the vault's pinned notes by number, and where
 //! they are managed. A digit opens that note at once (no query input — nine
 //! rows never need filtering); `j`/`k`/↑/↓ move, Enter opens the selected
-//! row, `J`/`K` move it down/up, `d`/Delete unpins it, Esc closes. Every
+//! row, `J`/`K` move it down/up, `d`/Delete unpins it, Esc closes. With the
+//! mouse: click selects, clicking the selected row opens it, and the footer
+//! chips run their keys. Every
 //! change is written as it is made and the list reloads through
 //! [`OverlayData::PinnedNotesLoaded`]; there is no commit or cancel step.
 //! A pin whose note is missing on disk is kept, drawn dimmed with
@@ -11,13 +13,15 @@ use std::sync::Arc;
 
 use kimun_core::NoteVault;
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::Paragraph;
 
+use crate::components::clickable::{is_press_outside, list_index_at};
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, OverlayData, PinnedRow};
+use crate::components::hint_row::HintRow;
 use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::settings::themes::Theme;
 
@@ -44,6 +48,11 @@ pub struct PinnedNotesDialog {
     /// dialog's own reload lands (success or failure — see
     /// `handle_loaded`); no other event may clear it.
     persist_pending: bool,
+    /// Outer popup rect from the last render; a press outside closes.
+    popup_rect: Rect,
+    /// Where the rows were drawn in the last render.
+    body_rect: Rect,
+    hints: HintRow,
 }
 
 impl PinnedNotesDialog {
@@ -56,6 +65,17 @@ impl PinnedNotesDialog {
             selected: 0,
             loaded: false,
             persist_pending: false,
+            popup_rect: Rect::default(),
+            body_rect: Rect::default(),
+            hints: HintRow::new(&[
+                // `K`/`J` reorder the pins on disk — "Raise"/"Lower", never
+                // "Up"/"Down", which read as moving the highlight.
+                (KeyCode::Enter, "⏎", "Open"),
+                (KeyCode::Char('K'), "K", "Raise"),
+                (KeyCode::Char('J'), "J", "Lower"),
+                (KeyCode::Char('d'), "d", "Unpin"),
+                (KeyCode::Esc, "Esc", "Close"),
+            ]),
         }
     }
 
@@ -287,12 +307,39 @@ impl PinnedNotesDialog {
     }
 }
 
+impl PinnedNotesDialog {
+    /// Click a row to select it, click the selected row to open it; the
+    /// wheel moves the selection; footer chips run their key; a press
+    /// outside the popup closes it. Modal: every mouse event is consumed.
+    pub fn handle_mouse(&mut self, m: &MouseEvent, tx: &AppTx) -> EventState {
+        if is_press_outside(m, self.popup_rect) {
+            return self.handle_key(KeyEvent::from(KeyCode::Esc), tx);
+        }
+        if let Some(key) = self.hints.hit(m) {
+            return self.handle_key(key, tx);
+        }
+        match m.kind {
+            MouseEventKind::ScrollUp => self.handle_key(KeyEvent::from(KeyCode::Up), tx),
+            MouseEventKind::ScrollDown => self.handle_key(KeyEvent::from(KeyCode::Down), tx),
+            _ => {
+                if let Some(idx) = list_index_at(m, self.body_rect, 0, self.rows.len()) {
+                    if idx == self.selected {
+                        return self.handle_key(KeyEvent::from(KeyCode::Enter), tx);
+                    }
+                    self.selected = idx;
+                }
+                EventState::Consumed
+            }
+        }
+    }
+}
+
 impl crate::components::Component for PinnedNotesDialog {
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
-        if let InputEvent::Key(key) = event {
-            self.handle_key(*key, tx)
-        } else {
-            EventState::NotConsumed
+        match event {
+            InputEvent::Key(key) => self.handle_key(*key, tx),
+            InputEvent::Mouse(m) => self.handle_mouse(m, tx),
+            InputEvent::Paste(_) => EventState::NotConsumed,
         }
     }
 
@@ -300,6 +347,7 @@ impl crate::components::Component for PinnedNotesDialog {
         // body rows + borders(2) + footer(1)
         let outer_height = BODY_ROWS + 3;
         let popup = super::fixed_centered_rect(OUTER_WIDTH, outer_height, rect);
+        self.popup_rect = popup;
         let inner = modal_chrome(
             f,
             popup,
@@ -319,6 +367,7 @@ impl crate::components::Component for PinnedNotesDialog {
             .split(inner);
         let body = chunks[0];
         let footer_area = chunks[1];
+        self.body_rect = body;
 
         let bg = theme.bg_panel.to_ratatui();
         let fg = theme.fg.to_ratatui();
@@ -370,11 +419,8 @@ impl crate::components::Component for PinnedNotesDialog {
             );
         }
 
-        f.render_widget(
-            Paragraph::new("  [1-9/Enter] Open  [j/k] Move  [J/K] Reorder  [d] Unpin  [Esc] Close")
-                .style(Style::default().fg(gray).bg(bg)),
-            footer_area,
-        );
+        self.hints
+            .render(f, footer_area, Style::default().fg(gray).bg(bg), theme);
     }
 }
 

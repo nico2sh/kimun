@@ -7,6 +7,7 @@ use ratatui::widgets::Paragraph;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, SortTarget};
 use crate::components::file_list::{SortField, SortOrder};
+use crate::components::hint_row::HintRow;
 use crate::components::key_picker::{KeyPicker, PickerOutcome};
 use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::components::sortable::{SortState, is_blank_property, property_key};
@@ -42,6 +43,10 @@ pub struct SortDialog {
     picker: KeyPicker,
     /// Screen rect of each row from the last render, for clicks.
     row_rects: Vec<Rect>,
+    /// Footer chips while the Key row is selected.
+    key_hints: HintRow,
+    /// Footer chips for every other row.
+    row_hints: HintRow,
 }
 
 impl SortDialog {
@@ -65,6 +70,24 @@ impl SortDialog {
             selected: 0,
             picker: KeyPicker::new(&key),
             row_rects: Vec::new(),
+            key_hints: HintRow::new(&[
+                (KeyCode::Enter, "Enter", "Apply"),
+                (KeyCode::Esc, "Esc", "Close"),
+            ])
+            .with_prefix("type a key · "),
+            row_hints: if target == SortTarget::Sidebar {
+                HintRow::new(&[
+                    (KeyCode::Null, "Space", "Toggle"),
+                    (KeyCode::Char('s'), "s", "Save default"),
+                    (KeyCode::Esc, "Esc", "Close"),
+                ])
+            } else {
+                HintRow::new(&[
+                    (KeyCode::Null, "↑↓", "Move"),
+                    (KeyCode::Null, "Space", "Toggle"),
+                    (KeyCode::Esc, "Enter/Esc", "Close"),
+                ])
+            },
         };
         d.rebuild_rows();
         d
@@ -213,6 +236,7 @@ impl SortDialog {
         if !matches!(ev.kind, MouseEventKind::Down(MouseButton::Left)) {
             return EventState::Consumed;
         }
+
         let key_row = self.rows.iter().position(|r| *r == Row::Key);
         if key_row.is_some() {
             match self.picker.handle_click(ev.column, ev.row) {
@@ -229,6 +253,16 @@ impl SortDialog {
                 }
                 _ => {}
             }
+        }
+        // After the picker: its suggestion list draws over the footer.
+        // Only the drawn footer has rects; the other is stale or empty.
+        let hints = if self.rows[self.selected] == Row::Key {
+            &self.key_hints
+        } else {
+            &self.row_hints
+        };
+        if let Some(key) = hints.hit(ev) {
+            return self.handle_key(key, tx);
         }
         let pos = Position {
             x: ev.column,
@@ -275,7 +309,8 @@ impl SortDialog {
     }
 }
 
-const OUTER_WIDTH: u16 = 44;
+/// Wide enough for the sidebar footer's chips (they used to clip).
+const OUTER_WIDTH: u16 = 50;
 
 impl crate::components::Component for SortDialog {
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
@@ -365,17 +400,12 @@ impl crate::components::Component for SortDialog {
         }
 
         let key_selected = self.rows[self.selected] == Row::Key;
-        let footer = if key_selected {
-            "  type a key · [Enter] apply · [Esc] close"
-        } else if self.target == SortTarget::Sidebar {
-            "  [↑↓] Move  [Space] Toggle  [s] Save default  [Enter/Esc] Close"
+        let hints = if key_selected {
+            &mut self.key_hints
         } else {
-            "  [↑↓] Move  [Space] Toggle  [Enter/Esc] Close  · click a row"
+            &mut self.row_hints
         };
-        f.render_widget(
-            Paragraph::new(footer).style(Style::default().fg(gray).bg(bg)),
-            footer_area,
-        );
+        hints.render(f, footer_area, Style::default().fg(gray).bg(bg), theme);
 
         // Last, so the suggestion list draws over the rows and footer below.
         if let Some((field, focused)) = key_field {

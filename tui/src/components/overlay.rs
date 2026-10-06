@@ -83,6 +83,12 @@ pub trait Overlay: Send {
     fn as_sortable(&self) -> Option<&dyn SortableList> {
         None
     }
+    /// Whether this overlay's input takes the query syntax (the Ctrl+K
+    /// search browser) — F1 and its `[F1]` chip then open the syntax
+    /// reference over it. Defaults to `false`.
+    fn takes_query_syntax(&self) -> bool {
+        false
+    }
     /// Mutable twin of [`Self::as_sortable`], for applying a sort to the
     /// overlay parked under the sort dialog.
     fn as_sortable_mut(&mut self) -> Option<&mut dyn SortableList> {

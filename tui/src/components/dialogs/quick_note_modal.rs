@@ -2,13 +2,14 @@ use std::sync::Arc;
 
 use kimun_core::NoteVault;
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
 
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, FileOp, OverlayData};
+use crate::components::hint_row::HintRow;
 use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::components::single_line_input::{InputOutcome, SingleLineInput};
 use crate::settings::themes::Theme;
@@ -17,6 +18,8 @@ pub struct QuickNoteModal {
     input: SingleLineInput,
     vault: Arc<NoteVault>,
     pub error: Option<String>,
+    save_hints: HintRow,
+    cancel_hint: HintRow,
 }
 
 impl QuickNoteModal {
@@ -25,7 +28,22 @@ impl QuickNoteModal {
             input: SingleLineInput::new(),
             vault,
             error: None,
+            save_hints: HintRow::new(&[
+                (KeyCode::Enter, "Enter", "Save"),
+                (KeyCode::Enter, "Shift+Enter", "Save & Open"),
+            ])
+            .with_modifiers(1, KeyModifiers::SHIFT),
+            cancel_hint: HintRow::new(&[(KeyCode::Esc, "Esc", "Cancel")]),
         }
+    }
+
+    /// A click on a hint chip runs its key. Modal: every mouse event is
+    /// consumed.
+    pub fn handle_mouse(&mut self, m: &MouseEvent, tx: &AppTx) -> EventState {
+        if let Some(key) = self.save_hints.hit(m).or_else(|| self.cancel_hint.hit(m)) {
+            self.handle_key(key, tx);
+        }
+        EventState::Consumed
     }
 
     pub fn handle_key(&mut self, key: KeyEvent, tx: &AppTx) -> EventState {
@@ -126,15 +144,9 @@ impl QuickNoteModal {
 
         super::render_separator(f, rows[2], gray, bg);
 
-        f.render_widget(
-            Paragraph::new("  [Enter] Save  [Shift+Enter] Save & Open")
-                .style(Style::default().fg(gray).bg(bg)),
-            rows[3],
-        );
-        f.render_widget(
-            Paragraph::new("  [Esc] Cancel").style(Style::default().fg(gray).bg(bg)),
-            rows[4],
-        );
+        let hint_style = Style::default().fg(gray).bg(bg);
+        self.save_hints.render(f, rows[3], hint_style, theme);
+        self.cancel_hint.render(f, rows[4], hint_style, theme);
 
         if let Some(msg) = &self.error {
             super::render_error_row(f, rows[5], msg, theme);

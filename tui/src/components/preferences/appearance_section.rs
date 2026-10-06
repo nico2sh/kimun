@@ -7,9 +7,12 @@ use crate::components::event_state::EventState;
 use crate::components::events::{AppTx, InputEvent};
 use crate::settings::themes::Theme;
 
+use super::ClickMap;
+
 pub struct AppearanceSection {
     themes: Vec<Theme>,
     list_state: ListState,
+    clicks: ClickMap,
 }
 
 impl AppearanceSection {
@@ -20,7 +23,24 @@ impl AppearanceSection {
             .unwrap_or(0);
         let mut list_state = ListState::default();
         list_state.select(Some(idx));
-        Self { themes, list_state }
+        Self {
+            themes,
+            list_state,
+            clicks: ClickMap::default(),
+        }
+    }
+
+    /// Resolve a click: a theme row selects (and so previews) it; the wheel
+    /// steps through themes. Returns the key a wheel notch stands for; a
+    /// row click changes the selection directly (the screen syncs it).
+    pub fn handle_mouse(
+        &mut self,
+        m: &ratatui::crossterm::event::MouseEvent,
+    ) -> Option<ratatui::crossterm::event::KeyEvent> {
+        // No controls and no re-click action: a row click only selects.
+        self.clicks
+            .resolve(m, self.list_state.selected(), None)
+            .into_key(|row| self.list_state.select(Some(row)))
     }
 
     pub fn selected_theme_name(&self) -> &str {
@@ -80,6 +100,8 @@ impl Component for AppearanceSection {
                 ListItem::new(format!("{}{}", prefix, t.name))
             })
             .collect();
+        // Rows are hit-tested inside the block actually drawn.
+        let inner = block.inner(rect);
         let list = List::new(items)
             .block(block)
             .style(theme.base_style())
@@ -89,6 +111,11 @@ impl Component for AppearanceSection {
                     .bg(theme.selection_bg.to_ratatui()),
             );
         f.render_stateful_widget(list, rect, &mut self.list_state);
+        // After rendering: the list may have scrolled to keep the selection
+        // in view, and rows map from the offset it settled on.
+        self.clicks.clear();
+        self.clicks
+            .list_rows(inner, self.list_state.offset(), self.themes.len());
     }
 }
 

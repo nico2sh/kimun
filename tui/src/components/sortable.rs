@@ -13,6 +13,61 @@ use kimun_core::{NoteVault, OrderBy, OrderField, SearchTerms, with_order_directi
 use crate::components::events::{AppEvent, AppTx};
 use crate::components::file_list::{PropertyValues, SortField, SortOrder};
 
+/// The clickable sort chip a sortable panel draws right-aligned on its
+/// search box border: ` Name ↑ `, ` Title ↓ `, ` due ↑ ` (a property sort
+/// shows its key). Plain text, so it reads the same in every font. A click
+/// on it opens the sort dialog — the mouse's `Ctrl+R`. A property key longer
+/// than [`SORT_CHIP_MAX_NAME`] cells is cut with `…`, so it never crowds the
+/// search box's own title.
+pub fn sort_chip_label(field: &SortField, order: SortOrder) -> String {
+    let name = match field {
+        SortField::Name => "Name",
+        SortField::Title => "Title",
+        SortField::Property(key) => key.as_str(),
+    };
+    format!(
+        " {} {} ",
+        truncate_cells(name, SORT_CHIP_MAX_NAME),
+        order.label()
+    )
+}
+
+/// Widest field name the sort chip shows, in terminal cells (`…` included).
+pub const SORT_CHIP_MAX_NAME: usize = 12;
+
+/// `s` cut to at most `max` display cells, ending in `…` when cut.
+fn truncate_cells(s: &str, max: usize) -> std::borrow::Cow<'_, str> {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    if s.width() <= max {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    let mut out = String::new();
+    let mut w = 0;
+    for c in s.chars() {
+        let cw = c.width().unwrap_or(0);
+        if w + cw > max.saturating_sub(1) {
+            break;
+        }
+        out.push(c);
+        w += cw;
+    }
+    out.push('…');
+    std::borrow::Cow::Owned(out)
+}
+
+/// [`sort_chip_label`] as a border-title line in the theme's action style,
+/// ready for a [`BorderChip`](crate::components::clickable::BorderChip).
+pub fn sort_chip_line(
+    field: &SortField,
+    order: SortOrder,
+    theme: &crate::settings::themes::Theme,
+) -> ratatui::text::Line<'static> {
+    ratatui::text::Line::from(ratatui::text::Span::styled(
+        sort_chip_label(field, order),
+        theme.action(),
+    ))
+}
+
 /// What the sort dialog shows and changes for one list.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SortState {
@@ -267,6 +322,28 @@ pub fn query_with_sort(query: &str, field: &SortField, order: SortOrder) -> Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sort_chip_names_the_field_and_cuts_long_keys() {
+        assert_eq!(
+            sort_chip_label(&SortField::Name, SortOrder::Ascending),
+            " Name ↑ "
+        );
+        assert_eq!(
+            sort_chip_label(&SortField::Property("due".into()), SortOrder::Descending),
+            " due ↓ "
+        );
+        let long = sort_chip_label(
+            &SortField::Property("a-very-long-property-name".into()),
+            SortOrder::Ascending,
+        );
+        assert_eq!(long, " a-very-long… ↑ ");
+        let name = long.trim().trim_end_matches(" ↑");
+        assert_eq!(
+            unicode_width::UnicodeWidthStr::width(name),
+            SORT_CHIP_MAX_NAME
+        );
+    }
 
     #[test]
     fn order_of_query_reads_the_directive() {

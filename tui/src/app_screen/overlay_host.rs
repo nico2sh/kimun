@@ -9,6 +9,7 @@ use std::sync::Arc;
 use kimun_core::NoteVault;
 use ratatui::Frame;
 use ratatui::layout::Rect;
+use std::time::Instant;
 
 use crate::components::event_state::EventState;
 use crate::components::events::{AppTx, InputEvent, OverlayData};
@@ -25,6 +26,9 @@ pub struct OverlayHost<F> {
     /// guard: a second `open` while one is active does NOT overwrite the
     /// saved focus.
     saved_focus: Option<F>,
+    /// Drops the tail of the double-click that opened the active overlay
+    /// (see [`OpenGuard`](crate::components::clickable::OpenGuard)).
+    guard: crate::components::clickable::OpenGuard,
 }
 
 impl<F> OverlayHost<F> {
@@ -33,6 +37,7 @@ impl<F> OverlayHost<F> {
             active: None,
             parked: None,
             saved_focus: None,
+            guard: Default::default(),
         }
     }
 
@@ -68,6 +73,7 @@ impl<F> OverlayHost<F> {
         }
         self.parked = None;
         self.active = Some(overlay);
+        self.guard.opened(Instant::now());
     }
 
     /// Open `overlay` over the active one, parking it (drawn, but no input)
@@ -76,6 +82,7 @@ impl<F> OverlayHost<F> {
     pub fn open_over(&mut self, overlay: Box<dyn Overlay>) {
         self.parked = self.active.take();
         self.active = Some(overlay);
+        self.guard.opened(Instant::now());
     }
 
     /// The parked overlay's kind, `None` when nothing is parked.
@@ -86,6 +93,11 @@ impl<F> OverlayHost<F> {
     /// The active overlay as a sortable list, if it is one.
     pub fn active_sortable(&self) -> Option<&dyn SortableList> {
         self.active.as_ref().and_then(|o| o.as_sortable())
+    }
+
+    /// Whether the active overlay takes the query syntax.
+    pub fn active_takes_query_syntax(&self) -> bool {
+        self.active.as_ref().is_some_and(|o| o.takes_query_syntax())
     }
 
     /// The parked overlay as a sortable list, if it is one — where a sort
@@ -99,6 +111,7 @@ impl<F> OverlayHost<F> {
     /// overlay, so panel focus must not move. Otherwise return the saved
     /// opener focus to restore.
     pub fn close(&mut self) -> Option<F> {
+        self.guard.closed();
         if let Some(parked) = self.parked.take() {
             self.active = Some(parked);
             return None;
@@ -110,12 +123,28 @@ impl<F> OverlayHost<F> {
     /// Close the whole stack — the active and any parked overlay — and
     /// return the saved opener focus (`None` when nothing was open).
     pub fn close_all(&mut self) -> Option<F> {
+        self.guard.closed();
         self.parked = None;
         self.active = None;
         self.saved_focus.take()
     }
 
     pub fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
+        self.handle_input_at(event, tx, Instant::now())
+    }
+
+    /// Record every screen input before it is handled, so an overlay that
+    /// opens because of it knows whether a mouse press opened it.
+    pub fn observe_input(&mut self, event: &InputEvent) {
+        self.guard.observe_input(event);
+    }
+
+    /// [`Self::handle_input`] with the clock passed in, so a test describes
+    /// a gap instead of sleeping through one.
+    fn handle_input_at(&mut self, event: &InputEvent, tx: &AppTx, now: Instant) -> EventState {
+        if self.active.is_some() && self.guard.swallows(event, now) {
+            return EventState::Consumed;
+        }
         if let Some(o) = &mut self.active {
             o.handle_input(event, tx)
         } else {
@@ -139,6 +168,9 @@ impl<F> OverlayHost<F> {
             o.render(f, area, theme);
         }
         if let Some(o) = &mut self.active {
+            // Modal: nothing under the overlay is clickable, so nothing under
+            // it may light up on hover either (`components::clickable`).
+            crate::components::clickable::clear();
             o.render(f, area, theme);
         }
     }
@@ -171,6 +203,69 @@ mod tests {
             EventState::Consumed
         }
         fn render(&mut self, _f: &mut Frame, _a: Rect, _t: &Theme) {}
+    }
+
+    /// Reports every event it receives as a `CloseOverlay`, so a test can
+    /// tell whether input reached it.
+    struct Echo;
+    impl Overlay for Echo {
+        fn kind(&self) -> OverlayKind {
+            OverlayKind::Dialog
+        }
+        fn handle_input(&mut self, _e: &InputEvent, tx: &AppTx) -> EventState {
+            tx.send(crate::components::events::AppEvent::CloseOverlay)
+                .ok();
+            EventState::Consumed
+        }
+        fn render(&mut self, _f: &mut Frame, _a: Rect, _t: &Theme) {}
+    }
+
+    /// Opened from the keyboard there is no gesture tail: an immediate click
+    /// is aimed at the overlay and reaches it.
+    #[test]
+    fn a_keyboard_open_takes_clicks_at_once() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut host: OverlayHost<u8> = OverlayHost::new();
+        host.observe_input(&InputEvent::Key(ratatui::crossterm::event::KeyEvent::from(
+            ratatui::crossterm::event::KeyCode::Char('p'),
+        )));
+        host.open(Box::new(Echo), 0);
+        host.handle_input_at(
+            &crate::test_support::mouse_down_at(0, 0),
+            &tx,
+            Instant::now(),
+        );
+        assert!(rx.try_recv().is_ok());
+    }
+
+    /// The second press of a double-click that opened the overlay must not
+    /// reach it — a popup would read it as a press outside and close at once.
+    #[test]
+    fn a_press_right_after_opening_is_the_opening_gesture() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut host: OverlayHost<u8> = OverlayHost::new();
+        let press = crate::test_support::mouse_down_at(0, 0);
+        // A click opened it.
+        host.observe_input(&press);
+        let opened = Instant::now();
+        host.open(Box::new(Echo), 0);
+
+        let early = opened + crate::components::DOUBLE_CLICK / 2;
+        assert_eq!(
+            host.handle_input_at(&press, &tx, early),
+            EventState::Consumed
+        );
+        assert!(rx.try_recv().is_err(), "swallowed inside the window");
+
+        let key = InputEvent::Key(ratatui::crossterm::event::KeyEvent::from(
+            ratatui::crossterm::event::KeyCode::Esc,
+        ));
+        host.handle_input_at(&key, &tx, early);
+        assert!(rx.try_recv().is_ok(), "keys are never held back");
+
+        let late = Instant::now() + crate::components::DOUBLE_CLICK;
+        host.handle_input_at(&press, &tx, late);
+        assert!(rx.try_recv().is_ok(), "delivered once the window passes");
     }
 
     #[test]

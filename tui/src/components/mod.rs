@@ -5,6 +5,7 @@ pub mod attachment_view;
 pub mod autocomplete;
 pub mod autosave_timer;
 pub mod button_row;
+pub mod clickable;
 pub mod command_palette;
 pub mod config_panel;
 pub mod dialogs;
@@ -15,6 +16,7 @@ pub mod event_state;
 pub mod events;
 pub mod file_list;
 pub mod footer_bar;
+pub mod hint_row;
 pub mod hints;
 pub mod indexing;
 pub mod key_picker;
@@ -42,6 +44,13 @@ pub mod which_key;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
+
+/// How close together two clicks have to be to read as one gesture (a
+/// double-click). Shorter than `TypingRun::IDLE`, which measures something
+/// else: that is a *pause* (how long before a human stops feeling they are
+/// still typing), this is a *deliberate burst*. macOS and Windows default to
+/// 500ms, GNOME to 400ms.
+pub const DOUBLE_CLICK: std::time::Duration = std::time::Duration::from_millis(400);
 
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent};
