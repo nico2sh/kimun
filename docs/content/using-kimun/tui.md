@@ -5,7 +5,7 @@ weight = 10
 
 # TUI Reference
 
-Kimün's terminal UI is a single editor screen with an activity rail, one collapsible drawer, and a two-line status bar. There are no editing modes; the only state is which panel has focus. Every leader command is also reachable by mouse: click `≡ Commands` in the title bar to open the [command palette](#command-palette), then click the command. A few chord-only actions have no mouse route, such as Quick Note (`Ctrl+W`) and find/replace in the open note.
+Kimün's terminal UI is a single editor screen with an activity rail (top left side), one collapsible drawer (right after that one), and a two-line status bar (below). There are no editing modes; the only state is which panel has focus. Most commands are also reachable by mouse: click `≡ Commands` in the title bar to open the [command palette](#command-palette), then click the command. A few actions have no mouse route, such as Quick Note (`Ctrl+W` by default) and find/replace in the open note that have a quick keyboard shortcut.
 
 ## Layout
 
