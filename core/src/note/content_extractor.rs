@@ -21,7 +21,7 @@ pub(in crate::note) static WIKILINK_RX: LazyLock<Regex> =
 pub(crate) static HASHTAG_RX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"#(?P<ht_text>[A-Za-z0-9_]+)"#).unwrap());
 
-static MD_LINK_RX: LazyLock<Regex> = LazyLock::new(|| {
+pub(in crate::note) static MD_LINK_RX: LazyLock<Regex> = LazyLock::new(|| {
     // `text` accepts an empty match so empty-alt image links like `![](path)`
     // — which the editor generates on image paste — are still recognised.
     Regex::new(r#"(?P<bang>!?)(?:\[(?P<text>[^\]]*)\])\((?P<link>[^\)]+?)\)"#).unwrap()
@@ -246,6 +246,21 @@ pub(in crate::note) fn wikilink_parts(inner: &str) -> (&str, &str) {
     let link = parts.next().unwrap_or(inner);
     let text = parts.next().unwrap_or(link);
     (link, text)
+}
+
+/// Content data, chunks and index links from one walk over the note.
+pub fn get_index_data<S: AsRef<str>>(
+    reference_path: &VaultPath,
+    md_text: S,
+) -> (NoteContentData, Vec<ContentChunk>, Vec<super::NoteLink>) {
+    let text = md_text.as_ref();
+    let walked = walk(text);
+    let data = NoteContentData {
+        title: walked.title(),
+        hash: nfs::hash_text(text),
+    };
+    let links = walked.index_links(reference_path);
+    (data, walked.into_chunks(), links)
 }
 
 pub fn get_content_data<S: AsRef<str>>(md_text: S) -> NoteContentData {
@@ -730,26 +745,28 @@ pub(in crate::note) fn frontmatter_delimiter(text: &str) -> Option<(&str, usize)
 /// of a YAML/TOML frontmatter block (`---` or `+++`), or `0` if no valid
 /// frontmatter is present. Tolerates both LF and CRLF line endings.
 pub(in crate::note) fn frontmatter_end_byte(text: &str) -> usize {
-    let (delimiter, mut offset) = match frontmatter_delimiter(text) {
-        Some(d) => d,
-        None => return 0,
-    };
+    frontmatter_bounds(text).map_or(0, |(_, end)| end)
+}
 
-    for line in text[offset..].split('\n') {
-        let trimmed = line.trim_end_matches('\r');
-        if trimmed == delimiter {
-            // Advance past this closing delimiter line (and its '\n' if present).
-            offset += line.len();
-            if text.as_bytes().get(offset) == Some(&b'\n') {
-                offset += 1;
+/// A closed YAML/TOML frontmatter block of `text`: the byte range between
+/// its fences (just after the opening line's `\n` up to the start of the
+/// closing line) and the byte just after the closing line. `None` when there
+/// is no block or it is never closed. Tolerates both LF and CRLF.
+pub(in crate::note) fn frontmatter_bounds(text: &str) -> Option<(Range<usize>, usize)> {
+    let (delimiter, start) = frontmatter_delimiter(text)?;
+    let mut offset = start;
+    for line in text[start..].split('\n') {
+        if line.trim_end_matches('\r') == delimiter {
+            // Past the closing delimiter line, and its '\n' if present.
+            let mut end = offset + line.len();
+            if text.as_bytes().get(end) == Some(&b'\n') {
+                end += 1;
             }
-            return offset;
+            return Some((start..offset, end));
         }
         offset += line.len() + 1; // +1 for '\n'
     }
-
-    // No closing delimiter found — treat as no frontmatter
-    0
+    None
 }
 
 /// Splits a leading UTF-8 byte-order mark off `text`: `("\u{feff}", rest)`, or
@@ -758,44 +775,6 @@ pub(in crate::note) fn split_bom(text: &str) -> (&str, &str) {
     match text.strip_prefix('\u{feff}') {
         Some(rest) => ("\u{feff}", rest),
         None => ("", text),
-    }
-}
-
-pub(in crate::note) fn remove_frontmatter<S: AsRef<str>>(text: S) -> (String, String) {
-    let text = text.as_ref();
-    let mut lines = text.lines();
-
-    let Some(first_line) = lines.next() else {
-        return (String::new(), String::new());
-    };
-    let first_line = split_bom(first_line).1;
-
-    if first_line != "---" && first_line != "+++" {
-        // A byte-order mark is not text: left in, it would hide a heading on
-        // the first line.
-        return (String::new(), split_bom(text).1.to_string());
-    }
-
-    let delimiter = first_line;
-    let mut frontmatter = vec![];
-    let mut content = vec![];
-    let mut closed_fm = false;
-
-    for line in lines {
-        if line == delimiter && !closed_fm {
-            closed_fm = true;
-        } else if closed_fm {
-            content.push(line);
-        } else {
-            frontmatter.push(line);
-        }
-    }
-
-    if closed_fm {
-        (frontmatter.join("\n"), content.join("\n"))
-    } else {
-        // An unclosed fence is not frontmatter; only its first line goes.
-        (String::new(), frontmatter.join("\n"))
     }
 }
 
@@ -1160,6 +1139,20 @@ Here's a [url](https://www.example.com)"#;
             let url = "https://www.example.com".to_string();
             link.text.eq("url") && link.ltype.eq(&LinkType::Url) && link.raw_link.eq(&url)
         }));
+    }
+
+    // Review 2, item 5: indexing reads title, hash, chunks and links from
+    // one walk, the same as the separate extractors.
+    #[test]
+    fn index_data_is_the_separate_extractors_from_one_walk() {
+        let path = VaultPath::new("/dir/n.md");
+        let text = "---\ntags: [x]\n---\n# Title #t\nsee [[a]] and [b](sub/b.md)\n## Next\nmore";
+        let (data, chunks, links) = crate::note::NoteDetails::index_data_of(&path, text);
+        assert_eq!(data, get_content_data(text));
+        assert_eq!(
+            (chunks, links),
+            crate::note::NoteDetails::chunks_and_links_of(&path, text)
+        );
     }
 
     #[test]
@@ -2751,8 +2744,9 @@ ls -la ./test
     #[test]
     fn frontmatter_after_a_byte_order_mark_is_still_frontmatter() {
         let text = "\u{feff}---\ntitle: x\n---\nbody";
-        let (fm, body) = super::remove_frontmatter(text);
-        assert_eq!((fm.as_str(), body.as_str()), ("title: x", "body"));
+        let chunks = get_content_chunks(text);
+        assert_eq!(chunks[0].text, "body");
+        assert_eq!(chunks[1].text, "title: x");
         assert_eq!(&text[super::frontmatter_end_byte(text)..], "body");
     }
 }

@@ -102,14 +102,11 @@ fn tags_with(labels: Vec<String>, frontmatter: &properties::PropertySet) -> Vec<
     tags.into_iter().collect()
 }
 
-/// Every link target of a note in document order — wikilink targets, markdown
-/// and image destinations, autolinks — frontmatter and code skipped.
+/// Every link target of a note in document order, as written — wikilink
+/// targets to valid vault paths, markdown and image destinations, autolinks —
+/// frontmatter and code skipped.
 pub fn note_link_targets(text: &str) -> Vec<String> {
-    walk::walk(text)
-        .links
-        .into_iter()
-        .map(|l| l.target)
-        .collect()
+    walk::walk(text).link_targets()
 }
 
 /// A heading of a note: its level (1–6), display text and line.
@@ -126,16 +123,18 @@ pub struct NoteHeading {
 }
 
 /// What a note's own text declares about it, read in one pass over its
-/// frontmatter: its labels (as [`note_tags`]), its frontmatter properties,
-/// and its headings (frontmatter and code skipped).
+/// frontmatter and one walk over the note: its labels (as [`note_tags`]),
+/// its frontmatter properties, its headings and its link targets (as
+/// [`note_link_targets`]; frontmatter and code skipped).
 ///
 /// ```
-/// let text = "---\n# a comment, not a heading\nstatus: done\n---\n# Title\n```\n# code\n```\n#todo";
+/// let text = "---\n# a comment, not a heading\nstatus: done\n---\n# Title\n```\n# code\n```\n#todo [[other]]";
 /// let meta = kimun_core::note::NoteMetadata::of(text);
 /// assert_eq!(meta.tags, ["todo"]);
 /// assert_eq!(meta.properties.len(), 1);
 /// assert_eq!(meta.headings.len(), 1);
 /// assert_eq!(meta.headings[0].text, "Title");
+/// assert_eq!(meta.links, ["other"]);
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct NoteMetadata {
@@ -146,6 +145,8 @@ pub struct NoteMetadata {
     pub properties: Vec<PropertyEntry>,
     /// Headings in order.
     pub headings: Vec<NoteHeading>,
+    /// Link targets in document order, as [`note_link_targets`] returns them.
+    pub links: Vec<String>,
 }
 
 impl NoteMetadata {
@@ -157,6 +158,7 @@ impl NoteMetadata {
             tags: tags_with(walked.tag_names(), &frontmatter),
             properties: frontmatter.into_entries(),
             headings: walked.headings(text),
+            links: walked.link_targets(),
         }
     }
 }
@@ -218,6 +220,17 @@ impl NoteDetails {
     /// constructing a `NoteDetails`.
     pub fn content_data_of<S: AsRef<str>>(text: S) -> NoteContentData {
         content_extractor::get_content_data(text)
+    }
+
+    /// Everything the index stores from a note body at `path` — content data
+    /// (title + hash), heading chunks and links — from one walk, without
+    /// constructing a `NoteDetails`. The same as [`Self::content_data_of`]
+    /// plus [`Self::chunks_and_links_of`].
+    pub fn index_data_of<S: AsRef<str>>(
+        path: &VaultPath,
+        text: S,
+    ) -> (NoteContentData, Vec<ContentChunk>, Vec<NoteLink>) {
+        content_extractor::get_index_data(path, text)
     }
 
     /// Heading-chunked content of a note body, without constructing a

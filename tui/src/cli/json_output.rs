@@ -1,4 +1,3 @@
-use crate::cli::metadata_extractor::extract_links;
 use chrono::Utc;
 use kimun_core::NoteVault;
 use kimun_core::nfs::NoteEntryData;
@@ -67,7 +66,7 @@ impl JsonNoteMetadata {
         let meta = NoteMetadata::of(content);
         Self {
             tags: meta.tags,
-            links: extract_links(content),
+            links: meta.links,
             headers: meta.headings.into_iter().map(JsonHeader::from).collect(),
             properties: JsonProperties(meta.properties),
         }
