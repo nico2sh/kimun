@@ -7,10 +7,7 @@ pub fn extract_tags(content: &str) -> Vec<String> {
 }
 
 pub fn extract_links(content: &str) -> Vec<String> {
-    kimun_core::note::scan::link_char_spans(content)
-        .into_iter()
-        .map(|span| span.target)
-        .collect()
+    kimun_core::note::note_link_targets(content)
 }
 
 /// The note's headings — frontmatter and `#` lines inside code skipped.
@@ -24,6 +21,19 @@ pub fn extract_headers(content: &str) -> Vec<JsonHeader> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn links_come_from_the_note_walk() {
+        let links = extract_links("see [[a|A]] and [b](b.md) and `[[code]]` <https://c.d>");
+        assert_eq!(links, ["a", "b.md", "https://c.d"]);
+    }
+
+    #[test]
+    fn a_wikilink_inside_an_html_block_is_a_link() {
+        let links =
+            extract_links("<details>\n<summary>More</summary>\nSee [[hidden]]\n</details>\n");
+        assert_eq!(links, ["hidden"]);
+    }
 
     #[test]
     fn frontmatter_tags_in_either_format() {
