@@ -300,7 +300,7 @@ echo "New line" | kimun note append "path/to/note"
 kimun note append "inbox/ideas" "Another idea just came to me"
 
 # Log the output of a command to a running log note
-date >> /dev/null; echo "$(date): build succeeded" | kimun note append "logs/build-log"
+echo "$(date): build succeeded" | kimun note append "logs/build-log"
 
 # Accumulate cron job output
 0 * * * * kimun note append "logs/hourly" "$(date): checked in"

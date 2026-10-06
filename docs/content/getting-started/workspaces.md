@@ -36,7 +36,7 @@ personal  /Users/alice/personal-notes   (active)
 
 ## Subcommands
 
-### `init` — create a workspace
+### Create a workspace (`init`)
 
 ```sh
 kimun workspace init --name <name> <path>
@@ -44,7 +44,7 @@ kimun workspace init --name <name> <path>
 
 Creates the config entry and the directory itself if it doesn't exist. The name is lowercased and validated against the [Workspace Name Rules](@/getting-started/configuration.md#workspace-name-rules). Invalid names (for example, ones containing `/`) are rejected before anything is written.
 
-### `list` — show all workspaces
+### List workspaces (`list`)
 
 ```sh
 kimun workspace list
@@ -52,7 +52,7 @@ kimun workspace list
 
 Lists every configured workspace and marks the `(active)` one, which all other commands and the TUI use.
 
-### `use` — switch the active workspace
+### Switch the active workspace (`use`)
 
 ```sh
 kimun workspace use <name>
@@ -60,7 +60,7 @@ kimun workspace use <name>
 
 From then on, search, note listing, and the TUI all use that workspace.
 
-### `rename` — rename a workspace
+### Rename a workspace (`rename`)
 
 ```sh
 kimun workspace rename <old-name> <new-name>
@@ -68,7 +68,7 @@ kimun workspace rename <old-name> <new-name>
 
 Renames the key in `config.toml` and moves the cache (`<old>.kimuncache` → `<new>.kimuncache`) and history (`<old>.txt` → `<new>.txt`) files with it. Your notes directory is not touched. The new name is validated like any other; if a cache or history file already exists at the new name, the rename aborts before any change so nothing is overwritten.
 
-### `remove` — remove a workspace
+### Remove a workspace (`remove`)
 
 ```sh
 kimun workspace remove <name>
@@ -76,7 +76,7 @@ kimun workspace remove <name>
 
 Removes the config entry and deletes the workspace's cache and history files. Your notes directory is not touched. If you add the workspace again, the index is rebuilt from scratch.
 
-### `reindex` — rebuild the search index
+### Rebuild the search index (`reindex`)
 
 ```sh
 kimun workspace reindex <name>

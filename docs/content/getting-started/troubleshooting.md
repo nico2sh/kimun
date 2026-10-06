@@ -134,6 +134,6 @@ If Kimün cannot write to the platform directory (for example, because the home 
 | macOS / Linux | `/tmp/kimun.log` (or wherever `$TMPDIR` points) |
 | Windows | `%TEMP%\kimun.log` |
 
-## Still Stuck?
+## Reporting Issues
 
-[Open an issue](https://github.com/nico2sh/kimun/issues) with the relevant section of `kimun.log`, including any `[PANIC]` lines. If search returns wrong results, `kimun workspace reindex <name>` rebuilds the index from scratch, which fixes most index problems (see [Workspaces](@/getting-started/workspaces.md#reindex-rebuild-the-search-index)).
+[Open an issue](https://github.com/nico2sh/kimun/issues) with the relevant section of `kimun.log`, including any `[PANIC]` lines. If search returns wrong results, `kimun workspace reindex <name>` rebuilds the index from scratch, which fixes most index problems (see [Workspaces](@/getting-started/workspaces.md#rebuild-the-search-index-reindex)).

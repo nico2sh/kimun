@@ -117,7 +117,7 @@ The name must match the `name` field in your `.toml` file exactly.
 
 ### Overriding the Default Theme
 
-If you save a file named `default.toml` in the themes directory, it will be loaded as an additional theme option. It does not replace the built-in default. To make it the active theme, set it in `[global]` as shown above.
+If you save a file named `default.toml` in the themes directory, it will be loaded as an additional theme option. It does not replace the built-in default. To make it the active theme, set the top-level `theme` key to its `name`, as shown above.
 
 ## Example: Ayu Dark Theme (minimal)
 
