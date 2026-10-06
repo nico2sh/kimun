@@ -20,7 +20,7 @@ use std::ops::Range;
 
 use chrono::{DateTime, SecondsFormat, Utc};
 
-use super::content_extractor::{frontmatter_delimiter, split_bom};
+use super::content_extractor::{frontmatter_bounds, frontmatter_delimiter, split_bom};
 use toml_formatter::TomlFormatter;
 use yaml_formatter::YamlFormatter;
 
@@ -197,27 +197,18 @@ struct FrontmatterSpan {
     inner: Range<usize>,
 }
 
-/// Finds the leading frontmatter block, with the same rules as the indexer's
-/// `remove_frontmatter`: the first line is exactly `---` or `+++` and a later
-/// line is exactly the same delimiter (CRLF tolerated).
+/// Finds the leading frontmatter block, with the indexer's rules
+/// (`frontmatter_bounds`): the first line is exactly `---` or `+++` and a
+/// later line is exactly the same delimiter (CRLF tolerated).
 fn locate_frontmatter(text: &str) -> Option<FrontmatterSpan> {
-    let (delimiter, start) = frontmatter_delimiter(text)?;
+    let (delimiter, _) = frontmatter_delimiter(text)?;
+    let (inner, _) = frontmatter_bounds(text)?;
     let format = if delimiter == FrontmatterFormat::Toml.delimiter() {
         FrontmatterFormat::Toml
     } else {
         FrontmatterFormat::Yaml
     };
-    let mut offset = start;
-    for line in text[start..].split_inclusive('\n') {
-        if line.trim_end_matches('\n').trim_end_matches('\r') == delimiter {
-            return Some(FrontmatterSpan {
-                format,
-                inner: start..offset,
-            });
-        }
-        offset += line.len();
-    }
-    None
+    Some(FrontmatterSpan { format, inner })
 }
 
 /// A note's properties — the one door for reading and editing them, whatever

@@ -397,11 +397,38 @@ impl VaultPath {
     /// directory part (e.g. `anton.md`) is returned unchanged so callers can
     /// fall back to a vault-wide name lookup (wiki-style links).
     pub fn resolve_link_in_note(&self, note_path: &VaultPath) -> VaultPath {
+        let resolved = self.resolve_against_note(note_path);
+        if self.is_note_file() {
+            resolved
+        } else {
+            resolved.absolute()
+        }
+    }
+
+    /// Resolve `self` as a link target written inside `note_path`, without
+    /// making the result absolute: a bare note filename (e.g. `anton.md`) is
+    /// returned unchanged for a vault-wide name lookup; anything else is
+    /// appended to the note's folder (or to `note_path` itself when it is a
+    /// folder) and flattened, so a relative note path gives a relative result.
+    /// [`Self::resolve_link_in_note`] is this plus [`Self::absolute`].
+    ///
+    /// ```
+    /// use kimun_core::nfs::VaultPath;
+    /// let note = VaultPath::new("folder/note.md");
+    /// let target = VaultPath::new("../work/a.md");
+    /// assert_eq!(target.resolve_against_note(&note).to_string(), "work/a.md");
+    /// ```
+    pub fn resolve_against_note(&self, note_path: &VaultPath) -> VaultPath {
         if self.is_note_file() {
             return self.clone();
         }
-        let (parent, _) = note_path.flatten().get_parent_path();
-        parent.append(self).flatten().absolute()
+        let note_path = note_path.flatten();
+        let base = if note_path.is_note() {
+            note_path.get_parent_path().0
+        } else {
+            note_path
+        };
+        base.append(self).flatten()
     }
 
     /// Expresses this path relative to `reference_path`, walking up with `..`
@@ -968,6 +995,36 @@ mod tests {
         assert_eq!(
             "/work/people/anton.md",
             target.resolve_link_in_note(&note).to_string()
+        );
+    }
+
+    #[test]
+    fn resolve_against_note_keeps_relative_paths_relative() {
+        let relative = VaultPath::new("folder/note.md");
+        assert_eq!(
+            "folder/sub/e.md",
+            VaultPath::note_path_from("sub/e")
+                .resolve_against_note(&relative)
+                .to_string()
+        );
+        assert_eq!(
+            "/journal/a/b.md",
+            VaultPath::new("a/b.md")
+                .resolve_against_note(&VaultPath::new("/journal/x.md"))
+                .to_string()
+        );
+        assert_eq!(
+            "work/a.md",
+            VaultPath::new("../work/a.md")
+                .resolve_against_note(&relative)
+                .to_string()
+        );
+        // A bare note name stays a name, looked up anywhere in the vault.
+        assert_eq!(
+            "anton.md",
+            VaultPath::new("anton.md")
+                .resolve_against_note(&relative)
+                .to_string()
         );
     }
 

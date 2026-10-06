@@ -198,6 +198,10 @@ must contain exactly these and nothing else.
 | a wikilink inside image alt text, `![x [[a]] #t](p.png)` | an image; `#t` not a tag | per CommonMark the image degrades to text; `#t` is a tag (rendered markdown unchanged) |
 | a URL fragment in an autolink, `<https://x.com/#frag>` | `frag` a tag in `extract_labels`/LINKS | not a tag (link text) |
 | a hashtag pulldown splits at a flanking `_`, `#my_tag_`, `#tag_`, `#_x` | never indexed; but a tag in `note_tags`, LINKS and the rendered markdown | not a tag anywhere — the other extractors now agree with the index |
+| an escaped wikilink, `\[[a]]` | a link (index, LINKS); rendered `\[a](a.md)` | not a link anywhere; text `[[a]]` — the backslash escapes it, as CommonMark reads it |
+| markup inside a plain wikilink, `[[a *b* c]]` | chunk text `a b c` | `a *b* c` — the wikilink's text is shown as written, like an alias |
+| a markdown link inside an HTML block, `<details>[doc](doc.md)</details>` | listed by LINKS/MCP/CLI, rewritten; not indexed | listed and rewritten as before, and now indexed too (like wikilinks in HTML) |
+| an image embed, `![[pic.png]]`, `![[sub/pic.png]]` | rendered `![pic.png](pic.png.md)` — a broken image | rendered `![pic.png](pic.png)` / `![…](sub/pic.png)`: an embed whose target looks like an image keeps it as written for the image pipeline to resolve; any other embed (`![[v1.2]]`, `![[doc.pdf]]`) still renders as a note path |
 | title of `# Sprint #42` | "Sprint #42" | "Sprint 42" |
 | title of `# See [[p\|Project]]` | "See [[p\|Project]]" | "See Project" |
 | title from a paragraph, e.g. `#inbox call [[bob\|Bob]]` | "#inbox call [[bob\|Bob]]" | "inbox call Bob" (a title renders like its line's chunk text) |

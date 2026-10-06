@@ -15531,7 +15531,7 @@ Alias tag [#b](a.md) and invalid [[#tag]] and empties [[|b]] [[]].
 
 A reference [ref][r] and an autolink <https://e.x>.
 
-Embed ![Picture](pic.png.md) and plain [Shown](note.md).
+Embed ![Picture](pic.png) and plain [Shown](note.md).
 
 Broken across lines [[target
 |Shown]] then text.
@@ -15577,6 +15577,46 @@ Note(VaultPath { absolute: false, slices: [PathSlice("real.md")] }) "real.md" "r
 related: see [docs](other.md) and [[refnote]]
 ---
 body with [real](real.md)
+
+
+=== tests/fixtures/walk/review2_rows.md
+-- title "Review 2 rows"
+-- headings
+1 0 "Review 2 rows"
+-- chunks
+[Review 2 rows] "A markdown link in an HTML block:\n<details>\n\nSee [doc](doc.md) and [deep](sub/deep.md)\n\n</details>\n\n<div>[x](y.md)</div>\n\nEscaped [[a]] x and markup a *b* c and section S.\nEmbeds pic.png and sub/pic.png and sub/e.\nA code span in a label a `]` b."
+-- index chunks
+[Review 2 rows] "A markdown link in an HTML block:\n<details>\n\nSee [doc](doc.md) and [deep](sub/deep.md)\n\n</details>\n\n<div>[x](y.md)</div>\n\nEscaped [[a]] x and markup a *b* c and section S.\nEmbeds pic.png and sub/pic.png and sub/e.\nA code span in a label a `]` b."
+-- index links (sorted)
+Note(VaultPath { absolute: false, slices: [PathSlice("doc.md")] }) "doc.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("deep.md")] }) "folder/sub/deep.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("x.md")] }) "folder/sub/x.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("pic.png.md")] }) "pic.png.md" "pic.png"
+Note(VaultPath { absolute: false, slices: [PathSlice("sub"), PathSlice("e.md")] }) "sub/e.md" "sub/e"
+Note(VaultPath { absolute: false, slices: [PathSlice("sub"), PathSlice("pic.png.md")] }) "sub/pic.png.md" "sub/pic.png"
+Note(VaultPath { absolute: false, slices: [PathSlice("y.md")] }) "y.md" ""
+-- tags []
+-- markdown links
+Note(VaultPath { absolute: false, slices: [PathSlice("doc.md")] }) "doc.md" "doc"
+Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("deep.md")] }) "folder/sub/deep.md" "deep"
+Note(VaultPath { absolute: false, slices: [PathSlice("y.md")] }) "y.md" "x"
+Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("x.md")] }) "folder/sub/x.md" "a `]` b"
+-- markdown
+# Review 2 rows
+
+A markdown link in an HTML block:
+
+<details>
+See [doc](doc.md) and [deep](folder/sub/deep.md)
+</details>
+
+<div>[x](y.md)</div>
+
+Escaped \[[a]] x and markup [[a *b* c]] and section [[a#sec|S]].
+
+Embeds ![pic.png](pic.png) and ![sub/pic.png](sub/pic.png) and ![sub/e](sub/e.md).
+
+A code span in a label [a `]` b](folder/sub/x.md).
 
 
 === tests/fixtures/walk/setext_hashtag.md

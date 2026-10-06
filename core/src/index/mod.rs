@@ -357,7 +357,7 @@ impl NoteIndex {
                 self.emit_delete(path);
             }
             for (entry, text) in diff.to_add.iter().chain(diff.to_modify.iter()) {
-                self.emit_upsert(&entry.path, NoteDetails::content_data_of(text).hash);
+                self.emit_upsert(&entry.path, crate::nfs::hash_text(text));
             }
         }
         Ok(())
@@ -393,7 +393,7 @@ impl NoteIndex {
             // The backlink victims' content changed: their links were
             // rewritten to the new name.
             for (entry, text) in rewritten {
-                self.emit_upsert(&entry.path, NoteDetails::content_data_of(text).hash);
+                self.emit_upsert(&entry.path, crate::nfs::hash_text(text));
             }
         }
         Ok(())
@@ -1964,8 +1964,8 @@ async fn save_note(
 ) -> Result<NoteContentData, DBError> {
     // Parse once and hand the computed content data back to the caller, so
     // the full-text hash + title extraction is never done twice per save.
-    let data = note_details.get_content_data();
-    let (chunks, links) = note_details.get_chunks_and_links();
+    let (data, chunks, links) =
+        NoteDetails::index_data_of(&note_details.path, &note_details.raw_text);
     let label_count = links
         .iter()
         .filter(|l| matches!(l.ltype, LinkType::Hashtag))
@@ -2099,10 +2099,9 @@ async fn upsert_notes_batched(
     let mut batch = NoteBatch::with_capacity(notes.len(), 0, 0, notes.len() * 4);
     for (entry_data, text) in notes {
         // Avoid `NoteDetails::new` — it would clone the raw text purely to be
-        // re-borrowed for each parse pass below. The borrowed-text associated
-        // functions take the text by `AsRef<str>` and keep it borrowed.
-        let data = NoteDetails::content_data_of(text);
-        let (chunks, links) = NoteDetails::chunks_and_links_of(&entry_data.path, text);
+        // re-borrowed below. The borrowed-text associated functions take the
+        // text by `AsRef<str>` and keep it borrowed; one walk gives it all.
+        let (data, chunks, links) = NoteDetails::index_data_of(&entry_data.path, text);
         let properties = NoteDetails::property_set_of(text);
         batch.push(entry_data, data, chunks, links, properties);
     }
