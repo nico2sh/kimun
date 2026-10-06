@@ -6,8 +6,8 @@ sort_by = "weight"
 
 # Getting Started
 
-Install Kimün, point it at a folder, start typing. This section covers that — plus the configuration options worth knowing about.
+This section covers installing Kimün, pointing it at a notes folder, and the main configuration options.
 
-Want to kick the tyres before touching your own notes? The repo's `example/` directory has sample notes and a ready-made `config.toml` you can mess up freely.
+To try Kimün without touching your own notes, use the repo's `example/` directory. It has sample notes and a ready-made `config.toml`.
 
 **Start here:** [Installation](@/getting-started/installation.md)

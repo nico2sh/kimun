@@ -5,7 +5,7 @@ weight = 3
 
 # Scripting with JSON
 
-Kimün's JSON output format makes it easy to automate note management and build custom workflows. This guide covers the JSON structure and provides practical recipes for common tasks.
+Kimün can print search results and note listings as JSON, which you can process with `jq` or other tools in scripts. This guide describes the JSON structure and gives recipes for common tasks.
 
 ## Enabling JSON output
 
@@ -22,28 +22,28 @@ The output is a single JSON object with two top-level keys:
 
 ### `metadata` object
 
-- `workspace` — active workspace name
-- `workspace_path` — absolute path to workspace directory
-- `total_results` — number of notes returned
-- `query` — the search query (null for `notes` listings)
-- `is_listing` — true for `notes`, false for `search`
-- `generated_at` — ISO 8601 timestamp
+- `workspace`: active workspace name
+- `workspace_path`: absolute path to workspace directory
+- `total_results`: number of notes returned
+- `query`: the search query (null for `notes` listings)
+- `is_listing`: true for `notes`, false for `search`
+- `generated_at`: ISO 8601 timestamp
 
 ### `notes` array
 
 Each note object contains:
 
-- `path` — note path relative to workspace root (includes `.md`)
-- `title` — note title (extracted from first heading or filename)
-- `content` — full note content
-- `size` — file size in bytes
-- `modified` — last modified timestamp (Unix seconds)
-- `created` — creation timestamp (Unix seconds, currently same as modified)
-- `hash` — content hash (hex string)
-- `journal_date` — date string `YYYY-MM-DD` if the note is a journal entry, otherwise absent
-- `metadata.tags` — array of `#tag` strings extracted from content
-- `metadata.links` — array of wikilink targets extracted from content
-- `metadata.headers` — array of `{level, text}` objects for each Markdown heading
+- `path`: note path relative to workspace root (includes `.md`)
+- `title`: note title (extracted from first heading or filename)
+- `content`: full note content
+- `size`: file size in bytes
+- `modified`: last modified timestamp (Unix seconds)
+- `created`: creation timestamp (Unix seconds, currently same as modified)
+- `hash`: content hash (hex string)
+- `journal_date`: date string `YYYY-MM-DD` if the note is a journal entry, otherwise absent
+- `metadata.tags`: array of `#tag` strings extracted from content
+- `metadata.links`: array of wikilink targets extracted from content
+- `metadata.headers`: array of `{level, text}` objects for each Markdown heading
 
 ## Common recipes
 
@@ -113,7 +113,7 @@ kimun notes --format json > notes-backup.json
 
 ### Count journal entries
 
-Get statistics on your journaling habits:
+Count the notes that are journal entries:
 
 ```sh
 kimun notes --format json | jq '[.notes[] | select(.journal_date != null) | .journal_date] | length'
@@ -121,7 +121,7 @@ kimun notes --format json | jq '[.notes[] | select(.journal_date != null) | .jou
 
 ### Build custom reports
 
-Process JSON output with other tools for advanced analysis:
+Compute other figures from the JSON output:
 
 ```sh
 # Get average note size
@@ -133,7 +133,7 @@ kimun notes --format json | jq '.notes[] | select(.created > (now | floor - 8640
 
 ## Quick note automation
 
-`kimun note quick` captures thoughts into timestamped inbox notes — handy in scripts:
+`kimun note quick` saves text as a timestamped note in your inbox, which is useful in scripts:
 
 ```sh
 # Log a command's output as a quick note
@@ -152,7 +152,4 @@ List inbox contents with `kimun note triage`, or use the MCP `triage_inbox` prom
 
 ## Tips
 
-- Use `jq` for powerful JSON filtering and transformation
-- Pipe JSON output to files for version control or backup
-- Combine with other command-line tools for complex workflows
-- Test queries with small result sets before applying to large workspaces
+Test a query on a small result set before running it against a large workspace.

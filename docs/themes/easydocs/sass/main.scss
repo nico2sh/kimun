@@ -280,31 +280,65 @@ main > nav {
   }
 }
 
-#toc {
-  margin-left:calc(#{$baseline} + #{$font-size});
-  padding:0;
-  margin:0 0 0 $baseline;
-  font-size: 80%;
+// Right-hand "On this page" outline. Sits beside #wrap on wide screens,
+// collapses into a <details> above the content on narrower ones.
+#page-outline {
+  grid-area: outline;
+  font-family: $font-family;
+  font-size: 0.8125rem;
+  line-height: 1.5;
 
-  a.active {
-    color: $hover-links;
+  summary {
+    cursor: pointer;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    color: rgba($color, 0.75);
+    margin-bottom: calc(#{$baseline} / 2);
+  }
+}
+
+#toc {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-left: 1px solid rgba($color, 0.12);
+
+  ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
   }
 
   li {
-    color:$color;
-    margin-left: $font-size;
-
-  &::before {
-    display: inline-block;
-    content:"";
+    margin: 0;
   }
 
-  ul {
-    padding:0;
+  a {
+    display: block;
+    padding: 2px 0 2px calc(#{$baseline} / 2);
+    margin-left: -1px;
+    border-left: 1px solid transparent;
+    color: rgba($color, 0.7);
+    transition: color 0.15s ease-in-out, border-color 0.15s ease-in-out;
+
+    &:visited {
+      color: rgba($color, 0.7);
+    }
+
+    &:hover {
+      color: $hover-links;
+    }
+
+    &.active {
+      color: $hover-links;
+      border-left-color: $hover-links;
+    }
   }
 
-}
-
+  ul a {
+    padding-left: $baseline;
+  }
 }
 
 main {
@@ -526,8 +560,20 @@ main {
 
 
 article {
- width: calc(100% - (#{$baseline} * 4 + 20rem));
- margin-left:calc(#{$baseline} * 2);
+ flex: 1;
+ min-width: 0;
+ margin: 0 $baseline 0 calc(#{$baseline} * 2);
+ display: grid;
+ grid-template-columns: minmax(0, 72ch);
+ grid-template-areas:
+   "search"
+   "outline"
+   "wrap";
+ align-items: start;
+
+ .search-container {
+   grid-area: search;
+ }
 
  img {
    max-width:100%;
@@ -536,7 +582,8 @@ article {
  }
 
  #wrap {
-   max-width: 72ch;
+   grid-area: wrap;
+   min-width: 0;
 
    p, li, blockquote, dd, dt, table {
      font-family: $body-font-family;
@@ -548,6 +595,45 @@ article {
    }
  }
 
+}
+
+// Below the wide breakpoint the outline is an inline, collapsible block
+@media screen and (max-width: 1279px) {
+  #page-outline {
+    margin-bottom: $baseline;
+    padding-bottom: calc(#{$baseline} / 2);
+    border-bottom: 1px solid rgba($color, 0.1);
+  }
+}
+
+// Wide: three columns — nav | content | outline
+@media screen and (min-width: 1280px) {
+  article {
+    grid-template-columns: minmax(0, 72ch) 15rem;
+    grid-template-areas:
+      "search search"
+      "wrap outline";
+    column-gap: calc(#{$baseline} * 2);
+  }
+
+  #page-outline {
+    position: sticky;
+    top: $baseline;
+    max-height: calc(100vh - #{$baseline} * 2);
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: rgba($color, 0.2) transparent;
+
+    summary {
+      cursor: default;
+      list-style: none;
+      pointer-events: none;
+
+      &::-webkit-details-marker {
+        display: none;
+      }
+    }
+  }
 }
 
 #mobile {
@@ -562,7 +648,6 @@ article {
   }
 
   article {
-    width: calc(100% - (#{$baseline} * 3 + 14rem));
     margin-left: $baseline;
   }
 }
@@ -581,7 +666,6 @@ article {
   }
 
   article {
-    width: calc(100% - (#{$baseline} * 2));
     margin:0 $baseline;
     z-index:1;
   }

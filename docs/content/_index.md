@@ -5,13 +5,13 @@ sort_by = "weight"
 
 # Introduction
 
-**Kimün is a notes app that lives in your terminal.** Fast to open, fast to search, impossible to outgrow.
+Kimün is a note-taking app for the terminal.
 
 ![Kimün TUI screenshot](img/screenshot-tui.png)
 
-- **Plain Markdown files** — your notes are just `.md` files in a directory you own. Open them with any editor, sync them with anything.
-- **Search that actually finds things** — a local SQLite index powers full-text and structured queries (by name, section, path, label, links).
-- **No lock-in, ever** — no cloud, no subscriptions, no tracking. Delete Kimün tomorrow and your notes won't notice.
+- Notes are plain `.md` files in a directory you own. You can open them with any editor and sync them with any tool.
+- A local SQLite index handles full-text and structured queries (by name, section, path, label, and links).
+- Everything stays on your machine. There is no cloud service, account, or tracking, and if you stop using Kimün your notes stay as they are.
 
 ## Quick Start
 
@@ -29,7 +29,7 @@ kimun --help
 
 ## Where Your Data Lives
 
-Your workspace directory holds only your **`.md` files** — plain Markdown, totally portable.
+Your workspace directory holds only your `.md` files.
 
 Kimün's own files live under your config directory, separate from your notes:
 
@@ -38,10 +38,8 @@ Kimün's own files live under your config directory, separate from your notes:
 
 That directory contains:
 
-- `config.toml` — your settings and workspace configuration
-- `<workspace>.kimuncache` — per-workspace search index (regenerable; safe to delete)
-- `history/<workspace>.txt` — per-workspace history of recently-opened notes
+- `config.toml`: your settings and workspace configuration
+- `<workspace>.kimuncache`: the per-workspace search index (regenerable, safe to delete)
+- `history/<workspace>.txt`: the per-workspace history of recently opened notes
 
-Both the cache and history locations are configurable — see [Configuration](@/getting-started/configuration.md#files-kimun-stores-on-disk).
-
-Everything is stored locally. No cloud, no subscriptions, no tracking.
+The cache and history locations are configurable. See [Configuration](@/getting-started/configuration.md#files-kimun-stores-on-disk).

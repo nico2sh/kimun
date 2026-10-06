@@ -5,13 +5,13 @@ weight = 2
 
 # Piping Output
 
-Kimün's CLI output is designed to work seamlessly with Unix pipes and other command-line tools. This guide covers common patterns for combining kimun with tools like `less`, `bat`, `fzf`, and more.
+Kimün's CLI reads from stdin and writes plain text or JSON to stdout, so it works with Unix pipes. This guide shows common ways to combine kimun with tools such as `less`, `bat`, and `fzf`.
 
 ## Basic piping
 
 ### Pipe search results into `kimun note show`
 
-Find a note and display it directly:
+Find a note and display it:
 
 ```sh
 # Find a note and display it
@@ -27,7 +27,7 @@ kimun note show journal/2024-01-15
 
 ### Pipe into a pager
 
-Display search results or note content with pagination:
+Page through search results or note content:
 
 ```sh
 kimun note show journal/2024-01-15 | less
@@ -47,7 +47,7 @@ kimun search "project" --format json | jq '.' | less
 
 ## Interactive selection with `fzf`
 
-[`fzf`](https://github.com/junegunn/fzf) is a command-line fuzzy finder that pairs perfectly with kimun for interactive note selection.
+[`fzf`](https://github.com/junegunn/fzf) is a command-line fuzzy finder. Use it with kimun to pick notes interactively.
 
 ### Interactively pick a note and display it
 
@@ -69,11 +69,11 @@ kimun notes --format paths | fzf --preview 'kimun note show {}' | kimun note sho
 
 ## Shell aliases and functions
 
-Add these to your `~/.zshrc` or `~/.bashrc` for quick access:
+Add these to your `~/.zshrc` or `~/.bashrc`:
 
 ### Quick capture
 
-The fastest way to jot down a thought from the terminal:
+Save a thought from the terminal with one short command:
 
 ```sh
 # One-letter alias for instant capture
@@ -119,7 +119,7 @@ alias ki='kimun note triage'
 
 ## Piping into the journal
 
-`kimun journal` accepts piped input when stdin is not a terminal, making it easy to log command output directly to your daily entry:
+When stdin is not a terminal, `kimun journal` appends the piped input to your daily entry. Use this to log command output:
 
 ```sh
 # Timestamped log line
@@ -135,7 +135,7 @@ kimun search "todo" --format paths | kimun journal
 echo "Late entry" | kimun journal --date 2024-01-15
 ```
 
-Combine with cron for automatic daily logs:
+Run it from cron to log something every day:
 
 ```sh
 @daily echo "$(hostname): $(uptime)" | kimun journal
@@ -143,7 +143,4 @@ Combine with cron for automatic daily logs:
 
 ## Tips
 
-- Pipes work with both plain text and JSON output
-- Use `--format json` with tools like `jq` for advanced filtering
-- Combine multiple pipes to build complex workflows
-- Test piped commands without committing them to aliases first
+Pipes work with both plain text and JSON output. To filter on specific fields, use `--format json` with `jq` (see [Scripting with JSON](@/guides/scripting.md)). Try a pipeline on the command line before saving it as an alias.

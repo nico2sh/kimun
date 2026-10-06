@@ -7,7 +7,7 @@ weight = 22
 
 `kimun mcp` runs kimun as a [Model Context Protocol](https://modelcontextprotocol.io) server over stdio. Any MCP-compatible client (Claude Desktop, Claude Code, Zed, Cursor, etc.) can connect to manage notes and search the vault without spawning a new process per operation.
 
-The MCP client spawns and manages the `kimun mcp` process automatically — you never need to start it manually.
+The MCP client starts and manages the `kimun mcp` process, so you don't need to start it yourself.
 
 ## Tools
 
@@ -16,13 +16,13 @@ The MCP client spawns and manages the `kimun mcp` process automatically — you 
 | `create_note` | Create a new note (fails if it already exists) |
 | `append_note` | Append text to a note (creates it if absent) |
 | `overwrite_note` | Replace a note's entire body with new content (destructive) |
-| `replace_in_note` | Replace text in a note (literal, or a regex with `regex: true` — then `new` may use `$1`/`${name}` captures); the match must be unique unless `replace_all` is set; `preview: true` returns the result without writing (destructive) |
+| `replace_in_note` | Replace text in a note (literal, or a regex with `regex: true`, in which case `new` may use `$1`/`${name}` captures); the match must be unique unless `replace_all` is set; `preview: true` returns the result without writing (destructive) |
 | `delete_note` | Delete a note (destructive) |
 | `show_note` | Return the full markdown content of a note |
 | `get_properties` | Return a note's frontmatter properties (in the note's order; a key with no value, or one Kimün can't read such as a TOML time of day, is null) and all its labels, as JSON |
 | `set_property` | Set a frontmatter property; `value` is a string, number, true/false, or array. A string is typed like the key's values in other notes (a mismatch is refused unless `type` is given), or by its look for a new key. `format: "yaml"` picks YAML for a note with no frontmatter yet |
 | `remove_property` | Remove a frontmatter property (destructive) |
-| `search_notes` | Search the vault — same [query syntax](@/using-kimun/search.md) as the TUI and CLI |
+| `search_notes` | Search the vault with the same [query syntax](@/using-kimun/search.md) as the TUI and CLI |
 | `list_notes` | List all notes, optionally filtered by path prefix |
 | `journal` | Append to today's (or a specific date's) journal entry |
 | `get_backlinks` | List notes that link to the given note |
@@ -39,12 +39,12 @@ The MCP client spawns and manages the `kimun mcp` process automatically — you 
 before they run.
 
 Like every Kimün edit, destructive operations (including the backlink rewrites
-from `rename_note` / `move_note`) back up the old content first — see
-[Backups](@/using-kimun/cli.md#backups) for how that works.
+from `rename_note` / `move_note`) back up the old content first. See
+[Backups](@/using-kimun/cli.md#backups) for details.
 
 ## Prompts
 
-Prompt templates load vault content and ask the LLM to reason over it. The MCP client invokes them by name and the server returns a ready-to-send message.
+Prompt templates load vault content and ask the LLM to reason over it. The MCP client invokes them by name and the server returns a message ready to send.
 
 | Prompt | Parameters | Description |
 |---|---|---|
@@ -58,7 +58,7 @@ Prompt templates load vault content and ask the LLM to reason over it. The MCP c
 
 ## Resources
 
-Notes are also exposed as MCP resources with the `note://` URI scheme (e.g. `note://journal/2026-04-02.md`). Clients can browse and attach notes directly to their context.
+Notes are also exposed as MCP resources with the `note://` URI scheme (e.g. `note://journal/2026-04-02.md`). Clients can browse notes and attach them to their context.
 
 ## Client Setup
 
@@ -85,4 +85,4 @@ claude mcp add kimun -- kimun mcp
 
 ## Running Alongside the TUI
 
-`kimun mcp` and `kimun` (TUI) can run simultaneously against the same vault. Both use the same SQLite index with safe concurrent reads.
+`kimun mcp` and `kimun` (TUI) can run at the same time against the same vault. Both use the same SQLite index, which supports concurrent reads.
