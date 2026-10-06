@@ -107,13 +107,17 @@ fn tags_with(text: &str, frontmatter: &properties::PropertySet) -> Vec<String> {
     tags.into_iter().collect()
 }
 
-/// A heading of a note: its level (1–6) and display text.
+/// A heading of a note: its level (1–6), display text and line.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct NoteHeading {
     /// 1 for `#`, up to 6.
     pub level: u8,
-    /// The heading's text, inline markup rendered to plain text.
+    /// The heading's text, rendered as a content chunk's breadcrumb renders
+    /// it: inline markup to plain text, wikilinks collapsed to their text,
+    /// hashtag markers dropped.
     pub text: String,
+    /// 0-based line of the heading in the note text, frontmatter included.
+    pub line: usize,
 }
 
 /// What a note's own text declares about it, read in one pass over its
@@ -152,35 +156,13 @@ impl NoteMetadata {
 }
 
 /// A note body's headings in order — frontmatter and `#` lines inside code
-/// skipped, inline markup rendered to text.
+/// skipped, a heading with an empty section included. The one heading source:
+/// the CLI, the OUTLINE and its jump all read headings here, through the same
+/// walk the content chunks' breadcrumbs come from.
 pub fn note_headings(text: &str) -> Vec<NoteHeading> {
-    content_extractor::extract_headings(text)
-        .into_iter()
-        .map(|(level, text)| NoteHeading { level, text })
-        .collect()
-}
-
-/// A heading as the OUTLINE lists it: [`NoteHeading`] plus where it sits.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OutlineHeading {
-    /// 1 for `#`, up to 6.
-    pub level: u8,
-    /// The heading's text, rendered as [`scan::heading_display_text`]
-    /// renders its line.
-    pub text: String,
-    /// 0-based line of the heading in the note text, frontmatter included.
-    /// A hint for finding it again: two headings may share a text.
-    pub line: usize,
-}
-
-/// A note body's OUTLINE: every heading in order, one with an empty section
-/// included, each text rendered as a content chunk's breadcrumb renders it
-/// (wikilinks collapsed, hashtag markers dropped) so it matches
-/// [`scan::heading_display_text`] of its own line.
-pub fn note_outline(text: &str) -> Vec<OutlineHeading> {
     content_extractor::extract_outline(text)
         .into_iter()
-        .map(|(level, text, line)| OutlineHeading { level, text, line })
+        .map(|(level, text, line)| NoteHeading { level, text, line })
         .collect()
 }
 

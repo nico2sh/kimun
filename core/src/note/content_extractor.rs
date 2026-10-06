@@ -357,11 +357,36 @@ pub fn get_content_chunks<S: AsRef<str>>(md_text: S) -> Vec<ContentChunk> {
 }
 
 /// Wikilinks collapsed to their display text and hashtag markers dropped —
-/// the one rendering the chunker, the OUTLINE ([`extract_outline`]) and
+/// the one rendering the chunker, the heading walk ([`extract_outline`]) and
 /// [`heading_display_text`] share, so a heading reads the same in all three.
 fn collapse_inline_links(md_text: &str) -> String {
-    let text = process_wikilinks(md_text, |_link, _text| None);
-    cleanup_hashtags(&text)
+    collapse_inline_links_tracking_lines(md_text).0
+}
+
+/// [`collapse_inline_links`], plus where it removed line breaks: a wikilink
+/// written across lines collapses onto one, which would move every row below
+/// it up. Hashtag cleanup never touches a line break.
+fn collapse_inline_links_tracking_lines(md_text: &str) -> (String, DroppedBreaks) {
+    let (text, dropped) = process_wikilinks_tracking_lines(md_text, |_link, _text| None);
+    (cleanup_hashtags(&text), dropped)
+}
+
+/// Line breaks removed by a text rewrite, to map a row of the rewritten text
+/// back to the row it had before: `(row of the rewrite in the new text,
+/// breaks it removed)`, in order.
+#[derive(Default)]
+struct DroppedBreaks(Vec<(usize, usize)>);
+
+impl DroppedBreaks {
+    /// The row `row` of the rewritten text had in the original.
+    fn original_row(&self, row: usize) -> usize {
+        row + self
+            .0
+            .iter()
+            .take_while(|(at, _)| *at < row)
+            .map(|(_, dropped)| dropped)
+            .sum::<usize>()
+    }
 }
 
 /// Process wikilinks with a custom handler function
@@ -370,21 +395,45 @@ fn process_wikilinks<F>(md_text: &str, handler: F) -> String
 where
     F: Fn(&str, &str) -> Option<String>,
 {
-    WIKILINK_RX
-        .replace_all(md_text, |caps: &Captures| {
-            let items = &caps["link_text"];
-            let parts: Vec<&str> = items.split('|').collect();
+    process_wikilinks_tracking_lines(md_text, handler).0
+}
 
-            let (link, text) = match parts.len() {
-                1 => (parts[0], parts[0]),
-                2 => (parts[0], parts[1]),
-                // Extra pipes: use first part as link, second as display text, ignore rest
-                _ => (parts[0], parts[1]),
-            };
+/// [`process_wikilinks`], plus the line breaks each replacement removed.
+fn process_wikilinks_tracking_lines<F>(md_text: &str, handler: F) -> (String, DroppedBreaks)
+where
+    F: Fn(&str, &str) -> Option<String>,
+{
+    let mut out = String::with_capacity(md_text.len());
+    let mut dropped = DroppedBreaks::default();
+    let mut row = 0;
+    let mut copied = 0;
+    for caps in WIKILINK_RX.captures_iter(md_text) {
+        let whole = caps.get(0).expect("group 0 always matches");
+        let before = &md_text[copied..whole.start()];
+        out.push_str(before);
+        row += before.matches('\n').count();
 
-            handler(link, text).unwrap_or_else(|| text.to_string())
-        })
-        .into_owned()
+        let items = &caps["link_text"];
+        let parts: Vec<&str> = items.split('|').collect();
+        let (link, text) = match parts.len() {
+            1 => (parts[0], parts[0]),
+            2 => (parts[0], parts[1]),
+            // Extra pipes: use first part as link, second as display text, ignore rest
+            _ => (parts[0], parts[1]),
+        };
+        let replacement = handler(link, text).unwrap_or_else(|| text.to_string());
+
+        let kept = replacement.matches('\n').count();
+        let lost = whole.as_str().matches('\n').count().saturating_sub(kept);
+        if lost > 0 {
+            dropped.0.push((row, lost));
+        }
+        out.push_str(&replacement);
+        row += kept;
+        copied = whole.end();
+    }
+    out.push_str(&md_text[copied..]);
+    (out, dropped)
 }
 
 /// Returns byte-offset ranges (start, end) within `md_text` covering every
@@ -527,7 +576,7 @@ pub fn heading_section_range(text: &str, heading: &str) -> Option<Range<usize>> 
 ///
 /// One line at a time, so a caller can match a heading title against raw text
 /// without re-chunking the note ([`heading_section_range`]); a caller holding
-/// the whole note wants [`crate::note::note_outline`], which has line numbers
+/// the whole note wants [`crate::note::note_headings`], which has line numbers
 /// and none of the limits below. Rendering a line
 /// alone has limits the whole-note chunker does not, all of them fail-safe: a
 /// setext heading (`Title` over `=====`) has no `#` and renders to `None`; a
@@ -545,11 +594,10 @@ pub fn heading_display_text(line: &str) -> Option<String> {
         return None;
     }
     let text = collapse_inline_links(line);
-    let mut parser = Parser::new(&text);
-    loop_events(&mut parser)
+    loop_events(&text)
         .into_iter()
         .find_map(|text_line| match text_line {
-            TextLine::Header(_, text) => Some(text),
+            TextLine::Header(_, text, _) => Some(text),
             _ => None,
         })
 }
@@ -982,14 +1030,13 @@ where
 
 pub fn extract_title<S: AsRef<str>>(md_text: S) -> String {
     let (_frontmatter, md_text) = remove_frontmatter(md_text);
-    let mut parser = Parser::new(md_text.as_ref());
-    let result = loop_events(&mut parser);
+    let result = loop_events(md_text.as_ref());
 
     result
         .iter()
         .find_map(|tt| match tt {
             TextLine::Empty => None,
-            TextLine::Header(_level, text) => Some(text.to_owned()),
+            TextLine::Header(_level, text, _) => Some(text.to_owned()),
             TextLine::Text(text) => Some(text.to_owned()),
             // A wrapped item names the note by its first line only.
             TextLine::ListItem(_level, text) => text.lines().next().map(str::to_owned),
@@ -997,76 +1044,35 @@ pub fn extract_title<S: AsRef<str>>(md_text: S) -> String {
         .unwrap_or_default()
 }
 
-/// Every heading of a note as `(level, display text, line)`, in order,
-/// rendered exactly as [`get_content_chunks`] renders a breadcrumb segment
-/// (wikilinks collapsed to their text, hashtag markers dropped) — so each text
-/// matches [`heading_display_text`] of its line. Unlike the chunker, a heading
-/// whose section has no body (`# Title` straight followed by `## Sub`) is
-/// kept.
+/// Every heading of a note as `(level, display text, line)`, in order — the
+/// one heading walk every heading API is built on, so they can never disagree.
+///
+/// Text is rendered exactly as [`get_content_chunks`] renders a breadcrumb
+/// segment (wikilinks collapsed to their text, hashtag markers dropped,
+/// inline markup gone), through the same event walk; frontmatter and `#`
+/// lines inside code are never headings. Unlike the chunker, a heading whose
+/// section has no body (`# Title` straight followed by `## Sub`) is kept.
 ///
 /// `line` is the 0-based row of the heading in `md_text`, frontmatter
-/// included. A wikilink broken across lines collapses onto one, so a heading
-/// below one reads a little high — a position hint, not an address.
+/// included, counting `\n` line breaks.
 pub(crate) fn extract_outline<S: AsRef<str>>(md_text: S) -> Vec<(u8, String, usize)> {
-    let md_text = md_text.as_ref();
-    let (_frontmatter, body) = remove_frontmatter(md_text);
-    // The body is a suffix of the note's lines.
-    let first_body_line = md_text.lines().count() - body.lines().count();
-    let body = collapse_inline_links(&body);
-
-    // One walk: every `Start(Heading)` opens exactly one `TextLine::Header`,
-    // so the n-th start offset belongs to the n-th header.
-    let mut lines = TextLines::default();
-    let mut starts = Vec::new();
-    for (event, range) in Parser::new(&body).into_offset_iter() {
-        if matches!(event, Event::Start(Tag::Heading { .. })) {
-            starts.push(range.start);
-        }
-        lines.push(event, str::to_string);
-    }
-    let mut row = first_body_line;
-    let mut scanned = 0;
-    lines
-        .finish()
+    let (_frontmatter, body, body_line) = split_frontmatter(md_text.as_ref());
+    let (body, dropped_breaks) = collapse_inline_links_tracking_lines(&body);
+    let breaks: Vec<usize> = body.match_indices('\n').map(|(at, _)| at).collect();
+    loop_events(&body)
         .into_iter()
         .filter_map(|line| match line {
-            TextLine::Header(level, text) => Some((level, text)),
-            _ => None,
-        })
-        .zip(starts)
-        .filter(|((_, text), _)| !text.is_empty())
-        .map(|((level, text), start)| {
-            row += body[scanned..start].matches('\n').count();
-            scanned = start;
-            (level, text, row)
-        })
-        .collect()
-}
-
-/// Every heading of a note as `(level, display text)`, in order — through the
-/// same event walk as the title and the index breadcrumbs, so frontmatter and
-/// `#` lines inside code are never headings, and inline markup is rendered to
-/// its text.
-pub(crate) fn extract_headings<S: AsRef<str>>(md_text: S) -> Vec<(u8, String)> {
-    let (_frontmatter, md_text) = remove_frontmatter(md_text);
-    headings_in(&md_text)
-}
-
-/// The headings of frontmatter-free markdown, empty ones skipped.
-fn headings_in(md_text: &str) -> Vec<(u8, String)> {
-    let mut parser = Parser::new(md_text);
-    loop_events(&mut parser)
-        .into_iter()
-        .filter_map(|line| match line {
-            TextLine::Header(level, text) if !text.is_empty() => Some((level, text)),
+            TextLine::Header(level, text, start) if !text.is_empty() => {
+                let row = breaks.partition_point(|&at| at < start);
+                Some((level, text, body_line + dropped_breaks.original_row(row)))
+            }
             _ => None,
         })
         .collect()
 }
 
 fn parse_text(md_text: &str) -> Vec<ContentChunk> {
-    let mut parser = Parser::new(md_text);
-    let lines = loop_events(&mut parser);
+    let lines = loop_events(md_text);
     chunks_from_text_lines(lines)
 }
 
@@ -1080,7 +1086,7 @@ fn chunks_from_text_lines(lines: Vec<TextLine>) -> Vec<ContentChunk> {
 
     for text_line in lines {
         match text_line {
-            TextLine::Header(level, text) => {
+            TextLine::Header(level, text, _) => {
                 if !current_breadcrumb.is_empty() || !current_content.is_empty() {
                     let content =
                         crate::note::diacritics::remove_diacritics(&current_content.join("\n"));
@@ -1202,7 +1208,7 @@ fn walk_indexing_events(
             _ => {}
         }
 
-        lines.push(event, |text| {
+        lines.push(event, range.start, |text| {
             if code_depth > 0 {
                 text.to_string()
             } else {
@@ -1369,15 +1375,23 @@ pub(in crate::note) fn split_bom(text: &str) -> (&str, &str) {
 }
 
 fn remove_frontmatter<S: AsRef<str>>(text: S) -> (String, String) {
-    let mut lines = text.as_ref().lines();
+    let (frontmatter, body, _) = split_frontmatter(text.as_ref());
+    (frontmatter, body)
+}
+
+/// [`remove_frontmatter`], plus the row of `text` the body starts on — counted
+/// as the lines consumed, since the body's own line count loses a trailing
+/// blank line to the re-join.
+fn split_frontmatter(text: &str) -> (String, String, usize) {
+    let mut lines = text.lines();
 
     let Some(first_line) = lines.next() else {
-        return (String::new(), String::new());
+        return (String::new(), String::new(), 0);
     };
     let first_line = split_bom(first_line).1;
 
     if first_line != "---" && first_line != "+++" {
-        return (String::new(), text.as_ref().to_string());
+        return (String::new(), text.to_string(), 0);
     }
 
     let delimiter = first_line;
@@ -1396,9 +1410,12 @@ fn remove_frontmatter<S: AsRef<str>>(text: S) -> (String, String) {
     }
 
     if closed_fm {
-        (frontmatter.join("\n"), content.join("\n"))
+        // Opening fence, the frontmatter, closing fence.
+        let body_line = frontmatter.len() + 2;
+        (frontmatter.join("\n"), content.join("\n"), body_line)
     } else {
-        (String::new(), frontmatter.join("\n"))
+        // An unclosed fence is not frontmatter; only its first line goes.
+        (String::new(), frontmatter.join("\n"), 1)
     }
 }
 
@@ -1406,7 +1423,9 @@ fn remove_frontmatter<S: AsRef<str>>(text: S) -> (String, String) {
 enum TextLine {
     #[default]
     Empty,
-    Header(u8, String),
+    /// Level, text, and the byte the heading starts at in the walked text —
+    /// kept on the line itself so a heading can never part from its place.
+    Header(u8, String, usize),
     Text(String),
     ListItem(u8, String),
 }
@@ -1415,8 +1434,8 @@ impl TextLine {
     fn append_text(&self, text: String) -> TextLine {
         match self {
             TextLine::Empty => TextLine::Text(text),
-            TextLine::Header(level, header_text) => {
-                TextLine::Header(*level, format!("{}{}", header_text, text))
+            TextLine::Header(level, header_text, start) => {
+                TextLine::Header(*level, format!("{}{}", header_text, text), *start)
             }
             TextLine::Text(line_text) => TextLine::Text(format!("{}{}", line_text, text)),
             TextLine::ListItem(level, item_text) => {
@@ -1428,7 +1447,7 @@ impl TextLine {
     fn to_text(&self) -> String {
         match self {
             TextLine::Empty => String::new(),
-            TextLine::Header(level, text) => {
+            TextLine::Header(level, text, _) => {
                 format!("{} {}", "#".repeat(*level as usize), text)
             }
             TextLine::Text(text) => text.to_owned(),
@@ -1442,17 +1461,19 @@ impl TextLine {
     fn trim(&self) -> Self {
         match self {
             TextLine::Empty => TextLine::Empty,
-            TextLine::Header(level, text) => TextLine::Header(*level, text.trim().to_string()),
+            TextLine::Header(level, text, start) => {
+                TextLine::Header(*level, text.trim().to_string(), *start)
+            }
             TextLine::Text(text) => TextLine::Text(text.trim().to_string()),
             TextLine::ListItem(level, text) => TextLine::ListItem(*level, text.trim().to_string()),
         }
     }
 }
 
-fn loop_events(parser: &mut Parser) -> Vec<TextLine> {
+fn loop_events(md_text: &str) -> Vec<TextLine> {
     let mut lines = TextLines::default();
-    for event in parser.by_ref() {
-        lines.push(event, str::to_string);
+    for (event, range) in Parser::new(md_text).into_offset_iter() {
+        lines.push(event, range.start, str::to_string);
     }
     lines.finish()
 }
@@ -1467,13 +1488,14 @@ struct TextLines<'a> {
 }
 
 impl<'a> TextLines<'a> {
-    /// Feeds one event. A text event's content is first passed through
-    /// `text` (the indexing walk strips hashtags there).
-    fn push(&mut self, event: Event<'a>, text: impl FnOnce(&str) -> String) {
+    /// Feeds one event, which starts at byte `start` of the walked text. A
+    /// text event's content is first passed through `text` (the indexing walk
+    /// strips hashtags there).
+    fn push(&mut self, event: Event<'a>, start: usize, text: impl FnOnce(&str) -> String) {
         match event {
             Event::Start(tag) => {
                 let current_line = self.lines.pop().unwrap_or_default();
-                self.lines.extend(parse_tag(&tag, current_line));
+                self.lines.extend(parse_tag(&tag, current_line, start));
                 self.tag_stack.push(tag);
             }
             Event::End(tag_end) => {
@@ -1552,7 +1574,7 @@ impl<'a> TextLines<'a> {
     }
 }
 
-fn parse_tag(tag: &Tag, current_line: TextLine) -> Vec<TextLine> {
+fn parse_tag(tag: &Tag, current_line: TextLine, start: usize) -> Vec<TextLine> {
     match tag {
         Tag::Heading { level, .. } => {
             let level = match level {
@@ -1563,7 +1585,7 @@ fn parse_tag(tag: &Tag, current_line: TextLine) -> Vec<TextLine> {
                 pulldown_cmark::HeadingLevel::H5 => 5,
                 pulldown_cmark::HeadingLevel::H6 => 6,
             };
-            vec![current_line, TextLine::Header(level, String::new())]
+            vec![current_line, TextLine::Header(level, String::new(), start)]
         }
         Tag::Link { .. } => {
             // Link text arrives via Event::Text; nothing to prepend here.
@@ -3329,6 +3351,13 @@ ls -la ./test
         assert!(chunks[0].text.contains("item one wraps on"), "{chunks:?}");
     }
 
+    fn extract_headings(text: &str) -> Vec<(u8, String)> {
+        crate::note::content_extractor::extract_outline(text)
+            .into_iter()
+            .map(|(level, text, _)| (level, text))
+            .collect()
+    }
+
     /// Each outline entry is what the editor's jump looks for, on the line it
     /// claims.
     fn assert_outline_lines(text: &str, expected: &[(u8, &str, usize)]) {
@@ -3357,6 +3386,35 @@ ls -la ./test
     }
 
     #[test]
+    fn the_outline_lines_survive_a_trailing_blank_line_after_frontmatter() {
+        assert_outline_lines("---\nt: x\n---\n# A\n## B\n\n", &[(1, "A", 3), (2, "B", 4)]);
+        assert_outline_lines("---\n# A\n\n", &[(1, "A", 1)]);
+        assert_outline_lines("---\n---\n# A\n\n\n", &[(1, "A", 2)]);
+    }
+
+    #[test]
+    fn the_outline_lines_survive_a_wikilink_broken_across_lines() {
+        assert_outline_lines(
+            "# A\n[[target\n|Shown]]\n# B\nsee [[x\ny\nz|w]] and [[p\nq]]\n## C\n",
+            &[(1, "A", 0), (1, "B", 3), (2, "C", 8)],
+        );
+    }
+
+    #[test]
+    fn every_heading_api_renders_a_heading_as_its_chunk_breadcrumb() {
+        let text = "# See [[other|Other]] #tag\nbody\n## Docs [here](https://x.y) **now**\nmore\n";
+        let headings: Vec<String> = extract_headings(text).into_iter().map(|(_, t)| t).collect();
+        let breadcrumbs: Vec<String> = get_content_chunks(text)
+            .iter()
+            .filter_map(|c| c.breadcrumb_last().map(str::to_string))
+            .collect();
+        assert_eq!(headings, breadcrumbs);
+        for (line, heading) in text.lines().filter(|l| l.starts_with('#')).zip(&headings) {
+            assert_eq!(heading_display_text(line).as_ref(), Some(heading));
+        }
+    }
+
+    #[test]
     fn the_outline_gives_each_same_named_heading_its_own_line() {
         assert_outline_lines(
             "# Notes\n## Notes\nbody\n\n## Notes\n",
@@ -3381,9 +3439,7 @@ ls -la ./test
     #[test]
     fn a_line_break_tag_in_a_heading_keeps_the_words_apart() {
         assert_eq!(
-            crate::note::content_extractor::extract_headings(
-                "# Release<br>notes\n# Ctrl <kbd>K</kbd>\n"
-            ),
+            extract_headings("# Release<br>notes\n# Ctrl <kbd>K</kbd>\n"),
             vec![(1, "Release notes".to_string()), (1, "Ctrl K".to_string())]
         );
     }
@@ -3445,7 +3501,7 @@ ls -la ./test
     fn a_heading_inside_a_list_item_is_only_its_own_text() {
         let text = "# Top\n\n- # Setup\n  make install\n";
         assert_eq!(
-            crate::note::content_extractor::extract_headings(text),
+            extract_headings(text),
             vec![(1, "Top".to_string()), (1, "Setup".to_string())]
         );
         let chunks = crate::note::content_extractor::get_content_chunks(text);
@@ -3461,7 +3517,7 @@ ls -la ./test
     fn inline_html_never_cuts_a_heading_or_a_line() {
         let text = "# Release <kbd>v2</kbd> notes\n\nPress <kbd>Ctrl</kbd>+K now.\n\n## <a id=\"x\"></a>Install\nbody";
         assert_eq!(
-            crate::note::content_extractor::extract_headings(text),
+            extract_headings(text),
             vec![
                 (1, "Release v2 notes".to_string()),
                 (2, "Install".to_string())
@@ -3480,7 +3536,7 @@ ls -la ./test
     fn a_heading_directly_above_a_code_block_is_kept() {
         let text = "# Setup\n```sh\nmake\n```\n## Next\ntext";
         assert_eq!(
-            crate::note::content_extractor::extract_headings(text),
+            extract_headings(text),
             vec![(1, "Setup".to_string()), (2, "Next".to_string())]
         );
         let chunks = crate::note::content_extractor::get_content_chunks(text);

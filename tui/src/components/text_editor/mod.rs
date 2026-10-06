@@ -1142,14 +1142,17 @@ impl TextEditorComponent {
     }
 
     /// The OUTLINE drawer's jump — [`markdown_edits::jump_to_heading`] on the
-    /// live buffer. No-op on the Nvim backend.
-    pub fn jump_to_heading(&mut self, heading: &str, occurrence: usize) {
+    /// live buffer. `false` when the buffer has no such heading (any more).
+    /// No-op on the Nvim backend.
+    pub fn jump_to_heading(&mut self, heading: &str, occurrence: usize) -> bool {
         let Some(ta) = self.backend.as_textarea_mut() else {
-            return;
+            return true;
         };
-        if markdown_edits::jump_to_heading(ta, heading, occurrence) {
+        let jumped = markdown_edits::jump_to_heading(ta, heading, occurrence);
+        if jumped {
             self.sync_highlight();
         }
+        jumped
     }
 
     /// Indent or dedent whole rows by one **indent step** — the cursor's row,
