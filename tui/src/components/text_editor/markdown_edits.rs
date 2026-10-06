@@ -151,23 +151,23 @@ pub fn smart_enter(buf: &mut RopeBuffer) -> bool {
     true
 }
 
-/// Move the cursor to the first heading row whose rendered text equals
-/// `heading`, at any level — the OUTLINE drawer's jump. `false`, cursor
-/// untouched, when none matches.
+/// Move the cursor to the `occurrence`-th (0-based) heading whose rendered
+/// text equals `heading`, at any level — the OUTLINE drawer's jump. `false`,
+/// cursor untouched, when none matches.
 ///
-/// "Rendered" is what the OUTLINE shows, and the row is rendered by the same
-/// core function that produced the entry (`scan::heading_display_text`:
-/// wikilinks and links to their text, hashtag markers dropped, emphasis and
-/// ATX markers gone), so the two agree wherever a line can be rendered alone —
-/// `heading_display_text` names the limits (setext headings, reference-style
-/// links, a `#` line inside a fence). A normaliser of our own once lived here
-/// and missed every heading holding a link or a tag.
-pub fn jump_to_heading(buf: &mut RopeBuffer, heading: &str) -> bool {
-    let row = (0..buf.row_count()).find(|&row| {
-        buf.row(row).is_some_and(|line| {
-            kimun_core::note::scan::heading_display_text(&line).as_deref() == Some(heading)
-        })
-    });
+/// The headings are read from the live buffer by the same core function that
+/// built the OUTLINE (`note_outline`), so text and position agree with it —
+/// frontmatter and fenced code skipped, setext headings included — however
+/// far lines moved since the OUTLINE was last refreshed. Keyed by occurrence,
+/// not line, for that reason: `# Notes` over `## Notes` stay apart. Should a
+/// same-named heading have gone since, the last one left is taken.
+pub fn jump_to_heading(buf: &mut RopeBuffer, heading: &str, occurrence: usize) -> bool {
+    let row = kimun_core::note::note_outline(&buf.text().to_string())
+        .into_iter()
+        .filter(|h| h.text == heading)
+        .take(occurrence + 1)
+        .last()
+        .map(|h| h.line);
     match row {
         Some(row) => {
             // A jump is a cursor move, not a selection gesture: drop any live
@@ -481,17 +481,40 @@ mod tests {
     #[test]
     fn jump_to_heading_finds_any_level_and_normalises_markup() {
         let mut buf = buffer("intro\n# Top\nbody\n## **Sub** One ##\nmore\n");
-        assert!(jump_to_heading(&mut buf, "Sub One"));
+        assert!(jump_to_heading(&mut buf, "Sub One", 0));
         assert_eq!(buf.cursor(), (3, 0));
-        assert!(jump_to_heading(&mut buf, "Top"));
+        assert!(jump_to_heading(&mut buf, "Top", 0));
         assert_eq!(buf.cursor(), (1, 0));
+    }
+
+    #[test]
+    fn jump_to_heading_tells_same_named_headings_apart() {
+        let mut buf = buffer("# Notes\n## Notes\nbody\n\n## Notes\n");
+        assert!(jump_to_heading(&mut buf, "Notes", 1));
+        assert_eq!(buf.cursor(), (1, 0));
+        assert!(jump_to_heading(&mut buf, "Notes", 2));
+        assert_eq!(buf.cursor(), (4, 0));
+        assert!(jump_to_heading(&mut buf, "Notes", 0));
+        assert_eq!(buf.cursor(), (0, 0));
+        // One gone since the OUTLINE was read: the last one left.
+        assert!(jump_to_heading(&mut buf, "Notes", 7));
+        assert_eq!(buf.cursor(), (4, 0));
+    }
+
+    #[test]
+    fn jump_to_heading_skips_code_and_frontmatter_and_finds_setext() {
+        let mut buf = buffer("---\n# meta\n---\n```\n# Top\n```\nTop\n===\n# Top\n");
+        assert!(jump_to_heading(&mut buf, "Top", 0));
+        assert_eq!(buf.cursor(), (6, 0));
+        assert!(jump_to_heading(&mut buf, "Top", 1));
+        assert_eq!(buf.cursor(), (8, 0));
     }
 
     #[test]
     fn an_unknown_heading_leaves_the_cursor_where_it_was() {
         let mut buf = buffer("intro\n# Top\nbody");
         assert!(buf.jump_to(2, 1));
-        assert!(!jump_to_heading(&mut buf, "Nope"));
+        assert!(!jump_to_heading(&mut buf, "Nope", 0));
         assert_eq!(buf.cursor(), (2, 1));
     }
 
@@ -500,7 +523,7 @@ mod tests {
         let mut buf = buffer("intro\n# Top\nbody");
         assert!(buf.jump_to(2, 1));
         buf.start_selection(); // the zero-width anchor a mouse click leaves
-        assert!(jump_to_heading(&mut buf, "Top"));
+        assert!(jump_to_heading(&mut buf, "Top", 0));
         assert_eq!(buf.cursor(), (1, 0));
         assert_eq!(buf.selection_range(), None);
     }
@@ -508,9 +531,9 @@ mod tests {
     #[test]
     fn a_hash_inside_a_row_is_not_a_heading() {
         let mut buf = buffer("see #tag here\n# Real");
-        assert!(jump_to_heading(&mut buf, "Real"));
+        assert!(jump_to_heading(&mut buf, "Real", 0));
         assert_eq!(buf.cursor(), (1, 0));
-        assert!(!jump_to_heading(&mut buf, "tag here"));
+        assert!(!jump_to_heading(&mut buf, "tag here", 0));
     }
 
     #[test]
@@ -518,14 +541,14 @@ mod tests {
         // What the OUTLINE lists for these rows, per core's chunker.
         let mut buf =
             buffer("# See [[other note]]\na\n# Sprint #42\nb\n# Docs [here](https://x.y)\nc\n");
-        assert!(jump_to_heading(&mut buf, "Docs here"));
+        assert!(jump_to_heading(&mut buf, "Docs here", 0));
         assert_eq!(buf.cursor(), (4, 0));
-        assert!(jump_to_heading(&mut buf, "Sprint 42"));
+        assert!(jump_to_heading(&mut buf, "Sprint 42", 0));
         assert_eq!(buf.cursor(), (2, 0));
-        assert!(jump_to_heading(&mut buf, "See other note"));
+        assert!(jump_to_heading(&mut buf, "See other note", 0));
         assert_eq!(buf.cursor(), (0, 0));
         assert!(
-            !jump_to_heading(&mut buf, "See [[other note]]"),
+            !jump_to_heading(&mut buf, "See [[other note]]", 0),
             "raw source is not what the OUTLINE shows"
         );
     }

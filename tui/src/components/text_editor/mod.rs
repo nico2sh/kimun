@@ -1143,11 +1143,11 @@ impl TextEditorComponent {
 
     /// The OUTLINE drawer's jump — [`markdown_edits::jump_to_heading`] on the
     /// live buffer. No-op on the Nvim backend.
-    pub fn jump_to_heading(&mut self, heading: &str) {
+    pub fn jump_to_heading(&mut self, heading: &str, occurrence: usize) {
         let Some(ta) = self.backend.as_textarea_mut() else {
             return;
         };
-        if markdown_edits::jump_to_heading(ta, heading) {
+        if markdown_edits::jump_to_heading(ta, heading, occurrence) {
             self.sync_highlight();
         }
     }
@@ -3018,17 +3018,17 @@ mod tests {
         // The OUTLINE drawer reads the position back through the view snapshot.
         let mut ed = make_editor();
         ed.set_text("intro\n# Top\nbody\n## Sub One\nmore\n".to_string());
-        ed.jump_to_heading("Sub One");
+        ed.jump_to_heading("Sub One", 0);
         assert_eq!(ed.view_snapshot().cursor.0, 3);
-        ed.jump_to_heading("Top");
+        ed.jump_to_heading("Top", 0);
         assert_eq!(ed.view_snapshot().cursor.0, 1);
         // A click's zero-width selection must not turn the jump into a span
         // the next keystroke replaces.
         select_range(&mut ed, (2, 1), (2, 1));
-        ed.jump_to_heading("Top");
+        ed.jump_to_heading("Top", 0);
         assert_eq!(ed.selection, None);
         assert_eq!(ed.view_snapshot().cursor.0, 1);
-        ed.jump_to_heading("Nope");
+        ed.jump_to_heading("Nope", 0);
         assert_eq!(
             ed.view_snapshot().cursor.0,
             1,

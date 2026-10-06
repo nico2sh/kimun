@@ -1605,9 +1605,12 @@ impl EditorScreen {
                 let term = kimun_core::quote_query_term(&label);
                 self.open_find_with_query(format!("#{term}"), None, tx);
             }
-            AppEvent::JumpToHeading(heading) if !self.overlays.is_open() => {
+            AppEvent::JumpToHeading {
+                heading,
+                occurrence,
+            } if !self.overlays.is_open() => {
                 if let Some(ed) = self.panels.editor_mut() {
-                    ed.jump_to_heading(&heading);
+                    ed.jump_to_heading(&heading, occurrence);
                 }
                 self.focus_editor();
             }

@@ -4,7 +4,7 @@
 //! (`refresh`) — the same engine-per-context pattern the sidebar uses per
 //! directory.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::num::NonZeroU64;
 use std::sync::Arc;
 
@@ -509,6 +509,9 @@ pub struct OutlineEntry {
     /// 1-based nesting depth: how many headings enclose this one, plus one.
     /// Not the markdown level — `## A` over `#### B` is depth 1 and 2.
     pub depth: usize,
+    /// How many headings above share this text: what tells `# Notes` and
+    /// `## Notes` apart when jumping.
+    pub occurrence: usize,
 }
 
 impl OutlineEntry {
@@ -517,14 +520,19 @@ impl OutlineEntry {
         // Depth counts the open ancestors with a lower level, as a breadcrumb
         // does.
         let mut open_levels: Vec<u8> = Vec::new();
+        let mut seen: HashMap<String, usize> = HashMap::new();
         kimun_core::note::note_outline(text)
             .into_iter()
             .map(|heading| {
                 open_levels.retain(|lvl| *lvl < heading.level);
                 open_levels.push(heading.level);
+                let count = seen.entry(heading.text.clone()).or_default();
+                let occurrence = *count;
+                *count += 1;
                 OutlineEntry {
                     heading: heading.text,
                     depth: open_levels.len(),
+                    occurrence,
                 }
             })
             .collect()
@@ -562,7 +570,11 @@ impl ListPanelSpec for OutlineSpec {
     const TITLE: &'static str = "Outline";
 
     fn submit(row: &OutlineEntry, tx: &AppTx) {
-        tx.send(AppEvent::JumpToHeading(row.heading.clone())).ok();
+        tx.send(AppEvent::JumpToHeading {
+            heading: row.heading.clone(),
+            occurrence: row.occurrence,
+        })
+        .ok();
     }
 
     fn hints() -> Vec<(String, String)> {
@@ -804,11 +816,27 @@ mod tests {
         let mut panel = outline_panel();
         let text = "# Title\n## Title2\nbody\n### Skipped [[link|Shown]] #tag\n";
         sync(&mut panel, Some(1), text, &tx);
-        // Rendered like `heading_display_text`, so Enter still jumps to it.
+        // Rendered as the chunker renders breadcrumbs: links and tag markers gone.
         assert_eq!(
             rows(&panel),
             owned(&[("Title", 1), ("Title2", 2), ("Skipped Shown tag", 3)])
         );
+    }
+
+    #[test]
+    fn outline_rows_number_same_named_headings_and_jump_by_that() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut panel = outline_panel();
+        sync(&mut panel, Some(1), "# Notes\n## Other\n## Notes\n", &tx);
+        let list = panel.body.list().unwrap();
+        let occurrences: Vec<usize> = list.visible_rows().iter().map(|r| r.occurrence).collect();
+        assert_eq!(occurrences, [0, 0, 1]);
+
+        OutlineSpec::submit(list.visible_rows()[2], &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AppEvent::JumpToHeading { heading, occurrence: 1 }) if heading == "Notes"
+        ));
     }
 
     #[test]
