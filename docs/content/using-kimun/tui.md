@@ -5,7 +5,7 @@ weight = 10
 
 # TUI Reference
 
-Kimün's terminal UI is a single editor screen with an activity rail (top left side), one collapsible drawer (right after that one), and a two-line status bar (below). There are no editing modes; the only state is which panel has focus. Most commands are also reachable by mouse: click `≡ Commands` in the title bar to open the [command palette](#command-palette), then click the command. A few actions have no mouse route, such as Quick Note (`Ctrl+W` by default) and find/replace in the open note that have a quick keyboard shortcut.
+Kimün's terminal UI is a single editor screen with an activity rail (top left side), one collapsible drawer (right after that one), and a two-line status bar (below). There are no editing modes; the only state is which panel has focus. Most commands are also reachable by mouse: click `≡ Commands` in the title bar to open the [command palette](#command-palette), then click the command. A few actions that have their own keyboard shortcut have no mouse route, such as find/replace in the open note.
 
 ## Layout
 
@@ -244,7 +244,7 @@ Pins are stored in the vault (`.kimun/pinned-notes.toml`), so they move with you
 
 ## Quick Note & Journal
 
-- **`Ctrl+W`**: quick note dialog. Type a thought and press Enter to save it to your inbox with a timestamp name (Shift+Enter saves and opens it).
+- **`Ctrl+W`** (or `Ctrl+B n q`): quick note dialog. Type a thought and press Enter to save it to your inbox with a timestamp name (Shift+Enter saves and opens it).
 - **`Ctrl+J`**: open (or create) today's journal entry.
 
 ## Workspaces

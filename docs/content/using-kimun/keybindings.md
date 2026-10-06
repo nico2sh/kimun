@@ -62,7 +62,7 @@ Everything else lives behind the leader: press `Ctrl+B`, then a short sequence. 
 | Group | Keys | Examples |
 | ----- | ---- | -------- |
 | `f` +find | `f f` files · `f g` grep/query · `f t` tags · `f b` backlinks · `f r` recent · `f s` saved searches · `f h` headings · `f p` pinned notes |
-| `n` +note | `n n` new · `n d` daily · `n t` from template · `n r` rename · `n p` properties · `n m` move · `n D` delete |
+| `n` +note | `n n` new · `n d` daily · `n q` quick note · `n t` from template · `n r` rename · `n p` properties · `n m` move · `n D` delete |
 | `l` +links | `l b` backlinks · `l o` outgoing · `l u` unlinked mentions |
 | `o` +open | `o f/q/t/k/l/c` open a drawer view directly (files/find/tags/links/outline/config) |
 | `g` +git | `g s` status · `g p` sync/push · `g l` log · `g d` diff *(log/diff/sync are display-only stubs)* |
