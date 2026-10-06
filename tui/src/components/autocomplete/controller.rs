@@ -7,7 +7,9 @@ use kimun_core::note::scan::ExclusionZones;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use super::host::AutocompleteHost;
-use super::popup::{PopupAction, PopupOutcome, handle_key as popup_handle_key};
+use super::popup::{
+    PopupAction, PopupOutcome, handle_key as popup_handle_key, handle_mouse as popup_handle_mouse,
+};
 use super::state::{AutocompleteState, DEFAULT_MAX_VISIBLE_ROWS, Suggestion};
 use super::trigger::{TriggerKind, TriggerOptions, ZoneOracle, detect_trigger_with_oracle};
 use crate::components::search_list::SuggestionSource;
@@ -238,6 +240,32 @@ impl AutocompleteController {
             return HandleKeyOutcome::NotHandled;
         };
         let outcome = popup_handle_key(state, key);
+        self.apply_outcome(outcome, host)
+    }
+
+    /// Route a mouse event through the popup when one is open: a click on a
+    /// suggestion accepts it (the same `Accepted` a Tab/Enter produces), the
+    /// wheel over it moves the highlight. `NotHandled` for anything that
+    /// missed the popup, so the host's own mouse handling runs.
+    pub fn handle_mouse<H: AutocompleteHost>(
+        &mut self,
+        m: &ratatui::crossterm::event::MouseEvent,
+        host: &H,
+    ) -> HandleKeyOutcome {
+        let Some(state) = self.state.as_mut() else {
+            return HandleKeyOutcome::NotHandled;
+        };
+        let outcome = popup_handle_mouse(state, m);
+        self.apply_outcome(outcome, host)
+    }
+
+    /// Turn a popup outcome into what the host does next — one mapping for
+    /// keys and clicks, so an accept means the same thing from either.
+    fn apply_outcome<H: AutocompleteHost>(
+        &mut self,
+        outcome: PopupOutcome,
+        host: &H,
+    ) -> HandleKeyOutcome {
         match outcome {
             PopupOutcome::Consumed(PopupAction::None) => HandleKeyOutcome::Consumed,
             PopupOutcome::Consumed(PopupAction::Accept) => {

@@ -12,7 +12,7 @@ use ratatui::widgets::{Block, Borders, ListItem, Paragraph};
 
 use crate::components::autocomplete::AutocompleteMode;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, FileOp};
+use crate::components::events::{AppEvent, AppTx, FileOp, SortTarget};
 use crate::components::file_list::{SortField, SortOrder};
 use crate::components::preview_pane::{Highlight, PreviewPane};
 use crate::components::query_vars::{QueryContext, query_has_variables, resolve_query};
@@ -21,7 +21,9 @@ use crate::components::search_list::{
     Emit, Focus, KeyReaction, ResolvingRowSource, RowSource, SearchList, SearchMouse, SearchRow,
     Unresolvable, VaultSuggestions,
 };
-use crate::components::sortable::{SortState, SortableList, order_of_query, query_with_sort};
+use crate::components::sortable::{
+    SortState, SortableList, order_of_query, query_with_sort, sort_chip_line,
+};
 use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::key_combo::KeyCombo;
@@ -156,6 +158,11 @@ pub struct QueryPanel {
     /// highlight needles; it owns where the preview is and how far it scrolls.
     /// See [`PreviewPane`].
     preview: PreviewPane,
+    /// The sort chip (`Name ↑`) on the query box border from the last render; `None`
+    /// while no query runs (nothing to sort).
+    sort_chip: crate::components::clickable::BorderChip,
+    /// The `[F1] Syntax` chip on the query box's bottom border.
+    syntax_chip: crate::components::clickable::BorderChip,
     key_bindings: KeyBindings,
     /// Shared sender filled the first time a `tx` arrives. The engine's redraw
     /// callback reads this slot, so async loads/autocomplete wake the render
@@ -248,6 +255,8 @@ impl QueryPanel {
             current_note,
             saved_search: SavedSearchBreadcrumb::default(),
             preview: PreviewPane::new(),
+            sort_chip: Default::default(),
+            syntax_chip: Default::default(),
             key_bindings,
             redraw_tx,
             follow_link_combos,
@@ -478,21 +487,7 @@ impl QueryPanel {
                 EventState::Consumed
             }
             KeyReaction::Consumed => {
-                // Forward the query event to the breadcrumb: a `?name`
-                // expansion pins it, a blank query clears it, a manual edit
-                // keeps it (sticky).
-                let accepted = self.list.take_accepted_saved_search();
-                let blank = self.query_is_blank();
-                self.saved_search
-                    .on_query_consumed(accepted, self.list.query(), blank);
-                // A query edit moves the needle highlights, so the preview
-                // scroll goes back to the link auto-anchor — a user scroll
-                // position is stale against the new matches. (Programmatic
-                // query changes re-arm via `reset_expand`.)
-                if self.list.query() != prev_query {
-                    self.preview.re_anchor();
-                }
-                self.sync_expand_anchor();
+                self.after_query_edit(&prev_query);
                 EventState::Consumed
             }
             KeyReaction::Submit => {
@@ -543,6 +538,22 @@ impl QueryPanel {
         use ratatui::crossterm::event::{MouseButton, MouseEventKind};
         use ratatui::layout::Position;
         self.ensure_redraw_tx(tx);
+        // The autocomplete popup draws over the query box's border, so a
+        // press on it belongs to the popup, never to a chip under it.
+        let on_popup = self.list.popup_contains(mouse.column, mouse.row);
+        // The `[F1] Syntax` chip opens the query syntax reference.
+        if !on_popup && self.syntax_chip.hit(mouse) {
+            self.list.close_autocomplete();
+            tx.send(AppEvent::OpenQueryHelp).ok();
+            return EventState::Consumed;
+        }
+        // The sort chip on the query box border opens the sort dialog, in any
+        // expand state.
+        if !on_popup && self.sort_chip.hit(mouse) {
+            self.list.close_autocomplete();
+            tx.send(AppEvent::OpenSortDialog(SortTarget::Query)).ok();
+            return EventState::Consumed;
+        }
         // Read BEFORE the sync: a selection that vanished in this same event
         // batch collapses the expand state, but the screen still shows the
         // full view — the event must be handled against what the user saw,
@@ -557,8 +568,13 @@ impl QueryPanel {
         // rule for events the engine never sees.
         if was_full {
             match mouse.kind {
-                // Fall through to the engine below.
+                // Fall through to the engine below: the wheel, and a click
+                // on the query input or its autocomplete popup (drawn in
+                // every expand state).
                 MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {}
+                MouseEventKind::Down(MouseButton::Left)
+                    if self.list.input_contains(mouse.column, mouse.row)
+                        || self.list.popup_contains(mouse.column, mouse.row) => {}
                 // A click on the header collapses the view, mirroring Enter.
                 // (A sync collapse above already cleared the header rect, so
                 // this cannot toggle a no-longer-full view.)
@@ -572,13 +588,21 @@ impl QueryPanel {
                     self.toggle_expand();
                     return EventState::Consumed;
                 }
-                _ => {
+                // A press elsewhere dismisses the popup; motion leaves it.
+                MouseEventKind::Down(_) => {
                     self.list.close_autocomplete();
                     return EventState::Consumed;
                 }
+                _ => return EventState::Consumed,
             }
         }
+        let prev_query = self.list.query().to_string();
         match self.list.handle_mouse(mouse) {
+            SearchMouse::Autocomplete { edited: true } => {
+                self.after_query_edit(&prev_query);
+                EventState::Consumed
+            }
+            SearchMouse::Autocomplete { edited: false } => EventState::Consumed,
             SearchMouse::ContentScrollUp => {
                 self.preview.scroll_up();
                 EventState::Consumed
@@ -587,8 +611,14 @@ impl QueryPanel {
                 self.preview.scroll_down();
                 EventState::Consumed
             }
+            // A slow click-click steps the preview; a fast double-click
+            // opens the note, like double-clicking in the sidebar.
             SearchMouse::Activated(_) => {
                 self.toggle_expand();
+                EventState::Consumed
+            }
+            SearchMouse::DoubleClicked { .. } => {
+                self.open_selected(tx);
                 EventState::Consumed
             }
             // Right-click on a result row → file/note context menu (spec §10).
@@ -602,8 +632,27 @@ impl QueryPanel {
                 self.sync_expand_anchor();
                 EventState::Consumed
             }
+            SearchMouse::InputFocused => EventState::Consumed,
             SearchMouse::None => EventState::NotConsumed,
         }
+    }
+
+    /// After the query changed (a key, or a clicked suggestion).
+    fn after_query_edit(&mut self, prev_query: &str) {
+        // Forward the query event to the breadcrumb: a `?name` expansion
+        // pins it, a blank query clears it, a manual edit keeps it (sticky).
+        let accepted = self.list.take_accepted_saved_search();
+        let blank = self.query_is_blank();
+        self.saved_search
+            .on_query_consumed(accepted, self.list.query(), blank);
+        // A query edit moves the needle highlights, so the preview scroll
+        // goes back to the link auto-anchor — a user scroll position is stale
+        // against the new matches. (Programmatic query changes re-arm via
+        // `reset_expand`.)
+        if self.list.query() != prev_query {
+            self.preview.re_anchor();
+        }
+        self.sync_expand_anchor();
     }
 
     /// The list-focus `y` verb. Reads the same [`SearchRow::yank_target`] the
@@ -706,24 +755,20 @@ impl QueryPanel {
             self.order_cache_query = self.list.query().to_string();
         }
         let (sort_field, sort_order) = &self.order_cache;
-        let sort_indicator = match sort_field {
-            SortField::Property(key) => format!("sorted by {key} {}", sort_order.label()),
-            other => format!("{}{}", other.label(), sort_order.label()),
-        };
         // The saved-search name lives on the query searchbox border (the
         // breadcrumb below), not here, so the outer title stays generic.
         // `is_default_query` ignores the order directive and recognizes every
         // spelling of the default (`<{note}`, bare `<`, `lk:`), so sorting or
         // typing a synonym still reads as "Backlinks". Memoised above — the
         // helper allocates and this runs every frame.
-        let title = if self.list.query().trim().is_empty() {
+        let querying = !self.list.query().trim().is_empty();
+        let title = if !querying {
             "Find".to_string()
         } else if self.is_default_cache {
-            format!("Backlinks ({}) {}", count, sort_indicator)
+            format!("Backlinks ({count})")
         } else {
-            format!("Query ({}) {}", count, sort_indicator)
+            format!("Query ({count})")
         };
-
         let outer = Block::default()
             .title(title)
             .borders(Borders::ALL)
@@ -756,6 +801,35 @@ impl QueryPanel {
                 .right_aligned(),
             );
         }
+        // Results are sortable only while a query runs; the sort chip says how
+        // and opens the sort dialog. Added last so it is the rightmost
+        // right-aligned title (ratatui stacks them leftward), clear of a
+        // parse-error segment.
+        use crate::components::clickable::Edge;
+        if querying {
+            search_block = self.sort_chip.place(
+                search_block,
+                rows[0],
+                Edge::Top,
+                sort_chip_line(sort_field, *sort_order, theme),
+            );
+        } else {
+            self.sort_chip.hide();
+        }
+        // `[F1] Syntax` on the bottom border: the query grammar is one
+        // click away.
+        search_block = self.syntax_chip.place(
+            search_block,
+            rows[0],
+            Edge::Bottom,
+            ratatui::text::Line::from(vec![
+                ratatui::text::Span::styled("[F1]", theme.action()),
+                ratatui::text::Span::styled(
+                    " Syntax ",
+                    Style::default().fg(theme.gray.to_ratatui()),
+                ),
+            ]),
+        );
         let search_inner = search_block.inner(rows[0]);
         f.render_widget(search_block, rows[0]);
         self.list.render_query(f, search_inner, theme, focused);
@@ -1655,6 +1729,46 @@ mod tests {
         assert!(
             !panel.list.autocomplete_is_open(),
             "wheel over the preview must dismiss the popup"
+        );
+    }
+
+    /// A fast double-click on a result opens the note — the same
+    /// `OpenPath` that `o` sends.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn double_click_on_a_result_opens_it() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let vault = crate::test_support::temp_vault("qp-double-click").await;
+        vault.validate_and_init().await.unwrap();
+        vault
+            .create_note(&VaultPath::note_path_from("/hit.md"), "#todo body")
+            .await
+            .unwrap();
+        let mut panel = make_panel(vault);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        panel.set_active_query("#todo".to_string());
+        settle(&mut panel).await;
+        let theme = crate::settings::themes::Theme::default();
+        let mut terminal = Terminal::new(TestBackend::new(40, 30)).unwrap();
+        terminal
+            .draw(|f| panel.render(f, f.area(), &theme, true))
+            .unwrap();
+        let (x, y) = crate::test_support::find_text(terminal.backend().buffer(), "hit")
+            .expect("result row drawn");
+        let press = match crate::test_support::mouse_down_at(x, y) {
+            crate::components::events::InputEvent::Mouse(m) => m,
+            _ => unreachable!(),
+        };
+        panel.handle_mouse(&press, &tx);
+        panel.handle_mouse(&press, &tx);
+        let opened = crate::test_support::drain(&mut rx)
+            .into_iter()
+            .any(|e| matches!(e, AppEvent::OpenPath { .. }));
+        assert!(opened, "a double-click opens the result");
+        assert!(
+            panel.preview.is_collapsed(),
+            "and does not toggle the preview"
         );
     }
 

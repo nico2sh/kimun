@@ -419,6 +419,23 @@ impl Theme {
             .fg(self.fg.to_ratatui())
             .bg(self.bg_panel.to_ratatui())
     }
+
+    /// At-rest style for anything clickable (chips, buttons, status-bar
+    /// segments, the sort label): one colour, no decoration, so click
+    /// targets are recognisable without moving the mouse. See
+    /// `components::clickable`.
+    pub fn action(&self) -> Style {
+        Style::default().fg(self.blue.to_ratatui())
+    }
+
+    /// The click target under the pointer: the action colour turned into a
+    /// background. Distinct from the list selection so a hover never reads
+    /// as "selected".
+    pub fn hover(&self) -> Style {
+        Style::default()
+            .fg(self.bg_hard.to_ratatui())
+            .bg(self.blue.to_ratatui())
+    }
 }
 
 #[cfg(test)]

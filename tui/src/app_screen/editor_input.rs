@@ -63,6 +63,14 @@ pub struct InputCtx {
     /// Ctrl+R over it open the
     /// sort dialog on top instead of reaching the overlay.
     pub overlay_sortable: bool,
+    /// The open overlay takes the query syntax (the Ctrl+K search browser):
+    /// F1 over it opens the syntax reference stacked on top.
+    pub overlay_query: bool,
+    /// A mouse event landed on the editor column. The classifier cannot
+    /// hit-test, and an **editor claim** only owns presses inside the editor:
+    /// a click on the rail, the drawer or the footer must reach them even
+    /// while the find bar is open. Meaningless for non-mouse events.
+    pub pointer_on_editor: bool,
 }
 
 impl InputCtx {
@@ -172,6 +180,9 @@ pub enum OverlayOpen {
     /// search browser or Ctrl+O file finder) — the one
     /// recipe that opens over an overlay instead of being refused by it.
     SortBrowser,
+    /// The query syntax reference stacked over the open Ctrl+K browser —
+    /// the other recipe that opens over an overlay.
+    QueryHelpOverBrowser,
     QuickNote,
     /// The pinned-notes dialog (leader `f p`).
     PinnedNotes,
@@ -226,7 +237,10 @@ pub fn classify(event: &InputEvent, bindings: &KeyBindings, ctx: &InputCtx) -> C
     // An **editor claim** only holds while the editor is the active panel: the
     // bar is inside it, so a drawer click or an open overlay outranks it.
     // Without this the filter would swallow every click anywhere in the app.
-    let claim = if ctx.editor_active() {
+    // Focus alone is not enough for the mouse: the editor stays focused until
+    // a press lands elsewhere, so that press must be judged by where it lands.
+    let off_editor = matches!(event, InputEvent::Mouse(_)) && !ctx.pointer_on_editor;
+    let claim = if ctx.editor_active() && !off_editor {
         ctx.claim
     } else {
         EditorClaim::None
@@ -576,7 +590,11 @@ pub(crate) fn classify_tail(
                     // F1 opens the help modal. Over the Find panel it surfaces
                     // query syntax instead of the flat key-bindings help. All
                     // F-keys are consumed and never forwarded to the editor.
-                    if combo.key == KeyStrike::F1 && combo.modifiers.is_empty() {
+                    if combo.key == KeyStrike::F1 && combo.modifiers.is_empty() && ctx.overlay_query
+                    {
+                        // Over the Ctrl+K browser: its syntax, on top of it.
+                        Some(EditorIntent::OpenOverlay(OverlayOpen::QueryHelpOverBrowser))
+                    } else if combo.key == KeyStrike::F1 && combo.modifiers.is_empty() {
                         Some(EditorIntent::OpenOverlay(if ctx.find_panel_focused() {
                             OverlayOpen::QueryHelp
                         } else {
@@ -701,6 +719,8 @@ mod tests {
             claim: EditorClaim::None,
             double_click: false,
             overlay_sortable: false,
+            overlay_query: false,
+            pointer_on_editor: true,
         }
     }
 
@@ -858,6 +878,26 @@ mod tests {
             classify_it(&at(MouseEventKind::ScrollUp), &ctx_find_bar()).intent,
             EditorIntent::Mouse,
             "scrolling still works"
+        );
+    }
+
+    /// The claim lives inside the editor. A press elsewhere — the rail, the
+    /// drawer, the footer — is that surface's, even while the editor still
+    /// holds focus; consuming it froze every click in the app while the bar
+    /// was open.
+    #[test]
+    fn a_find_bar_claim_does_not_own_presses_off_the_editor() {
+        let off = InputCtx {
+            pointer_on_editor: false,
+            ..ctx_find_bar()
+        };
+        assert_eq!(classify_it(&press(), &off).intent, EditorIntent::Mouse);
+        assert_eq!(
+            classify_it(&key(KeyCode::Enter, KeyModifiers::CONTROL), &off).intent,
+            EditorIntent::Panel {
+                fallback: PanelFallback::None
+            },
+            "keys still belong to the bar"
         );
     }
 

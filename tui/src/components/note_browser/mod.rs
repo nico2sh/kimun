@@ -77,6 +77,12 @@ pub struct NoteBrowserModal {
     /// sticky/clear/edited state machine; the modal only forwards query events.
     /// See [`SavedSearchBreadcrumb`].
     saved_search: SavedSearchBreadcrumb,
+    /// The sort label (`Name ↑`) on the search box border from the last
+    /// render; `None` for a browser that cannot be sorted.
+    sort_chip: crate::components::clickable::BorderChip,
+    /// The hint bar's chips (`[⏎] Open`, `[Esc] Close`, and — for the query
+    /// browser — `[F1] Query syntax`).
+    hints: crate::components::hint_row::HintRow,
     /// Last create/open error (e.g. a failed `Create: …`), shown in the hint
     /// bar until the next keystroke. Cleared on input.
     error: Option<String>,
@@ -186,6 +192,8 @@ impl NoteBrowserModal {
             preview_path: None,
             key_bindings,
             saved_search: SavedSearchBreadcrumb::default(),
+            sort_chip: Default::default(),
+            hints: browser_hints(scope),
             error: None,
             row_sort: None,
         };
@@ -458,6 +466,20 @@ impl SortableList for NoteBrowserModal {
 // Overlay impl
 // ---------------------------------------------------------------------------
 
+impl NoteBrowserModal {
+    /// After the query changed (a key, or a clicked suggestion): forward the
+    /// event to the breadcrumb — a `?name` expansion pins it, an emptied
+    /// field clears it, a manual edit keeps it (sticky) — and refresh the
+    /// preview.
+    fn after_query_edit(&mut self) {
+        let accepted = self.list.take_accepted_saved_search();
+        let blank = self.list.query().trim().is_empty();
+        self.saved_search
+            .on_query_consumed(accepted, self.list.query(), blank);
+        self.refresh_preview_from_list();
+    }
+}
+
 impl Overlay for NoteBrowserModal {
     fn kind(&self) -> OverlayKind {
         OverlayKind::NoteBrowser
@@ -478,14 +500,21 @@ impl Overlay for NoteBrowserModal {
         self.is_sortable().then_some(self as &dyn SortableList)
     }
 
+    fn takes_query_syntax(&self) -> bool {
+        self.scope == BrowserScope::Query
+    }
+
     fn as_sortable_mut(&mut self) -> Option<&mut dyn SortableList> {
         if self.is_sortable() { Some(self) } else { None }
     }
 
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
         match event {
+            InputEvent::Mouse(mouse) if let Some(chip) = self.chip_at(mouse) => {
+                self.click_chip(chip, tx)
+            }
             InputEvent::Mouse(mouse) => match self.list.handle_mouse(mouse) {
-                SearchMouse::Activated(_) => {
+                SearchMouse::Activated(_) | SearchMouse::DoubleClicked { repeat: false, .. } => {
                     self.open_selected(tx);
                     EventState::Consumed
                 }
@@ -498,6 +527,15 @@ impl Overlay for NoteBrowserModal {
                 SearchMouse::ContentScrollUp | SearchMouse::ContentScrollDown => {
                     EventState::Consumed
                 }
+                SearchMouse::Autocomplete { edited: true } => {
+                    self.after_query_edit();
+                    EventState::Consumed
+                }
+                // The repeat half of a double-click whose first press already
+                // opened: acting again would open twice.
+                SearchMouse::InputFocused
+                | SearchMouse::Autocomplete { edited: false }
+                | SearchMouse::DoubleClicked { repeat: true, .. } => EventState::Consumed,
                 SearchMouse::None => EventState::NotConsumed,
             },
             InputEvent::Key(key) => {
@@ -513,14 +551,7 @@ impl Overlay for NoteBrowserModal {
                         EventState::Consumed
                     }
                     KeyReaction::Consumed => {
-                        // Forward the query event to the breadcrumb: a `?name`
-                        // expansion pins it, an emptied field clears it, a manual
-                        // edit keeps it (sticky).
-                        let accepted = self.list.take_accepted_saved_search();
-                        let blank = self.list.query().trim().is_empty();
-                        self.saved_search
-                            .on_query_consumed(accepted, self.list.query(), blank);
-                        self.refresh_preview_from_list();
+                        self.after_query_edit();
                         EventState::Consumed
                     }
                     KeyReaction::Yank(target) => {
@@ -590,15 +621,33 @@ impl Overlay for NoteBrowserModal {
             .saved_search
             .border_title(self.list.query(), " Search ");
         let result_count = self.list.match_count();
-        let search_block = Block::default()
-            .title(search_title)
-            .title(
-                ratatui::text::Line::from(ratatui::text::Span::styled(
-                    format!(" {result_count} results "),
-                    Style::default().fg(theme.gray.to_ratatui()),
-                ))
-                .right_aligned(),
-            )
+        let mut search_block = Block::default().title(search_title).title(
+            ratatui::text::Line::from(ratatui::text::Span::styled(
+                format!(" {result_count} results "),
+                Style::default().fg(theme.gray.to_ratatui()),
+            ))
+            .right_aligned(),
+        );
+        // The sort label, added last so it is the rightmost right-aligned
+        // title (ratatui stacks them leftward). A list still in its natural
+        // order says so instead of naming a field.
+        if self.is_sortable() {
+            let line = if self.is_unsorted() {
+                ratatui::text::Line::from(ratatui::text::Span::styled(" Unsorted ", theme.action()))
+            } else {
+                let state = self.sort_state();
+                crate::components::sortable::sort_chip_line(&state.field, state.order, theme)
+            };
+            search_block = self.sort_chip.place(
+                search_block,
+                rows[0],
+                crate::components::clickable::Edge::Top,
+                line,
+            );
+        } else {
+            self.sort_chip.hide();
+        }
+        let search_block = search_block
             .borders(Borders::ALL)
             .border_style(theme.border_style(true))
             .style(modal_style);
@@ -682,13 +731,22 @@ impl Overlay for NoteBrowserModal {
         );
 
         // ── Hint bar (or last error) ──────────────────────────────────────
-        let hint = match &self.error {
-            Some(err) => Paragraph::new(format!("⚠ {err}"))
-                .style(Style::default().fg(theme.red.to_ratatui())),
-            None => Paragraph::new("↑↓: navigate  |  Enter: open  |  Esc: close")
-                .style(Style::default().fg(theme.fg_secondary.to_ratatui())),
-        };
-        f.render_widget(hint, rows[2]);
+        match &self.error {
+            Some(err) => {
+                self.hints.hide();
+                f.render_widget(
+                    Paragraph::new(format!("⚠ {err}"))
+                        .style(Style::default().fg(theme.red.to_ratatui())),
+                    rows[2],
+                )
+            }
+            None => self.hints.render(
+                f,
+                rows[2],
+                Style::default().fg(theme.fg_secondary.to_ratatui()),
+                theme,
+            ),
+        }
 
         // ── Autocomplete popup ───────────────────────────────────────────
         // Clamp to the modal's bounds so it never spills past the border.
@@ -714,6 +772,67 @@ impl Overlay for NoteBrowserModal {
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
+
+/// A click target on the browser's chrome (not a list row).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BrowserChip {
+    /// A hint chip that is its key (`[⏎] Open`, `[Esc] Close`).
+    Key(ratatui::crossterm::event::KeyEvent),
+    /// `[F1] Query syntax` — the screen opens the reference over the
+    /// browser.
+    Syntax,
+    /// The sort label — the screen opens the sort dialog over the browser
+    /// (the mouse's Ctrl+R).
+    Sort,
+}
+
+impl NoteBrowserModal {
+    /// Run a chrome chip: a hint chip is its key; the syntax and sort chips
+    /// ask the screen to open their dialog over this browser.
+    fn click_chip(&mut self, chip: BrowserChip, tx: &AppTx) -> EventState {
+        let event = match chip {
+            BrowserChip::Key(key) => return self.handle_input(&InputEvent::Key(key), tx),
+            BrowserChip::Syntax => AppEvent::OpenQueryHelp,
+            BrowserChip::Sort => {
+                AppEvent::OpenSortDialog(crate::components::events::SortTarget::Browser)
+            }
+        };
+        self.list.close_autocomplete();
+        tx.send(event).ok();
+        EventState::Consumed
+    }
+
+    /// The chrome target under a left press, if any. The autocomplete
+    /// popup draws over the chrome, so a press on it is never a chip's.
+    fn chip_at(&self, m: &ratatui::crossterm::event::MouseEvent) -> Option<BrowserChip> {
+        if self.list.popup_contains(m.column, m.row) {
+            return None;
+        }
+        if let Some(key) = self.hints.hit(m) {
+            return Some(if key.code == ratatui::crossterm::event::KeyCode::F(1) {
+                BrowserChip::Syntax
+            } else {
+                BrowserChip::Key(key)
+            });
+        }
+        self.sort_chip.hit(m).then_some(BrowserChip::Sort)
+    }
+}
+
+/// The hint bar's chips. The query browser adds `[F1] Query syntax`; the
+/// file finder takes plain fuzzy input and has no syntax to explain.
+fn browser_hints(scope: BrowserScope) -> crate::components::hint_row::HintRow {
+    use ratatui::crossterm::event::KeyCode;
+    let mut chips = vec![
+        (KeyCode::Null, "↑↓", "Navigate"),
+        (KeyCode::Enter, "⏎", "Open"),
+        (KeyCode::Esc, "Esc", "Close"),
+    ];
+    if scope == BrowserScope::Query {
+        chips.push((KeyCode::F(1), "F1", "Query syntax"));
+    }
+    crate::components::hint_row::HintRow::new(&chips).with_indent(0)
+}
 
 pub(crate) fn format_journal_date(date: NaiveDate) -> String {
     date.format("%A, %B %-d, %Y").to_string()
@@ -993,6 +1112,29 @@ mod tests {
     }
 
     // ── Sorting (Ctrl+R over the search browser) ──────────────────────────
+
+    /// An error line replaces the hint chips; the chips it hides must not
+    /// stay clickable underneath it.
+    #[tokio::test]
+    async fn an_error_line_hides_the_hint_chips() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let (mut modal, _tx) = search_modal(BrowserScope::Query, "#x").await;
+        let theme = crate::settings::themes::Theme::default();
+        let mut t = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        t.draw(|f| modal.render(f, f.area(), &theme)).unwrap();
+        let (x, y) = crate::test_support::find_text(t.backend().buffer(), "[Esc] Close")
+            .expect("chips drawn");
+        modal.error = Some("could not create".into());
+        t.draw(|f| modal.render(f, f.area(), &theme)).unwrap();
+        let (tx, mut rx) = unbounded_channel();
+        modal.handle_input(&crate::test_support::mouse_down_at(x, y), &tx);
+        assert!(
+            !crate::test_support::drain(&mut rx)
+                .iter()
+                .any(|e| matches!(e, AppEvent::CloseOverlay)),
+            "the hidden [Esc] chip did not fire"
+        );
+    }
 
     async fn search_modal(scope: BrowserScope, query: &str) -> (NoteBrowserModal, AppTx) {
         let vault = temp_vault("modal_sort").await;

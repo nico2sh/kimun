@@ -3,7 +3,7 @@ use std::sync::Arc;
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseEvent};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
@@ -11,6 +11,7 @@ use ratatui::widgets::Paragraph;
 use crate::components::Component;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, AppTxExt, OverlayData};
+use crate::components::hint_row::HintRow;
 use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::settings::themes::Theme;
 
@@ -29,6 +30,7 @@ pub struct CreateNoteDialog {
     /// note (the plain create flow); `Some` is the Ask "save as note" action
     /// (`e` in `ThreadPanel`), which pre-fills the question/answer.
     pub content: Option<String>,
+    hints: HintRow,
 }
 
 impl CreateNoteDialog {
@@ -40,7 +42,17 @@ impl CreateNoteDialog {
             path_display,
             error: None,
             content,
+            hints: super::confirm_hints("Create"),
         }
+    }
+
+    /// A click on a hint chip runs its key. Modal: every mouse event is
+    /// consumed.
+    pub fn handle_mouse(&mut self, m: &MouseEvent, tx: &AppTx) -> EventState {
+        if let Some(key) = self.hints.hit(m) {
+            self.handle_key(key, tx);
+        }
+        EventState::Consumed
     }
 
     /// Handle a raw [`KeyEvent`]. Returns [`EventState::Consumed`] for all
@@ -129,11 +141,8 @@ impl Component for CreateNoteDialog {
             Paragraph::new("  Note doesn't exist.").style(Style::default().fg(gray).bg(bg)),
             rows[3],
         );
-        f.render_widget(
-            Paragraph::new("  [Enter] Create   [Esc] Cancel")
-                .style(Style::default().fg(gray).bg(bg)),
-            rows[5],
-        );
+        self.hints
+            .render(f, rows[5], Style::default().fg(gray).bg(bg), theme);
         if let Some(msg) = &self.error {
             super::render_error_row(f, rows[6], msg, theme);
         }

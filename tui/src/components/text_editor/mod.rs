@@ -1608,6 +1608,24 @@ impl TextEditorComponent {
         EventState::Consumed
     }
 
+    /// Act on what the autocomplete popup did with a key or a click — one
+    /// path, so an accept edits the buffer the same way from either. `None`:
+    /// the popup passed, the event is the editor's.
+    fn apply_popup_outcome(&mut self, outcome: HandleKeyOutcome) -> Option<EventState> {
+        match outcome {
+            HandleKeyOutcome::Accepted(action) => {
+                self.interrupt_typing();
+                if let Some(ta) = self.backend.as_textarea_mut() {
+                    ta.edit(|ta| apply_accept_to_textarea(ta, &action));
+                }
+                self.after_edit();
+                Some(EventState::Consumed)
+            }
+            HandleKeyOutcome::Dismissed | HandleKeyOutcome::Consumed => Some(EventState::Consumed),
+            HandleKeyOutcome::NotHandled => None,
+        }
+    }
+
     /// Handle a mouse event (Textarea backend only).
     fn handle_mouse(
         &mut self,
@@ -1748,19 +1766,9 @@ impl Component for TextEditorComponent {
                     )
                     && let Some(controller) = self.autocomplete.as_mut()
                 {
-                    match controller.handle_key(*key, &host) {
-                        HandleKeyOutcome::Accepted(action) => {
-                            self.interrupt_typing();
-                            if let Some(ta) = self.backend.as_textarea_mut() {
-                                ta.edit(|ta| apply_accept_to_textarea(ta, &action));
-                            }
-                            self.after_edit();
-                            return EventState::Consumed;
-                        }
-                        HandleKeyOutcome::Dismissed | HandleKeyOutcome::Consumed => {
-                            return EventState::Consumed;
-                        }
-                        HandleKeyOutcome::NotHandled => {}
+                    let outcome = controller.handle_key(*key, &host);
+                    if let Some(state) = self.apply_popup_outcome(outcome) {
+                        return state;
                     }
                 }
                 // Find bar intercepts all keys while active. Must run before the
@@ -1880,6 +1888,22 @@ impl Component for TextEditorComponent {
                 result
             }
             InputEvent::Mouse(mouse) => {
+                // An open popup gets first crack: a click on a suggestion
+                // accepts it — the same edit Tab/Enter make — and the wheel
+                // over it moves the highlight instead of the buffer.
+                if self.autocomplete.as_ref().is_some_and(|c| c.is_open())
+                    && let Some(host) = build_editor_host_snapshot(
+                        &self.backend,
+                        self.revs.current(),
+                        self.view.last_cursor_screen,
+                    )
+                    && let Some(controller) = self.autocomplete.as_mut()
+                {
+                    let outcome = controller.handle_mouse(mouse, &host);
+                    if let Some(state) = self.apply_popup_outcome(outcome) {
+                        return state;
+                    }
+                }
                 let text_rev_before = self.revs.current();
                 let cursor_before = self.textarea_cursor();
                 let result = self.handle_mouse(mouse, tx);
@@ -2183,14 +2207,15 @@ impl Component for TextEditorComponent {
         // rather than draw at a stale anchor — the popup state is
         // preserved, so the popup reappears at the correct position
         // once the cursor scrolls back into view.
-        if let (Some(controller), Some(live_anchor)) =
-            (self.autocomplete.as_mut(), self.view.last_cursor_screen)
-        {
-            if let Some(state) = controller.state_mut() {
-                state.anchor = live_anchor;
-            }
-            if let Some(state) = controller.state() {
-                autocomplete::render(f, state, editor_rect, theme);
+        let live_anchor = self.view.last_cursor_screen;
+        if let Some(state) = self.autocomplete.as_mut().and_then(|c| c.state_mut()) {
+            match live_anchor {
+                Some(anchor) => {
+                    state.anchor = anchor;
+                    autocomplete::render(f, state, editor_rect, theme);
+                }
+                // Not drawn this frame, so nothing of it may be clickable.
+                None => state.rows_rect = Rect::default(),
             }
         }
     }
@@ -2273,6 +2298,63 @@ mod tests {
 
     fn dummy_tx() -> AppTx {
         tokio::sync::mpsc::unbounded_channel().0
+    }
+
+    /// A click on a suggestion in the editor's popup inserts it — the same
+    /// edit Tab makes.
+    #[tokio::test]
+    async fn clicking_an_autocomplete_suggestion_inserts_it() {
+        use crate::components::search_list::{SuggestionItem, SuggestionSource};
+        use ratatui::{Terminal, backend::TestBackend};
+        struct Tags;
+        #[async_trait::async_trait]
+        impl SuggestionSource for Tags {
+            async fn notes_by_prefix(&self, _p: &str, _n: usize) -> Vec<SuggestionItem> {
+                vec![]
+            }
+            async fn tags_by_prefix(&self, p: &str, _n: usize) -> Vec<SuggestionItem> {
+                if "projects".starts_with(p) {
+                    vec![SuggestionItem::plain("projects")]
+                } else {
+                    vec![]
+                }
+            }
+        }
+        let mut editor = make_editor();
+        editor.autocomplete = Some(
+            AutocompleteController::new(std::sync::Arc::new(Tags), AutocompleteMode::Both)
+                .with_debounce(std::time::Duration::ZERO),
+        );
+        let tx = dummy_tx();
+        let theme = Theme::default();
+        let mut t = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        let draw = |editor: &mut TextEditorComponent, t: &mut Terminal<TestBackend>| {
+            t.draw(|f| editor.render(f, f.area(), &theme, true))
+                .unwrap();
+        };
+        draw(&mut editor, &mut t);
+        for c in ['#', 'p', 'r', 'o'] {
+            editor.handle_input(
+                &InputEvent::Key(ratatui::crossterm::event::KeyEvent::from(
+                    ratatui::crossterm::event::KeyCode::Char(c),
+                )),
+                &tx,
+            );
+            draw(&mut editor, &mut t);
+        }
+        for _ in 0..50 {
+            tokio::task::yield_now().await;
+            draw(&mut editor, &mut t);
+        }
+        let rows = editor
+            .autocomplete
+            .as_ref()
+            .and_then(|c| c.state())
+            .map(|st| st.rows_rect)
+            .filter(|r| !r.is_empty())
+            .expect("popup drawn");
+        editor.handle_input(&crate::test_support::mouse_down_at(rows.x + 1, rows.y), &tx);
+        assert_eq!(editor.get_text(), "#projects");
     }
 
     fn get_ta(editor: &mut TextEditorComponent) -> &mut RopeBuffer {

@@ -8,6 +8,9 @@ use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent};
 use crate::settings::themes::Theme;
 
+use super::{ClickMap, SectionMouse, text_rect};
+use unicode_width::UnicodeWidthStr;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum IndexAction {
     Fast,
@@ -17,6 +20,7 @@ pub enum IndexAction {
 pub struct IndexingSection {
     pub selected: IndexAction,
     vault_available: bool,
+    clicks: ClickMap,
 }
 
 impl IndexingSection {
@@ -24,6 +28,33 @@ impl IndexingSection {
         Self {
             selected: IndexAction::Fast,
             vault_available,
+            clicks: ClickMap::default(),
+        }
+    }
+
+    /// Resolve a click: a button selects and runs its reindex (the Enter it
+    /// stands for). Inert without a vault, like the keys.
+    pub fn handle_mouse(
+        &mut self,
+        m: &ratatui::crossterm::event::MouseEvent,
+    ) -> Option<ratatui::crossterm::event::KeyEvent> {
+        if !self.vault_available {
+            return None;
+        }
+        let row = |a: IndexAction| match a {
+            IndexAction::Fast => 0,
+            IndexAction::Full => 1,
+        };
+        match self.clicks.resolve(m, Some(row(self.selected)), None) {
+            SectionMouse::Key(r, key) => {
+                self.selected = if r == 0 {
+                    IndexAction::Fast
+                } else {
+                    IndexAction::Full
+                };
+                Some(key)
+            }
+            SectionMouse::Select(_) | SectionMouse::Wheel(_) | SectionMouse::None => None,
         }
     }
 
@@ -98,8 +129,27 @@ impl Component for IndexingSection {
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(inner);
-        f.render_widget(Paragraph::new(fast_label).style(dim), cols[0]);
-        f.render_widget(Paragraph::new(full_label).style(dim), cols[1]);
+        // Available buttons take the action colour and are click targets.
+        let style = if self.vault_available {
+            dim.patch(theme.action())
+        } else {
+            dim
+        };
+        self.clicks.clear();
+        if self.vault_available {
+            for (i, (col, label)) in [(cols[0], fast_label), (cols[1], full_label)]
+                .into_iter()
+                .enumerate()
+            {
+                self.clicks.control(
+                    text_rect(col, 0, label.width() as u16),
+                    i,
+                    ratatui::crossterm::event::KeyCode::Enter,
+                );
+            }
+        }
+        f.render_widget(Paragraph::new(fast_label).style(style), cols[0]);
+        f.render_widget(Paragraph::new(full_label).style(style), cols[1]);
     }
 }
 

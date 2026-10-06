@@ -3,12 +3,13 @@
 //! persists, Esc reverts to the theme that was active when the picker opened.
 
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
+use crate::components::clickable::{is_press_outside, list_index_at};
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx};
 use crate::settings::AppSettings;
@@ -23,6 +24,10 @@ pub struct ThemePickerDialog {
     original: usize,
     /// Scroll offset for long lists.
     offset: usize,
+    /// Outer popup rect from the last render; a press outside cancels.
+    popup_rect: Rect,
+    /// Where the rows were drawn in the last render.
+    list_rect: Rect,
 }
 
 impl ThemePickerDialog {
@@ -35,6 +40,32 @@ impl ThemePickerDialog {
             selected,
             original: selected,
             offset: 0,
+            popup_rect: Rect::default(),
+            list_rect: Rect::default(),
+        }
+    }
+
+    /// Click a theme to preview it, click the previewed one to keep it; the
+    /// wheel steps through themes; a press outside reverts and closes, like
+    /// Esc. Modal: every mouse event is consumed.
+    pub fn handle_mouse(&mut self, m: &MouseEvent, tx: &AppTx) -> EventState {
+        if is_press_outside(m, self.popup_rect) {
+            return self.handle_key(KeyEvent::from(KeyCode::Esc), tx);
+        }
+        match m.kind {
+            MouseEventKind::ScrollUp => self.handle_key(KeyEvent::from(KeyCode::Up), tx),
+            MouseEventKind::ScrollDown => self.handle_key(KeyEvent::from(KeyCode::Down), tx),
+            _ => {
+                if let Some(idx) = list_index_at(m, self.list_rect, self.offset, self.themes.len())
+                {
+                    if idx == self.selected {
+                        return self.handle_key(KeyEvent::from(KeyCode::Enter), tx);
+                    }
+                    self.selected = idx;
+                    self.apply(idx, false, tx);
+                }
+                EventState::Consumed
+            }
         }
     }
 
@@ -85,6 +116,7 @@ impl ThemePickerDialog {
             .min(rect.height.saturating_sub(4))
             .max(5);
         let area = super::fixed_centered_rect(width, height, rect);
+        self.popup_rect = area;
         let inner = crate::components::panel::modal_chrome(
             f,
             area,
@@ -96,6 +128,7 @@ impl ThemePickerDialog {
             },
         );
 
+        self.list_rect = inner;
         // Keep the selection in the visible window.
         let visible = inner.height as usize;
         if self.selected < self.offset {

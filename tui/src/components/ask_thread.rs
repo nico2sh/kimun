@@ -30,6 +30,7 @@ use crate::ask::{AskSource, Thread, Turn, TurnStatus, citations, save};
 use crate::components::Component;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, AskData, FileOp, InputEvent};
+use crate::components::hint_row::HintRow;
 use crate::components::panel::panel_block;
 use crate::components::single_line_input::{InputOutcome, SingleLineInput};
 use crate::settings::icons::Icons;
@@ -111,6 +112,8 @@ pub struct ThreadPanel {
     turns_rect: Rect,
     /// The composer's rect from the last render — mouse hit-testing base.
     composer_rect: Rect,
+    /// The action chips between the turns and the composer.
+    actions: HintRow,
     /// Row → data mapping from the last render, scoped to `turns_rect`.
     row_map: Vec<RowSlot>,
     /// Glyph set (question-prompt chevron, …) resolved from `use_nerd_fonts`.
@@ -132,6 +135,14 @@ impl ThreadPanel {
             citation_target: None,
             turns_rect: Rect::default(),
             composer_rect: Rect::default(),
+            actions: HintRow::new(&[
+                (KeyCode::Enter, "⏎", "Send"),
+                (KeyCode::Char('y'), "y", "Copy"),
+                (KeyCode::Char('e'), "e", "Save as note"),
+                (KeyCode::Char('r'), "r", "Regenerate"),
+                (KeyCode::Char('n'), "n", "New"),
+            ])
+            .with_indent(1),
             row_map: Vec::new(),
             icons: Icons::new(false),
         }
@@ -309,7 +320,11 @@ impl ThreadPanel {
         }
     }
 
-    fn handle_mouse(&mut self, mouse: &MouseEvent, _tx: &AppTx) -> EventState {
+    fn handle_mouse(&mut self, mouse: &MouseEvent, tx: &AppTx) -> EventState {
+        if let Some(key) = self.actions.hit(mouse) {
+            self.run_action(key.code, tx);
+            return EventState::Consumed;
+        }
         let pos = Position {
             x: mouse.column,
             y: mouse.row,
@@ -336,6 +351,40 @@ impl ThreadPanel {
                 EventState::Consumed
             }
             _ => EventState::NotConsumed,
+        }
+    }
+
+    /// Run an action chip. The chips act on the thread whatever holds the
+    /// keyboard — unlike the keys, which belong to Turns (`y`/`e`/`r`) or the
+    /// composer (Enter) — so each calls its action directly.
+    fn run_action(&mut self, code: KeyCode, tx: &AppTx) {
+        match code {
+            KeyCode::Enter => self.submit(tx),
+            KeyCode::Char('y') => self.copy_selected(tx),
+            KeyCode::Char('e') => self.save_selected(tx),
+            KeyCode::Char('r') => self.regenerate_selected(tx),
+            // Starting over also resets the Sources drawer, which this panel
+            // does not own — the leader action does both.
+            KeyCode::Char('n') => {
+                tx.send(AppEvent::ExecuteLeaderAction(
+                    crate::keys::leader::LeaderAction::AskNew,
+                ))
+                .ok();
+            }
+            _ => {}
+        }
+    }
+
+    /// Enable the chips that can act right now: Send needs a server and a
+    /// question; the turn actions and New need a turn.
+    fn sync_actions(&mut self) {
+        let has_turn = self.thread.selected().is_some();
+        self.actions.set_enabled(
+            0,
+            self.client.is_some() && !self.composer.value().trim().is_empty(),
+        );
+        for i in 1..=4 {
+            self.actions.set_enabled(i, has_turn);
         }
     }
 
@@ -636,7 +685,11 @@ impl Component for ThreadPanel {
     fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(COMPOSER_HEIGHT)])
+            .constraints([
+                Constraint::Min(0),
+                Constraint::Length(1),
+                Constraint::Length(COMPOSER_HEIGHT),
+            ])
             .split(rect);
         self.render_turns(
             f,
@@ -644,9 +697,16 @@ impl Component for ThreadPanel {
             theme,
             focused && self.focus == ThreadFocus::Turns,
         );
-        self.render_composer(
+        self.sync_actions();
+        self.actions.render(
             f,
             chunks[1],
+            Style::default().fg(theme.gray.to_ratatui()),
+            theme,
+        );
+        self.render_composer(
+            f,
+            chunks[2],
             theme,
             focused && self.focus == ThreadFocus::Composer,
         );
@@ -1338,6 +1398,49 @@ mod tests {
             );
         }
 
+        /// Render `p` and click the first cell of `text`; returns the events.
+        fn click_text(p: &mut ThreadPanel, text: &str) -> Vec<AppEvent> {
+            use ratatui::{Terminal, backend::TestBackend};
+            let theme = Theme::default();
+            let mut t = Terminal::new(TestBackend::new(80, 12)).unwrap();
+            t.draw(|f| p.render(f, f.area(), &theme, true)).unwrap();
+            let (x, y) = crate::test_support::find_text(t.backend().buffer(), text)
+                .unwrap_or_else(|| panic!("{text:?} not drawn"));
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            p.handle_input(&crate::test_support::mouse_down_at(x, y), &tx);
+            crate::test_support::drain(&mut rx).into_iter().collect()
+        }
+
+        /// The chips act on the selected turn whatever holds the keyboard —
+        /// here the composer, where the `y`/`e` keys would be text.
+        #[test]
+        fn action_chips_act_from_any_focus() {
+            let mut p = ThreadPanel::new();
+            p.set_client(Some(test_client()));
+            let id = p.thread_mut().ask("q".into());
+            p.thread_mut().complete(id, "answer".into(), vec![]);
+            p.focus = ThreadFocus::Composer;
+            let ev = click_text(&mut p, "[e] Save as note");
+            assert!(
+                ev.iter().any(|e| matches!(e, AppEvent::FileOp(_))),
+                "save as note opens the create dialog: {ev:?}"
+            );
+            let ev = click_text(&mut p, "[n] New");
+            assert!(ev.iter().any(|e| matches!(
+                e,
+                AppEvent::ExecuteLeaderAction(crate::keys::leader::LeaderAction::AskNew)
+            )));
+        }
+
+        /// With no turn yet, only Send can act — and only with a question.
+        #[test]
+        fn turn_chips_are_inert_without_a_turn() {
+            let mut p = ThreadPanel::new();
+            p.set_client(Some(test_client()));
+            assert!(click_text(&mut p, "[n] New").is_empty());
+            assert!(click_text(&mut p, "[⏎] Send").is_empty(), "empty question");
+        }
+
         /// A completed answer taller than the viewport scrolls so its end is
         /// visible (bottom-follow), not stuck showing the question.
         #[test]
@@ -1356,10 +1459,11 @@ mod tests {
                 turn_id: id,
                 result: Ok((answer, vec![])),
             });
-            // Terminal height 8 − composer(3) = 5 turn rows. Rows total 12
-            // (question 1 + 10 answer + trailing blank 1) → end pins at 12 − 5 = 7.
+            // Terminal height 8 − actions(1) − composer(3) = 4 turn rows. Rows
+            // total 12 (question 1 + 10 answer + trailing blank 1) → end pins
+            // at 12 − 4 = 8.
             draw(&mut p, &theme, 60, 8, true);
-            assert_eq!(p.scroll, 7, "bottom-follow shows the answer's end");
+            assert_eq!(p.scroll, 8, "bottom-follow shows the answer's end");
         }
 
         /// Completing an UNSELECTED turn (e.g. regenerating an old turn while
@@ -1415,7 +1519,7 @@ mod tests {
             // First turn: question(1)+answer(1)+blank(1) = 3 rows. Each later
             // turn adds a leading separator: separator(1)+question(1)+answer(1)+
             // blank(1) = 4 rows. 8 turns → 3 + 7×4 = 31 rows.
-            // Terminal height 9 − composer(3) = 6 turn rows.
+            // Terminal height 9 − actions(1) − composer(3) = 5 turn rows.
             draw(&mut p, &theme, 60, 9, true); // selection at the last turn
 
             // Jump the selection to the first turn: it scrolls to the top.
@@ -1428,10 +1532,10 @@ mod tests {
                 "selecting the first turn scrolled it into view"
             );
 
-            // End scrolls to the bottom, clamped to total − height (31 − 6 = 25).
+            // End scrolls to the bottom, clamped to total − height (31 − 5 = 26).
             turns_key(&mut p, KeyCode::End);
             draw(&mut p, &theme, 60, 9, true);
-            assert_eq!(p.scroll, 25, "content scroll clamps to the last page");
+            assert_eq!(p.scroll, 26, "content scroll clamps to the last page");
         }
     }
 }

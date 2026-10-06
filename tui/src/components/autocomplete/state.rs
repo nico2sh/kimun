@@ -42,6 +42,10 @@ pub struct AutocompleteState {
     /// `>`, or `=`) so the title renders the matching sigil. `None` for
     /// `Wikilink`/`Hashtag` (fixed sigils) and until set from the trigger.
     pub opener: Option<char>,
+    /// Where the visible rows were drawn by the last render (inside the
+    /// border) — what a mouse click is hit-tested against. Empty until
+    /// rendered, and whenever the popup could not draw.
+    pub rows_rect: ratatui::layout::Rect,
 }
 
 impl AutocompleteState {
@@ -56,6 +60,7 @@ impl AutocompleteState {
             max_visible_rows: DEFAULT_MAX_VISIBLE_ROWS,
             anchor,
             opener: None,
+            rows_rect: ratatui::layout::Rect::default(),
         }
     }
 
