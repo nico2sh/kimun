@@ -143,6 +143,9 @@ pub struct SearchList<R: SearchRow> {
     ///
     /// [`ContentScrollDown`]: SearchMouse::ContentScrollDown
     content_rect: Rect,
+    /// Where the query input was drawn by the last [`Self::render_query`].
+    /// A click there gives the input the keyboard.
+    input_rect: Rect,
     /// Load generation whose rows are currently held. When a newer generation
     /// (a requery / reload) delivers its first event, `poll` clears the stale
     /// rows before applying it — required for streamed (`Push`) sources, which
@@ -156,6 +159,13 @@ pub struct SearchList<R: SearchRow> {
     /// again activates" only fires on a true click-click — never on a click
     /// landing on an auto- or keyboard-made selection.
     last_click_pos: Option<usize>,
+    /// When the last left-click landed — a second one on the same row within
+    /// [`DOUBLE_CLICK`](crate::components::DOUBLE_CLICK) is a double-click.
+    last_click_at: Option<std::time::Instant>,
+    /// The last left press came back [`SearchMouse::Activated`] — so a fast
+    /// press after it completes a double-click whose first half already
+    /// acted (see `DoubleClicked::repeat`).
+    last_click_activated: bool,
     /// Render the query input with §9 syntax highlighting (the FIND drawer
     /// and the telescope modal; plain inputs like the sidebar filter skip it).
     highlight_query: bool,
@@ -177,6 +187,18 @@ pub struct SearchList<R: SearchRow> {
 pub enum SearchMouse {
     Selected(usize),
     Activated(usize),
+    /// A fast double-click on a row (both presses within
+    /// [`DOUBLE_CLICK`](crate::components::DOUBLE_CLICK)). Hosts whose
+    /// [`Activated`](Self::Activated) already means "open" treat both the
+    /// same; hosts where it toggles a preview open the row instead.
+    ///
+    /// `repeat`: the pair's first press already came back `Activated` (it
+    /// re-clicked a row an earlier, slower click had selected). A host where
+    /// both mean the same thing must not act twice; it ignores the repeat.
+    DoubleClicked {
+        pos: usize,
+        repeat: bool,
+    },
     /// Right-click on a row: selected, and the host should open its context
     /// menu for it.
     Context(usize),
@@ -186,6 +208,15 @@ pub enum SearchMouse {
     /// so the engine routed the event instead of moving the list.
     ContentScrollUp,
     ContentScrollDown,
+    /// A left click on the query input: it now owns the keyboard (list
+    /// focus, where the surface has one, went back to the input).
+    InputFocused,
+    /// The event landed on the open autocomplete popup. `edited`: a click
+    /// accepted a suggestion into the query — the host reacts exactly as to
+    /// a key [`KeyReaction::Consumed`] (breadcrumb, preview re-anchor).
+    Autocomplete {
+        edited: bool,
+    },
     None,
 }
 
@@ -287,6 +318,8 @@ impl<R: SearchRow> SearchList<R> {
             input,
             highlight_query: b.highlight_query,
             last_click_pos: None,
+            last_click_at: None,
+            last_click_activated: false,
             autocomplete,
             intercept: b.intercept,
             yank_combos: b.yank_combos,
@@ -294,6 +327,7 @@ impl<R: SearchRow> SearchList<R> {
             list_rect: Rect::default(),
             panel_rect: Rect::default(),
             content_rect: Rect::default(),
+            input_rect: Rect::default(),
             applied_generation: 0,
             accepted_saved_search: None,
             focus: b.opening_focus,
@@ -665,6 +699,21 @@ impl<R: SearchRow> SearchList<R> {
         crate::keys::key_event_to_combo(key).is_some_and(|c| self.yank_combos.contains(&c))
     }
 
+    /// Write an accepted suggestion into the query — one path for a key
+    /// accept and a click accept.
+    fn apply_accept(&mut self, action: crate::components::autocomplete::AcceptAction) {
+        self.input.replace_range_bytes(
+            action.range.clone(),
+            &action.new_text,
+            action.new_cursor_byte,
+        );
+        // Stash any accepted SavedSearch name for the host's breadcrumb
+        // (`None` for every other kind). The host reads it on this same
+        // event, so a plain assign never clobbers an unread value.
+        self.accepted_saved_search = action.saved_search_name;
+        self.sync_query_from_input();
+    }
+
     pub fn handle_key(&mut self, key: &KeyEvent) -> KeyReaction {
         use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
@@ -684,17 +733,7 @@ impl<R: SearchRow> SearchList<R> {
             if let Some(ac) = &mut self.autocomplete {
                 match ac.handle_key(*key, &snap) {
                     HandleKeyOutcome::Accepted(action) => {
-                        self.input.replace_range_bytes(
-                            action.range.clone(),
-                            &action.new_text,
-                            action.new_cursor_byte,
-                        );
-                        // Stash any accepted SavedSearch name for the host's
-                        // breadcrumb (`None` for every other kind). The host
-                        // reads it on this same `Consumed`, so a plain assign
-                        // never clobbers an unread value.
-                        self.accepted_saved_search = action.saved_search_name;
-                        self.sync_query_from_input();
+                        self.apply_accept(action);
                         return KeyReaction::Consumed;
                     }
                     HandleKeyOutcome::Dismissed | HandleKeyOutcome::Consumed => {
@@ -811,6 +850,7 @@ impl<R: SearchRow> SearchList<R> {
         // input half owns the keyboard; in list focus it renders unfocused
         // (dimmed, cursor hidden). For surfaces that never opt into list focus
         // `self.focus` is always `Input`, so this is byte-identical to today.
+        self.input_rect = area;
         let focused = focused && self.focus == Focus::Input;
         let base = Style::default()
             .fg(theme.fg.to_ratatui())
@@ -892,7 +932,7 @@ impl<R: SearchRow> SearchList<R> {
             if let (Some(state), Some(anchor)) = (ac.state_mut(), caret) {
                 state.anchor = anchor;
             }
-            if let Some(state) = ac.state() {
+            if let Some(state) = ac.state_mut() {
                 crate::components::autocomplete::render(f, state, clamp, theme);
             }
         }
@@ -917,12 +957,65 @@ impl<R: SearchRow> SearchList<R> {
         self.autocomplete.as_ref().is_some_and(|ac| ac.is_open())
     }
 
+    /// Whether (col,row) is on the query input drawn by the last
+    /// [`Self::render_query`].
+    pub fn input_contains(&self, col: u16, row: u16) -> bool {
+        self.input_rect
+            .contains(ratatui::layout::Position::new(col, row))
+    }
+
+    /// Whether (col,row) is on a row of the open autocomplete popup, as last
+    /// drawn — a host that filters mouse events must let these through.
+    pub fn popup_contains(&self, col: u16, row: u16) -> bool {
+        self.autocomplete
+            .as_ref()
+            .and_then(|ac| ac.state())
+            .is_some_and(|st| {
+                st.rows_rect
+                    .contains(ratatui::layout::Position::new(col, row))
+            })
+    }
+
     pub fn handle_mouse(&mut self, m: &ratatui::crossterm::event::MouseEvent) -> SearchMouse {
+        self.handle_mouse_at(m, std::time::Instant::now())
+    }
+
+    /// [`Self::handle_mouse`] with the clock passed in, so a test describes a
+    /// gap instead of sleeping through one.
+    pub(crate) fn handle_mouse_at(
+        &mut self,
+        m: &ratatui::crossterm::event::MouseEvent,
+        now: std::time::Instant,
+    ) -> SearchMouse {
         use ratatui::crossterm::event::{MouseButton, MouseEventKind};
         use ratatui::layout::Position;
-        // Any mouse interaction dismisses an open autocomplete popup (matches
-        // the old modal: a click on the preview/border closes a stale popup).
-        self.close_autocomplete();
+        // An open popup gets first crack: a click on a suggestion accepts
+        // it, the wheel over it moves the highlight.
+        if self.autocomplete.as_ref().is_some_and(|ac| ac.is_open()) {
+            let snap = self.autocomplete_snapshot();
+            if let Some(ac) = &mut self.autocomplete {
+                match ac.handle_mouse(m, &snap) {
+                    HandleKeyOutcome::Accepted(action) => {
+                        self.apply_accept(action);
+                        return SearchMouse::Autocomplete { edited: true };
+                    }
+                    HandleKeyOutcome::Consumed | HandleKeyOutcome::Dismissed => {
+                        return SearchMouse::Autocomplete { edited: false };
+                    }
+                    HandleKeyOutcome::NotHandled => {}
+                }
+            }
+        }
+        // A press or a scroll anywhere else dismisses an open popup (a click
+        // on the preview/border closes a stale popup). Pointer motion does
+        // not: the terminal reports every move, and closing on those would
+        // drop the popup before the pointer could reach it.
+        if matches!(
+            m.kind,
+            MouseEventKind::Down(_) | MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+        ) {
+            self.close_autocomplete();
+        }
         let pos = Position {
             x: m.column,
             y: m.row,
@@ -959,6 +1052,13 @@ impl<R: SearchRow> SearchList<R> {
             }
             return SearchMouse::Scrolled;
         }
+        if matches!(m.kind, MouseEventKind::Down(MouseButton::Left))
+            && self.input_rect.contains(pos)
+        {
+            // The mouse's `i` / `/`: the input takes the keyboard back.
+            self.focus = Focus::Input;
+            return SearchMouse::InputFocused;
+        }
         let r = self.list_rect;
         if !r.contains(pos) {
             return SearchMouse::None;
@@ -987,13 +1087,30 @@ impl<R: SearchRow> SearchList<R> {
                 if let Some(pos) = hit {
                     let prev = self.selected;
                     let prev_click = self.last_click_pos.replace(pos);
+                    let prev_at = if right_click {
+                        self.last_click_at.take()
+                    } else {
+                        self.last_click_at.replace(now)
+                    };
                     self.selected = Some(pos);
                     self.selection_pinned = true;
+                    let fast = prev_at
+                        .is_some_and(|at| now.duration_since(at) < crate::components::DOUBLE_CLICK);
+                    let was_activate = std::mem::take(&mut self.last_click_activated);
                     return if right_click {
                         SearchMouse::Context(pos)
+                    } else if prev == Some(pos) && prev_click == Some(pos) && fast {
+                        // A burst: a third press must not chain into a
+                        // second double-click.
+                        self.last_click_at = None;
+                        SearchMouse::DoubleClicked {
+                            pos,
+                            repeat: was_activate,
+                        }
                     } else if prev == Some(pos) && prev_click == Some(pos) {
                         // Activate only on click-click: the row was already
                         // selected BY A CLICK, not by auto-select or keys.
+                        self.last_click_activated = true;
                         SearchMouse::Activated(pos)
                     } else {
                         SearchMouse::Selected(pos)
@@ -1519,6 +1636,79 @@ mod tests {
         assert_eq!(list.selected_row().unwrap().name, "row3");
     }
 
+    /// Two presses on a row inside the double-click window are a
+    /// double-click; a slower second press is the old click-click
+    /// activation. A third fast press does not chain into another double.
+    #[tokio::test]
+    async fn double_click_needs_a_fast_second_press() {
+        let src = VecSource {
+            rows: (0..3).map(|i| TestRow::new(&format!("row{i}"))).collect(),
+            reload: true,
+        };
+        let mut list = SearchList::builder(src, noop_redraw()).build();
+        list.poll_until_idle().await;
+        list.set_list_rect(ratatui::layout::Rect::new(0, 0, 20, 3));
+        let t0 = std::time::Instant::now();
+        let ms = |n: u64| t0 + std::time::Duration::from_millis(n);
+        let press = mouse_down_at(2, 1);
+
+        assert_eq!(
+            list.handle_mouse_at(&press, ms(0)),
+            SearchMouse::Selected(1)
+        );
+        assert_eq!(
+            list.handle_mouse_at(&press, ms(150)),
+            SearchMouse::DoubleClicked {
+                pos: 1,
+                repeat: false
+            }
+        );
+        assert_eq!(
+            list.handle_mouse_at(&press, ms(250)),
+            SearchMouse::Activated(1),
+            "a third press is not a second double-click"
+        );
+        let slow = ms(250) + crate::components::DOUBLE_CLICK;
+        assert_eq!(
+            list.handle_mouse_at(&press, slow),
+            SearchMouse::Activated(1),
+            "a slow click-click still activates"
+        );
+    }
+
+    /// A double-click on a row an earlier click already selected: the first
+    /// press activates (slow click-click), the second completes the double
+    /// — flagged `repeat`, so hosts where both mean "open" act once.
+    #[tokio::test]
+    async fn a_double_click_after_an_activation_is_a_repeat() {
+        let src = VecSource {
+            rows: (0..3).map(|i| TestRow::new(&format!("row{i}"))).collect(),
+            reload: true,
+        };
+        let mut list = SearchList::builder(src, noop_redraw()).build();
+        list.poll_until_idle().await;
+        list.set_list_rect(ratatui::layout::Rect::new(0, 0, 20, 3));
+        let t0 = std::time::Instant::now();
+        let ms = |n: u64| t0 + std::time::Duration::from_millis(n);
+        let press = mouse_down_at(2, 1);
+
+        assert_eq!(
+            list.handle_mouse_at(&press, ms(0)),
+            SearchMouse::Selected(1)
+        );
+        assert_eq!(
+            list.handle_mouse_at(&press, ms(1000)),
+            SearchMouse::Activated(1)
+        );
+        assert_eq!(
+            list.handle_mouse_at(&press, ms(1150)),
+            SearchMouse::DoubleClicked {
+                pos: 1,
+                repeat: true
+            }
+        );
+    }
+
     // The synchronous build seam: `build_with_rows` applies the rows and seeds
     // the selection in the same call — no poll, no spawn, `is_loading()` false
     // immediately. This is the static-source path (StaticRowSource); the row
@@ -1730,6 +1920,117 @@ mod tests {
             list.poll();
         }
         let _ = list.handle_key(&key(KeyCode::Tab));
+        assert_eq!(list.query(), "#projects");
+    }
+
+    /// Pointer motion must not close the popup — the terminal reports every
+    /// move, so the popup would vanish before the pointer reached it.
+    #[tokio::test]
+    async fn moving_the_pointer_keeps_the_popup_open() {
+        struct Mem;
+        #[async_trait::async_trait]
+        impl crate::components::search_list::SuggestionSource for Mem {
+            async fn notes_by_prefix(&self, _p: &str, _n: usize) -> Vec<SuggestionItem> {
+                vec![]
+            }
+            async fn tags_by_prefix(&self, _p: &str, _n: usize) -> Vec<SuggestionItem> {
+                vec![SuggestionItem::plain("projects")]
+            }
+        }
+        let src = VecSource {
+            rows: vec![],
+            reload: true,
+        };
+        let mut list = SearchList::builder(src, noop_redraw())
+            .autocomplete(
+                std::sync::Arc::new(Mem),
+                crate::components::autocomplete::AutocompleteMode::SearchQuery,
+            )
+            .debounce(std::time::Duration::ZERO)
+            .build();
+        for c in ['#', 'p'] {
+            let _ = list.handle_key(&key(KeyCode::Char(c)));
+        }
+        for _ in 0..50 {
+            tokio::task::yield_now().await;
+            list.poll();
+        }
+        assert!(list.autocomplete_is_open());
+        let moved = ratatui::crossterm::event::MouseEvent {
+            kind: ratatui::crossterm::event::MouseEventKind::Moved,
+            column: 30,
+            row: 30,
+            modifiers: KeyModifiers::NONE,
+        };
+        list.handle_mouse(&moved);
+        assert!(list.autocomplete_is_open(), "motion keeps it");
+        list.handle_mouse(&mouse_down_at(30, 30));
+        assert!(!list.autocomplete_is_open(), "a press elsewhere closes it");
+    }
+
+    /// A click on a suggestion accepts it — the same rewrite Tab makes —
+    /// and reports the edit so hosts run their query-edit path.
+    #[tokio::test]
+    async fn clicking_a_suggestion_accepts_it() {
+        use ratatui::{Terminal, backend::TestBackend};
+        struct Mem;
+        #[async_trait::async_trait]
+        impl crate::components::search_list::SuggestionSource for Mem {
+            async fn notes_by_prefix(&self, _p: &str, _n: usize) -> Vec<SuggestionItem> {
+                vec![]
+            }
+            async fn tags_by_prefix(&self, p: &str, _n: usize) -> Vec<SuggestionItem> {
+                if "projects".starts_with(p) {
+                    vec![SuggestionItem::plain("projects")]
+                } else {
+                    vec![]
+                }
+            }
+        }
+        let src = VecSource {
+            rows: vec![],
+            reload: true,
+        };
+        let mut list = SearchList::builder(src, noop_redraw())
+            .autocomplete(
+                std::sync::Arc::new(Mem),
+                crate::components::autocomplete::AutocompleteMode::SearchQuery,
+            )
+            .debounce(std::time::Duration::ZERO)
+            .build();
+        for c in ['#', 'p', 'r', 'o'] {
+            let _ = list.handle_key(&key(KeyCode::Char(c)));
+        }
+        for _ in 0..50 {
+            tokio::task::yield_now().await;
+            list.poll();
+        }
+        let theme = Theme::gruvbox_dark();
+        let mut t = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        t.draw(|f| {
+            let input = ratatui::layout::Rect::new(0, 0, 40, 1);
+            list.render_query(f, input, &theme, true);
+            list.render_autocomplete(f, f.area(), &theme);
+        })
+        .unwrap();
+        let rows = list
+            .autocomplete
+            .as_ref()
+            .and_then(|ac| ac.state())
+            .map(|st| st.rows_rect)
+            .expect("popup open");
+        assert!(
+            list.popup_contains(rows.x + 1, rows.y),
+            "hosts that filter clicks can see the popup"
+        );
+        let click = match crate::test_support::mouse_down_at(rows.x + 1, rows.y) {
+            crate::components::events::InputEvent::Mouse(m) => m,
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            list.handle_mouse(&click),
+            SearchMouse::Autocomplete { edited: true }
+        );
         assert_eq!(list.query(), "#projects");
     }
 
@@ -2211,6 +2512,35 @@ mod tests {
         );
         list.poll_until_idle().await;
         assert_eq!(list.query(), "l", "verb letters still type in Input focus");
+    }
+
+    /// Clicking the query input is the mouse's `i`: list focus goes back to
+    /// the input, so typing filters again.
+    #[tokio::test]
+    async fn clicking_the_input_gives_it_the_keyboard() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let src = VecSource {
+            rows: vec![TestRow::new("alpha"), TestRow::new("beta")],
+            reload: false,
+        };
+        let mut list = SearchList::builder(src, noop_redraw())
+            .filter(Filter::Fuzzy)
+            .opening_focus(Focus::List)
+            .build();
+        list.poll_until_idle().await;
+        let theme = Theme::gruvbox_dark();
+        let mut t = Terminal::new(TestBackend::new(30, 1)).unwrap();
+        t.draw(|f| list.render_query(f, f.area(), &theme, true))
+            .unwrap();
+        let m = match crate::test_support::mouse_down_at(3, 0) {
+            crate::components::events::InputEvent::Mouse(m) => m,
+            _ => unreachable!(),
+        };
+        assert_eq!(list.handle_mouse(&m), SearchMouse::InputFocused);
+        assert_eq!(list.focus(), Focus::Input);
+        list.handle_key(&key(KeyCode::Char('a')));
+        list.poll_until_idle().await;
+        assert_eq!(list.query(), "a");
     }
 
     // Opening on the list starts in List focus; a plain letter with no verb

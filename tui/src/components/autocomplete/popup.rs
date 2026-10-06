@@ -29,6 +29,44 @@ pub enum PopupAction {
     Dismiss,
 }
 
+/// Routes a mouse event through the popup: the wheel over it moves the
+/// highlight, a left click on a row highlights and accepts it. Anything
+/// else (including a press outside) is `NotHandled` — the host's own mouse
+/// handling then closes the popup as before.
+pub fn handle_mouse(
+    state: &mut AutocompleteState,
+    m: &ratatui::crossterm::event::MouseEvent,
+) -> PopupOutcome {
+    use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+    let pos = ratatui::layout::Position::new(m.column, m.row);
+    if !state.rows_rect.contains(pos) {
+        return PopupOutcome::NotHandled;
+    }
+    match m.kind {
+        MouseEventKind::ScrollUp => {
+            state.move_highlight_up();
+            PopupOutcome::Consumed(PopupAction::None)
+        }
+        MouseEventKind::ScrollDown => {
+            state.move_highlight_down();
+            PopupOutcome::Consumed(PopupAction::None)
+        }
+        MouseEventKind::Down(MouseButton::Left) => {
+            let (start, end) = state.visible_window();
+            let idx = start + (m.row - state.rows_rect.y) as usize;
+            if idx < end {
+                state.highlighted = idx;
+                PopupOutcome::Consumed(PopupAction::Accept)
+            } else {
+                PopupOutcome::Consumed(PopupAction::None)
+            }
+        }
+        // Moves, drags and other buttons over the popup do nothing, but
+        // must not fall through and dismiss it.
+        _ => PopupOutcome::Consumed(PopupAction::None),
+    }
+}
+
 /// Routes a key event through the popup's input model. Navigation keys are
 /// consumed (Up/Down, PageUp/PageDown, Home/End). Tab and Enter accept;
 /// Esc dismisses. Everything else returns `NotHandled` so the host can
@@ -91,7 +129,8 @@ pub fn handle_key(state: &mut AutocompleteState, key: KeyEvent) -> PopupOutcome 
 /// is bounded by `state.max_visible_rows`; the popup never grows past it,
 /// even when the screen has more room available — keeping it visually
 /// subordinate to the editor.
-pub fn render(frame: &mut Frame, state: &AutocompleteState, screen: Rect, theme: &Theme) {
+pub fn render(frame: &mut Frame, state: &mut AutocompleteState, screen: Rect, theme: &Theme) {
+    state.rows_rect = Rect::default();
     if state.items.is_empty() {
         return;
     }
@@ -148,6 +187,7 @@ pub fn render(frame: &mut Frame, state: &AutocompleteState, screen: Rect, theme:
     };
 
     frame.render_widget(Clear, area);
+    crate::components::clickable::occlude(area);
 
     let title = format!(" {} ", visible_title(state));
     let block = Block::default()
@@ -157,6 +197,7 @@ pub fn render(frame: &mut Frame, state: &AutocompleteState, screen: Rect, theme:
         .style(theme.panel_style());
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    state.rows_rect = inner;
 
     let inner_width = inner.width as usize;
 
@@ -383,6 +424,55 @@ mod tests {
         assert_eq!(st.highlighted, 29);
     }
 
+    // ---- Mouse ----
+
+    fn press(
+        kind: ratatui::crossterm::event::MouseEventKind,
+        col: u16,
+        row: u16,
+    ) -> ratatui::crossterm::event::MouseEvent {
+        ratatui::crossterm::event::MouseEvent {
+            kind,
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    /// Render for real so `rows_rect` is recorded on `st` itself.
+    fn draw_mut(st: &mut AutocompleteState) {
+        let theme = Theme::gruvbox_dark();
+        let mut terminal = Terminal::new(TestBackend::new(60, 30)).unwrap();
+        terminal.draw(|f| render(f, st, f.area(), &theme)).unwrap();
+    }
+
+    #[test]
+    fn clicking_a_row_highlights_and_accepts_it() {
+        use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+        let mut st = sample_state(5);
+        draw_mut(&mut st);
+        let r = st.rows_rect;
+        assert!(!r.is_empty(), "rows rect recorded");
+        let out = handle_mouse(
+            &mut st,
+            &press(MouseEventKind::Down(MouseButton::Left), r.x, r.y + 2),
+        );
+        assert_eq!(out, PopupOutcome::Consumed(PopupAction::Accept));
+        assert_eq!(st.highlighted, 2);
+    }
+
+    #[test]
+    fn wheel_moves_the_highlight_and_outside_is_not_handled() {
+        use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+        let mut st = sample_state(5);
+        draw_mut(&mut st);
+        let r = st.rows_rect;
+        handle_mouse(&mut st, &press(MouseEventKind::ScrollDown, r.x, r.y));
+        assert_eq!(st.highlighted, 1);
+        let outside = press(MouseEventKind::Down(MouseButton::Left), r.right() + 5, r.y);
+        assert_eq!(handle_mouse(&mut st, &outside), PopupOutcome::NotHandled);
+    }
+
     // ---- Rendering smoke tests ----
 
     fn draw(state: &AutocompleteState, area: Rect) -> Terminal<TestBackend> {
@@ -391,7 +481,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|f| {
-                render(f, state, f.area(), &theme);
+                render(f, &mut state.clone(), f.area(), &theme);
             })
             .unwrap();
         terminal
@@ -464,14 +554,14 @@ mod tests {
 
     #[test]
     fn render_empty_state_is_noop() {
-        let st = sample_state(0);
+        let mut st = sample_state(0);
         let theme = Theme::gruvbox_dark();
         let backend = TestBackend::new(40, 10);
         let mut terminal = Terminal::new(backend).unwrap();
         // Should complete without rendering anything.
         terminal
             .draw(|f| {
-                render(f, &st, f.area(), &theme);
+                render(f, &mut st, f.area(), &theme);
             })
             .unwrap();
     }

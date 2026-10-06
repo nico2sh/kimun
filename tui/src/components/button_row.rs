@@ -100,24 +100,39 @@ impl ButtonRow {
             } else if self.focused == Some(i) {
                 focus
             } else {
-                normal
+                normal.patch(theme.action())
             };
             // Clip to the row: a button past the right edge is not clickable.
             let visible = rect.right().saturating_sub(x).min(w);
-            self.rects.push(Rect {
+            let r = Rect {
                 x,
                 y: rect.y,
                 width: visible,
                 height: 1,
-            });
+            };
+            self.rects.push(r);
+            if self.enabled[i] {
+                crate::components::clickable::register(r);
+            }
             spans.push(Span::styled(text, style));
             x += w;
         }
         f.render_widget(Paragraph::new(Line::from(spans)).style(normal), rect);
     }
 
-    /// Index of the enabled button under (col,row) from the last render.
-    pub fn hit(&self, col: u16, row: u16) -> Option<usize> {
+    /// Index of the enabled button under a left press, from the last
+    /// render. Other buttons never press a button — a right-click on
+    /// `Discard` must not discard.
+    pub fn hit(&self, m: &ratatui::crossterm::event::MouseEvent) -> Option<usize> {
+        if !crate::components::clickable::is_left_press(m) {
+            return None;
+        }
+        self.hit_at(m.column, m.row)
+    }
+
+    /// Index of the enabled button at (col,row) from the last render — for
+    /// callers that have already decided the event is a left press.
+    pub fn hit_at(&self, col: u16, row: u16) -> Option<usize> {
         let pos = Position { x: col, y: row };
         self.rects
             .iter()
@@ -142,19 +157,19 @@ mod tests {
         let mut row = ButtonRow::new(&["Save", "Cancel"]);
         drawn(&mut row);
         // Layout: " [ Save ]  [ Cancel ]" → Save at cols 1..=8, Cancel at 11..=20.
-        assert_eq!(row.hit(1, 0), Some(0));
-        assert_eq!(row.hit(8, 0), Some(0));
-        assert_eq!(row.hit(11, 0), Some(1));
-        assert_eq!(row.hit(20, 0), Some(1));
+        assert_eq!(row.hit_at(1, 0), Some(0));
+        assert_eq!(row.hit_at(8, 0), Some(0));
+        assert_eq!(row.hit_at(11, 0), Some(1));
+        assert_eq!(row.hit_at(20, 0), Some(1));
     }
 
     #[test]
     fn gap_between_buttons_hits_nothing() {
         let mut row = ButtonRow::new(&["Save", "Cancel"]);
         drawn(&mut row);
-        assert_eq!(row.hit(9, 0), None);
-        assert_eq!(row.hit(0, 0), None);
-        assert_eq!(row.hit(30, 0), None);
+        assert_eq!(row.hit_at(9, 0), None);
+        assert_eq!(row.hit_at(0, 0), None);
+        assert_eq!(row.hit_at(30, 0), None);
     }
 
     #[test]
@@ -162,7 +177,7 @@ mod tests {
         let mut row = ButtonRow::new(&["Add", "Edit", "Delete"]);
         row.set_enabled(1, false);
         drawn(&mut row);
-        assert_eq!(row.hit(10, 0), None, "Edit is disabled");
+        assert_eq!(row.hit_at(10, 0), None, "Edit is disabled");
         row.set_focused(Some(0));
         assert!(row.focus_next());
         assert_eq!(row.focused(), Some(2), "focus skips the disabled button");
@@ -192,6 +207,6 @@ mod tests {
     #[test]
     fn no_hit_before_first_render() {
         let row = ButtonRow::new(&["Save"]);
-        assert_eq!(row.hit(1, 0), None);
+        assert_eq!(row.hit_at(1, 0), None);
     }
 }

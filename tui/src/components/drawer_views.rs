@@ -485,8 +485,9 @@ impl LinksPanel {
             };
             let w = tab.label().len() as u16; // labels are ASCII
             if x < rows[0].right() {
-                self.tab_cells
-                    .push((tab, Rect::new(x, rows[0].y, w.min(rows[0].right() - x), 1)));
+                let r = Rect::new(x, rows[0].y, w.min(rows[0].right() - x), 1);
+                crate::components::clickable::register(r);
+                self.tab_cells.push((tab, r));
             }
             spans.push(Span::styled(tab.label(), style));
             x += w;

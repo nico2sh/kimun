@@ -3,6 +3,7 @@
 //! arm per view, never inline view logic in the host.
 
 use ratatui::Frame;
+use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
@@ -25,10 +26,12 @@ pub struct ConfigInfo {
 }
 
 /// Read-only settings summary plus two launcher keys: `t`/Enter opens the
-/// theme picker, `p` opens Preferences.
+/// theme picker, `p` opens Preferences. Clicking a launcher row is its key.
 #[derive(Default)]
 pub struct ConfigPanel {
     info: ConfigInfo,
+    /// Each launcher row with its key, from the last render.
+    launchers: Vec<(Rect, KeyCode)>,
 }
 
 impl ConfigPanel {
@@ -45,7 +48,12 @@ impl ConfigPanel {
     }
 
     pub fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
-        use ratatui::crossterm::event::KeyCode;
+        if let InputEvent::Mouse(m) = event {
+            if let Some(key) = crate::components::clickable::key_at(&self.launchers, m) {
+                return self.handle_input(&InputEvent::Key(key), tx);
+            }
+            return EventState::NotConsumed;
+        }
         if let InputEvent::Key(key) = event {
             match key.code {
                 KeyCode::Char('t') | KeyCode::Enter => {
@@ -71,8 +79,8 @@ impl ConfigPanel {
         let info = &self.info;
         let label = Style::default().fg(theme.gray.to_ratatui());
         let value = Style::default().fg(theme.fg.to_ratatui());
-        let keycap = Style::default().fg(theme.yellow.to_ratatui());
-        let lines = vec![
+        let keycap = theme.action();
+        let mut lines = vec![
             ratatui::text::Line::from(vec![
                 ratatui::text::Span::styled(" theme    ", label),
                 ratatui::text::Span::styled(info.theme_name.clone(), value),
@@ -97,15 +105,26 @@ impl ConfigPanel {
                 ratatui::text::Span::styled(info.config_path.clone(), value),
             ]),
             ratatui::text::Line::default(),
-            ratatui::text::Line::from(vec![
-                ratatui::text::Span::styled(" t ", keycap),
-                ratatui::text::Span::styled("theme picker", label),
-            ]),
-            ratatui::text::Line::from(vec![
-                ratatui::text::Span::styled(" p ", keycap),
-                ratatui::text::Span::styled("preferences", label),
-            ]),
         ];
+        // Each launcher records its click target as it is laid out, so the
+        // rect and the key cannot drift apart. A row clipped off the bottom
+        // is not clickable.
+        self.launchers.clear();
+        for (key, text) in [('t', "theme picker"), ('p', "preferences")] {
+            let y = inner.y + lines.len() as u16;
+            if y < inner.bottom() {
+                // The drawn text is the target — what lights up is what
+                // clicks.
+                let w = (3 + text.len() as u16).min(inner.width);
+                let r = Rect::new(inner.x, y, w, 1);
+                crate::components::clickable::register(r);
+                self.launchers.push((r, KeyCode::Char(key)));
+            }
+            lines.push(ratatui::text::Line::from(vec![
+                ratatui::text::Span::styled(format!(" {key} "), keycap),
+                ratatui::text::Span::styled(text, label),
+            ]));
+        }
         f.render_widget(Paragraph::new(lines), inner);
     }
 }
@@ -131,6 +150,29 @@ mod tests {
                 Ok(AppEvent::ExecuteLeaderAction(LeaderAction::VaultTheme))
             ));
         }
+    }
+
+    #[test]
+    fn clicking_a_launcher_row_runs_its_key() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let (tx, mut rx) = unbounded_channel();
+        let mut panel = ConfigPanel::default();
+        let theme = Theme::gruvbox_dark();
+        let mut t = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        t.draw(|f| panel.render(f, f.area(), &theme, true)).unwrap();
+        // Border row + 7 lines: theme picker on row 7, preferences on row 8.
+        panel.handle_input(&crate::test_support::mouse_down_at(5, 7), &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AppEvent::ExecuteLeaderAction(LeaderAction::VaultTheme))
+        ));
+        panel.handle_input(&crate::test_support::mouse_down_at(5, 8), &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AppEvent::OpenScreen(ScreenEvent::OpenPreferences))
+        ));
+        panel.handle_input(&crate::test_support::mouse_down_at(5, 2), &tx);
+        assert!(rx.try_recv().is_err(), "info rows are inert");
     }
 
     #[test]

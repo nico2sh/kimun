@@ -46,7 +46,8 @@ pub struct DocState<'a> {
     pub matches: Option<usize>,
     /// Link-under-cursor affordance: `→ target · N backlinks` (spec §5.2).
     pub link: Option<String>,
-    /// Newer release available, e.g. `⬆ 0.18.0` — opens the update dialog.
+    /// Newer release available, e.g. `⬆ 0.18.0` — clickable, opens the
+    /// update dialog.
     pub update: Option<String>,
     /// RAG server status, e.g. `rag: online` — absent when no server is set.
     pub rag: Option<String>,
@@ -66,16 +67,30 @@ pub struct StatusContext<'a> {
     pub doc: DocState<'a>,
 }
 
+/// A line-2 segment that reacts to a click.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FooterTarget {
+    /// `⊞ N props` — opens the properties dialog.
+    Props,
+    /// `⬆ x.y.z` — opens the update dialog.
+    Update,
+    /// `N backlinks` — opens the LINKS drawer on its backlinks tab.
+    Backlinks,
+    /// `→ target` — follows the link under the cursor (the mouse's Ctrl+N).
+    Link,
+}
+
 pub struct FooterBar {
     key_flash: Option<(String, Instant)>,
-    props_rect: Option<Rect>,
+    /// Clickable segments from the last render, clipped to the row.
+    targets: Vec<(Rect, FooterTarget)>,
 }
 
 impl FooterBar {
     pub fn new() -> Self {
         Self {
             key_flash: None,
-            props_rect: None,
+            targets: Vec::new(),
         }
     }
 
@@ -243,39 +258,37 @@ impl FooterBar {
             Span::styled("✓ saved", Style::default().fg(theme.green.to_ratatui()))
         };
         push(&mut segments, state_span);
-        self.props_rect = None;
-        if let Some(n) = doc.props {
-            let label = props_label(n);
+        self.targets.clear();
+        // Where the next pushed segment will land: everything already pushed
+        // plus the separator `push` puts in front of it.
+        let row = rows[1];
+        let target_rect = |segments: &[Span], label: &str| -> Option<Rect> {
             let x_before: u16 = segments
                 .iter()
                 .map(|s| s.content.width() as u16)
                 .sum::<u16>()
                 + " · ".width() as u16;
-            let x = rows[1].x + x_before;
-            let w = label.width() as u16;
-            if x < rows[1].right() {
-                self.props_rect = Some(Rect {
-                    x,
-                    y: rows[1].y,
-                    width: w.min(rows[1].right() - x),
-                    height: 1,
-                });
+            let x = row.x.saturating_add(x_before);
+            (x < row.right()).then(|| Rect {
+                x,
+                y: row.y,
+                width: (label.width() as u16).min(row.right() - x),
+                height: 1,
+            })
+        };
+        if let Some(n) = doc.props {
+            let label = props_label(n);
+            if let Some(r) = target_rect(&segments, &label) {
+                self.targets.push((r, FooterTarget::Props));
             }
-            push(
-                &mut segments,
-                Span::styled(
-                    label,
-                    Style::default()
-                        .fg(theme.blue.to_ratatui())
-                        .add_modifier(Modifier::UNDERLINED),
-                ),
-            );
+            push(&mut segments, Span::styled(label, theme.action()));
         }
         if let Some(count) = doc.backlinks {
-            push(
-                &mut segments,
-                Span::styled(format!("{count} backlinks"), muted),
-            );
+            let label = format!("{count} backlinks");
+            if let Some(r) = target_rect(&segments, &label) {
+                self.targets.push((r, FooterTarget::Backlinks));
+            }
+            push(&mut segments, Span::styled(label, theme.action()));
         }
         if let Some(git) = &doc.git {
             push(&mut segments, Span::styled(git.clone(), muted));
@@ -290,20 +303,18 @@ impl FooterBar {
             );
         }
         if let Some(link) = &doc.link {
-            push(
-                &mut segments,
-                Span::styled(link.clone(), Style::default().fg(theme.blue.to_ratatui())),
-            );
+            if let Some(r) = target_rect(&segments, link) {
+                self.targets.push((r, FooterTarget::Link));
+            }
+            push(&mut segments, Span::styled(link.clone(), theme.action()));
         }
         if let Some(update) = &doc.update {
+            if let Some(r) = target_rect(&segments, update) {
+                self.targets.push((r, FooterTarget::Update));
+            }
             push(
                 &mut segments,
-                Span::styled(
-                    update.clone(),
-                    Style::default()
-                        .fg(theme.accent.to_ratatui())
-                        .add_modifier(Modifier::BOLD),
-                ),
+                Span::styled(update.clone(), theme.action().add_modifier(Modifier::BOLD)),
             );
         }
         if let Some(rag) = &doc.rag {
@@ -311,6 +322,9 @@ impl FooterBar {
                 &mut segments,
                 Span::styled(rag.clone(), Style::default().fg(theme.green.to_ratatui())),
             );
+        }
+        for (r, _) in &self.targets {
+            crate::components::clickable::register(*r);
         }
         f.render_widget(Paragraph::new(Line::from(segments)), rows[1]);
     }
@@ -325,10 +339,9 @@ fn props_label(n: usize) -> String {
 }
 
 impl FooterBar {
-    /// Whether (col,row) is on the `⊞ props` segment from the last render.
-    pub fn props_hit(&self, col: u16, row: u16) -> bool {
-        self.props_rect
-            .is_some_and(|r| r.contains(ratatui::layout::Position { x: col, y: row }))
+    /// The clickable segment under (col,row) from the last render.
+    pub fn target_at(&self, col: u16, row: u16) -> Option<FooterTarget> {
+        crate::components::clickable::target_at(&self.targets, col, row)
     }
 }
 
@@ -385,13 +398,68 @@ mod tests {
         };
         t.draw(|f| bar.render(f, f.area(), &theme, &ctx)).unwrap();
         let buf = t.backend().buffer().clone();
-        let line: String = (0..100).map(|x| buf[(x, 1)].symbol().to_string()).collect();
-        let col = line.find("⊞ 3 props").expect("segment drawn");
-        let col = line[..col].chars().count() as u16;
-        assert!(bar.props_hit(col, 1));
-        assert!(bar.props_hit(col + 8, 1));
-        assert!(!bar.props_hit(col.saturating_sub(2), 1));
-        assert!(!bar.props_hit(col, 0), "line 1 is not the segment");
+        let (col, _) = crate::test_support::find_text(&buf, "⊞ 3 props").expect("segment drawn");
+        assert_eq!(bar.target_at(col, 1), Some(FooterTarget::Props));
+        assert_eq!(bar.target_at(col + 8, 1), Some(FooterTarget::Props));
+        assert_eq!(bar.target_at(col.saturating_sub(2), 1), None);
+        assert_eq!(bar.target_at(col, 0), None, "line 1 is not the segment");
+    }
+
+    #[test]
+    fn update_segment_is_clickable_where_drawn() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let theme = Theme::gruvbox_dark();
+        let mut bar = FooterBar::new();
+        let mut t = Terminal::new(TestBackend::new(100, 2)).unwrap();
+        let ctx = StatusContext {
+            focus_label: "EDITOR",
+            editing: true,
+            hints: &[],
+            global_hints: &[],
+            doc: DocState {
+                path: "n.md",
+                props: Some(3),
+                update: Some("⬆ 9.9.9".into()),
+                ..Default::default()
+            },
+        };
+        t.draw(|f| bar.render(f, f.area(), &theme, &ctx)).unwrap();
+        let buf = t.backend().buffer().clone();
+        let (col, _) = crate::test_support::find_text(&buf, "⬆ 9.9.9").expect("segment drawn");
+        assert_eq!(bar.target_at(col, 1), Some(FooterTarget::Update));
+        assert_eq!(bar.target_at(col + 6, 1), Some(FooterTarget::Update));
+        assert_eq!(bar.target_at(col.saturating_sub(2), 1), None);
+    }
+
+    #[test]
+    fn backlinks_and_link_segments_are_clickable() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let theme = Theme::gruvbox_dark();
+        let mut bar = FooterBar::new();
+        let mut t = Terminal::new(TestBackend::new(120, 2)).unwrap();
+        let ctx = StatusContext {
+            focus_label: "EDITOR",
+            editing: true,
+            hints: &[],
+            global_hints: &[],
+            doc: DocState {
+                path: "n.md",
+                backlinks: Some(4),
+                link: Some("→ other".into()),
+                ..Default::default()
+            },
+        };
+        t.draw(|f| bar.render(f, f.area(), &theme, &ctx)).unwrap();
+        let buf = t.backend().buffer().clone();
+        let at = |s: &str| crate::test_support::find_text(&buf, s).expect("drawn").0;
+        assert_eq!(
+            bar.target_at(at("4 backlinks"), 1),
+            Some(FooterTarget::Backlinks)
+        );
+        assert_eq!(
+            bar.target_at(at("→ other") + 2, 1),
+            Some(FooterTarget::Link)
+        );
     }
 
     #[test]
@@ -411,7 +479,7 @@ mod tests {
             },
         };
         t.draw(|f| bar.render(f, f.area(), &theme, &ctx)).unwrap();
-        assert!(!(0..100).any(|c| bar.props_hit(c, 1)));
+        assert!(!(0..100).any(|c| bar.target_at(c, 1).is_some()));
     }
 
     #[test]

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseEvent};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
@@ -11,6 +11,7 @@ use ratatui::widgets::Paragraph;
 use crate::components::Component;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, FileOp, OverlayData};
+use crate::components::hint_row::HintRow;
 use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::settings::themes::Theme;
 
@@ -20,6 +21,7 @@ pub struct DeleteConfirmDialog {
     /// Pre-computed `"  {path}"` for zero-allocation rendering.
     pub path_display: String,
     pub error: Option<String>,
+    hints: HintRow,
 }
 
 impl DeleteConfirmDialog {
@@ -30,6 +32,7 @@ impl DeleteConfirmDialog {
             vault,
             path_display,
             error: None,
+            hints: super::confirm_hints("Delete"),
         }
     }
 
@@ -64,6 +67,15 @@ impl DeleteConfirmDialog {
             }
             _ => EventState::NotConsumed,
         }
+    }
+
+    /// A click on a hint chip runs its key; every other mouse event is
+    /// swallowed — the dialog is modal.
+    pub fn handle_mouse(&mut self, m: &MouseEvent, tx: &AppTx) -> EventState {
+        if let Some(key) = self.hints.hit(m) {
+            self.handle_key(key, tx);
+        }
+        EventState::Consumed
     }
 }
 
@@ -126,11 +138,8 @@ impl Component for DeleteConfirmDialog {
         );
 
         // Row 5: hint
-        f.render_widget(
-            Paragraph::new("  [Enter] Delete   [Esc] Cancel")
-                .style(Style::default().fg(gray).bg(bg)),
-            rows[5],
-        );
+        self.hints
+            .render(f, rows[5], Style::default().fg(gray).bg(bg), theme);
 
         // Row 6: error (optional)
         if let Some(msg) = &self.error {
