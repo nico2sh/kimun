@@ -5,7 +5,7 @@ weight = 10
 
 # TUI Reference
 
-Kimün's terminal UI is a single editor screen with an activity rail, one collapsible drawer, and a two-line status bar. There are no editing modes; the only state is which panel has focus. Everything you can reach by keyboard you can also reach by mouse.
+Kimün's terminal UI is a single editor screen with an activity rail, one collapsible drawer, and a two-line status bar. There are no editing modes; the only state is which panel has focus.
 
 ## Layout
 
@@ -196,7 +196,7 @@ If a note's frontmatter is malformed, the first failed write turns the dialog re
 
 ## Mouse
 
-Every mouse gesture has a keyboard equivalent, and the reverse:
+Every mouse gesture has a keyboard equivalent:
 
 | Gesture | Effect |
 | ------- | ------ |
