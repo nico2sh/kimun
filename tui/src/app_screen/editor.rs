@@ -1609,9 +1609,18 @@ impl EditorScreen {
                 heading,
                 occurrence,
             } if !self.overlays.is_open() => {
-                if let Some(ed) = self.panels.editor_mut() {
-                    ed.jump_to_heading(&heading, occurrence);
+                let jumped = self
+                    .panels
+                    .editor_mut()
+                    .is_none_or(|ed| ed.jump_to_heading(&heading, occurrence));
+                if !jumped {
+                    self.footer.flash(
+                        format!("heading \"{heading}\" is no longer in the note"),
+                        tx,
+                    );
                 }
+                // The list may predate the edit that moved or renamed it.
+                self.panels.sync_outline(&self.path, tx);
                 self.focus_editor();
             }
             AppEvent::OpenDrawerView(view) => {
@@ -1728,8 +1737,9 @@ impl EditorScreen {
                 self.doc_meta.refresh_git(tx);
                 if path == self.path {
                     self.doc_meta.refresh_properties(&path, tx);
-                    // Autosave fires on a pause in typing: the OUTLINE's
-                    // cue to catch up with the buffer. A failed save changed
+                    // The OUTLINE catches up with the buffer on each autosave
+                    // tick (every `autosave_interval_secs`), on reveal and on
+                    // a jump — never per keystroke. A failed save changed
                     // nothing worth a re-read.
                     if saved_revision.is_some() && self.drawer_open_on(DrawerView::Outline) {
                         self.panels.sync_outline(&path, tx);
@@ -3990,6 +4000,58 @@ mod tests {
         screen.open_drawer_view(DrawerView::Files, &tx);
         screen.open_drawer_view(DrawerView::Outline, &tx);
         assert_eq!(headings(&mut screen), ["Alpha", "Beta", "Gamma"]);
+    }
+
+    /// Enter on a row whose heading was renamed since the OUTLINE was read:
+    /// the cursor stays, the footer says why, and the list catches up.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn jumping_to_a_stale_outline_row_refreshes_the_outline() {
+        let vault = crate::test_support::temp_vault("editor-outline-stale").await;
+        vault.validate_and_init().await.unwrap();
+        let path = VaultPath::note_path_from("alpha");
+        vault.create_note(&path, "# Alpha\n## Foo\n").await.unwrap();
+        let settings = std::sync::Arc::new(std::sync::RwLock::new(
+            crate::settings::AppSettings::default(),
+        ));
+        let mut screen = EditorScreen::new(vault.clone(), path.clone(), settings);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        screen.on_enter(&tx).await;
+        screen.open_drawer_view(DrawerView::Outline, &tx);
+        assert_eq!(
+            screen.panels.outline_mut().headings_for_test(),
+            ["Alpha", "Foo"]
+        );
+
+        screen
+            .panels
+            .editor_mut()
+            .unwrap()
+            .set_text("# Alpha\n## Bar\n".to_string());
+        let jump = AppEvent::JumpToHeading {
+            heading: "Foo".to_string(),
+            occurrence: 0,
+        };
+        screen.handle_app_message(jump, &tx).await;
+
+        assert_eq!(screen.panels.editor().unwrap().view_snapshot().cursor.0, 0);
+        assert!(
+            screen
+                .footer
+                .flash_text()
+                .is_some_and(|t| t.contains("Foo"))
+        );
+        assert_eq!(
+            screen.panels.outline_mut().headings_for_test(),
+            ["Alpha", "Bar"]
+        );
+
+        // A live row still jumps.
+        let jump = AppEvent::JumpToHeading {
+            heading: "Bar".to_string(),
+            occurrence: 0,
+        };
+        screen.handle_app_message(jump, &tx).await;
+        assert_eq!(screen.panels.editor().unwrap().view_snapshot().cursor.0, 1);
     }
 
     /// Opening a note marks its sidebar row; saving it (AutosaveCompleted with a

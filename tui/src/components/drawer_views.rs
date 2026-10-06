@@ -521,7 +521,7 @@ impl OutlineEntry {
         // does.
         let mut open_levels: Vec<u8> = Vec::new();
         let mut seen: HashMap<String, usize> = HashMap::new();
-        kimun_core::note::note_outline(text)
+        kimun_core::note::note_headings(text)
             .into_iter()
             .map(|heading| {
                 open_levels.retain(|lvl| *lvl < heading.level);
@@ -583,7 +583,10 @@ impl ListPanelSpec for OutlineSpec {
 }
 
 /// The OUTLINE drawer: the open note's headings as an indented tree, read
-/// from the editor buffer (not the file), so it never lags a pending save.
+/// from the editor buffer (not the file). Refreshed when revealed, on each
+/// autosave tick and on a jump — so between ticks it may trail the buffer by
+/// up to `autosave_interval_secs`; the jump itself always reads the live
+/// buffer.
 pub struct OutlinePanel {
     note: VaultPath,
     /// Buffer revision `entries` was computed at; `None` = unknown, re-parse.

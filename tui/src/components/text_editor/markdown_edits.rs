@@ -156,13 +156,13 @@ pub fn smart_enter(buf: &mut RopeBuffer) -> bool {
 /// cursor untouched, when none matches.
 ///
 /// The headings are read from the live buffer by the same core function that
-/// built the OUTLINE (`note_outline`), so text and position agree with it —
+/// built the OUTLINE (`note_headings`), so text and position agree with it —
 /// frontmatter and fenced code skipped, setext headings included — however
 /// far lines moved since the OUTLINE was last refreshed. Keyed by occurrence,
 /// not line, for that reason: `# Notes` over `## Notes` stay apart. Should a
 /// same-named heading have gone since, the last one left is taken.
 pub fn jump_to_heading(buf: &mut RopeBuffer, heading: &str, occurrence: usize) -> bool {
-    let row = kimun_core::note::note_outline(&buf.text().to_string())
+    let row = kimun_core::note::note_headings(&buf.text().to_string())
         .into_iter()
         .filter(|h| h.text == heading)
         .take(occurrence + 1)
