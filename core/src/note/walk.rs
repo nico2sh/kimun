@@ -64,10 +64,15 @@ pub(in crate::note) struct WalkLink {
 }
 
 impl WalkLink {
-    /// Whether every view treats this as a link: a wikilink (or embed) only
-    /// when the note it points to (see [`Self::wiki_note`]) is a valid vault
-    /// path — `[[#tag]]` parses as a wikilink but links nowhere — and any
-    /// other only with a destination that is not blank (`[t]()`).
+    /// Whether this is a link at all: a wikilink (or embed) when the note it
+    /// points to (see [`Self::wiki_note`]) is a valid vault path —
+    /// `[[#tag]]` reads as a wikilink but links nowhere — and any other when
+    /// its destination is not blank (`[t]()`). [`NoteWalk::link_targets`]
+    /// (the CLI, `NoteMetadata::links`) lists every link that passes, its
+    /// target as written; the index and the rendered markdown also require a
+    /// markdown destination to resolve (`resolve_md_link`: a URL or a valid
+    /// vault path), so `[x](a|b.md)` is a CLI target but neither indexed nor
+    /// rendered as a link.
     fn is_link(&self) -> bool {
         match self.kind {
             WalkLinkKind::Wiki | WalkLinkKind::WikiEmbed => {
@@ -483,15 +488,22 @@ impl TextBlocks {
     /// inside a link, image, code span or inline HTML pulldown read — a
     /// wikilink in a link's text is that link's text, as in the editor; one
     /// in code or HTML is code or HTML. What pulldown read between its
-    /// brackets (``[[a|b `c` d]]``, an autolink) is part of its text. `![[`
-    /// is an embed unless its `!` is escaped or not prose.
+    /// brackets (``[[a|b `c` d]]``, an autolink) is part of its text, not a
+    /// link (see [`walk`]). `![[` is an embed unless its `!` is escaped or
+    /// not prose.
+    /// A match across lines whose last line holds a wikilink in prose is that
+    /// wikilink, as the editor highlights it (`Type [[ then pick.⏎See
+    /// [[Note]]`); otherwise the match is judged on its own
+    /// (``[[a|see the⏎`[[` syntax]]`` links `a`).
     ///
     /// A found link — in practice a destination with spaces,
     /// `[David H](../People/David H.md)`, `![shot](my shot.png)` — is kept
     /// when it overlaps no link, image or wikilink, has its destination on
-    /// one line, holds a code span or inline HTML only in its text, and is
-    /// not escaped (`\[x](a b.md)`). A hashtag inside one is link text, not
-    /// a tag (see [`walk`]).
+    /// one line and without a `(` (the editor's pattern, which ends a
+    /// destination at its first `)`, cannot read one reliably), holds a
+    /// code span or inline HTML only in its text, and is not escaped
+    /// (`\[x](a b.md)`). A hashtag inside one is link text, not a tag (see
+    /// [`walk`]).
     fn scan(&mut self, own: Range<usize>, block: &TextBlock, body: &str, body_start: usize) {
         let source = &body[own.clone()];
         #[cfg(test)]
@@ -502,13 +514,27 @@ impl TextBlocks {
         // Something pulldown read: a link, an image, a code span, HTML.
         let read =
             |r: &Range<usize>| overlaps_any(&block.links, r) || overlaps_any(&block.opaque, r);
+        // Whether a match's brackets are prose.
+        let prose = |m: &Range<usize>| {
+            let open = own.start + m.start..own.start + m.start + "[[".len();
+            let close = own.start + m.end - "]]".len()..own.start + m.end;
+            !escaped(&source[..m.start]) && !read(&open) && !read(&close)
+        };
         if source.contains("[[") {
             for m in wikilink_matches(source) {
-                let open = own.start + m.start..own.start + m.start + "[[".len();
-                let close = own.start + m.end - "]]".len()..own.start + m.end;
-                if escaped(&source[..m.start]) || read(&open) || read(&close) {
+                // The editor reads line by line: the last line of a match
+                // across lines may hold a wikilink of its own.
+                let last_line = source[m.clone()].rfind('\n').map(|at| m.start + at + 1);
+                let own_line = last_line.and_then(|line| {
+                    let inner = wikilink_matches(&source[line..m.end]).next()?;
+                    Some(line + inner.start..line + inner.end)
+                });
+                let m = own_line.filter(prose).unwrap_or(m);
+                if !prose(&m) {
                     continue;
                 }
+                let open = own.start + m.start..own.start + m.start + "[[".len();
+                let close = own.start + m.end - "]]".len()..own.start + m.end;
                 let embed = source[..m.start].ends_with('!')
                     && !escaped(&source[..m.start - 1])
                     && !read(&(open.start - 1..open.start));
@@ -545,9 +571,11 @@ impl TextBlocks {
                 .iter()
                 .take_while(|o| o.start < at.end)
                 .any(|o| !(label.start <= o.start && o.end <= label.end));
-            // A label may wrap; a destination may not (nor in pulldown).
+            // A label may wrap; a destination may not (nor in pulldown). A
+            // spaced destination holding a `(` — `[n](My Notes (draft).md)`,
+            // `[n](a\(b c.md)` — the pattern cannot read reliably.
             if escaped(&source[..m.range.start])
-                || m.target.contains('\n')
+                || m.target.contains(['\n', '('])
                 || overlaps_any(&block.links, &at)
                 || overlaps_any(&wikis, &at)
                 || code_outside_label
@@ -860,6 +888,17 @@ pub(in crate::note) fn walk(note: &str) -> NoteWalk {
                 .is_some_and(|r| r.start <= t.range.start && t.range.end <= r.end)
         });
     }
+    // What pulldown read inside a wikilink — an autolink — is its text, not
+    // a link (see `TextBlocks::scan`).
+    if !wikis.is_empty() {
+        links.retain(|l| {
+            let i = wikis.partition_point(|w| w.link.range.end <= l.range.start);
+            matches!(l.kind, WalkLinkKind::Wiki | WalkLinkKind::WikiEmbed)
+                || !wikis
+                    .get(i)
+                    .is_some_and(|w| w.link.range.start <= l.range.start)
+        });
+    }
     // The blocks' links come first: back in document order.
     if sort_links {
         links.sort_by_key(|l| l.range.start);
@@ -922,7 +961,9 @@ fn embed_image(link: &WalkLink) -> String {
 
 /// A wikilink's text, written as markdown link text that reads back as
 /// itself: `\\`, `[` and `]` escaped, so a bracket cannot end or open the
-/// link (`[[a|b[c]]` renders `[b\[c](a.md)`).
+/// link (`[[a|b[c]]` renders `[b\[c](a.md)`), and so is the `<` of an
+/// autolink in it (`[[a|<https://x.y>]]` renders `[\<https://x.y>](a.md)`):
+/// a link cannot hold a link, and the wikilink's text is no link.
 fn link_text(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
@@ -930,6 +971,23 @@ fn link_text(text: &str) -> String {
             out.push('\\');
         }
         out.push(c);
+    }
+    if out.contains('<') {
+        // Read as the link text it becomes: code keeps its `<`.
+        let src = format!("[{out}]()");
+        let autolinks: Vec<usize> = Parser::new_ext(&src, Options::empty())
+            .into_offset_iter()
+            .filter_map(|(event, range)| match event {
+                Event::Start(Tag::Link {
+                    link_type: LinkType::Autolink | LinkType::Email,
+                    ..
+                }) => Some(range.start - "[".len()),
+                _ => None,
+            })
+            .collect();
+        for at in autolinks.into_iter().rev() {
+            out.insert(at, '\\');
+        }
     }
     out
 }
@@ -1158,17 +1216,16 @@ pub(in crate::note) enum TextLine {
 }
 
 impl TextLine {
-    pub(in crate::note) fn append_text(&self, text: String) -> TextLine {
-        match self {
-            TextLine::Empty => TextLine::Text(text),
-            TextLine::Header(level, header_text, start) => {
-                TextLine::Header(*level, format!("{}{}", header_text, text), *start)
-            }
-            TextLine::Text(line_text) => TextLine::Text(format!("{}{}", line_text, text)),
-            TextLine::ListItem(level, item_text) => {
-                TextLine::ListItem(*level, format!("{}{}", item_text, text))
+    /// The line with `text` added to its end, in place: only `text` is
+    /// copied, so a long line grows in linear time.
+    pub(in crate::note) fn append_text(mut self, text: String) -> TextLine {
+        match &mut self {
+            TextLine::Empty => return TextLine::Text(text),
+            TextLine::Header(_, line, _) | TextLine::Text(line) | TextLine::ListItem(_, line) => {
+                line.push_str(&text)
             }
         }
+        self
     }
 
     pub(in crate::note) fn to_text(&self) -> String {
@@ -3367,11 +3424,19 @@ mod tests {
                 vec!["a"],
                 format!("[<b>x</b>]({a})"),
             ),
+            // Review 9, item 3: an autolink is the wikilink's text too — not
+            // recorded, and escaped when rendered so the result is one link.
             (
                 "[[a|see <https://e.f>]]",
                 "see <https://e.f>",
-                vec!["a", "https://e.f"],
-                format!("[see <https://e.f>]({a})"),
+                vec!["a"],
+                format!("[see \\<https://e.f>]({a})"),
+            ),
+            (
+                "[[a|<https://x.y>]] [[a|<m@x.y> `<https://c.d>`]]",
+                "<https://x.y> <m@x.y> `<https://c.d>`",
+                vec!["a", "a"],
+                format!("[\\<https://x.y>]({a}) [\\<m@x.y> `<https://c.d>`]({a})"),
             ),
         ] {
             let w = walk(note);
@@ -3399,13 +3464,14 @@ mod tests {
         assert_eq!(text(&w), "* \n# Team\n* A\n* T\n* K n");
     }
 
-    /// The walk's wikilinks in a one-line note equal what the editor's
-    /// pattern highlights there, less what is not prose: a `[[` outside a
-    /// text event (a reference definition), one whose `[[` or `]]` lies in a
-    /// link, image, code span, code block or HTML pulldown read, an escaped
-    /// `[[`, and a wikilink without a target (`[[|b]]`).
-    fn assert_editor_agreement(line: &str) {
-        let parse: Vec<(Event, Range<usize>)> = Parser::new_ext(line, Options::empty())
+    /// The walk's wikilinks on each line of `note` equal what the editor's
+    /// pattern highlights on that line (it reads line by line), less what
+    /// is not prose: a `[[` outside a text event (a reference definition),
+    /// one whose `[[` or `]]` lies in a link, image, code span, code block or
+    /// HTML pulldown read, an escaped `[[`, and a wikilink without a target
+    /// (`[[|b]]`). A wikilink across lines is the walk's alone (spec row).
+    fn assert_editor_agreement(note: &str) {
+        let parse: Vec<(Event, Range<usize>)> = Parser::new_ext(note, Options::empty())
             .into_offset_iter()
             .collect();
         let opaque: Vec<&Range<usize>> = parse
@@ -3427,14 +3493,21 @@ mod tests {
                 .iter()
                 .any(|(e, r)| matches!(e, Event::Text(_)) && r.start <= at && at < r.end)
         };
-        let expected: Vec<Range<usize>> = crate::note::scan::wikilink_char_spans(line)
-            .into_iter()
+        // The editor highlights line by line.
+        let mut at = 0;
+        let mut highlighted = Vec::new();
+        for row in note.split('\n') {
+            let spans = crate::note::scan::wikilink_char_spans(row).into_iter();
             // ASCII alphabet: chars are bytes.
-            .map(|s| s.start..s.end)
+            highlighted.extend(spans.map(|s| at + s.start..at + s.end));
+            at += row.len() + 1;
+        }
+        let expected: Vec<Range<usize>> = highlighted
+            .into_iter()
             .filter(|s| {
-                let before = &line[..s.start];
+                let before = &note[..s.start];
                 let escaped = (before.len() - before.trim_end_matches('\\').len()) % 2 == 1;
-                let target = wikilink_parts(&line[s.start + 2..s.end - 2]).0;
+                let target = wikilink_parts(&note[s.start + 2..s.end - 2]).0;
                 let read =
                     |r: Range<usize>| opaque.iter().any(|o| o.start < r.end && r.start < o.end);
                 in_text(s.start)
@@ -3444,7 +3517,7 @@ mod tests {
                     && !read(s.end - 2..s.end)
             })
             .collect();
-        let walked: Vec<Range<usize>> = walk(line)
+        let walked: Vec<Range<usize>> = walk(note)
             .links
             .iter()
             .filter_map(|l| match l.kind {
@@ -3452,8 +3525,9 @@ mod tests {
                 WalkLinkKind::WikiEmbed => Some(l.range.start + 1..l.range.end),
                 _ => None,
             })
+            .filter(|r| !note[r.clone()].contains('\n'))
             .collect();
-        assert_eq!(walked, expected, "{line:?}");
+        assert_eq!(walked, expected, "{note:?}");
     }
 
     #[test]
@@ -3468,8 +3542,128 @@ mod tests {
             "# [[h]] #",
             "- [[i]]",
             "[r]: [[x]]",
+            "a [[b\nc [[d]] e",
         ] {
             assert_editor_agreement(line);
+        }
+    }
+
+    // Review 9, item 1: a line grows in place — an append copies only the
+    // appended text — so one long line builds in linear time. It was
+    // quadratic: a 1.1 MB line of `[[a]](b) ` took 2.6 s to index in release.
+    #[test]
+    fn a_long_line_grows_in_linear_time() {
+        let started = std::time::Instant::now();
+        let mut lines = TextLines::default();
+        for _ in 0..400_000 {
+            lines.push(Event::Text("ab".into()), 0, str::to_string);
+        }
+        let lines = lines.finish();
+        let elapsed = started.elapsed();
+        assert!(matches!(&lines[..], [TextLine::Text(t)] if t.len() == 800_000));
+        assert!(elapsed < std::time::Duration::from_secs(1), "{elapsed:?}");
+    }
+
+    // Review 9, item 4: a `[[` that opens no wikilink on its own line — in
+    // code, escaped, or stray — does not swallow one on a later line: the
+    // walk reads the wikilink the editor highlights there.
+    #[test]
+    fn a_stray_double_bracket_does_not_swallow_a_later_lines_wikilink() {
+        for (note, chunk) in [
+            (
+                "Use `[[` to start a link.\nSee [[Note]].",
+                "Use `[[` to start a link.\nSee Note.",
+            ),
+            (
+                "Type [[ then pick.\nSee [[Note]].",
+                "Type [[ then pick.\nSee Note.",
+            ),
+            (
+                "Escaped \\[[ here\nSee [[Note]].",
+                "Escaped [[ here\nSee Note.",
+            ),
+            (
+                "Escaped \\\\[[ here\nSee [[Note]].",
+                "Escaped \\[[ here\nSee Note.",
+            ),
+            ("[[a|x\ny [[Note]] z", "[[a|x\ny Note z"),
+        ] {
+            let w = walk(note);
+            assert_eq!(w.link_targets(), ["Note"], "{note:?}");
+            assert_eq!(text(&w), chunk, "{note:?}");
+            assert_editor_agreement(note);
+        }
+        // A wikilink across lines is still one (spec row) — also when its
+        // last line's `[[` opens none in prose (code, escaped): then the
+        // outer match is judged on its own, as 50dcb026 read it.
+        let a = VaultPath::note_path_from("a");
+        let at = VaultPath::new("n.md");
+        for note in [
+            "[[a|x\ny]] z",
+            "[[a|see the\n`[[` syntax]]",
+            "[[a|x\ny \\[[ z]]",
+        ] {
+            let w = walk(note);
+            assert_eq!(w.link_targets(), ["a"], "{note:?}");
+            let (md, listed) = w.render_markdown(note, &at);
+            assert!(md.contains(&format!("]({a})")), "{md:?}");
+            assert_eq!(raw_links(&listed), [a.to_string()], "{note:?}");
+            let (_, index) = crate::note::content_extractor::get_chunks_and_links(&at, note);
+            assert_eq!(raw_links(&index), [a.to_string()], "{note:?}");
+            assert_editor_agreement(note);
+        }
+        assert_eq!(walk("[[a|x\ny [[b]]").link_targets(), ["b"]);
+    }
+
+    // Review 9, item 5 (spec row): the editor's pattern ends a destination
+    // at its first `)`, so it cannot read a spaced destination holding a
+    // `(` reliably: no link.
+    #[test]
+    fn a_spaced_destination_with_a_parenthesis_is_no_link() {
+        for note in ["[notes](My Notes (draft).md)", "![s](my (1).png) x"] {
+            assert_no_link_anywhere(note);
+            assert_eq!(text(&walk(note)), note);
+        }
+    }
+
+    // Review 9, pin (spec row): an escaped bang before a wikilink is a
+    // literal `!`; the wikilink is a link everywhere.
+    #[test]
+    fn a_wikilink_after_an_escaped_bang_is_a_link() {
+        let note = "x \\![[a]] y";
+        let at = VaultPath::new("n.md");
+        let w = walk(note);
+        assert_eq!(links(&w), [(WalkLinkKind::Wiki, "a", "a")]);
+        assert_eq!(text(&w), "x !a y");
+        let a = VaultPath::note_path_from("a");
+        let (md, listed) = w.render_markdown(note, &at);
+        assert_eq!(md, format!("x \\![a]({a}) y"));
+        assert_eq!(raw_links(&listed), [a.to_string()]);
+        let (_, index) = crate::note::content_extractor::get_chunks_and_links(&at, note);
+        assert_eq!(raw_links(&index), [a.to_string()]);
+        assert_eq!(crate::note::note_link_targets(note), ["a"]);
+    }
+
+    // Review 9, pin (spec row): a hashtag inside reference-link text is link
+    // text — no tag anywhere.
+    #[test]
+    fn a_hashtag_in_reference_link_text_is_no_tag() {
+        let at = VaultPath::new("n.md");
+        for note in ["see [about #tag][r]\n\n[r]: x.md", "[#tag]\n\n[#tag]: x.md"] {
+            let w = walk(note);
+            assert!(w.tags.is_empty(), "{note:?}");
+            assert_eq!(w.link_targets(), ["x.md"], "{note:?}");
+            let (md, listed) = w.render_markdown(note, &at);
+            assert_eq!(md, note);
+            assert_eq!(raw_links(&listed), ["x.md"], "{note:?}");
+            let (_, index) = crate::note::content_extractor::get_chunks_and_links(&at, note);
+            assert_eq!(raw_links(&index), ["x.md"], "{note:?}");
+            assert!(crate::note::note_tags(note).is_empty(), "{note:?}");
+            assert!(crate::note::extract_labels(note).is_empty(), "{note:?}");
+            assert!(
+                crate::note::NoteMetadata::of(note).tags.is_empty(),
+                "{note:?}"
+            );
         }
     }
 
@@ -3487,9 +3681,9 @@ mod tests {
     /// `n` random one-line notes per seed through the editor-agreement
     /// property.
     fn fuzz_editor_agreement(seeds: &[u64], n: usize) {
-        const ALPHABET: [&str; 20] = [
+        const ALPHABET: [&str; 23] = [
             "[", "]", "(", ")", "!", "|", "#", "<", ">", "\\", "`", "a", " ", "[[", "]]", "![[",
-            "](", "](x)", "|]]", "*",
+            "](", "](x)", "|]]", "*", "\n", "`[[`", "\\[[",
         ];
         for &seed in seeds {
             let mut next = rng(seed);
