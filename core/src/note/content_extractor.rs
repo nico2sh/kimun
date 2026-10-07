@@ -170,6 +170,13 @@ pub(in crate::note) struct MdLinkMatch<'t> {
     pub image: bool,
 }
 
+/// The bytes of every `[[…]]` the editor's wikilink pattern finds in `text`
+/// — exactly what [`wikilink_char_spans`] highlights — in order: the one
+/// recognition rule for a wikilink, shared by the editor and the walk.
+pub(in crate::note) fn wikilink_matches(text: &str) -> impl Iterator<Item = Range<usize>> + '_ {
+    WIKILINK_RX.find_iter(text).map(|m| m.range())
+}
+
 /// The markdown links and images the editor's link pattern finds in
 /// `text`, in order.
 pub(in crate::note) fn md_link_matches(text: &str) -> impl Iterator<Item = MdLinkMatch<'_>> {
@@ -877,15 +884,13 @@ mod test {
     }
 
     #[test]
-    fn a_wikilink_inside_a_markdown_link_label_is_the_only_indexed_link() {
-        // spec: a wikilink inside a markdown link's label, `[see [[a]]](x.md)`
+    fn a_wikilink_inside_a_markdown_link_label_is_link_text() {
+        // spec row (review 8): `[see [[a]]](x.md)` is a link to `x.md` whose
+        // text holds `[[a]]` — as CommonMark and the editor read it.
         let path = crate::nfs::VaultPath::note_path_from("/n.md");
         let (_, links) = super::get_chunks_and_links(&path, "[see [[a]]](x.md)");
         let raw: Vec<String> = links.into_iter().map(|l| l.raw_link).collect();
-        assert_eq!(
-            raw,
-            [crate::nfs::VaultPath::note_path_from("a").to_string()]
-        );
+        assert_eq!(raw, [crate::nfs::VaultPath::new("x.md").to_string()]);
     }
 
     #[test]

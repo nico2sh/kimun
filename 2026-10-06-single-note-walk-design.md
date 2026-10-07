@@ -118,14 +118,18 @@ counting `\n` in the note up to an offset.
    it today).
 2. Compute hashtag candidates with `label_matches_inner` over the body —
    the regex and its word-boundary/`##` rules are unchanged.
-3. Run one `Parser::new_ext(body, Options::ENABLE_WIKILINKS)
-   .into_offset_iter()` and feed every event to `TextLines`, with these
-   additions:
-   - **Wikilink** (`Tag::Link`/`Tag::Image` with `LinkType::WikiLink`):
-     read the link's source span, strip `[[`/`![[` and `]]`, apply
-     `wikilink_parts` for target and display text, append the display text
-     to the current line, and ignore pulldown's own events up to the
-     matching `End`. Record a `WalkLink` (`Wiki` or `WikiEmbed`).
+3. Run one plain CommonMark parse (`Parser::new_ext(body, Options::empty())
+   .into_offset_iter()` — pulldown-cmark's wikilink extension is NOT used:
+   in 0.13.4 it panics on some inputs, re-emits events exponentially after
+   `[[a|]]`, and leaks text out of linked embeds; decision 2026-10-07) and
+   feed every event to `TextLines`, with these additions:
+   - **Wikilink** (`[[target|text]]`, `![[target|text]]`): recognised by
+     Kimün itself with the editor's pattern (`WIKILINK_RX`, the same one
+     `scan::wikilink_char_spans` highlights), per text block, in prose
+     only — never inside code, HTML, or a link/image pulldown parsed, and
+     not when escaped (`\[[`). Target and display text come from
+     `wikilink_parts`; the display text replaces the wikilink's source in
+     the line. Record a `WalkLink` (`Wiki` or `WikiEmbed`).
    - **Other links and images**: record a `WalkLink` with pulldown's
      destination; their text events flow into the line as today.
    - **Hashtags**: a candidate is a tag when its range lies inside a prose
@@ -195,7 +199,7 @@ must contain exactly these and nothing else.
 | a wikilink inside an HTML block (a block-level tag such as `<div>`/`<details>` starting a line, or any tag alone on its line), e.g. `<details>…See [[hidden]]…</details>` | collapsed in chunk text, linked everywhere | not a link anywhere: HTML is not markdown (as for hashtags); the HTML text is kept as written. Formatting tags inside a line (`see <b>[[note]]</b>`) are inline HTML and do not affect the link |
 | markup or entities in a wikilink alias, `[[a\|*Emph* name]]`, `[[c\|a &amp; b]]` | rendered (`Emph name`, `a & b`) | shown as written (`*Emph* name`, `a &amp; b`) — the alias is source text |
 | a hashtag touching a wikilink, `[[c]]#t2`, `#t3[[d]]` | index missed `t2`, recorded bogus `t3d` | `t2` and `t3`, as the other extractors already had |
-| a wikilink inside image alt text, `![x [[a]] #t](p.png)` | an image; `#t` not a tag | per CommonMark the image degrades to text; `#t` is a tag (rendered markdown unchanged) |
+| a wikilink inside image alt text, `![x [[a]] #t](p.png)` | an image; `#t` not a tag | an image, as CommonMark reads it; its alt text, wikilink and hashtag included, is image text: not a link, not a tag (rendered markdown unchanged) |
 | a URL fragment in an autolink, `<https://x.com/#frag>` | `frag` a tag in `extract_labels`/LINKS | not a tag (link text) |
 | a hashtag pulldown splits at a flanking `_`, `#my_tag_`, `#tag_`, `#_x` | never indexed; but a tag in `note_tags`, LINKS and the rendered markdown | not a tag anywhere — the other extractors now agree with the index |
 | an escaped wikilink, `\[[a]]` | a link (index, LINKS); rendered `\[a](a.md)` | not a link anywhere; text `[[a]]` — the backslash escapes it, as CommonMark reads it |
@@ -205,6 +209,7 @@ must contain exactly these and nothing else.
 | a wikilink to a name with spaces, `[[DEM Platform]]` (rendered markdown) | `[DEM Platform](dem platform.md)` — not a link to a CommonMark previewer | `[DEM Platform](<dem platform.md>)` — a real link |
 | a wikilink inside inline HTML (a comment `<!-- [[x]] -->`, an attribute `<a title="[[x]]">`) or as a reference definition's destination `[r]: [[x]]` | indexed and listed | not a link anywhere: HTML is not markdown; a definition's destination is not a wikilink |
 | a wikilink used as an inline link's destination, `[t]([[a]])` | a link to `a` (regex collapsed it first) | not a link: per CommonMark the destination is literal text |
+| a malformed embed span, e.g. `![[a](b) c](d)]]` | text `a c]]` | unchanged: plain CommonMark (an image whose text holds a link to `b`). pulldown-cmark's wikilink extension is deliberately not used — in 0.13.4 it panics on such input, re-emits events exponentially after `[[a\|]]` and garbles linked embeds — so there is nothing to guard |
 | an escaped hashtag, `\#esc` (plain chunk text) | `\esc` | `esc` (still a tag, as before) |
 | a `#` right after `&`, as in an HTML entity pasted from the web, `it&#39;s` | tag `39` (and highlighted in the editor) | not a tag anywhere, editor included |
 | an escaped spaced link, `\[x](a b.md)` | listed by LINKS/MCP/CLI | not a link anywhere (the backslash escapes it) |
@@ -217,12 +222,12 @@ must contain exactly these and nothing else.
 | an embed with a fragment, `![[pic.png#x]]`, `![[e^b]]` | left as written | renders without the fragment (`![…](pic.png)`, `![…](e.md)`); indexed like the same embed without it |
 | a wikilink with an empty display part, `[[a\|]]`, `[[a#s\|]]` | an invisible `[](a.md)`, or left as written with a fragment | the rendered link text falls back to the target as written, `[a](a.md)`, `[a#s](a.md#s)` (chunk text unchanged) |
 | a reference definition to an anchor, `[top]: #anchor` | `anchor` a tag; definition mangled to `[top]: [#anchor](#anchor)` | not a tag; definition left as written; its uses are links |
-| link syntax the old regex misread: `[t](a(b).md)`, `[[Note (draft)]]` below the root, `a [[[tri]]] b`, `[v](d\_e.md)` | `a(b` attachment; `folder/note (draft).md`; no link; `d\_e.md` | `a(b).md`; `note (draft).md`; a link to `tri`; `d_e.md` — as CommonMark/pulldown read them |
+| link syntax the old regex misread: `[t](a(b).md)`, `[[Note (draft)]]` below the root, `[v](d\_e.md)` | `a(b` attachment; `folder/note (draft).md`; `d\_e.md` | `a(b).md`; `note (draft).md`; `d_e.md` — as CommonMark/pulldown read them. (`a [[[tri]]] b` stays no link: the editor's pattern reads `[[[tri]]`, whose target `[tri` is no vault path) |
 | title of `# Sprint #42` | "Sprint #42" | "Sprint 42" |
 | title of `# See [[p\|Project]]` | "See [[p\|Project]]" | "See Project" |
 | title from a paragraph, e.g. `#inbox call [[bob\|Bob]]` | "#inbox call [[bob\|Bob]]" | "inbox call Bob" (a title renders like its line's chunk text) |
 | embed `![[pic.png\|Picture]]` in prose | chunk text "!Picture" | "Picture" (rule 1) |
-| a wikilink inside a markdown link's label, `[see [[a]]](x.md)` | both `a` and `x.md` recorded (regex collapsed the wikilink first) | only `a`: per CommonMark a link cannot contain a link, so the outer `[…](x.md)` is text |
+| a wikilink inside a markdown link's label, `[see [[a]]](x.md)`, `[![[pic.png]]](u.md)` | both `a` and `x.md` recorded (regex collapsed the wikilink first) | only `x.md`: per CommonMark it is a link whose text is `see [[a]]`, and a wikilink inside a link's text is that text (the editor does not highlight it either); chunk text `see [[a]]` |
 | `[[t\n\|s]]` across lines | heading rows below it remapped | rows exact, no remapping |
 | a link inside the frontmatter | rewritten and recorded by `get_markdown_and_links` (the index already skipped it) | left as written, not recorded anywhere |
 
@@ -291,13 +296,13 @@ small notes are already fast, so the absolute cost is negligible.
    *Behaviour changes*; the plan lists each such edit up front.
 5. **Index**: existing schema tests cover the `VERSION` bump.
 6. **Benches** as in *Performance*; the seven CI gates as usual.
-7. **pulldown-cmark 0.13.4 crash guard (temporary).** 0.13.4 panics on an
-   `![[` completed as an ordinary image or link before its `]]`
-   (`![[]x]()]]`); upstream fixed it in commit ebf31da886 (unreleased).
-   Until a release ships it, `pulldown_crash_guard` in `walk.rs` hands
-   pulldown a same-length copy where such an `![[` reads `!` then `[[`;
-   remove it (and its call) when pulldown-cmark is bumped, keeping
-   `pulldown_0_13_4_wikilink_crash_inputs_do_not_panic` and the fuzz tests.
+7. **pulldown-cmark's wikilink extension is deliberately unused.** The
+   walk parses plain CommonMark and recognises wikilinks itself (see *The
+   pass*, step 3): 0.13.4's extension panics on an `![[` completed as an
+   ordinary image or link before its `]]`, re-emits events exponentially
+   after `[[a|]]` and garbles linked embeds. The inputs that crashed it
+   (`inputs_that_crashed_pulldown_wikilinks_read_as_commonmark`) and the
+   fuzz tests stay as regressions.
 
 ## Docs
 

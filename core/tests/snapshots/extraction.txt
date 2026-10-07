@@ -15487,25 +15487,23 @@ Side notes:
 1 0 "Edge cases"
 2 28 "After the broken link"
 -- chunks
-[Edge cases] "Code span `[[x]]` and code link `[y](y.md)` stay code.\nAlias tag #b and invalid #tag and empties [[|b]] [[]].\nA reference ref and an autolink https://e.x.\nEmbed Picture and plain Shown.\nBroken across lines Shown then text.\nA wikilink in an HTML block:\n<details>\n\n<summary>More</summary>\n\nSee [[hidden]]\n\n</details>\n\nAlias markup *Emph* name and entity a &amp; b.\nTouching tags ct2 and t3d.\nImage alt ![x a t](p.png) degrades.\nAutolink fragment https://x.com/#frag is no tag."
+[Edge cases] "Code span `[[x]]` and code link `[y](y.md)` stay code.\nAlias tag #b and invalid #tag and empties [[|b]] [[]].\nA reference ref and an autolink https://e.x.\nEmbed Picture and plain Shown.\nBroken across lines Shown then text.\nA wikilink in an HTML block:\n<details>\n\n<summary>More</summary>\n\nSee [[hidden]]\n\n</details>\n\nAlias markup *Emph* name and entity a &amp; b.\nTouching tags ct2 and t3d.\nImage alt x [[a]] #t degrades.\nAutolink fragment https://x.com/#frag is no tag."
 [Edge casesAfter the broken link] "body"
 -- index chunks
-[Edge cases] "Code span `[[x]]` and code link `[y](y.md)` stay code.\nAlias tag #b and invalid #tag and empties [[|b]] [[]].\nA reference ref and an autolink https://e.x.\nEmbed Picture and plain Shown.\nBroken across lines Shown then text.\nA wikilink in an HTML block:\n<details>\n\n<summary>More</summary>\n\nSee [[hidden]]\n\n</details>\n\nAlias markup *Emph* name and entity a &amp; b.\nTouching tags ct2 and t3d.\nImage alt ![x a t](p.png) degrades.\nAutolink fragment https://x.com/#frag is no tag."
+[Edge cases] "Code span `[[x]]` and code link `[y](y.md)` stay code.\nAlias tag #b and invalid #tag and empties [[|b]] [[]].\nA reference ref and an autolink https://e.x.\nEmbed Picture and plain Shown.\nBroken across lines Shown then text.\nA wikilink in an HTML block:\n<details>\n\n<summary>More</summary>\n\nSee [[hidden]]\n\n</details>\n\nAlias markup *Emph* name and entity a &amp; b.\nTouching tags ct2 and t3d.\nImage alt x [[a]] #t degrades.\nAutolink fragment https://x.com/#frag is no tag."
 [Edge casesAfter the broken link] "body"
 -- index links (sorted)
-Hashtag "#t" "t"
 Hashtag "#t2" "t2"
 Hashtag "#t3" "t3"
 Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "#b"
 Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "*Emph* name"
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "a"
 Note(VaultPath { absolute: false, slices: [PathSlice("c.md")] }) "c.md" "a &amp; b"
 Note(VaultPath { absolute: false, slices: [PathSlice("c.md")] }) "c.md" "c"
 Note(VaultPath { absolute: false, slices: [PathSlice("d.md")] }) "d.md" "d"
 Note(VaultPath { absolute: false, slices: [PathSlice("note.md")] }) "note.md" "Shown"
 Note(VaultPath { absolute: false, slices: [PathSlice("other.md")] }) "other.md" ""
 Note(VaultPath { absolute: false, slices: [PathSlice("pic.png.md")] }) "pic.png.md" "Picture"
--- tags ["t", "t2", "t3"]
+-- tags ["t2", "t3"]
 -- markdown links
 Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "#b"
 Note(VaultPath { absolute: false, slices: [PathSlice("other.md")] }) "other.md" "ref"
@@ -15515,11 +15513,9 @@ Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "*Emph* 
 Note(VaultPath { absolute: false, slices: [PathSlice("c.md")] }) "c.md" "a &amp; b"
 Note(VaultPath { absolute: false, slices: [PathSlice("c.md")] }) "c.md" "c"
 Note(VaultPath { absolute: false, slices: [PathSlice("d.md")] }) "d.md" "d"
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "a"
 Url "https://x.com/#frag" "https://x.com/#frag"
 Hashtag "#t2" "t2"
 Hashtag "#t3" "t3"
-Hashtag "#t" "t"
 -- markdown
 # Edge cases
 
@@ -15545,7 +15541,7 @@ Alias markup [*Emph* name](a.md) and entity [a &amp; b](c.md).
 
 Touching tags [c](c.md)[#t2](#t2) and [#t3](#t3)[d](d.md).
 
-Image alt ![x [a](a.md) [#t](#t)](p.png) degrades.
+Image alt ![x [[a]] #t](p.png) degrades.
 
 Autolink fragment <https://x.com/#frag> is no tag.
 
@@ -15634,7 +15630,6 @@ Note(VaultPath { absolute: false, slices: [PathSlice("note.md")] }) "note.md" "n
 Note(VaultPath { absolute: false, slices: [PathSlice("plan.md")] }) "plan.md" "g"
 Note(VaultPath { absolute: false, slices: [PathSlice("plan.md")] }) "plan.md" "goals"
 Note(VaultPath { absolute: false, slices: [PathSlice("spaced.md")] }) "spaced.md" " spaced "
-Note(VaultPath { absolute: false, slices: [PathSlice("tri.md")] }) "tri.md" "tri"
 Note(VaultPath { absolute: false, slices: [PathSlice("x.md")] }) "x.md" ""
 -- tags []
 -- markdown links
@@ -15644,7 +15639,6 @@ Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "a^blk"
 Note(VaultPath { absolute: false, slices: [PathSlice("spaced.md")] }) "spaced.md" " spaced "
 Note(VaultPath { absolute: false, slices: [PathSlice("a(b).md")] }) "a(b).md" "t"
 Note(VaultPath { absolute: false, slices: [PathSlice("note (draft).md")] }) "note (draft).md" "Note (draft)"
-Note(VaultPath { absolute: false, slices: [PathSlice("tri.md")] }) "tri.md" "tri"
 Note(VaultPath { absolute: false, slices: [PathSlice("d_e.md")] }) "d_e.md" "v"
 Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("c.md")] }) "folder/sub/c.md" "u"
 Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("a&b.md")] }) "folder/sub/a&b.md" "v"
@@ -15663,7 +15657,7 @@ Still no vault path [[#tag]].
 
 Use [top].
 
-Parens [t](<a(b).md>), draft [Note (draft)](<note (draft).md>), triple a [[tri](tri.md)] b, escaped [v](d_e.md).
+Parens [t](<a(b).md>), draft [Note (draft)](<note (draft).md>), triple a [[[tri]]] b, escaped [v](d_e.md).
 
 Padded [u](folder/sub/c.md), entity [v](folder/sub/a&b.md), tab [w](folder/sub/x.md), angle [x](<my note.md>), title [t](x.md "Title").
 
@@ -15880,9 +15874,9 @@ it&#39;s Title&#32; a [#tag](#tag) &x [#tag2](#tag2)
 -- headings
 1 0 "Review 7 rows"
 -- chunks
-[Review 7 rows] "CRLF (stored LF, the corpus reads it as LF): `code span` and dis\nplay.\n<div>\n\nhtml\n\n</div>\n\nBracket [[a|b]c]] x and [[a]b]] y.\nWrapped [x\ny](a b.md) label.\n401 Guide nowhere.\n![a c](d)]]\nSee ![img](b.md)]] here\n![!](x)]]\n![]<]]"
+[Review 7 rows] "CRLF (stored LF, the corpus reads it as LF): `code span` and dis\nplay.\n<div>\n\nhtml\n\n</div>\n\nBracket [[a|b]c]] x and [[a]b]] y.\nWrapped [x\ny](a b.md) label.\n401 Guide nowhere.\na c]]\nSee img]] here\n!]]\n[]<]]"
 -- index chunks
-[Review 7 rows] "CRLF (stored LF, the corpus reads it as LF): `code span` and dis\nplay.\n<div>\n\nhtml\n\n</div>\n\nBracket [[a|b]c]] x and [[a]b]] y.\nWrapped [x\ny](a b.md) label.\n401 Guide nowhere.\n![a c](d)]]\nSee ![img](b.md)]] here\n![!](x)]]\n![]<]]"
+[Review 7 rows] "CRLF (stored LF, the corpus reads it as LF): `code span` and dis\nplay.\n<div>\n\nhtml\n\n</div>\n\nBracket [[a|b]c]] x and [[a]b]] y.\nWrapped [x\ny](a b.md) label.\n401 Guide nowhere.\na c]]\nSee img]] here\n!]]\n[]<]]"
 -- index links (sorted)
 Note(VaultPath { absolute: false, slices: [PathSlice("a b.md")] }) "a b.md" ""
 Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "dis\nplay"
@@ -15893,7 +15887,6 @@ Note(VaultPath { absolute: false, slices: [PathSlice("a b.md")] }) "a b.md" "x\n
 Attachment(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("b")] }) "folder/b" "a"
 Attachment(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("a.png")] }) "folder/a.png" "img"
 Attachment(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("x")] }) "folder/x" "!"
-Attachment(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("x")] }) "folder/x" "[]<"
 -- markdown
 # Review 7 rows
 
@@ -15918,7 +15911,81 @@ See ![[img](folder/a.png)](b.md)]] here
 
 ![[!](folder/x)](x)]]
 
-![[]<](folder/x)]]
+![[]<](x)]]
+
+
+=== tests/fixtures/walk/review8_rows.md
+-- title "Review 8 rows"
+-- headings
+1 0 "Review 8 rows"
+1 17 "Team"
+-- chunks
+[Review 8 rows] "Empty displays see  and  and c.\nq\nb c\nem  tail f and x [[a|]] t z\nSee x ![[a]] and ![[pic.png|200]] end\nSee [1] diagram here\n t (...)\nInside b `c` d and <b>x</b> and see <https://e.f>.\n* "
+[Team] "* A\n* T n"
+-- index chunks
+[Review 8 rows] "Empty displays see  and  and c.\nq\nb c\nem  tail f and x [[a|]] t z\nSee x ![[a]] and ![[pic.png|200]] end\nSee [1] diagram here\n t (...)\nInside b `c` d and <b>x</b> and see <https://e.f>.\n* "
+[Team] "* A\n* T n"
+-- index links (sorted)
+Hashtag "#t" "t"
+Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "<b>x</b>"
+Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "A"
+Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "b `c` d"
+Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "see <https://e.f>"
+Note(VaultPath { absolute: false, slices: [PathSlice("b.md")] }) "b.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("c.md")] }) "c.md" "c"
+Note(VaultPath { absolute: false, slices: [PathSlice("c.md")] }) "c.md" "c"
+Note(VaultPath { absolute: false, slices: [PathSlice("f.md")] }) "f.md" "f"
+Note(VaultPath { absolute: false, slices: [PathSlice("t.md")] }) "t.md" "T"
+Note(VaultPath { absolute: false, slices: [PathSlice("x.md")] }) "x.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("y.md")] }) "y.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("y.md")] }) "y.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("z.md")] }) "z.md" "z"
+-- tags ["t"]
+-- markdown links
+Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("b.md")] }) "b.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("c.md")] }) "c.md" "c"
+Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("c.md")] }) "c.md" "c"
+Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("f.md")] }) "f.md" "f"
+Note(VaultPath { absolute: false, slices: [PathSlice("y.md")] }) "y.md" "x [[a|]]"
+Note(VaultPath { absolute: false, slices: [PathSlice("z.md")] }) "z.md" "z"
+Note(VaultPath { absolute: false, slices: [PathSlice("y.md")] }) "y.md" "x ![[a]]"
+Url "https://x.com" "![[pic.png|200]]"
+Note(VaultPath { absolute: false, slices: [PathSlice("x.md")] }) "x.md" "t"
+Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "b `c` d"
+Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "<b>x</b>"
+Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "see <https://e.f>"
+Url "https://e.f" "https://e.f"
+Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "A"
+Note(VaultPath { absolute: false, slices: [PathSlice("t.md")] }) "t.md" "T"
+Url "https://x.y" "n"
+Hashtag "#t" "t"
+-- markdown
+# Review 8 rows
+
+Empty displays see [a](a.md) and [b](b.md) and [c](c.md).
+
+> [a](a.md) q
+> b [c](c.md)
+
+*em [a](a.md)* tail [f](f.md) and [x [[a|]]](y.md) [#t](#t) [z](z.md)
+
+See [x ![[a]]](y.md) and [![[pic.png|200]]](https://x.com) end
+
+See ![[1] diagram](img.png) here
+
+![](img.png) [t](x.md "T") (...)
+
+Inside [b `c` d](a.md) and [<b>x</b>](a.md) and [see <https://e.f>](a.md).
+
+- # Team
+	- [A](a.md)
+	- [T](t.md) [n](https://x.y)
 
 
 === tests/fixtures/walk/setext_hashtag.md
