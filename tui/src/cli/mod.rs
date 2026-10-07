@@ -2,7 +2,6 @@
 pub mod commands;
 pub mod helpers;
 pub mod json_output;
-pub mod metadata_extractor;
 pub mod output;
 
 /// A CLI-level user error — a request about something that isn't there or
