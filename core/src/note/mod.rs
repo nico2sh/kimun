@@ -152,6 +152,7 @@ pub struct NoteHeading {
 /// assert_eq!(meta.links, ["other"]);
 /// ```
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct NoteMetadata {
     /// Inline `#hashtags` plus frontmatter `tags`, lowercased, sorted, distinct.
     pub tags: Vec<String>,

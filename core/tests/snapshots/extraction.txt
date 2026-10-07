@@ -15836,6 +15836,47 @@ See [ref] *a
 Escaped \[x](a b.md).
 
 
+=== tests/fixtures/walk/review6_rows.md
+-- title "Review 6 rows\u{a0}"
+-- headings
+1 0 "Review 6 rows\u{a0}"
+-- chunks
+[Review 6 rows ] "See ![shot](assets/my image.png) and ![a t](my pic.png) end.\n* a\n* \n<Screen to the terminal>\n\n* b\na <!-- [[x]] --> b <a title=\"[[y]]\">t</a>\nSee DEM Platform.\nesc ok\nit's Title  a tag &x tag2"
+-- index chunks
+[Review 6 rows ] "See ![shot](assets/my image.png) and ![a t](my pic.png) end.\n* a\n* \n<Screen to the terminal>\n\n* b\na <!-- [[x]] --> b <a title=\"[[y]]\">t</a>\nSee DEM Platform.\nesc ok\nit's Title  a tag &x tag2"
+-- index links (sorted)
+Hashtag "#esc" "esc"
+Hashtag "#ok" "ok"
+Hashtag "#tag" "tag"
+Hashtag "#tag2" "tag2"
+Note(VaultPath { absolute: false, slices: [PathSlice("dem platform.md")] }) "dem platform.md" "DEM Platform"
+-- tags ["esc", "ok", "tag", "tag2"]
+-- markdown links
+Note(VaultPath { absolute: false, slices: [PathSlice("dem platform.md")] }) "dem platform.md" "DEM Platform"
+Hashtag "#esc" "esc"
+Hashtag "#ok" "ok"
+Hashtag "#tag" "tag"
+Hashtag "#tag2" "tag2"
+-- markdown
+# Review 6 rows 
+
+See ![shot](assets/my image.png) and ![a #t](my pic.png) end.
+
+- a
+- <Screen to the terminal>
+- b
+
+a <!-- [[x]] --> b <a title="[[y]]">t</a>
+
+[r]: [[z]]
+
+See [DEM Platform](<dem platform.md>).
+
+\[#esc](#esc) [#ok](#ok)
+
+it&#39;s Title&#32; a [#tag](#tag) &x [#tag2](#tag2)
+
+
 === tests/fixtures/walk/setext_hashtag.md
 -- title "1. Intro"
 -- headings

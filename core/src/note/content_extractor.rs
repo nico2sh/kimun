@@ -158,27 +158,27 @@ pub fn link_char_spans(text: &str) -> Vec<LinkSpan> {
         .collect()
 }
 
-/// A `[text](link)` the editor's link pattern finds — what
-/// [`link_char_spans`] highlights and follows as [`LinkSpanKind::Markdown`]:
-/// its bytes and its text's bytes in the scanned text, and its destination
-/// as written (trimmed, as `link_char_spans` reports it).
+/// A `[text](link)` or `![text](link)` the editor's link pattern finds —
+/// what [`link_char_spans`] highlights as [`LinkSpanKind::Markdown`] or
+/// [`LinkSpanKind::Image`]: its bytes (an image's `!` included) and its
+/// text's bytes in the scanned text, and its destination as written
+/// (trimmed, as `link_char_spans` reports it).
 pub(in crate::note) struct MdLinkMatch<'t> {
     pub range: Range<usize>,
     pub label: Range<usize>,
     pub target: &'t str,
+    pub image: bool,
 }
 
-/// The markdown links (not images, `![…](…)`) the editor's link pattern
-/// finds in `text`, in order.
+/// The markdown links and images the editor's link pattern finds in
+/// `text`, in order.
 pub(in crate::note) fn md_link_matches(text: &str) -> impl Iterator<Item = MdLinkMatch<'_>> {
     MD_LINK_RX.captures_iter(text).filter_map(|caps| {
-        if !caps["bang"].is_empty() {
-            return None;
-        }
         Some(MdLinkMatch {
             range: caps.get(0)?.range(),
             label: caps.name("text")?.range(),
             target: caps.name("link")?.as_str().trim(),
+            image: !caps["bang"].is_empty(),
         })
     })
 }
@@ -629,7 +629,8 @@ impl ExclusionZones {
 /// rejected when the preceding or following character is alphanumeric, `_`,
 /// or another `#` — so mid-word (`hello#tag`), stacked-hash (`##tag`,
 /// Markdown header territory), and adjacent-hash (`#tag#more`) cases are
-/// all skipped. Code-span / HTML / link overlap suppression is left to the
+/// all skipped — or when it follows an `&`, as in an HTML entity
+/// (`it&#39;s`). Code-span / HTML / link overlap suppression is left to the
 /// caller because those checks are context-specific.
 pub(crate) fn label_matches_inner(
     text: &str,
@@ -640,7 +641,7 @@ pub(crate) fn label_matches_inner(
             && text[..m.start()]
                 .chars()
                 .next_back()
-                .map(|c| c.is_alphanumeric() || c == '_' || c == '#')
+                .map(|c| c.is_alphanumeric() || c == '_' || c == '#' || c == '&')
                 .unwrap_or(false);
         if preceding_blocks_label {
             return None;
@@ -2074,6 +2075,16 @@ ls -la ./test
             .map(|m| m.name)
             .collect();
         assert!(v.is_empty(), "expected no labels, got {:?}", v);
+    }
+
+    // Review 6, item 8: a `#` right after `&` (an HTML entity, `it&#39;s`)
+    // is not a label, here as in every view built on the shared rule.
+    #[test]
+    fn label_matches_skips_after_ampersand() {
+        let v: Vec<&str> = crate::note::scan::label_matches("it&#39;s Title&#32; a #tag &x #tag2")
+            .map(|m| m.name)
+            .collect();
+        assert_eq!(v, vec!["tag", "tag2"]);
     }
 
     #[test]
