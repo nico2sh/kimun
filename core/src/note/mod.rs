@@ -104,8 +104,11 @@ fn tags_with(labels: Vec<String>, frontmatter: &properties::PropertySet) -> Vec<
 
 /// Every link target of a note in document order, **as written** — wikilink
 /// targets whose note is a valid vault path (a `#section` or `^block` kept:
-/// `note#section`), markdown and image destinations, autolinks — frontmatter
-/// and code skipped.
+/// `note#section`), markdown and image destinations that are a URL or a
+/// valid vault path (a `#section` kept), autolinks — frontmatter and code
+/// skipped (a wikilink in an indented code block is still listed). A
+/// destination that links nowhere (`[t]([[b]])`, `[x](a|b.md)`) is not
+/// listed: the same links every other view lists.
 ///
 /// These are strings, not resolved vault paths: vault targets and URLs side
 /// by side, relative paths unresolved, wikilinks without the note extension.

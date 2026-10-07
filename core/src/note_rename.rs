@@ -179,7 +179,7 @@ impl<'a> Scouted<'a> {
             let to = &to;
             async move {
                 let text = nfs::load_note(workspace, &path).await?;
-                let (updated, changed) = note::replace_note_links(&text, from, to);
+                let (updated, changed) = note::replace_note_links(&text, &path, from, to);
                 Ok(changed.then_some((path, updated)))
             }
         }))
@@ -240,7 +240,7 @@ impl Prepared<'_> {
 
         // Self-links inside the renamed file, rewritten at its new location.
         let text = nfs::load_note(workspace_path, &to).await?;
-        let (updated, changed) = note::replace_note_links(&text, &from, &to);
+        let (updated, changed) = note::replace_note_links(&text, &from, &from, &to);
         if changed {
             let (entry, written) = nfs::save_note(workspace_path, &to, &updated).await?;
             out.push((entry, written));
@@ -543,5 +543,94 @@ mod tests {
         assert_eq!(f.text("/hub.md").await, "[[a2]] and [[b2]]");
         assert_eq!(f.backlinks("/a2.md").await, vec![VaultPath::new("/hub.md")]);
         assert_eq!(f.backlinks("/b2.md").await, vec![VaultPath::new("/hub.md")]);
+    }
+
+    /// The link rows the index would record for `text` at `path`, as
+    /// `links_of` reports them.
+    fn walked_links(path: &VaultPath, text: &str) -> Vec<(String, String)> {
+        let (_, links) = crate::note::content_extractor::get_chunks_and_links(path, text);
+        let mut rows: Vec<(String, String)> = links
+            .iter()
+            .filter_map(|l| match &l.ltype {
+                crate::note::LinkType::Note(p) => Some((p.to_string(), p.get_name())),
+                _ => None,
+            })
+            .collect();
+        rows.sort();
+        rows
+    }
+
+    // Review 10, item 3: the rename rewrites every link the index records
+    // as pointing at the renamed note — a wikilink with a section, block or
+    // padding, a markdown link with a section or spaces in its destination,
+    // a reference definition — keeping what surrounds the name as written.
+    // Afterwards, for every note, the index's link rows equal what a walk of
+    // the text on disk records: no row points where the text does not.
+    #[tokio::test]
+    async fn rename_rewrites_every_link_the_index_records_and_the_index_matches_the_text() {
+        let f = Fixture::new().await;
+        let plan = f
+            .note("/work/plan.md", "# Plan\n[me](plan.md#top) [[Plan^b]]")
+            .await;
+        let david = f.note("/people/david h.md", "# David").await;
+        let victims = [
+            (
+                "/work/a.md",
+                "[[Plan#Goals|g]] [[ Plan ]] [[Plan^blk]] ![[plan#x]] [x](plan.md#goals)\n\n\
+                 [y](/work/plan.md) [z](../work/plan.md \"T\") [r]\n\n[r]: plan.md#s\n",
+            ),
+            (
+                "/journal/b.md",
+                "[D](../people/David H.md) and [E](../people/david h.md#bio) `[[Plan]]`\n\n\
+                 ```\n[[Plan]]\n```\n\n\t- [[plan]] in an outline\n",
+            ),
+            ("/work/c.md", "Only [[plan#Goals]] here, and [[other]]."),
+        ];
+        for (path, text) in victims {
+            f.note(path, text).await;
+        }
+
+        f.rename(false)
+            .rename(&plan, &VaultPath::new("/work/roadmap.md"))
+            .await
+            .unwrap();
+        f.rename(false)
+            .rename(&david, &VaultPath::new("/people/david hu.md"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            f.text("/work/a.md").await,
+            "[[roadmap#Goals|g]] [[ roadmap ]] [[roadmap^blk]] ![[roadmap#x]] \
+             [x](roadmap.md#goals)\n\n[y](/work/roadmap.md) [z](../work/roadmap.md \"T\") \
+             [r]\n\n[r]: roadmap.md#s\n"
+        );
+        assert_eq!(
+            f.text("/journal/b.md").await,
+            "[D](../people/david hu.md) and [E](../people/david hu.md#bio) `[[Plan]]`\n\n\
+             ```\n[[Plan]]\n```\n\n\t- [[roadmap]] in an outline\n"
+        );
+        assert_eq!(
+            f.text("/work/c.md").await,
+            "Only [[roadmap#Goals]] here, and [[other]]."
+        );
+        assert_eq!(
+            f.text("/work/roadmap.md").await,
+            "# Plan\n[me](roadmap.md#top) [[roadmap^b]]"
+        );
+        for path in [
+            "/work/a.md",
+            "/journal/b.md",
+            "/work/c.md",
+            "/work/roadmap.md",
+        ] {
+            let path = VaultPath::new(path);
+            let text = nfs::load_note(&f.ws, &path).await.unwrap();
+            assert_eq!(
+                f.index.links_of(&path).await,
+                walked_links(&path, &text),
+                "{path}: {text:?}"
+            );
+        }
     }
 }

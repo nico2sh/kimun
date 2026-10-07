@@ -9,7 +9,7 @@ use crate::{
     note::{ContentChunk, NoteContentData},
 };
 
-use super::walk::{walk, TextLine};
+use super::walk::{retarget_links, walk, TextLine};
 use super::NoteLink;
 
 const _MAX_TITLE_LENGTH: usize = 40;
@@ -683,63 +683,22 @@ pub(crate) fn get_markdown_and_links<S: AsRef<str>>(
     walk(note).render_markdown(note, reference_path)
 }
 
-/// Rewrites all links in `md_text` that target `old_path` so they target `new_path` instead.
-///
-/// Handles three link forms:
-/// - WikiLinks: `[[old-name]]` → `[[new-name]]`, `[[old-name|display]]` → `[[new-name|display]]`
-/// - Markdown links by full vault path: `[text](/old/path.md)` → `[text](/new/path.md)`
-/// - Markdown links by filename: `[text](old-name.md)` → `[text](new-name.md)`
+/// Rewrites every link in `md_text` that points at `old_path` so it points
+/// at `new_path` — exactly the links the index records as pointing at it,
+/// read by the same walk (see `walk::retarget_links`): wikilinks and embeds
+/// with a `#section`, `^block` or padding, markdown links with spaces in
+/// their destination or a `#section`, reference definitions. `note_path` is
+/// where the note was when its links were indexed (the renamed note's own
+/// self-links: `old_path`).
 ///
 /// Returns `(updated_text, changed)` where `changed` is true when at least one replacement was made.
 pub(crate) fn replace_note_links(
     md_text: &str,
+    note_path: &VaultPath,
     old_path: &VaultPath,
     new_path: &VaultPath,
 ) -> (String, bool) {
-    let old_name = old_path.get_name(); // e.g. "old-title.md"
-    let old_full = old_path.to_string(); // e.g. "/notes/old-title.md"
-    let new_clean = new_path.get_clean_name(); // e.g. "new-title" (no extension)
-    let new_name = new_path.get_name(); // e.g. "new-title.md"
-    let new_full = new_path.to_string(); // e.g. "/notes/new-title.md"
-
-    // Step 1: rewrite wikilinks whose resolved name matches old_path
-    let after_wikilinks = WIKILINK_RX.replace_all(md_text, |caps: &Captures| {
-        let items = &caps["link_text"];
-        let parts: Vec<&str> = items.split('|').collect();
-        let (link, display) = match parts.len() {
-            1 => (parts[0], parts[0]),
-            _ => (parts[0], parts[1]),
-        };
-        if VaultPath::note_path_from(link).get_name() == old_name {
-            if link == display {
-                format!("[[{}]]", new_clean)
-            } else {
-                format!("[[{}|{}]]", new_clean, display)
-            }
-        } else {
-            // Keep unchanged — reconstruct the original form
-            format!("[[{}]]", items)
-        }
-    });
-
-    // Step 2: rewrite markdown links by full vault path or bare filename
-    let after_links = MD_LINK_RX.replace_all(&after_wikilinks, |caps: &Captures| {
-        let bang = &caps["bang"];
-        let text = &caps["text"];
-        let link = caps["link"].trim();
-        if !bang.is_empty() {
-            return format!("![{}]({})", text, link); // image — skip
-        }
-        if link == old_full {
-            format!("[{}]({})", text, new_full)
-        } else if link == old_name {
-            format!("[{}]({})", text, new_name)
-        } else {
-            format!("[{}]({})", text, link)
-        }
-    });
-
-    let result = after_links.to_string();
+    let result = retarget_links(md_text, note_path, old_path, new_path);
     let changed = result != md_text;
     (result, changed)
 }
@@ -1038,11 +997,16 @@ mod test {
 
     // ---- replace_note_links tests ----
 
+    /// The note whose links are rewritten.
+    fn victim() -> VaultPath {
+        VaultPath::new("/notes/victim.md")
+    }
+
     #[test]
     fn replace_wikilink_no_display() {
         let old = VaultPath::new("/notes/old-note.md");
         let new = VaultPath::new("/notes/new-note.md");
-        let (result, changed) = replace_note_links("See [[old-note]].", &old, &new);
+        let (result, changed) = replace_note_links("See [[old-note]].", &victim(), &old, &new);
         assert!(changed);
         assert_eq!(result, "See [[new-note]].");
     }
@@ -1051,7 +1015,8 @@ mod test {
     fn replace_wikilink_with_display_text() {
         let old = VaultPath::new("/notes/old-note.md");
         let new = VaultPath::new("/notes/new-note.md");
-        let (result, changed) = replace_note_links("See [[old-note|my note]].", &old, &new);
+        let (result, changed) =
+            replace_note_links("See [[old-note|my note]].", &victim(), &old, &new);
         assert!(changed);
         assert_eq!(result, "See [[new-note|my note]].");
     }
@@ -1060,7 +1025,8 @@ mod test {
     fn replace_markdown_link_full_path() {
         let old = VaultPath::new("/notes/old-note.md");
         let new = VaultPath::new("/notes/new-note.md");
-        let (result, changed) = replace_note_links("[click](/notes/old-note.md)", &old, &new);
+        let (result, changed) =
+            replace_note_links("[click](/notes/old-note.md)", &victim(), &old, &new);
         assert!(changed);
         assert_eq!(result, "[click](/notes/new-note.md)");
     }
@@ -1069,7 +1035,7 @@ mod test {
     fn replace_markdown_link_filename_only() {
         let old = VaultPath::new("/notes/old-note.md");
         let new = VaultPath::new("/notes/new-note.md");
-        let (result, changed) = replace_note_links("[click](old-note.md)", &old, &new);
+        let (result, changed) = replace_note_links("[click](old-note.md)", &victim(), &old, &new);
         assert!(changed);
         assert_eq!(result, "[click](new-note.md)");
     }
@@ -1079,7 +1045,7 @@ mod test {
         let old = VaultPath::new("/notes/old-note.md");
         let new = VaultPath::new("/notes/new-note.md");
         let text = "[[other-note]] [x](/notes/unrelated.md) [y](unrelated.md)";
-        let (result, changed) = replace_note_links(text, &old, &new);
+        let (result, changed) = replace_note_links(text, &victim(), &old, &new);
         assert!(!changed);
         assert_eq!(result, text);
     }
@@ -1090,7 +1056,7 @@ mod test {
         let new = VaultPath::new("/notes/new-note.md");
         // Images that happen to match the name must not be touched
         let text = "![old-note.md](old-note.md)";
-        let (result, changed) = replace_note_links(text, &old, &new);
+        let (result, changed) = replace_note_links(text, &victim(), &old, &new);
         assert!(!changed);
         assert_eq!(result, text);
     }
@@ -1100,11 +1066,55 @@ mod test {
         let old = VaultPath::new("/notes/old-note.md");
         let new = VaultPath::new("/archive/new-note.md");
         let text = "[[old-note]] and [[old-note|read this]] plus [link](/notes/old-note.md) end.";
-        let (result, changed) = replace_note_links(text, &old, &new);
+        let (result, changed) = replace_note_links(text, &victim(), &old, &new);
         assert!(changed);
         assert_eq!(
             result,
             "[[new-note]] and [[new-note|read this]] plus [link](/archive/new-note.md) end."
+        );
+    }
+
+    // Review 10, item 3: a new name that would not read back as the same
+    // link bare is written in `<…>`; one that does stays bare.
+    #[test]
+    fn replace_wraps_a_destination_that_would_not_read_back() {
+        let old = VaultPath::new("/notes/plan.md");
+        for (new, text, expected) in [
+            ("/notes/my plan.md", "[x](plan.md)", "[x](my plan.md)"),
+            (
+                "/notes/my plan.md",
+                "[x](plan.md \"T\")",
+                "[x](<my plan.md> \"T\")",
+            ),
+            ("/notes/my plan.md", "[x](<plan.md>)", "[x](<my plan.md>)"),
+            (
+                "/notes/my plan.md",
+                "[r]\n\n[r]: plan.md\n",
+                "[r]\n\n[r]: <my plan.md>\n",
+            ),
+            ("/notes/p (1).md", "[x](plan.md#s)", "[x](<p (1).md#s>)"),
+            ("/notes/p (1).md", "[[plan]]", "[[p (1)]]"),
+        ] {
+            let new = VaultPath::new(new);
+            let (result, changed) = replace_note_links(text, &victim(), &old, &new);
+            assert!(changed, "{text:?}");
+            assert_eq!(result, expected);
+        }
+    }
+
+    // Review 10, item 3: a moved note's links are written for where they
+    // live — a relative path from the linking note's folder — and a link
+    // in code is code, left alone.
+    #[test]
+    fn replace_writes_a_moved_note_relative_to_the_linking_note() {
+        let old = VaultPath::new("/notes/plan.md");
+        let new = VaultPath::new("/archive/old/plan.md");
+        let text = "[a](../notes/plan.md) [b](/notes/plan.md) [c](plan.md) `[d](plan.md)`";
+        let at = VaultPath::new("/journal/x.md");
+        let (result, _) = replace_note_links(text, &at, &old, &new);
+        assert_eq!(
+            result,
+            "[a](../archive/old/plan.md) [b](/archive/old/plan.md) [c](plan.md) `[d](plan.md)`"
         );
     }
 
@@ -1113,7 +1123,7 @@ mod test {
         let old = VaultPath::new("/notes/missing.md");
         let new = VaultPath::new("/notes/also-missing.md");
         let text = "No references here at all.";
-        let (result, changed) = replace_note_links(text, &old, &new);
+        let (result, changed) = replace_note_links(text, &victim(), &old, &new);
         assert!(!changed);
         assert_eq!(result, text);
     }

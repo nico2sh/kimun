@@ -60,7 +60,13 @@ Out:
   exists for. They already share the one rule that matters —
   `wikilink_parts` — with the walk.
 - **`replace_note_links`** (rename rewrites) — a write path with its own
-  tests; not an extractor.
+  tests; not an extractor. *Brought in by review 10 (item 3):* it now reads
+  the note through the walk (`walk::retarget_links`) and rewrites exactly
+  the links the index records as pointing at the renamed note — wikilinks
+  with a section, block or padding, markdown links with a section, spaces
+  or a relative path, reference definitions — keeping what surrounds the
+  name as written; nothing the walk does not read as a link (code, HTML,
+  frontmatter) is touched.
 - **The server** — no code change (see *Index and server*).
 
 ## Architecture
@@ -208,6 +214,11 @@ must contain exactly these and nothing else.
 | markup inside a plain wikilink, `[[a *b* c]]` | chunk text `a b c` | `a *b* c` — the wikilink's text is shown as written, like an alias |
 | a markdown link inside an HTML block, `<details>[doc](doc.md)</details>` | listed by LINKS/MCP/CLI, rewritten; not indexed | not a link anywhere, left as written |
 | a markdown link with unencoded spaces in its destination, `[David H](../Work/People/David H.md)` | listed by LINKS/MCP/CLI and followed by the editor; not indexed | a link everywhere (index, LINKS, MCP, CLI), found with the same pattern the editor highlights; rendered as `[David H](<…/David H.md>)` so previewers show it; chunk text unchanged; one whose destination contains a code span (``[t](a `b c`.md)``) is not a link |
+| a wikilink in an indented block (tab/4-space indent after a heading or blank line — a Logseq-style outline that CommonMark reads as indented code), `# T⏎\t- [[Pep]]` | indexed | still a link everywhere (index, LINKS, CLI, rename), as the editor shows it; the block's text stays as written, and markdown links/hashtags in it stay not links/tags. Fenced code (```` ``` ````) is still not a link |
+| a wikilink whose name matches a reference definition, `See [[docs]]` + `[docs]: https://…` | a link to `docs` | still a link to `docs` (the inner `[docs]` is not read as a reference link) |
+| a markdown link to a section, `[x](plan.md#goals)`, `[y](my note.md#sec)` | not indexed | indexed as a link to the note (fragment stripped, as the editor follows it); rendered with the fragment kept |
+| a URL with parentheses, `[Rust](https://…/Rust_(programming_language))` (rendered markdown) | truncated at the first `)` | `[Rust](<https://…/Rust_(programming_language)>)` — whole URL, wrapped |
+| CLI / `NoteMetadata.links` targets | every link as written | every link that resolves to a note, URL or vault path (as LINKS lists them), as written — junk like `[t]([[b]])` → `[[b]]` is not listed |
 | a spaced destination with a `(` in it, `[notes](My Notes (draft).md)` | listed as a broken attachment `folder/my notes (draft` | not a link (left as written) — the editor's pattern cannot read the destination |
 | a wikilink in the label of a spaced-destination link, `[see [[a]]](x y.md)`, `[![[pic.png]]](my page.md)` | both recorded (regex) | the wikilink only: neither pulldown nor the editor's pattern reads an outer link there (its label holds `]`), and the editor highlights the wikilink — index and editor agree |
 | an unclosed `[[` followed on a later line by a wikilink, `[[a|x⏎y [[b]]` | link to `a` (alias across the line) | link to `b`, as the editor highlights it |
@@ -228,7 +239,7 @@ must contain exactly these and nothing else.
 | a wikilink whose target is still not a vault path after that (`[[#tag]]`) | listed raw by the CLI | not listed anywhere |
 | an embed with a fragment, `![[pic.png#x]]`, `![[e^b]]` | left as written | renders without the fragment (`![…](pic.png)`, `![…](e.md)`); indexed like the same embed without it |
 | a wikilink with an empty display part, `[[a\|]]`, `[[a#s\|]]` | an invisible `[](a.md)`, or left as written with a fragment | the rendered link text falls back to the target as written, `[a](a.md)`, `[a#s](a.md#s)` (chunk text unchanged) |
-| a reference definition to an anchor, `[top]: #anchor` | `anchor` a tag; definition mangled to `[top]: [#anchor](#anchor)` | not a tag; definition left as written; its uses are links |
+| a reference definition to an anchor, `[top]: #anchor` | `anchor` a tag; definition mangled to `[top]: [#anchor](#anchor)` | not a tag; definition left as written; its uses are read as links but, an anchor linking to no note, URL or vault path, listed by no view (see the CLI targets row) |
 | link syntax the old regex misread: `[t](a(b).md)`, `[[Note (draft)]]` below the root, `[v](d\_e.md)` | `a(b` attachment; `folder/note (draft).md`; `d\_e.md` | `a(b).md`; `note (draft).md`; `d_e.md` — as CommonMark/pulldown read them. (`a [[[tri]]] b` stays no link: the editor's pattern reads `[[[tri]]`, whose target `[tri` is no vault path) |
 | title of `# Sprint #42` | "Sprint #42" | "Sprint 42" |
 | title of `# See [[p\|Project]]` | "See [[p\|Project]]" | "See Project" |
