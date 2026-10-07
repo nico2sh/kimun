@@ -11,7 +11,7 @@ use pulldown_cmark::{CowStr, Event, LinkType, Options, Parser, Tag, TagEnd};
 
 use super::content_extractor::{
     frontmatter_bounds, frontmatter_delimiter, label_matches_inner, split_bom, split_link_fragment,
-    target_looks_like_image, wikilink_parts, MD_LINK_RX, WIKILINK_RX,
+    target_looks_like_image, wikilink_parts,
 };
 use super::ContentChunk;
 use crate::nfs::VaultPath;
@@ -48,9 +48,6 @@ pub(in crate::note) struct WalkLink {
     pub label: String,
     /// Source bytes of the whole link, in the note.
     pub range: Range<usize>,
-    /// Found in HTML (a block or an inline tag), which pulldown does not
-    /// parse: still a link, but a wikilink's text is left as written.
-    pub in_html: bool,
 }
 
 impl WalkLink {
@@ -149,46 +146,14 @@ fn frontmatter_text(block: &str) -> String {
     out
 }
 
-/// The links in a slice of HTML at byte `offset` of the note, in document
-/// order. Pulldown hands HTML over unparsed, so they are found in its
-/// source: wikilinks with the wikilink pattern, markdown links (not images,
-/// left to the image pipeline) with the markdown-link pattern. Each is built
-/// by the same functions as a prose link ([`wikilink`], [`inline_link`]),
-/// so its target, label, validity and rewrite are read the same way.
-fn html_links(src: &str, offset: usize, links: &mut Vec<WalkLink>) {
-    // Every link opens with `[`: most HTML (`<br>`, `<kbd>`) holds none.
-    if !src.contains('[') {
-        return;
-    }
-    let first = links.len();
-    for m in WIKILINK_RX.find_iter(src) {
-        let start = if src[..m.start()].ends_with('!') {
-            m.start() - 1
-        } else {
-            m.start()
-        };
-        links.extend(wikilink(&src[start..m.end()], offset + start, true).map(|(l, _)| l));
-    }
-    let wikilinks = first..links.len();
-    for caps in MD_LINK_RX.captures_iter(src) {
-        let Some(whole) = caps.get(0) else { continue };
-        let range = offset + whole.start()..offset + whole.end();
-        let overlaps_a_wikilink = links[wikilinks.clone()]
-            .iter()
-            .any(|l| l.range.start < range.end && range.start < l.range.end);
-        if caps["bang"].is_empty() && !overlaps_a_wikilink {
-            links.push(inline_link(&caps["link"], &caps["text"], range, true));
-        }
-    }
-    links[first..].sort_by_key(|l| l.range.start);
-}
-
 /// A wikilink's record from its source (`[[…]]` or `![[…]]`) starting at
 /// byte `start` of the note, and its display text: target and text by
 /// `wikilink_parts`. `None` without a target (`[[|b]]`), which pulldown
-/// does not read as a wikilink either. Prose and HTML wikilinks are built
-/// here alike.
-fn wikilink(src: &str, start: usize, in_html: bool) -> Option<(WalkLink, &str)> {
+/// does not read as a wikilink either.
+// Out of line: most events start no link, and inlining the link builders
+// into `LinkRecorder::step` measurably slowed the walk (criterion, medium).
+#[inline(never)]
+fn wikilink(src: &str, start: usize) -> Option<(WalkLink, &str)> {
     let (kind, inner) = match src.strip_prefix('!') {
         Some(rest) => (WalkLinkKind::WikiEmbed, rest),
         None => (WalkLinkKind::Wiki, src),
@@ -203,29 +168,8 @@ fn wikilink(src: &str, start: usize, in_html: bool) -> Option<(WalkLink, &str)> 
         target: target.to_string(),
         label: label.to_string(),
         range: start..start + src.len(),
-        in_html,
     };
     Some((link, label))
-}
-
-/// An inline link's record: its destination as written between the
-/// parentheses (`dest`, padding and a title allowed) read as a link
-/// destination — `<…>` unwrapped, else up to the first whitespace — and its
-/// label as written. Pulldown already hands prose links their destination;
-/// HTML links come here with the raw text (not entity-decoded).
-fn inline_link(dest: &str, label: &str, range: Range<usize>, in_html: bool) -> WalkLink {
-    let dest = dest.trim();
-    let target = match dest.strip_prefix('<') {
-        Some(rest) => rest.split('>').next().unwrap_or(rest),
-        None => dest.split(char::is_whitespace).next().unwrap_or(dest),
-    };
-    WalkLink {
-        kind: WalkLinkKind::Inline,
-        target: target.to_string(),
-        label: label.to_string(),
-        range,
-        in_html,
-    }
 }
 
 fn wikilink_kind(event: &Event) -> Option<WalkLinkKind> {
@@ -281,16 +225,15 @@ enum Step<'s> {
     Other { in_link: bool },
 }
 
-/// Records the links of one parse — the walk's over the body, or one over a
-/// slice of HTML — the same way: wikilinks from their source through
-/// `wikilink_parts`, markdown links and images with pulldown's destination
-/// and their label as written.
+/// Records the links of the walk's parse: wikilinks from their source
+/// through `wikilink_parts`, markdown links and images with pulldown's
+/// destination and their label as written. HTML is opaque: pulldown hands
+/// it over unparsed, and nothing inside it is a link.
 struct LinkRecorder<'s> {
     /// The parsed text as written: labels and wikilink parts come from it.
     src: &'s str,
     /// Byte of the note `src` starts at.
     offset: usize,
-    in_html: bool,
     /// Open non-wiki links and images: text inside them is link text, and
     /// its source is their label.
     open: Vec<OpenLink>,
@@ -300,11 +243,10 @@ struct LinkRecorder<'s> {
 }
 
 impl<'s> LinkRecorder<'s> {
-    fn new(src: &'s str, offset: usize, in_html: bool) -> Self {
+    fn new(src: &'s str, offset: usize) -> Self {
         Self {
             src,
             offset,
-            in_html,
             open: Vec::new(),
             wikilink_depth: 0,
         }
@@ -338,7 +280,7 @@ impl<'s> LinkRecorder<'s> {
         if wikilink_kind(event).is_some() {
             let src: &'s str = &self.src[range.clone()];
             self.wikilink_depth = 1;
-            return match wikilink(src, in_note.start, self.in_html) {
+            return match wikilink(src, in_note.start) {
                 Some((link, label)) => {
                     links.push(link);
                     Step::Wikilink(label)
@@ -348,7 +290,7 @@ impl<'s> LinkRecorder<'s> {
             };
         }
         if let Event::Start(Tag::Link { .. } | Tag::Image { .. }) = event {
-            let found = md_link(event, in_note, self.in_html);
+            let found = md_link(event, in_note);
             let labelled = found
                 .as_ref()
                 .is_some_and(|l| l.kind != WalkLinkKind::Autolink);
@@ -372,7 +314,9 @@ impl<'s> LinkRecorder<'s> {
 
 /// A markdown link or image's record (none for an email autolink), its
 /// label left for its [`OpenLink`] to fill.
-fn md_link(event: &Event, range: Range<usize>, in_html: bool) -> Option<WalkLink> {
+// Out of line, as `wikilink`.
+#[inline(never)]
+fn md_link(event: &Event, range: Range<usize>) -> Option<WalkLink> {
     let (kind, target, label) = match event {
         // An email address is not a vault or web link: its text stays in
         // the line, nothing is recorded.
@@ -401,7 +345,6 @@ fn md_link(event: &Event, range: Range<usize>, in_html: bool) -> Option<WalkLink
         target: target.to_string(),
         label,
         range,
-        in_html,
     })
 }
 
@@ -459,18 +402,9 @@ pub(in crate::note) fn walk(note: &str) -> NoteWalk {
     let mut links = Vec::new();
     let mut tags = Vec::new();
     let mut code_depth = 0u32;
-    let mut recorder = LinkRecorder::new(body, body_start, false);
-    // A run of inline HTML tags one after another (line breaks between them
-    // allowed), scanned as one slice once it ends, so a link across tags is
-    // found.
-    let mut html_run: Option<Range<usize>> = None;
+    let mut recorder = LinkRecorder::new(body, body_start);
 
     for (event, range) in Parser::new_ext(body, Options::ENABLE_WIKILINKS).into_offset_iter() {
-        if !matches!(event, Event::InlineHtml(_) | Event::SoftBreak) {
-            if let Some(run) = html_run.take() {
-                html_links(&body[run.clone()], body_start + run.start, &mut links);
-            }
-        }
         let start = body_start + range.start;
         let in_link = match recorder.step(&event, &range, &mut links) {
             Step::InWikilink => continue,
@@ -489,23 +423,6 @@ pub(in crate::note) fn walk(note: &str) -> NoteWalk {
         match &event {
             Event::Start(Tag::CodeBlock(_)) => code_depth += 1,
             Event::End(TagEnd::CodeBlock) => code_depth = code_depth.saturating_sub(1),
-            // A whole HTML block at once, so a link across its lines is
-            // found; HTML never sits inside a code block.
-            Event::Start(Tag::HtmlBlock) => {
-                html_links(&body[range.clone()], start, &mut links);
-            }
-            Event::InlineHtml(_) => {
-                html_run = Some(match html_run.take() {
-                    Some(run) if body[run.end..range.start].trim().is_empty() => {
-                        run.start..range.end
-                    }
-                    Some(run) => {
-                        html_links(&body[run.clone()], body_start + run.start, &mut links);
-                        range.clone()
-                    }
-                    None => range.clone(),
-                });
-            }
             _ => {}
         }
         let in_code = code_depth > 0;
@@ -524,9 +441,6 @@ pub(in crate::note) fn walk(note: &str) -> NoteWalk {
                 )
             }
         });
-    }
-    if let Some(run) = html_run {
-        html_links(&body[run.clone()], body_start + run.start, &mut links);
     }
 
     NoteWalk {
@@ -698,11 +612,10 @@ impl NoteWalk {
     /// resolved; hashtags become `[#tag](#tag)`. Every rewritten destination
     /// is written by `markdown_destination`. Reference links, autolinks,
     /// inline links written with a `<…>` destination or a title (see
-    /// `WalkLink::rewritten_destination`), links whose destination cannot be
-    /// written back, and wikilinks inside HTML are listed but left as
-    /// written. Links come in document order, hashtags after them.
-    /// Everything outside a recorded range — frontmatter, code, images — is
-    /// copied verbatim.
+    /// `WalkLink::rewritten_destination`), and links whose destination
+    /// cannot be written back are listed but left as written. Links come in
+    /// document order, hashtags after them. Everything outside a recorded
+    /// range — frontmatter, code, HTML, images — is copied verbatim.
     pub(in crate::note) fn render_markdown(
         &self,
         note: &str,
@@ -712,17 +625,15 @@ impl NoteWalk {
         let mut links = Vec::new();
         for link in self.listed_links() {
             match link.kind {
-                // HTML is left as the renderer will read it.
-                WalkLinkKind::WikiEmbed if !link.in_html => {
+                WalkLinkKind::WikiEmbed => {
                     edits.push((link.range.clone(), embed_image(link)));
                 }
-                WalkLinkKind::WikiEmbed => {}
                 WalkLinkKind::Wiki => {
                     let (target, fragment) = link.wiki_note();
                     let path = VaultPath::note_path_from(target).resolve_against_note(ref_path);
                     links.push(NoteLink::note(&path, &link.label));
                     let dest = markdown_destination(format!("{path}{}", url_fragment(fragment)));
-                    if let Some(dest) = dest.filter(|_| !link.in_html) {
+                    if let Some(dest) = dest {
                         // An empty display part would render an invisible link.
                         let text = if link.label.is_empty() {
                             &link.target
@@ -1460,39 +1371,40 @@ mod tests {
         links.iter().map(|l| l.raw_link.clone()).collect()
     }
 
-    // Item 1 (final review): a wikilink inside an HTML block is still a link.
-    #[test]
-    fn a_wikilink_inside_an_html_block_is_still_a_link() {
-        let note = "<details>\n<summary>More</summary>\nSee [[hidden]]\n</details>\n";
-        let hidden = VaultPath::note_path_from("hidden");
-        let at = VaultPath::new("n.md");
+    /// Asserts no view reads a link in `note`: the walk, the index, the
+    /// rendered markdown (left as written) and its link list, the CLI
+    /// targets and `NoteMetadata`.
+    fn assert_no_link_anywhere(note: &str) {
+        let at = VaultPath::new("folder/n.md");
+        let w = walk(note);
+        assert!(w.links.is_empty(), "{note:?}: {:?}", w.links);
         let (_, index) = crate::note::content_extractor::get_chunks_and_links(&at, note);
-        assert_eq!(raw_links(&index), [hidden.to_string()]);
+        assert!(index.is_empty(), "{note:?}: {index:?}");
         let (md, listed) = crate::note::content_extractor::get_markdown_and_links(&at, note);
         assert_eq!(md, note, "HTML stays as written");
-        assert_eq!(raw_links(&listed), [hidden.to_string()]);
-        assert_eq!(crate::note::note_link_targets(note), ["hidden"]);
-        let w = walk(note);
-        assert_eq!(&note[w.links[0].range.clone()], "[[hidden]]");
-        assert!(text(&w).contains("See [[hidden]]"), "{:?}", text(&w));
+        assert!(listed.is_empty(), "{note:?}: {listed:?}");
+        assert!(crate::note::note_link_targets(note).is_empty(), "{note:?}");
+        assert!(
+            crate::note::NoteMetadata::of(note).links.is_empty(),
+            "{note:?}"
+        );
     }
 
+    // HTML is opaque (spec row): nothing inside an HTML block is a link —
+    // a wikilink, an embed, one with a section, one across lines, one in
+    // content indented four spaces.
     #[test]
-    fn a_wikilink_in_html_follows_the_wikilink_rules() {
-        // Across lines inside the block, inside an inline-HTML attribute,
-        // an embed; degenerate forms stay text, as outside HTML.
-        let note =
-            "<div>\n[[a\n|b]] ![[e]] [[|x]] [[]]\n</div>\n\nsee <span title=\"[[q]]\">z</span>\n";
-        let w = walk(note);
-        assert_eq!(
-            links(&w),
-            [
-                (WalkLinkKind::Wiki, "a\n", "b"),
-                (WalkLinkKind::WikiEmbed, "e", "e"),
-                (WalkLinkKind::Wiki, "q", "q"),
-            ]
-        );
-        assert_eq!(&note[w.links[1].range.clone()], "![[e]]");
+    fn a_wikilink_inside_an_html_block_is_not_a_link_anywhere() {
+        let note = "<details>\n<summary>More</summary>\nSee [[hidden]]\n</details>\n";
+        assert_no_link_anywhere(note);
+        assert!(text(&walk(note)).contains("See [[hidden]]"));
+        for note in [
+            "<div>\n[[a\n|b]] ![[e]] [[|x]] [[]]\n</div>\n",
+            "<div>\n[[note#sec|S]]\n</div>\n",
+            "<div>\n    and [[w]]\n</div>\n",
+        ] {
+            assert_no_link_anywhere(note);
+        }
     }
 
     // Spec row: pulldown splits text at a flanking `_`, and a hashtag cut
@@ -1633,35 +1545,21 @@ mod tests {
         );
     }
 
-    // Review 2, item 1: a markdown link inside HTML is a link for every
-    // consumer — listed, rewritten in plain form, a CLI target, indexed.
+    // HTML is opaque (spec row): a markdown link inside an HTML block is no
+    // link anywhere and is not rewritten — padded, titled, `<…>`-wrapped,
+    // indented four spaces, or next to an image.
     #[test]
-    fn a_markdown_link_inside_an_html_block_is_a_link_everywhere() {
-        let at = VaultPath::new("/dir/n.md");
-        for (note, target) in [
-            ("<details>\nSee [doc](doc.md)\n</details>\n", "doc.md"),
-            ("<div>[x](y.md)</div>\n", "y.md"),
+    fn a_markdown_link_inside_an_html_block_is_not_a_link_anywhere() {
+        for note in [
+            "<details>\nSee [doc](doc.md)\n</details>\n",
+            "<div>[x](y.md)</div>\n",
+            "<div>[x](sub/y.md) ![i](p.png) [[w]]</div>\n",
+            "<div>\n[p]( sub/c.md )\n</div>\n",
+            "<div>[t](x.md \"T\") [u](<a b.md>)</div>\n",
+            "<div>\n    [x](sub/y.md)\n</div>\n",
         ] {
-            let path = VaultPath::new(target);
-            let (md, listed) = crate::note::content_extractor::get_markdown_and_links(&at, note);
-            assert_eq!(md, note, "a bare note name is already its own path");
-            assert_eq!(raw_links(&listed), [path.to_string()], "{note:?}");
-            assert_eq!(crate::note::note_link_targets(note), [target], "{note:?}");
-            let (_, index) = crate::note::content_extractor::get_chunks_and_links(&at, note);
-            assert_eq!(raw_links(&index), [path.to_string()], "{note:?}");
+            assert_no_link_anywhere(note);
         }
-    }
-
-    #[test]
-    fn a_markdown_link_inside_html_is_rewritten_in_plain_form_and_images_skipped() {
-        let note = "<div>[x](sub/y.md) ![i](p.png) [[w]]</div>\n";
-        let at = VaultPath::new("/dir/n.md");
-        let (md, listed) = walk(note).render_markdown(note, &at);
-        let y = VaultPath::new("/dir/sub/y.md");
-        assert_eq!(md, format!("<div>[x]({y}) ![i](p.png) [[w]]</div>\n"));
-        let w = VaultPath::note_path_from("w");
-        assert_eq!(raw_links(&listed), [y.to_string(), w.to_string()]);
-        assert_eq!(crate::note::note_link_targets(note), ["sub/y.md", "w"]);
     }
 
     // Review 2, item 2 (spec rows; pinned).
@@ -1852,19 +1750,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_section_wikilink_inside_html_is_a_link() {
-        let note = "<div>\n[[note#sec|S]]\n</div>\n";
-        let at = VaultPath::new("n.md");
-        let path = VaultPath::note_path_from("note");
-        let (_, index) = crate::note::content_extractor::get_chunks_and_links(&at, note);
-        assert_eq!(raw_links(&index), [path.to_string()]);
-        let (md, listed) = crate::note::content_extractor::get_markdown_and_links(&at, note);
-        assert_eq!(md, note, "HTML stays as written");
-        assert_eq!(raw_links(&listed), [path.to_string()]);
-        assert_eq!(crate::note::note_link_targets(note), ["note#sec"]);
-    }
-
     // Review 3, item 2: every inline link is rewritten but a `<…>`
     // destination or one with a title; padding and escapes are no reason
     // to leave one as written.
@@ -1933,35 +1818,71 @@ mod tests {
         assert_eq!(raw_links(&listed), ["d_e.md"]);
     }
 
-    // Review 3, item 6: links in HTML are read by the same parse rules as
-    // prose links — a padded destination is rewritten, a wikilink across
-    // the lines of one inline tag is found.
+    // HTML is opaque (spec row): a link inside an inline tag — in an
+    // attribute, across the lines of one tag, across two adjacent tags — is
+    // no link anywhere.
     #[test]
-    fn a_padded_link_inside_html_is_rewritten() {
-        let note = "<div>\n[p]( sub/c.md )\n</div>\n";
-        let at = VaultPath::new("folder/note.md");
-        let c = VaultPath::new("folder/sub/c.md");
-        let (md, listed) = crate::note::content_extractor::get_markdown_and_links(&at, note);
-        assert_eq!(md, format!("<div>\n[p]({c})\n</div>\n"));
-        assert_eq!(raw_links(&listed), [c.to_string()]);
-        let (_, index) = crate::note::content_extractor::get_chunks_and_links(&at, note);
-        assert_eq!(raw_links(&index), [c.to_string()]);
+    fn a_link_inside_a_multi_line_inline_tag_is_not_a_link_anywhere() {
+        for note in [
+            "a <span title=\"[[x|one\ntwo]]\">z</span> b",
+            "see <span title=\"[[q]]\">z</span>\n",
+            "a <i title=\"[[t|one\"></i>\n<b title=\"two]]\"> b",
+            "a <a title=\"[x](\ny.md)\">z</a> b",
+        ] {
+            assert_no_link_anywhere(note);
+        }
     }
 
+    // HTML is opaque (spec row): an HTML comment is HTML.
     #[test]
-    fn a_wikilink_across_the_lines_of_an_inline_tag_is_a_link() {
-        let note = "a <span title=\"[[x|one\ntwo]]\">z</span> b";
+    fn a_link_inside_an_html_comment_is_not_a_link_anywhere() {
+        for note in [
+            "<!-- [[hidden]] and [x](y.md) -->\n",
+            "text <!-- [[hidden]]\n[x](y.md) --> more\n",
+        ] {
+            assert_no_link_anywhere(note);
+        }
+    }
+
+    // Formatting tags inside a line are inline HTML only for the tags: the
+    // text between them is markdown, so its links are links everywhere.
+    #[test]
+    fn a_link_between_inline_formatting_tags_is_a_link_everywhere() {
+        let note = "see <b>[[note]]</b>, <mark>[x](y.md)</mark> and \
+                    <span style=\"color:red\">[[other]]</span> text\n";
+        let at = VaultPath::new("n.md");
+        let n = VaultPath::note_path_from("note");
+        let y = VaultPath::new("y.md");
+        let o = VaultPath::note_path_from("other");
         let w = walk(note);
-        assert_eq!(links(&w), [(WalkLinkKind::Wiki, "x", "one\ntwo")]);
-        assert_eq!(&note[w.links[0].range.clone()], "[[x|one\ntwo]]");
-        assert_eq!(crate::note::note_link_targets(note), ["x"]);
-    }
-
-    #[test]
-    fn an_angle_destination_inside_html_is_not_misread() {
-        let note = "<div>[x](<a b.md>)</div>\n";
-        let targets = crate::note::note_link_targets(note);
-        assert!(targets.iter().all(|t| !t.contains('>')), "{targets:?}");
+        assert_eq!(
+            links(&w),
+            [
+                (WalkLinkKind::Wiki, "note", "note"),
+                (WalkLinkKind::Inline, "y.md", "x"),
+                (WalkLinkKind::Wiki, "other", "other"),
+            ]
+        );
+        let expected = [n.to_string(), y.to_string(), o.to_string()];
+        let (_, index) = crate::note::content_extractor::get_chunks_and_links(&at, note);
+        assert_eq!(raw_links(&index), expected);
+        let (md, listed) = crate::note::content_extractor::get_markdown_and_links(&at, note);
+        assert_eq!(raw_links(&listed), expected);
+        assert_eq!(
+            md,
+            format!(
+                "see <b>[note]({n})</b>, <mark>[x]({y})</mark> and \
+                 <span style=\"color:red\">[other]({o})</span> text\n"
+            )
+        );
+        assert_eq!(
+            crate::note::note_link_targets(note),
+            ["note", "y.md", "other"]
+        );
+        assert_eq!(
+            crate::note::NoteMetadata::of(note).links,
+            ["note", "y.md", "other"]
+        );
     }
 
     // Rulings round, 1: only spaces and tabs pad a wikilink target; one that
@@ -2008,38 +1929,6 @@ mod tests {
             })
             .collect();
         assert_eq!(dests, [format!("{plan}#My Goals")]);
-    }
-
-    // Rulings round, 2: HTML is scanned as written, so content indented
-    // four spaces (a code block if it were markdown) is still read.
-    #[test]
-    fn a_link_in_indented_html_content_is_a_link() {
-        let note = "<div>\n    [x](sub/y.md) and [[w]]\n</div>\n";
-        let at = VaultPath::new("folder/note.md");
-        let y = VaultPath::new("folder/sub/y.md");
-        let w = VaultPath::note_path_from("w");
-        let (md, listed) = crate::note::content_extractor::get_markdown_and_links(&at, note);
-        assert_eq!(md, format!("<div>\n    [x]({y}) and [[w]]\n</div>\n"));
-        assert_eq!(raw_links(&listed), [y.to_string(), w.to_string()]);
-        assert_eq!(crate::note::note_link_targets(note), ["sub/y.md", "w"]);
-    }
-
-    #[test]
-    fn a_wikilink_across_adjacent_inline_tags_is_one_link() {
-        // Two inline tags in a row, a line break between them, scanned as one.
-        let note = "a <i title=\"[[t|one\"></i>\n<b title=\"two]]\"> b";
-        let w = walk(note);
-        assert_eq!(links(&w).len(), 1, "{:?}", w.links);
-        assert_eq!(w.links[0].target, "t");
-        assert!(w.links[0].in_html);
-    }
-
-    #[test]
-    fn a_titled_link_in_html_targets_its_destination() {
-        let note = "<div>[t](x.md \"T\") [u](<a b.md>)</div>\n";
-        assert_eq!(crate::note::note_link_targets(note), ["x.md", "a b.md"]);
-        let (md, _) = walk(note).render_markdown(note, &VaultPath::new("n.md"));
-        assert_eq!(md, note, "a title or `<…>` destination is left as written");
     }
 
     /// The destinations of the links a renderer reads in `md`.

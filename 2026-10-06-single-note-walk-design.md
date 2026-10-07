@@ -192,7 +192,7 @@ must contain exactly these and nothing else.
 | `[[\|b]]`, `[[]]` | "b" / "" | literal text, not links |
 | reference links, autolinks (not email autolinks, which stay unrecorded) | indexed, missing from LINKS, MCP, tags | recorded everywhere |
 | inline link with a `<…>` destination or a title, `[t](<a b.md>)`, `[t](x.md "T")` | left as written, not listed | still left as written in the rendered markdown, now listed as links |
-| a wikilink inside an HTML block, e.g. `<details>…See [[hidden]]…</details>` | collapsed in chunk text, linked everywhere | still a link everywhere (index, LINKS, MCP, CLI); the HTML text is kept as written |
+| a wikilink inside an HTML block (a block-level tag such as `<div>`/`<details>` starting a line, or any tag alone on its line), e.g. `<details>…See [[hidden]]…</details>` | collapsed in chunk text, linked everywhere | not a link anywhere: HTML is not markdown (as for hashtags); the HTML text is kept as written. Formatting tags inside a line (`see <b>[[note]]</b>`) are inline HTML and do not affect the link |
 | markup or entities in a wikilink alias, `[[a\|*Emph* name]]`, `[[c\|a &amp; b]]` | rendered (`Emph name`, `a & b`) | shown as written (`*Emph* name`, `a &amp; b`) — the alias is source text |
 | a hashtag touching a wikilink, `[[c]]#t2`, `#t3[[d]]` | index missed `t2`, recorded bogus `t3d` | `t2` and `t3`, as the other extractors already had |
 | a wikilink inside image alt text, `![x [[a]] #t](p.png)` | an image; `#t` not a tag | per CommonMark the image degrades to text; `#t` is a tag (rendered markdown unchanged) |
@@ -200,7 +200,7 @@ must contain exactly these and nothing else.
 | a hashtag pulldown splits at a flanking `_`, `#my_tag_`, `#tag_`, `#_x` | never indexed; but a tag in `note_tags`, LINKS and the rendered markdown | not a tag anywhere — the other extractors now agree with the index |
 | an escaped wikilink, `\[[a]]` | a link (index, LINKS); rendered `\[a](a.md)` | not a link anywhere; text `[[a]]` — the backslash escapes it, as CommonMark reads it |
 | markup inside a plain wikilink, `[[a *b* c]]` | chunk text `a b c` | `a *b* c` — the wikilink's text is shown as written, like an alias |
-| a markdown link inside an HTML block, `<details>[doc](doc.md)</details>` | listed by LINKS/MCP/CLI, rewritten; not indexed | listed and rewritten as before, and now indexed too (like wikilinks in HTML) |
+| a markdown link inside an HTML block, `<details>[doc](doc.md)</details>` | listed by LINKS/MCP/CLI, rewritten; not indexed | not a link anywhere, left as written |
 | an image embed, `![[pic.png]]`, `![[sub/pic.png]]` | rendered `![pic.png](pic.png.md)` — a broken image | rendered `![pic.png](pic.png)` / `![…](sub/pic.png)`: an embed whose target looks like an image keeps it as written for the image pipeline to resolve; any other embed (`![[v1.2]]`, `![[doc.pdf]]`) still renders as a note path |
 | a wikilink to a section or block, `[[note#section]]`, `[[Plan#Goals\|goals]]`, `[[a^blk]]`, or with padding, `[[ spaced ]]` | not indexed; listed raw by the CLI | a link everywhere: the target is the note with the `#…`/`^…` part and surrounding spaces stripped (as the editor follows it); the rendered markdown keeps the fragment, `[goals](plan.md#Goals)`; the CLI lists the target as written |
 | a wikilink whose target is still not a vault path after that (`[[#tag]]`) | listed raw by the CLI | not listed anywhere |
