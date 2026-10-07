@@ -723,6 +723,19 @@ impl NoteIndex {
         Ok(rows.into_iter().map(|(n,)| n).collect())
     }
 
+    /// The link rows of one note, `(destination, dest_name)`, sorted.
+    #[cfg(test)]
+    pub(crate) async fn links_of(&self, path: &VaultPath) -> Vec<(String, String)> {
+        sqlx::query_as(
+            "SELECT destination, dest_name FROM links WHERE source = ? \
+             ORDER BY destination, dest_name",
+        )
+        .bind(path.canonical().to_string())
+        .fetch_all(&self.pool)
+        .await
+        .unwrap()
+    }
+
     /// Every distinct property key in the vault, in search form, sorted.
     pub(crate) async fn property_keys(&self) -> Result<Vec<String>, DBError> {
         let rows: Vec<(String,)> =

@@ -15198,10 +15198,12 @@ Hashtag "#whiskey" "whiskey"
 Hashtag "#xray" "xray"
 Hashtag "#yankee" "yankee"
 Hashtag "#zulu" "zulu"
+Note(VaultPath { absolute: false, slices: [PathSlice("page.md")] }) "page.md" ""
 Note(VaultPath { absolute: false, slices: [PathSlice("topic-a.md")] }) "topic-a.md" "topic-a"
 Note(VaultPath { absolute: false, slices: [PathSlice("topic-b.md")] }) "topic-b.md" "topic-b"
 -- tags ["after", "alpha", "archived", "backend", "background", "beta", "blocked", "bravo", "charlie", "component", "context", "delta", "design", "echo", "end", "foxtrot", "frontend", "golf", "hashtag", "hotel", "in", "india", "infra", "juliet", "kilo", "lima", "mike", "november", "oscar", "papa", "qa", "quebec", "release", "review", "romeo", "sierra", "stale", "tango", "task", "uniform", "upstream", "urgent", "victor", "whiskey", "xray", "yankee", "zulu"]
 -- markdown links
+Note(VaultPath { absolute: false, slices: [PathSlice("page.md")] }) "page.md" "docs"
 Note(VaultPath { absolute: false, slices: [PathSlice("topic-a.md")] }) "topic-a.md" "topic-a"
 Note(VaultPath { absolute: false, slices: [PathSlice("topic-b.md")] }) "topic-b.md" "topic-b"
 Hashtag "#hashtag" "hashtag"
@@ -15571,6 +15573,60 @@ Note(VaultPath { absolute: false, slices: [PathSlice("real.md")] }) "real.md" "r
 related: see [docs](other.md) and [[refnote]]
 ---
 body with [real](real.md)
+
+
+=== tests/fixtures/walk/review10_rows.md
+-- title "Review 10 rows"
+-- headings
+1 0 "Review 10 rows"
+2 9 "Outline"
+-- chunks
+[Review 10 rows] "See docs for details and Project Plan.\nWrapping link see [[a]] and destination t"
+[Review 10 rowsOutline] "```\n- [[Pep]] and [[Ann|A]]\n- [x](y.md) #nottag\n```\n```\n[[fenced]] #fencedtag\n```\nSection links x and [y](my note.md#sec)\nRust\nJunk [a b](c d.md \"Title\") and x"
+-- index chunks
+[Review 10 rows] "See docs for details and Project Plan.\nWrapping link see [[a]] and destination t"
+[Review 10 rowsOutline] "```\n- [[Pep]] and [[Ann|A]]\n- [x](y.md) #nottag\n```\n```\n[[fenced]] #fencedtag\n```\nSection links x and [y](my note.md#sec)\nRust\nJunk [a b](c d.md \"Title\") and x"
+-- index links (sorted)
+Note(VaultPath { absolute: false, slices: [PathSlice("ann.md")] }) "ann.md" "A"
+Note(VaultPath { absolute: false, slices: [PathSlice("docs.md")] }) "docs.md" "docs"
+Note(VaultPath { absolute: false, slices: [PathSlice("my note.md")] }) "my note.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("pep.md")] }) "pep.md" "Pep"
+Note(VaultPath { absolute: false, slices: [PathSlice("plan.md")] }) "plan.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("project plan.md")] }) "project plan.md" "Project Plan"
+Note(VaultPath { absolute: false, slices: [PathSlice("x.md")] }) "x.md" ""
+-- tags []
+-- markdown links
+Note(VaultPath { absolute: false, slices: [PathSlice("docs.md")] }) "docs.md" "docs"
+Note(VaultPath { absolute: false, slices: [PathSlice("project plan.md")] }) "project plan.md" "Project Plan"
+Note(VaultPath { absolute: false, slices: [PathSlice("x.md")] }) "x.md" "see [[a]]"
+Note(VaultPath { absolute: false, slices: [PathSlice("pep.md")] }) "pep.md" "Pep"
+Note(VaultPath { absolute: false, slices: [PathSlice("ann.md")] }) "ann.md" "A"
+Note(VaultPath { absolute: false, slices: [PathSlice("plan.md")] }) "plan.md" "x"
+Note(VaultPath { absolute: false, slices: [PathSlice("my note.md")] }) "my note.md" "y"
+Url "https://en.wikipedia.org/wiki/Rust_(programming_language)" "Rust"
+-- markdown
+# Review 10 rows
+
+See [docs](docs.md) for details and [Project Plan](<project plan.md>).
+
+[docs]: https://docs.example.com
+[project plan]: https://plan.example.com
+
+Wrapping link [see [[a]]](x.md) and destination [t]([[a]])
+
+## Outline
+	- [[Pep]] and [[Ann|A]]
+	- [x](y.md) #nottag
+
+```
+[[fenced]] #fencedtag
+```
+
+Section links [x](plan.md#goals) and [y](<my note.md#sec>)
+
+[Rust](<https://en.wikipedia.org/wiki/Rust_(programming_language)>)
+
+Junk [a b](c d.md "Title") and [x](a|b.md)
 
 
 === tests/fixtures/walk/review2_rows.md
