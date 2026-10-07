@@ -15681,7 +15681,7 @@ Still no vault path [[#tag]].
 
 Use [top].
 
-Parens [t](a(b).md), draft [Note (draft)](<note (draft).md>), triple a [[tri](tri.md)] b, escaped [v](d_e.md).
+Parens [t](<a(b).md>), draft [Note (draft)](<note (draft).md>), triple a [[tri](tri.md)] b, escaped [v](d_e.md).
 
 Padded [u](folder/sub/c.md), entity [v](folder/sub/a&b.md), tab [w](folder/sub/x.md), angle [x](<my note.md>), title [t](x.md "Title").
 
@@ -15698,6 +15698,39 @@ Spaced section [g](<plan.md#My Goals>), broken target [[target
 <div>
     Indented [i](folder/sub/i.md) and [[ind]]
 </div>
+
+
+=== tests/fixtures/walk/review4_rows.md
+-- title "Review 4 rows"
+-- headings
+1 0 "Review 4 rows"
+-- chunks
+[Review 4 rows] "Unusual destinations g, Plan#a), Plan#a(b.\nEmbeds with a fragment pic.png#x and e^b.\nEmpty destinations t and t and x.\nEmpty display ."
+-- index chunks
+[Review 4 rows] "Unusual destinations g, Plan#a), Plan#a(b.\nEmbeds with a fragment pic.png#x and e^b.\nEmpty destinations t and t and x.\nEmpty display ."
+-- index links (sorted)
+Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("e.md")] }) "e.md" "e^b"
+Note(VaultPath { absolute: false, slices: [PathSlice("pic.png.md")] }) "pic.png.md" "pic.png#x"
+Note(VaultPath { absolute: false, slices: [PathSlice("plan.md")] }) "plan.md" "Plan#a(b"
+Note(VaultPath { absolute: false, slices: [PathSlice("plan.md")] }) "plan.md" "Plan#a)"
+Note(VaultPath { absolute: false, slices: [PathSlice("plan.md")] }) "plan.md" "g"
+-- tags []
+-- markdown links
+Note(VaultPath { absolute: false, slices: [PathSlice("plan.md")] }) "plan.md" "g"
+Note(VaultPath { absolute: false, slices: [PathSlice("plan.md")] }) "plan.md" "Plan#a)"
+Note(VaultPath { absolute: false, slices: [PathSlice("plan.md")] }) "plan.md" "Plan#a(b"
+Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" ""
+-- markdown
+# Review 4 rows
+
+Unusual destinations [[Plan#a > b|g]], [Plan#a)](<plan.md#a)>), [Plan#a(b](<plan.md#a(b>).
+
+Embeds with a fragment ![pic.png#x](pic.png) and ![e^b](e.md).
+
+Empty destinations [t]() and [t]( ) and [[ |x]].
+
+Empty display [a#s](a.md#s).
 
 
 === tests/fixtures/walk/setext_hashtag.md
