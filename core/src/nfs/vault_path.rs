@@ -431,10 +431,19 @@ impl VaultPath {
         self.resolve_in_folder(base).unwrap_or_else(|| self.clone())
     }
 
-    /// The common part of the two link resolvers above: `self` written in a
-    /// note inside `folder`, appended to it and flattened; `None` for a bare
-    /// note filename, which each resolver keeps as is for a vault-wide name
-    /// lookup.
+    /// The one link resolution, behind both resolvers above: `self` written
+    /// in a note inside `folder` (the explicit base), appended to it and
+    /// flattened; `None` for a bare note filename, which each resolver keeps
+    /// as is for a vault-wide name lookup.
+    ///
+    /// The resolvers differ only in how they pick `folder` and in a last
+    /// step, and cannot be merged without changing one's results. The trap:
+    /// [`Self::resolve_link_in_note`] always drops `note_path`'s last
+    /// component (a folder `/journal` resolves `a/b.md` to `/a/b.md`) and
+    /// makes the result absolute; [`Self::resolve_against_note`] keeps a
+    /// folder as the base (`/journal/a/b.md`) and a relative note path's
+    /// result relative. The editor follows links with the first; the walk
+    /// renders and indexes them with the second.
     fn resolve_in_folder(&self, folder: VaultPath) -> Option<VaultPath> {
         (!self.is_note_file()).then(|| folder.append(self).flatten())
     }
@@ -1045,6 +1054,34 @@ mod tests {
             VaultPath::new("a/b.md")
                 .resolve_link_in_note(&VaultPath::new("/journal"))
                 .to_string()
+        );
+    }
+
+    // Review 8, finding 8: the two resolvers share one implementation and
+    // differ only in their base and the last step — pinned, so merging them
+    // is seen to change results.
+    #[test]
+    fn the_two_resolvers_differ_only_in_base_and_absoluteness() {
+        let target = VaultPath::new("a/b.md");
+        let note = VaultPath::new("/journal/x.md");
+        assert_eq!(
+            target.resolve_link_in_note(&note),
+            target.resolve_against_note(&note)
+        );
+        let folder = VaultPath::new("/journal");
+        assert_eq!(target.resolve_link_in_note(&folder).to_string(), "/a/b.md");
+        assert_eq!(
+            target.resolve_against_note(&folder).to_string(),
+            "/journal/a/b.md"
+        );
+        let relative = VaultPath::new("journal/x.md");
+        assert_eq!(
+            target.resolve_link_in_note(&relative).to_string(),
+            "/journal/a/b.md"
+        );
+        assert_eq!(
+            target.resolve_against_note(&relative).to_string(),
+            "journal/a/b.md"
         );
     }
 
