@@ -167,7 +167,9 @@ calls stays. All removed items are crate-private: deleted, not deprecated.
 
 ## Rendering rules
 
-1. **Wikilink** `[[…]]` — found by pulldown, so never inside code. Target
+1. **Wikilink** `[[…]]` — found by Kimün with the editor's pattern, in prose
+   only: never inside code, HTML, or a link's text (a wikilink inside
+   `[see [[a]]](x.md)` or a linked thumbnail is link text). Target
    and display from `wikilink_parts` on the source (`[[a|b|c]]` shows `b`).
    A note link when `VaultPath::is_valid(target)`. `![[x]]` behaves as
    `[[x]]`: shows its display text, records the same link.
@@ -253,7 +255,7 @@ chunk splitting, the `FrontMatter` chunk, the editor's per-line helpers.
 | Path | Today | After |
 |---|---|---|
 | plain chunks / headings / title | wikilink regex, hashtag clean-up (own code-range parse + link scans), parse — 2 parses | hashtag candidates, 1 parse |
-| indexing | collapse regex, hashtag candidates, 1 parse | hashtag candidates, 1 parse (wikilinks on) |
+| indexing | collapse regex, hashtag candidates, 1 parse | hashtag candidates, 1 plain parse, per-block wikilink/spaced-link scan |
 | `get_markdown_and_links` | 2 regex rewrites, code-range parse, 3 range scans | 1 parse + splice |
 | `NoteMetadata::of` | tag pass + heading pass | 1 walk |
 
