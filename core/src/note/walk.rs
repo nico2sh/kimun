@@ -36,7 +36,8 @@ pub(in crate::note) enum WalkLinkKind {
     Reference,
     /// `<https://…>` or `<mail@…>`.
     Autolink,
-    /// `![alt](dest)` and its reference forms.
+    /// `![alt](dest)` and its reference forms, and one pulldown did not
+    /// read found with the editor's pattern (see `TextBlocks::end`).
     Image,
 }
 
@@ -424,8 +425,8 @@ fn prose_text(
 }
 
 /// A paragraph, heading or list item the walk is inside — a block of text,
-/// where a markdown link pulldown did not read is looked for when it ends
-/// (see [`TextBlocks::end`]). Ranges are bytes of the walked body.
+/// where a markdown link or image pulldown did not read is looked for when
+/// it ends (see [`TextBlocks::end`]). Ranges are bytes of the walked body.
 struct TextBlock {
     range: Range<usize>,
     /// What pulldown read inside it — links, images, wikilinks, nested
@@ -489,13 +490,14 @@ impl TextBlocks {
         }
     }
 
-    /// A text block ended: the markdown links pulldown did not read in it
-    /// — the editor's pattern, [`md_link_matches`], line by line as the
-    /// editor scans; in practice a destination with spaces,
-    /// `[David H](../People/David H.md)` — are recorded. A match is kept
-    /// when it overlaps nothing pulldown read, holds a code span or inline
-    /// HTML only in its text, and is not escaped (`\[x](a b.md)`). A
-    /// hashtag inside one is link text, not a tag.
+    /// A text block ended: the markdown links and images pulldown did not
+    /// read in it — the editor's pattern, [`md_link_matches`], line by line
+    /// as the editor scans; in practice a destination with spaces,
+    /// `[David H](../People/David H.md)`, `![shot](my shot.png)` — are
+    /// recorded. A match is kept when it overlaps nothing pulldown read,
+    /// holds a code span or inline HTML only in its text, and is not
+    /// escaped (`\[x](a b.md)`). A hashtag inside one is link text, not a
+    /// tag.
     #[inline(never)]
     fn end(
         &mut self,
@@ -539,7 +541,11 @@ impl TextBlocks {
                 let in_note = body_start + at.start..body_start + at.end;
                 tags.retain(|t| !(in_note.start <= t.range.start && t.range.end <= in_note.end));
                 links.push(WalkLink {
-                    kind: WalkLinkKind::Found,
+                    kind: if m.image {
+                        WalkLinkKind::Image
+                    } else {
+                        WalkLinkKind::Found
+                    },
                     target: m.target.to_string(),
                     label: body[label].to_string(),
                     range: in_note,
@@ -717,8 +723,9 @@ impl NoteWalk {
         chunks
     }
 
-    /// The first non-empty line, trimmed: a heading's text, a paragraph's,
-    /// or a list item's first line.
+    /// The first non-empty line, trimmed as a line's text is (see
+    /// [`pulldown_whitespace`]): a heading's text, a paragraph's, or a list
+    /// item's first line.
     pub(in crate::note) fn title(&self) -> String {
         self.lines
             .iter()
@@ -729,7 +736,7 @@ impl NoteWalk {
                 // A wrapped item names the note by its first line only.
                 TextLine::ListItem(_, text) => text.lines().next(),
             })
-            .map(|text| text.trim().to_owned())
+            .map(|text| text.trim_matches(pulldown_whitespace).to_owned())
             .unwrap_or_default()
     }
 
@@ -1168,9 +1175,11 @@ fn parse_tag_end(tag_end: &TagEnd, current_line: TextLine) -> Vec<TextLine> {
         TagEnd::Heading(_) => {
             vec![current_line.trim(pulldown_whitespace), TextLine::Empty]
         }
-        TagEnd::Item => {
-            vec![current_line.trim(pulldown_whitespace)]
-        }
+        // An item's own line, not an HTML or code line inside it.
+        TagEnd::Item => match current_line {
+            TextLine::ListItem(..) => vec![current_line.trim(pulldown_whitespace)],
+            other => vec![other],
+        },
         _ => {
             vec![current_line]
         }
@@ -2369,7 +2378,7 @@ mod tests {
     }
 
     #[test]
-    fn a_spaced_destination_link_is_recorded_once_and_images_are_skipped() {
+    fn a_spaced_destination_link_is_recorded_once_and_an_image_as_an_image() {
         let note = "[t](x.md) and [u](a b.md) ![img](p q.png) [Dave #x](d e.md) #y";
         let w = walk(note);
         assert_eq!(
@@ -2377,6 +2386,7 @@ mod tests {
             [
                 (WalkLinkKind::Inline, "x.md", "t"),
                 (WalkLinkKind::Found, "a b.md", "u"),
+                (WalkLinkKind::Image, "p q.png", "img"),
                 (WalkLinkKind::Found, "d e.md", "Dave #x"),
             ]
         );
@@ -2616,5 +2626,114 @@ mod tests {
     fn a_found_pattern_inside_a_code_span_or_escaped_is_no_link() {
         assert_no_link_anywhere("[a] **b\n`[x](y z.md)`**\n");
         assert_no_link_anywhere("\\[x](a b.md)\n");
+    }
+
+    // Review 6, item 1: an image the editor's pattern finds where pulldown
+    // read none (a destination with spaces) is an image like any other:
+    // listed by the CLI and `NoteMetadata`, never indexed, left as written
+    // in the rendered markdown and not in its link list; a hashtag in its
+    // alt text is not a tag. Found links' exclusions hold.
+    #[test]
+    fn an_image_with_spaces_in_its_destination_is_listed_like_any_image() {
+        let at = VaultPath::new("n.md");
+        for (note, targets) in [
+            (
+                "see ![shot](assets/my image.png) and ![p](p.png)",
+                vec!["assets/my image.png", "p.png"],
+            ),
+            ("![a #t](my pic.png) end", vec!["my pic.png"]),
+            ("![z `k l`](e f.png)", vec!["e f.png"]),
+        ] {
+            assert_eq!(crate::note::note_link_targets(note), targets, "{note:?}");
+            assert_eq!(crate::note::NoteMetadata::of(note).links, targets);
+            let (_, index) = crate::note::content_extractor::get_chunks_and_links(&at, note);
+            assert!(index.is_empty(), "{note:?}: {index:?}");
+            let (md, listed) = crate::note::content_extractor::get_markdown_and_links(&at, note);
+            assert_eq!(md, note);
+            assert!(listed.is_empty(), "{note:?}: {listed:?}");
+            assert!(crate::note::note_tags(note).is_empty(), "{note:?}");
+        }
+        for note in [
+            "`![y](c d.png)`\n",
+            "\\![x](a b.png)\n",
+            "<div>\n![x](a b.png)\n</div>\n",
+        ] {
+            assert_no_link_anywhere(note);
+        }
+    }
+
+    // Review 6, item 4: the item-end trim is for the item's own prose line;
+    // an HTML line inside a tight item keeps its line break.
+    #[test]
+    fn html_in_a_tight_list_item_keeps_its_line_break() {
+        let chunks = crate::note::content_extractor::get_content_chunks(
+            "- a\n- <Screen to the terminal>\n- b",
+        );
+        assert_eq!(chunks[0].text, "* a\n* \n<Screen to the terminal>\n\n* b");
+    }
+
+    // Review 6, item 6: a title is trimmed as its line is — ASCII
+    // whitespace only, so a no-break space at its end stays, as before.
+    #[test]
+    fn a_title_is_trimmed_like_its_line() {
+        for (note, title) in [
+            ("# Title\u{a0}\nbody", "Title\u{a0}"),
+            ("Title\u{a0}\nbody", "Title\u{a0}"),
+            ("#   Title  \nbody", "Title"),
+            ("  Title  \nbody", "Title"),
+        ] {
+            let w = walk(note);
+            assert_eq!(w.title(), title, "{note:?}");
+            if let Some(heading) = w.headings(note).first() {
+                assert_eq!(heading.text, title, "{note:?}");
+            }
+        }
+    }
+
+    // Review 6, item 8 (spec row): a `#` right after `&`, as in an HTML
+    // entity, is no tag anywhere; other hashtags are untouched.
+    #[test]
+    fn a_hash_after_an_ampersand_is_not_a_tag() {
+        let at = VaultPath::new("n.md");
+        let note = "it&#39;s Title&#32; a #tag &x #tag2";
+        assert_eq!(tag_list(&walk(note)), ["tag", "tag2"]);
+        assert_eq!(crate::note::note_tags(note), ["tag", "tag2"]);
+        assert_eq!(crate::note::extract_labels(note), ["tag", "tag2"]);
+        let (_, index) = crate::note::content_extractor::get_chunks_and_links(&at, note);
+        assert_eq!(raw_links(&index), ["#tag", "#tag2"]);
+        let (md, _) = crate::note::content_extractor::get_markdown_and_links(&at, note);
+        assert_eq!(md, "it&#39;s Title&#32; a [#tag](#tag) &x [#tag2](#tag2)");
+    }
+
+    // Review 6, item 2 (spec row): a wikilink inside inline HTML or as a
+    // reference definition's destination is no link anywhere.
+    #[test]
+    fn a_wikilink_in_inline_html_or_a_definition_destination_is_not_a_link() {
+        for note in [
+            "a <!-- [[x]] --> b\n",
+            "<a title=\"[[x]]\">t</a> b\n",
+            "[r]: [[x]]\n",
+        ] {
+            assert_no_link_anywhere(note);
+        }
+    }
+
+    // Review 6, item 3 (spec row): a wikilink to a name with spaces renders
+    // as a link a CommonMark previewer reads.
+    #[test]
+    fn a_wikilink_to_a_name_with_spaces_renders_as_a_real_link() {
+        let note = "[[DEM Platform]]";
+        let (md, _) = walk(note).render_markdown(note, &VaultPath::new("n.md"));
+        assert_eq!(md, "[DEM Platform](<dem platform.md>)");
+    }
+
+    // Review 6, item 7 (spec row): an escaped hashtag loses its backslash
+    // in the plain chunk text and is still a tag.
+    #[test]
+    fn an_escaped_hashtag_is_plain_text_and_still_a_tag() {
+        let note = "\\#esc #ok";
+        let chunks = crate::note::content_extractor::get_content_chunks(note);
+        assert_eq!(chunks[0].text, "esc ok");
+        assert_eq!(crate::note::note_tags(note), ["esc", "ok"]);
     }
 }

@@ -202,9 +202,14 @@ must contain exactly these and nothing else.
 | markup inside a plain wikilink, `[[a *b* c]]` | chunk text `a b c` | `a *b* c` — the wikilink's text is shown as written, like an alias |
 | a markdown link inside an HTML block, `<details>[doc](doc.md)</details>` | listed by LINKS/MCP/CLI, rewritten; not indexed | not a link anywhere, left as written |
 | a markdown link with unencoded spaces in its destination, `[David H](../Work/People/David H.md)` | listed by LINKS/MCP/CLI and followed by the editor; not indexed | a link everywhere (index, LINKS, MCP, CLI), found with the same pattern the editor highlights; rendered as `[David H](<…/David H.md>)` so previewers show it; chunk text unchanged; one whose destination contains a code span (``[t](a `b c`.md)``) is not a link |
+| a wikilink to a name with spaces, `[[DEM Platform]]` (rendered markdown) | `[DEM Platform](dem platform.md)` — not a link to a CommonMark previewer | `[DEM Platform](<dem platform.md>)` — a real link |
+| a wikilink inside inline HTML (a comment `<!-- [[x]] -->`, an attribute `<a title="[[x]]">`) or as a reference definition's destination `[r]: [[x]]` | indexed and listed | not a link anywhere: HTML is not markdown; a definition's destination is not a wikilink |
+| an escaped hashtag, `\#esc` (plain chunk text) | `\esc` | `esc` (still a tag, as before) |
+| a `#` right after `&`, as in an HTML entity pasted from the web, `it&#39;s` | tag `39` (and highlighted in the editor) | not a tag anywhere, editor included |
 | an escaped spaced link, `\[x](a b.md)` | listed by LINKS/MCP/CLI | not a link anywhere (the backslash escapes it) |
-| a hashtag inside a spaced-destination link's label, `[Dave #x](d e.md)` | chunk text keeps `#x`; not a tag | not a tag; chunk text `x` (as for other link text handled by the walk) |
+| a hashtag inside a spaced-destination link's label or image alt, `[Dave #x](d e.md)`, `![a #t](p q.png)` | chunk text keeps `#x`; not a tag | not a tag; chunk text `x` (as for other link text handled by the walk) |
 | a heading ending in inline HTML, `# a <kbd>` | heading `a ` (trailing space) | `a` — trimmed like any heading |
+| a note opening with an HTML block, `<x>` (title) | `<x>\n` | `<x>` — trimmed like any title |
 | an image embed, `![[pic.png]]`, `![[sub/pic.png]]` | rendered `![pic.png](pic.png.md)` — a broken image | rendered `![pic.png](pic.png)` / `![…](sub/pic.png)`: an embed whose target looks like an image keeps it as written for the image pipeline to resolve; any other embed (`![[v1.2]]`, `![[doc.pdf]]`) still renders as a note path |
 | a wikilink to a section or block, `[[note#section]]`, `[[Plan#Goals\|goals]]`, `[[a^blk]]`, or with padding, `[[ spaced ]]` | not indexed; listed raw by the CLI | a link everywhere: the target is the note with the `#…`/`^…` part and surrounding spaces stripped (as the editor follows it); the rendered markdown keeps the fragment, `[goals](plan.md#Goals)`; the CLI lists the target as written |
 | a wikilink whose target is still not a vault path after that (`[[#tag]]`) | listed raw by the CLI | not listed anywhere |
