@@ -15,13 +15,13 @@ use super::NoteLink;
 const _MAX_TITLE_LENGTH: usize = 40;
 
 // Compile regexes once at startup
-pub(in crate::note) static WIKILINK_RX: LazyLock<Regex> =
+static WIKILINK_RX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"(?:\[\[(?P<link_text>[^\]]+)\]\])"#).unwrap());
 
 pub(crate) static HASHTAG_RX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"#(?P<ht_text>[A-Za-z0-9_]+)"#).unwrap());
 
-pub(in crate::note) static MD_LINK_RX: LazyLock<Regex> = LazyLock::new(|| {
+static MD_LINK_RX: LazyLock<Regex> = LazyLock::new(|| {
     // `text` accepts an empty match so empty-alt image links like `![](path)`
     // — which the editor generates on image paste — are still recognised.
     Regex::new(r#"(?P<bang>!?)(?:\[(?P<text>[^\]]*)\])\((?P<link>[^\)]+?)\)"#).unwrap()

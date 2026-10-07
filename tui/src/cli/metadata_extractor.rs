@@ -29,10 +29,11 @@ mod tests {
     }
 
     #[test]
-    fn a_wikilink_inside_an_html_block_is_a_link() {
+    fn a_wikilink_inside_an_html_block_is_not_a_link() {
+        // HTML is opaque: nothing inside it is a link.
         let links =
             extract_links("<details>\n<summary>More</summary>\nSee [[hidden]]\n</details>\n");
-        assert_eq!(links, ["hidden"]);
+        assert!(links.is_empty(), "{links:?}");
     }
 
     #[test]
