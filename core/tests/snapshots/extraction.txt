@@ -15726,12 +15726,12 @@ Empty display [a#s](a.md#s).
 [Review 5 rows[David H](../Work/People/David H.md)] "See [David H](../Work/People/David H.md) and ![img](a b.png) and [Dave x](d e.md) y.\n* item [t](a b.md) and u\nsee multi\nline end\n* item first second tail"
 [Review 5 rowsQuoted setext] "head"
 [Heading] "see"
-[] "Brackets b]c and b[c.\nLabel over lines a\n.\nMarkup in labels [David H](a b.md), [x](a b.md), [a `c`](d e.md), [a <b>x</b>](c d.md).\nCode and HTML `[x](a b.md)` and <b>[y](a b.md)</b>.\nNowhere [x](a b.md \"T\") and [a](https://x.y/a b).\n```\nx\n```\n* [ ] Call Bob today\n[a] see w and c\nSee [ref] a\n[Doc](My Doc.md)\n[a] b\n`[x](y z.md)`\nEscaped [x](a b.md)."
+[] "Brackets [[a|b]c]] and b[c.\nLabel over lines a\n.\nMarkup in labels [David H](a b.md), [x](a b.md), [a `c`](d e.md), [a <b>x</b>](c d.md).\nCode and HTML `[x](a b.md)` and <b>[y](a b.md)</b>.\nNowhere [x](a b.md \"T\") and [a](https://x.y/a b).\n```\nx\n```\n* [ ] Call Bob today\n[a] see w and c\nSee [ref] a\n[Doc](My Doc.md)\n[a] b\n`[x](y z.md)`\nEscaped [x](a b.md)."
 -- index chunks
 [Review 5 rows[David H](../Work/People/David H.md)] "See [David H](../Work/People/David H.md) and ![img](a b.png) and [Dave x](d e.md) y.\n* item [t](a b.md) and u\nsee multi\nline end\n* item first second tail"
 [Review 5 rowsQuoted setext] "head"
 [Heading] "see"
-[] "Brackets b]c and b[c.\nLabel over lines a\n.\nMarkup in labels [David H](a b.md), [x](a b.md), [a `c`](d e.md), [a <b>x</b>](c d.md).\nCode and HTML `[x](a b.md)` and <b>[y](a b.md)</b>.\nNowhere [x](a b.md \"T\") and [a](https://x.y/a b).\n```\nx\n```\n* [ ] Call Bob today\n[a] see w and c\nSee [ref] a\n[Doc](My Doc.md)\n[a] b\n`[x](y z.md)`\nEscaped [x](a b.md)."
+[] "Brackets [[a|b]c]] and b[c.\nLabel over lines a\n.\nMarkup in labels [David H](a b.md), [x](a b.md), [a `c`](d e.md), [a <b>x</b>](c d.md).\nCode and HTML `[x](a b.md)` and <b>[y](a b.md)</b>.\nNowhere [x](a b.md \"T\") and [a](https://x.y/a b).\n```\nx\n```\n* [ ] Call Bob today\n[a] see w and c\nSee [ref] a\n[Doc](My Doc.md)\n[a] b\n`[x](y z.md)`\nEscaped [x](a b.md)."
 -- index links (sorted)
 Hashtag "#y" "y"
 Note(VaultPath { absolute: false, slices: [PathSlice("a b.md")] }) "a b.md" ""
@@ -15742,7 +15742,6 @@ Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" " "
 Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" ""
 Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" ""
 Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "b[c"
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "b]c"
 Note(VaultPath { absolute: false, slices: [PathSlice("bob.md")] }) "bob.md" ""
 Note(VaultPath { absolute: false, slices: [PathSlice("c d.md")] }) "c d.md" ""
 Note(VaultPath { absolute: false, slices: [PathSlice("d e.md")] }) "d e.md" ""
@@ -15770,7 +15769,6 @@ Note(VaultPath { absolute: false, slices: [PathSlice("x.md")] }) "x.md" "setext\
 Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" ""
 Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" ""
 Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" " "
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "b]c"
 Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "b[c"
 Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("x.md")] }) "folder/sub/x.md" "a\n"
 Note(VaultPath { absolute: false, slices: [PathSlice("a b.md")] }) "a b.md" "**David** H"
@@ -15808,7 +15806,7 @@ see [a](a.md)
 
 # [ ](a.md)
 
-Brackets [b\]c](a.md) and [b\[c](a.md).
+Brackets [[a|b]c]] and [b\[c](a.md).
 
 Label over lines [a
 ](folder/sub/x.md).
@@ -15875,6 +15873,52 @@ See [DEM Platform](<dem platform.md>).
 \[#esc](#esc) [#ok](#ok)
 
 it&#39;s Title&#32; a [#tag](#tag) &x [#tag2](#tag2)
+
+
+=== tests/fixtures/walk/review7_rows.md
+-- title "Review 7 rows"
+-- headings
+1 0 "Review 7 rows"
+-- chunks
+[Review 7 rows] "CRLF (stored LF, the corpus reads it as LF): `code span` and dis\nplay.\n<div>\n\nhtml\n\n</div>\n\nBracket [[a|b]c]] x and [[a]b]] y.\nWrapped [x\ny](a b.md) label.\n401 Guide nowhere.\n![a c](d)]]\nSee ![img](b.md)]] here\n![!](x)]]\n![]<]]"
+-- index chunks
+[Review 7 rows] "CRLF (stored LF, the corpus reads it as LF): `code span` and dis\nplay.\n<div>\n\nhtml\n\n</div>\n\nBracket [[a|b]c]] x and [[a]b]] y.\nWrapped [x\ny](a b.md) label.\n401 Guide nowhere.\n![a c](d)]]\nSee ![img](b.md)]] here\n![!](x)]]\n![]<]]"
+-- index links (sorted)
+Note(VaultPath { absolute: false, slices: [PathSlice("a b.md")] }) "a b.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "dis\nplay"
+-- tags []
+-- markdown links
+Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "dis\nplay"
+Note(VaultPath { absolute: false, slices: [PathSlice("a b.md")] }) "a b.md" "x\ny"
+Attachment(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("b")] }) "folder/b" "a"
+Attachment(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("a.png")] }) "folder/a.png" "img"
+Attachment(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("x")] }) "folder/x" "!"
+Attachment(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("x")] }) "folder/x" "[]<"
+-- markdown
+# Review 7 rows
+
+CRLF (stored LF, the corpus reads it as LF): `code
+span` and [dis
+play](a.md).
+
+<div>
+html
+</div>
+
+Bracket [[a|b]c]] x and [[a]b]] y.
+
+Wrapped [x
+y](<a b.md>) label.
+
+[401 Guide]([https://x.y/a](https://x.y/a)) nowhere.
+
+![[a](folder/b) c](d)]]
+
+See ![[img](folder/a.png)](b.md)]] here
+
+![[!](folder/x)](x)]]
+
+![[]<](folder/x)]]
 
 
 === tests/fixtures/walk/setext_hashtag.md
