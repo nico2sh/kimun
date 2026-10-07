@@ -142,7 +142,9 @@ use super::{
 //       HTML no longer cuts headings or lines, and every line of a list item
 //       is indexed. Bump forces a clean reindex so both reach existing vaults.
 // 0.18: chunks, links and tags come from one walk over the note as written
-//       (wikilinks parsed by pulldown-cmark, hashtags handled inside it):
+//       (a plain CommonMark parse; wikilinks recognised with the editor's
+//       pattern — pulldown-cmark's wikilink extension is deliberately unused,
+//       see the single-note-walk design doc — and hashtags handled inside it):
 //       wikilinks in code are no longer links, reference links and autolinks
 //       are recorded, a `#`-prefixed setext heading is kept, and a title
 //       renders like its heading or line. Bump forces a clean reindex.
