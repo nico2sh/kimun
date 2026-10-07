@@ -158,6 +158,31 @@ pub fn link_char_spans(text: &str) -> Vec<LinkSpan> {
         .collect()
 }
 
+/// A `[text](link)` the editor's link pattern finds — what
+/// [`link_char_spans`] highlights and follows as [`LinkSpanKind::Markdown`]:
+/// its bytes and its text's bytes in the scanned text, and its destination
+/// as written (trimmed, as `link_char_spans` reports it).
+pub(in crate::note) struct MdLinkMatch<'t> {
+    pub range: Range<usize>,
+    pub label: Range<usize>,
+    pub target: &'t str,
+}
+
+/// The markdown links (not images, `![…](…)`) the editor's link pattern
+/// finds in `text`, in order.
+pub(in crate::note) fn md_link_matches(text: &str) -> impl Iterator<Item = MdLinkMatch<'_>> {
+    MD_LINK_RX.captures_iter(text).filter_map(|caps| {
+        if !caps["bang"].is_empty() {
+            return None;
+        }
+        Some(MdLinkMatch {
+            range: caps.get(0)?.range(),
+            label: caps.name("text")?.range(),
+            target: caps.name("link")?.as_str().trim(),
+        })
+    })
+}
+
 /// Recognised image extensions, lowercase. Used by [`target_looks_like_image`].
 const IMAGE_EXTENSIONS: &[&str] = &[
     "png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "tiff", "tif", "ico", "avif",
@@ -747,21 +772,22 @@ pub fn extract_title<S: AsRef<str>>(md_text: S) -> String {
     walk(md_text.as_ref()).title()
 }
 
-/// Returns the byte offset immediately after the closing `\n` of the opening
-/// delimiter line, or `None` if the text does not start with a valid frontmatter
-/// delimiter (`---` or `+++`).  Strips a trailing `\r` so CRLF files work the
-/// same as LF files, and ignores a leading UTF-8 byte-order mark (Windows
-/// editors write one); the offset still counts it, so it indexes `text`.
+/// Returns the byte offset immediately after the opening delimiter line —
+/// past its `\n`, or the end of `text` when that line is all there is — or
+/// `None` if the text does not start with a valid frontmatter delimiter
+/// (`---` or `+++`).  Strips a trailing `\r` so CRLF files work the same as
+/// LF files, and ignores a leading UTF-8 byte-order mark (Windows editors
+/// write one); the offset still counts it, so it indexes `text`.
 pub(in crate::note) fn frontmatter_delimiter(text: &str) -> Option<(&str, usize)> {
     let (bom, rest) = split_bom(text);
-    let newline_pos = bom.len() + rest.find('\n')?;
-    let first_line = text[bom.len()..newline_pos].trim_end_matches('\r');
+    let line_end = bom.len() + rest.find('\n').unwrap_or(rest.len());
+    let first_line = text[bom.len()..line_end].trim_end_matches('\r');
     if first_line != "---" && first_line != "+++" {
         return None;
     }
     // Return the canonical delimiter (without \r) and the byte offset just
-    // after the opening '\n'.
-    Some((first_line, newline_pos + 1))
+    // after the opening line.
+    Some((first_line, (line_end + 1).min(text.len())))
 }
 
 /// Returns the byte offset of the first character after the closing delimiter

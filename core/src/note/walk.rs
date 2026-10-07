@@ -10,8 +10,8 @@ use log::debug;
 use pulldown_cmark::{CowStr, Event, LinkType, Options, Parser, Tag, TagEnd};
 
 use super::content_extractor::{
-    frontmatter_bounds, frontmatter_delimiter, label_matches_inner, split_bom, split_link_fragment,
-    target_looks_like_image, wikilink_parts,
+    frontmatter_bounds, frontmatter_delimiter, label_matches_inner, md_link_matches, split_bom,
+    split_link_fragment, target_looks_like_image, wikilink_parts,
 };
 use super::ContentChunk;
 use crate::nfs::VaultPath;
@@ -28,6 +28,10 @@ pub(in crate::note) enum WalkLinkKind {
     WikiEmbed,
     /// `[label](dest)`.
     Inline,
+    /// `[label](dest)` pulldown did not read as a link — in practice a
+    /// destination with spaces — found with the editor's pattern (see
+    /// `TextBlocks::end`). Rendered as a link only when it links somewhere.
+    Found,
     /// `[label][ref]`, `[label][]`, `[label]` resolved against a definition.
     Reference,
     /// `<https://…>` or `<mail@…>`.
@@ -48,6 +52,10 @@ pub(in crate::note) struct WalkLink {
     pub label: String,
     /// Source bytes of the whole link, in the note.
     pub range: Range<usize>,
+    /// An inline link written with a title or a `<…>` destination: the
+    /// rendered markdown leaves it as written (neither survives being
+    /// re-emitted).
+    pub as_written: bool,
 }
 
 impl WalkLink {
@@ -73,30 +81,15 @@ impl WalkLink {
 
     /// How an inline link writes `dest`, its resolved destination, back as
     /// `[label](…)` (see [`markdown_destination`]); `None` leaves it as
-    /// written: so does a destination written in `<…>` or followed by a
-    /// title (neither survives being re-emitted). Padding and escapes in the
+    /// written: so does one [`Self::as_written`]. Padding and escapes in the
     /// destination are no reason to keep it.
-    fn rewritten_destination(&self, note: &str, dest: String) -> Option<String> {
-        inline_destination(&note[self.range.clone()], &self.label)
-            .is_some_and(|written| plain_destination(written.trim()))
-            .then(|| markdown_destination(dest))
-            .flatten()
+    fn rewritten_destination(&self, dest: String) -> Option<String> {
+        if self.as_written {
+            None
+        } else {
+            markdown_destination(dest)
+        }
     }
-}
-
-/// What an inline link's source holds between `](` and its closing `)`,
-/// given its label as written; `None` if the source is not shaped so.
-fn inline_destination<'s>(link: &'s str, label: &str) -> Option<&'s str> {
-    link.strip_prefix('[')?
-        .strip_prefix(label)?
-        .strip_prefix("](")?
-        .strip_suffix(')')
-}
-
-/// Whether an inline link's destination is written plain: not in `<…>`,
-/// no whitespace (a title follows it).
-fn plain_destination(written: &str) -> bool {
-    !written.starts_with('<') && !written.contains(char::is_whitespace)
 }
 
 /// A hashtag in prose: its name without `#`, and the source bytes of
@@ -168,8 +161,24 @@ fn wikilink(src: &str, start: usize) -> Option<(WalkLink, &str)> {
         target: target.to_string(),
         label: label.to_string(),
         range: start..start + src.len(),
+        as_written: false,
     };
     Some((link, label))
+}
+
+/// A wikilink's display text as written, line by line, as pulldown reads
+/// text over lines: each line after the first without its container prefix
+/// (indentation, blockquote `>` markers), no line with its `\r`. The walk
+/// puts a line break between them, so a heading ends at the first.
+fn display_lines(display: &str) -> impl Iterator<Item = &str> {
+    display.split('\n').enumerate().map(|(i, line)| {
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        if i == 0 {
+            line
+        } else {
+            line.trim_start_matches([' ', '\t', '>'])
+        }
+    })
 }
 
 fn wikilink_kind(event: &Event) -> Option<WalkLinkKind> {
@@ -203,12 +212,21 @@ impl OpenLink {
         self.label_end = Some(self.label_end.map_or(event.end, |end| end.max(event.end)));
     }
 
-    /// The link ended: its label is the source of its text, as written.
+    /// The link ended: its label is the source of its text, as written,
+    /// and an inline link whose destination is written in `<…>` (the text
+    /// after the `](` that follows its label) is kept as written.
     fn close(self, links: &mut [WalkLink], src: &str) {
-        if let Some(record) = self.record {
-            links[record].label = self
-                .label_end
-                .map_or_else(String::new, |end| src[self.label_start..end].to_string());
+        let Some(record) = self.record else {
+            return;
+        };
+        let link = &mut links[record];
+        let label_end = self.label_end.unwrap_or(self.label_start);
+        link.label = src[self.label_start..label_end].to_string();
+        if link.kind == WalkLinkKind::Inline {
+            let after = &src[label_end..];
+            link.as_written |= after
+                .find("](")
+                .is_some_and(|at| after[at + 2..].trim_start().starts_with('<'));
         }
     }
 }
@@ -317,7 +335,7 @@ impl<'s> LinkRecorder<'s> {
 // Out of line, as `wikilink`.
 #[inline(never)]
 fn md_link(event: &Event, range: Range<usize>) -> Option<WalkLink> {
-    let (kind, target, label) = match event {
+    let (kind, target, label, titled) = match event {
         // An email address is not a vault or web link: its text stays in
         // the line, nothing is recorded.
         Event::Start(Tag::Link {
@@ -328,16 +346,29 @@ fn md_link(event: &Event, range: Range<usize>) -> Option<WalkLink> {
             link_type: LinkType::Autolink,
             dest_url,
             ..
-        }) => (WalkLinkKind::Autolink, dest_url, dest_url.to_string()),
+        }) => (
+            WalkLinkKind::Autolink,
+            dest_url,
+            dest_url.to_string(),
+            false,
+        ),
         Event::Start(Tag::Link {
             link_type: LinkType::Inline,
             dest_url,
+            title,
             ..
-        }) => (WalkLinkKind::Inline, dest_url, String::new()),
+        }) => (
+            WalkLinkKind::Inline,
+            dest_url,
+            String::new(),
+            !title.is_empty(),
+        ),
         Event::Start(Tag::Link { dest_url, .. }) => {
-            (WalkLinkKind::Reference, dest_url, String::new())
+            (WalkLinkKind::Reference, dest_url, String::new(), false)
         }
-        Event::Start(Tag::Image { dest_url, .. }) => (WalkLinkKind::Image, dest_url, String::new()),
+        Event::Start(Tag::Image { dest_url, .. }) => {
+            (WalkLinkKind::Image, dest_url, String::new(), false)
+        }
         _ => return None,
     };
     Some(WalkLink {
@@ -345,6 +376,8 @@ fn md_link(event: &Event, range: Range<usize>) -> Option<WalkLink> {
         target: target.to_string(),
         label,
         range,
+        // The `<…>` form is read from the source when the link closes.
+        as_written: titled,
     })
 }
 
@@ -390,6 +423,134 @@ fn prose_text(
     out.replace("\r\n", "\n")
 }
 
+/// A paragraph, heading or list item the walk is inside — a block of text,
+/// where a markdown link pulldown did not read is looked for when it ends
+/// (see [`TextBlocks::end`]). Ranges are bytes of the walked body.
+struct TextBlock {
+    range: Range<usize>,
+    /// What pulldown read inside it — links, images, wikilinks, nested
+    /// blocks: a found link overlaps none.
+    taken: Vec<Range<usize>>,
+    /// Its code spans and inline HTML: a found link holds one only in its
+    /// text.
+    opaque: Vec<Range<usize>>,
+}
+
+/// The text blocks the walk is inside, innermost last; `None` for one
+/// whose source holds no `](` — no link to find there.
+#[derive(Default)]
+struct TextBlocks {
+    open: Vec<Option<TextBlock>>,
+    /// Whether a link was found, so the links need sorting.
+    found: bool,
+}
+
+impl TextBlocks {
+    /// Takes one event (`range` in `body`, the walked text, which starts at
+    /// byte `body_start` of the note); a block it ends is looked through
+    /// (see [`Self::end`]).
+    #[inline]
+    fn step(
+        &mut self,
+        event: &Event,
+        range: &Range<usize>,
+        body: &str,
+        body_start: usize,
+        links: &mut Vec<WalkLink>,
+        tags: &mut Vec<WalkTag>,
+    ) {
+        match event {
+            Event::Start(Tag::Emphasis | Tag::Strong | Tag::Strikethrough) => {}
+            Event::Start(tag) => {
+                if let Some(Some(block)) = self.open.last_mut() {
+                    block.taken.push(range.clone());
+                }
+                if matches!(tag, Tag::Paragraph | Tag::Heading { .. } | Tag::Item) {
+                    // A block's start spans the whole block.
+                    let block = body[range.clone()].contains("](").then(|| TextBlock {
+                        range: range.clone(),
+                        taken: Vec::new(),
+                        opaque: Vec::new(),
+                    });
+                    self.open.push(block);
+                }
+            }
+            Event::Code(_) | Event::InlineHtml(_) => {
+                if let Some(Some(block)) = self.open.last_mut() {
+                    block.opaque.push(range.clone());
+                }
+            }
+            Event::End(TagEnd::Paragraph | TagEnd::Heading(_) | TagEnd::Item) => {
+                if let Some(Some(block)) = self.open.pop() {
+                    self.end(block, body, body_start, links, tags);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// A text block ended: the markdown links pulldown did not read in it
+    /// — the editor's pattern, [`md_link_matches`], line by line as the
+    /// editor scans; in practice a destination with spaces,
+    /// `[David H](../People/David H.md)` — are recorded. A match is kept
+    /// when it overlaps nothing pulldown read, holds a code span or inline
+    /// HTML only in its text, and is not escaped (`\[x](a b.md)`). A
+    /// hashtag inside one is link text, not a tag.
+    #[inline(never)]
+    fn end(
+        &mut self,
+        block: TextBlock,
+        body: &str,
+        body_start: usize,
+        links: &mut Vec<WalkLink>,
+        tags: &mut Vec<WalkTag>,
+    ) {
+        let source = &body[block.range.clone()];
+        let mut line_start = block.range.start;
+        for line in source.split_inclusive('\n') {
+            let at_line = line_start;
+            line_start += line.len();
+            // Only a `](` outside everything pulldown read can end a link
+            // to find (a parsed link's own `](` is the common case).
+            let open = |(i, _): (usize, &str)| {
+                let at = at_line + i;
+                !block.taken.iter().any(|r| r.start <= at && at < r.end)
+            };
+            if !line.match_indices("](").any(open) {
+                continue;
+            }
+            for m in md_link_matches(line) {
+                let at = at_line + m.range.start..at_line + m.range.end;
+                let label = at_line + m.label.start..at_line + m.label.end;
+                let overlaps = |r: &Range<usize>| r.start < at.end && at.start < r.end;
+                // Escaped by an odd run of backslashes (`\\[` is a literal
+                // backslash followed by a real link).
+                let backslashes = line[..m.range.start].len()
+                    - line[..m.range.start].trim_end_matches('\\').len();
+                if backslashes % 2 == 1
+                    || block.taken.iter().any(overlaps)
+                    || block
+                        .opaque
+                        .iter()
+                        .any(|r| overlaps(r) && !(label.start <= r.start && r.end <= label.end))
+                {
+                    continue;
+                }
+                let in_note = body_start + at.start..body_start + at.end;
+                tags.retain(|t| !(in_note.start <= t.range.start && t.range.end <= in_note.end));
+                links.push(WalkLink {
+                    kind: WalkLinkKind::Found,
+                    target: m.target.to_string(),
+                    label: body[label].to_string(),
+                    range: in_note,
+                    as_written: false,
+                });
+                self.found = true;
+            }
+        }
+    }
+}
+
 /// One pass over `note` as written — see the module docs above.
 pub(in crate::note) fn walk(note: &str) -> NoteWalk {
     let (body_start, frontmatter) = body_start(note);
@@ -403,9 +564,14 @@ pub(in crate::note) fn walk(note: &str) -> NoteWalk {
     let mut tags = Vec::new();
     let mut code_depth = 0u32;
     let mut recorder = LinkRecorder::new(body, body_start);
+    // No `](` in the body, no link pulldown did not read.
+    let mut blocks = body.contains("](").then(TextBlocks::default);
 
     for (event, range) in Parser::new_ext(body, Options::ENABLE_WIKILINKS).into_offset_iter() {
         let start = body_start + range.start;
+        if let Some(blocks) = &mut blocks {
+            blocks.step(&event, &range, body, body_start, &mut links, &mut tags);
+        }
         let in_link = match recorder.step(&event, &range, &mut links) {
             Step::InWikilink => continue,
             Step::WikilinkEnd => {
@@ -413,9 +579,13 @@ pub(in crate::note) fn walk(note: &str) -> NoteWalk {
                 continue;
             }
             Step::Wikilink(display) => {
-                let display = display.replace("\r\n", "\n");
                 lines.push(event, start, str::to_string);
-                lines.push(Event::Text(CowStr::from(display)), start, str::to_string);
+                for (i, line) in display_lines(display).enumerate() {
+                    if i > 0 {
+                        lines.push(Event::SoftBreak, start, str::to_string);
+                    }
+                    lines.push(Event::Text(CowStr::Borrowed(line)), start, str::to_string);
+                }
                 continue;
             }
             Step::Other { in_link } => in_link,
@@ -441,6 +611,11 @@ pub(in crate::note) fn walk(note: &str) -> NoteWalk {
                 )
             }
         });
+    }
+    // A found link is recorded when its block ends, after the links read
+    // inside the block: back in document order.
+    if blocks.is_some_and(|b| b.found) {
+        links.sort_by_key(|l| l.range.start);
     }
 
     NoteWalk {
@@ -483,7 +658,21 @@ fn embed_image(link: &WalkLink) -> String {
     } else {
         VaultPath::note_path_from(target).to_string()
     };
-    format!("![{}]({dest})", link.label)
+    format!("![{}]({dest})", link_text(&link.label))
+}
+
+/// A wikilink's text, written as markdown link text that reads back as
+/// itself: `\\`, `[` and `]` escaped, so a bracket cannot end or open the
+/// link (`[[a|b]c]]` renders `[b\]c](a.md)`).
+fn link_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if matches!(c, '\\' | '[' | ']') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// A wikilink's `#section` / `^block` as a URL fragment: a section as
@@ -583,7 +772,10 @@ impl NoteWalk {
                     let path = VaultPath::note_path_from(link.wiki_note().0);
                     found.push((link.range.start, NoteLink::note(&path, &link.label)));
                 }
-                WalkLinkKind::Inline | WalkLinkKind::Reference | WalkLinkKind::Autolink => {
+                WalkLinkKind::Inline
+                | WalkLinkKind::Found
+                | WalkLinkKind::Reference
+                | WalkLinkKind::Autolink => {
                     // The index stores no link text; skip the allocation.
                     if let (_, Some(note)) = resolve_md_link(&link.target, "", ref_path) {
                         if matches!(note.ltype, NoteLinkType::Note(_)) {
@@ -613,8 +805,11 @@ impl NoteWalk {
     /// is written by `markdown_destination`. Reference links, autolinks,
     /// inline links written with a `<…>` destination or a title (see
     /// `WalkLink::rewritten_destination`), and links whose destination
-    /// cannot be written back are listed but left as written. Links come in
-    /// document order, hashtags after them. Everything outside a recorded
+    /// cannot be written back are listed but left as written. A link found
+    /// with the editor's pattern (`WalkLinkKind::Found`) is rewritten and
+    /// listed like an inline link when it resolves to a link; one that
+    /// resolves nowhere (`[x](a b.md "T")`) is left as written and not
+    /// listed. Links come in document order, hashtags after them. Everything outside a recorded
     /// range — frontmatter, code, HTML, images — is copied verbatim.
     pub(in crate::note) fn render_markdown(
         &self,
@@ -640,14 +835,27 @@ impl NoteWalk {
                         } else {
                             &link.label
                         };
+                        let text = link_text(text);
                         edits.push((link.range.clone(), format!("[{text}]({dest})")));
                     }
                 }
                 WalkLinkKind::Inline => {
                     let (dest, found) = resolve_md_link(&link.target, &link.label, ref_path);
                     links.extend(found);
-                    if let Some(dest) = link.rewritten_destination(note, dest) {
+                    if let Some(dest) = link.rewritten_destination(dest) {
                         edits.push((link.range.clone(), format!("[{}]({dest})", link.label)));
+                    }
+                }
+                WalkLinkKind::Found => {
+                    // Written back only as the link it was read as: a
+                    // destination that links nowhere (`[x](a b.md "T")`, a
+                    // URL with a space) stays as written.
+                    let (dest, found) = resolve_md_link(&link.target, &link.label, ref_path);
+                    if let Some(found) = found {
+                        links.push(found);
+                        if let Some(dest) = markdown_destination(dest) {
+                            edits.push((link.range.clone(), format!("[{}]({dest})", link.label)));
+                        }
                     }
                 }
                 WalkLinkKind::Reference | WalkLinkKind::Autolink => {
@@ -724,16 +932,27 @@ impl TextLine {
         }
     }
 
-    pub(in crate::note) fn trim(&self) -> Self {
-        match self {
-            TextLine::Empty => TextLine::Empty,
-            TextLine::Header(level, text, start) => {
-                TextLine::Header(*level, text.trim().to_string(), *start)
-            }
-            TextLine::Text(text) => TextLine::Text(text.trim().to_string()),
-            TextLine::ListItem(level, text) => TextLine::ListItem(*level, text.trim().to_string()),
+    /// The line with whitespace (`is_whitespace`) cut from both ends of its
+    /// text, in place: what a line's text is once it ends. Prose lines trim
+    /// what pulldown trims ([`pulldown_whitespace`]); a code block's text
+    /// any whitespace.
+    pub(in crate::note) fn trim(mut self, is_whitespace: fn(char) -> bool) -> Self {
+        if let TextLine::Header(_, text, _) | TextLine::Text(text) | TextLine::ListItem(_, text) =
+            &mut self
+        {
+            let end = text.trim_end_matches(is_whitespace).len();
+            text.truncate(end);
+            let start = end - text.trim_start_matches(is_whitespace).len();
+            text.drain(..start);
         }
+        self
     }
+}
+
+/// The whitespace pulldown trims from a line of prose: ASCII only, so a
+/// no-break space at a line's edge stays.
+fn pulldown_whitespace(c: char) -> bool {
+    c.is_ascii_whitespace()
 }
 
 /// Builds the [`TextLine`] sequence from markdown events, fed by [`walk`]:
@@ -814,12 +1033,15 @@ impl<'a> TextLines<'a> {
                 if matches!(self.lines.last(), Some(TextLine::ListItem(..))) =>
             {
                 let item = self.lines.pop().unwrap_or_default();
-                self.lines.push(item.append_text("\n".to_string()));
+                self.lines
+                    .push(item.trim(pulldown_whitespace).append_text("\n".to_string()));
             }
             Event::SoftBreak => {
+                self.end_line();
                 self.lines.push(TextLine::Empty);
             }
             Event::HardBreak => {
+                self.end_line();
                 self.lines.push(TextLine::Empty);
                 self.lines.push(TextLine::Empty);
             }
@@ -834,6 +1056,13 @@ impl<'a> TextLines<'a> {
 
     pub(in crate::note) fn finish(self) -> Vec<TextLine> {
         self.lines
+    }
+
+    /// The last line ends at a line break: its text is trimmed.
+    fn end_line(&mut self) {
+        if let Some(line) = self.lines.pop() {
+            self.lines.push(line.trim(pulldown_whitespace));
+        }
     }
 }
 
@@ -906,7 +1135,10 @@ fn parse_tag(tag: &Tag, current_line: TextLine, start: usize) -> Vec<TextLine> {
 fn parse_tag_end(tag_end: &TagEnd, current_line: TextLine) -> Vec<TextLine> {
     match tag_end {
         TagEnd::CodeBlock => {
-            vec![current_line.trim(), TextLine::Text("```".to_string())]
+            vec![
+                current_line.trim(char::is_whitespace),
+                TextLine::Text("```".to_string()),
+            ]
         }
         TagEnd::List(_) => {
             if let TextLine::ListItem(lvl, text) = &current_line {
@@ -925,13 +1157,19 @@ fn parse_tag_end(tag_end: &TagEnd, current_line: TextLine) -> Vec<TextLine> {
                 vec![current_line]
             }
         }
+        // A line ends with its paragraph, heading or item: its text is
+        // trimmed, as pulldown trims it (a wikilink's text at its edge can
+        // leave whitespace there).
         TagEnd::Paragraph => {
-            vec![current_line, TextLine::Empty]
+            vec![current_line.trim(pulldown_whitespace), TextLine::Empty]
         }
         // A heading's text ends with it: what follows in the same block (a
         // heading inside a list item) starts a new line, not the heading's.
         TagEnd::Heading(_) => {
-            vec![current_line, TextLine::Empty]
+            vec![current_line.trim(pulldown_whitespace), TextLine::Empty]
+        }
+        TagEnd::Item => {
+            vec![current_line.trim(pulldown_whitespace)]
         }
         _ => {
             vec![current_line]
@@ -1668,12 +1906,18 @@ mod tests {
     // Review 2, item 9: a link's label is the source of its text events, so
     // a code span holding `]` is part of it.
     #[test]
+    fn an_escaped_backslash_before_a_spaced_link_keeps_it_a_link() {
+        assert_eq!(walk("\\\\[x](a b.md)").link_targets(), ["a b.md"]);
+        assert!(walk("\\[x](a b.md)").link_targets().is_empty());
+    }
+
+    #[test]
     fn a_leading_escape_in_a_link_label_is_part_of_the_label() {
         let note = "[\\[a](sub/x.md) ![\\[b](i.png)";
         let w = walk(note);
         assert_eq!(links(&w)[0], (WalkLinkKind::Inline, "sub/x.md", "\\[a"));
         assert_eq!(links(&w)[1], (WalkLinkKind::Image, "i.png", "\\[b"));
-        // The label matches the source again, so the plain form is rewritten.
+        // A plain inline link is rewritten, whatever its label holds.
         let (md, _) = w.render_markdown(note, &VaultPath::new("/dir/n.md"));
         assert!(!md.starts_with("[\\[a](sub/x.md)"), "{md}");
     }
@@ -1698,8 +1942,38 @@ mod tests {
     // same walk.
     #[test]
     fn note_metadata_lists_the_link_targets() {
-        let note = "---\nrel: [[fm]]\n---\n[[a]] [b](b.md) [[#bad]] `[[c]]`";
-        assert_eq!(crate::note::NoteMetadata::of(note).links, ["a", "b.md"]);
+        let note = "---\nrel: [[fm]]\n---\n[[a]] [b](b.md) [[#bad]] `[[c]]` <https://c.d>";
+        assert_eq!(
+            crate::note::NoteMetadata::of(note).links,
+            ["a", "b.md", "https://c.d"]
+        );
+    }
+
+    // Moved from the CLI's removed `metadata_extractor` (review 5, item 7):
+    // the tags the CLI reports are the index's labels plus frontmatter tags.
+    #[test]
+    fn note_metadata_tags_come_from_either_frontmatter_format_and_the_body() {
+        let yaml = "---\ntags:\n  - Project\n  - urgent\ntitle: Test\n---\nbody";
+        assert_eq!(
+            crate::note::NoteMetadata::of(yaml).tags,
+            ["project", "urgent"]
+        );
+        let toml = "+++\ntags = [\"meeting\"]\n+++\nbody #notes";
+        assert_eq!(
+            crate::note::NoteMetadata::of(toml).tags,
+            ["meeting", "notes"]
+        );
+    }
+
+    #[test]
+    fn note_metadata_tags_follow_the_label_rules() {
+        let note =
+            "---\ntags: [yaml_tag]\n---\nplain #body and #tag-with-dash\n```\n#code_tag\n```";
+        // A dash ends a label; a tag in code is none.
+        assert_eq!(
+            crate::note::NoteMetadata::of(note).tags,
+            ["body", "tag", "yaml_tag"]
+        );
     }
 
     // Review 3, item 1 (spec row): a wikilink to a section or a block, or
@@ -2059,5 +2333,288 @@ mod tests {
         assert_eq!(text(&w), "");
         let (md, _) = w.render_markdown(note, &VaultPath::new("n.md"));
         assert_eq!(md, format!("[a#s]({a}#s)"));
+    }
+
+    // Review 5, item 1 (spec row): a markdown link whose destination holds
+    // unencoded spaces is a link everywhere, found with the editor's pattern.
+    #[test]
+    fn a_markdown_link_with_spaces_in_its_destination_is_a_link_everywhere() {
+        let at = VaultPath::new("/journal/2024-10-21.md");
+        let david = VaultPath::new("/work/people/david h.md");
+        let written = "[David H](../Work/People/David H.md)";
+        for note in [
+            format!("### {written}\n"),
+            format!("see {written} here\n"),
+            format!("- item {written} x\n"),
+        ] {
+            let (chunks, index) = crate::note::content_extractor::get_chunks_and_links(&at, &note);
+            assert_eq!(raw_links(&index), [david.to_string()], "{note:?}");
+            // The text stays as written: a heading's, or its chunk's.
+            let headings = walk(&note).headings(&note);
+            assert!(
+                chunks.iter().any(|c| c.text.contains(written))
+                    || headings.first().is_some_and(|h| h.text == written),
+                "{note:?}: {chunks:?} {headings:?}"
+            );
+            let (md, listed) = crate::note::content_extractor::get_markdown_and_links(&at, &note);
+            assert_eq!(raw_links(&listed), [david.to_string()], "{note:?}");
+            assert!(md.contains(&format!("[David H](<{david}>)")), "{md:?}");
+            assert_eq!(rendered_dests(&md), [david.to_string()], "{md:?}");
+            assert_eq!(
+                crate::note::note_link_targets(&note),
+                ["../Work/People/David H.md"],
+                "{note:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_spaced_destination_link_is_recorded_once_and_images_are_skipped() {
+        let note = "[t](x.md) and [u](a b.md) ![img](p q.png) [Dave #x](d e.md) #y";
+        let w = walk(note);
+        assert_eq!(
+            links(&w),
+            [
+                (WalkLinkKind::Inline, "x.md", "t"),
+                (WalkLinkKind::Found, "a b.md", "u"),
+                (WalkLinkKind::Found, "d e.md", "Dave #x"),
+            ]
+        );
+        assert_eq!(&note[w.links[1].range.clone()], "[u](a b.md)");
+        // A hashtag in its text is link text, not a tag in any view; the
+        // walked text, built before the block ends, shows it without `#`
+        // (as HEAD did).
+        assert_eq!(tag_list(&w), ["y"]);
+        assert_eq!(
+            text(&w),
+            "t and [u](a b.md) ![img](p q.png) [Dave x](d e.md) y"
+        );
+        let (md, _) = w.render_markdown(note, &VaultPath::new("n.md"));
+        assert_eq!(
+            md,
+            "[t](x.md) and [u](<a b.md>) ![img](p q.png) [Dave #x](<d e.md>) [#y](#y)"
+        );
+    }
+
+    #[test]
+    fn a_spaced_destination_link_in_code_or_html_is_no_link() {
+        for note in [
+            "`[u](a b.md)`\n",
+            "```\n[u](a b.md)\n```\n",
+            "<div>\n[u](a b.md)\n</div>\n",
+            "a <span title=\"[u](a b.md)\">z</span>\n",
+        ] {
+            assert_no_link_anywhere(note);
+        }
+    }
+
+    // Review 5, item 2: a wikilink alias wrapped over lines reads as
+    // pulldown would read its text: the next line's container prefix goes.
+    #[test]
+    fn a_wrapped_wikilink_alias_drops_the_next_lines_container_prefix() {
+        let note = "> see [[x|multi\n> line]] end";
+        let chunks = crate::note::content_extractor::get_content_chunks(note);
+        assert_eq!(chunks[0].text, "see multi\nline end");
+        assert_eq!(walk(note).title(), "see multi");
+        let note = "- item [[x|first\n  second]] tail";
+        let chunks = crate::note::content_extractor::get_content_chunks(note);
+        assert_eq!(chunks[0].text, "* item first second tail");
+        assert_eq!(walk(note).title(), "item first");
+        let note = "> Quoted [[x|setext\n> head]]\n> ---";
+        let w = walk(note);
+        assert_eq!(headers(&w), [(2, "Quoted setext".to_string(), 2)]);
+        let chunks = w.into_chunks();
+        assert_eq!(chunks.len(), 1, "{chunks:?}");
+        assert_eq!(
+            (chunks[0].breadcrumb.as_str(), chunks[0].text.as_str()),
+            ("Quoted setext", "head")
+        );
+    }
+
+    // Review 5, item 3: line ends and headings are trimmed as pulldown
+    // trims them; a heading of only whitespace is not listed.
+    #[test]
+    fn whitespace_left_by_a_wikilink_alias_is_trimmed() {
+        let note = "# Heading [[a|]]\n";
+        assert_eq!(walk(note).headings(note)[0].text, "Heading");
+        assert!(crate::note::scan::heading_section_range(note, "Heading").is_some());
+        let chunks = crate::note::content_extractor::get_content_chunks("see [[a|]]");
+        assert_eq!(chunks[0].text, "see");
+        let note = "# [[a| ]]\n";
+        assert!(walk(note).headings(note).is_empty());
+    }
+
+    // Review 5, item 4: a fence alone, without a newline, is a fence.
+    #[test]
+    fn a_lone_fence_without_a_newline_is_no_body() {
+        for note in ["+++", "---", "\u{feff}+++", "\u{feff}---"] {
+            let w = walk(note);
+            assert!(w.lines.iter().all(|l| l.to_text().is_empty()), "{note:?}");
+            assert_eq!(w.title(), "", "{note:?}");
+            assert!(w.into_chunks().is_empty(), "{note:?}");
+        }
+    }
+
+    // Review 5, item 5: brackets in a wikilink's text are escaped when it is
+    // rendered as a markdown link.
+    #[test]
+    fn brackets_in_a_wikilink_alias_are_escaped_when_rendered() {
+        let at = VaultPath::new("folder/note.md");
+        let a = VaultPath::note_path_from("a");
+        for (note, expected) in [
+            ("[[a|b]c]]", format!("[b\\]c]({a})")),
+            ("[[a|b[c]]", format!("[b\\[c]({a})")),
+            ("[[a|b\\c]]", format!("[b\\\\c]({a})")),
+        ] {
+            let (md, listed) = walk(note).render_markdown(note, &at);
+            assert_eq!(md, expected, "{note:?}");
+            assert_eq!(raw_links(&listed), [a.to_string()], "{note:?}");
+            assert_eq!(rendered_dests(&md), [a.to_string()], "{note:?}");
+            let (_, index) = crate::note::content_extractor::get_chunks_and_links(&at, note);
+            assert_eq!(raw_links(&index), [a.to_string()], "{note:?}");
+        }
+    }
+
+    // Review 5, item 6: whether an inline link keeps its written form comes
+    // from pulldown's title and the `<…>` after `](`, not a rebuilt label.
+    #[test]
+    fn a_label_across_lines_does_not_stop_the_rewrite() {
+        let at = VaultPath::new("/dir/n.md");
+        let note = "[a\n  ](sub/x.md)";
+        let (md, _) = walk(note).render_markdown(note, &at);
+        let x = VaultPath::new("/dir/sub/x.md");
+        assert_eq!(rendered_dests(&md), [x.to_string()], "{md:?}");
+        for note in [
+            "[t](x.md \"Title\")",
+            "[x](<my note.md>)",
+            "[x]( <my note.md>)",
+            "[a\n  ](<b c.md>)",
+        ] {
+            assert_eq!(walk(note).render_markdown(note, &at).0, note);
+        }
+    }
+
+    // Review 5 fix round 1, item 1: inline markup in the label does not stop
+    // the editor's pattern (as 50dcb026 listed them).
+    #[test]
+    fn a_spaced_destination_link_with_markup_in_its_label_is_a_link_everywhere() {
+        let at = VaultPath::new("n.md");
+        for (note, dest) in [
+            ("see [**David** H](a b.md) x", "a b.md"),
+            ("see [*x*](a b.md) x", "a b.md"),
+            ("see [a `c`](d e.md) x", "d e.md"),
+            ("see [a <b>x</b>](c d.md) x", "c d.md"),
+        ] {
+            let path = VaultPath::new(dest);
+            let (_, index) = crate::note::content_extractor::get_chunks_and_links(&at, note);
+            assert_eq!(raw_links(&index), [path.to_string()], "{note:?}");
+            let (md, listed) = crate::note::content_extractor::get_markdown_and_links(&at, note);
+            assert_eq!(raw_links(&listed), [path.to_string()], "{note:?}");
+            assert_eq!(rendered_dests(&md), [path.to_string()], "{note:?}: {md}");
+            assert_eq!(crate::note::note_link_targets(note), [dest], "{note:?}");
+        }
+    }
+
+    // Pinned: the pattern inside a code span is code; next to inline HTML
+    // tags (not inside one) it is prose.
+    #[test]
+    fn a_spaced_destination_link_in_a_code_span_or_between_html_tags() {
+        assert_no_link_anywhere("a `[x](a b.md)` b\n");
+        assert_no_link_anywhere("a `x [y](a b.md) z` b\n");
+        let note = "<b>[x](a b.md)</b>\n";
+        let at = VaultPath::new("n.md");
+        let ab = VaultPath::new("a b.md");
+        let (_, index) = crate::note::content_extractor::get_chunks_and_links(&at, note);
+        assert_eq!(raw_links(&index), [ab.to_string()]);
+        let (md, listed) = crate::note::content_extractor::get_markdown_and_links(&at, note);
+        assert_eq!(raw_links(&listed), [ab.to_string()]);
+        assert_eq!(md, format!("<b>[x](<{ab}>)</b>\n"));
+        assert_eq!(crate::note::note_link_targets(note), ["a b.md"]);
+    }
+
+    // Review 5 fix round 1, item 2: a found pattern that links nowhere is
+    // left as written.
+    #[test]
+    fn a_spaced_destination_that_resolves_nowhere_is_left_as_written() {
+        let at = VaultPath::new("n.md");
+        for (note, written) in [
+            ("[x](a b.md \"T\")", "a b.md \"T\""),
+            ("[a](https://x.y/a b)", "https://x.y/a b"),
+        ] {
+            let (md, listed) = crate::note::content_extractor::get_markdown_and_links(&at, note);
+            assert_eq!(md, note);
+            assert!(listed.is_empty(), "{note:?}: {listed:?}");
+            let (_, index) = crate::note::content_extractor::get_chunks_and_links(&at, note);
+            assert!(index.is_empty(), "{note:?}: {index:?}");
+            assert_eq!(crate::note::note_link_targets(note), [written]);
+        }
+    }
+
+    // Review 5 fix round 1, item 3: a code block's text is trimmed of any
+    // whitespace, as before.
+    #[test]
+    fn a_code_block_is_trimmed_of_unicode_whitespace() {
+        for ws in ['\u{a0}', '\u{3000}'] {
+            let note = format!("```\n{ws}x{ws}\n```\n");
+            let chunks = crate::note::content_extractor::get_content_chunks(&note);
+            assert_eq!(chunks[0].text, "```\nx\n```", "{ws:?}");
+        }
+    }
+
+    // Review 5 fix round 2: the editor's pattern finds a link only where
+    // pulldown read none — never a second record of a parsed link, never
+    // across lines, in document order.
+    #[test]
+    fn a_found_link_never_repeats_or_reorders_a_parsed_one() {
+        let at = VaultPath::new("n.md");
+        let note_path = |t: &str| VaultPath::note_path_from(t).to_string();
+        let path = |t: &str| VaultPath::new(t).to_string();
+        for (note, targets, labels, listed) in [
+            (
+                "- [ ] **Call [Bob](bob.md)** today",
+                vec!["bob.md"],
+                vec!["Bob"],
+                vec![path("bob.md")],
+            ),
+            (
+                "[a] **b [c](d.md) z**",
+                vec!["d.md"],
+                vec!["c"],
+                vec![path("d.md")],
+            ),
+            (
+                "[a] *see [[w]] and [c](d.md)*",
+                vec!["w", "d.md"],
+                vec!["w", "c"],
+                vec![note_path("w"), path("d.md")],
+            ),
+            (
+                "See [ref] *a\n[Doc](My Doc.md)*",
+                vec!["My Doc.md"],
+                vec!["Doc"],
+                vec![path("My Doc.md")],
+            ),
+            (
+                "[ **a\n[y](e f.md)**",
+                vec!["e f.md"],
+                vec!["y"],
+                vec![path("e f.md")],
+            ),
+        ] {
+            let w = walk(note);
+            let got: Vec<&str> = w.links.iter().map(|l| l.label.as_str()).collect();
+            assert_eq!(got, labels, "{note:?}");
+            assert_eq!(crate::note::note_link_targets(note), targets, "{note:?}");
+            let (_, index) = crate::note::content_extractor::get_chunks_and_links(&at, note);
+            assert_eq!(raw_links(&index), listed, "{note:?}");
+            let (_, md_links) = crate::note::content_extractor::get_markdown_and_links(&at, note);
+            assert_eq!(raw_links(&md_links), listed, "{note:?}");
+        }
+    }
+
+    #[test]
+    fn a_found_pattern_inside_a_code_span_or_escaped_is_no_link() {
+        assert_no_link_anywhere("[a] **b\n`[x](y z.md)`**\n");
+        assert_no_link_anywhere("\\[x](a b.md)\n");
     }
 }

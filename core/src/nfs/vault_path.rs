@@ -401,11 +401,9 @@ impl VaultPath {
     /// a folder path resolves against its parent; see
     /// [`Self::resolve_against_note`] for a reference that may be a folder.
     pub fn resolve_link_in_note(&self, note_path: &VaultPath) -> VaultPath {
-        if self.is_note_file() {
-            return self.clone();
-        }
         let (parent, _) = note_path.flatten().get_parent_path();
-        parent.append(self).flatten().absolute()
+        self.resolve_in_folder(parent)
+            .map_or_else(|| self.clone(), |path| path.absolute())
     }
 
     /// Resolve `self` as a link target written inside `note_path`, without
@@ -414,7 +412,8 @@ impl VaultPath {
     /// appended to the note's folder (or to `note_path` itself when it is a
     /// folder) and flattened, so a relative note path gives a relative result.
     /// For a note path this is [`Self::resolve_link_in_note`] without
-    /// [`Self::absolute`]; unlike it, a folder `note_path` is the base itself.
+    /// [`Self::absolute`]; unlike it, a folder `note_path` is the base itself
+    /// (the two differ only in their base and that last step).
     ///
     /// ```
     /// use kimun_core::nfs::VaultPath;
@@ -423,16 +422,21 @@ impl VaultPath {
     /// assert_eq!(target.resolve_against_note(&note).to_string(), "work/a.md");
     /// ```
     pub fn resolve_against_note(&self, note_path: &VaultPath) -> VaultPath {
-        if self.is_note_file() {
-            return self.clone();
-        }
         let note_path = note_path.flatten();
         let base = if note_path.is_note() {
             note_path.get_parent_path().0
         } else {
             note_path
         };
-        base.append(self).flatten()
+        self.resolve_in_folder(base).unwrap_or_else(|| self.clone())
+    }
+
+    /// The common part of the two link resolvers above: `self` written in a
+    /// note inside `folder`, appended to it and flattened; `None` for a bare
+    /// note filename, which each resolver keeps as is for a vault-wide name
+    /// lookup.
+    fn resolve_in_folder(&self, folder: VaultPath) -> Option<VaultPath> {
+        (!self.is_note_file()).then(|| folder.append(self).flatten())
     }
 
     /// Expresses this path relative to `reference_path`, walking up with `..`

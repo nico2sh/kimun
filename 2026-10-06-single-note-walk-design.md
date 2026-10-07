@@ -201,6 +201,10 @@ must contain exactly these and nothing else.
 | an escaped wikilink, `\[[a]]` | a link (index, LINKS); rendered `\[a](a.md)` | not a link anywhere; text `[[a]]` — the backslash escapes it, as CommonMark reads it |
 | markup inside a plain wikilink, `[[a *b* c]]` | chunk text `a b c` | `a *b* c` — the wikilink's text is shown as written, like an alias |
 | a markdown link inside an HTML block, `<details>[doc](doc.md)</details>` | listed by LINKS/MCP/CLI, rewritten; not indexed | not a link anywhere, left as written |
+| a markdown link with unencoded spaces in its destination, `[David H](../Work/People/David H.md)` | listed by LINKS/MCP/CLI and followed by the editor; not indexed | a link everywhere (index, LINKS, MCP, CLI), found with the same pattern the editor highlights; rendered as `[David H](<…/David H.md>)` so previewers show it; chunk text unchanged; one whose destination contains a code span (``[t](a `b c`.md)``) is not a link |
+| an escaped spaced link, `\[x](a b.md)` | listed by LINKS/MCP/CLI | not a link anywhere (the backslash escapes it) |
+| a hashtag inside a spaced-destination link's label, `[Dave #x](d e.md)` | chunk text keeps `#x`; not a tag | not a tag; chunk text `x` (as for other link text handled by the walk) |
+| a heading ending in inline HTML, `# a <kbd>` | heading `a ` (trailing space) | `a` — trimmed like any heading |
 | an image embed, `![[pic.png]]`, `![[sub/pic.png]]` | rendered `![pic.png](pic.png.md)` — a broken image | rendered `![pic.png](pic.png)` / `![…](sub/pic.png)`: an embed whose target looks like an image keeps it as written for the image pipeline to resolve; any other embed (`![[v1.2]]`, `![[doc.pdf]]`) still renders as a note path |
 | a wikilink to a section or block, `[[note#section]]`, `[[Plan#Goals\|goals]]`, `[[a^blk]]`, or with padding, `[[ spaced ]]` | not indexed; listed raw by the CLI | a link everywhere: the target is the note with the `#…`/`^…` part and surrounding spaces stripped (as the editor follows it); the rendered markdown keeps the fragment, `[goals](plan.md#Goals)`; the CLI lists the target as written |
 | a wikilink whose target is still not a vault path after that (`[[#tag]]`) | listed raw by the CLI | not listed anywhere |
@@ -244,6 +248,12 @@ chunk splitting, the `FrontMatter` chunk, the editor's per-line helpers.
 
 Gate: `cargo bench -p kimun_core --bench indexing` before and after; any
 regression in the `get_chunks_and_links` group blocks the merge.
+
+Outcome (2026-10-07): the small and hashtag-heavy fixtures ended ~3–6%
+slower than `before` (part already at the first walk commit, part from
+recognising spaced-destination links); medium/large are unchanged or up to
+~20% faster and `get_content_chunks` 5–17% faster. Accepted by the owner:
+small notes are already fast, so the absolute cost is negligible.
 
 ## Testing
 

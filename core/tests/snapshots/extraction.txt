@@ -15715,6 +15715,127 @@ Empty destinations [t]() and [t]( ) and [[ |x]].
 Empty display [a#s](a.md#s).
 
 
+=== tests/fixtures/walk/review5_rows.md
+-- title "Review 5 rows"
+-- headings
+1 0 "Review 5 rows"
+3 2 "[David H](../Work/People/David H.md)"
+2 14 "Quoted setext"
+1 18 "Heading"
+-- chunks
+[Review 5 rows[David H](../Work/People/David H.md)] "See [David H](../Work/People/David H.md) and ![img](a b.png) and [Dave x](d e.md) y.\n* item [t](a b.md) and u\nsee multi\nline end\n* item first second tail"
+[Review 5 rowsQuoted setext] "head"
+[Heading] "see"
+[] "Brackets b]c and b[c.\nLabel over lines a\n.\nMarkup in labels [David H](a b.md), [x](a b.md), [a `c`](d e.md), [a <b>x</b>](c d.md).\nCode and HTML `[x](a b.md)` and <b>[y](a b.md)</b>.\nNowhere [x](a b.md \"T\") and [a](https://x.y/a b).\n```\nx\n```\n* [ ] Call Bob today\n[a] see w and c\nSee [ref] a\n[Doc](My Doc.md)\n[a] b\n`[x](y z.md)`\nEscaped [x](a b.md)."
+-- index chunks
+[Review 5 rows[David H](../Work/People/David H.md)] "See [David H](../Work/People/David H.md) and ![img](a b.png) and [Dave x](d e.md) y.\n* item [t](a b.md) and u\nsee multi\nline end\n* item first second tail"
+[Review 5 rowsQuoted setext] "head"
+[Heading] "see"
+[] "Brackets b]c and b[c.\nLabel over lines a\n.\nMarkup in labels [David H](a b.md), [x](a b.md), [a `c`](d e.md), [a <b>x</b>](c d.md).\nCode and HTML `[x](a b.md)` and <b>[y](a b.md)</b>.\nNowhere [x](a b.md \"T\") and [a](https://x.y/a b).\n```\nx\n```\n* [ ] Call Bob today\n[a] see w and c\nSee [ref] a\n[Doc](My Doc.md)\n[a] b\n`[x](y z.md)`\nEscaped [x](a b.md)."
+-- index links (sorted)
+Hashtag "#y" "y"
+Note(VaultPath { absolute: false, slices: [PathSlice("a b.md")] }) "a b.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("a b.md")] }) "a b.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("a b.md")] }) "a b.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("a b.md")] }) "a b.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" " "
+Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "b[c"
+Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "b]c"
+Note(VaultPath { absolute: false, slices: [PathSlice("bob.md")] }) "bob.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("c d.md")] }) "c d.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("d e.md")] }) "d e.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("d e.md")] }) "d e.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("d.md")] }) "d.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("x.md")] }) "folder/sub/x.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("my doc.md")] }) "my doc.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("w.md")] }) "w.md" "w"
+Note(VaultPath { absolute: false, slices: [PathSlice("work"), PathSlice("people"), PathSlice("david h.md")] }) "work/people/david h.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("work"), PathSlice("people"), PathSlice("david h.md")] }) "work/people/david h.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("x.md")] }) "x.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("x.md")] }) "x.md" "first\n  second"
+Note(VaultPath { absolute: false, slices: [PathSlice("x.md")] }) "x.md" "multi\n> line"
+Note(VaultPath { absolute: false, slices: [PathSlice("x.md")] }) "x.md" "setext\n> head"
+-- tags ["y"]
+-- markdown links
+Note(VaultPath { absolute: false, slices: [PathSlice("work"), PathSlice("people"), PathSlice("david h.md")] }) "work/people/david h.md" "David H"
+Note(VaultPath { absolute: false, slices: [PathSlice("work"), PathSlice("people"), PathSlice("david h.md")] }) "work/people/david h.md" "David H"
+Note(VaultPath { absolute: false, slices: [PathSlice("d e.md")] }) "d e.md" "Dave #x"
+Note(VaultPath { absolute: false, slices: [PathSlice("a b.md")] }) "a b.md" "t"
+Note(VaultPath { absolute: false, slices: [PathSlice("x.md")] }) "x.md" "u"
+Note(VaultPath { absolute: false, slices: [PathSlice("x.md")] }) "x.md" "multi\n> line"
+Note(VaultPath { absolute: false, slices: [PathSlice("x.md")] }) "x.md" "first\n  second"
+Note(VaultPath { absolute: false, slices: [PathSlice("x.md")] }) "x.md" "setext\n> head"
+Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" ""
+Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" " "
+Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "b]c"
+Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "b[c"
+Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("x.md")] }) "folder/sub/x.md" "a\n"
+Note(VaultPath { absolute: false, slices: [PathSlice("a b.md")] }) "a b.md" "**David** H"
+Note(VaultPath { absolute: false, slices: [PathSlice("a b.md")] }) "a b.md" "*x*"
+Note(VaultPath { absolute: false, slices: [PathSlice("d e.md")] }) "d e.md" "a `c`"
+Note(VaultPath { absolute: false, slices: [PathSlice("c d.md")] }) "c d.md" "a <b>x</b>"
+Note(VaultPath { absolute: false, slices: [PathSlice("a b.md")] }) "a b.md" "y"
+Note(VaultPath { absolute: false, slices: [PathSlice("bob.md")] }) "bob.md" "Bob"
+Note(VaultPath { absolute: false, slices: [PathSlice("w.md")] }) "w.md" "w"
+Note(VaultPath { absolute: false, slices: [PathSlice("d.md")] }) "d.md" "c"
+Note(VaultPath { absolute: false, slices: [PathSlice("my doc.md")] }) "my doc.md" "Doc"
+Hashtag "#y" "y"
+-- markdown
+# Review 5 rows
+
+### [David H](<work/people/david h.md>)
+
+See [David H](<work/people/david h.md>) and ![img](a b.png) and [Dave #x](<d e.md>) [#y](#y).
+
+- item [t](<a b.md>) and [u](x.md)
+
+> see [multi
+> line](x.md) end
+
+- item [first
+  second](x.md) tail
+
+> Quoted [setext
+> head](x.md)
+> ---
+
+# Heading [a](a.md)
+
+see [a](a.md)
+
+# [ ](a.md)
+
+Brackets [b\]c](a.md) and [b\[c](a.md).
+
+Label over lines [a
+](folder/sub/x.md).
+
+Markup in labels [**David** H](<a b.md>), [*x*](<a b.md>), [a `c`](<d e.md>), [a <b>x</b>](<c d.md>).
+
+Code and HTML `[x](a b.md)` and <b>[y](<a b.md>)</b>.
+
+Nowhere [x](a b.md "T") and [a](https://x.y/a b).
+
+```
+ x　
+```
+
+- [ ] **Call [Bob](bob.md)** today
+
+[a] *see [w](w.md) and [c](d.md)*
+
+See [ref] *a
+[Doc](<my doc.md>)*
+
+[a] **b
+`[x](y z.md)`**
+
+Escaped \[x](a b.md).
+
+
 === tests/fixtures/walk/setext_hashtag.md
 -- title "1. Intro"
 -- headings
