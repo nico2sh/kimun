@@ -204,6 +204,7 @@ must contain exactly these and nothing else.
 | a markdown link with unencoded spaces in its destination, `[David H](../Work/People/David H.md)` | listed by LINKS/MCP/CLI and followed by the editor; not indexed | a link everywhere (index, LINKS, MCP, CLI), found with the same pattern the editor highlights; rendered as `[David H](<…/David H.md>)` so previewers show it; chunk text unchanged; one whose destination contains a code span (``[t](a `b c`.md)``) is not a link |
 | a wikilink to a name with spaces, `[[DEM Platform]]` (rendered markdown) | `[DEM Platform](dem platform.md)` — not a link to a CommonMark previewer | `[DEM Platform](<dem platform.md>)` — a real link |
 | a wikilink inside inline HTML (a comment `<!-- [[x]] -->`, an attribute `<a title="[[x]]">`) or as a reference definition's destination `[r]: [[x]]` | indexed and listed | not a link anywhere: HTML is not markdown; a definition's destination is not a wikilink |
+| a wikilink used as an inline link's destination, `[t]([[a]])` | a link to `a` (regex collapsed it first) | not a link: per CommonMark the destination is literal text |
 | an escaped hashtag, `\#esc` (plain chunk text) | `\esc` | `esc` (still a tag, as before) |
 | a `#` right after `&`, as in an HTML entity pasted from the web, `it&#39;s` | tag `39` (and highlighted in the editor) | not a tag anywhere, editor included |
 | an escaped spaced link, `\[x](a b.md)` | listed by LINKS/MCP/CLI | not a link anywhere (the backslash escapes it) |
@@ -290,6 +291,13 @@ small notes are already fast, so the absolute cost is negligible.
    *Behaviour changes*; the plan lists each such edit up front.
 5. **Index**: existing schema tests cover the `VERSION` bump.
 6. **Benches** as in *Performance*; the seven CI gates as usual.
+7. **pulldown-cmark 0.13.4 crash guard (temporary).** 0.13.4 panics on an
+   `![[` completed as an ordinary image or link before its `]]`
+   (`![[]x]()]]`); upstream fixed it in commit ebf31da886 (unreleased).
+   Until a release ships it, `pulldown_crash_guard` in `walk.rs` hands
+   pulldown a same-length copy where such an `![[` reads `!` then `[[`;
+   remove it (and its call) when pulldown-cmark is bumped, keeping
+   `pulldown_0_13_4_wikilink_crash_inputs_do_not_panic` and the fuzz tests.
 
 ## Docs
 

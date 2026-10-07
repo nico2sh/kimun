@@ -159,27 +159,12 @@ fn wikilink(src: &str, start: usize) -> Option<(WalkLink, &str)> {
     }
     let link = WalkLink {
         kind,
-        target: target.to_string(),
-        label: label.to_string(),
+        target: lf(target),
+        label: lf(label),
         range: start..start + src.len(),
         as_written: false,
     };
     Some((link, label))
-}
-
-/// A wikilink's display text as written, line by line, as pulldown reads
-/// text over lines: each line after the first without its container prefix
-/// (indentation, blockquote `>` markers), no line with its `\r`. The walk
-/// puts a line break between them, so a heading ends at the first.
-fn display_lines(display: &str) -> impl Iterator<Item = &str> {
-    display.split('\n').enumerate().map(|(i, line)| {
-        let line = line.strip_suffix('\r').unwrap_or(line);
-        if i == 0 {
-            line
-        } else {
-            line.trim_start_matches([' ', '\t', '>'])
-        }
-    })
 }
 
 fn wikilink_kind(event: &Event) -> Option<WalkLinkKind> {
@@ -222,7 +207,7 @@ impl OpenLink {
         };
         let link = &mut links[record];
         let label_end = self.label_end.unwrap_or(self.label_start);
-        link.label = src[self.label_start..label_end].to_string();
+        link.label = lf(&src[self.label_start..label_end]);
         if link.kind == WalkLinkKind::Inline {
             let after = &src[label_end..];
             link.as_written |= after
@@ -233,13 +218,14 @@ impl OpenLink {
 }
 
 /// What one event is to the line builder, as a [`LinkRecorder`] saw it.
-enum Step<'s> {
+enum Step {
     /// Pulldown's own event inside a wikilink: not for the lines.
     InWikilink,
     /// A wikilink's end.
     WikilinkEnd,
-    /// A wikilink's start; its display text, as written, follows it.
-    Wikilink(&'s str),
+    /// A wikilink's start; its display text, as written (the range of it
+    /// in the parsed text), follows it.
+    Wikilink(Range<usize>),
     /// Any other event; `in_link` when it is link or image text.
     Other { in_link: bool },
 }
@@ -273,7 +259,7 @@ impl<'s> LinkRecorder<'s> {
 
     /// Takes one event (`range` in `src`), recording any link it starts or
     /// labels.
-    fn step(&mut self, event: &Event, range: &Range<usize>, links: &mut Vec<WalkLink>) -> Step<'s> {
+    fn step(&mut self, event: &Event, range: &Range<usize>, links: &mut Vec<WalkLink>) -> Step {
         if self.wikilink_depth > 0 {
             match event {
                 Event::Start(_) => self.wikilink_depth += 1,
@@ -302,10 +288,12 @@ impl<'s> LinkRecorder<'s> {
             return match wikilink(src, in_note.start) {
                 Some((link, label)) => {
                     links.push(link);
-                    Step::Wikilink(label)
+                    // `label` is a slice of `src`: its place there.
+                    let at = range.start + (label.as_ptr() as usize - src.as_ptr() as usize);
+                    Step::Wikilink(at..at + label.len())
                 }
                 // Defensive: pulldown reads no wikilink without a target.
-                None => Step::Wikilink(""),
+                None => Step::Wikilink(range.start..range.start),
             };
         }
         if let Event::Start(Tag::Link { .. } | Tag::Image { .. }) = event {
@@ -401,7 +389,7 @@ fn prose_text(
         .take_while(|(r, _)| r.end <= range.end)
         .collect();
     if inside.is_empty() || in_link {
-        return decoded.replace("\r\n", "\n");
+        return decoded.to_string();
     }
     for (r, name) in &inside {
         tags.push(WalkTag {
@@ -411,7 +399,7 @@ fn prose_text(
     }
     let source = &body[range.clone()];
     if source.len() != decoded.len() {
-        return decoded.replace("\r\n", "\n");
+        return decoded.to_string();
     }
     let mut out = String::with_capacity(source.len());
     let mut last = range.start;
@@ -421,7 +409,7 @@ fn prose_text(
         last = r.end;
     }
     out.push_str(&body[last..range.end]);
-    out.replace("\r\n", "\n")
+    out
 }
 
 /// A paragraph, heading or list item the walk is inside — a block of text,
@@ -491,13 +479,14 @@ impl TextBlocks {
     }
 
     /// A text block ended: the markdown links and images pulldown did not
-    /// read in it — the editor's pattern, [`md_link_matches`], line by line
-    /// as the editor scans; in practice a destination with spaces,
-    /// `[David H](../People/David H.md)`, `![shot](my shot.png)` — are
-    /// recorded. A match is kept when it overlaps nothing pulldown read,
-    /// holds a code span or inline HTML only in its text, and is not
-    /// escaped (`\[x](a b.md)`). A hashtag inside one is link text, not a
-    /// tag.
+    /// read in it — the editor's pattern, [`md_link_matches`], over the
+    /// block's source (a label may wrap, `[x⏎y](a b.md)`); in practice a
+    /// destination with spaces, `[David H](../People/David H.md)`,
+    /// `![shot](my shot.png)` — are recorded. A match is kept when it
+    /// overlaps nothing pulldown read (a nested block included), has its
+    /// destination on one line, holds a code span or inline HTML only in its
+    /// text, and is not escaped (`\[x](a b.md)`). A hashtag inside one is
+    /// link text, not a tag.
     #[inline(never)]
     fn end(
         &mut self,
@@ -508,53 +497,325 @@ impl TextBlocks {
         tags: &mut Vec<WalkTag>,
     ) {
         let source = &body[block.range.clone()];
-        let mut line_start = block.range.start;
-        for line in source.split_inclusive('\n') {
-            let at_line = line_start;
-            line_start += line.len();
-            // Only a `](` outside everything pulldown read can end a link
-            // to find (a parsed link's own `](` is the common case).
-            let open = |(i, _): (usize, &str)| {
-                let at = at_line + i;
-                !block.taken.iter().any(|r| r.start <= at && at < r.end)
-            };
-            if !line.match_indices("](").any(open) {
+        let at_block = block.range.start;
+        // Only a `](` outside everything pulldown read can end a link to
+        // find (a parsed link's own `](` is the common case).
+        let open = |(i, _): (usize, &str)| {
+            let at = at_block + i;
+            !block.taken.iter().any(|r| r.start <= at && at < r.end)
+        };
+        if !source.match_indices("](").any(open) {
+            return;
+        }
+        for m in md_link_matches(source) {
+            let at = at_block + m.range.start..at_block + m.range.end;
+            let label = at_block + m.label.start..at_block + m.label.end;
+            let overlaps = |r: &Range<usize>| r.start < at.end && at.start < r.end;
+            // Escaped by an odd run of backslashes (`\\[` is a literal
+            // backslash followed by a real link).
+            let before = &source[..m.range.start];
+            let backslashes = before.len() - before.trim_end_matches('\\').len();
+            // A label may wrap; a destination may not (nor in pulldown).
+            if backslashes % 2 == 1
+                || m.target.contains('\n')
+                || block.taken.iter().any(overlaps)
+                || block
+                    .opaque
+                    .iter()
+                    .any(|r| overlaps(r) && !(label.start <= r.start && r.end <= label.end))
+            {
                 continue;
             }
-            for m in md_link_matches(line) {
-                let at = at_line + m.range.start..at_line + m.range.end;
-                let label = at_line + m.label.start..at_line + m.label.end;
-                let overlaps = |r: &Range<usize>| r.start < at.end && at.start < r.end;
-                // Escaped by an odd run of backslashes (`\\[` is a literal
-                // backslash followed by a real link).
-                let backslashes = line[..m.range.start].len()
-                    - line[..m.range.start].trim_end_matches('\\').len();
-                if backslashes % 2 == 1
-                    || block.taken.iter().any(overlaps)
-                    || block
-                        .opaque
-                        .iter()
-                        .any(|r| overlaps(r) && !(label.start <= r.start && r.end <= label.end))
-                {
-                    continue;
-                }
-                let in_note = body_start + at.start..body_start + at.end;
-                tags.retain(|t| !(in_note.start <= t.range.start && t.range.end <= in_note.end));
-                links.push(WalkLink {
-                    kind: if m.image {
-                        WalkLinkKind::Image
-                    } else {
-                        WalkLinkKind::Found
-                    },
-                    target: m.target.to_string(),
-                    label: body[label].to_string(),
-                    range: in_note,
-                    as_written: false,
-                });
-                self.found = true;
-            }
+            let in_note = body_start + at.start..body_start + at.end;
+            tags.retain(|t| !(in_note.start <= t.range.start && t.range.end <= in_note.end));
+            links.push(WalkLink {
+                kind: if m.image {
+                    WalkLinkKind::Image
+                } else {
+                    WalkLinkKind::Found
+                },
+                target: m.target.to_string(),
+                label: lf(&body[label]),
+                range: in_note,
+                as_written: false,
+            });
+            self.found = true;
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// PULLDOWN-CMARK 0.13.4 CRASH GUARD — remove once pulldown-cmark ships the fix.
+//
+// pulldown-cmark 0.13.4 panics with `ENABLE_WIKILINKS` ("byte range starts at
+// N but ends at N-1", parse.rs:911; "attempt to subtract with overflow",
+// parse.rs:892, in debug) when an `![[` opener is completed as an ordinary
+// image or link before the `]]` that pops it, e.g. `![[]x]()]]`,
+// `![[a](b) c](d)]]`: its stale wikilink-stack entry makes `handle_wikilink`
+// slice backwards. Upstream fix: commit ebf31da886 ("Fix subtract-overflow
+// panic in handle_wikilink on malformed input", pulldown-cmark issue #1108),
+// the guard `if end_ix <= start_ix { return None; }` in `handle_wikilink`;
+// unreleased as of 2026-10-07 (0.13.4 is the latest release).
+//
+// To remove: bump pulldown-cmark to a release containing ebf31da886; delete
+// `pulldown_crash_guard`, `GUARD_BYTE` and `unguarded` below, give `events`
+// back its one `body` argument (parse `body`, drop the `unguarded` step) and
+// drop the `pulldown_crash_guard` call in `walk`. Keep the regression tests
+// (`pulldown_0_13_4_wikilink_crash_inputs_do_not_panic`, the fuzz tests);
+// update their expected output to what the fixed pulldown gives.
+// ---------------------------------------------------------------------------
+
+/// The text the walk hands pulldown: `body`, or — when it holds an `![[`
+/// that could go stale — a copy with that `!` swapped for [`GUARD_BYTE`],
+/// so pulldown reads `![[` as `!` then `[[` (never an image wikilink opener)
+/// and every byte offset stays that of `body`. Only an `![[` whose text up to
+/// its `]]` has no `[`, `]`, backtick, backslash, `<` or line break — an
+/// embed as written, `![[pic.png|200]]` — is left: nothing in it can
+/// complete an image or link before its `]]` pops it.
+fn pulldown_crash_guard(body: &str) -> std::borrow::Cow<'_, str> {
+    let mut copy: Option<Vec<u8>> = None;
+    for (at, _) in body.match_indices("![[") {
+        let rest = &body[at + 3..];
+        let embed = rest
+            .find(['[', ']', '`', '\\', '<', '\n'])
+            .is_some_and(|end| rest[end..].starts_with("]]"));
+        if !embed {
+            copy.get_or_insert_with(|| body.as_bytes().to_vec())[at] = GUARD_BYTE;
+        }
+    }
+    match copy {
+        // ASCII swapped for ASCII: still UTF-8.
+        Some(copy) => String::from_utf8(copy).map_or(std::borrow::Cow::Borrowed(body), Into::into),
+        None => std::borrow::Cow::Borrowed(body),
+    }
+}
+
+/// What the guard writes over an `!`: ASCII punctuation as `!` is (so
+/// emphasis flanking reads the same), inert in markdown.
+const GUARD_BYTE: u8 = b'%';
+
+/// An event of the guarded parse (of `parse`, a copy of `body`) with the
+/// note's own text: text pulldown sliced from `parse` is sliced from `body`
+/// instead; text it built (a code span over lines) gets its `!` back at
+/// each swapped byte, in source order.
+fn unguarded<'a>(
+    event: Event<'a>,
+    range: &Range<usize>,
+    body: &'a str,
+    parse: &'a str,
+) -> Event<'a> {
+    let own = |text: CowStr<'a>| -> CowStr<'a> {
+        if let CowStr::Borrowed(t) = text {
+            let at = (t.as_ptr() as usize).wrapping_sub(parse.as_ptr() as usize);
+            return match body.get(at..at.saturating_add(t.len())) {
+                Some(own) if at + t.len() <= parse.len() => own.into(),
+                _ => t.into(),
+            };
+        }
+        let swapped: Vec<bool> = (parse[range.clone()].bytes())
+            .zip(body[range.clone()].bytes())
+            .filter(|(p, _)| *p == GUARD_BYTE)
+            .map(|(_, b)| b == b'!')
+            .collect();
+        if !swapped.contains(&true) {
+            return text;
+        }
+        let mut swapped = swapped.into_iter();
+        let restore = |c: char| {
+            if c == GUARD_BYTE as char && swapped.next() == Some(true) {
+                '!'
+            } else {
+                c
+            }
+        };
+        text.chars().map(restore).collect::<String>().into()
+    };
+    match event {
+        Event::Text(t) => Event::Text(own(t)),
+        Event::Code(t) => Event::Code(own(t)),
+        Event::Html(t) => Event::Html(own(t)),
+        Event::InlineHtml(t) => Event::InlineHtml(own(t)),
+        other => other,
+    }
+}
+
+/// A code span's text as pulldown gives it for the same span in LF, from
+/// its text `code` in a CRLF note and its source `src` (backticks
+/// included); `None` when there is nothing to change. Pulldown turns a
+/// line ending in a code span into a space and skips the next line's
+/// container prefix (indentation, `>` markers), but reads a CRLF as two
+/// line endings: two spaces. Its text is rebuilt line by line from the
+/// source: each line after the first is the end of its source line, past
+/// the prefix pulldown skipped — the `[ \t>]` run its text starts with
+/// tells how much of the line's own run is left. Then one space is cut at
+/// each edge, as pulldown does, when both edges are spaces.
+fn crlf_code_span(code: &str, src: &str) -> Option<String> {
+    let ticks = src.len() - src.trim_start_matches('`').len();
+    let inner = src.get(ticks..src.len().checked_sub(ticks)?)?;
+    if !inner.contains("\r\n") {
+        return None;
+    }
+    let is_space = |b: Option<u8>| matches!(b, Some(b' ' | b'\r' | b'\n'));
+    let prefix_run = |s: &str| s.len() - s.trim_start_matches([' ', '\t', '>']).len();
+    // The text before pulldown cut a space from each edge.
+    let cut = is_space(inner.bytes().next())
+        && is_space(inner.bytes().last())
+        && !code.bytes().all(|b| b == b' ');
+    let spaced = if cut {
+        format!(" {code} ")
+    } else {
+        code.to_string()
+    };
+    let mut out = String::with_capacity(spaced.len());
+    let mut at = 0;
+    let lines: Vec<&str> = inner.split('\n').collect();
+    for (i, line) in lines.iter().enumerate() {
+        let crlf = line.ends_with('\r');
+        let text = line.strip_suffix('\r').unwrap_or(line);
+        let len = if i == 0 {
+            text.len()
+        } else if i + 1 == lines.len() {
+            spaced.len().checked_sub(at)?
+        } else {
+            // What is left of the line's own `[ \t>]` run, then the rest.
+            let left = prefix_run(spaced.get(at..)?).min(prefix_run(text));
+            text.len() - prefix_run(text) + left
+        };
+        out.push_str(spaced.get(at..at + len)?);
+        at += len;
+        if i + 1 < lines.len() {
+            // Its line ending: one space, two for a CRLF.
+            let ending = if crlf { "  " } else { " " };
+            if spaced.get(at..at + ending.len())? != ending {
+                return None;
+            }
+            out.push(' ');
+            at += ending.len();
+        }
+    }
+    if out.len() > 1
+        && out.starts_with(' ')
+        && out.ends_with(' ')
+        && !out.bytes().all(|b| b == b' ')
+    {
+        out = out[1..out.len() - 1].to_string();
+    }
+    Some(out)
+}
+
+/// `text` with its CRLF line endings as LF: a link's label, read from the
+/// note as written, reads the same in a CRLF note.
+fn lf(text: &str) -> String {
+    text.replace("\r\n", "\n")
+}
+
+/// The parse of `body`, the one place the walk reads it.
+///
+/// A wikilink holding a `]` between its brackets (`[[a|b]c]]`) is text, as
+/// the editor reads it (`wikilink_char_spans`): its source as written (see
+/// [`source_text`]; a hashtag in it is still a tag), in place of pulldown's
+/// events for it — which for such a wikilink can be malformed (0.13.4 leaks
+/// the events after an empty display part into it, or nests text before its
+/// parent's start).
+///
+/// A CRLF note gives every event the same note in LF gives. Pulldown drops a
+/// CRLF's `\r` almost everywhere; what is left: it splits an HTML line from
+/// its line ending (`Html("<div>")`, `Html("\n")`, joined back here) and
+/// keeps it in inline HTML over lines (and in the odd text event of a
+/// malformed link); a code span over a CRLF it reads as two line endings
+/// (see [`crlf_code_span`]).
+///
+/// `parse` is what pulldown reads: `body`, or its crash-guarded copy (see
+/// [`pulldown_crash_guard`]), whose events get the note's text back.
+fn events<'a>(body: &'a str, parse: &'a str) -> impl Iterator<Item = (Event<'a>, Range<usize>)> {
+    let guarded = !std::ptr::eq(body, parse);
+    let mut parser = Parser::new_ext(parse, Options::ENABLE_WIKILINKS)
+        .into_offset_iter()
+        .peekable();
+    // The range of a wikilink read as text, while inside it.
+    let mut text_wikilink: Option<Range<usize>> = None;
+    let mut pending = std::collections::VecDeque::new();
+    let crlf = body.contains('\r');
+    std::iter::from_fn(move || loop {
+        if let Some(next) = pending.pop_front() {
+            return Some(next);
+        }
+        let (event, range) = parser.next()?;
+        let event = if guarded {
+            unguarded(event, &range, body, parse)
+        } else {
+            event
+        };
+        if let Some(wikilink) = &text_wikilink {
+            if matches!(event, Event::End(_)) && range == *wikilink {
+                text_wikilink = None;
+            }
+            continue;
+        }
+        return Some(match event {
+            Event::Start(
+                Tag::Link {
+                    link_type: LinkType::WikiLink { .. },
+                    ..
+                }
+                | Tag::Image {
+                    link_type: LinkType::WikiLink { .. },
+                    ..
+                },
+            ) if body[range.start..range.end - "]]".len()].contains(']') => {
+                pending.extend(source_text(body, range.clone()));
+                text_wikilink = Some(range);
+                continue;
+            }
+            Event::Html(html) if !html.ends_with('\n') => {
+                match parser.next_if(|(e, _)| matches!(e, Event::Html(t) if t.as_ref() == "\n")) {
+                    Some((_, end)) => (
+                        Event::Html(format!("{html}\n").into()),
+                        range.start..end.end,
+                    ),
+                    None => (Event::Html(html), range),
+                }
+            }
+            Event::InlineHtml(html) if crlf && html.contains('\r') => {
+                (Event::InlineHtml(lf(&html).into()), range)
+            }
+            Event::Code(code) if crlf && body[range.clone()].contains('\r') => {
+                let code = crlf_code_span(&code, &body[range.clone()]).map_or(code, Into::into);
+                (Event::Code(code), range)
+            }
+            Event::Text(text) if crlf && text.contains('\r') => {
+                (Event::Text(lf(&text).into()), range)
+            }
+            other => (other, range),
+        });
+    })
+}
+
+/// `body[range]` as pulldown gives text over lines: a text event per line,
+/// each after the first without its container prefix (indentation,
+/// blockquote `>` markers) and none with its `\r`, a soft break between (so
+/// a heading ends at the first). For text the walk shows as written: a
+/// wikilink's display text, a wikilink read as text.
+fn source_text(body: &str, range: Range<usize>) -> Vec<(Event<'_>, Range<usize>)> {
+    let mut out = Vec::new();
+    let mut at = range.start;
+    for (i, line) in body[range].split('\n').enumerate() {
+        let line_end = at + line.len();
+        let text = line.strip_suffix('\r').unwrap_or(line);
+        let end = at + text.len();
+        let start = match i {
+            0 => at,
+            _ => end - text.trim_start_matches([' ', '\t', '>']).len(),
+        };
+        if i > 0 {
+            out.push((Event::SoftBreak, at - 1..at));
+        }
+        if start < end {
+            out.push((Event::Text(body[start..end].into()), start..end));
+        }
+        at = line_end + 1;
+    }
+    out
 }
 
 /// One pass over `note` as written — see the module docs above.
@@ -573,7 +834,8 @@ pub(in crate::note) fn walk(note: &str) -> NoteWalk {
     // No `](` in the body, no link pulldown did not read.
     let mut blocks = body.contains("](").then(TextBlocks::default);
 
-    for (event, range) in Parser::new_ext(body, Options::ENABLE_WIKILINKS).into_offset_iter() {
+    let parse = pulldown_crash_guard(body);
+    for (event, range) in events(body, &parse) {
         let start = body_start + range.start;
         if let Some(blocks) = &mut blocks {
             blocks.step(&event, &range, body, body_start, &mut links, &mut tags);
@@ -586,11 +848,8 @@ pub(in crate::note) fn walk(note: &str) -> NoteWalk {
             }
             Step::Wikilink(display) => {
                 lines.push(event, start, str::to_string);
-                for (i, line) in display_lines(display).enumerate() {
-                    if i > 0 {
-                        lines.push(Event::SoftBreak, start, str::to_string);
-                    }
-                    lines.push(Event::Text(CowStr::Borrowed(line)), start, str::to_string);
+                for (text, _) in source_text(body, display) {
+                    lines.push(text, start, str::to_string);
                 }
                 continue;
             }
@@ -604,7 +863,7 @@ pub(in crate::note) fn walk(note: &str) -> NoteWalk {
         let in_code = code_depth > 0;
         lines.push(event, start, |decoded| {
             if in_code {
-                decoded.replace("\r\n", "\n")
+                decoded.to_string()
             } else {
                 prose_text(
                     decoded,
@@ -669,7 +928,7 @@ fn embed_image(link: &WalkLink) -> String {
 
 /// A wikilink's text, written as markdown link text that reads back as
 /// itself: `\\`, `[` and `]` escaped, so a bracket cannot end or open the
-/// link (`[[a|b]c]]` renders `[b\]c](a.md)`).
+/// link (`[[a|b[c]]` renders `[b\[c](a.md)`).
 fn link_text(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
@@ -812,12 +1071,12 @@ impl NoteWalk {
     /// is written by `markdown_destination`. Reference links, autolinks,
     /// inline links written with a `<…>` destination or a title (see
     /// `WalkLink::rewritten_destination`), and links whose destination
-    /// cannot be written back are listed but left as written. A link found
-    /// with the editor's pattern (`WalkLinkKind::Found`) is rewritten and
-    /// listed like an inline link when it resolves to a link; one that
-    /// resolves nowhere (`[x](a b.md "T")`) is left as written and not
-    /// listed. Links come in document order, hashtags after them. Everything outside a recorded
-    /// range — frontmatter, code, HTML, images — is copied verbatim.
+    /// cannot be written back are listed but left as written. An inline
+    /// link, or one found with the editor's pattern (`WalkLinkKind::Found`),
+    /// whose destination resolves nowhere (`[x](a b.md "T")`) is left as
+    /// written and not listed. Links come in document order, hashtags after
+    /// them. Everything outside a recorded range — frontmatter, code, HTML,
+    /// images — is copied verbatim.
     pub(in crate::note) fn render_markdown(
         &self,
         note: &str,
@@ -846,21 +1105,14 @@ impl NoteWalk {
                         edits.push((link.range.clone(), format!("[{text}]({dest})")));
                     }
                 }
-                WalkLinkKind::Inline => {
-                    let (dest, found) = resolve_md_link(&link.target, &link.label, ref_path);
-                    links.extend(found);
-                    if let Some(dest) = link.rewritten_destination(dest) {
-                        edits.push((link.range.clone(), format!("[{}]({dest})", link.label)));
-                    }
-                }
-                WalkLinkKind::Found => {
+                WalkLinkKind::Inline | WalkLinkKind::Found => {
                     // Written back only as the link it was read as: a
-                    // destination that links nowhere (`[x](a b.md "T")`, a
-                    // URL with a space) stays as written.
+                    // destination that links nowhere (`[x](a b.md "T")`,
+                    // `[t]([u](u))`, a URL with a space) stays as written.
                     let (dest, found) = resolve_md_link(&link.target, &link.label, ref_path);
                     if let Some(found) = found {
                         links.push(found);
-                        if let Some(dest) = markdown_destination(dest) {
+                        if let Some(dest) = link.rewritten_destination(dest) {
                             edits.push((link.range.clone(), format!("[{}]({dest})", link.label)));
                         }
                     }
@@ -1023,15 +1275,14 @@ impl<'a> TextLines<'a> {
                 self.lines.push(match current_line {
                     TextLine::Header(..) if is_break => current_line.append_text(" ".to_string()),
                     TextLine::Header(..) => current_line,
-                    other => other.append_text(cow_str.replace("\r\n", "\n")),
+                    other => other.append_text(cow_str.to_string()),
                 });
             }
             Event::InlineMath(cow_str)
             | Event::DisplayMath(cow_str)
             | Event::Html(cow_str)
             | Event::FootnoteReference(cow_str) => {
-                self.lines
-                    .push(TextLine::Text(cow_str.replace("\r\n", "\n")));
+                self.lines.push(TextLine::Text(cow_str.to_string()));
             }
             // A line break inside a list item continues the item — its text
             // and its nesting level stay together (rendered as one line, the
@@ -1322,8 +1573,10 @@ mod tests {
         // observed through `link_depth`. This pins what is observable: no
         // stray End reaches `TextLines`, nested content is not emitted twice,
         // and the lines after the wikilink parse normally.
-        let w = walk("# [[a|![b](c)]] head\n\n![alt [[a|![b](c)]] more #t](i.png)\n\n#u\n");
-        assert_eq!(headers(&w), [(1, "![b](c) head".to_string(), 0)]);
+        // (Nested markup without a `]`: one holding a `]`, as an image
+        // would, is text — review 7, item 2.)
+        let w = walk("# [[a|*b* c]] head\n\n![alt [[a|*b*]] more #t](i.png)\n\n#u\n");
+        assert_eq!(headers(&w), [(1, "*b* c head".to_string(), 0)]);
         assert_eq!(
             w.tags.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
             ["t", "u"]
@@ -2471,8 +2724,8 @@ mod tests {
     fn brackets_in_a_wikilink_alias_are_escaped_when_rendered() {
         let at = VaultPath::new("folder/note.md");
         let a = VaultPath::note_path_from("a");
+        // (`[[a|b]c]]` is text — review 7, item 2.)
         for (note, expected) in [
-            ("[[a|b]c]]", format!("[b\\]c]({a})")),
             ("[[a|b[c]]", format!("[b\\[c]({a})")),
             ("[[a|b\\c]]", format!("[b\\\\c]({a})")),
         ] {
@@ -2604,10 +2857,12 @@ mod tests {
                 vec!["Doc"],
                 vec![path("My Doc.md")],
             ),
+            // The label from the first `[`, as before the walk (review 7,
+            // item 3: the editor's pattern over the whole block).
             (
                 "[ **a\n[y](e f.md)**",
                 vec!["e f.md"],
-                vec!["y"],
+                vec![" **a\n[y"],
                 vec![path("e f.md")],
             ),
         ] {
@@ -2735,5 +2990,196 @@ mod tests {
         let chunks = crate::note::content_extractor::get_content_chunks(note);
         assert_eq!(chunks[0].text, "esc ok");
         assert_eq!(crate::note::note_tags(note), ["esc", "ok"]);
+    }
+
+    // Review 7, crash: pulldown-cmark 0.13.4 panics on these (an `![[`
+    // opener completed as an ordinary image or link before a later `]]`).
+    const PULLDOWN_CRASH_INPUTS: [&str; 4] = [
+        "![[a](b) c](d)]]",
+        "See ![[img](a.png)](b.md)]] here",
+        "![[!](x)](x)]]",
+        "![[]<](x)]]",
+    ];
+
+    /// Guards the pulldown-cmark 0.13.4 wikilink crash (upstream fix
+    /// ebf31da886, see `pulldown_crash_guard`): these inputs panicked the
+    /// parse. With the guard each `![[` is `!` then `[[`: the inner link is
+    /// a link, the rest text as written (a `]` in it, so no wikilink).
+    #[test]
+    fn pulldown_0_13_4_wikilink_crash_inputs_do_not_panic() {
+        let expected: [(&str, &[&str]); 4] = [
+            ("![a c](d)]]", &["b"]),
+            ("See ![img](b.md)]] here", &["a.png"]),
+            ("![!](x)]]", &["x"]),
+            ("![]<]]", &["x"]),
+        ];
+        for (note, (chunk_text, targets)) in PULLDOWN_CRASH_INPUTS.into_iter().zip(expected) {
+            let w = walk(note);
+            let (md, _) = w.render_markdown(note, &VaultPath::new("n.md"));
+            assert_eq!(md, note, "nothing to rewrite: {note:?}");
+            assert_eq!(
+                (text(&w).as_str(), w.link_targets()),
+                (chunk_text, targets.iter().map(|t| t.to_string()).collect()),
+                "{note:?}"
+            );
+            let heading =
+                crate::note::content_extractor::heading_display_text(&format!("# {note}"));
+            assert_eq!(heading.as_deref(), Some(chunk_text), "{note:?}");
+        }
+    }
+
+    /// The guard leaves an embed as written alone, and the text it swaps
+    /// comes back as the note has it, code included.
+    #[test]
+    fn the_crash_guard_keeps_embeds_and_the_notes_text() {
+        let note = "![[pic.png|200]] `![[a` ![[b](c)\n\n```\n![[x]y\n```\n";
+        assert_eq!(
+            pulldown_crash_guard("![[pic.png|200]] and ![[a.png]]"),
+            "![[pic.png|200]] and ![[a.png]]"
+        );
+        let w = walk(note);
+        assert_eq!(links(&w)[0], (WalkLinkKind::WikiEmbed, "pic.png", "200"));
+        assert_eq!(text(&w), "200 `![[a` ![b\n```\n![[x]y\n```");
+    }
+
+    /// Walks `n` seeded random notes over the markup alphabet the pulldown
+    /// crash needs, through every view and `heading_display_text`.
+    fn fuzz_walk(n: usize) {
+        const ALPHABET: [&str; 19] = [
+            "[", "]", "(", ")", "!", "|", "#", "<", ">", "\\", "`", "a", " ", "\n", "[[", "]]",
+            "![[", "](", "](x)",
+        ];
+        let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x as usize
+        };
+        let path = VaultPath::new("n.md");
+        for _ in 0..n {
+            let note: String = (0..1 + next() % 16)
+                .map(|_| ALPHABET[next() % ALPHABET.len()])
+                .collect();
+            let w = walk(&note);
+            let _ = (w.headings(&note), w.link_targets(), w.index_links(&path));
+            let _ = (w.render_markdown(&note, &path), w.tag_names(), w.title());
+            let _ = w.into_chunks();
+            let _ = crate::note::content_extractor::heading_display_text(&format!("#{note}"));
+            let crlf = note.replace('\n', "\r\n");
+            assert_eq!(every_view(&crlf), every_view(&note), "{note:?}");
+        }
+    }
+
+    #[test]
+    fn random_markup_walks_without_panicking() {
+        fuzz_walk(8_000);
+    }
+
+    /// The crash fix's proof run: `cargo test -p kimun_core --release --lib
+    /// random_markup_walks_at_length -- --ignored`.
+    #[test]
+    #[ignore = "slow: 300k notes"]
+    fn random_markup_walks_at_length() {
+        fuzz_walk(300_000);
+    }
+
+    /// Everything a note's extractors give, as text: for comparing the same
+    /// note in LF and CRLF. The rendered markdown keeps the note's own line
+    /// endings outside what it rewrites, so it is compared with them as LF.
+    fn every_view(note: &str) -> String {
+        use crate::note::{NoteDetails, NoteMetadata};
+        let details = NoteDetails::new(&VaultPath::new("d/n.md"), note);
+        let (md, md_links) = details.get_markdown_and_links();
+        format!(
+            "{:?}\n{:?}\n{:?}\n{:?}\n{:?}\n{:?}\n{:?}\n{:?}",
+            details.get_title(),
+            details.get_content_chunks(),
+            details.get_chunks_and_links(),
+            NoteMetadata::of(note),
+            crate::note::note_tags(note),
+            crate::note::extract_labels(note),
+            md.replace("\r\n", "\n"),
+            md_links,
+        )
+    }
+
+    // Review 7, item 1: CRLF notes read exactly as LF notes, with and
+    // without frontmatter.
+    #[test]
+    fn a_crlf_note_reads_exactly_as_the_same_note_in_lf() {
+        let body = "# Title [[a|x\ny]]\n\nx `code\nspan` y [[a|dis\nplay]] #tag\n\n\
+                    <div>\nhtml\n</div>\n\n<pre>\na\n\nb\n</pre>\n\n\
+                    [l\nm](n.md) a <b\nc=\"d\">x [p\nq](a b.md)\n\n```\nc\r\n```\n\n    i\n    j\n\n## End\n";
+        for note in [body.to_string(), format!("---\ntitle: x\n---\n{body}")] {
+            let note = note.replace("\r\n", "\n");
+            let crlf = note.replace('\n', "\r\n");
+            assert_eq!(every_view(&crlf), every_view(&note), "{note:?}");
+        }
+    }
+
+    // Review 7, item 2: a `]` between `[[` and `]]` makes it text, as the
+    // editor reads it — what pulldown reads without wikilinks.
+    #[test]
+    fn a_wikilink_holding_a_closing_bracket_is_text() {
+        for (note, chunk_text) in [
+            ("[[a|b]c]] x", "[[a|b]c]] x"),
+            ("[[a]b]] x", "[[a]b]] x"),
+            ("![[a]b]] x", "![[a]b]] x"),
+            ("[[a]|]] x", "[[a]|]] x"),
+        ] {
+            assert_no_link_anywhere(note);
+            assert_eq!(text(&walk(note)), chunk_text, "{note:?}");
+        }
+        // Its text as written, like a wikilink's (markup and all); a
+        // hashtag in it is still a tag, as in any text.
+        let note = "[[a|*b* #t]c]]";
+        let w = walk(note);
+        assert_eq!(text(&w), "[[a|*b* t]c]]");
+        assert!(w.links.is_empty());
+        assert_eq!(w.tag_names(), ["t"]);
+    }
+
+    // Review 7, item 3: a spaced-destination link whose label wraps is
+    // found (the editor's pattern over the whole block, as before the walk);
+    // a `]` and `(` split over two lines is no link, nor is one spanning a
+    // nested list item.
+    #[test]
+    fn a_spaced_destination_link_with_a_wrapped_label_is_a_link() {
+        let at = VaultPath::new("n.md");
+        for (note, label) in [
+            ("p [x\ny](a b.md) q", "x\ny"),
+            ("> p [x\n> y](a b.md) q", "x\n> y"),
+        ] {
+            let w = walk(note);
+            assert_eq!(
+                links(&w),
+                [(WalkLinkKind::Found, "a b.md", label)],
+                "{note:?}"
+            );
+            assert_eq!(w.link_targets(), ["a b.md"], "{note:?}");
+            let (md, _) = w.render_markdown(note, &at);
+            assert!(md.contains("](<a b.md>)"), "{md:?}");
+        }
+        for note in [
+            "p [a]\n(b c.md) q",
+            "- [a\n  - b](c d.md)",
+            "p [x](a\nb c.md) q",
+        ] {
+            assert_no_link_anywhere(note);
+        }
+    }
+
+    // Review 7, item 4: an inline link whose destination links nowhere is
+    // left as written, like a found one (real note: Jira Reference.md).
+    #[test]
+    fn an_inline_link_that_resolves_nowhere_is_left_as_written() {
+        let note = "[401 Guide]([https://x.y/a](https://x.y/a)) and [ok](b.md)";
+        let (md, listed) = walk(note).render_markdown(note, &VaultPath::new("n.md"));
+        assert_eq!(
+            md,
+            "[401 Guide]([https://x.y/a](https://x.y/a)) and [ok](b.md)"
+        );
+        assert_eq!(raw_links(&listed), ["b.md"]);
     }
 }
