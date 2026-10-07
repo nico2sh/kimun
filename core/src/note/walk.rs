@@ -56,14 +56,15 @@ pub(in crate::note) struct WalkLink {
 impl WalkLink {
     /// Whether every view treats this as a link: a wikilink (or embed) only
     /// when the note it points to (see [`Self::wiki_note`]) is a valid vault
-    /// path — `[[#tag]]` parses as a wikilink but links nowhere.
+    /// path — `[[#tag]]` parses as a wikilink but links nowhere — and any
+    /// other only with a destination that is not blank (`[t]()`).
     fn is_link(&self) -> bool {
         match self.kind {
             WalkLinkKind::Wiki | WalkLinkKind::WikiEmbed => {
                 let (note, _) = self.wiki_note();
                 !note.is_empty() && VaultPath::is_valid(note)
             }
-            _ => true,
+            _ => !self.target.trim().is_empty(),
         }
     }
 
@@ -73,16 +74,16 @@ impl WalkLink {
         split_link_fragment(&self.target)
     }
 
-    /// Whether an inline link can be written back as `[label](dest)` with
-    /// `dest` its resolved destination: not when the destination is in
-    /// `<…>` or followed by a title (neither survives being re-emitted bare,
-    /// so the link is left as written), nor when `dest` itself cannot stand
-    /// bare in a link (whitespace, unbalanced parentheses). Padding and
-    /// escapes in the destination are no reason to keep it.
-    fn rewritable_as(&self, note: &str, dest: &str) -> bool {
+    /// How an inline link writes `dest`, its resolved destination, back as
+    /// `[label](…)` (see [`markdown_destination`]); `None` leaves it as
+    /// written: so does a destination written in `<…>` or followed by a
+    /// title (neither survives being re-emitted). Padding and escapes in the
+    /// destination are no reason to keep it.
+    fn rewritten_destination(&self, note: &str, dest: String) -> Option<String> {
         inline_destination(&note[self.range.clone()], &self.label)
-            .is_some_and(|written| bare_destination(written.trim()))
-            && bare_destination(dest)
+            .is_some_and(|written| plain_destination(written.trim()))
+            .then(|| markdown_destination(dest))
+            .flatten()
     }
 }
 
@@ -95,20 +96,10 @@ fn inline_destination<'s>(link: &'s str, label: &str) -> Option<&'s str> {
         .strip_suffix(')')
 }
 
-/// Whether `dest` reads back as itself as a bare link destination: not in
-/// `<…>`, no whitespace (a title would follow it), parentheses balanced.
-fn bare_destination(dest: &str) -> bool {
-    let mut depth = 0i32;
-    for c in dest.chars() {
-        match c {
-            '(' => depth += 1,
-            ')' if depth == 0 => return false,
-            ')' => depth -= 1,
-            c if c.is_whitespace() => return false,
-            _ => {}
-        }
-    }
-    depth == 0 && !dest.starts_with('<')
+/// Whether an inline link's destination is written plain: not in `<…>`,
+/// no whitespace (a title follows it).
+fn plain_destination(written: &str) -> bool {
+    !written.starts_with('<') && !written.contains(char::is_whitespace)
 }
 
 /// A hashtag in prose: its name without `#`, and the source bytes of
@@ -567,17 +558,18 @@ pub(in crate::note) fn resolve_md_link(
 
 /// An embed as a markdown image for the image pipeline: a target that looks
 /// like an image as written (the pipeline resolves it against the note's
-/// folder), any other its note path, unresolved; a fragment kept after it
-/// (see `url_fragment`). Left bare, not `<…>`-wrapped: the image pipeline
-/// reads the destination as written.
+/// folder), any other its note path, unresolved; a fragment is dropped (an
+/// image shows the whole file). Left bare, not `<…>`-wrapped: the image
+/// pipeline reads the destination as written, and a vault path holds no
+/// `<`, `>` or line break.
 fn embed_image(link: &WalkLink) -> String {
-    let (target, fragment) = link.wiki_note();
+    let (target, _) = link.wiki_note();
     let dest = if target_looks_like_image(target) {
         target.to_string()
     } else {
         VaultPath::note_path_from(target).to_string()
     };
-    format!("![{}]({dest}{})", link.label, url_fragment(fragment))
+    format!("![{}]({dest})", link.label)
 }
 
 /// A wikilink's `#section` / `^block` as a URL fragment: a section as
@@ -590,14 +582,21 @@ fn url_fragment(fragment: &str) -> String {
     }
 }
 
-/// `dest` as a markdown link destination that reads back as itself:
-/// wrapped in `<…>` when it holds whitespace (`plan.md#My Goals`,
-/// `note (draft).md`).
-fn markdown_destination(dest: String) -> String {
-    if dest.contains(char::is_whitespace) {
-        format!("<{dest}>")
+/// `dest` as a markdown link destination that reads back as itself: bare
+/// without whitespace, `<`, `>` or parentheses; wrapped in `<…>` when it
+/// holds whitespace or parentheses (`plan.md#My Goals`, `note (draft).md`)
+/// but no `<`, `>` or line break; otherwise `None` — no form reads back as
+/// `dest`, so the link is left as written (still listed). A backslash is
+/// doubled in either form, so it is not read as an escape.
+fn markdown_destination(dest: String) -> Option<String> {
+    let needs_wrap = |c: char| c.is_whitespace() || c == '(' || c == ')';
+    let escaped = dest.replace('\\', "\\\\");
+    if !dest.contains(['<', '>']) && !dest.contains(needs_wrap) {
+        Some(escaped)
+    } else if !dest.contains(['<', '>', '\n', '\r']) {
+        Some(format!("<{escaped}>"))
     } else {
-        dest
+        None
     }
 }
 
@@ -693,13 +692,15 @@ impl NoteWalk {
     /// The note rewritten for a renderer, plus its links: valid wikilinks
     /// become `[text](note path#fragment)`, a path target resolved against
     /// the note's folder as the editor follows it, a `#section` kept after it
-    /// (`^block` as `#^block`), the destination `<…>`-wrapped when it holds
-    /// whitespace; an embed becomes an image left to the image pipeline
+    /// (`^block` as `#^block`), an empty display part shown as the target as
+    /// written; an embed becomes an image left to the image pipeline
     /// (see `embed_image`), not listed; inline links get their destination
-    /// resolved; hashtags become `[#tag](#tag)`. Reference links, autolinks,
-    /// inline links that cannot be written back bare (`<…>` destination,
-    /// title — see `WalkLink::rewritable_as`) and wikilinks inside HTML are
-    /// listed but left as written. Links come in document order, hashtags after them.
+    /// resolved; hashtags become `[#tag](#tag)`. Every rewritten destination
+    /// is written by `markdown_destination`. Reference links, autolinks,
+    /// inline links written with a `<…>` destination or a title (see
+    /// `WalkLink::rewritten_destination`), links whose destination cannot be
+    /// written back, and wikilinks inside HTML are listed but left as
+    /// written. Links come in document order, hashtags after them.
     /// Everything outside a recorded range — frontmatter, code, images — is
     /// copied verbatim.
     pub(in crate::note) fn render_markdown(
@@ -720,17 +721,21 @@ impl NoteWalk {
                     let (target, fragment) = link.wiki_note();
                     let path = VaultPath::note_path_from(target).resolve_against_note(ref_path);
                     links.push(NoteLink::note(&path, &link.label));
-                    if !link.in_html {
-                        let dest =
-                            markdown_destination(format!("{path}{}", url_fragment(fragment)));
-                        let rendered = format!("[{}]({dest})", link.label);
-                        edits.push((link.range.clone(), rendered));
+                    let dest = markdown_destination(format!("{path}{}", url_fragment(fragment)));
+                    if let Some(dest) = dest.filter(|_| !link.in_html) {
+                        // An empty display part would render an invisible link.
+                        let text = if link.label.is_empty() {
+                            &link.target
+                        } else {
+                            &link.label
+                        };
+                        edits.push((link.range.clone(), format!("[{text}]({dest})")));
                     }
                 }
                 WalkLinkKind::Inline => {
                     let (dest, found) = resolve_md_link(&link.target, &link.label, ref_path);
                     links.extend(found);
-                    if link.rewritable_as(note, &dest) {
+                    if let Some(dest) = link.rewritten_destination(note, dest) {
                         edits.push((link.range.clone(), format!("[{}]({dest})", link.label)));
                     }
                 }
@@ -1879,12 +1884,12 @@ mod tests {
     }
 
     #[test]
-    fn a_destination_that_cannot_be_written_back_bare_is_left_as_written() {
+    fn a_destination_that_cannot_be_written_back_bare_is_wrapped() {
         // `a\(b.md` decodes to `a(b.md`: written back bare, its `(` would
-        // end the link early.
+        // end the link early, so it is `<…>`-wrapped (review 4, item 1).
         let note = "[t](a\\(b.md)";
         let (md, listed) = walk(note).render_markdown(note, &VaultPath::new("folder/note.md"));
-        assert_eq!(md, note);
+        assert_eq!(md, "[t](<a(b.md>)");
         assert_eq!(listed.len(), 1, "{listed:?}");
     }
 
@@ -1984,7 +1989,8 @@ mod tests {
         let a = VaultPath::note_path_from("a");
         let e = VaultPath::note_path_from("e");
         let (md, _) = walk(note).render_markdown(note, &VaultPath::new("n.md"));
-        assert_eq!(md, format!("[a^blk]({a}#^blk) ![e^b]({e}#^b)"));
+        // An embed drops its fragment (review 4, item 2).
+        assert_eq!(md, format!("[a^blk]({a}#^blk) ![e^b]({e})"));
     }
 
     #[test]
@@ -2034,5 +2040,135 @@ mod tests {
         assert_eq!(crate::note::note_link_targets(note), ["x.md", "a b.md"]);
         let (md, _) = walk(note).render_markdown(note, &VaultPath::new("n.md"));
         assert_eq!(md, note, "a title or `<…>` destination is left as written");
+    }
+
+    /// The destinations of the links a renderer reads in `md`.
+    fn rendered_dests(md: &str) -> Vec<String> {
+        Parser::new(md)
+            .filter_map(|e| match e {
+                Event::Start(Tag::Link { dest_url, .. }) => Some(dest_url.to_string()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    // Review 4, item 1: a destination is written bare, `<…>`-wrapped, or —
+    // when neither reads back as itself — not spliced; the link stays listed.
+    #[test]
+    fn a_destination_is_written_bare_wrapped_or_left_as_written() {
+        let at = VaultPath::new("n.md");
+        let plan = VaultPath::note_path_from("Plan");
+        for (note, expected) in [
+            ("[[Plan]]", format!("[Plan]({plan})")),
+            ("[[Plan#My Goals|g]]", format!("[g](<{plan}#My Goals>)")),
+            ("[[Plan#a)]]", format!("[Plan#a)](<{plan}#a)>)")),
+            ("[[Plan#a(b]]", format!("[Plan#a(b](<{plan}#a(b>)")),
+            ("[[Plan#a > b|g]]", "[[Plan#a > b|g]]".to_string()),
+        ] {
+            let (md, listed) = walk(note).render_markdown(note, &at);
+            assert_eq!(md, expected, "{note:?}");
+            assert_eq!(raw_links(&listed), [plan.to_string()], "{note:?}");
+            if md != note {
+                let (_, fragment) = split_link_fragment(note.trim_matches(['[', ']']));
+                let fragment = fragment.split('|').next().unwrap_or_default();
+                assert_eq!(
+                    rendered_dests(&md),
+                    [format!("{plan}{fragment}")],
+                    "{note:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_backslash_in_a_destination_is_doubled_so_it_reads_back() {
+        let at = VaultPath::new("n.md");
+        let plan = VaultPath::note_path_from("Plan");
+        for (note, dest) in [
+            ("[[Plan#a\\.b|g]]", format!("{plan}#a\\.b")),
+            ("[[Plan#a b\\.c|g]]", format!("{plan}#a b\\.c")),
+        ] {
+            let (md, _) = walk(note).render_markdown(note, &at);
+            assert_eq!(rendered_dests(&md), [dest], "{note:?} -> {md}");
+        }
+    }
+
+    // Review 4, item 1: the vault's image pass leaves wrapped link
+    // destinations exactly as rendered.
+    #[test]
+    fn the_image_pass_keeps_wrapped_destinations() {
+        let note = "[[Plan#a(b]] [[Plan#My Goals|g]] [[Note (draft)]] ![[pic.png#x]]";
+        let (md, _) = walk(note).render_markdown(note, &VaultPath::new("n.md"));
+        let (after, images) = crate::note::process_image_links(&md, |_, raw| {
+            (format!("/abs/{raw}"), NoteLink::url(raw, ""))
+        });
+        assert_eq!(after, md.replace("(pic.png)", "(/abs/pic.png)"));
+        assert_eq!(images.len(), 1);
+    }
+
+    // Review 4, item 1: the same rule for an inline link's resolved
+    // destination.
+    #[test]
+    fn an_inline_destination_with_parentheses_is_wrapped() {
+        let note = "[t](a\\(b.md) [u](a&#32;b.md)";
+        let (md, _) = walk(note).render_markdown(note, &VaultPath::new("n.md"));
+        assert_eq!(md, "[t](<a(b.md>) [u](<a b.md>)");
+        assert_eq!(rendered_dests(&md), ["a(b.md", "a b.md"]);
+    }
+
+    // Review 4, item 2: an embed renders without its fragment.
+    #[test]
+    fn an_embed_renders_without_its_fragment() {
+        let at = VaultPath::new("/dir/n.md");
+        let e = VaultPath::note_path_from("e");
+        for (note, expected) in [
+            ("![[pic.png#x]]", "![pic.png#x](pic.png)".to_string()),
+            ("![[pic.png#x|P]]", "![P](pic.png)".to_string()),
+            ("![[e^b]]", format!("![e^b]({e})")),
+            ("![[e#s]]", format!("![e#s]({e})")),
+        ] {
+            let w = walk(note);
+            let (md, listed) = w.render_markdown(note, &at);
+            assert_eq!(md, expected, "{note:?}");
+            assert!(listed.is_empty(), "{listed:?}");
+        }
+        assert_eq!(
+            raw_links(&walk("![[e^b]]").index_links(&at)),
+            [e.to_string()]
+        );
+    }
+
+    // Review 4, item 3: an empty or blank destination is no link anywhere.
+    #[test]
+    fn an_empty_destination_is_no_link() {
+        let at = VaultPath::new("folder/n.md");
+        for note in ["[t]()", "[t]( )", "[t](<>)", "[[a#s|]] [[ |x]]"] {
+            let (_, index) = crate::note::content_extractor::get_chunks_and_links(&at, note);
+            let (md, listed) = walk(note).render_markdown(note, &at);
+            let targets = crate::note::note_link_targets(note);
+            if note.starts_with("[[") {
+                let a = VaultPath::note_path_from("a");
+                assert_eq!(raw_links(&index), [a.to_string()], "{note:?}");
+                assert_eq!(targets, ["a#s"], "{note:?}");
+                assert!(md.ends_with(" [[ |x]]"), "{md:?}");
+            } else {
+                assert!(index.is_empty(), "{note:?}: {index:?}");
+                assert!(listed.is_empty(), "{note:?}: {listed:?}");
+                assert!(targets.is_empty(), "{note:?}: {targets:?}");
+                assert_eq!(md, note);
+            }
+        }
+    }
+
+    // Review 4, item 4: an empty display part renders the target as the
+    // link text; the walked text stays empty.
+    #[test]
+    fn an_empty_display_part_renders_the_target_as_link_text() {
+        let note = "[[a#s|]]";
+        let a = VaultPath::note_path_from("a");
+        let w = walk(note);
+        assert_eq!(text(&w), "");
+        let (md, _) = w.render_markdown(note, &VaultPath::new("n.md"));
+        assert_eq!(md, format!("[a#s]({a}#s)"));
     }
 }
