@@ -684,20 +684,17 @@ enum WikilinkSuffix {
 /// `start` must be a char boundary within `buffer` (`compute_accept`
 /// checks this before calling).
 fn scan_wikilink_extent(buffer: &str, start: usize) -> WikilinkExtent {
-    let bytes = buffer.as_bytes();
-    // All decision bytes are ASCII so byte-level scanning is UTF-8 safe.
-    let is_stop = |b: &u8| matches!(b, b'\n' | b'\r' | b'[');
-
     // Where this link could still extend to: the rest of the line, up to
-    // the next `[` (which would open another link).
-    let rest = &bytes[start..];
-    let reach = &rest[..rest.iter().position(is_stop).unwrap_or(rest.len())];
-    let close = reach.windows(2).position(|w| w == b"]]");
-    let marker = reach.iter().position(|b| matches!(b, b'|' | b'#' | b'^'));
+    // the next `[` (which would open another link). Every offset below
+    // comes from `find` on ASCII patterns, so slices stay on char
+    // boundaries.
+    let rest = &buffer[start..];
+    let reach = &rest[..rest.find(['\n', '\r', '[']).unwrap_or(rest.len())];
+    let close = reach.find("]]");
+    let marker = reach.find(['|', '#', '^']);
     let typed_alias = || {
-        reach.iter().position(|&b| b == b'|').is_some_and(|p| {
-            !reach[..p].iter().any(u8::is_ascii_whitespace)
-                && reach.get(p + 1).is_some_and(|b| !b.is_ascii_whitespace())
+        reach.split_once('|').is_some_and(|(target, alias)| {
+            !target.contains(char::is_whitespace) && alias.starts_with(|c: char| !c.is_whitespace())
         })
     };
 
@@ -708,7 +705,7 @@ fn scan_wikilink_extent(buffer: &str, start: usize) -> WikilinkExtent {
         // ahead of the alias is kept along with it.
         (None, Some(m)) if typed_alias() => (m, WikilinkSuffix::Kept),
         (None, _) => (
-            usize::from(reach.first() == Some(&b']')),
+            usize::from(reach.starts_with(']')),
             WikilinkSuffix::AppendClose,
         ),
     };
@@ -1200,6 +1197,17 @@ mod tests {
             ("| a | [[me | c |", "| a | [[me", "| a | [[meeting]] | c |"),
             ("| a |[[me| c |", "| a |[[me", "| a |[[meeting]]| c |"),
             ("|[[me|", "|[[me", "|[[meeting]]|"),
+            // Non-ASCII padding (ideographic / no-break space) too.
+            (
+                "|[[me\u{3000}|\u{3000}c|",
+                "|[[me",
+                "|[[meeting]]\u{3000}|\u{3000}c|",
+            ),
+            (
+                "|[[me\u{a0}|\u{a0}c|",
+                "|[[me",
+                "|[[meeting]]\u{a0}|\u{a0}c|",
+            ),
         ] {
             let (buffer, _) = accept_first("meeting", before, cursor.len()).await;
             assert_eq!(buffer, after);

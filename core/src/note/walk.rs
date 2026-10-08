@@ -366,7 +366,7 @@ fn prose_text(
 }
 
 /// Whether `r` overlaps one of `ranges`, which are disjoint and in order.
-fn overlaps_any(ranges: &[Range<usize>], r: &Range<usize>) -> bool {
+pub(in crate::note) fn overlaps_any(ranges: &[Range<usize>], r: &Range<usize>) -> bool {
     let i = ranges.partition_point(|x| x.end <= r.start);
     ranges.get(i).is_some_and(|x| x.start < r.end)
 }

@@ -9,7 +9,7 @@ use crate::{
     note::{ContentChunk, NoteContentData},
 };
 
-use super::walk::{retarget_links, walk, TextLine};
+use super::walk::{overlaps_any, retarget_links, walk, TextLine};
 use super::NoteLink;
 
 const _MAX_TITLE_LENGTH: usize = 40;
@@ -146,8 +146,15 @@ pub fn link_char_spans(text: &str) -> Vec<LinkSpan> {
         let target = wikilink_parts(inner).0.to_string();
         raw.push((m.start(), m.end(), LinkSpanKind::WikiLink, target));
     }
+    // Neither pattern overlaps itself, but a `[[…]]` can sit inside a
+    // markdown destination (`[a]([[b]])`). Keep the wikilink, as the walk
+    // does — the cursor below also needs non-overlapping spans.
+    let wikis: Vec<Range<usize>> = raw.iter().map(|w| w.0..w.1).collect();
     for caps in MD_LINK_RX.captures_iter(text) {
         let m = caps.get(0).unwrap();
+        if overlaps_any(&wikis, &m.range()) {
+            continue;
+        }
         let target = caps["link"].trim().to_string();
         let kind = if caps["bang"].is_empty() {
             LinkSpanKind::Markdown
@@ -922,6 +929,29 @@ mod test {
         // " then " = 6 chars; md starts at 15+6=21; "[link](http://x)" = 16 chars.
         assert_eq!(md.start, 21);
         assert_eq!(md.end, 37);
+    }
+
+    #[test]
+    fn link_char_spans_prefers_a_wikilink_inside_a_markdown_destination() {
+        // A `[[…]]` inside `(…)` overlaps the markdown match; like the walk,
+        // keep the wikilink and drop the markdown link (overlapping spans
+        // also broke the byte→char cursor).
+        for (text, wiki) in [
+            ("[a]([[b]])", "[[b]]"),
+            ("![a]([[b]] c)", "[[b]]"),
+            ("[x](a [[b)]]", "[[b)]]"),
+            ("see [x](y [[z]]) and 会议", "[[z]]"),
+        ] {
+            let spans = link_char_spans(text);
+            assert_eq!(spans.len(), 1, "{text:?}: {spans:?}");
+            assert_eq!(spans[0].kind, LinkSpanKind::WikiLink, "{text:?}");
+            let got: String = text
+                .chars()
+                .skip(spans[0].start)
+                .take(spans[0].end - spans[0].start)
+                .collect();
+            assert_eq!(got, wiki, "{text:?}");
+        }
     }
 
     #[test]
