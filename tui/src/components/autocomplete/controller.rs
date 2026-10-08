@@ -590,13 +590,13 @@ impl AutocompleteController {
                 // the stale wikilink-target region (see
                 // `scan_wikilink_extent`): up to an existing `]]` or
                 // `|alias`/`#fragment` when the link is closed; for an
-                // unclosed link only an alias or fragment being typed or a
-                // lone `]` at the cursor —
+                // unclosed link only an alias being typed or a lone `]` at
+                // the cursor —
                 // preventing artefacts like `[[meeting]]e]]` when the
                 // popup is reopened mid-target without eating the rest of
                 // the line.
                 let new_range = range.start..extent.end;
-                let new_text = if extent.suffix == WikilinkSuffix::None {
+                let new_text = if extent.suffix == WikilinkSuffix::AppendClose {
                     format!("{}]]", suggestion.display)
                 } else {
                     suggestion.display.clone()
@@ -668,10 +668,10 @@ enum WikilinkSuffix {
     /// An existing `]]`.
     Close,
     /// A `|alias`, `#section` or `^block` the user already typed, which we
-    /// must preserve (closed or not).
+    /// must preserve (only `|alias` when the link is unclosed).
     Kept,
     /// Nothing link-related — the accept must append `]]`.
-    None,
+    AppendClose,
 }
 
 /// Find how far past the cursor the target being completed extends.
@@ -687,10 +687,11 @@ enum WikilinkSuffix {
 /// that follows (paths, spaceless scripts and punctuation all defeat a
 /// word-based guess); leaving a visible tail beats deleting text. So
 /// nothing past the cursor is consumed, except:
-/// - an alias or fragment being typed: a `|`, `#` or `^` directly
-///   followed by non-blank text, reached without crossing a blank
-///   (`[[meet` + `ign|al`). The text up to it is stale target; a `|`
-///   followed by a blank or the line end is a table separator instead.
+/// - an alias being typed: a `|` directly followed by non-blank text,
+///   reached without crossing a blank (`[[meet` + `ign|al`). The text up
+///   to it is stale target; a `|` followed by a blank or the line end is
+///   a table separator instead. `#` and `^` get no such treatment here:
+///   without a `]]` they are as likely a hashtag or prose as a fragment.
 /// - a lone `]` right at the cursor, so `[[me]` doesn't become
 ///   `[[meeting]]]`.
 fn scan_wikilink_extent(buffer: &str, start: usize) -> WikilinkExtent {
@@ -718,6 +719,7 @@ fn scan_wikilink_extent(buffer: &str, start: usize) -> WikilinkExtent {
         };
     }
     if let Some(p) = marker
+        && line[p] == b'|'
         && !line[..p].iter().any(u8::is_ascii_whitespace)
         && !is_blank(line.get(p + 1))
     {
@@ -725,7 +727,7 @@ fn scan_wikilink_extent(buffer: &str, start: usize) -> WikilinkExtent {
     }
     WikilinkExtent {
         end: start + usize::from(line.first() == Some(&b']')),
-        suffix: WikilinkSuffix::None,
+        suffix: WikilinkSuffix::AppendClose,
     }
 }
 
@@ -1264,13 +1266,25 @@ mod tests {
             ("see [[pl^block]]", "see [[plan^block]]"),
             ("see [[pl#goals|Goals]]", "see [[plan#goals|Goals]]"),
             ("see [[plx#goals]]", "see [[plan#goals]]"),
-            // Unclosed: the fragment is still being typed.
-            ("see [[pl#goals", "see [[plan#goals"),
-            ("see [[plx#goals and more", "see [[plan#goals and more"),
         ] {
             let (buffer, cursor) = accept_first("plan", before, "see [[pl".len()).await;
             assert_eq!(buffer, after, "from {before:?}");
             assert_eq!(cursor, "see [[plan".len(), "from {before:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn accepting_unclosed_wikilink_leaves_hash_and_caret_text_alone() {
+        // Without a closing `]]`, a `#` or `^` after the cursor may be a
+        // hashtag or prose rather than a fragment, so nothing is consumed.
+        for (before, after) in [
+            ("see [[me#project", "see [[meeting]]#project"),
+            ("see [[me/notes.md#intro", "see [[meeting]]/notes.md#intro"),
+            ("see [[me^x", "see [[meeting]]^x"),
+        ] {
+            let (buffer, cursor) = accept_first("meeting", before, "see [[me".len()).await;
+            assert_eq!(buffer, after, "from {before:?}");
+            assert_eq!(cursor, "see [[meeting]]".len(), "from {before:?}");
         }
     }
 
