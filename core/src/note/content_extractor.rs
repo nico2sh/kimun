@@ -27,15 +27,17 @@ static MD_LINK_RX: LazyLock<Regex> = LazyLock::new(|| {
     //
     // Approximates CommonMark without a full parse: the text may wrap onto
     // following lines (a soft break inside the paragraph) but not past a
-    // blank or whitespace-only line, and may hold one level of balanced
-    // `[…]`; the destination never wraps. Without these limits a stray `[`
-    // — say a `[[` being typed — paired with any `](…)` further down the
-    // note, swallowing everything in between as link text.
+    // blank (spaces/tabs only) line, and may hold one level of balanced
+    // `[…]` — but not as its first thing, so `[[wikilink]](…)` stays a
+    // wikilink. The destination never wraps. Without these limits a stray
+    // `[` — say a `[[` being typed — paired with any `](…)` further down
+    // the note, swallowing everything in between as link text.
     const CHAR: &str = r"[^\[\]\r\n]";
-    const SOFT_BREAK: &str = r"\r?\n[ \t]*[^\s\[\]]";
+    const SOFT_BREAK: &str = r"\r?\n[ \t]*[^ \t\r\n\[\]]";
     let piece = format!("{CHAR}|{SOFT_BREAK}");
+    let nested = format!(r"\[(?:{piece})*\]");
     Regex::new(&format!(
-        r"(?P<bang>!?)(?:\[(?P<text>(?:{piece}|\[(?:{piece})*\])*)\])\((?P<link>[^\)\r\n]+?)\)"
+        r"(?P<bang>!?)(?:\[(?P<text>(?:(?:{piece})(?:{piece}|{nested})*)?)\])\((?P<link>[^\)\r\n]+?)\)"
     ))
     .unwrap()
 });
@@ -2526,6 +2528,15 @@ ls -la ./test
         assert!(md("[para\n  \nbreak](u)").is_empty());
         // Balanced brackets inside the text are fine; a stray `[` is not.
         assert_eq!(md("[a [b] c](u)"), ["[a [b] c](u)"]);
+        // A wikilink right before `(` stays a wikilink, not link text.
+        assert!(md("in [[Meeting]](notes)").is_empty());
+        let cursor = "in [[Mee".len();
+        assert!(!super::is_inside_code_link_or_frontmatter(
+            "in [[Meeting]](notes)",
+            cursor
+        ));
+        // Only spaces and tabs make a line blank, as in CommonMark.
+        assert_eq!(md("[会议\n\u{3000}记录](u)"), ["[会议\n\u{3000}记录](u)"]);
         assert_eq!(md("see [[ and [Nico](u)"), ["[Nico](u)"]);
         // The destination never wraps: a stray `[x](` doesn't reach a `(…)`
         // further down, nor swallow a real link on the next line.

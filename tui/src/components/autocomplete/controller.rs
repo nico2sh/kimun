@@ -589,24 +589,16 @@ impl AutocompleteController {
                 // Replace from the trigger's start through the stale
                 // target text past the cursor — see `scan_wikilink_extent`.
                 let new_range = range.start..extent.end;
-                let new_text = if extent.suffix == WikilinkSuffix::AppendClose {
-                    format!("{}]]", suggestion.display)
-                } else {
-                    suggestion.display.clone()
+                let display = &suggestion.display;
+                // The cursor lands past `]]` (appended or existing), or
+                // right before a kept `|alias` / `#fragment` so the user
+                // can edit it next.
+                let (new_text, close_len) = match extent.suffix {
+                    WikilinkSuffix::AppendClose => (format!("{display}]]"), 2),
+                    WikilinkSuffix::ExistingClose => (display.clone(), 2),
+                    WikilinkSuffix::Kept => (display.clone(), 0),
                 };
-                let cursor_offset_in_target = suggestion.display.len();
-                let new_cursor_byte = if extent.suffix == WikilinkSuffix::Kept {
-                    // Keep the cursor right before `|alias` / `#fragment`
-                    // so the user can edit it next.
-                    range.start.saturating_add(cursor_offset_in_target)
-                } else {
-                    // Land just past `]]` — whether we appended it or
-                    // it already existed.
-                    range
-                        .start
-                        .saturating_add(cursor_offset_in_target)
-                        .saturating_add(2)
-                };
+                let new_cursor_byte = range.start + display.len() + close_len;
                 Some(AcceptAction {
                     range: new_range,
                     new_text,
@@ -682,47 +674,47 @@ enum WikilinkSuffix {
 /// nothing past the cursor is consumed, except:
 /// - an alias being typed: a `|` directly followed by non-blank text,
 ///   reached without crossing a blank (`[[meet` + `ign|al`). The text up
-///   to it is stale target; a `|` followed by a blank or the line end is
-///   a table separator instead. `#` and `^` get no such treatment here:
-///   without a `]]` they are as likely a hashtag or prose as a fragment.
+///   to it is stale target, and a `#fragment` typed ahead of the alias is
+///   kept with it; a `|` followed by a blank or the line end is a table
+///   separator instead. Without an alias, `#` and `^` get no such
+///   treatment: they are as likely a hashtag or prose as a fragment.
 /// - a lone `]` right at the cursor, so `[[me]` doesn't become
 ///   `[[meeting]]]`.
+///
+/// `start` must be a char boundary within `buffer` (`compute_accept`
+/// checks this before calling).
 fn scan_wikilink_extent(buffer: &str, start: usize) -> WikilinkExtent {
-    let start = start.min(buffer.len());
     let bytes = buffer.as_bytes();
     // All decision bytes are ASCII so byte-level scanning is UTF-8 safe.
     let is_stop = |b: &u8| matches!(b, b'\n' | b'\r' | b'[');
-    let is_blank = |b: Option<&u8>| b.is_none_or(|b| b.is_ascii_whitespace());
 
     // Where this link could still extend to: the rest of the line, up to
     // the next `[` (which would open another link).
     let rest = &bytes[start..];
     let reach = &rest[..rest.iter().position(is_stop).unwrap_or(rest.len())];
+    let close = reach.windows(2).position(|w| w == b"]]");
     let marker = reach.iter().position(|b| matches!(b, b'|' | b'#' | b'^'));
-    let kept = |p: usize| WikilinkExtent {
-        end: start + p,
-        suffix: WikilinkSuffix::Kept,
+    let typed_alias = || {
+        reach.iter().position(|&b| b == b'|').is_some_and(|p| {
+            !reach[..p].iter().any(u8::is_ascii_whitespace)
+                && reach.get(p + 1).is_some_and(|b| !b.is_ascii_whitespace())
+        })
     };
 
-    if let Some(close) = reach.windows(2).position(|w| w == b"]]") {
-        return match marker.filter(|&p| p < close) {
-            Some(p) => kept(p),
-            None => WikilinkExtent {
-                end: start + close,
-                suffix: WikilinkSuffix::ExistingClose,
-            },
-        };
-    }
-    if let Some(p) = marker
-        && reach[p] == b'|'
-        && !reach[..p].iter().any(u8::is_ascii_whitespace)
-        && !is_blank(reach.get(p + 1))
-    {
-        return kept(p);
-    }
+    let (end, suffix) = match (close, marker) {
+        (Some(close), Some(m)) if m < close => (m, WikilinkSuffix::Kept),
+        (Some(close), _) => (close, WikilinkSuffix::ExistingClose),
+        // `marker` sits at or before the alias's `|`, so a fragment typed
+        // ahead of the alias is kept along with it.
+        (None, Some(m)) if typed_alias() => (m, WikilinkSuffix::Kept),
+        (None, _) => (
+            usize::from(reach.first() == Some(&b']')),
+            WikilinkSuffix::AppendClose,
+        ),
+    };
     WikilinkExtent {
-        end: start + usize::from(reach.first() == Some(&b']')),
-        suffix: WikilinkSuffix::AppendClose,
+        end: start + end,
+        suffix,
     }
 }
 
@@ -1231,6 +1223,14 @@ mod tests {
             accept_first("meeting", "see [[meetign|al", "see [[meet".len()).await;
         assert_eq!(buffer, "see [[meeting|al");
         assert_eq!(cursor, "see [[meeting".len());
+    }
+
+    #[tokio::test]
+    async fn accepting_unclosed_wikilink_keeps_fragment_before_alias_being_typed() {
+        // An alias proves the `#goals` before it is a fragment, not prose.
+        let (buffer, cursor) = accept_first("plan", "see [[pl#goals|Goals", "see [[pl".len()).await;
+        assert_eq!(buffer, "see [[plan#goals|Goals");
+        assert_eq!(cursor, "see [[plan".len());
     }
 
     #[tokio::test]
