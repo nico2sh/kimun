@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.6](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.24.5...kimun-notes-v0.24.6) - 2026-10-08
+
+### Added
+
+- check updates on server
+- preferences mouse friendly
+- dialogs are mouse friendly now
+- move across properties with arroes
+- dialog for sort by property, dialog for property editing
+- search by property dates, the dates are stored in UTC, so if you put an offset, keep in mind it may drift from your original date
+- mcp and skill now are aware of the properties
+- frontmatter properties
+
+### Fixed
+
+- possible crash
+- distinct markdown and wikilinks
+- multiline links
+- cleanups
+- possible issues on autocompleting in middle of a sentence
+- autosuggest link doesn't removee the remaining of the line
+- better test
+- if there's no version in the health endpoint, we consider it as an outdated version
+- accept links with spaces with the new parser
+- inner html is ignored for md links and wikilinks
+- regressions
+- regressions on the note walker
+- changed parsing for a note walked, more efficient
+- issues with same name headings
+- heading consistency
+- outline jumps to the right header when more than one header has the same name
+- properly outline headings
+- hover issues on preferences
+- break words on reproducing enter with .
+- dot command properly enters new line continuing lists
+- consistent smart enter on vim mode
+- solved race condition when reloading note and closing properties dialog
+- better sort helper
+- search with no terms and sort, displays recents
+- better duplicate property errors
+- keys with no values are accepted
+- properties keep key casing, BOM files, and inline comments
+- tags always a list
+- accept blank key properties
+
+### Other
+
+- small rules for autocomplete
+- cleanup comments
+- refactor
+- Merge pull request #205 from nico2sh/properties
+- fmt
+
 ## [0.24.5](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.24.4...kimun-notes-v0.24.5) - 2026-10-02
 
 ### Added
