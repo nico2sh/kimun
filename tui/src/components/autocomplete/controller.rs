@@ -586,15 +586,8 @@ impl AutocompleteController {
         match kind {
             TriggerKind::Wikilink => {
                 let extent = scan_wikilink_extent(&buffer, range.end);
-                // Replace from the trigger's start through the end of
-                // the stale wikilink-target region (see
-                // `scan_wikilink_extent`): up to an existing `]]` or
-                // `|alias`/`#fragment` when the link is closed; for an
-                // unclosed link only an alias being typed or a lone `]` at
-                // the cursor —
-                // preventing artefacts like `[[meeting]]e]]` when the
-                // popup is reopened mid-target without eating the rest of
-                // the line.
+                // Replace from the trigger's start through the stale
+                // target text past the cursor — see `scan_wikilink_extent`.
                 let new_range = range.start..extent.end;
                 let new_text = if extent.suffix == WikilinkSuffix::AppendClose {
                     format!("{}]]", suggestion.display)
@@ -666,7 +659,7 @@ struct WikilinkExtent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WikilinkSuffix {
     /// An existing `]]`.
-    Close,
+    ExistingClose,
     /// A `|alias`, `#section` or `^block` the user already typed, which we
     /// must preserve (only `|alias` when the link is unclosed).
     Kept,
@@ -698,35 +691,37 @@ fn scan_wikilink_extent(buffer: &str, start: usize) -> WikilinkExtent {
     let start = start.min(buffer.len());
     let bytes = buffer.as_bytes();
     // All decision bytes are ASCII so byte-level scanning is UTF-8 safe.
-    let is_line_end = |b: &u8| matches!(b, b'\n' | b'\r' | b'[');
+    let is_stop = |b: &u8| matches!(b, b'\n' | b'\r' | b'[');
     let is_blank = |b: Option<&u8>| b.is_none_or(|b| b.is_ascii_whitespace());
 
+    // Where this link could still extend to: the rest of the line, up to
+    // the next `[` (which would open another link).
     let rest = &bytes[start..];
-    let line = &rest[..rest.iter().position(is_line_end).unwrap_or(rest.len())];
-    let marker = line.iter().position(|b| matches!(b, b'|' | b'#' | b'^'));
+    let reach = &rest[..rest.iter().position(is_stop).unwrap_or(rest.len())];
+    let marker = reach.iter().position(|b| matches!(b, b'|' | b'#' | b'^'));
     let kept = |p: usize| WikilinkExtent {
         end: start + p,
         suffix: WikilinkSuffix::Kept,
     };
 
-    if let Some(close) = line.windows(2).position(|w| w == b"]]") {
+    if let Some(close) = reach.windows(2).position(|w| w == b"]]") {
         return match marker.filter(|&p| p < close) {
             Some(p) => kept(p),
             None => WikilinkExtent {
                 end: start + close,
-                suffix: WikilinkSuffix::Close,
+                suffix: WikilinkSuffix::ExistingClose,
             },
         };
     }
     if let Some(p) = marker
-        && line[p] == b'|'
-        && !line[..p].iter().any(u8::is_ascii_whitespace)
-        && !is_blank(line.get(p + 1))
+        && reach[p] == b'|'
+        && !reach[..p].iter().any(u8::is_ascii_whitespace)
+        && !is_blank(reach.get(p + 1))
     {
         return kept(p);
     }
     WikilinkExtent {
-        end: start + usize::from(line.first() == Some(&b']')),
+        end: start + usize::from(reach.first() == Some(&b']')),
         suffix: WikilinkSuffix::AppendClose,
     }
 }
@@ -919,6 +914,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn wikilink_trigger_opens_above_a_later_markdown_link() {
+        // Regression: `[[` typed above `[Nico](…)` paired with that link's
+        // `](`, so the cursor counted as inside a markdown link and the
+        // popup stayed shut.
+        let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
+        let mut c = make_controller(vault, AutocompleteMode::Both);
+        let note = "- item\n[[\n\n## Recipes\n\n[Nico](https://nico.red)";
+        let host = FakeHost::new(note, note.find("[[").unwrap() + 2);
+        c.sync(&host);
+        drain_results(&mut c).await;
+        assert!(c.is_open());
+    }
+
+    #[tokio::test]
     async fn saved_search_popup_loads_matching_searches() {
         let (_tmp, vault) = new_vault_with(&[], &[]).await;
         vault
@@ -989,7 +998,6 @@ mod tests {
         // Consumed and silently ate the keystroke. Now returns
         // NotHandled so the host can give the user back their Tab
         // indent / Enter newline.
-        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
         let mut c = make_controller(vault, AutocompleteMode::Both);
         let mut host = FakeHost::new("see [[me", 8);
@@ -1107,7 +1115,6 @@ mod tests {
         let mut host = FakeHost::new("?to", 3);
         c.sync(&host);
         drain_results(&mut c).await;
-        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let outcome = c.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &host);
         let HandleKeyOutcome::Accepted(action) = outcome else {
             panic!("expected Accepted, got {outcome:?}");
@@ -1295,7 +1302,6 @@ mod tests {
         let mut host = FakeHost::new("about #pro", 10);
         c.sync(&host);
         drain_results(&mut c).await;
-        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let outcome = c.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &host);
         let HandleKeyOutcome::Accepted(action) = outcome else {
             panic!("expected Accepted, got {:?}", outcome);
@@ -1341,7 +1347,6 @@ mod tests {
             .iter()
             .position(|s| s.display == "big project")
             .unwrap();
-        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         for _ in 0..index {
             c.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &host);
         }
@@ -1360,7 +1365,6 @@ mod tests {
         let mut host = FakeHost::new(">my", 3);
         c.sync(&host);
         drain_results(&mut c).await;
-        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let outcome = c.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &host);
         let HandleKeyOutcome::Accepted(action) = outcome else {
             panic!("expected Accepted, got {:?}", outcome);
@@ -1376,7 +1380,6 @@ mod tests {
         let host = FakeHost::new("see [[me", 8);
         c.sync(&host);
         drain_results(&mut c).await;
-        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let outcome = c.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &host);
         assert_eq!(outcome, HandleKeyOutcome::Dismissed);
         assert_eq!(host.buffer, "see [[me");
