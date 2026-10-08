@@ -366,7 +366,7 @@ fn prose_text(
 }
 
 /// Whether `r` overlaps one of `ranges`, which are disjoint and in order.
-fn overlaps_any(ranges: &[Range<usize>], r: &Range<usize>) -> bool {
+pub(in crate::note) fn overlaps_any(ranges: &[Range<usize>], r: &Range<usize>) -> bool {
     let i = ranges.partition_point(|x| x.end <= r.start);
     ranges.get(i).is_some_and(|x| x.start < r.end)
 }
@@ -595,11 +595,12 @@ impl TextBlocks {
                 .iter()
                 .take_while(|o| o.start < at.end)
                 .any(|o| !(label.start <= o.start && o.end <= label.end));
-            // A label may wrap; a destination may not (nor in pulldown). A
-            // spaced destination holding a `(` — `[n](My Notes (draft).md)`,
-            // `[n](a\(b c.md)` — the pattern cannot read reliably.
+            // The pattern never lets a destination wrap (nor does
+            // pulldown). A spaced destination holding a `(` —
+            // `[n](My Notes (draft).md)`, `[n](a\(b c.md)` — it cannot read
+            // reliably.
             if escaped(&source[..m.range.start])
-                || m.target.contains(['\n', '('])
+                || m.target.contains('(')
                 || overlaps_any(&block.links, &at)
                 || overlaps_any(&wikis, &at)
                 || code_outside_label
@@ -3110,12 +3111,12 @@ mod tests {
                 vec!["Doc"],
                 vec![path("My Doc.md")],
             ),
-            // The label from the first `[`, as before the walk (the
-            // editor's pattern over the whole block).
+            // A stray `[` earlier in the block doesn't pair with the link's
+            // `]`: the label is the link's own text.
             (
                 "[ **a\n[y](e f.md)**",
                 vec!["e f.md"],
-                vec![" **a\n[y"],
+                vec!["y"],
                 vec![path("e f.md")],
             ),
         ] {
