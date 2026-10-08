@@ -1,4 +1,4 @@
-//! The phase-03 drawer views: **TAGS**, **LINKS**, and **OUTLINE** — each a
+//! The drawer views: **TAGS**, **LINKS**, and **OUTLINE** — each a
 //! thin adapter (`ListPanelSpec` + a `RowSource`) of the shared
 //! [`QueryListPanel`] body, over core's vault API. Rebuilt on demand
 //! (`refresh`) — the same engine-per-context pattern the sidebar uses per
@@ -351,7 +351,7 @@ pub struct LinksPanel {
     tab: LinksTab,
     body: QueryListPanel<LinksSpec>,
     /// Screen cell each sub-view tab was drawn into on the last render —
-    /// click-to-switch hit-test (keyboard ↔ mouse parity, spec §10).
+    /// click-to-switch hit-test (keyboard ↔ mouse parity).
     tab_cells: Vec<(LinksTab, Rect)>,
 }
 

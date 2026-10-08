@@ -846,7 +846,7 @@ mod tests {
 
     #[test]
     fn old_theme_toml_derives_new_roles_from_siblings() {
-        // A theme file written before the §1 role expansion must still parse,
+        // A theme file written before the role expansion must still parse,
         // with the new roles derived from their closest sibling.
         let toml = r##"
             name = "Old"

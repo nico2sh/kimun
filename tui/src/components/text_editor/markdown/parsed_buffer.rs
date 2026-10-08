@@ -2,9 +2,6 @@
 //! `parse()`. Owns the per-row classification (`kinds`), the
 //! lazy-depth tracking that gates reset-boundary detection, and the
 //! splice/parse-range machinery used by the incremental editor view.
-//!
-//! See openspec changes `parse-reset-boundaries` and
-//! `parse-reset-boundaries-v2` for the design.
 
 use super::super::parse_incremental::LineConstructKind;
 use super::super::text_coords::byte_col_to_char_col;

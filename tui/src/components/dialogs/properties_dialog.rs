@@ -1621,7 +1621,7 @@ mod tests {
 
     // The brief's tests pressed Esc after typing a key "to close the
     // suggestion list if open". With no known keys the list never opens, and
-    // the spec makes Esc on a closed list return to the list, so those Esc
+    // Esc on a closed list return to the list, so those Esc
     // presses are dropped here.
 
     #[tokio::test]

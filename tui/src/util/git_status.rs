@@ -1,5 +1,5 @@
-//! Workspace git-status summary for the status bar (display only — spec §12
-//! keeps every other git interaction out of scope).
+//! Workspace git-status summary for the status bar (display only — every other git
+//! interaction is out of scope).
 //!
 //! This shells out to the user's `git`; it is repo metadata, not a vault
 //! file operation, so it lives in the TUI rather than core.

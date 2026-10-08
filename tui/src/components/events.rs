@@ -63,7 +63,7 @@ pub enum AppEvent {
     },
     /// Open a note (or directory) — `emphasis` carries the originating
     /// query's needles when the open comes from a query result, so the
-    /// editor lights up the matched spans (spec §5.1). Use
+    /// editor lights up the matched spans. Use
     /// [`AppEvent::open`] for the plain case.
     OpenPath {
         path: VaultPath,

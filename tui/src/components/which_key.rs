@@ -1,4 +1,4 @@
-//! The **which-key overlay** (spec §8b) — the popup docked above the status
+//! The **which-key overlay** — the popup docked above the status
 //! bar that documents the pending leader sequence. It renders the node the
 //! `LeaderEngine` currently sits on, so it can never drift from the tree:
 //! same data, two surfaces.
@@ -99,8 +99,8 @@ pub fn render(
     let rows = children.len().div_ceil(cols);
     let arrow = Span::styled(" → ", muted);
     for (i, row) in children.iter().enumerate() {
-        // Column-major fill: read top-to-bottom within a column, like the
-        // spec mockup.
+        // Column-major fill: read top-to-bottom within a column, like a
+        // conventional menu.
         let col = i / rows;
         let grid_row = i % rows;
         let y = inner.y + 1 + grid_row as u16;

@@ -427,7 +427,7 @@ pub(super) fn span_style(kind: Option<ElementKind>, is_sigil_region: bool, theme
         Some(ElementKind::Image) => Style::default()
             .fg(theme.accent.to_ratatui())
             .add_modifier(Modifier::ITALIC),
-        // Spec §5.1: H1/H2 bright + bold, H3 yellow + bold.
+        // H1/H2 bright + bold, H3 yellow + bold.
         Some(ElementKind::HeadingH1) | Some(ElementKind::HeadingH2) => {
             if is_sigil_region {
                 Style::default().fg(theme.gray.to_ratatui())
@@ -447,7 +447,7 @@ pub(super) fn span_style(kind: Option<ElementKind>, is_sigil_region: bool, theme
             }
         }
         Some(ElementKind::Blockquote) => Style::default().fg(theme.fg_secondary.to_ratatui()),
-        // Spec §5.1: wikilink targets are blue + underlined.
+        // Wikilink targets are blue + underlined.
         Some(ElementKind::WikiLink) => Style::default()
             .fg(theme.blue.to_ratatui())
             .add_modifier(Modifier::UNDERLINED),
@@ -1444,12 +1444,11 @@ mod tests {
 
     // ── V2 lazy_depth tracking ───────────────────────────────────────────────
 
-    /// CORRECTED FROM SPEC: tasks.md 2.1 asserted `[1, 1, 1, 0]`,
-    /// claiming blockquote lazy-extends across blanks. This is
-    /// incorrect per CommonMark §5.1 — a blank line ENDS a
+    /// A blockquote does NOT lazy-extend across blanks (so the depths are
+    /// not `[1, 1, 1, 0]`): per CommonMark §5.1 a blank line ENDS a
     /// blockquote (see Example 209). Pulldown closes the blockquote
     /// at the first blank, so lazy_depth drops there. The §5.1 lazy
-    /// "paragraph continuation" cited in the spec is about non-`>`
+    /// "paragraph continuation" is about non-`>`
     /// lines continuing an OPEN paragraph (still on the same line
     /// run), not extending the blockquote across blanks.
     #[test]
@@ -1526,12 +1525,11 @@ mod tests {
 
     /// Boundary detection must skip rows inside a lazy-continuable
     /// block. Using the IndentedCode multi-chunk fixture (the
-    /// canonical §4.4 case) every row has lazy_depth > 0, so no
+    /// canonical CommonMark §4.4 case) every row has lazy_depth > 0, so no
     /// interior boundary can land. Only the sentinels remain.
     ///
-    /// CORRECTED FROM SPEC: tasks.md 2.4 used the blockquote
-    /// fixture from 2.1, which does NOT produce interior
-    /// lazy_depth > 0 rows (blanks end the blockquote). The
+    /// A blockquote fixture would not do here: it does NOT produce
+    /// interior lazy_depth > 0 rows (blanks end the blockquote). The
     /// IndentedCode multi-chunk fixture is the correct one for
     /// this invariant.
     #[test]

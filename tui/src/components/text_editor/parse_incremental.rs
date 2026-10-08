@@ -210,8 +210,7 @@ fn widen_down(kinds: &[LineConstructKind], damaged_end: usize) -> usize {
 ///
 /// This replaces the heuristic `widen_to_safe`-plus-structural-marker
 /// guard tower. The latter is kept available as a behavioural
-/// comparison source for one release cycle (per the openspec
-/// migration plan) before being deleted.
+/// comparison source for one release cycle before being deleted.
 pub fn expand_to_reset_boundary(
     boundaries: &[usize],
     lines_len: usize,
@@ -262,8 +261,7 @@ pub fn expand_to_reset_boundary(
 /// or `FullRebuild` when the cap is exceeded or the buffer is empty.
 ///
 /// Kept available for one release cycle as a behavioural comparison
-/// source against `expand_to_reset_boundary` (see openspec change
-/// `parse-reset-boundaries`). New call sites should use
+/// source against `expand_to_reset_boundary`. New call sites should use
 /// `expand_to_reset_boundary` instead.
 pub fn widen_to_safe(kinds: &[LineConstructKind], damaged: Range<usize>) -> WidenResult {
     if kinds.is_empty() {

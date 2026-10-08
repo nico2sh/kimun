@@ -1,4 +1,4 @@
-# Review 3 rows
+# Section and padded wikilinks
 
 Section [[note#section]], alias [[Plan#Goals|goals]], block [[a^blk]], padded [[ spaced ]].
 

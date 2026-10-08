@@ -1,4 +1,4 @@
-//! The **theme picker** (leader `v c`, spec §8c "+vault → config"): a small
+//! The **theme picker** (leader `v c`, under "+vault → config"): a small
 //! modal listing every theme; moving the selection previews it live, Enter
 //! persists, Esc reverts to the theme that was active when the picker opened.
 

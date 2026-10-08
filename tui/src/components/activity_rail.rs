@@ -150,8 +150,8 @@ impl ActivityRail {
     }
 
     pub fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
-        // Click on a rail item → switch the drawer to it (spec §3); the
-        // toggle-on-active-click refinement lands with Phase 03.
+        // Click on a rail item → switch the drawer to it; clicking the
+        // already-active item toggles the drawer (handled by the editor screen).
         if let InputEvent::Mouse(mouse) = event {
             use ratatui::crossterm::event::{MouseButton, MouseEventKind};
             if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))

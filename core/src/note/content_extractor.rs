@@ -670,11 +670,11 @@ pub(crate) fn label_matches_inner(
     })
 }
 
-/// Returns the converted text into Markdown (replacing note wikilinks to markdown links)
-/// Normalizes the links urls when needed (lowercasing the path for vault paths)
-/// And a list of the links existing in the note, relative links are transformed to absolute links.
-/// Hashtags are converted to markdown links and added to the links list.
-/// One walk over the note, spliced in place — see `NoteWalk::render_markdown`.
+/// The note rewritten for a Markdown renderer, plus the links it holds:
+/// wikilinks become Markdown links, inline-link destinations are resolved
+/// to vault paths, hashtags become `[#tag](#tag)` links. One walk over the
+/// note, rewritten only at the links it recorded — see
+/// `NoteWalk::render_markdown` for the exact rules.
 pub(crate) fn get_markdown_and_links<S: AsRef<str>>(
     reference_path: &VaultPath,
     md_text: S,
@@ -735,6 +735,8 @@ where
     (result.to_string(), image_links)
 }
 
+/// The note's title: the text of its first non-empty line (frontmatter
+/// skipped), rendered like the rest of the walk — see `NoteWalk::title`.
 pub fn extract_title<S: AsRef<str>>(md_text: S) -> String {
     walk(md_text.as_ref()).title()
 }
@@ -844,7 +846,7 @@ mod test {
 
     #[test]
     fn a_wikilink_inside_a_markdown_link_label_is_link_text() {
-        // spec row (review 8): `[see [[a]]](x.md)` is a link to `x.md` whose
+        // `[see [[a]]](x.md)` is a link to `x.md` whose
         // text holds `[[a]]` — as CommonMark and the editor read it.
         let path = crate::nfs::VaultPath::note_path_from("/n.md");
         let (_, links) = super::get_chunks_and_links(&path, "[see [[a]]](x.md)");
@@ -1074,7 +1076,7 @@ mod test {
         );
     }
 
-    // Review 10, item 3: a new name that would not read back as the same
+    // A new name that would not read back as the same
     // link bare is written in `<…>`; one that does stays bare.
     #[test]
     fn replace_wraps_a_destination_that_would_not_read_back() {
@@ -1102,7 +1104,7 @@ mod test {
         }
     }
 
-    // Review 10, item 3: a moved note's links are written for where they
+    // A moved note's links are written for where they
     // live — a relative path from the linking note's folder — and a link
     // in code is code, left alone.
     #[test]
@@ -1219,7 +1221,7 @@ Here's a [url](https://www.example.com)"#;
         }));
     }
 
-    // Review 2, item 5: indexing reads title, hash, chunks and links from
+    // Indexing reads title, hash, chunks and links from
     // one walk, the same as the separate extractors.
     #[test]
     fn index_data_is_the_separate_extractors_from_one_walk() {
@@ -1938,7 +1940,7 @@ ls -la ./test
 
     #[test]
     fn hashtag_terminates_at_non_label_char() {
-        // Per spec: `#tag-with-dash` yields the label `tag` and the rest
+        // `#tag-with-dash` yields the label `tag` and the rest
         // (`-with-dash`) is treated as following text. `HASHTAG_RX` already
         // enforces this because `[A-Za-z0-9_]+` stops at `-`.
         let path = crate::nfs::VaultPath::note_path_from("/n.md");
@@ -2092,7 +2094,7 @@ ls -la ./test
         assert!(v.is_empty(), "expected no labels, got {:?}", v);
     }
 
-    // Review 6, item 8: a `#` right after `&` (an HTML entity, `it&#39;s`)
+    // A `#` right after `&` (an HTML entity, `it&#39;s`)
     // is not a label, here as in every view built on the shared rule.
     #[test]
     fn label_matches_skips_after_ampersand() {

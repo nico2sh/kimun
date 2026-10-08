@@ -1,5 +1,4 @@
-//! The one pass over a note every whole-note extractor reads — see
-//! `2026-10-06-single-note-walk-design.md`. `walk` parses the note as written
+//! The one pass over a note every whole-note extractor reads. `walk` parses the note as written
 //! once and returns a `NoteWalk` (text lines, links, tags, frontmatter); every
 //! whole-note extractor is a view of it. All offsets are byte offsets into
 //! the note as given. Wikilinks are Kimün's own, recognised with the
@@ -2054,7 +2053,7 @@ mod tests {
 
     #[test]
     fn a_wikilink_inside_a_markdown_link_label_is_link_text() {
-        // spec row (review 8): per CommonMark `[see [[a]]](x.md)` is a link
+        // Per CommonMark `[see [[a]]](x.md)` is a link
         // to `x.md`, and a wikilink inside a link's text is that text (the
         // editor does not highlight it either).
         let note = "[see [[a]]](x.md)";
@@ -2146,7 +2145,7 @@ mod tests {
         );
     }
 
-    // HTML is opaque (spec row): nothing inside an HTML block is a link —
+    // HTML is opaque: nothing inside an HTML block is a link —
     // a wikilink, an embed, one with a section, one across lines, one in
     // content indented four spaces.
     #[test]
@@ -2163,7 +2162,7 @@ mod tests {
         }
     }
 
-    // Spec row: pulldown splits text at a flanking `_`, and a hashtag cut
+    // Pulldown splits text at a flanking `_`, and a hashtag cut
     // in two is no tag anywhere (the index never had one).
     #[test]
     fn a_hashtag_split_at_an_underscore_is_not_a_tag_anywhere() {
@@ -2225,7 +2224,7 @@ mod tests {
 
     #[test]
     fn a_wikilink_in_image_alt_text_is_alt_text() {
-        // spec row (review 8): per CommonMark `![x [[a]] #t](p.png)` is an
+        // Per CommonMark `![x [[a]] #t](p.png)` is an
         // image; its alt text, wikilink and hashtag included, is image text.
         let note = "![x [[a]] #t](p.png)";
         let w = walk(note);
@@ -2301,7 +2300,7 @@ mod tests {
         );
     }
 
-    // HTML is opaque (spec row): a markdown link inside an HTML block is no
+    // HTML is opaque: a markdown link inside an HTML block is no
     // link anywhere and is not rewritten — padded, titled, `<…>`-wrapped,
     // indented four spaces, or next to an image.
     #[test]
@@ -2318,7 +2317,6 @@ mod tests {
         }
     }
 
-    // Review 2, item 2 (spec rows; pinned).
     #[test]
     fn an_escaped_wikilink_is_not_a_link_anywhere() {
         let note = "\\[[a]] x";
@@ -2340,7 +2338,7 @@ mod tests {
         assert_eq!(chunks[0].text, "a *b* c");
     }
 
-    // Review 2, item 3: the CLI's link targets drop the wikilinks every
+    // The CLI's link targets drop the wikilinks every
     // other consumer drops.
     #[test]
     fn link_targets_skip_wikilinks_to_invalid_paths() {
@@ -2356,7 +2354,7 @@ mod tests {
         );
     }
 
-    // Review 2, item 4: an embed whose target looks like an image keeps its
+    // An embed whose target looks like an image keeps its
     // target as written for the image pipeline; any other renders an
     // unresolved note path. Embeds stay unlisted.
     #[test]
@@ -2398,7 +2396,7 @@ mod tests {
         assert_eq!(raw_links(&walk(note).index_links(&at)), [e.to_string()]);
     }
 
-    // Review 2, item 6: the frontmatter is read from the offsets the body
+    // The frontmatter is read from the offsets the body
     // start was found from, exactly as the line-based reading returned it.
     #[test]
     fn the_frontmatter_is_the_text_between_its_fences() {
@@ -2421,7 +2419,7 @@ mod tests {
         }
     }
 
-    // Review 2, item 9: a link's label is the source of its text events, so
+    // A link's label is the source of its text events, so
     // a code span holding `]` is part of it.
     #[test]
     fn an_escaped_backslash_before_a_spaced_link_keeps_it_a_link() {
@@ -2456,7 +2454,7 @@ mod tests {
         assert_eq!(md, format!("[a `]` b]({x}) and [](e.md)"));
     }
 
-    // Review 2, item 7: the metadata carries the CLI's link targets from the
+    // The metadata carries the CLI's link targets from the
     // same walk.
     #[test]
     fn note_metadata_lists_the_link_targets() {
@@ -2467,8 +2465,7 @@ mod tests {
         );
     }
 
-    // Moved from the CLI's removed `metadata_extractor` (review 5, item 7):
-    // the tags the CLI reports are the index's labels plus frontmatter tags.
+    // The tags the CLI reports are the index's labels plus frontmatter tags.
     #[test]
     fn note_metadata_tags_come_from_either_frontmatter_format_and_the_body() {
         let yaml = "---\ntags:\n  - Project\n  - urgent\ntitle: Test\n---\nbody";
@@ -2494,7 +2491,7 @@ mod tests {
         );
     }
 
-    // Review 3, item 1 (spec row): a wikilink to a section or a block, or
+    // A wikilink to a section or a block, or
     // padded, links to the note — indexed and listed with the fragment and
     // padding stripped, rendered keeping the fragment, a CLI target as
     // written.
@@ -2542,7 +2539,7 @@ mod tests {
         }
     }
 
-    // Review 3, item 2: every inline link is rewritten but a `<…>`
+    // Every inline link is rewritten but a `<…>`
     // destination or one with a title; padding and escapes are no reason
     // to leave one as written.
     #[test]
@@ -2563,14 +2560,13 @@ mod tests {
     #[test]
     fn a_destination_that_cannot_be_written_back_bare_is_wrapped() {
         // `a\(b.md` decodes to `a(b.md`: written back bare, its `(` would
-        // end the link early, so it is `<…>`-wrapped (review 4, item 1).
+        // end the link early, so it is `<…>`-wrapped.
         let note = "[t](a\\(b.md)";
         let (md, listed) = walk(note).render_markdown(note, &VaultPath::new("folder/note.md"));
         assert_eq!(md, "[t](<a(b.md>)");
         assert_eq!(listed.len(), 1, "{listed:?}");
     }
 
-    // Review 3, items 4 and 5 (spec rows; pinned).
     #[test]
     fn a_reference_definition_to_an_anchor_is_no_tag() {
         let note = "[top]: #anchor\n\nUse [top].";
@@ -2581,7 +2577,7 @@ mod tests {
         let (md, _) = w.render_markdown(note, &VaultPath::new("n.md"));
         assert_eq!(md, note);
         // An anchor links to no note, URL or vault path: not listed by any
-        // view (review 10, item 6).
+        // view.
         assert!(crate::note::note_link_targets(note).is_empty());
     }
 
@@ -2599,8 +2595,8 @@ mod tests {
         assert_eq!(md, format!("[Note (draft)](<{draft}>)"));
         assert_eq!(raw_links(&listed), [draft.to_string()]);
 
-        // spec row (review 8): the editor's pattern reads `[[[tri]]` — its
-        // target `[tri` is no vault path — as 50dcb026 did: no link.
+        // The editor's pattern reads `[[[tri]]` — its
+        // target `[tri` is no vault path — as the previous extractor did: no link.
         let note = "a [[[tri]]] b";
         assert!(crate::note::note_link_targets(note).is_empty());
         let w = walk(note);
@@ -2614,7 +2610,7 @@ mod tests {
         assert_eq!(raw_links(&listed), ["d_e.md"]);
     }
 
-    // HTML is opaque (spec row): a link inside an inline tag — in an
+    // HTML is opaque: a link inside an inline tag — in an
     // attribute, across the lines of one tag, across two adjacent tags — is
     // no link anywhere.
     #[test]
@@ -2629,7 +2625,7 @@ mod tests {
         }
     }
 
-    // HTML is opaque (spec row): an HTML comment is HTML.
+    // HTML is opaque: an HTML comment is HTML.
     #[test]
     fn a_link_inside_an_html_comment_is_not_a_link_anywhere() {
         for note in [
@@ -2706,7 +2702,7 @@ mod tests {
         let a = VaultPath::note_path_from("a");
         let e = VaultPath::note_path_from("e");
         let (md, _) = walk(note).render_markdown(note, &VaultPath::new("n.md"));
-        // An embed drops its fragment (review 4, item 2).
+        // An embed drops its fragment.
         assert_eq!(md, format!("[a^blk]({a}#^blk) ![e^b]({e})"));
     }
 
@@ -2737,7 +2733,7 @@ mod tests {
             .collect()
     }
 
-    // Review 4, item 1: a destination is written bare, `<…>`-wrapped, or —
+    // A destination is written bare, `<…>`-wrapped, or —
     // when neither reads back as itself — not spliced; the link stays listed.
     #[test]
     fn a_destination_is_written_bare_wrapped_or_left_as_written() {
@@ -2778,7 +2774,7 @@ mod tests {
         }
     }
 
-    // Review 4, item 1: the vault's image pass leaves wrapped link
+    // The vault's image pass leaves wrapped link
     // destinations exactly as rendered.
     #[test]
     fn the_image_pass_keeps_wrapped_destinations() {
@@ -2791,7 +2787,7 @@ mod tests {
         assert_eq!(images.len(), 1);
     }
 
-    // Review 4, item 1: the same rule for an inline link's resolved
+    // The same rule for an inline link's resolved
     // destination.
     #[test]
     fn an_inline_destination_with_parentheses_is_wrapped() {
@@ -2801,7 +2797,7 @@ mod tests {
         assert_eq!(rendered_dests(&md), ["a(b.md", "a b.md"]);
     }
 
-    // Review 4, item 2: an embed renders without its fragment.
+    // An embed renders without its fragment.
     #[test]
     fn an_embed_renders_without_its_fragment() {
         let at = VaultPath::new("/dir/n.md");
@@ -2823,7 +2819,7 @@ mod tests {
         );
     }
 
-    // Review 4, item 3: an empty or blank destination is no link anywhere.
+    // An empty or blank destination is no link anywhere.
     #[test]
     fn an_empty_destination_is_no_link() {
         let at = VaultPath::new("folder/n.md");
@@ -2845,7 +2841,7 @@ mod tests {
         }
     }
 
-    // Review 4, item 4: an empty display part renders the target as the
+    // An empty display part renders the target as the
     // link text; the walked text stays empty.
     #[test]
     fn an_empty_display_part_renders_the_target_as_link_text() {
@@ -2857,7 +2853,7 @@ mod tests {
         assert_eq!(md, format!("[a#s]({a}#s)"));
     }
 
-    // Review 5, item 1 (spec row): a markdown link whose destination holds
+    // A markdown link whose destination holds
     // unencoded spaces is a link everywhere, found with the editor's pattern.
     #[test]
     fn a_markdown_link_with_spaces_in_its_destination_is_a_link_everywhere() {
@@ -2931,7 +2927,7 @@ mod tests {
         }
     }
 
-    // Review 5, item 2: a wikilink alias wrapped over lines reads as
+    // A wikilink alias wrapped over lines reads as
     // pulldown would read its text: the next line's container prefix goes.
     #[test]
     fn a_wrapped_wikilink_alias_drops_the_next_lines_container_prefix() {
@@ -2954,7 +2950,7 @@ mod tests {
         );
     }
 
-    // Review 5, item 3: line ends and headings are trimmed as pulldown
+    // Line ends and headings are trimmed as pulldown
     // trims them; a heading of only whitespace is not listed.
     #[test]
     fn whitespace_left_by_a_wikilink_alias_is_trimmed() {
@@ -2967,7 +2963,7 @@ mod tests {
         assert!(walk(note).headings(note).is_empty());
     }
 
-    // Review 5, item 4: a fence alone, without a newline, is a fence.
+    // A fence alone, without a newline, is a fence.
     #[test]
     fn a_lone_fence_without_a_newline_is_no_body() {
         for note in ["+++", "---", "\u{feff}+++", "\u{feff}---"] {
@@ -2978,13 +2974,13 @@ mod tests {
         }
     }
 
-    // Review 5, item 5: brackets in a wikilink's text are escaped when it is
+    // Brackets in a wikilink's text are escaped when it is
     // rendered as a markdown link.
     #[test]
     fn brackets_in_a_wikilink_alias_are_escaped_when_rendered() {
         let at = VaultPath::new("folder/note.md");
         let a = VaultPath::note_path_from("a");
-        // (`[[a|b]c]]` is text — review 7, item 2.)
+        // (`[[a|b]c]]` is text.)
         for (note, expected) in [
             ("[[a|b[c]]", format!("[b\\[c]({a})")),
             ("[[a|b\\c]]", format!("[b\\\\c]({a})")),
@@ -2998,7 +2994,7 @@ mod tests {
         }
     }
 
-    // Review 5, item 6: whether an inline link keeps its written form comes
+    // Whether an inline link keeps its written form comes
     // from pulldown's title and the `<…>` after `](`, not a rebuilt label.
     #[test]
     fn a_label_across_lines_does_not_stop_the_rewrite() {
@@ -3017,8 +3013,8 @@ mod tests {
         }
     }
 
-    // Review 5 fix round 1, item 1: inline markup in the label does not stop
-    // the editor's pattern (as 50dcb026 listed them).
+    // Inline markup in the label does not stop
+    // the editor's pattern (as the previous extractor listed them).
     #[test]
     fn a_spaced_destination_link_with_markup_in_its_label_is_a_link_everywhere() {
         let at = VaultPath::new("n.md");
@@ -3055,8 +3051,8 @@ mod tests {
         assert_eq!(crate::note::note_link_targets(note), ["a b.md"]);
     }
 
-    // Review 5 fix round 1, item 2: a found pattern that links nowhere is
-    // left as written — and, since review 10 item 6, listed by no view.
+    // A found pattern that links nowhere is left as written — and listed by no
+    // view.
     #[test]
     fn a_spaced_destination_that_resolves_nowhere_is_left_as_written() {
         let at = VaultPath::new("n.md");
@@ -3070,7 +3066,7 @@ mod tests {
         }
     }
 
-    // Review 5 fix round 1, item 3: a code block's text is trimmed of any
+    // A code block's text is trimmed of any
     // whitespace, as before.
     #[test]
     fn a_code_block_is_trimmed_of_unicode_whitespace() {
@@ -3081,7 +3077,7 @@ mod tests {
         }
     }
 
-    // Review 5 fix round 2: the editor's pattern finds a link only where
+    // The editor's pattern finds a link only where
     // pulldown read none — never a second record of a parsed link, never
     // across lines, in document order.
     #[test]
@@ -3114,8 +3110,8 @@ mod tests {
                 vec!["Doc"],
                 vec![path("My Doc.md")],
             ),
-            // The label from the first `[`, as before the walk (review 7,
-            // item 3: the editor's pattern over the whole block).
+            // The label from the first `[`, as before the walk (the
+            // editor's pattern over the whole block).
             (
                 "[ **a\n[y](e f.md)**",
                 vec!["e f.md"],
@@ -3140,7 +3136,7 @@ mod tests {
         assert_no_link_anywhere("\\[x](a b.md)\n");
     }
 
-    // Review 6, item 1: an image the editor's pattern finds where pulldown
+    // An image the editor's pattern finds where pulldown
     // read none (a destination with spaces) is an image like any other:
     // listed by the CLI and `NoteMetadata`, never indexed, left as written
     // in the rendered markdown and not in its link list; a hashtag in its
@@ -3174,7 +3170,7 @@ mod tests {
         }
     }
 
-    // Review 6, item 4: the item-end trim is for the item's own prose line;
+    // The item-end trim is for the item's own prose line;
     // an HTML line inside a tight item keeps its line break.
     #[test]
     fn html_in_a_tight_list_item_keeps_its_line_break() {
@@ -3184,7 +3180,7 @@ mod tests {
         assert_eq!(chunks[0].text, "* a\n* \n<Screen to the terminal>\n\n* b");
     }
 
-    // Review 6, item 6: a title is trimmed as its line is — ASCII
+    // A title is trimmed as its line is — ASCII
     // whitespace only, so a no-break space at its end stays, as before.
     #[test]
     fn a_title_is_trimmed_like_its_line() {
@@ -3202,7 +3198,7 @@ mod tests {
         }
     }
 
-    // Review 6, item 8 (spec row): a `#` right after `&`, as in an HTML
+    // A `#` right after `&`, as in an HTML
     // entity, is no tag anywhere; other hashtags are untouched.
     #[test]
     fn a_hash_after_an_ampersand_is_not_a_tag() {
@@ -3217,7 +3213,7 @@ mod tests {
         assert_eq!(md, "it&#39;s Title&#32; a [#tag](#tag) &x [#tag2](#tag2)");
     }
 
-    // Review 6, item 2 (spec row): a wikilink inside inline HTML or as a
+    // A wikilink inside inline HTML or as a
     // reference definition's destination is no link anywhere.
     #[test]
     fn a_wikilink_in_inline_html_or_a_definition_destination_is_not_a_link() {
@@ -3230,7 +3226,7 @@ mod tests {
         }
     }
 
-    // Review 6, item 3 (spec row): a wikilink to a name with spaces renders
+    // A wikilink to a name with spaces renders
     // as a link a CommonMark previewer reads.
     #[test]
     fn a_wikilink_to_a_name_with_spaces_renders_as_a_real_link() {
@@ -3239,7 +3235,7 @@ mod tests {
         assert_eq!(md, "[DEM Platform](<dem platform.md>)");
     }
 
-    // Review 6, item 7 (spec row): an escaped hashtag loses its backslash
+    // An escaped hashtag loses its backslash
     // in the plain chunk text and is still a tag.
     #[test]
     fn an_escaped_hashtag_is_plain_text_and_still_a_tag() {
@@ -3249,11 +3245,10 @@ mod tests {
         assert_eq!(crate::note::note_tags(note), ["esc", "ok"]);
     }
 
-    // Review 7, crash: pulldown-cmark 0.13.4's wikilink extension panicked
-    // on these (an `![[` opener completed as an ordinary image or link before
-    // a later `]]`). The extension is no longer used (review 8): each is
-    // plain CommonMark — an image whose text holds a link, then text — with
-    // the chunk text 50dcb026 gave.
+    // Pulldown-cmark 0.13.4's wikilink extension panicked on these (an `![[`
+    // opener completed as an ordinary image or link before a later `]]`). The
+    // extension is deliberately unused: each is plain CommonMark — an image
+    // whose text holds a link, then text — with the chunk text the previous extractor gave.
     const PULLDOWN_CRASH_INPUTS: [&str; 4] = [
         "![[a](b) c](d)]]",
         "See ![[img](a.png)](b.md)]] here",
@@ -3349,7 +3344,7 @@ mod tests {
         )
     }
 
-    // Review 7, item 1: CRLF notes read exactly as LF notes, with and
+    // CRLF notes read exactly as LF notes, with and
     // without frontmatter.
     #[test]
     fn a_crlf_note_reads_exactly_as_the_same_note_in_lf() {
@@ -3363,7 +3358,7 @@ mod tests {
         }
     }
 
-    // Review 8, fuzz: a code span over lines whose last line is only a
+    // A code span over lines whose last line is only a
     // container prefix (`>`, skipped by pulldown) reads the same in CRLF.
     #[test]
     fn a_code_span_ending_on_a_quote_marker_reads_the_same_in_crlf() {
@@ -3373,7 +3368,7 @@ mod tests {
         }
     }
 
-    // Review 7, item 2: a `]` between `[[` and `]]` makes it text, as the
+    // A `]` between `[[` and `]]` makes it text, as the
     // editor reads it — what pulldown reads without wikilinks.
     #[test]
     fn a_wikilink_holding_a_closing_bracket_is_text() {
@@ -3386,7 +3381,7 @@ mod tests {
             assert_no_link_anywhere(note);
             assert_eq!(text(&walk(note)), chunk_text, "{note:?}");
         }
-        // Plain text to CommonMark too: its markup renders (as 50dcb026
+        // Plain text to CommonMark too: its markup renders (as the previous extractor
         // gave); a hashtag in it is a tag, as in any text.
         let note = "[[a|*b* #t]c]]";
         let w = walk(note);
@@ -3395,7 +3390,7 @@ mod tests {
         assert_eq!(w.tag_names(), ["t"]);
     }
 
-    // Review 7, item 3: a spaced-destination link whose label wraps is
+    // A spaced-destination link whose label wraps is
     // found (the editor's pattern over the whole block, as before the walk);
     // a `]` and `(` split over two lines is no link, nor is one spanning a
     // nested list item.
@@ -3425,7 +3420,7 @@ mod tests {
         }
     }
 
-    // Review 7, item 4: an inline link whose destination links nowhere is
+    // An inline link whose destination links nowhere is
     // left as written, like a found one (real note: Jira Reference.md).
     #[test]
     fn an_inline_link_that_resolves_nowhere_is_left_as_written() {
@@ -3438,7 +3433,7 @@ mod tests {
         assert_eq!(raw_links(&listed), ["b.md"]);
     }
 
-    // Review 8: wikilinks are Kimün's own (the editor's pattern over a plain
+    // Wikilinks are Kimün's own (the editor's pattern over a plain
     // CommonMark parse), not pulldown-cmark's extension.
 
     /// Every view of `note`, timed: panics past `limit`.
@@ -3452,7 +3447,7 @@ mod tests {
         assert!(elapsed < limit, "{elapsed:?} for {note:?}");
     }
 
-    // Finding 1: pulldown 0.13.4 re-emitted events ~2^N after N `[[a|]]`.
+    // Pulldown 0.13.4 re-emitted events ~2^N after N `[[a|]]`.
     #[test]
     fn many_empty_display_wikilinks_in_one_paragraph_walk_fast() {
         let limit = std::time::Duration::from_millis(100);
@@ -3464,7 +3459,7 @@ mod tests {
         }
     }
 
-    // Finding 2: links after an empty display part were lost and the text
+    // Links after an empty display part were lost and the text
     // after it repeated.
     #[test]
     fn links_after_an_empty_display_part_are_kept() {
@@ -3490,7 +3485,7 @@ mod tests {
         }
     }
 
-    // Finding 3: an embed inside a link's text is that link's text, as
+    // An embed inside a link's text is that link's text, as
     // CommonMark (and the editor) reads it.
     #[test]
     fn an_embed_inside_a_link_is_link_text() {
@@ -3505,7 +3500,7 @@ mod tests {
         );
     }
 
-    // Finding 4: an image whose alt text starts with `[` is an image.
+    // An image whose alt text starts with `[` is an image.
     #[test]
     fn an_image_whose_alt_starts_with_a_bracket_is_an_image() {
         let w = walk("See ![[1] diagram](img.png) here");
@@ -3513,7 +3508,7 @@ mod tests {
         assert_eq!(text(&w), "See [1] diagram here");
     }
 
-    // Finding 6: a label spliced into the rendered markdown keeps the
+    // A label spliced into the rendered markdown keeps the
     // note's bytes; the listed link text is LF.
     #[test]
     fn a_crlf_label_is_spliced_as_written_and_listed_as_lf() {
@@ -3526,10 +3521,10 @@ mod tests {
         assert_eq!(texts, ["b\nc", "d\ne"]);
     }
 
-    // Finding 7: a line keeps its edges as pulldown reads them; only the
+    // A line keeps its edges as pulldown reads them; only the
     // whitespace a wikilink's display text leaves at a line's edge goes, as
     // when wikilinks were collapsed before parsing. Headings and titles are
-    // trimmed (spec rows).
+    // trimmed.
     #[test]
     fn only_whitespace_left_by_a_wikilink_is_trimmed_from_a_line() {
         let w = walk("![](img.png) [t](x.md \"T\") (...)");
@@ -3545,7 +3540,7 @@ mod tests {
         }
     }
 
-    // Finding 9: each text block reads only its own text, so a nested list
+    // Each text block reads only its own text, so a nested list
     // is not read again for every level around it.
     #[test]
     fn each_text_block_scans_only_its_own_text() {
@@ -3573,7 +3568,7 @@ mod tests {
     }
 
     // A wikilink's brackets must be prose; what pulldown reads between
-    // them is its text, shown as written (as 50dcb026 and the editor read
+    // them is its text, shown as written (as the previous extractor and the editor read
     // it).
     #[test]
     fn code_html_or_an_autolink_between_a_wikilinks_brackets_is_its_text() {
@@ -3591,7 +3586,7 @@ mod tests {
                 vec!["a"],
                 format!("[<b>x</b>]({a})"),
             ),
-            // Review 9, item 3: an autolink is the wikilink's text too — not
+            // An autolink is the wikilink's text too — not
             // recorded, and escaped when rendered so the result is one link.
             (
                 "[[a|see <https://e.f>]]",
@@ -3620,7 +3615,7 @@ mod tests {
         }
     }
 
-    // Review 8, vault probe: pulldown's ranges for a tab-indented list
+    // Pulldown's ranges for a tab-indented list
     // overlap (the list starts inside the heading line before it, sibling
     // items share a byte); every link is still read once.
     #[test]
@@ -3639,7 +3634,7 @@ mod tests {
     /// `[…]` (`[[docs]]` with `[docs]: …` defined) — an escaped `[[`, and a
     /// wikilink without a target (`[[|b]]`). An indented code block is read
     /// (the editor highlights wikilinks there; fenced code it shows raw). A
-    /// wikilink across lines is the walk's alone (spec row).
+    /// wikilink across lines is the walk's alone.
     fn assert_editor_agreement(note: &str) {
         let parse: Vec<(Event, Range<usize>)> = Parser::new_ext(note, Options::empty())
             .into_offset_iter()
@@ -3723,7 +3718,7 @@ mod tests {
         }
     }
 
-    // Review 9, item 1: a line grows in place — an append copies only the
+    // A line grows in place — an append copies only the
     // appended text — so one long line builds in linear time. It was
     // quadratic: a 1.1 MB line of `[[a]](b) ` took 2.6 s to index in release.
     #[test]
@@ -3739,7 +3734,7 @@ mod tests {
         assert!(elapsed < std::time::Duration::from_secs(1), "{elapsed:?}");
     }
 
-    // Review 9, item 4: a `[[` that opens no wikilink on its own line — in
+    // A `[[` that opens no wikilink on its own line — in
     // code, escaped, or stray — does not swallow one on a later line: the
     // walk reads the wikilink the editor highlights there.
     #[test]
@@ -3768,9 +3763,9 @@ mod tests {
             assert_eq!(text(&w), chunk, "{note:?}");
             assert_editor_agreement(note);
         }
-        // A wikilink across lines is still one (spec row) — also when its
+        // A wikilink across lines is still one — also when its
         // last line's `[[` opens none in prose (code, escaped): then the
-        // outer match is judged on its own, as 50dcb026 read it.
+        // outer match is judged on its own, as the previous extractor read it.
         let a = VaultPath::note_path_from("a");
         let at = VaultPath::new("n.md");
         for note in [
@@ -3790,7 +3785,7 @@ mod tests {
         assert_eq!(walk("[[a|x\ny [[b]]").link_targets(), ["b"]);
     }
 
-    // Review 9, item 5 (spec row): the editor's pattern ends a destination
+    // The editor's pattern ends a destination
     // at its first `)`, so it cannot read a spaced destination holding a
     // `(` reliably: no link.
     #[test]
@@ -3801,7 +3796,7 @@ mod tests {
         }
     }
 
-    // Review 9, pin (spec row): an escaped bang before a wikilink is a
+    // An escaped bang before a wikilink is a
     // literal `!`; the wikilink is a link everywhere.
     #[test]
     fn a_wikilink_after_an_escaped_bang_is_a_link() {
@@ -3819,7 +3814,7 @@ mod tests {
         assert_eq!(crate::note::note_link_targets(note), ["a"]);
     }
 
-    // Review 9, pin (spec row): a hashtag inside reference-link text is link
+    // A hashtag inside reference-link text is link
     // text — no tag anywhere.
     #[test]
     fn a_hashtag_in_reference_link_text_is_no_tag() {
@@ -3884,7 +3879,7 @@ mod tests {
         fuzz_editor_agreement(&[3, 4, 5], 300_000);
     }
 
-    // Review 10, item 1 (spec row): a wikilink whose name matches a
+    // A wikilink whose name matches a
     // reference definition — pulldown reads `[` + the shortcut reference
     // link `[docs]` + `]` — is still the wikilink, and that inner link is
     // not recorded.
@@ -3915,7 +3910,7 @@ mod tests {
         }
     }
 
-    // Review 10, item 1: what must not change — a wikilink inside a real
+    // What must not change — a wikilink inside a real
     // link's text stays link text, and one as an inline link's destination
     // is no link.
     #[test]
@@ -3931,7 +3926,7 @@ mod tests {
             .all(|l| !matches!(l.kind, WalkLinkKind::Wiki)));
     }
 
-    // Review 10, item 2 (spec row): an indented code block — in practice a
+    // An indented code block — in practice a
     // Logseq-style outline indented after a heading — is read for
     // wikilinks: they are links everywhere (index, rendered link list,
     // CLI), but the block stays code: its text is kept as written in the
@@ -3964,7 +3959,7 @@ mod tests {
         assert_no_link_anywhere("# Team\n\n```\n[[Pep]] [x](y.md) #tag\n```\n");
     }
 
-    // Review 10, item 2: an indented block inside a list item is read once,
+    // An indented block inside a list item is read once,
     // as its own block.
     #[test]
     fn a_wikilink_in_an_indented_block_inside_an_item_is_read_once() {
@@ -3974,7 +3969,7 @@ mod tests {
         assert_eq!(targets, ["a", "b", "a"]);
     }
 
-    // Review 10, item 4 (spec row): a markdown link to a section links to
+    // A markdown link to a section links to
     // the note — the fragment is stripped for resolving, as the editor
     // follows it — and the rendered markdown keeps it after the resolved
     // path.
@@ -4016,7 +4011,7 @@ mod tests {
         assert_eq!(raw_links(&listed), ["https://x.y/a#b"]);
     }
 
-    // Review 10, item 5 (spec row): a URL with parentheses is rendered
+    // A URL with parentheses is rendered
     // whole, wrapped in `<…>`, and reads back as the same URL.
     #[test]
     fn a_url_with_parentheses_is_rendered_whole_and_wrapped() {
@@ -4028,7 +4023,7 @@ mod tests {
         assert_eq!(raw_links(&listed), [url]);
     }
 
-    // Review 10, item 6 (spec row): the CLI / `NoteMetadata.links` list, as
+    // The CLI / `NoteMetadata.links` list, as
     // written, exactly the links every other view lists — not a destination
     // that links nowhere.
     #[test]

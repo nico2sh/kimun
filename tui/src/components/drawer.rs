@@ -52,7 +52,7 @@ pub use crate::components::config_panel::ConfigInfo;
 
 /// Hosts the drawer views. FILES and FIND are the ported existing panels
 /// (file browser and Query panel); TAGS, LINKS, and OUTLINE are the
-/// phase-03 panels; CFG is a placeholder until the settings drawer lands.
+/// later-added panels; CFG is a placeholder until the settings drawer lands.
 pub struct DrawerHost {
     active: DrawerView,
     sidebar: SidebarComponent,
@@ -107,7 +107,7 @@ impl DrawerHost {
     /// Whether the active view is a text-input context (drives the status
     /// bar's ⌨/≣ indicator). The surface owns this knowledge: FIND hosts a
     /// query input; the list views are filter-as-you-type lists, which read
-    /// as lists (spec mockup shows them with ≣).
+    /// as lists (shown with ≣).
     pub fn is_text_input(&self) -> bool {
         // ASK's drawer face is the Sources *list* (the question composer lives
         // in the editor area), so it reads as a list, not a text input.
