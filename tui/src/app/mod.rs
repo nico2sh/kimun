@@ -191,7 +191,7 @@ pub struct App {
     pub rag_status: crate::rag::RagStatus,
     /// Newer server release reported by the server, if any. Seeded into each
     /// screen alongside `rag_status`.
-    pub server_update: Option<String>,
+    pub server_update: Option<crate::server_client::sync::ServerUpdate>,
 }
 
 impl App {

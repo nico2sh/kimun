@@ -43,17 +43,48 @@ impl ServerCapability {
     }
 }
 
+/// A server update the user should hear about, derived from `/health`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerUpdate {
+    /// The server's update check found this newer release.
+    Newer(String),
+    /// The server reports no `version` at all: it predates version reporting,
+    /// so it is behind every release that has it, but which one is unknown.
+    Legacy,
+}
+
+impl ServerUpdate {
+    /// Derives the notice from a health probe: a server without `version` is
+    /// [`Legacy`](ServerUpdate::Legacy); otherwise it is whatever newer release
+    /// the server itself reported, if any.
+    pub fn from_health(health: &crate::server_client::dto::Health) -> Option<Self> {
+        match (&health.version, &health.latest_version) {
+            (None, _) => Some(ServerUpdate::Legacy),
+            (Some(_), Some(latest)) => Some(ServerUpdate::Newer(latest.clone())),
+            (Some(_), None) => None,
+        }
+    }
+
+    /// Footer text, e.g. `server 0.5.0 available`.
+    pub fn label(&self) -> String {
+        match self {
+            ServerUpdate::Newer(v) => format!("server {v} available"),
+            ServerUpdate::Legacy => "server update available".to_string(),
+        }
+    }
+}
+
 /// One `/health` round-trip's worth of facts: what the server can do, and
 /// whether it gates its API behind a bearer token. `/health` itself is
 /// un-gated, so a client with a missing/wrong token still probes fine —
 /// `auth_required` lets it report "unauthorized" up front instead of
-/// discovering a 401 on the first sync call. `server_update` is a newer server
-/// release the server reported about itself, shown as a passive footer hint.
+/// discovering a 401 on the first sync call. `server_update` is the passive
+/// footer hint that the server is out of date.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerProbe {
     pub capability: ServerCapability,
     pub auth_required: bool,
-    pub server_update: Option<String>,
+    pub server_update: Option<ServerUpdate>,
 }
 
 /// Bundles a vault, its dirty-set, and the server client, and drives sync. The
@@ -96,7 +127,7 @@ impl RagSync {
         self.client.health().await.ok().map(|h| ServerProbe {
             capability: ServerCapability::from_health(&h),
             auth_required: h.auth_required,
-            server_update: h.latest_version,
+            server_update: ServerUpdate::from_health(&h),
         })
     }
 
@@ -307,6 +338,34 @@ mod tests {
     use async_trait::async_trait;
 
     #[test]
+    fn server_update_from_health_fields() {
+        use crate::server_client::dto::Health;
+        let h = |version: Option<&str>, latest: Option<&str>| Health {
+            status: "ok".into(),
+            reranker: false,
+            embedder: None,
+            llm_provider: None,
+            auth_required: false,
+            version: version.map(str::to_string),
+            latest_version: latest.map(str::to_string),
+        };
+        assert_eq!(ServerUpdate::from_health(&h(Some("0.5.0"), None)), None);
+        assert_eq!(
+            ServerUpdate::from_health(&h(Some("0.5.0"), Some("0.6.0"))),
+            Some(ServerUpdate::Newer("0.6.0".into()))
+        );
+        // A pre-0.5 server's /health has no version at all.
+        let legacy: Health = serde_json::from_str(
+            r#"{"status":"ok","reranker":false,"embedder":"fastembed","llm_provider":null,"auth_required":false,"degraded":null}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            ServerUpdate::from_health(&legacy),
+            Some(ServerUpdate::Legacy)
+        );
+    }
+
+    #[test]
     fn capability_from_health_fields() {
         use crate::server_client::dto::Health;
         let h = |embedder: Option<&str>, llm: Option<&str>| Health {
@@ -315,6 +374,7 @@ mod tests {
             embedder: embedder.map(str::to_string),
             llm_provider: llm.map(str::to_string),
             auth_required: false,
+            version: Some("0.5.0".into()),
             latest_version: None,
         };
         assert_eq!(
