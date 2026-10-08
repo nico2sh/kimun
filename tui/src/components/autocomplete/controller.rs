@@ -655,8 +655,9 @@ impl AutocompleteController {
 /// what kind of suffix is already present.
 struct WikilinkExtent {
     /// Byte offset (≥ `start`) of the first character that is NOT part
-    /// of the target region: either the first `]` of an existing `]]`,
-    /// a `|` alias separator, a newline, a `[`, or EOF.
+    /// of the target region: either the first `]` of an existing `]]` or
+    /// a `|` alias separator. For an unclosed link it is `start` (past a
+    /// lone `]` sitting at the cursor) so the rest of the line survives.
     end: usize,
     /// `true` when an existing `]]` follows immediately at `end`.
     existing_close: bool,
@@ -669,6 +670,11 @@ struct WikilinkExtent {
 /// target characters (anything except `]`, `|`, `\n`, `\r`, `[`).
 /// Lone `]` bytes (without a following `]`) are treated as stale
 /// characters and consumed — invalid inside a wikilink target anyway.
+///
+/// The scanned region only counts as stale target text when it ends in
+/// `]]` or `|`. Hitting a newline, `[` or EOF first means the link was
+/// never closed — the user typed `[[` mid-line — and what follows the
+/// cursor is ordinary prose, so nothing past the cursor is consumed.
 ///
 /// All decision bytes are ASCII so byte-level scanning is UTF-8 safe.
 fn scan_wikilink_extent(buffer: &str, start: usize) -> WikilinkExtent {
@@ -695,18 +701,20 @@ fn scan_wikilink_extent(buffer: &str, start: usize) -> WikilinkExtent {
                     has_alias: true,
                 };
             }
-            b'\n' | b'\r' | b'[' => {
-                return WikilinkExtent {
-                    end: i,
-                    existing_close: false,
-                    has_alias: false,
-                };
-            }
+            b'\n' | b'\r' | b'[' => break,
             _ => i += 1,
         }
     }
+    // Unclosed link: keep the rest of the line, but still swallow a lone
+    // `]` right at the cursor so `[[me]` (cursor before `]`) doesn't become `[[meeting]]]`.
+    let start = start.min(bytes.len());
+    let end = if bytes.get(start) == Some(&b']') {
+        start + 1
+    } else {
+        start
+    };
     WikilinkExtent {
-        end: i,
+        end,
         existing_close: false,
         has_alias: false,
     }
@@ -1130,6 +1138,42 @@ mod tests {
         host.apply(&action);
         assert_eq!(host.buffer, "see [[meeting]]");
         assert_eq!(host.cursor, host.buffer.len());
+    }
+
+    #[tokio::test]
+    async fn accepting_unclosed_wikilink_mid_line_keeps_rest_of_line() {
+        // Typing `[[` in the middle of a line: no closing `]]` exists, so
+        // the text after the cursor is not part of the target and must
+        // survive the accept.
+        let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
+        let mut c = make_controller(vault, AutocompleteMode::Both);
+        let mut host = FakeHost::new("see [[me and more text", 8); // cursor after `me`
+        c.sync(&host);
+        drain_results(&mut c).await;
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let outcome = c.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &host);
+        let HandleKeyOutcome::Accepted(action) = outcome else {
+            panic!("expected Accepted, got {:?}", outcome);
+        };
+        host.apply(&action);
+        assert_eq!(host.buffer, "see [[meeting]] and more text");
+        assert_eq!(host.cursor, "see [[meeting]]".len());
+    }
+
+    #[tokio::test]
+    async fn accepting_unclosed_wikilink_before_another_link_keeps_text_between() {
+        let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
+        let mut c = make_controller(vault, AutocompleteMode::Both);
+        let mut host = FakeHost::new("see [[me and [[other]]", 8);
+        c.sync(&host);
+        drain_results(&mut c).await;
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let outcome = c.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &host);
+        let HandleKeyOutcome::Accepted(action) = outcome else {
+            panic!("expected Accepted, got {:?}", outcome);
+        };
+        host.apply(&action);
+        assert_eq!(host.buffer, "see [[meeting]] and [[other]]");
     }
 
     #[tokio::test]
