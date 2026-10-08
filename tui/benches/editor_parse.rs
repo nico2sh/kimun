@@ -1,6 +1,6 @@
 //! Criterion benchmarks for the incremental-parse machinery.
 //!
-//! Targets (per openspec/changes/incremental-parsed-buffer/):
+//! Targets:
 //! - full_parse_5000_lines: 5–20 ms (reference)
 //! - incremental_paragraph_insert_5000_lines: < 1 ms
 //! - incremental_fallback_5000_lines: ≈ full_parse_5000_lines ± 5%
@@ -282,8 +282,8 @@ fn bench_full_view_update_heavy_lists_typing(c: &mut Criterion) {
     let warmed = warmed_view(&lines, (target_row, 0), rect);
 
     // Single-char append inside an item's content. Pre-edit row is a
-    // ListMarker (lazy_depth == 1) inside the loose list. The v3 §3.0
-    // relaxation skips the lazy_depth guard for this shape; the
+    // ListMarker (lazy_depth == 1) inside the loose list. The v3
+    // lazy-guard relaxation skips the lazy_depth guard for this shape; the
     // intra-construct widener tier finds an End(Item) boundary and
     // splices a narrow slice. Pre-v3 this fixture cap-tripped to a
     // full ParsedBuffer::parse (~493 µs); post-v3 it lands at ~36 µs.
@@ -337,10 +337,10 @@ fn bench_full_view_update_heavy_lists_first_parse(c: &mut Criterion) {
 /// the `>` row exercise the intra-construct widener on the
 /// blockquote-end boundary; edits to the lazy-continuation row land
 /// inside the blockquote (lazy_depth > 0, Plain kind) and bail at
-/// the §3.0 guard (Plain is NOT in the qualifying set).
+/// the lazy-guard relaxation (Plain is NOT in the qualifying set).
 ///
 /// This bench measures the intra-construct win on the `> a` row
-/// pattern. Once the §3.0 relaxation widens to include `Plain` (via
+/// pattern. Once the relaxation widens to include `Plain` (via
 /// a post-widening sanity check), the lazy-continuation row will
 /// also become incremental.
 fn make_blockquotes_lazy_buffer() -> Vec<String> {

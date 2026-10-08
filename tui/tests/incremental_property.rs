@@ -210,10 +210,10 @@ proptest! {
         }
     }
 
-    /// §4.1 — V3 proptest. Random loose lists with MIXED marker
+    /// V3 proptest. Random loose lists with MIXED marker
     /// styles (-, *, +, 1., 1)) and intra-blank gaps, edited with a
     /// single-char insert INSIDE an item's text content. After the
-    /// §3.0 lazy-guard relaxation + intra-construct widener, the
+    /// lazy-guard relaxation + intra-construct widener, the
     /// spliced parsed_buffer must equal a fresh full parse.
     /// Divergence here proves the rendered-output-equivalence claim
     /// is broken for the shape covered.
@@ -270,7 +270,7 @@ proptest! {
         }
     }
 
-    /// §4.2 — V3 proptest for blockquotes. Random blockquote
+    /// V3 proptest for blockquotes. Random blockquote
     /// buffers (one `> content` per blockquote, blank-separated)
     /// with single-char content edits.
     #[test]
@@ -321,7 +321,7 @@ proptest! {
         }
     }
 
-    /// §4.3 — V3 proptest for tight lists. NO blanks between items.
+    /// V3 proptest for tight lists. NO blanks between items.
     /// Validates that the sparse heuristic doesn't break correctness
     /// when boundaries are dropped (only ~n/2 entries instead of n).
     #[test]

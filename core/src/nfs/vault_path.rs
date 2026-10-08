@@ -396,12 +396,56 @@ impl VaultPath {
     /// Absolute targets are returned flattened as-is. A bare filename with no
     /// directory part (e.g. `anton.md`) is returned unchanged so callers can
     /// fall back to a vault-wide name lookup (wiki-style links).
+    ///
+    /// `note_path`'s last component is always taken for the note's name, so
+    /// a folder path resolves against its parent; see
+    /// [`Self::resolve_against_note`] for a reference that may be a folder.
     pub fn resolve_link_in_note(&self, note_path: &VaultPath) -> VaultPath {
-        if self.is_note_file() {
-            return self.clone();
-        }
         let (parent, _) = note_path.flatten().get_parent_path();
-        parent.append(self).flatten().absolute()
+        self.resolve_in_folder(parent)
+            .map_or_else(|| self.clone(), |path| path.absolute())
+    }
+
+    /// Resolve `self` as a link target written inside `note_path`, without
+    /// making the result absolute: a bare note filename (e.g. `anton.md`) is
+    /// returned unchanged for a vault-wide name lookup; anything else is
+    /// appended to the note's folder (or to `note_path` itself when it is a
+    /// folder) and flattened, so a relative note path gives a relative result.
+    /// For a note path this is [`Self::resolve_link_in_note`] without
+    /// [`Self::absolute`]; unlike it, a folder `note_path` is the base itself
+    /// (the two differ only in their base and that last step).
+    ///
+    /// ```
+    /// use kimun_core::nfs::VaultPath;
+    /// let note = VaultPath::new("folder/note.md");
+    /// let target = VaultPath::new("../work/a.md");
+    /// assert_eq!(target.resolve_against_note(&note).to_string(), "work/a.md");
+    /// ```
+    pub fn resolve_against_note(&self, note_path: &VaultPath) -> VaultPath {
+        let note_path = note_path.flatten();
+        let base = if note_path.is_note() {
+            note_path.get_parent_path().0
+        } else {
+            note_path
+        };
+        self.resolve_in_folder(base).unwrap_or_else(|| self.clone())
+    }
+
+    /// The one link resolution, behind both resolvers above: `self` written
+    /// in a note inside `folder` (the explicit base), appended to it and
+    /// flattened; `None` for a bare note filename, which each resolver keeps
+    /// as is for a vault-wide name lookup.
+    ///
+    /// The resolvers differ only in how they pick `folder` and in a last
+    /// step, and cannot be merged without changing one's results. The trap:
+    /// [`Self::resolve_link_in_note`] always drops `note_path`'s last
+    /// component (a folder `/journal` resolves `a/b.md` to `/a/b.md`) and
+    /// makes the result absolute; [`Self::resolve_against_note`] keeps a
+    /// folder as the base (`/journal/a/b.md`) and a relative note path's
+    /// result relative. The editor follows links with the first; the walk
+    /// renders and indexes them with the second.
+    fn resolve_in_folder(&self, folder: VaultPath) -> Option<VaultPath> {
+        (!self.is_note_file()).then(|| folder.append(self).flatten())
     }
 
     /// Expresses this path relative to `reference_path`, walking up with `..`
@@ -968,6 +1012,76 @@ mod tests {
         assert_eq!(
             "/work/people/anton.md",
             target.resolve_link_in_note(&note).to_string()
+        );
+    }
+
+    #[test]
+    fn resolve_against_note_keeps_relative_paths_relative() {
+        let relative = VaultPath::new("folder/note.md");
+        assert_eq!(
+            "folder/sub/e.md",
+            VaultPath::note_path_from("sub/e")
+                .resolve_against_note(&relative)
+                .to_string()
+        );
+        assert_eq!(
+            "/journal/a/b.md",
+            VaultPath::new("a/b.md")
+                .resolve_against_note(&VaultPath::new("/journal/x.md"))
+                .to_string()
+        );
+        assert_eq!(
+            "work/a.md",
+            VaultPath::new("../work/a.md")
+                .resolve_against_note(&relative)
+                .to_string()
+        );
+        // A bare note name stays a name, looked up anywhere in the vault.
+        assert_eq!(
+            "anton.md",
+            VaultPath::new("anton.md")
+                .resolve_against_note(&relative)
+                .to_string()
+        );
+    }
+
+    #[test]
+    fn resolve_link_in_note_resolves_against_the_parent_of_a_folder_path() {
+        // As it always did: the last component of `note_path` is dropped,
+        // whether or not it is a note.
+        assert_eq!(
+            "/a/b.md",
+            VaultPath::new("a/b.md")
+                .resolve_link_in_note(&VaultPath::new("/journal"))
+                .to_string()
+        );
+    }
+
+    // The two resolvers share one implementation and
+    // differ only in their base and the last step — pinned, so merging them
+    // is seen to change results.
+    #[test]
+    fn the_two_resolvers_differ_only_in_base_and_absoluteness() {
+        let target = VaultPath::new("a/b.md");
+        let note = VaultPath::new("/journal/x.md");
+        assert_eq!(
+            target.resolve_link_in_note(&note),
+            target.resolve_against_note(&note)
+        );
+        let folder = VaultPath::new("/journal");
+        assert_eq!(target.resolve_link_in_note(&folder).to_string(), "/a/b.md");
+        assert_eq!(
+            target.resolve_against_note(&folder).to_string(),
+            "/journal/a/b.md"
+        );
+        let relative = VaultPath::new("journal/x.md");
+        assert_eq!(
+            target.resolve_link_in_note(&relative).to_string(),
+            "/journal/a/b.md"
+        );
+        assert_eq!(
+            target.resolve_against_note(&relative).to_string(),
+            "journal/a/b.md"
         );
     }
 

@@ -166,7 +166,7 @@ pub struct SearchList<R: SearchRow> {
     /// press after it completes a double-click whose first half already
     /// acted (see `DoubleClicked::repeat`).
     last_click_activated: bool,
-    /// Render the query input with §9 syntax highlighting (the FIND drawer
+    /// Render the query input with syntax highlighting (the FIND drawer
     /// and the telescope modal; plain inputs like the sidebar filter skip it).
     highlight_query: bool,
     /// Which half owns the keyboard. See [`Focus`] and CONTEXT.md.
@@ -1219,7 +1219,7 @@ impl<R: SearchRow> SearchListBuilder<R> {
         self.intercept = v;
         self
     }
-    /// Render the query input with §9 syntax highlighting.
+    /// Render the query input with syntax highlighting.
     pub fn highlight_query(mut self) -> Self {
         self.highlight_query = true;
         self

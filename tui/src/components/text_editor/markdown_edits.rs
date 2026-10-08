@@ -151,32 +151,17 @@ pub fn smart_enter(buf: &mut RopeBuffer) -> bool {
     true
 }
 
-/// Move the cursor to the first heading row whose rendered text equals
-/// `heading`, at any level — the OUTLINE drawer's jump. `false`, cursor
-/// untouched, when none matches.
-///
-/// "Rendered" is what the OUTLINE shows, and the row is rendered by the same
-/// core function that produced the entry (`scan::heading_display_text`:
-/// wikilinks and links to their text, hashtag markers dropped, emphasis and
-/// ATX markers gone), so the two agree wherever a line can be rendered alone —
-/// `heading_display_text` names the limits (setext headings, reference-style
-/// links, a `#` line inside a fence). A normaliser of our own once lived here
-/// and missed every heading holding a link or a tag.
-pub fn jump_to_heading(buf: &mut RopeBuffer, heading: &str) -> bool {
-    let row = (0..buf.row_count()).find(|&row| {
-        buf.row(row).is_some_and(|line| {
-            kimun_core::note::scan::heading_display_text(&line).as_deref() == Some(heading)
-        })
-    });
-    match row {
-        Some(row) => {
-            // A jump is a cursor move, not a selection gesture: drop any live
-            // selection (a mouse click leaves a zero-width one) before moving.
-            buf.cancel_selection();
-            buf.jump_to(row, 0)
-        }
-        None => false,
+/// Move the cursor to the start of `row` — the OUTLINE drawer's jump, once
+/// the drawer has resolved which row its heading is on. `false`, cursor
+/// untouched, when the buffer has no such row.
+pub fn jump_to_row(buf: &mut RopeBuffer, row: usize) -> bool {
+    if row >= buf.row_count() {
+        return false;
     }
+    // A jump is a cursor move, not a selection gesture: drop any live
+    // selection (a mouse click leaves a zero-width one) before moving.
+    buf.cancel_selection();
+    buf.jump_to(row, 0)
 }
 
 /// If `marker` is an ordered-list marker like `"3. "`, the next one (`"4. "`).
@@ -479,54 +464,28 @@ mod tests {
     // ── heading jump ──────────────────────────────────────────────────────
 
     #[test]
-    fn jump_to_heading_finds_any_level_and_normalises_markup() {
-        let mut buf = buffer("intro\n# Top\nbody\n## **Sub** One ##\nmore\n");
-        assert!(jump_to_heading(&mut buf, "Sub One"));
-        assert_eq!(buf.cursor(), (3, 0));
-        assert!(jump_to_heading(&mut buf, "Top"));
+    fn jump_to_row_moves_to_the_row_start() {
+        let mut buf = buffer("intro\n# Top\nbody\n");
+        assert!(buf.jump_to(2, 2));
+        assert!(jump_to_row(&mut buf, 1));
         assert_eq!(buf.cursor(), (1, 0));
     }
 
     #[test]
-    fn an_unknown_heading_leaves_the_cursor_where_it_was() {
+    fn a_row_past_the_end_leaves_the_cursor_where_it_was() {
         let mut buf = buffer("intro\n# Top\nbody");
         assert!(buf.jump_to(2, 1));
-        assert!(!jump_to_heading(&mut buf, "Nope"));
+        assert!(!jump_to_row(&mut buf, 9));
         assert_eq!(buf.cursor(), (2, 1));
     }
 
     #[test]
-    fn jump_to_heading_drops_a_live_selection_instead_of_extending_it() {
+    fn jump_to_row_drops_a_live_selection_instead_of_extending_it() {
         let mut buf = buffer("intro\n# Top\nbody");
         assert!(buf.jump_to(2, 1));
         buf.start_selection(); // the zero-width anchor a mouse click leaves
-        assert!(jump_to_heading(&mut buf, "Top"));
+        assert!(jump_to_row(&mut buf, 1));
         assert_eq!(buf.cursor(), (1, 0));
         assert_eq!(buf.selection_range(), None);
-    }
-
-    #[test]
-    fn a_hash_inside_a_row_is_not_a_heading() {
-        let mut buf = buffer("see #tag here\n# Real");
-        assert!(jump_to_heading(&mut buf, "Real"));
-        assert_eq!(buf.cursor(), (1, 0));
-        assert!(!jump_to_heading(&mut buf, "tag here"));
-    }
-
-    #[test]
-    fn jump_to_heading_finds_headings_holding_links_and_tags() {
-        // What the OUTLINE lists for these rows, per core's chunker.
-        let mut buf =
-            buffer("# See [[other note]]\na\n# Sprint #42\nb\n# Docs [here](https://x.y)\nc\n");
-        assert!(jump_to_heading(&mut buf, "Docs here"));
-        assert_eq!(buf.cursor(), (4, 0));
-        assert!(jump_to_heading(&mut buf, "Sprint 42"));
-        assert_eq!(buf.cursor(), (2, 0));
-        assert!(jump_to_heading(&mut buf, "See other note"));
-        assert_eq!(buf.cursor(), (0, 0));
-        assert!(
-            !jump_to_heading(&mut buf, "See [[other note]]"),
-            "raw source is not what the OUTLINE shows"
-        );
     }
 }

@@ -538,7 +538,7 @@ impl Component for SidebarComponent {
                     SearchMouse::Activated(_) | SearchMouse::DoubleClicked { repeat: false, .. } => {
                         self.activate_selected_entry(tx)
                     }
-                    // Right-click on a file/dir row → context menu (spec §10).
+                    // Right-click on a file/dir row → context menu.
                     SearchMouse::Context(_) => {
                         if let Some(entry) = list.selected_row()
                             && !matches!(

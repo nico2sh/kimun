@@ -1,5 +1,6 @@
 pub(crate) mod content_extractor;
 pub(crate) mod properties;
+mod walk;
 
 pub use properties::{
     is_list_property_key, property_keys_match, property_search_key, FrontmatterFormat,
@@ -26,8 +27,8 @@ pub mod scan {
     pub use super::content_extractor::{
         heading_display_text, heading_section_range, is_inside_code_link_or_frontmatter,
         is_inside_exclusion_zone, is_remote_url, link_char_spans, link_target_filename,
-        target_looks_like_image, url_with_allowed_scheme, wikilink_char_spans, ExclusionZones,
-        LinkSpan, LinkSpanKind,
+        split_link_fragment, target_looks_like_image, url_with_allowed_scheme, wikilink_char_spans,
+        ExclusionZones, LinkSpan, LinkSpanKind,
     };
 
     /// A label token detected in note text, with byte-offset range and the
@@ -53,19 +54,10 @@ pub mod scan {
 }
 
 /// Returns the deduplicated lowercase label names extracted from `text`
-/// according to the same rules used by the indexer (skips frontmatter,
-/// code, HTML, markdown links, wikilinks; applies word-boundary on both
-/// sides of the match).
+/// by the note walk the indexer reads (skips frontmatter, code, HTML, link
+/// text and wikilinks; applies word-boundary on both sides of the match).
 pub fn extract_labels(text: &str) -> Vec<String> {
-    let path = crate::nfs::VaultPath::root();
-    let (_md, links) = content_extractor::get_markdown_and_links(&path, text);
-    let mut seen = std::collections::BTreeSet::new();
-    for l in links {
-        if let LinkType::Hashtag = l.ltype {
-            seen.insert(l.text.to_lowercase());
-        }
-    }
-    seen.into_iter().collect()
+    walk::walk(text).tag_names()
 }
 
 /// Whether `label` can be written as an inline `#label` hashtag that reads
@@ -96,39 +88,74 @@ pub fn is_hashtag_label(label: &str) -> bool {
 /// assert_eq!(kimun_core::note::note_tags(text), ["draft", "project", "q1"]);
 /// ```
 pub fn note_tags(text: &str) -> Vec<String> {
-    tags_with(text, &NoteDetails::property_set_of(text))
+    tags_with(
+        walk::walk(text).tag_names(),
+        &NoteDetails::property_set_of(text),
+    )
 }
 
-/// The inline labels of `text` plus the `tags` of its already-parsed
+/// `labels` (a note's inline hashtags) plus the `tags` of its already-parsed
 /// frontmatter, sorted and distinct.
-fn tags_with(text: &str, frontmatter: &properties::PropertySet) -> Vec<String> {
-    let mut tags: std::collections::BTreeSet<String> = extract_labels(text).into_iter().collect();
+fn tags_with(labels: Vec<String>, frontmatter: &properties::PropertySet) -> Vec<String> {
+    let mut tags: std::collections::BTreeSet<String> = labels.into_iter().collect();
     tags.extend(frontmatter.tags());
     tags.into_iter().collect()
 }
 
-/// A heading of a note: its level (1–6) and display text.
+/// Every link target of a note in document order, **as written** — wikilink
+/// targets whose note is a valid vault path (a `#section` or `^block` kept:
+/// `note#section`), markdown and image destinations that are a URL or a
+/// valid vault path (a `#section` kept), autolinks — frontmatter and code
+/// skipped (a wikilink in an indented code block is still listed). A
+/// destination that links nowhere (`[t]([[b]])`, `[x](a|b.md)`) is not
+/// listed: the same links every other view lists.
+///
+/// These are strings, not resolved vault paths: vault targets and URLs side
+/// by side, relative paths unresolved, wikilinks without the note extension.
+/// For the notes a link resolves to, build a [`VaultPath`] from the target
+/// (e.g. [`VaultPath::note_path_from`] and [`VaultPath::resolve_link_in_note`])
+/// or read the note's links from the index.
+///
+/// ```
+/// let text = "[[Plan#Goals|goals]] [doc](../doc.md) <https://x.y>";
+/// assert_eq!(
+///     kimun_core::note::note_link_targets(text),
+///     ["Plan#Goals", "../doc.md", "https://x.y"]
+/// );
+/// ```
+pub fn note_link_targets(text: &str) -> Vec<String> {
+    walk::walk(text).link_targets()
+}
+
+/// A heading of a note: its level (1–6), display text and line.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct NoteHeading {
     /// 1 for `#`, up to 6.
     pub level: u8,
-    /// The heading's text, inline markup rendered to plain text.
+    /// The heading's text, rendered as a content chunk's breadcrumb renders
+    /// it: inline markup to plain text, wikilinks collapsed to their text,
+    /// hashtag markers dropped.
     pub text: String,
+    /// 0-based line of the heading in the note text, frontmatter included.
+    pub line: usize,
 }
 
 /// What a note's own text declares about it, read in one pass over its
-/// frontmatter: its labels (as [`note_tags`]), its frontmatter properties,
-/// and its headings (frontmatter and code skipped).
+/// frontmatter and one walk over the note: its labels (as [`note_tags`]),
+/// its frontmatter properties, its headings and its link targets (as
+/// [`note_link_targets`]; frontmatter and code skipped).
 ///
 /// ```
-/// let text = "---\n# a comment, not a heading\nstatus: done\n---\n# Title\n```\n# code\n```\n#todo";
+/// let text = "---\n# a comment, not a heading\nstatus: done\n---\n# Title\n```\n# code\n```\n#todo [[other]]";
 /// let meta = kimun_core::note::NoteMetadata::of(text);
 /// assert_eq!(meta.tags, ["todo"]);
 /// assert_eq!(meta.properties.len(), 1);
 /// assert_eq!(meta.headings.len(), 1);
 /// assert_eq!(meta.headings[0].text, "Title");
+/// assert_eq!(meta.links, ["other"]);
 /// ```
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct NoteMetadata {
     /// Inline `#hashtags` plus frontmatter `tags`, lowercased, sorted, distinct.
     pub tags: Vec<String>,
@@ -137,27 +164,31 @@ pub struct NoteMetadata {
     pub properties: Vec<PropertyEntry>,
     /// Headings in order.
     pub headings: Vec<NoteHeading>,
+    /// Link targets in document order, as written — strings mixing vault
+    /// targets and URLs, not resolved vault paths; see [`note_link_targets`].
+    pub links: Vec<String>,
 }
 
 impl NoteMetadata {
     /// Reads a note body's metadata.
     pub fn of(text: &str) -> Self {
         let frontmatter = NoteDetails::property_set_of(text);
+        let walked = walk::walk(text);
         Self {
-            tags: tags_with(text, &frontmatter),
+            tags: tags_with(walked.tag_names(), &frontmatter),
             properties: frontmatter.into_entries(),
-            headings: note_headings(text),
+            headings: walked.headings(text),
+            links: walked.link_targets(),
         }
     }
 }
 
 /// A note body's headings in order — frontmatter and `#` lines inside code
-/// skipped, inline markup rendered to text.
+/// skipped, a heading with an empty section included. The one heading source:
+/// the CLI, the OUTLINE and its jump all read headings here, through the same
+/// walk the content chunks' breadcrumbs come from.
 pub fn note_headings(text: &str) -> Vec<NoteHeading> {
-    content_extractor::extract_headings(text)
-        .into_iter()
-        .map(|(level, text)| NoteHeading { level, text })
-        .collect()
+    walk::walk(text).headings(text)
 }
 
 /// A note's vault path paired with its raw, unprocessed text.
@@ -209,6 +240,17 @@ impl NoteDetails {
     /// constructing a `NoteDetails`.
     pub fn content_data_of<S: AsRef<str>>(text: S) -> NoteContentData {
         content_extractor::get_content_data(text)
+    }
+
+    /// Everything the index stores from a note body at `path` — content data
+    /// (title + hash), heading chunks and links — from one walk, without
+    /// constructing a `NoteDetails`. The same as [`Self::content_data_of`]
+    /// plus [`Self::chunks_and_links_of`].
+    pub fn index_data_of<S: AsRef<str>>(
+        path: &VaultPath,
+        text: S,
+    ) -> (NoteContentData, Vec<ContentChunk>, Vec<NoteLink>) {
+        content_extractor::get_index_data(path, text)
     }
 
     /// Heading-chunked content of a note body, without constructing a

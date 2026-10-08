@@ -255,27 +255,23 @@ fn default_keybindings() -> KeyBindings {
     // which the deserialize safety net uses to recover an unreachable app.
     kb.batch_add()
         .with_ctrl()
-        // Ctrl-P is the command palette (decision 2026-06-05); settings
-        // live on Ctrl+Shift+P.
+        // Ctrl-P is the command palette; settings live on Ctrl+Shift+P.
         .add(KeyStrike::KeyP, ActionShortcuts::OpenCommandPalette)
         .add(KeyStrike::KeyQ, ActionShortcuts::Quit)
         .add(KeyStrike::KeyJ, ActionShortcuts::NewJournal)
-        // Drawer toggle. Deliberate spec deviation: the spec's Tier-0 puts
-        // this on Ctrl-B; the toggle went to Ctrl-T instead to leave Ctrl-B on
-        // Bold (decision 2026-06-05). Bold has since left the chord table for
-        // the leader, and Ctrl-B now hosts the gateway itself (decision
-        // 2026-10-02) — but the toggle stays on Ctrl-T regardless, because
-        // moving a chord people have in their fingers to satisfy a spec is
-        // the cost without the benefit.
+        // Drawer toggle. Deliberately not Ctrl-B: the toggle went to Ctrl-T
+        // to leave Ctrl-B on Bold. Bold has since left the chord table for
+        // the leader, and Ctrl-B now hosts the gateway itself — but the
+        // toggle stays on Ctrl-T regardless: moving a chord people have in
+        // their fingers would cost more than it gains.
         .add(KeyStrike::KeyT, ActionShortcuts::ToggleSidebar)
         .add(KeyStrike::KeyR, ActionShortcuts::OpenSortDialog)
-        // Leader gateway. Spec deviation: spec says Ctrl-K, which stays the
-        // note browser. Ctrl-G held the gateway from 2026-06-05 until Ctrl-B
-        // freed up (formatting left for the leader's own `+text` group);
-        // Ctrl-B is tmux's standard prefix, so new installs get it as the
-        // gateway instead (decision 2026-10-02). Existing config.toml files
-        // already have `Leader = ["ctrl&G"]` written from first run and are
-        // unaffected — this only changes what a fresh install picks up.
+        // Leader gateway. Not Ctrl-K, which stays the note browser. Ctrl-G
+        // held the gateway until Ctrl-B freed up (formatting left for the
+        // leader's own `+text` group); Ctrl-B is tmux's standard prefix, so
+        // new installs get it as the gateway instead. Existing config.toml
+        // files already have `Leader = ["ctrl&G"]` written from first run and
+        // are unaffected — this only changes what a fresh install picks up.
         .add(KeyStrike::KeyB, ActionShortcuts::Leader)
         // FollowLink's always-works binding; Ctrl+Enter also follows on
         // kitty-protocol terminals (hardcoded in the editor screen).

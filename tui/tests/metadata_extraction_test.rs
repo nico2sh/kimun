@@ -1,4 +1,19 @@
-use kimun_notes::cli::metadata_extractor::{extract_headers, extract_links, extract_tags};
+//! The note metadata the CLI's JSON output reports (`JsonNoteMetadata`):
+//! tags, links and headers, all read by core's `NoteMetadata`.
+
+use kimun_notes::cli::json_output::{JsonHeader, JsonNoteMetadata};
+
+fn extract_tags(content: &str) -> Vec<String> {
+    JsonNoteMetadata::from_content(content).tags
+}
+
+fn extract_links(content: &str) -> Vec<String> {
+    JsonNoteMetadata::from_content(content).links
+}
+
+fn extract_headers(content: &str) -> Vec<JsonHeader> {
+    JsonNoteMetadata::from_content(content).headers
+}
 
 #[test]
 fn extract_tags_from_hashtags_and_frontmatter() {
