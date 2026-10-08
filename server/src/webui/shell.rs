@@ -100,6 +100,7 @@ button.danger:hover{background:oklch(66% .14 30)}
 .flash{padding:var(--sp-md) var(--sp-lg);border-radius:6px;margin:var(--sp-lg) 0;font-size:.9375rem}
 .flash.ok{background:oklch(76% .1 145/.12);color:var(--ok)}
 .flash.err{background:oklch(74% .12 30/.12);color:var(--err)}
+.flash.info{background:oklch(84% .14 89/.1);color:var(--accent)}
 .flash a{color:inherit;text-decoration:underline}
 .muted{color:var(--muted)}
 .mono{font-family:var(--mono);font-size:.875rem}
