@@ -45,7 +45,7 @@ pub mod search_provider;
 /// unique to the browser: a live preview pane for the selected note and the
 /// open-on-enter glue that emits [`AppEvent::OpenPath`].
 /// What the modal is scoped to — drives the input prefix glyph and whether
-/// the §9 query highlighter applies.
+/// the query syntax highlighter applies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BrowserScope {
     /// Full query syntax (Ctrl-K, tag/backlink leaves): `⌕` prefix +
@@ -269,7 +269,7 @@ impl NoteBrowserModal {
     }
 
     /// The emphasis payload an open from this modal carries: the query's
-    /// needles (spec §5.1), Query scope only.
+    /// needles, Query scope only.
     fn emphasis(&self) -> Option<Vec<String>> {
         let needles = self.preview_needles();
         (!needles.is_empty()).then_some(needles)
@@ -589,7 +589,7 @@ impl Overlay for NoteBrowserModal {
 
         let popup_rect = crate::components::centered_rect(75, 75, area);
 
-        // Modal chrome (spec §6): hard background, focus-green border.
+        // Modal chrome: hard background, focus-green border.
         let modal_style = Style::default()
             .fg(theme.fg.to_ratatui())
             .bg(theme.bg_hard.to_ratatui());
@@ -703,7 +703,7 @@ impl Overlay for NoteBrowserModal {
         }
 
         // Preview header: filename, plus the match count when the query
-        // carries text terms (spec §6: `filename · N matches`).
+        // carries text terms (`filename · N matches`).
         let needles = self.preview_needles();
         let match_count = count_matches(&self.preview_text, &needles);
         let preview_title = match (&self.preview_path, match_count) {
@@ -854,7 +854,7 @@ fn count_matches(text: &str, needles: &[String]) -> Option<usize> {
     Some(preview_highlight::match_ranges(text, needles).len())
 }
 
-/// The preview text with needle matches emphasized in `yellow` (spec §6).
+/// The preview text with needle matches emphasized in `yellow`.
 /// Matching is byte-safe via [`preview_highlight::match_ranges`], so non-ASCII
 /// case folds (e.g. `İ`, `ẞ`) are highlighted too, not dropped.
 fn highlight_matches<'a>(

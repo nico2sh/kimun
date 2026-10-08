@@ -3,8 +3,7 @@
 //! Line 1 — context + actions: a focus-context indicator (`⌨ EDITOR` when a
 //! text field holds the cursor, `≣ LIST` when a list/panel is focused)
 //! followed by the focused surface's key hints, with the global hints
-//! right-aligned. There is no editing "mode"; focus is the only state
-//! (spec §7).
+//! right-aligned. There is no editing "mode"; focus is the only state.
 //!
 //! Line 2 — document state: path · ln/col · modified/saved · backlink count
 //! · git status · (in query contexts) match count.
@@ -44,7 +43,7 @@ pub struct DocState<'a> {
     pub git: Option<String>,
     /// Result count when a query context is focused.
     pub matches: Option<usize>,
-    /// Link-under-cursor affordance: `→ target · N backlinks` (spec §5.2).
+    /// Link-under-cursor affordance: `→ target · N backlinks`.
     pub link: Option<String>,
     /// Newer release available, e.g. `⬆ 0.18.0` — clickable, opens the
     /// update dialog.

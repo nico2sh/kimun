@@ -330,7 +330,7 @@ pub struct TextEditorComponent {
     /// path) opens the note's context menu and clears the flag.
     pub wants_context_menu: bool,
     /// Lowercased needles to emphasize in the rendered buffer — set when the
-    /// note was opened from a query result (spec §5.1 "search match"), and
+    /// note was opened from a query result ("search match"), and
     /// dropped on the first edit (`revs.needles_stale()`).
     search_needles: Vec<String>,
     full_parse_tx: tokio::sync::mpsc::UnboundedSender<(u64, ParsedBuffer)>,
@@ -1141,13 +1141,13 @@ impl TextEditorComponent {
         true
     }
 
-    /// The OUTLINE drawer's jump — [`markdown_edits::jump_to_heading`] on the
+    /// The OUTLINE drawer's jump — [`markdown_edits::jump_to_row`] on the
     /// live buffer. No-op on the Nvim backend.
-    pub fn jump_to_heading(&mut self, heading: &str) {
+    pub fn jump_to_row(&mut self, row: usize) {
         let Some(ta) = self.backend.as_textarea_mut() else {
             return;
         };
-        if markdown_edits::jump_to_heading(ta, heading) {
+        if markdown_edits::jump_to_row(ta, row) {
             self.sync_highlight();
         }
     }
@@ -1644,7 +1644,7 @@ impl TextEditorComponent {
         self.interrupt_typing();
         // Right-click: with a selection it copies (unchanged behavior);
         // without one it asks the host to open the note's context menu
-        // (spec §10 — file & note ops).
+        // (file & note ops).
         if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Right))
             && self.selection.is_none_or(|(start, end)| start == end)
         {
@@ -1737,7 +1737,7 @@ impl TextEditorComponent {
 
 /// Viewport post-pass: emphasize search-needle matches
 /// (`color_search_match`, bold) and style task checkboxes — `[ ]` accent,
-/// `[x]` rows dimmed + struck (spec §5.1). Operates on the rendered buffer
+/// `[x]` rows dimmed + struck. Operates on the rendered buffer
 /// rows, so cost is bounded by the visible area regardless of note size.
 impl Component for TextEditorComponent {
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
@@ -2156,7 +2156,7 @@ impl Component for TextEditorComponent {
         self.view
             .render(f, editor_rect, theme, editor_focused, cursor_shape);
 
-        // Search-match emphasis (spec §5.1): paint needle matches and task
+        // Search-match emphasis: paint needle matches and task
         // checkboxes over the rendered viewport. Buffer-level post-pass —
         // viewport-only, so large notes pay nothing beyond the visible rows.
         if self.revs.needles_stale() {
@@ -2164,7 +2164,7 @@ impl Component for TextEditorComponent {
             self.revs.disarm_needles();
         }
 
-        // Empty-note tip (spec §5.2): dim ghost text in a fresh/empty buffer,
+        // Empty-note tip: dim ghost text in a fresh/empty buffer,
         // gone the instant the first character lands (the buffer stops being
         // empty). Drawn after the view so it sits over the blank canvas.
         if snap.text.len_bytes() == 0 && editor_rect.height > 0 {
@@ -2249,7 +2249,7 @@ impl Component for TextEditorComponent {
         }
 
         // Cursor-context hints come first: what the cursor is on decides the
-        // most relevant action (spec §5.2).
+        // most relevant action.
         let mut hints: Vec<(String, String)> = Vec::new();
         match self.follow_target_at_cursor() {
             Some(FollowTarget::Link(_)) => {
@@ -3014,26 +3014,18 @@ mod tests {
     }
 
     #[test]
-    fn jump_to_heading_moves_the_view_cursor() {
+    fn jump_to_row_moves_the_view_cursor() {
         // The OUTLINE drawer reads the position back through the view snapshot.
         let mut ed = make_editor();
         ed.set_text("intro\n# Top\nbody\n## Sub One\nmore\n".to_string());
-        ed.jump_to_heading("Sub One");
+        ed.jump_to_row(3);
         assert_eq!(ed.view_snapshot().cursor.0, 3);
-        ed.jump_to_heading("Top");
-        assert_eq!(ed.view_snapshot().cursor.0, 1);
         // A click's zero-width selection must not turn the jump into a span
         // the next keystroke replaces.
         select_range(&mut ed, (2, 1), (2, 1));
-        ed.jump_to_heading("Top");
+        ed.jump_to_row(1);
         assert_eq!(ed.selection, None);
         assert_eq!(ed.view_snapshot().cursor.0, 1);
-        ed.jump_to_heading("Nope");
-        assert_eq!(
-            ed.view_snapshot().cursor.0,
-            1,
-            "an unknown heading leaves the cursor"
-        );
     }
 
     #[test]

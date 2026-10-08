@@ -65,7 +65,7 @@ pub fn apply_accept_to_textarea(ta: &mut RopeBuffer, action: &AcceptAction) {
 
 /// Cursor screen position given a `rect` (col, row in cells), or `None`
 /// when the cursor is scrolled off-screen. The popup uses this as its
-/// anchor — a small spec liberty over "just after the sigil" (we anchor
+/// anchor — a small liberty over "just after the sigil" (we anchor
 /// at the cursor, which sits at the end of the typed prefix), but the
 /// popup ends up adjacent to the typed text either way.
 pub fn cursor_screen_pos(
@@ -109,7 +109,7 @@ mod tests {
     #[test]
     fn apply_accept_replaces_and_positions_cursor() {
         let mut ta = RopeBuffer::new(crate::ropetext::Text::from("see [[me"));
-        // Move cursor to end so the textarea matches the spec scenario.
+        // Move cursor to end so the textarea matches the accept scenario.
         ta.move_cursor(CursorMove::End);
         let action = AcceptAction {
             range: 6..8,

@@ -57,7 +57,7 @@ pub trait AppScreen: Send {
     /// does not handle it, in which case the main loop switches to an
     /// appropriate screen. Default: not handled.
     /// `emphasis` carries the originating query's needles when the open came
-    /// from a query result; only the editor screen uses it (spec §5.1) — it
+    /// from a query result; only the editor screen uses it — it
     /// is dropped when the open reroutes to a screen switch.
     async fn try_open_path(
         &mut self,

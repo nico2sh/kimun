@@ -6,7 +6,7 @@
 //! inside `EditorScreen::handle_input`. The screen builds the snapshot,
 //! classifies, then *executes* the intent.
 //!
-//! A pending leader sequence owns the input first (spec §8a) — including
+//! A pending leader sequence owns the input first — including
 //! ahead of the paste intercepts, which in the pre-extraction ladder sat
 //! above it (the old quirk let a leader-pending Ctrl+V paste an image and
 //! leave the sequence pending). Ctrl-chords and paste payloads cancel the
@@ -14,8 +14,8 @@
 //!
 //! Two decided collaterals of that reorder, both asserted by tests below:
 //! Ctrl+Enter mid-sequence now feeds the leader instead of following the
-//! link (Enter is not a `Char` chord, so no exception applies — §8a wins
-//! over the old follow-link-first order), and a paste arriving mid-sequence
+//! link (Enter is not a `Char` chord, so no exception applies — the pending
+//! sequence wins over the old follow-link-first order), and a paste arriving mid-sequence
 //! under an open overlay cancels the leader where the old ladder left it
 //! pending (the paste rule applies regardless of who receives the paste).
 
@@ -274,8 +274,7 @@ fn apply_claim(intent: EditorIntent, event: &InputEvent, claim: EditorClaim) -> 
     };
     let find_bar = claim == EditorClaim::FindBar;
     match intent {
-        // Always allowed. A pending leader sequence outranks a claim (spec
-        // §8a); the panel default IS the delivery path; an overlay cannot
+        // Always allowed. A pending leader sequence outranks a claim; the panel default IS the delivery path; an overlay cannot
         // coexist with a claim (a claim implies the editor is focused and
         // unobscured); the palette stays reachable as a global escape.
         EditorIntent::LeaderKey(_)
@@ -365,8 +364,8 @@ fn classify_unclaimed(
 ) -> Classification {
     use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
-    // A pending leader sequence owns the input ahead of everything else
-    // (spec §8a), including the paste intercepts below. Exceptions: an
+    // A pending leader sequence owns the input ahead of everything else,
+    // including the paste intercepts below. Exceptions: an
     // overlay that opened underneath wins, a Ctrl-chord cancels the sequence
     // then dispatches normally, and a paste payload — not a key the sequence
     // can consume — gets the same cancel-then-dispatch treatment.
@@ -653,7 +652,7 @@ pub(crate) fn classify_tail(
         return done(EditorIntent::LeaderStart);
     }
 
-    // Tab / Shift-Tab cycle panel focus (spec §2). The focused panel gets
+    // Tab / Shift-Tab cycle panel focus. The focused panel gets
     // first crack — the Query panel's autocomplete accepts on Tab — and the
     // editor keeps Tab for indentation.
     if ctx.focused != PanelKind::Editor
@@ -1019,7 +1018,7 @@ mod tests {
         );
     }
 
-    /// A pending leader sequence outranks a claim (spec §8a).
+    /// A pending leader sequence outranks a claim.
     #[test]
     fn the_leader_outranks_a_claim() {
         let ev = key(KeyCode::Char('x'), KeyModifiers::NONE);
@@ -1090,7 +1089,7 @@ mod tests {
 
     #[test]
     fn leader_pending_ctrl_v_cancels_leader_then_probes_image() {
-        // §8a ctrl-chord exception: the chord cancels the pending sequence
+        // Ctrl-chord exception: the chord cancels the pending sequence
         // and dispatches normally — for Ctrl+V that is the image probe, so
         // the cancel rides on the probe classification (the leader must die
         // whether or not the clipboard holds an image), and exactly once:
@@ -1116,7 +1115,7 @@ mod tests {
     #[test]
     fn leader_pending_ctrl_enter_feeds_leader() {
         // Enter is not a Char ctrl-chord, so no exception applies: the
-        // pending sequence owns the key (§8a) ahead of follow-link.
+        // pending sequence owns the key ahead of follow-link.
         let mut cx = ctx();
         cx.leader_pending = true;
         let c = classify_it(&key(KeyCode::Enter, KeyModifiers::CONTROL), &cx);

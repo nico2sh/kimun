@@ -2234,7 +2234,7 @@ mod tests {
     #[tokio::test]
     async fn attachment_details_detects_nul_past_sniff_window() {
         // A file that is text through the 64 KiB sniff window but holds a NUL
-        // later must still classify as binary (phase-2 full-buffer decode).
+        // later must still classify as binary (full-buffer decode).
         let dir = TempDir::new().unwrap();
         let vault = make_vault(dir.path()).await;
         let mut bytes = vec![b'a'; 100_000];

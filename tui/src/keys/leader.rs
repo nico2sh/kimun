@@ -1,8 +1,8 @@
 //! The **leader engine** — the non-modal key-sequence state machine behind
-//! the leader gateway (Ctrl-B by default; spec §8 says Ctrl-K, which stays
-//! the note browser here). The gateway starts a sequence in every context;
+//! the leader gateway (Ctrl-B by default; Ctrl-K stays
+//! the note browser). The gateway starts a sequence in every context;
 //! subsequent keys walk the leader tree until a leaf fires, `Esc` cancels, or
-//! `Backspace` steps up a level. The which-key overlay (phase 06) renders
+//! `Backspace` steps up a level. The which-key overlay renders
 //! the pending node; this module is pure input logic.
 
 use std::time::Instant;
@@ -409,7 +409,7 @@ pub struct DisplayChild {
     pub is_group: bool,
 }
 
-/// The leader tree per spec §8c (gateway key deviations noted in the module
+/// The leader tree (the gateway key is noted in the module
 /// docs). Group letters: f n l o g v w m t a, plus `p` `q` `?` and the digits
 /// `1`–`9` (pinned-note jumps).
 ///

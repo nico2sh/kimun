@@ -1,4 +1,4 @@
-//! The shared **rich list row** format every drawer list uses (spec §4):
+//! The shared **rich list row** format every drawer list uses:
 //!
 //! ```text
 //! ▤ Auth Flow Meeting              04-08

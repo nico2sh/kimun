@@ -278,7 +278,7 @@ impl QueryPanel {
     }
 
     /// The emphasis payload an open from this panel carries: the resolved
-    /// query's needles (spec §5.1) — resolved, not the template, so `{note}`
+    /// query's needles — resolved, not the template, so `{note}`
     /// never leaks.
     fn emphasis(&self) -> Option<Vec<String>> {
         let resolved = resolve_query(self.list.query(), &self.query_ctx());
@@ -621,7 +621,7 @@ impl QueryPanel {
                 self.open_selected(tx);
                 EventState::Consumed
             }
-            // Right-click on a result row → file/note context menu (spec §10).
+            // Right-click on a result row → file/note context menu.
             SearchMouse::Context(_) => {
                 if let Some(path) = self.selected_path().cloned() {
                     tx.send(AppEvent::FileOp(FileOp::ShowMenu(path))).ok();
@@ -791,7 +791,7 @@ impl QueryPanel {
             .border_style(border_style)
             .style(theme.panel_style());
         // Parse problems surface as a second, red title segment — the input
-        // itself never blocks (spec §9).
+        // itself never blocks.
         if let Some(reason) = crate::components::query_highlight::error_reason(self.list.query()) {
             search_block = search_block.title(
                 ratatui::text::Line::from(ratatui::text::Span::styled(
@@ -903,7 +903,7 @@ impl QueryPanel {
         // selected-row marker handled in `to_list_item`).
         if self.list.query().trim().is_empty() {
             // Empty-state: a short query-syntax primer instead of a blank
-            // list (spec §9 discoverability; the panel no longer pre-fills
+            // list (discoverability; the panel no longer pre-fills
             // a backlinks query — the LINKS drawer owns those).
             let dim = Style::default().fg(theme.gray.to_ratatui());
             let key = Style::default().fg(theme.yellow.to_ratatui());

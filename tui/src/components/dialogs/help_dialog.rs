@@ -165,7 +165,7 @@ impl HelpDialog {
 
         let tree = settings.leader_tree();
         let mut rows: Vec<HelpRow> = Vec::new();
-        // Current configuration up top (spec phase-10: surface theme + keys).
+        // Current configuration up top (surfaces the theme and keys).
         rows.push(HelpRow::Header("Configuration".to_string()));
         rows.push(HelpRow::Separator);
         rows.push(HelpRow::Binding {

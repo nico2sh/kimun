@@ -18,7 +18,8 @@ use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, redraw_callback};
 use crate::components::panel::panel_block;
 use crate::components::search_list::{
-    Filter, KeyReaction, RowSource, SearchList, SearchMouse, SearchRow,
+    Filter, KeyReaction, RowSource, SearchList, SearchListBuilder, SearchMouse, SearchRow,
+    StaticRowSource,
 };
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
@@ -87,6 +88,20 @@ impl<S: ListPanelSpec> QueryListPanel<S> {
     /// (Re)build the list over a fresh source — the engine-per-context
     /// pattern every drawer view uses.
     pub fn set_source(&mut self, source: impl RowSource<S::Row> + 'static, tx: &AppTx) {
+        self.list = Some(self.builder(source, tx).build());
+    }
+
+    /// (Re)build the list over rows already in hand — applied at once, no
+    /// async load.
+    pub fn set_rows(&mut self, rows: Vec<S::Row>, tx: &AppTx) {
+        self.list = Some(self.builder(StaticRowSource, tx).build_with_rows(rows));
+    }
+
+    fn builder(
+        &self,
+        source: impl RowSource<S::Row> + 'static,
+        tx: &AppTx,
+    ) -> SearchListBuilder<S::Row> {
         let mut builder = SearchList::builder(source, redraw_callback(tx.clone()));
         if S::HAS_FILTER {
             // A server-backed source (LOCAL_FILTER = false) already applied the
@@ -98,12 +113,9 @@ impl<S: ListPanelSpec> QueryListPanel<S> {
                 Filter::SourceOrder
             });
         }
-        self.list = Some(
-            builder
-                .yank_combos(self.yank_combos.clone())
-                .icons(self.icons.clone())
-                .build(),
-        );
+        builder
+            .yank_combos(self.yank_combos.clone())
+            .icons(self.icons.clone())
     }
 
     pub fn is_loaded(&self) -> bool {

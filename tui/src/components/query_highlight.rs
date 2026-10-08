@@ -1,6 +1,6 @@
-//! Query **syntax highlighting** (spec §9): maps core's query token spans
-//! onto theme roles. Reused by every query input — the FIND drawer now, the
-//! telescope modal in phase 08 — so the coloring rules live exactly once.
+//! Query **syntax highlighting**: maps core's query token spans
+//! onto theme roles. Reused by every query input — the FIND drawer and the
+//! telescope modal — so the coloring rules live exactly once.
 //!
 //! Core's lexer ([`kimun_core::query_token_spans`]) owns tokenization; this
 //! module only assigns styles, plus two presentation-layer overlays the core
@@ -13,7 +13,7 @@ use ratatui::text::{Line, Span};
 
 use crate::settings::themes::Theme;
 
-/// Style for a token class, per the spec §9 role table mapped onto the real
+/// Style for a token class, mapped onto the real
 /// grammar: field keys yellow, tag values aqua, note targets blue, quoted
 /// green, date/number purple, negation red, plain terms fg.
 fn class_style(class: QueryTokenClass, theme: &Theme) -> Style {

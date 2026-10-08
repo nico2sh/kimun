@@ -85,7 +85,7 @@ pub struct EditorScreen {
     /// The Ask workspace's coordination layer: Thread↔Sources sync, capability
     /// refresh, AskData routing, and show/stash transitions (see `ask.rs`).
     ask: AskCoordinator,
-    /// The leader-key sequence state machine (Ctrl-B gateway by default, spec §8a).
+    /// The leader-key sequence state machine (Ctrl-B gateway by default).
     leader: LeaderEngine,
     /// The mouse presses currently forming one gesture, so a double-click in
     /// the editor can follow a link (see `click_run`). Fed before each
@@ -126,7 +126,7 @@ impl EditorScreen {
         );
         let tags = TagsPanel::new(vault.clone(), s.icons(), s.yank_combos());
         let links = LinksPanel::new(vault.clone(), s.icons(), s.yank_combos());
-        let outline = OutlinePanel::new(vault.clone(), s.icons(), s.yank_combos());
+        let outline = OutlinePanel::new(s.icons(), s.yank_combos());
         let drawer = DrawerHost::new(
             vault.clone(),
             &kb,
@@ -311,9 +311,10 @@ impl EditorScreen {
         }
 
         // Note reference — look it up in the vault.
-        // Strip any `#fragment` suffix before resolving (e.g. `notes/design.md#goals`
-        // should resolve to `notes/design.md`, not `notes/design.md#goals.md`).
-        let target_clean = target.split('#').next().unwrap_or(&target).trim_end();
+        // Strip any `#section` / `^block` suffix before resolving (e.g.
+        // `notes/design.md#goals` resolves to `notes/design.md`, not
+        // `notes/design.md#goals.md`) — the same split the index uses.
+        let (target_clean, _) = kimun_core::note::scan::split_link_fragment(&target);
         // Resolve the (possibly relative, e.g. `../work/anton.md`) target
         // against this note's directory so the existence lookup uses the same
         // absolute path the note is stored under. Bare names stay name-lookups.
@@ -1605,9 +1606,21 @@ impl EditorScreen {
                 let term = kimun_core::quote_query_term(&label);
                 self.open_find_with_query(format!("#{term}"), None, tx);
             }
-            AppEvent::JumpToHeading(heading) if !self.overlays.is_open() => {
-                if let Some(ed) = self.panels.editor_mut() {
-                    ed.jump_to_heading(&heading);
+            AppEvent::JumpToHeading(target) if !self.overlays.is_open() => {
+                // The row may predate edits that moved, renamed or added
+                // headings: bring the OUTLINE up to the buffer, then resolve
+                // the row against it — one parse for both.
+                self.panels.sync_outline(&self.path, tx);
+                let row = self.panels.outline_mut().resolve(&target);
+                match (self.panels.editor_mut(), row) {
+                    (Some(ed), Some(row)) => ed.jump_to_row(row),
+                    // An attachment or the Ask workspace took the editor's
+                    // place; the sync above already emptied the list.
+                    (None, _) => self.footer.flash("no note open".to_string(), tx),
+                    (Some(_), None) => self.footer.flash(
+                        format!("heading \"{}\" is no longer in the note", target.text),
+                        tx,
+                    ),
                 }
                 self.focus_editor();
             }
@@ -1633,7 +1646,7 @@ impl EditorScreen {
                     .ok();
                 }
                 // Selecting the already-active view toggles the drawer closed
-                // (spec §3: clicking the active rail item toggles).
+                // (clicking the active rail item toggles it).
                 else if self.panels.is_visible(PanelKind::Drawer)
                     && self.panels.active_drawer_view() == view
                 {
@@ -1725,6 +1738,13 @@ impl EditorScreen {
                 self.doc_meta.refresh_git(tx);
                 if path == self.path {
                     self.doc_meta.refresh_properties(&path, tx);
+                    // The OUTLINE catches up with the buffer on each autosave
+                    // tick (every `autosave_interval_secs`), on reveal and on
+                    // a jump — never per keystroke. A failed save changed
+                    // nothing worth a re-read.
+                    if saved_revision.is_some() && self.drawer_open_on(DrawerView::Outline) {
+                        self.panels.sync_outline(&path, tx);
+                    }
                 }
                 // `SingleSlotTask::is_in_flight()` flips to false the
                 // moment the spawned future returns (success or panic),
@@ -1792,7 +1812,7 @@ impl EditorScreen {
         if self.panels.is_visible(PanelKind::Drawer) {
             match self.panels.active_drawer_view() {
                 DrawerView::Links => self.panels.links_mut().set_note(path.clone(), tx),
-                DrawerView::Outline => self.panels.outline_mut().set_note(path, tx),
+                DrawerView::Outline => self.panels.sync_outline(&path, tx),
                 _ => {}
             }
         }
@@ -1904,7 +1924,7 @@ impl EditorScreen {
             DrawerView::Semantic => self.panels.semantic_mut().ensure_source(tx),
             DrawerView::Tags => self.panels.tags_mut().refresh(tx),
             DrawerView::Links => self.panels.links_mut().set_note(self.path.clone(), tx),
-            DrawerView::Outline => self.panels.outline_mut().set_note(self.path.clone(), tx),
+            DrawerView::Outline => self.panels.sync_outline(&self.path, tx),
             _ => {}
         }
     }
@@ -2216,7 +2236,7 @@ impl EditorScreen {
             }
 
             // +git/sync — status is live; the rest are display-only stubs
-            // (spec §12 keeps git interactions out of scope).
+            // (git interactions are out of scope).
             LeaderAction::GitStatus => {
                 self.doc_meta.refresh_git(tx);
                 let msg = self
@@ -2570,7 +2590,7 @@ impl AppScreen for EditorScreen {
             }
         };
         let path_str = self.path.to_string();
-        // Link-under-cursor affordance (spec §5.2): `→ target · N backlinks`.
+        // Link-under-cursor affordance: `→ target · N backlinks`.
         // The backlink count loads async, cached per target.
         let link_segment = if self.panels.focused() == PanelKind::Editor && !self.overlays.is_open()
         {
@@ -2631,7 +2651,7 @@ impl AppScreen for EditorScreen {
         self.footer.render(f, rows[2], theme, &ctx);
 
         // which-key overlay — docked above the status bar once the user
-        // hesitates mid-sequence (spec §8b).
+        // hesitates mid-sequence.
         let whichkey_visible = self
             .leader
             .pending_since()
@@ -3264,6 +3284,37 @@ mod tests {
         );
     }
 
+    /// An OUTLINE row left over from a note, entered while an attachment is
+    /// shown: says why nothing moved, and the list empties to match.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn jumping_from_the_outline_with_an_attachment_shown_flashes() {
+        use crate::components::drawer_views::HeadingTarget;
+        let (mut screen, vault, _, _dir) = test_screen().await;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let note = VaultPath::note_path_from("alpha");
+        vault.create_note(&note, "# Alpha\n").await.unwrap();
+        screen.open_path(note, None, &tx).await;
+        screen.open_drawer_view(DrawerView::Outline, &tx);
+        assert_eq!(screen.panels.outline_mut().headings_for_test(), ["Alpha"]);
+        vault
+            .save_attachment(&VaultPath::new("assets/diagram.png"), &[1, 2, 3])
+            .await
+            .unwrap();
+        screen
+            .try_open_attachment(VaultPath::new("assets/diagram.png"), &tx)
+            .await;
+
+        let jump = AppEvent::JumpToHeading(HeadingTarget {
+            text: "Alpha".to_string(),
+            occurrence: 0,
+            count: 1,
+            line: 0,
+        });
+        screen.handle_app_message(jump, &tx).await;
+        assert_eq!(screen.footer.flash_text(), Some("no note open"));
+        assert!(screen.panels.outline_mut().headings_for_test().is_empty());
+    }
+
     /// The Ask workspace counts as "no note open" even though `self.path`
     /// still names the note that was open before switching to Ask — the
     /// editor area is not showing it.
@@ -3542,8 +3593,7 @@ mod tests {
         );
     }
 
-    // The try_save timeout-abort regression tests (commits 55eb49ed +
-    // 5e28b796) previously lived here against `await_or_abort`. The
+    // The try_save timeout-abort regression tests previously lived here against `await_or_abort`. The
     // logic now lives in `SingleSlotTask::await_with_timeout` and is
     // covered by `single_slot_task_timeout_returns_none_keeps_handle`
     // in `crate::util::single_slot_task`.
@@ -3932,6 +3982,112 @@ mod tests {
             !screen.panels.editor().unwrap().is_dirty(),
             "reloaded buffer is clean (won't clobber the renamed file)"
         );
+    }
+
+    /// The OUTLINE follows the editor buffer, not the file: it catches up
+    /// when a save lands (the pause in typing), ignores a failed save, and is
+    /// current whenever it is revealed — unsaved headings included.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn outline_follows_the_buffer_at_save_and_reveal() {
+        let vault = crate::test_support::temp_vault("editor-outline-buffer").await;
+        vault.validate_and_init().await.unwrap();
+        let path = VaultPath::note_path_from("alpha");
+        vault.create_note(&path, "# Alpha\n").await.unwrap();
+        let settings = std::sync::Arc::new(std::sync::RwLock::new(
+            crate::settings::AppSettings::default(),
+        ));
+        let mut screen = EditorScreen::new(vault.clone(), path.clone(), settings);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        screen.on_enter(&tx).await;
+        let headings = |screen: &mut EditorScreen| screen.panels.outline_mut().headings_for_test();
+        let edit = |screen: &mut EditorScreen, text: &str| {
+            let ed = screen.panels.editor_mut().unwrap();
+            ed.set_text(text.to_string());
+            ed.content_revision()
+        };
+        let saved = |path: &VaultPath, rev| AppEvent::AutosaveCompleted {
+            path: path.clone(),
+            saved_revision: rev,
+            title: rev.map(|_| "Alpha".to_string()),
+        };
+
+        screen.open_drawer_view(DrawerView::Outline, &tx);
+        assert_eq!(headings(&mut screen), ["Alpha"]);
+
+        // Typing alone does not re-parse; the save landing does.
+        let rev = edit(&mut screen, "# Alpha\n## Beta\n");
+        assert_eq!(headings(&mut screen), ["Alpha"]);
+        screen
+            .handle_app_message(saved(&path, Some(rev)), &tx)
+            .await;
+        assert_eq!(headings(&mut screen), ["Alpha", "Beta"]);
+
+        // A failed save leaves it alone.
+        edit(&mut screen, "# Alpha\n## Beta\n## Gamma\n");
+        screen.handle_app_message(saved(&path, None), &tx).await;
+        assert_eq!(headings(&mut screen), ["Alpha", "Beta"]);
+
+        // Revealing OUTLINE reads the buffer, unsaved headings included.
+        screen.open_drawer_view(DrawerView::Files, &tx);
+        screen.open_drawer_view(DrawerView::Outline, &tx);
+        assert_eq!(headings(&mut screen), ["Alpha", "Beta", "Gamma"]);
+    }
+
+    /// Enter on a row whose heading was renamed since the OUTLINE was read:
+    /// the cursor stays, the footer says why, and the list catches up.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn jumping_to_a_stale_outline_row_refreshes_the_outline() {
+        use crate::components::drawer_views::HeadingTarget;
+        let vault = crate::test_support::temp_vault("editor-outline-stale").await;
+        vault.validate_and_init().await.unwrap();
+        let path = VaultPath::note_path_from("alpha");
+        vault.create_note(&path, "# Alpha\n## Foo\n").await.unwrap();
+        let settings = std::sync::Arc::new(std::sync::RwLock::new(
+            crate::settings::AppSettings::default(),
+        ));
+        let mut screen = EditorScreen::new(vault.clone(), path.clone(), settings);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        screen.on_enter(&tx).await;
+        screen.open_drawer_view(DrawerView::Outline, &tx);
+        assert_eq!(
+            screen.panels.outline_mut().headings_for_test(),
+            ["Alpha", "Foo"]
+        );
+
+        screen
+            .panels
+            .editor_mut()
+            .unwrap()
+            .set_text("# Alpha\n## Bar\n".to_string());
+        let jump = AppEvent::JumpToHeading(HeadingTarget {
+            text: "Foo".to_string(),
+            occurrence: 0,
+            count: 1,
+            line: 1,
+        });
+        screen.handle_app_message(jump, &tx).await;
+
+        assert_eq!(screen.panels.editor().unwrap().view_snapshot().cursor.0, 0);
+        assert!(
+            screen
+                .footer
+                .flash_text()
+                .is_some_and(|t| t.contains("Foo"))
+        );
+        assert_eq!(
+            screen.panels.outline_mut().headings_for_test(),
+            ["Alpha", "Bar"]
+        );
+
+        // A live row still jumps.
+        let jump = AppEvent::JumpToHeading(HeadingTarget {
+            text: "Bar".to_string(),
+            occurrence: 0,
+            count: 1,
+            line: 1,
+        });
+        screen.handle_app_message(jump, &tx).await;
+        assert_eq!(screen.panels.editor().unwrap().view_snapshot().cursor.0, 1);
     }
 
     /// Opening a note marks its sidebar row; saving it (AutosaveCompleted with a

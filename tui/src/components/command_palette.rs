@@ -1,4 +1,4 @@
-//! The **command palette** (spec §6: `›`-prefixed telescope scope): a fuzzy
+//! The **command palette** (the `›`-prefixed telescope scope): a fuzzy
 //! list of every leader-tree command. Selecting one executes its
 //! [`LeaderAction`] — the palette is a labelled door onto the same actions
 //! the leader sequences fire, never a second implementation.

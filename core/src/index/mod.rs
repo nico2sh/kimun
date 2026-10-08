@@ -141,7 +141,14 @@ use super::{
 //       UTC) in `value_num`, so they compare and sort as instants; inline
 //       HTML no longer cuts headings or lines, and every line of a list item
 //       is indexed. Bump forces a clean reindex so both reach existing vaults.
-const VERSION: &str = "0.17";
+// 0.18: chunks, links and tags come from one walk over the note as written
+//       (a plain CommonMark parse; wikilinks recognised with the editor's
+//       pattern — pulldown-cmark's wikilink extension is deliberately unused —
+//       and hashtags handled inside it):
+//       wikilinks in code are no longer links, reference links and autolinks
+//       are recorded, a `#`-prefixed setext heading is kept, and a title
+//       renders like its heading or line. Bump forces a clean reindex.
+const VERSION: &str = "0.18";
 
 /// Tables whose rows belong to one note through a `path` column. Every save,
 /// rename and delete keeps all of them in step with the note, so a new
@@ -352,7 +359,7 @@ impl NoteIndex {
                 self.emit_delete(path);
             }
             for (entry, text) in diff.to_add.iter().chain(diff.to_modify.iter()) {
-                self.emit_upsert(&entry.path, NoteDetails::content_data_of(text).hash);
+                self.emit_upsert(&entry.path, crate::nfs::hash_text(text));
             }
         }
         Ok(())
@@ -388,7 +395,7 @@ impl NoteIndex {
             // The backlink victims' content changed: their links were
             // rewritten to the new name.
             for (entry, text) in rewritten {
-                self.emit_upsert(&entry.path, NoteDetails::content_data_of(text).hash);
+                self.emit_upsert(&entry.path, crate::nfs::hash_text(text));
             }
         }
         Ok(())
@@ -714,6 +721,19 @@ impl NoteIndex {
                 .fetch_all(&self.pool)
                 .await?;
         Ok(rows.into_iter().map(|(n,)| n).collect())
+    }
+
+    /// The link rows of one note, `(destination, dest_name)`, sorted.
+    #[cfg(test)]
+    pub(crate) async fn links_of(&self, path: &VaultPath) -> Vec<(String, String)> {
+        sqlx::query_as(
+            "SELECT destination, dest_name FROM links WHERE source = ? \
+             ORDER BY destination, dest_name",
+        )
+        .bind(path.canonical().to_string())
+        .fetch_all(&self.pool)
+        .await
+        .unwrap()
     }
 
     /// Every distinct property key in the vault, in search form, sorted.
@@ -1959,8 +1979,8 @@ async fn save_note(
 ) -> Result<NoteContentData, DBError> {
     // Parse once and hand the computed content data back to the caller, so
     // the full-text hash + title extraction is never done twice per save.
-    let data = note_details.get_content_data();
-    let (chunks, links) = note_details.get_chunks_and_links();
+    let (data, chunks, links) =
+        NoteDetails::index_data_of(&note_details.path, &note_details.raw_text);
     let label_count = links
         .iter()
         .filter(|l| matches!(l.ltype, LinkType::Hashtag))
@@ -2094,10 +2114,9 @@ async fn upsert_notes_batched(
     let mut batch = NoteBatch::with_capacity(notes.len(), 0, 0, notes.len() * 4);
     for (entry_data, text) in notes {
         // Avoid `NoteDetails::new` — it would clone the raw text purely to be
-        // re-borrowed for each parse pass below. The borrowed-text associated
-        // functions take the text by `AsRef<str>` and keep it borrowed.
-        let data = NoteDetails::content_data_of(text);
-        let (chunks, links) = NoteDetails::chunks_and_links_of(&entry_data.path, text);
+        // re-borrowed below. The borrowed-text associated functions take the
+        // text by `AsRef<str>` and keep it borrowed; one walk gives it all.
+        let (data, chunks, links) = NoteDetails::index_data_of(&entry_data.path, text);
         let properties = NoteDetails::property_set_of(text);
         batch.push(entry_data, data, chunks, links, properties);
     }
