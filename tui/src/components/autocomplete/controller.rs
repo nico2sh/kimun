@@ -589,21 +589,22 @@ impl AutocompleteController {
                 // Replace from the trigger's start through the end of
                 // the stale wikilink-target region (see
                 // `scan_wikilink_extent`): up to an existing `]]` or
-                // `|alias` when the link is closed, otherwise just the
-                // word fragment at the cursor — preventing artefacts like
-                // `[[meeting]]e]]` when the popup is reopened mid-target
-                // without eating the rest of the line.
+                // `|alias`/`#fragment` when the link is closed; for an
+                // unclosed link only an alias or fragment being typed or a
+                // lone `]` at the cursor —
+                // preventing artefacts like `[[meeting]]e]]` when the
+                // popup is reopened mid-target without eating the rest of
+                // the line.
                 let new_range = range.start..extent.end;
-                let needs_close = !extent.existing_close && !extent.has_alias;
-                let new_text = if needs_close {
+                let new_text = if extent.suffix == WikilinkSuffix::None {
                     format!("{}]]", suggestion.display)
                 } else {
                     suggestion.display.clone()
                 };
                 let cursor_offset_in_target = suggestion.display.len();
-                let new_cursor_byte = if extent.has_alias {
-                    // Keep the cursor right before `|alias]]` so the
-                    // user can edit the alias next.
+                let new_cursor_byte = if extent.suffix == WikilinkSuffix::Kept {
+                    // Keep the cursor right before `|alias` / `#fragment`
+                    // so the user can edit it next.
                     range.start.saturating_add(cursor_offset_in_target)
                 } else {
                     // Land just past `]]` — whether we appended it or
@@ -653,91 +654,79 @@ impl AutocompleteController {
 }
 
 /// Where the stale wikilink-target region around the cursor ends, plus
-/// what kind of suffix is already present.
+/// what already follows it.
 struct WikilinkExtent {
     /// Byte offset (≥ `start`) of the first character that is NOT part
-    /// of the target region: the first `]` of an existing `]]`, a `|`
-    /// alias separator, or — for an unclosed link — the end of the word
-    /// fragment touching the cursor.
+    /// of the target region.
     end: usize,
-    /// `true` when an existing `]]` follows immediately at `end`.
-    existing_close: bool,
-    /// `true` when `end` points at a `|` separator — the user has
-    /// already started typing an alias which we must preserve.
-    has_alias: bool,
+    suffix: WikilinkSuffix,
+}
+
+/// What sits at [`WikilinkExtent::end`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WikilinkSuffix {
+    /// An existing `]]`.
+    Close,
+    /// A `|alias`, `#section` or `^block` the user already typed, which we
+    /// must preserve (closed or not).
+    Kept,
+    /// Nothing link-related — the accept must append `]]`.
+    None,
 }
 
 /// Find how far past the cursor the target being completed extends.
 ///
-/// When the link is already closed on this line (a `]]` ahead, possibly
-/// after a `|alias`), everything from the cursor up to that `]]` or `|`
-/// is stale target text and is replaced; lone `]` bytes inside it are
+/// When the link is already closed on this line (a `]]` ahead, before any
+/// newline or `[`), everything from the cursor up to that `]]` — or up to
+/// a `|`, `#` or `^` in front of it, which starts the alias or fragment —
+/// is stale target text and is replaced. Lone `]` bytes inside it are
 /// dropped too, being invalid in a target.
 ///
 /// Otherwise the link is unclosed — the user typed `[[` mid-line — and
-/// what follows the cursor is mostly prose. Only the rest of the word the
-/// cursor sits in (`ign` in `[[meetign` with the cursor after `meet`) is
-/// consumed, plus a lone `]` ending the line (`[[me]`), so neither
-/// `[[meeting]]ign` nor `[[meeting]]]` is produced while the rest of the
-/// line survives. A `|` without a `]]`
-/// after it is a table separator, not an alias.
+/// there is no reliable way to tell a stale target tail from the prose
+/// that follows (paths, spaceless scripts and punctuation all defeat a
+/// word-based guess); leaving a visible tail beats deleting text. So
+/// nothing past the cursor is consumed, except:
+/// - an alias or fragment being typed: a `|`, `#` or `^` directly
+///   followed by non-blank text, reached without crossing a blank
+///   (`[[meet` + `ign|al`). The text up to it is stale target; a `|`
+///   followed by a blank or the line end is a table separator instead.
+/// - a lone `]` right at the cursor, so `[[me]` doesn't become
+///   `[[meeting]]]`.
 fn scan_wikilink_extent(buffer: &str, start: usize) -> WikilinkExtent {
     let start = start.min(buffer.len());
     let bytes = buffer.as_bytes();
     // All decision bytes are ASCII so byte-level scanning is UTF-8 safe.
-    let mut i = start;
-    while i < bytes.len() {
-        match bytes[i] {
-            b']' if bytes.get(i + 1) == Some(&b']') => {
-                return WikilinkExtent {
-                    end: i,
-                    existing_close: true,
-                    has_alias: false,
-                };
-            }
-            b'|' if closes_later_on_line(bytes, i + 1) => {
-                return WikilinkExtent {
-                    end: i,
-                    existing_close: false,
-                    has_alias: true,
-                };
-            }
-            b'|' | b'\n' | b'\r' | b'[' => break,
-            _ => i += 1,
-        }
-    }
+    let is_line_end = |b: &u8| matches!(b, b'\n' | b'\r' | b'[');
+    let is_blank = |b: Option<&u8>| b.is_none_or(|b| b.is_ascii_whitespace());
 
-    let word_end = buffer[start..]
-        .char_indices()
-        .find(|&(_, c)| !(c.is_alphanumeric() || c == '-' || c == '_'))
-        .map_or(buffer.len(), |(off, _)| start + off);
-    let rest_of_line_blank = |from: usize| {
-        bytes[from..]
-            .iter()
-            .take_while(|&&b| b != b'\n' && b != b'\r')
-            .all(u8::is_ascii_whitespace)
+    let rest = &bytes[start..];
+    let line = &rest[..rest.iter().position(is_line_end).unwrap_or(rest.len())];
+    let marker = line.iter().position(|b| matches!(b, b'|' | b'#' | b'^'));
+    let kept = |p: usize| WikilinkExtent {
+        end: start + p,
+        suffix: WikilinkSuffix::Kept,
     };
-    let end = if bytes.get(word_end) == Some(&b']') && rest_of_line_blank(word_end + 1) {
-        word_end + 1
-    } else {
-        word_end
-    };
+
+    if let Some(close) = line.windows(2).position(|w| w == b"]]") {
+        return match marker.filter(|&p| p < close) {
+            Some(p) => kept(p),
+            None => WikilinkExtent {
+                end: start + close,
+                suffix: WikilinkSuffix::Close,
+            },
+        };
+    }
+    if let Some(p) = marker
+        && !line[..p].iter().any(u8::is_ascii_whitespace)
+        && !is_blank(line.get(p + 1))
+    {
+        return kept(p);
+    }
     WikilinkExtent {
-        end,
-        existing_close: false,
-        has_alias: false,
+        end: start + usize::from(line.first() == Some(&b']')),
+        suffix: WikilinkSuffix::None,
     }
-}
-
-/// `true` when a `]]` appears at or after `from` before the line ends or
-/// another `[` opens.
-fn closes_later_on_line(bytes: &[u8], from: usize) -> bool {
-    let line = &bytes[from.min(bytes.len())..];
-    let line = &line[..line
-        .iter()
-        .position(|&b| matches!(b, b'\n' | b'\r' | b'['))
-        .unwrap_or(line.len())];
-    line.windows(2).any(|w| w == b"]]")
 }
 
 /// What the controller decided when forwarded a key event.
@@ -770,6 +759,7 @@ mod tests {
     use super::*;
     use kimun_core::nfs::VaultPath;
     use kimun_core::{NoteVault, VaultConfig};
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
     use tempfile::TempDir;
@@ -1099,20 +1089,9 @@ mod tests {
 
     #[tokio::test]
     async fn accepting_wikilink_inserts_name_and_closes_brackets() {
-        let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
-        let mut c = make_controller(vault, AutocompleteMode::Both);
-        let mut host = FakeHost::new("see [[me", 8);
-        c.sync(&host);
-        drain_results(&mut c).await;
-        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-        let outcome = c.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &host);
-        let HandleKeyOutcome::Accepted(action) = outcome else {
-            panic!("expected Accepted, got {:?}", outcome);
-        };
-        host.apply(&action);
-        assert_eq!(host.buffer, "see [[meeting]]");
-        assert_eq!(host.cursor, host.buffer.len());
-        assert!(!c.is_open());
+        let (buffer, cursor) = accept_first("meeting", "see [[me", "see [[me".len()).await;
+        assert_eq!(buffer, "see [[meeting]]");
+        assert_eq!(cursor, buffer.len());
     }
 
     #[tokio::test]
@@ -1139,25 +1118,37 @@ mod tests {
         assert_eq!(host.cursor, host.buffer.len());
     }
 
+    /// Opens the wikilink popup on `buffer` at `cursor` in a vault holding
+    /// `note`, accepts the first suggestion with `key` and returns the
+    /// resulting buffer and cursor.
+    async fn accept_with(key: KeyCode, note: &str, buffer: &str, cursor: usize) -> (String, usize) {
+        let (_tmp, vault) = new_vault_with(&[note], &[]).await;
+        let mut c = make_controller(vault, AutocompleteMode::Both);
+        let mut host = FakeHost::new(buffer, cursor);
+        c.sync(&host);
+        drain_results(&mut c).await;
+        let outcome = c.handle_key(KeyEvent::new(key, KeyModifiers::NONE), &host);
+        let HandleKeyOutcome::Accepted(action) = outcome else {
+            panic!("expected Accepted, got {:?}", outcome);
+        };
+        host.apply(&action);
+        assert!(!c.is_open());
+        (host.buffer, host.cursor)
+    }
+
+    async fn accept_first(note: &str, buffer: &str, cursor: usize) -> (String, usize) {
+        accept_with(KeyCode::Tab, note, buffer, cursor).await
+    }
+
     #[tokio::test]
     async fn accepting_wikilink_consumes_stale_chars_before_existing_close() {
         // Reopened mid-target: the user moved the cursor back inside an
         // already-closed wikilink and is replacing the target. The stale
         // characters between the cursor and `]]` must be consumed, not
         // left as `[[meeting]]e]]`.
-        let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
-        let mut c = make_controller(vault, AutocompleteMode::Both);
-        let mut host = FakeHost::new("see [[me]]", 7); // cursor between `m` and `e`
-        c.sync(&host);
-        drain_results(&mut c).await;
-        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-        let outcome = c.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &host);
-        let HandleKeyOutcome::Accepted(action) = outcome else {
-            panic!("expected Accepted, got {:?}", outcome);
-        };
-        host.apply(&action);
-        assert_eq!(host.buffer, "see [[meeting]]");
-        assert_eq!(host.cursor, host.buffer.len());
+        let (buffer, cursor) = accept_first("meeting", "see [[me]]", "see [[m".len()).await;
+        assert_eq!(buffer, "see [[meeting]]");
+        assert_eq!(cursor, buffer.len());
     }
 
     #[tokio::test]
@@ -1165,147 +1156,122 @@ mod tests {
         // Typing `[[` in the middle of a line: no closing `]]` exists, so
         // the text after the cursor is not part of the target and must
         // survive the accept.
-        let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
-        let mut c = make_controller(vault, AutocompleteMode::Both);
-        let mut host = FakeHost::new("see [[me and more text", 8); // cursor after `me`
-        c.sync(&host);
-        drain_results(&mut c).await;
-        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-        let outcome = c.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &host);
-        let HandleKeyOutcome::Accepted(action) = outcome else {
-            panic!("expected Accepted, got {:?}", outcome);
-        };
-        host.apply(&action);
-        assert_eq!(host.buffer, "see [[meeting]] and more text");
-        assert_eq!(host.cursor, "see [[meeting]]".len());
+        let (buffer, cursor) =
+            accept_first("meeting", "see [[me and more text", "see [[me".len()).await;
+        assert_eq!(buffer, "see [[meeting]] and more text");
+        assert_eq!(cursor, "see [[meeting]]".len());
     }
 
     #[tokio::test]
     async fn accepting_unclosed_wikilink_before_another_link_keeps_text_between() {
-        let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
-        let mut c = make_controller(vault, AutocompleteMode::Both);
-        let mut host = FakeHost::new("see [[me and [[other]]", 8);
-        c.sync(&host);
-        drain_results(&mut c).await;
-        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-        let outcome = c.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &host);
-        let HandleKeyOutcome::Accepted(action) = outcome else {
-            panic!("expected Accepted, got {:?}", outcome);
-        };
-        host.apply(&action);
-        assert_eq!(host.buffer, "see [[meeting]] and [[other]]");
-    }
-
-    /// Opens the wikilink popup on `buffer` at `cursor`, accepts the first
-    /// suggestion (`meeting`) and returns the resulting buffer.
-    async fn accept_meeting(buffer: &str, cursor: usize) -> String {
-        let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
-        let mut c = make_controller(vault, AutocompleteMode::Both);
-        let mut host = FakeHost::new(buffer, cursor);
-        c.sync(&host);
-        drain_results(&mut c).await;
-        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-        let outcome = c.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &host);
-        let HandleKeyOutcome::Accepted(action) = outcome else {
-            panic!("expected Accepted, got {:?}", outcome);
-        };
-        host.apply(&action);
-        host.buffer
+        let (buffer, _) = accept_first("meeting", "see [[me and [[other]]", "see [[me".len()).await;
+        assert_eq!(buffer, "see [[meeting]] and [[other]]");
     }
 
     #[tokio::test]
-    async fn accepting_unclosed_wikilink_mid_word_consumes_word_tail() {
-        // `[[meetign`, cursor moved back after `meet`: the stale `ign` is
-        // part of the target being completed and must not linger.
-        assert_eq!(
-            accept_meeting("see [[meetign", "see [[meet".len()).await,
-            "see [[meeting]]"
-        );
-        assert_eq!(
-            accept_meeting("see [[meetign and more", "see [[meet".len()).await,
-            "see [[meeting]] and more"
-        );
+    async fn accepting_unclosed_wikilink_keeps_text_touching_cursor() {
+        // Nothing past the cursor is guessed to be stale target text:
+        // punctuation, path-like tails and even a word fragment survive.
+        for (before, after) in [
+            ("see [[me, then", "see [[meeting]], then"),
+            ("see [[me/notes.md", "see [[meeting]]/notes.md"),
+            ("see [[meign", "see [[meeting]]ign"),
+        ] {
+            let (buffer, _) = accept_first("meeting", before, "see [[me".len()).await;
+            assert_eq!(buffer, after);
+        }
     }
 
     #[tokio::test]
-    async fn accepting_unclosed_wikilink_keeps_punctuation_after_cursor() {
-        assert_eq!(
-            accept_meeting("see [[me, then", "see [[me".len()).await,
-            "see [[meeting]], then"
-        );
+    async fn accepting_unclosed_wikilink_in_spaceless_script_keeps_sentence() {
+        // No spaces between words, so a word-based guess would eat the
+        // rest of the sentence.
+        let (buffer, _) =
+            accept_first("会议记录", "参见[[会议内容很重要。", "参见[[会议".len()).await;
+        assert_eq!(buffer, "参见[[会议记录]]内容很重要。");
     }
 
     #[tokio::test]
     async fn accepting_unclosed_wikilink_in_table_cell_ignores_cell_pipe() {
-        // A `|` with no `]]` after it is a table separator, not an alias.
-        assert_eq!(
-            accept_meeting("| a | [[me | c |", "| a | [[me".len()).await,
-            "| a | [[meeting]] | c |"
-        );
+        // A `|` followed by a space or the line end is a table separator,
+        // not an alias — with or without padding around the cell.
+        for (before, cursor, after) in [
+            ("| a | [[me | c |", "| a | [[me", "| a | [[meeting]] | c |"),
+            ("| a |[[me| c |", "| a |[[me", "| a |[[meeting]]| c |"),
+            ("|[[me|", "|[[me", "|[[meeting]]|"),
+        ] {
+            let (buffer, _) = accept_first("meeting", before, cursor.len()).await;
+            assert_eq!(buffer, after);
+        }
     }
 
     #[tokio::test]
-    async fn accepting_unclosed_wikilink_keeps_bracket_of_surrounding_link() {
-        // The `]` closes the surrounding bracketed aside — it is not stale.
-        assert_eq!(
-            accept_meeting("note [aside [[me] more", "note [aside [[me".len()).await,
-            "note [aside [[meeting]]] more"
-        );
+    async fn accepting_unclosed_wikilink_preserves_alias_being_typed() {
+        // `[[me|al` with the cursor moved back before `|`: the alias is
+        // still being typed, so keep it and don't close the link.
+        let (buffer, cursor) = accept_first("meeting", "see [[me|al", "see [[me".len()).await;
+        assert_eq!(buffer, "see [[meeting|al");
+        assert_eq!(cursor, "see [[meeting".len());
+    }
+
+    #[tokio::test]
+    async fn accepting_unclosed_wikilink_replaces_stale_target_before_alias() {
+        // `[[meetign|al`, cursor after `meet`: `ign` is stale target text
+        // glued to the alias, so it is replaced and the alias kept.
+        let (buffer, cursor) =
+            accept_first("meeting", "see [[meetign|al", "see [[meet".len()).await;
+        assert_eq!(buffer, "see [[meeting|al");
+        assert_eq!(cursor, "see [[meeting".len());
+    }
+
+    #[tokio::test]
+    async fn accepting_unclosed_wikilink_consumes_lone_bracket_mid_line() {
+        let (buffer, _) = accept_first("meeting", "see [[me]. More text", "see [[me".len()).await;
+        assert_eq!(buffer, "see [[meeting]]. More text");
     }
 
     #[tokio::test]
     async fn accepting_wikilink_with_lone_trailing_bracket_does_not_triple() {
         // Buffer has a single stray `]` after the target — must not
         // produce `]]]`.
-        let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
-        let mut c = make_controller(vault, AutocompleteMode::Both);
-        let mut host = FakeHost::new("see [[me]", 8);
-        c.sync(&host);
-        drain_results(&mut c).await;
-        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-        let outcome = c.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &host);
-        let HandleKeyOutcome::Accepted(action) = outcome else {
-            panic!("expected Accepted, got {:?}", outcome);
-        };
-        host.apply(&action);
-        assert_eq!(host.buffer, "see [[meeting]]");
+        let (buffer, _) = accept_first("meeting", "see [[me]", "see [[me".len()).await;
+        assert_eq!(buffer, "see [[meeting]]");
     }
 
     #[tokio::test]
     async fn accepting_wikilink_preserves_existing_alias() {
         // `[[me|alias]]` — cursor in the target portion; alias must
         // survive and the cursor must land right before `|alias]]`.
-        let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
-        let mut c = make_controller(vault, AutocompleteMode::Both);
-        let mut host = FakeHost::new("see [[me|alias]]", 8); // cursor before `|`
-        c.sync(&host);
-        drain_results(&mut c).await;
-        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-        let outcome = c.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &host);
-        let HandleKeyOutcome::Accepted(action) = outcome else {
-            panic!("expected Accepted, got {:?}", outcome);
-        };
-        host.apply(&action);
-        assert_eq!(host.buffer, "see [[meeting|alias]]");
-        // Cursor right after `meeting`, before `|alias]]`.
-        assert_eq!(host.cursor, "see [[meeting".len());
+        let (buffer, cursor) = accept_first("meeting", "see [[me|alias]]", "see [[me".len()).await;
+        assert_eq!(buffer, "see [[meeting|alias]]");
+        assert_eq!(cursor, "see [[meeting".len());
     }
 
     #[tokio::test]
     async fn accepting_wikilink_preserves_existing_closing_brackets() {
-        let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
-        let mut c = make_controller(vault, AutocompleteMode::Both);
-        let mut host = FakeHost::new("see [[me]]", 8);
-        c.sync(&host);
-        drain_results(&mut c).await;
-        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-        let outcome = c.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &host);
-        let HandleKeyOutcome::Accepted(action) = outcome else {
-            panic!("expected Accepted, got {:?}", outcome);
-        };
-        host.apply(&action);
-        assert_eq!(host.buffer, "see [[meeting]]");
-        assert_eq!(host.cursor, host.buffer.len());
+        let (buffer, cursor) =
+            accept_with(KeyCode::Enter, "meeting", "see [[me]]", "see [[me".len()).await;
+        assert_eq!(buffer, "see [[meeting]]");
+        assert_eq!(cursor, buffer.len());
+    }
+
+    #[tokio::test]
+    async fn accepting_wikilink_preserves_section_and_block_fragments() {
+        // Reopened mid-target on `[[pl#goals]]`: `#goals` is a fragment of
+        // the link, not stale target text, so it survives like an alias.
+        for (before, after) in [
+            ("see [[pl#goals]]", "see [[plan#goals]]"),
+            ("see [[pl^block]]", "see [[plan^block]]"),
+            ("see [[pl#goals|Goals]]", "see [[plan#goals|Goals]]"),
+            ("see [[plx#goals]]", "see [[plan#goals]]"),
+            // Unclosed: the fragment is still being typed.
+            ("see [[pl#goals", "see [[plan#goals"),
+            ("see [[plx#goals and more", "see [[plan#goals and more"),
+        ] {
+            let (buffer, cursor) = accept_first("plan", before, "see [[pl".len()).await;
+            assert_eq!(buffer, after, "from {before:?}");
+            assert_eq!(cursor, "see [[plan".len(), "from {before:?}");
+        }
     }
 
     #[tokio::test]
