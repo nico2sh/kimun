@@ -82,6 +82,8 @@ pub struct EditorScreen {
     /// Latest RAG connection/sync status from the background sync task, shown in
     /// the footer. `Disabled` (no server) renders nothing.
     rag_status: crate::rag::RagStatus,
+    /// Newer server release the server reported; footer hint only.
+    server_update: Option<String>,
     /// The Ask workspace's coordination layer: Thread↔Sources sync, capability
     /// refresh, AskData routing, and show/stash transitions (see `ask.rs`).
     ask: AskCoordinator,
@@ -164,6 +166,7 @@ impl EditorScreen {
             doc_meta: crate::app_screen::doc_meta::DocMeta::new(vault.clone()),
             update: None,
             rag_status: crate::rag::RagStatus::Disabled,
+            server_update: None,
             ask,
             vault,
             path,
@@ -1535,6 +1538,7 @@ impl EditorScreen {
                         .await;
                 }
             }
+            AppEvent::ServerUpdate(latest) => self.server_update = latest,
             AppEvent::Ask(data) => self.ask.handle_data(&mut self.panels, data, tx),
             // Stale completions (for notes we've navigated away from) fall
             // through to the catch-all and are dropped.
@@ -2645,7 +2649,10 @@ impl AppScreen for EditorScreen {
                     .update
                     .as_ref()
                     .map(|u| format!("⬆ {} available", u.latest)),
-                rag: self.rag_status.label().map(|s| s.to_string()),
+                rag: self.rag_status.label().map(|s| match &self.server_update {
+                    Some(v) => format!("{s} · server {v} available"),
+                    None => s.to_string(),
+                }),
             },
         };
         self.footer.render(f, rows[2], theme, &ctx);
@@ -4443,6 +4450,41 @@ mod tests {
     /// health probe reports the server reachable for search, shown for a
     /// semantic-only server (search works, ASK stays hidden), and hidden again
     /// when the server drops offline.
+    /// A server-reported newer release rides along with the RAG status in the
+    /// footer, and clears when the server stops reporting it.
+    #[tokio::test]
+    async fn footer_shows_server_update_next_to_rag_status() {
+        let (mut screen, _, _, _dir) = test_screen().await;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let footer = |screen: &mut EditorScreen| {
+            let mut term =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 40)).unwrap();
+            term.draw(|f| screen.render(f)).unwrap();
+            let buf = term.backend().buffer();
+            (0..160u16)
+                .map(|x| buf[(x, 39)].symbol())
+                .collect::<String>()
+        };
+
+        screen
+            .handle_owned_message(
+                AppEvent::RagStatus(crate::rag::RagStatus::Online {
+                    llm_available: false,
+                }),
+                &tx,
+            )
+            .await;
+        screen
+            .handle_owned_message(AppEvent::ServerUpdate(Some("9.9.9".into())), &tx)
+            .await;
+        assert!(footer(&mut screen).contains("server 9.9.9 available"));
+
+        screen
+            .handle_owned_message(AppEvent::ServerUpdate(None), &tx)
+            .await;
+        assert!(!footer(&mut screen).contains("9.9.9"));
+    }
+
     #[tokio::test]
     async fn sem_rail_entry_tracks_search_availability() {
         let (mut screen, _, _, _dir) = test_screen().await;

@@ -36,6 +36,9 @@ pub struct AppState {
     /// collection can't double-insert chunks or race each other's updates.
     /// Queries never take this, so indexing does not block search/answer.
     pub index_lock: Arc<Mutex<()>>,
+    /// Latest-release check result. Process-lifetime (survives in-process
+    /// restarts); shown on the dashboard and in `/health`.
+    pub update_check: crate::update::UpdateCheck,
     /// Signals the binary's restart loop: the web UI's Restart
     /// button sends here, the serving loop drains and rebuilds from the saved
     /// config file. `None` when no loop is wired (tests).
@@ -53,6 +56,7 @@ impl AppState {
             reranker_error: None,
             job_tracker: Arc::new(Mutex::new(JobTracker::new())),
             index_lock: Arc::new(Mutex::new(())),
+            update_check: crate::update::UpdateCheck::new(),
             restart: None,
         }
     }
@@ -95,6 +99,13 @@ impl AppState {
     /// Records why the (non-fatal) reranker initialization failed.
     pub fn with_reranker_error(mut self, error: Option<String>) -> Self {
         self.reranker_error = error;
+        self
+    }
+
+    /// Attaches the process-lifetime update check, so a restart keeps the last
+    /// result instead of re-querying GitHub.
+    pub fn with_update_check(mut self, check: crate::update::UpdateCheck) -> Self {
+        self.update_check = check;
         self
     }
 

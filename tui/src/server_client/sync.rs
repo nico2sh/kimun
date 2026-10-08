@@ -47,11 +47,13 @@ impl ServerCapability {
 /// whether it gates its API behind a bearer token. `/health` itself is
 /// un-gated, so a client with a missing/wrong token still probes fine —
 /// `auth_required` lets it report "unauthorized" up front instead of
-/// discovering a 401 on the first sync call.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// discovering a 401 on the first sync call. `server_update` is a newer server
+/// release the server reported about itself, shown as a passive footer hint.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerProbe {
     pub capability: ServerCapability,
     pub auth_required: bool,
+    pub server_update: Option<String>,
 }
 
 /// Bundles a vault, its dirty-set, and the server client, and drives sync. The
@@ -94,6 +96,7 @@ impl RagSync {
         self.client.health().await.ok().map(|h| ServerProbe {
             capability: ServerCapability::from_health(&h),
             auth_required: h.auth_required,
+            server_update: h.latest_version,
         })
     }
 
@@ -312,6 +315,7 @@ mod tests {
             embedder: embedder.map(str::to_string),
             llm_provider: llm.map(str::to_string),
             auth_required: false,
+            latest_version: None,
         };
         assert_eq!(
             ServerCapability::from_health(&h(None, None)),
