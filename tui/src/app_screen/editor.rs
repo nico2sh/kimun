@@ -2649,9 +2649,13 @@ impl AppScreen for EditorScreen {
                     .update
                     .as_ref()
                     .map(|u| format!("⬆ {} available", u.latest)),
-                rag: self.rag_status.label().map(|s| match &self.server_update {
-                    Some(u) => format!("{s} · {}", u.label()),
-                    None => s.to_string(),
+                rag: self.rag_status.label().map(|s| {
+                    use crate::server_client::sync::ServerUpdate;
+                    match &self.server_update {
+                        Some(ServerUpdate::Newer(v)) => format!("{s} · server {v} available"),
+                        Some(ServerUpdate::Legacy) => format!("{s} · server update available"),
+                        None => s.to_string(),
+                    }
                 }),
             },
         };
@@ -4491,7 +4495,12 @@ mod tests {
         screen
             .handle_owned_message(AppEvent::ServerUpdate(None), &tx)
             .await;
-        assert!(!footer(&mut screen).contains("9.9.9"));
+        let cleared = footer(&mut screen);
+        assert!(cleared.contains("rag: online"), "rag status stays");
+        assert!(
+            !cleared.contains("server"),
+            "the whole hint is gone: {cleared}"
+        );
     }
 
     #[tokio::test]
