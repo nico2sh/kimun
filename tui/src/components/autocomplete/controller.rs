@@ -587,11 +587,12 @@ impl AutocompleteController {
             TriggerKind::Wikilink => {
                 let extent = scan_wikilink_extent(&buffer, range.end);
                 // Replace from the trigger's start through the end of
-                // the stale wikilink-target region. This consumes any
-                // characters the user already typed past the cursor up
-                // to (but not including) `]]`, `|`, a newline, `[`, or
-                // EOF — preventing artefacts like `[[meeting]]e]]` when
-                // the popup is reopened mid-target.
+                // the stale wikilink-target region (see
+                // `scan_wikilink_extent`): up to an existing `]]` or
+                // `|alias` when the link is closed, otherwise just the
+                // word fragment at the cursor — preventing artefacts like
+                // `[[meeting]]e]]` when the popup is reopened mid-target
+                // without eating the rest of the line.
                 let new_range = range.start..extent.end;
                 let needs_close = !extent.existing_close && !extent.has_alias;
                 let new_text = if needs_close {
@@ -655,9 +656,9 @@ impl AutocompleteController {
 /// what kind of suffix is already present.
 struct WikilinkExtent {
     /// Byte offset (≥ `start`) of the first character that is NOT part
-    /// of the target region: either the first `]` of an existing `]]` or
-    /// a `|` alias separator. For an unclosed link it is `start` (past a
-    /// lone `]` sitting at the cursor) so the rest of the line survives.
+    /// of the target region: the first `]` of an existing `]]`, a `|`
+    /// alias separator, or — for an unclosed link — the end of the word
+    /// fragment touching the cursor.
     end: usize,
     /// `true` when an existing `]]` follows immediately at `end`.
     existing_close: bool,
@@ -666,58 +667,77 @@ struct WikilinkExtent {
     has_alias: bool,
 }
 
-/// Walk forward from `start` over the bytes that look like wikilink
-/// target characters (anything except `]`, `|`, `\n`, `\r`, `[`).
-/// Lone `]` bytes (without a following `]`) are treated as stale
-/// characters and consumed — invalid inside a wikilink target anyway.
+/// Find how far past the cursor the target being completed extends.
 ///
-/// The scanned region only counts as stale target text when it ends in
-/// `]]` or `|`. Hitting a newline, `[` or EOF first means the link was
-/// never closed — the user typed `[[` mid-line — and what follows the
-/// cursor is ordinary prose, so nothing past the cursor is consumed.
+/// When the link is already closed on this line (a `]]` ahead, possibly
+/// after a `|alias`), everything from the cursor up to that `]]` or `|`
+/// is stale target text and is replaced; lone `]` bytes inside it are
+/// dropped too, being invalid in a target.
 ///
-/// All decision bytes are ASCII so byte-level scanning is UTF-8 safe.
+/// Otherwise the link is unclosed — the user typed `[[` mid-line — and
+/// what follows the cursor is mostly prose. Only the rest of the word the
+/// cursor sits in (`ign` in `[[meetign` with the cursor after `meet`) is
+/// consumed, plus a lone `]` ending the line (`[[me]`), so neither
+/// `[[meeting]]ign` nor `[[meeting]]]` is produced while the rest of the
+/// line survives. A `|` without a `]]`
+/// after it is a table separator, not an alias.
 fn scan_wikilink_extent(buffer: &str, start: usize) -> WikilinkExtent {
+    let start = start.min(buffer.len());
     let bytes = buffer.as_bytes();
-    let mut i = start.min(bytes.len());
+    // All decision bytes are ASCII so byte-level scanning is UTF-8 safe.
+    let mut i = start;
     while i < bytes.len() {
         match bytes[i] {
-            b']' => {
-                if bytes.get(i + 1) == Some(&b']') {
-                    return WikilinkExtent {
-                        end: i,
-                        existing_close: true,
-                        has_alias: false,
-                    };
-                }
-                // Lone `]` — consume and keep scanning. Invalid inside
-                // a wikilink target so dropping it is the safe default.
-                i += 1;
+            b']' if bytes.get(i + 1) == Some(&b']') => {
+                return WikilinkExtent {
+                    end: i,
+                    existing_close: true,
+                    has_alias: false,
+                };
             }
-            b'|' => {
+            b'|' if closes_later_on_line(bytes, i + 1) => {
                 return WikilinkExtent {
                     end: i,
                     existing_close: false,
                     has_alias: true,
                 };
             }
-            b'\n' | b'\r' | b'[' => break,
+            b'|' | b'\n' | b'\r' | b'[' => break,
             _ => i += 1,
         }
     }
-    // Unclosed link: keep the rest of the line, but still swallow a lone
-    // `]` right at the cursor so `[[me]` (cursor before `]`) doesn't become `[[meeting]]]`.
-    let start = start.min(bytes.len());
-    let end = if bytes.get(start) == Some(&b']') {
-        start + 1
+
+    let word_end = buffer[start..]
+        .char_indices()
+        .find(|&(_, c)| !(c.is_alphanumeric() || c == '-' || c == '_'))
+        .map_or(buffer.len(), |(off, _)| start + off);
+    let rest_of_line_blank = |from: usize| {
+        bytes[from..]
+            .iter()
+            .take_while(|&&b| b != b'\n' && b != b'\r')
+            .all(u8::is_ascii_whitespace)
+    };
+    let end = if bytes.get(word_end) == Some(&b']') && rest_of_line_blank(word_end + 1) {
+        word_end + 1
     } else {
-        start
+        word_end
     };
     WikilinkExtent {
         end,
         existing_close: false,
         has_alias: false,
     }
+}
+
+/// `true` when a `]]` appears at or after `from` before the line ends or
+/// another `[` opens.
+fn closes_later_on_line(bytes: &[u8], from: usize) -> bool {
+    let line = &bytes[from.min(bytes.len())..];
+    let line = &line[..line
+        .iter()
+        .position(|&b| matches!(b, b'\n' | b'\r' | b'['))
+        .unwrap_or(line.len())];
+    line.windows(2).any(|w| w == b"]]")
 }
 
 /// What the controller decided when forwarded a key event.
@@ -1174,6 +1194,63 @@ mod tests {
         };
         host.apply(&action);
         assert_eq!(host.buffer, "see [[meeting]] and [[other]]");
+    }
+
+    /// Opens the wikilink popup on `buffer` at `cursor`, accepts the first
+    /// suggestion (`meeting`) and returns the resulting buffer.
+    async fn accept_meeting(buffer: &str, cursor: usize) -> String {
+        let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
+        let mut c = make_controller(vault, AutocompleteMode::Both);
+        let mut host = FakeHost::new(buffer, cursor);
+        c.sync(&host);
+        drain_results(&mut c).await;
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let outcome = c.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &host);
+        let HandleKeyOutcome::Accepted(action) = outcome else {
+            panic!("expected Accepted, got {:?}", outcome);
+        };
+        host.apply(&action);
+        host.buffer
+    }
+
+    #[tokio::test]
+    async fn accepting_unclosed_wikilink_mid_word_consumes_word_tail() {
+        // `[[meetign`, cursor moved back after `meet`: the stale `ign` is
+        // part of the target being completed and must not linger.
+        assert_eq!(
+            accept_meeting("see [[meetign", "see [[meet".len()).await,
+            "see [[meeting]]"
+        );
+        assert_eq!(
+            accept_meeting("see [[meetign and more", "see [[meet".len()).await,
+            "see [[meeting]] and more"
+        );
+    }
+
+    #[tokio::test]
+    async fn accepting_unclosed_wikilink_keeps_punctuation_after_cursor() {
+        assert_eq!(
+            accept_meeting("see [[me, then", "see [[me".len()).await,
+            "see [[meeting]], then"
+        );
+    }
+
+    #[tokio::test]
+    async fn accepting_unclosed_wikilink_in_table_cell_ignores_cell_pipe() {
+        // A `|` with no `]]` after it is a table separator, not an alias.
+        assert_eq!(
+            accept_meeting("| a | [[me | c |", "| a | [[me".len()).await,
+            "| a | [[meeting]] | c |"
+        );
+    }
+
+    #[tokio::test]
+    async fn accepting_unclosed_wikilink_keeps_bracket_of_surrounding_link() {
+        // The `]` closes the surrounding bracketed aside — it is not stale.
+        assert_eq!(
+            accept_meeting("note [aside [[me] more", "note [aside [[me".len()).await,
+            "note [aside [[meeting]]] more"
+        );
     }
 
     #[tokio::test]
