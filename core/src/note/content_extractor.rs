@@ -24,7 +24,20 @@ pub(crate) static HASHTAG_RX: LazyLock<Regex> =
 static MD_LINK_RX: LazyLock<Regex> = LazyLock::new(|| {
     // `text` accepts an empty match so empty-alt image links like `![](path)`
     // — which the editor generates on image paste — are still recognised.
-    Regex::new(r#"(?P<bang>!?)(?:\[(?P<text>[^\]]*)\])\((?P<link>[^\)]+?)\)"#).unwrap()
+    //
+    // Approximates CommonMark without a full parse: the text may wrap onto
+    // following lines (a soft break inside the paragraph) but not past a
+    // blank or whitespace-only line, and may hold one level of balanced
+    // `[…]`; the destination never wraps. Without these limits a stray `[`
+    // — say a `[[` being typed — paired with any `](…)` further down the
+    // note, swallowing everything in between as link text.
+    const CHAR: &str = r"[^\[\]\r\n]";
+    const SOFT_BREAK: &str = r"\r?\n[ \t]*[^\s\[\]]";
+    let piece = format!("{CHAR}|{SOFT_BREAK}");
+    Regex::new(&format!(
+        r"(?P<bang>!?)(?:\[(?P<text>(?:{piece}|\[(?:{piece})*\])*)\])\((?P<link>[^\)\r\n]+?)\)"
+    ))
+    .unwrap()
 });
 
 /// If `s` (after trimming) parses as a URL whose scheme is one of `allowed`,
@@ -2474,6 +2487,60 @@ ls -la ./test
         // Cursor inside the URL portion of the link (after the `#`).
         let inside = text.find("#section").unwrap() + 1;
         assert!(is_inside_exclusion_zone(text, inside));
+    }
+
+    #[test]
+    fn exclusion_zone_open_wikilink_before_a_later_markdown_link() {
+        // A `[[` being typed must not pair with a markdown link further
+        // down the note (across a blank line) or later on the same line.
+        let note = "- item\n[[\n\n## Recipes\n\nLabels: #a\n\n[Nico](https://nico.red)";
+        let cursor = note.find("[[").unwrap() + 2;
+        assert!(!super::is_inside_code_link_or_frontmatter(note, cursor));
+
+        let line = "see [[ and [Nico](https://x)";
+        assert!(!super::is_inside_code_link_or_frontmatter(
+            line,
+            "see [[".len()
+        ));
+        assert!(super::is_inside_code_link_or_frontmatter(
+            line,
+            line.find("Nico").unwrap()
+        ));
+    }
+
+    #[test]
+    fn markdown_link_text_follows_commonmark_paragraph_rules() {
+        let md = |text: &str| -> Vec<String> {
+            link_char_spans(text)
+                .into_iter()
+                .filter(|s| s.kind == LinkSpanKind::Markdown)
+                .map(|s| text.chars().skip(s.start).take(s.end - s.start).collect())
+                .collect()
+        };
+        // Soft line break inside a paragraph: still one link.
+        assert_eq!(md("[two\nlines](u)"), ["[two\nlines](u)"]);
+        assert_eq!(md("[two\r\nlines](u)"), ["[two\r\nlines](u)"]);
+        // A blank (or whitespace-only) line ends the paragraph.
+        assert!(md("[para\n\nbreak](u)").is_empty());
+        assert!(md("[para\r\n\r\nbreak](u)").is_empty());
+        assert!(md("[para\n  \nbreak](u)").is_empty());
+        // Balanced brackets inside the text are fine; a stray `[` is not.
+        assert_eq!(md("[a [b] c](u)"), ["[a [b] c](u)"]);
+        assert_eq!(md("see [[ and [Nico](u)"), ["[Nico](u)"]);
+        // The destination never wraps: a stray `[x](` doesn't reach a `(…)`
+        // further down, nor swallow a real link on the next line.
+        assert!(md("ref [x](\n\n- todo [[\n\n(see)").is_empty());
+        assert_eq!(md("[a](\n[b](c d.md)"), ["[b](c d.md)"]);
+        // Empty alt text, as the editor generates on image paste.
+        assert_eq!(link_char_spans("![](img.png)")[0].kind, LinkSpanKind::Image);
+    }
+
+    #[test]
+    fn labels_after_a_stray_bracket_are_still_indexed() {
+        let note = "[[\n\nLabels: #brewing #recipe\n\n[Nico](https://nico.red)";
+        let mut labels = crate::note::extract_labels(note);
+        labels.sort();
+        assert_eq!(labels, ["brewing", "recipe"]);
     }
 
     #[test]
