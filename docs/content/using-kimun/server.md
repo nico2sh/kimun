@@ -173,8 +173,6 @@ Once a day the server checks GitHub for a newer release. When one exists, the
 web UI dashboard shows it together with the upgrade command for your install
 (`docker pull` for the image, re-running the install script otherwise), and
 Kimün's status bar adds `server x.y.z available` next to the server status.
-Servers older than this feature can't report their version, so Kimün shows
-`server update available` for them.
 Nothing is downloaded or installed automatically. To turn the check off, set
 this in the server config:
 
@@ -182,6 +180,11 @@ this in the server config:
 [server]
 update_check = false
 ```
+
+Servers from 0.4.3 and earlier predate update notices and can't report their
+version, so Kimün always shows `server update available` for them. The
+setting above doesn't apply to those servers; upgrading the server is the only
+way to clear the notice.
 
 ## Running the server
 

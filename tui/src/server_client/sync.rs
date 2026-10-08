@@ -58,18 +58,9 @@ impl ServerUpdate {
     /// [`Legacy`](ServerUpdate::Legacy); otherwise it is whatever newer release
     /// the server itself reported, if any.
     pub fn from_health(health: &crate::server_client::dto::Health) -> Option<Self> {
-        match (&health.version, &health.latest_version) {
-            (None, _) => Some(ServerUpdate::Legacy),
-            (Some(_), Some(latest)) => Some(ServerUpdate::Newer(latest.clone())),
-            (Some(_), None) => None,
-        }
-    }
-
-    /// Footer text, e.g. `server 0.5.0 available`.
-    pub fn label(&self) -> String {
-        match self {
-            ServerUpdate::Newer(v) => format!("server {v} available"),
-            ServerUpdate::Legacy => "server update available".to_string(),
+        match &health.version {
+            None => Some(ServerUpdate::Legacy),
+            Some(_) => health.latest_version.clone().map(ServerUpdate::Newer),
         }
     }
 }
@@ -349,12 +340,12 @@ mod tests {
             version: version.map(str::to_string),
             latest_version: latest.map(str::to_string),
         };
-        assert_eq!(ServerUpdate::from_health(&h(Some("0.5.0"), None)), None);
+        assert_eq!(ServerUpdate::from_health(&h(Some("0.4.4"), None)), None);
         assert_eq!(
-            ServerUpdate::from_health(&h(Some("0.5.0"), Some("0.6.0"))),
-            Some(ServerUpdate::Newer("0.6.0".into()))
+            ServerUpdate::from_health(&h(Some("0.4.4"), Some("0.4.5"))),
+            Some(ServerUpdate::Newer("0.4.5".into()))
         );
-        // A pre-0.5 server's /health has no version at all.
+        // A 0.4.3-or-earlier server's /health has no version at all.
         let legacy: Health = serde_json::from_str(
             r#"{"status":"ok","reranker":false,"embedder":"fastembed","llm_provider":null,"auth_required":false,"degraded":null}"#,
         )
@@ -374,7 +365,7 @@ mod tests {
             embedder: embedder.map(str::to_string),
             llm_provider: llm.map(str::to_string),
             auth_required: false,
-            version: Some("0.5.0".into()),
+            version: Some("0.4.4".into()),
             latest_version: None,
         };
         assert_eq!(
