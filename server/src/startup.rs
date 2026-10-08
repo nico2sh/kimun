@@ -340,6 +340,8 @@ pub fn router(state: Arc<AppState>) -> Router {
 /// `reranker` likewise reports the *active* reranker, not the config: an
 /// enabled reranker whose model download failed shows `false`, with the
 /// reason under `reranker_error` (null when off by config or healthy).
+/// `version` is this binary's; `latest_version` is a newer stable release when
+/// the update check found one, else null.
 pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let embedder = state
         .rag
@@ -354,6 +356,8 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<serde_js
         "llm_provider": state.config.llm.as_ref().map(|l| l.provider()),
         "auth_required": state.config.auth.token.is_some(),
         "degraded": state.startup_error,
+        "version": crate::update::CURRENT_VERSION,
+        "latest_version": state.update_check.available(),
     }))
 }
 
@@ -596,6 +600,8 @@ mod tests {
                     "llm_provider": null,
                     "auth_required": false,
                     "degraded": null,
+                    "version": crate::update::CURRENT_VERSION,
+                    "latest_version": null,
                 }),
             ),
             (
@@ -609,6 +615,8 @@ mod tests {
                     "llm_provider": null,
                     "auth_required": false,
                     "degraded": "model download failed",
+                    "version": crate::update::CURRENT_VERSION,
+                    "latest_version": null,
                 }),
             ),
             (
@@ -622,6 +630,8 @@ mod tests {
                     "llm_provider": null,
                     "auth_required": false,
                     "degraded": null,
+                    "version": crate::update::CURRENT_VERSION,
+                    "latest_version": null,
                 }),
             ),
             (
@@ -635,6 +645,8 @@ mod tests {
                     "llm_provider": "gemini",
                     "auth_required": false,
                     "degraded": null,
+                    "version": crate::update::CURRENT_VERSION,
+                    "latest_version": null,
                 }),
             ),
         ];
@@ -643,6 +655,28 @@ mod tests {
             assert_eq!(status, StatusCode::OK, "{name}");
             assert_eq!(body, expected, "{name}");
         }
+    }
+
+    #[tokio::test]
+    async fn health_reports_a_newer_release_only() {
+        let state = AppState::new(None, config(UNCONFIGURED));
+        state
+            .update_check
+            .record("0.0.1".into(), std::time::Instant::now());
+        let (_, body) = get(router(Arc::new(state)), "/health", None).await;
+        assert_eq!(
+            body["latest_version"],
+            json!(null),
+            "older release is no update"
+        );
+
+        let state = AppState::new(None, config(UNCONFIGURED));
+        state
+            .update_check
+            .record("999.0.0".into(), std::time::Instant::now());
+        let (_, body) = get(router(Arc::new(state)), "/health", None).await;
+        assert_eq!(body["version"], crate::update::CURRENT_VERSION);
+        assert_eq!(body["latest_version"], "999.0.0");
     }
 
     #[tokio::test]

@@ -8,7 +8,13 @@ use clap::Parser;
 use std::sync::Arc;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use kimun_server::{config::RagConfig, logbuffer::LogBuffer, server_state::AppState, startup};
+use kimun_server::{
+    config::RagConfig,
+    logbuffer::LogBuffer,
+    server_state::AppState,
+    startup,
+    update::{self, UpdateCheck},
+};
 
 #[derive(Parser)]
 #[command(version, about = "Kimun RAG Server", long_about = None)]
@@ -61,9 +67,11 @@ async fn main() -> anyhow::Result<()> {
     // server; a web-UI restart drains in-flight requests, then the next
     // iteration re-reads the config file and rebinds, so every setting —
     // including the bind address — applies without a supervisor.
+    // The update check result outlives restarts, like the log buffer.
+    let update_check = UpdateCheck::new();
     let mut first_run = true;
     loop {
-        match run_server(&cli, first_run, log_buffer.clone()).await? {
+        match run_server(&cli, first_run, log_buffer.clone(), update_check.clone()).await? {
             Shutdown::Restart => {
                 tracing::info!("Restart requested — reloading configuration");
                 first_run = false;
@@ -73,7 +81,12 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-async fn run_server(cli: &Cli, first_run: bool, log_buffer: LogBuffer) -> anyhow::Result<Shutdown> {
+async fn run_server(
+    cli: &Cli,
+    first_run: bool,
+    log_buffer: LogBuffer,
+    update_check: UpdateCheck,
+) -> anyhow::Result<Shutdown> {
     // Load configuration (remembering the path so the web UI can persist edits).
     tracing::info!("Loading configuration...");
     let config_path = RagConfig::resolve_path(cli.config.clone());
@@ -106,9 +119,11 @@ async fn run_server(cli: &Cli, first_run: bool, log_buffer: LogBuffer) -> anyhow
         AppState::from_parts(parts, config.clone())
             .with_config_path(config_path)
             .with_log_buffer(log_buffer)
+            .with_update_check(update_check)
             .with_restart(restart_tx),
     );
     startup::spawn_job_sweep(&state);
+    update::spawn_check(&state);
 
     let app = startup::router(state);
 

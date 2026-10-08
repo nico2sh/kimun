@@ -189,6 +189,9 @@ pub struct App {
     /// freshly-opened editor can be seeded immediately (like `update`) instead
     /// of showing nothing until the next sync tick.
     pub rag_status: crate::rag::RagStatus,
+    /// Newer server release reported by the server, if any. Seeded into each
+    /// screen alongside `rag_status`.
+    pub server_update: Option<crate::server_client::sync::ServerUpdate>,
 }
 
 impl App {
@@ -216,6 +219,7 @@ impl App {
             parked_flashes: Vec::new(),
             rag_sync_task: None,
             rag_status: crate::rag::RagStatus::Disabled,
+            server_update: None,
         }
     }
 
@@ -324,6 +328,9 @@ async fn switch_screen(app: &mut App, tx: &AppTx, new_screen: ScreenEvent) {
     }
     screen
         .handle_app_message(AppEvent::RagStatus(app.rag_status), tx)
+        .await;
+    screen
+        .handle_app_message(AppEvent::ServerUpdate(app.server_update.clone()), tx)
         .await;
     app.current_screen = screen;
     // Bumped here (not at every swap site) because every swap goes through
@@ -782,6 +789,12 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
             app.rag_status = status;
             app.current_screen
                 .handle_app_message(AppEvent::RagStatus(status), tx)
+                .await;
+        }
+        AppEvent::ServerUpdate(latest) => {
+            app.server_update = latest.clone();
+            app.current_screen
+                .handle_app_message(AppEvent::ServerUpdate(latest), tx)
                 .await;
         }
         AppEvent::FileOp(op) => {

@@ -66,8 +66,17 @@ pub(super) async fn dashboard(State(state): State<Arc<AppState>>) -> Markup {
         None => None,
     };
     let reranker_active = state.rag.as_ref().is_some_and(|r| r.has_reranker());
+    let update = state.update_check.available();
     let body = html! {
         h1 { "Dashboard" }
+        @if let Some(latest) = &update {
+            p .flash.info {
+                "Kimün server " b { (latest) } " is available (running " (crate::update::CURRENT_VERSION) "). "
+                a href=(crate::update::releases_url()) { "Release notes" } ". To upgrade:"
+                br;
+                span .mono { (crate::update::upgrade_hint()) }
+            }
+        }
         @if let Some((cols, notes, active)) = glance {
             p .statusline {
                 b { (count_noun(cols, "collection")) }
@@ -94,6 +103,7 @@ pub(super) async fn dashboard(State(state): State<Arc<AppState>>) -> Markup {
         }
         div .panel {
             dl {
+                dt { "Version" } dd .mono { (crate::update::CURRENT_VERSION) }
                 dt { "Bind address" } dd .mono { (c.server.host) ":" (c.server.port) }
                 dt { "Vector DB" } dd { (vector_db) }
                 dt { "Embedder" } dd { (embedder) }

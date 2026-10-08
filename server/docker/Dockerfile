@@ -27,6 +27,10 @@ LABEL org.opencontainers.image.source="https://github.com/nico2sh/kimun" \
 # TLS roots for the embedding-model download and LLM API calls.
 COPY --from=certs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 
+# Tells the server it runs from this image, so its update notice says
+# `docker pull` rather than re-running the install script.
+ENV KIMUN_SERVER_INSTALL=docker
+
 ARG TARGETARCH
 COPY --chmod=755 dist/${TARGETARCH}/kimun-server /usr/local/bin/kimun-server
 COPY server/docker/server.toml.default /usr/local/share/kimun/server.toml.default
