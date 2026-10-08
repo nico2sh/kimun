@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/nico2sh/kimun/compare/kimun_core-v0.5.2...kimun_core-v0.6.0) - 2026-10-08
+
+### Added
+
+- dialog for sort by property, dialog for property editing
+- search by property dates, the dates are stored in UTC, so if you put an offset, keep in mind it may drift from your original date
+- property searches ignore accents
+- mcp and skill now are aware of the properties
+- check for properties present in queries
+- frontmatter properties
+
+### Fixed
+
+- possible crash
+- distinct markdown and wikilinks
+- multiline links
+- better renaming
+- long wikilink lines perfoermance
+- removed workarounds for parsing wikilinks
+- possible crash from pulldown cmark
+- image links with spaces fixed
+- accept links with spaces with the new parser
+- inner html is ignored for md links and wikilinks
+- empty wikilinks render
+- regressions
+- regressions on the note walker
+- changed parsing for a note walked, more efficient
+- issues with same name headings
+- heading consistency
+- outline jumps to the right header when more than one header has the same name
+- properly outline headings
+- search with no terms and sort, displays recents
+- better duplicate property errors
+- keys with no values are accepted
+- proper date sorting on properties
+- properties keep key casing, BOM files, and inline comments
+- tags always a list
+- accept blank key properties
+- search properties with quotes
+
+### Other
+
+- cleanup comments
+- tighten property key helpers; fix folded-key index collisions
+- property searches ignore case, including multibyte text
+
 ## [0.5.2](https://github.com/nico2sh/kimun/compare/kimun_core-v0.5.1...kimun_core-v0.5.2) - 2026-10-02
 
 ### Other
