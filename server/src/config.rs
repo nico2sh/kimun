@@ -41,6 +41,10 @@ pub struct ServerConfig {
     pub port: u16,
     #[serde(default = "default_max_concurrent_jobs")]
     pub max_concurrent_jobs: usize,
+    /// Check GitHub (once a day) for a newer server release and show it on the
+    /// dashboard and in `/health`. Notify only — nothing is downloaded.
+    #[serde(default = "default_update_check")]
+    pub update_check: bool,
 }
 
 /// Selects the embedder. All collections on a server share one embedder — the
@@ -421,6 +425,10 @@ fn default_max_concurrent_jobs() -> usize {
     10
 }
 
+fn default_update_check() -> bool {
+    true
+}
+
 fn default_sqlite_path() -> PathBuf {
     PathBuf::from("./rag_sqlite")
 }
@@ -495,6 +503,7 @@ impl Default for RagConfig {
                 host: default_host(),
                 port: default_port(),
                 max_concurrent_jobs: default_max_concurrent_jobs(),
+                update_check: default_update_check(),
             },
             vector_db: VectorDbConfig::Sqlite {
                 path: generated_sqlite_path(),
@@ -902,6 +911,7 @@ mod tests {
             host: host.into(),
             port: 7573,
             max_concurrent_jobs: 1,
+            update_check: false,
         };
         for host in [
             "127.0.0.1",

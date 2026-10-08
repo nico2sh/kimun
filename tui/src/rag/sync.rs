@@ -191,6 +191,8 @@ pub fn spawn_rag_sync(
         // the whole session.
         let mut sync: Option<RagSync> = None;
         let mut cadence = Cadence::new();
+        // Last server-update notice sent, so the event fires only on change.
+        let mut server_update: Option<String> = None;
 
         loop {
             interval.tick().await;
@@ -212,6 +214,12 @@ pub fn spawn_rag_sync(
 
             // One probe drives reachability, capability, and auth.
             let probe = sync.probe().await;
+
+            let update = probe.as_ref().and_then(|p| p.server_update.clone());
+            if update != server_update {
+                server_update = update;
+                let _ = tx.send(AppEvent::ServerUpdate(server_update.clone()));
+            }
 
             let reconcile = match cadence.plan(probe.as_ref(), token.is_some(), sync.index_ready())
             {
@@ -264,6 +272,7 @@ mod tests {
         ServerProbe {
             capability,
             auth_required,
+            server_update: None,
         }
     }
 

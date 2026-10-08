@@ -167,6 +167,20 @@ Windows zips are also on the
 [releases page](https://github.com/nico2sh/kimun/releases) (`kimun_server-v*`
 tags).
 
+### Update notices
+
+Once a day the server checks GitHub for a newer release. When one exists, the
+web UI dashboard shows it together with the upgrade command for your install
+(`docker pull` for the image, re-running the install script otherwise), and
+Kimün's status bar adds `server x.y.z available` next to the server status.
+Nothing is downloaded or installed automatically. To turn the check off, set
+this in the server config:
+
+```toml
+[server]
+update_check = false
+```
+
 ## Running the server
 
 To start with local defaults (an embedded SQLite vector store and a local

@@ -91,6 +91,10 @@ pub struct Health {
     pub llm_provider: Option<String>,
     #[serde(default)]
     pub auth_required: bool,
+    /// A newer stable server release, when the server's own update check found
+    /// one; `None` otherwise (and on servers too old to report it).
+    #[serde(default)]
+    pub latest_version: Option<String>,
 }
 
 /// Response to any job-creating endpoint.

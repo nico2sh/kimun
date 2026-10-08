@@ -335,6 +335,29 @@ provider = "gemini"
     }
 
     #[tokio::test]
+    async fn dashboard_announces_a_newer_release() {
+        let state = unconfigured_state();
+        let html = |state: Arc<AppState>| async move {
+            let resp = app(state)
+                .oneshot(Request::get("/").body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            body_text(resp).await
+        };
+        assert!(
+            !html(state.clone()).await.contains("is available"),
+            "no check yet"
+        );
+
+        state
+            .update_check
+            .record("999.0.0".into(), std::time::Instant::now());
+        let page = html(state).await;
+        assert!(page.contains("999.0.0"), "names the new version");
+        assert!(page.contains("install-server.sh"), "and how to upgrade");
+    }
+
+    #[tokio::test]
     async fn degraded_dashboard_shows_startup_error() {
         let app = app(degraded_state());
         let resp = app
