@@ -1057,7 +1057,7 @@ mod tests {
         );
     }
 
-    // Review 8, finding 8: the two resolvers share one implementation and
+    // The two resolvers share one implementation and
     // differ only in their base and the last step — pinned, so merging them
     // is seen to change results.
     #[test]

@@ -1209,10 +1209,10 @@ impl MarkdownEditorView {
             // V2 lazy-construct neighbourhood guard: edit at row R
             // can re-shape a lazy construct open at R-1, R, or R+1.
             // R-1: blockquote paragraph lazy-continuation across a
-            // former blank (§5.1). R: edit inside the construct. R+1:
+            // former blank (CommonMark §5.1). R: edit inside the construct. R+1:
             // paragraph eating a would-be IndentedCode start.
             //
-            // §3.0 conditional relaxation (intra-construct-reset-boundaries):
+            // Conditional relaxation (intra-construct reset boundaries):
             // when the damaged row's old kind is ListMarker AND
             // lazy_depth[row] == 1 (a top-level list, not nested inside
             // an outer lazy construct), the bail is skipped. List-marker
@@ -1234,8 +1234,7 @@ impl MarkdownEditorView {
             // row-classification flips past widened.end that the
             // post-slice verify (which only covers rows INSIDE widened)
             // doesn't catch. The deeper fix is a post-widening sanity
-            // check on `widened.end + 1` — see the design doc's
-            // "Blockquote/Plain/ListContinuation unlocks" follow-up.
+            // check on `widened.end + 1`; until then those unlocks stay off.
             let lazy = &self.parse_state.buf().lazy_depth;
             if lazy.is_empty() {
                 // (see `needs_downstream_verify` below)
@@ -1247,9 +1246,9 @@ impl MarkdownEditorView {
             let lo = row.saturating_sub(1);
             let hi = (row + 1).min(lazy.len() - 1);
             if lazy[lo..=hi].iter().any(|&d| d > 0) {
-                // §3.0 conditional relaxation — TIGHT VERSION.
+                // Conditional relaxation — TIGHT VERSION.
                 // Qualifying conditions (narrowed across two soak
-                // rounds — see openspec change for the rationale):
+                // rounds):
                 //   - old_kind == ListMarker (NOT ListContinuation)
                 //   - lazy_depth[row] == 1 (top-level list only)
                 //
@@ -1352,7 +1351,7 @@ impl MarkdownEditorView {
         //      is the correctness mechanism and bails to a full
         //      rebuild on any divergence.
         //
-        // After a §3.0 relax fires the strict widener usually
+        // After the relaxation fires the strict widener usually
         // cap-trips (lazy_depth > 0 around the edit means no nearby
         // blank-with-depth-0 reset boundary), but we still try strict
         // first — it costs only a binary search and succeeds in
@@ -1600,7 +1599,7 @@ impl MarkdownEditorView {
         // both were rebuilt from the same snapshot. The single
         // remaining edge case is an empty buffer (no rows at all),
         // handled by the early `is_empty` short-circuit below; the
-        // previous defensive `.get()` chain (commit c03dc728) was
+        // previous defensive `.get()` chain was
         // there to absorb stale Nvim snapshots where cursor outran
         // lines, which the snapshot invariant now rules out.
         self.last_cursor_screen = None;
@@ -2806,7 +2805,7 @@ mod tests {
 
     #[test]
     fn is_in_code_block_returns_true_for_any_fence_regardless_of_cursor() {
-        // Regression: after commit cceef444, every fenced block renders
+        // Regression: since the fence change, every fenced block renders
         // force-raw — not just the one the cursor sits in. Verify by
         // probing `is_in_code_block` for a row in a fence while the
         // cursor is positioned elsewhere.
@@ -3825,7 +3824,7 @@ mod tests {
         assert!(v.last_parse_was_incremental);
     }
 
-    // §3.4 — heuristic widener fires on an in-list content edit.
+    // Heuristic widener fires on an in-list content edit.
     //
     // Needs a buffer big enough that strict widener (which on a
     // loose list with no interior reset boundaries expands to
@@ -3875,7 +3874,7 @@ mod tests {
         );
     }
 
-    // §3.5 — lazy-guard relaxation must NOT skip when the edit is a
+    // Lazy-guard relaxation must NOT skip when the edit is a
     // list-marker flip. The marker-flip guard above the lazy guard
     // should bail first, and even if it didn't, the lazy guard's
     // kind_qualifies check should also bail since ListMarker is the
@@ -3892,7 +3891,7 @@ mod tests {
     // splice succeeds. If marker-style switches the classification,
     // verify catches it.
     //
-    // The §3.5 spec scenario "- a" → "* a" produces ListMarker in
+    // The scenario "- a" → "* a" produces ListMarker in
     // both. Slice parses "* a" alone as a list with `*` marker;
     // kinds[0] = ListMarker. Parent had ListMarker too. No
     // divergence. Splice succeeds via the heuristic widener.

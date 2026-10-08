@@ -85,7 +85,7 @@ pub struct EditorScreen {
     /// The Ask workspace's coordination layer: Thread↔Sources sync, capability
     /// refresh, AskData routing, and show/stash transitions (see `ask.rs`).
     ask: AskCoordinator,
-    /// The leader-key sequence state machine (Ctrl-B gateway by default, spec §8a).
+    /// The leader-key sequence state machine (Ctrl-B gateway by default).
     leader: LeaderEngine,
     /// The mouse presses currently forming one gesture, so a double-click in
     /// the editor can follow a link (see `click_run`). Fed before each
@@ -1646,7 +1646,7 @@ impl EditorScreen {
                     .ok();
                 }
                 // Selecting the already-active view toggles the drawer closed
-                // (spec §3: clicking the active rail item toggles).
+                // (clicking the active rail item toggles it).
                 else if self.panels.is_visible(PanelKind::Drawer)
                     && self.panels.active_drawer_view() == view
                 {
@@ -2236,7 +2236,7 @@ impl EditorScreen {
             }
 
             // +git/sync — status is live; the rest are display-only stubs
-            // (spec §12 keeps git interactions out of scope).
+            // (git interactions are out of scope).
             LeaderAction::GitStatus => {
                 self.doc_meta.refresh_git(tx);
                 let msg = self
@@ -2590,7 +2590,7 @@ impl AppScreen for EditorScreen {
             }
         };
         let path_str = self.path.to_string();
-        // Link-under-cursor affordance (spec §5.2): `→ target · N backlinks`.
+        // Link-under-cursor affordance: `→ target · N backlinks`.
         // The backlink count loads async, cached per target.
         let link_segment = if self.panels.focused() == PanelKind::Editor && !self.overlays.is_open()
         {
@@ -2651,7 +2651,7 @@ impl AppScreen for EditorScreen {
         self.footer.render(f, rows[2], theme, &ctx);
 
         // which-key overlay — docked above the status bar once the user
-        // hesitates mid-sequence (spec §8b).
+        // hesitates mid-sequence.
         let whichkey_visible = self
             .leader
             .pending_since()
@@ -3593,8 +3593,7 @@ mod tests {
         );
     }
 
-    // The try_save timeout-abort regression tests (commits 55eb49ed +
-    // 5e28b796) previously lived here against `await_or_abort`. The
+    // The try_save timeout-abort regression tests previously lived here against `await_or_abort`. The
     // logic now lives in `SingleSlotTask::await_with_timeout` and is
     // covered by `single_slot_task_timeout_returns_none_keeps_handle`
     // in `crate::util::single_slot_task`.

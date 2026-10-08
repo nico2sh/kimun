@@ -328,7 +328,7 @@ impl AppScreen for OnboardingScreen {
         }
         match key.code {
             // While the name field is in edit mode, Esc must exit the edit
-            // (handled by workspace_step_key in Task 5), not cancel the flow.
+            // (handled by workspace_step_key), not cancel the flow.
             KeyCode::Esc if !self.name_editing => self.on_cancel(tx),
             KeyCode::Left | KeyCode::BackTab if !self.name_editing => self.go_prev(),
             KeyCode::Right | KeyCode::Tab if !self.name_editing => {

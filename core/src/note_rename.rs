@@ -560,7 +560,7 @@ mod tests {
         rows
     }
 
-    // Review 10, item 3: the rename rewrites every link the index records
+    // The rename rewrites every link the index records
     // as pointing at the renamed note — a wikilink with a section, block or
     // padding, a markdown link with a section or spaces in its destination,
     // a reference definition — keeping what surrounds the name as written.

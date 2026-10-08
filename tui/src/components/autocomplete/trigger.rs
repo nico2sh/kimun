@@ -191,9 +191,8 @@ pub fn detect_trigger_with_oracle(
 
     // The exclusion-zone check is applied selectively below — only for
     // hashtags. A wikilink trigger inside an already-closed `[[foo]]`
-    // means the user is editing the target portion, which the spec
-    // explicitly supports (see "Suggestion acceptance" — alias-suffix
-    // preservation). Applying exclusion up-front here would block that
+    // means the user is editing the target portion, which is
+    // explicitly supported (alias-suffix preservation on acceptance). Applying exclusion up-front here would block that
     // reopen-mid-edit flow.
 
     // Walk backwards from the cursor, tracking the two possible trigger
@@ -280,7 +279,7 @@ pub fn detect_trigger_with_oracle(
         }
         // Suppress inside code, markdown link bodies, frontmatter —
         // but NOT inside an already-closed `[[…]]` (that is the
-        // reopen-mid-target case the spec wants to support). Only
+        // reopen-mid-target case that is supported). Only
         // applied when the caller is editing Markdown (search box
         // disables this).
         if opts.apply_exclusion_zone && oracle.contains_code_link_or_frontmatter(cursor) {
@@ -920,7 +919,7 @@ mod tests {
 
     #[test]
     fn wikilink_reopen_mid_existing_target_still_works() {
-        // The spec carve-out: cursor inside an already-closed `[[foo]]`
+        // The carve-out: cursor inside an already-closed `[[foo]]`
         // STILL triggers (so the user can edit the target). The new
         // exclusion-zone check excludes only code/link/frontmatter,
         // NOT closed wikilinks.

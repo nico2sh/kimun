@@ -1304,8 +1304,8 @@ mod tests {
         assert_eq!(names, vec!["memory"]);
     }
 
-    /// Regression for the opt-out cache-write skip (originally commit
-    /// 5dc15309 against the `revision == 0` sentinel; now expressed
+    /// Regression for the opt-out cache-write skip (originally written
+    /// against the `revision == 0` sentinel; now expressed
     /// via `content_revision() -> None`). Two invariants:
     ///   1. A sync from an opt-out host (revision == None) must NOT
     ///      populate `cached_text` — the search-box modal would

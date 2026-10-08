@@ -1,7 +1,6 @@
 //! Snapshot of every whole-note extractor over a fixed corpus: the
-//! `example/` vault, the bench fixtures and `tests/fixtures/walk`. Taken
-//! before the single-walk change (`2026-10-06-single-note-walk-design.md`)
-//! so every behaviour change shows up as a reviewed diff.
+//! `example/` vault, the bench fixtures and `tests/fixtures/walk`. Any
+//! behaviour change shows up as a reviewed diff.
 //!
 //! Regenerate with `UPDATE_SNAPSHOT=1 cargo test -p kimun_core --test extraction_snapshot`.
 
@@ -120,8 +119,7 @@ fn every_extractor_agrees_with_the_others() {
 
     // A vault-root note: there the rendered markdown's note-relative wikilink
     // resolution and the index's root resolution coincide. Below the root
-    // they differ for multi-segment wikilinks (a pre-existing difference the
-    // spec documents in Testing section 2).
+    // they differ for multi-segment wikilinks (a known difference).
     let path = VaultPath::new("note.md");
     for (name, text) in corpus() {
         let details = NoteDetails::new(&path, &text);

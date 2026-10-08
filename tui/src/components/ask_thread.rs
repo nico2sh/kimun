@@ -220,7 +220,7 @@ impl ThreadPanel {
                 }
             }
         }
-        // `ReaderNote` is addressed to the source reader (Task 10), not here.
+        // `ReaderNote` is addressed to the source reader, not here.
     }
 
     /// Arm bottom-follow: the next render scrolls the selected turn's end into

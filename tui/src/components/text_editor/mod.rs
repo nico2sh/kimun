@@ -330,7 +330,7 @@ pub struct TextEditorComponent {
     /// path) opens the note's context menu and clears the flag.
     pub wants_context_menu: bool,
     /// Lowercased needles to emphasize in the rendered buffer — set when the
-    /// note was opened from a query result (spec §5.1 "search match"), and
+    /// note was opened from a query result ("search match"), and
     /// dropped on the first edit (`revs.needles_stale()`).
     search_needles: Vec<String>,
     full_parse_tx: tokio::sync::mpsc::UnboundedSender<(u64, ParsedBuffer)>,
@@ -1644,7 +1644,7 @@ impl TextEditorComponent {
         self.interrupt_typing();
         // Right-click: with a selection it copies (unchanged behavior);
         // without one it asks the host to open the note's context menu
-        // (spec §10 — file & note ops).
+        // (file & note ops).
         if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Right))
             && self.selection.is_none_or(|(start, end)| start == end)
         {
@@ -1737,7 +1737,7 @@ impl TextEditorComponent {
 
 /// Viewport post-pass: emphasize search-needle matches
 /// (`color_search_match`, bold) and style task checkboxes — `[ ]` accent,
-/// `[x]` rows dimmed + struck (spec §5.1). Operates on the rendered buffer
+/// `[x]` rows dimmed + struck. Operates on the rendered buffer
 /// rows, so cost is bounded by the visible area regardless of note size.
 impl Component for TextEditorComponent {
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
@@ -2156,7 +2156,7 @@ impl Component for TextEditorComponent {
         self.view
             .render(f, editor_rect, theme, editor_focused, cursor_shape);
 
-        // Search-match emphasis (spec §5.1): paint needle matches and task
+        // Search-match emphasis: paint needle matches and task
         // checkboxes over the rendered viewport. Buffer-level post-pass —
         // viewport-only, so large notes pay nothing beyond the visible rows.
         if self.revs.needles_stale() {
@@ -2164,7 +2164,7 @@ impl Component for TextEditorComponent {
             self.revs.disarm_needles();
         }
 
-        // Empty-note tip (spec §5.2): dim ghost text in a fresh/empty buffer,
+        // Empty-note tip: dim ghost text in a fresh/empty buffer,
         // gone the instant the first character lands (the buffer stops being
         // empty). Drawn after the view so it sits over the blank canvas.
         if snap.text.len_bytes() == 0 && editor_rect.height > 0 {
@@ -2249,7 +2249,7 @@ impl Component for TextEditorComponent {
         }
 
         // Cursor-context hints come first: what the cursor is on decides the
-        // most relevant action (spec §5.2).
+        // most relevant action.
         let mut hints: Vec<(String, String)> = Vec::new();
         match self.follow_target_at_cursor() {
             Some(FollowTarget::Link(_)) => {

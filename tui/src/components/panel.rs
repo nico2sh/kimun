@@ -46,8 +46,8 @@ pub fn panel_block(title: &str, theme: &Theme, focused: bool) -> Block<'static> 
     }
 }
 
-/// The popup background: regular panel bg, or the harder shade spec §6 gives
-/// the telescope-style modals.
+/// The popup background: regular panel bg, or the harder shade the
+/// telescope-style modals use.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum ModalBg {
     #[default]
@@ -68,7 +68,7 @@ pub struct ModalSpec<'a> {
     pub bg: ModalBg,
 }
 
-/// The one way every popup draws its shell (spec §6): clear the area behind
+/// The one way every popup draws its shell: clear the area behind
 /// it, draw the titled/bordered block, return the inner rect to fill.
 /// Centering stays with the caller — popups center by percent, by fixed size,
 /// or dock (which-key), but the shell is identical.

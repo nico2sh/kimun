@@ -1,4 +1,4 @@
-# Review 4 rows
+# Unusual destinations
 
 Unusual destinations [[Plan#a > b|g]], [[Plan#a)]], [[Plan#a(b]].
 

@@ -129,7 +129,7 @@ impl DocMeta {
         });
     }
 
-    // ── Link-under-cursor affordance (spec §5.2) ────────────────────────
+    // ── Link-under-cursor affordance ────────────────────────
 
     /// The `→ target · N backlinks` status segment for the link under the
     /// cursor, if any. Caches per target; the count loads async (one fetch

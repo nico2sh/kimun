@@ -1,4 +1,4 @@
-# Review 2 rows
+# HTML blocks and embeds
 
 A markdown link in an HTML block:
 

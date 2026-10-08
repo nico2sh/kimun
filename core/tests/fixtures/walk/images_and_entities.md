@@ -1,4 +1,4 @@
-# Review 6 rows 
+# Images and entities 
 
 See ![shot](assets/my image.png) and ![a #t](my pic.png) end.
 
