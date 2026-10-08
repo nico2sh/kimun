@@ -83,7 +83,7 @@ pub struct EditorScreen {
     /// the footer. `Disabled` (no server) renders nothing.
     rag_status: crate::rag::RagStatus,
     /// Newer server release the server reported; footer hint only.
-    server_update: Option<String>,
+    server_update: Option<crate::server_client::sync::ServerUpdate>,
     /// The Ask workspace's coordination layer: Thread↔Sources sync, capability
     /// refresh, AskData routing, and show/stash transitions (see `ask.rs`).
     ask: AskCoordinator,
@@ -2650,7 +2650,7 @@ impl AppScreen for EditorScreen {
                     .as_ref()
                     .map(|u| format!("⬆ {} available", u.latest)),
                 rag: self.rag_status.label().map(|s| match &self.server_update {
-                    Some(v) => format!("{s} · server {v} available"),
+                    Some(u) => format!("{s} · {}", u.label()),
                     None => s.to_string(),
                 }),
             },
@@ -4454,6 +4454,7 @@ mod tests {
     /// footer, and clears when the server stops reporting it.
     #[tokio::test]
     async fn footer_shows_server_update_next_to_rag_status() {
+        use crate::server_client::sync::ServerUpdate;
         let (mut screen, _, _, _dir) = test_screen().await;
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let footer = |screen: &mut EditorScreen| {
@@ -4475,9 +4476,17 @@ mod tests {
             )
             .await;
         screen
-            .handle_owned_message(AppEvent::ServerUpdate(Some("9.9.9".into())), &tx)
+            .handle_owned_message(
+                AppEvent::ServerUpdate(Some(ServerUpdate::Newer("9.9.9".into()))),
+                &tx,
+            )
             .await;
         assert!(footer(&mut screen).contains("server 9.9.9 available"));
+
+        screen
+            .handle_owned_message(AppEvent::ServerUpdate(Some(ServerUpdate::Legacy)), &tx)
+            .await;
+        assert!(footer(&mut screen).contains("server update available"));
 
         screen
             .handle_owned_message(AppEvent::ServerUpdate(None), &tx)

@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use crate::server_client::{
     RagClient,
-    sync::{RagSync, ServerCapability, ServerProbe},
+    sync::{RagSync, ServerCapability, ServerProbe, ServerUpdate},
 };
 use kimun_core::NoteVault;
 use tokio::task::JoinHandle;
@@ -192,7 +192,7 @@ pub fn spawn_rag_sync(
         let mut sync: Option<RagSync> = None;
         let mut cadence = Cadence::new();
         // Last server-update notice sent, so the event fires only on change.
-        let mut server_update: Option<String> = None;
+        let mut server_update: Option<ServerUpdate> = None;
 
         loop {
             interval.tick().await;

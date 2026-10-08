@@ -91,6 +91,10 @@ pub struct Health {
     pub llm_provider: Option<String>,
     #[serde(default)]
     pub auth_required: bool,
+    /// The server's own version. `None` means a server that predates version
+    /// reporting — necessarily outdated.
+    #[serde(default)]
+    pub version: Option<String>,
     /// A newer stable server release, when the server's own update check found
     /// one; `None` otherwise (and on servers too old to report it).
     #[serde(default)]

@@ -42,10 +42,11 @@ pub enum AppEvent {
     /// Background RAG sync task reporting its connection/sync status. Rendered
     /// in the editor footer.
     RagStatus(crate::rag::RagStatus),
-    /// A newer server release the connected server reported via `/health`
-    /// (`None` clears it: up to date, offline, or check disabled). Shown as a
-    /// passive hint next to the RAG status in the editor footer.
-    ServerUpdate(Option<String>),
+    /// The connected server is out of date: its update check found a newer
+    /// release, or it predates version reporting (`None` clears it: up to
+    /// date, offline, or check disabled). Shown as a passive hint next to the
+    /// RAG status in the editor footer.
+    ServerUpdate(Option<crate::server_client::sync::ServerUpdate>),
     Autosave,
     /// A core write (the properties dialog) changed this note on disk: reload
     /// the editor buffer from disk if it is the open note.
