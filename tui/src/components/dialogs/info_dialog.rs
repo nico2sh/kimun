@@ -3,6 +3,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseEvent};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Paragraph, Wrap};
+use unicode_width::UnicodeWidthStr;
 
 use crate::components::Component;
 use crate::components::clickable::is_press_outside;
@@ -10,12 +11,16 @@ use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx};
 use crate::components::hint_row::HintRow;
 use crate::components::panel::{ModalSpec, modal_chrome};
-use crate::server_client::sync::ServerUpdate;
 use crate::settings::themes::Theme;
 
-/// Informational dialog opened from the footer's `rag: server update` segment.
-/// The TUI cannot tell how the server was installed, so it only points the
-/// user at the method they used.
+/// Popup width, border included.
+const WIDTH: u16 = 58;
+/// Horizontal margin between the popup border and its text.
+const MARGIN: u16 = 2;
+
+/// Read-only message dialog: an accent headline, a wrapped body, and
+/// `[Esc] Close`. Esc or a click outside/on the hint closes; everything else
+/// is swallowed. Height follows the wrapped body.
 ///
 /// ```text
 /// ┌─ Server Update ──────────────────────────────────────┐
@@ -28,20 +33,37 @@ use crate::settings::themes::Theme;
 /// │  [Esc] Close                                         │
 /// └──────────────────────────────────────────────────────┘
 /// ```
-pub struct ServerUpdateDialog {
+pub struct InfoDialog {
+    title: String,
     headline: String,
+    body: String,
     /// Outer popup rect from the last render; a press outside closes.
     popup_rect: Rect,
     close_hint: HintRow,
 }
 
-impl ServerUpdateDialog {
-    pub fn new(update: &ServerUpdate) -> Self {
+impl InfoDialog {
+    pub fn new(
+        title: impl Into<String>,
+        headline: impl Into<String>,
+        body: impl Into<String>,
+    ) -> Self {
         Self {
-            headline: update.summary(),
+            title: format!(" {} ", title.into()),
+            headline: headline.into(),
+            body: body.into(),
             popup_rect: Rect::default(),
             close_hint: HintRow::new(&[(KeyCode::Esc, "Esc", "Close")]),
         }
+    }
+
+    /// Rows the body takes once wrapped to the popup's text width.
+    fn body_rows(&self) -> u16 {
+        let text_w = (WIDTH - 2 - 2 * MARGIN) as usize;
+        self.body
+            .lines()
+            .map(|l| l.width().div_ceil(text_w).max(1))
+            .sum::<usize>() as u16
     }
 
     /// Modal: every mouse event is consumed; a press outside (or on the
@@ -64,9 +86,11 @@ impl ServerUpdateDialog {
     }
 }
 
-impl Component for ServerUpdateDialog {
+impl Component for InfoDialog {
     fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, _focused: bool) {
-        let popup_area = super::fixed_centered_rect(58, 10, rect);
+        let body_rows = self.body_rows();
+        // border(2) + spacer, headline, spacer, body, spacer, hint
+        let popup_area = super::fixed_centered_rect(WIDTH, 2 + 5 + body_rows, rect);
         self.popup_rect = popup_area;
 
         let inner = modal_chrome(
@@ -74,7 +98,7 @@ impl Component for ServerUpdateDialog {
             popup_area,
             theme,
             ModalSpec {
-                title: Some(" Server Update "),
+                title: Some(self.title.as_str()),
                 border: Some(Style::default().fg(theme.accent.to_ratatui())),
                 ..Default::default()
             },
@@ -82,22 +106,19 @@ impl Component for ServerUpdateDialog {
 
         let rows = Layout::default()
             .direction(Direction::Vertical)
-            .horizontal_margin(2)
+            .horizontal_margin(MARGIN)
             .constraints([
-                Constraint::Length(1), // 0: spacer
-                Constraint::Length(1), // 1: headline
-                Constraint::Length(1), // 2: spacer
-                Constraint::Length(2), // 3: how to update
-                Constraint::Length(1), // 4: spacer
-                Constraint::Length(1), // 5: Esc hint
+                Constraint::Length(1),         // spacer
+                Constraint::Length(1),         // headline
+                Constraint::Length(1),         // spacer
+                Constraint::Length(body_rows), // body
+                Constraint::Length(1),         // spacer
+                Constraint::Length(1),         // Esc hint
                 Constraint::Min(0),
             ])
             .split(inner);
 
         let bg = theme.bg_panel.to_ratatui();
-        let fg = theme.fg.to_ratatui();
-        let gray = theme.gray.to_ratatui();
-
         f.render_widget(
             Paragraph::new(self.headline.as_str()).style(
                 Style::default()
@@ -108,15 +129,17 @@ impl Component for ServerUpdateDialog {
             rows[1],
         );
         f.render_widget(
-            Paragraph::new(
-                "Update it the same way you installed it (install script, Docker image, package manager, …).",
-            )
-            .wrap(Wrap { trim: false })
-            .style(Style::default().fg(fg).bg(bg)),
+            Paragraph::new(self.body.as_str())
+                .wrap(Wrap { trim: false })
+                .style(Style::default().fg(theme.fg.to_ratatui()).bg(bg)),
             rows[3],
         );
-        self.close_hint
-            .render(f, rows[5], Style::default().fg(gray).bg(bg), theme);
+        self.close_hint.render(
+            f,
+            rows[5],
+            Style::default().fg(theme.gray.to_ratatui()).bg(bg),
+            theme,
+        );
     }
 }
 
@@ -128,7 +151,7 @@ mod tests {
     #[test]
     fn esc_closes_and_other_keys_are_swallowed() {
         let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
-        let mut d = ServerUpdateDialog::new(&ServerUpdate::Legacy);
+        let mut d = InfoDialog::new("T", "head", "body");
         assert_eq!(
             d.handle_key(KeyEvent::from(KeyCode::Char('x')), &tx),
             EventState::Consumed
@@ -136,5 +159,15 @@ mod tests {
         assert!(rx.try_recv().is_err());
         d.handle_key(KeyEvent::from(KeyCode::Esc), &tx);
         assert!(matches!(rx.try_recv(), Ok(AppEvent::CloseOverlay)));
+    }
+
+    #[test]
+    fn height_follows_wrapped_body() {
+        let short = InfoDialog::new("T", "h", "one line");
+        let long = InfoDialog::new("T", "h", "x".repeat(200));
+        let multi = InfoDialog::new("T", "h", "a\nb");
+        assert_eq!(short.body_rows(), 1);
+        assert_eq!(long.body_rows(), 4); // 200 / 50
+        assert_eq!(multi.body_rows(), 2);
     }
 }
