@@ -742,6 +742,11 @@ impl EditorScreen {
             FooterTarget::Update => {
                 tx.send(AppEvent::Update(UpdateFlow::ShowDialog)).ok();
             }
+            FooterTarget::ServerUpdate => {
+                if let Some(update) = self.server_update.clone() {
+                    self.present_overlay(Box::new(ActiveDialog::server_update(&update)));
+                }
+            }
             FooterTarget::Backlinks => {
                 self.execute_leader_action(
                     LeaderAction::LinksTab(crate::components::drawer_views::LinksTab::Backlinks),
@@ -2649,14 +2654,16 @@ impl AppScreen for EditorScreen {
                     .update
                     .as_ref()
                     .map(|u| format!("⬆ {} available", u.latest)),
-                rag: self.rag_status.label().map(|s| {
-                    use crate::server_client::sync::ServerUpdate;
-                    match &self.server_update {
-                        Some(ServerUpdate::Newer(v)) => format!("{s} · server {v} available"),
-                        Some(ServerUpdate::Legacy) => format!("{s} · server update available"),
-                        None => s.to_string(),
-                    }
-                }),
+                rag: self.rag_status.label().map(str::to_string),
+                // Only replaces a healthy status: offline / unauthorized /
+                // not-configured matter more than a stale update hint.
+                rag_update: matches!(
+                    self.rag_status,
+                    crate::rag::RagStatus::Online { .. } | crate::rag::RagStatus::Syncing { .. }
+                )
+                .then(|| self.server_update.as_ref())
+                .flatten()
+                .map(|u| format!("rag: {}", u.summary())),
             },
         };
         self.footer.render(f, rows[2], theme, &ctx);
@@ -4454,10 +4461,10 @@ mod tests {
     /// health probe reports the server reachable for search, shown for a
     /// semantic-only server (search works, ASK stays hidden), and hidden again
     /// when the server drops offline.
-    /// A server-reported newer release rides along with the RAG status in the
-    /// footer, and clears when the server stops reporting it.
+    /// A server-reported newer release replaces the RAG status in the footer
+    /// (clickable), and the status returns when the server stops reporting it.
     #[tokio::test]
-    async fn footer_shows_server_update_next_to_rag_status() {
+    async fn footer_server_update_replaces_rag_status() {
         use crate::server_client::sync::ServerUpdate;
         let (mut screen, _, _, _dir) = test_screen().await;
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -4485,12 +4492,17 @@ mod tests {
                 &tx,
             )
             .await;
-        assert!(footer(&mut screen).contains("server 9.9.9 available"));
+        let shown = footer(&mut screen);
+        assert!(shown.contains("rag: server 9.9.9 available"));
+        assert!(
+            !shown.contains("rag: online"),
+            "status is replaced: {shown}"
+        );
 
         screen
             .handle_owned_message(AppEvent::ServerUpdate(Some(ServerUpdate::Legacy)), &tx)
             .await;
-        assert!(footer(&mut screen).contains("server update available"));
+        assert!(footer(&mut screen).contains("rag: server update available"));
 
         screen
             .handle_owned_message(AppEvent::ServerUpdate(None), &tx)
@@ -4675,6 +4687,33 @@ mod tests {
             shown |= matches!(evt, AppEvent::Update(UpdateFlow::ShowDialog));
         }
         assert!(shown);
+    }
+
+    /// The replaced `rag:` segment is clickable and opens the server-update dialog.
+    #[tokio::test]
+    async fn clicking_server_update_segment_opens_dialog() {
+        let (mut screen, _vault, tx, _rx, _dir) = screen_on_note().await;
+        screen
+            .handle_app_message(
+                AppEvent::RagStatus(crate::rag::RagStatus::Online {
+                    llm_available: false,
+                }),
+                &tx,
+            )
+            .await;
+        screen
+            .handle_app_message(
+                AppEvent::ServerUpdate(Some(crate::server_client::sync::ServerUpdate::Legacy)),
+                &tx,
+            )
+            .await;
+        lay_out(&mut screen);
+        let (col, row) = (0..40u16)
+            .flat_map(|r| (0..120u16).map(move |c| (c, r)))
+            .find(|(c, r)| screen.footer.target_at(*c, *r) == Some(FooterTarget::ServerUpdate))
+            .expect("server update segment laid out");
+        screen.handle_input(&press_at(col, row), &tx);
+        assert!(screen.overlays.is_open(), "dialog presented");
     }
 
     /// `N backlinks` in the footer opens LINKS on its backlinks tab.
