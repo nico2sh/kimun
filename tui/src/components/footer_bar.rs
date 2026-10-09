@@ -50,6 +50,9 @@ pub struct DocState<'a> {
     pub update: Option<String>,
     /// RAG server status, e.g. `rag: online` — absent when no server is set.
     pub rag: Option<String>,
+    /// Set when the server reports an update: replaces the `rag` status with
+    /// this clickable text (opens the server-update dialog).
+    pub rag_update: Option<String>,
 }
 
 /// Everything the status bar shows for the current frame.
@@ -73,6 +76,8 @@ pub enum FooterTarget {
     Props,
     /// `⬆ x.y.z` — opens the update dialog.
     Update,
+    /// `rag: server update` — opens the server-update dialog.
+    ServerUpdate,
     /// `N backlinks` — opens the LINKS drawer on its backlinks tab.
     Backlinks,
     /// `→ target` — follows the link under the cursor (the mouse's Ctrl+N).
@@ -233,7 +238,7 @@ impl FooterBar {
             if let Some(update) = &doc.update {
                 w += " · ".width() + update.width();
             }
-            if let Some(rag) = &doc.rag {
+            if let Some(rag) = doc.rag_update.as_ref().or(doc.rag.as_ref()) {
                 w += " · ".width() + rag.width();
             }
             w
@@ -316,7 +321,12 @@ impl FooterBar {
                 Span::styled(update.clone(), theme.action().add_modifier(Modifier::BOLD)),
             );
         }
-        if let Some(rag) = &doc.rag {
+        if let Some(label) = &doc.rag_update {
+            if let Some(r) = target_rect(&segments, label) {
+                self.targets.push((r, FooterTarget::ServerUpdate));
+            }
+            push(&mut segments, Span::styled(label.clone(), theme.action()));
+        } else if let Some(rag) = &doc.rag {
             push(
                 &mut segments,
                 Span::styled(rag.clone(), Style::default().fg(theme.green.to_ratatui())),

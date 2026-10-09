@@ -8,6 +8,7 @@ pub use properties_dialog::PropertiesDialog;
 pub use quick_note_modal::QuickNoteModal;
 pub use rename_dialog::RenameDialog;
 pub use save_search_dialog::SaveSearchDialog;
+pub use server_update_dialog::ServerUpdateDialog;
 pub use sort_dialog::SortDialog;
 pub use theme_picker::ThemePickerDialog;
 pub use update_dialog::UpdateAvailableDialog;
@@ -69,6 +70,7 @@ pub mod properties_dialog;
 pub mod quick_note_modal;
 pub mod rename_dialog;
 pub mod save_search_dialog;
+pub mod server_update_dialog;
 pub mod sort_dialog;
 pub mod theme_picker;
 pub mod update_dialog;
@@ -88,6 +90,7 @@ pub enum ActiveDialog {
     PinnedNotes(PinnedNotesDialog),
     ThemePicker(ThemePickerDialog),
     UpdateAvailable(UpdateAvailableDialog),
+    ServerUpdate(ServerUpdateDialog),
     Properties(PropertiesDialog),
 }
 
@@ -107,6 +110,7 @@ impl ActiveDialog {
             ActiveDialog::PinnedNotes(_) => {} // no error state: its own failures arrive as PinnedNotesLoaded(Err) and flash
             ActiveDialog::ThemePicker(_) => {} // no error state
             ActiveDialog::UpdateAvailable(_) => {} // no error state
+            ActiveDialog::ServerUpdate(_) => {} // no error state
             ActiveDialog::Properties(d) => d.error = Some(msg),
         }
     }
@@ -137,6 +141,11 @@ impl ActiveDialog {
     /// The update-available dialog.
     pub fn update(status: &crate::update::UpdateStatus) -> Self {
         ActiveDialog::UpdateAvailable(UpdateAvailableDialog::new(status))
+    }
+
+    /// The server-update hint dialog (footer `rag:` segment).
+    pub fn server_update(update: &crate::server_client::sync::ServerUpdate) -> Self {
+        ActiveDialog::ServerUpdate(ServerUpdateDialog::new(update))
     }
 
     pub fn quick_note(vault: Arc<NoteVault>) -> Self {
@@ -351,6 +360,7 @@ impl Component for ActiveDialog {
                     ActiveDialog::QuickNote(d) => d.handle_mouse(m, tx),
                     ActiveDialog::WorkspaceSwitcher(d) => d.handle_mouse(m, tx),
                     ActiveDialog::UpdateAvailable(d) => d.handle_mouse(m, tx),
+                    ActiveDialog::ServerUpdate(d) => d.handle_mouse(m, tx),
                     ActiveDialog::ThemePicker(d) => d.handle_mouse(m, tx),
                     ActiveDialog::Help(d) => d.handle_mouse(m, tx),
                     ActiveDialog::PinnedNotes(d) => d.handle_mouse(m, tx),
@@ -372,6 +382,7 @@ impl Component for ActiveDialog {
             ActiveDialog::PinnedNotes(d) => d.handle_input(event, tx),
             ActiveDialog::ThemePicker(d) => d.handle_key(*key, tx),
             ActiveDialog::UpdateAvailable(d) => d.handle_key(*key, tx),
+            ActiveDialog::ServerUpdate(d) => d.handle_key(*key, tx),
             ActiveDialog::Properties(d) => d.handle_key(*key, tx),
         }
     }
@@ -391,6 +402,7 @@ impl Component for ActiveDialog {
             ActiveDialog::PinnedNotes(d) => d.render(f, rect, theme, focused),
             ActiveDialog::ThemePicker(d) => d.render(f, rect, theme, focused),
             ActiveDialog::UpdateAvailable(d) => d.render(f, rect, theme, focused),
+            ActiveDialog::ServerUpdate(d) => d.render(f, rect, theme, focused),
             ActiveDialog::Properties(d) => d.render(f, rect, theme),
         }
     }
