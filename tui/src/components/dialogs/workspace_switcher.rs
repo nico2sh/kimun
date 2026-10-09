@@ -4,7 +4,8 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph};
 
-use crate::components::clickable::{is_press_outside, list_index_at};
+use super::ModalShell;
+use crate::components::clickable::list_index_at;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx};
 use crate::components::hint_row::HintRow;
@@ -15,8 +16,8 @@ use crate::settings::themes::Theme;
 pub struct WorkspaceSwitcherModal {
     workspaces: Vec<(String, bool)>, // (name, is_current)
     list_state: ListState,
-    /// Outer popup rect from the last render; a press outside cancels.
-    popup_rect: Rect,
+    /// Dismiss-on-outside-press and hint-chip clicks (see [`ModalShell`]).
+    shell: ModalShell,
     /// Where the rows were drawn in the last render.
     list_rect: Rect,
     hints: HintRow,
@@ -44,7 +45,7 @@ impl WorkspaceSwitcherModal {
         Self {
             workspaces,
             list_state,
-            popup_rect: Rect::default(),
+            shell: ModalShell::default(),
             list_rect: Rect::default(),
             hints: HintRow::new(&[
                 (KeyCode::Enter, "Enter", "Switch"),
@@ -60,7 +61,7 @@ impl WorkspaceSwitcherModal {
         Self {
             workspaces,
             list_state,
-            popup_rect: Rect::default(),
+            shell: ModalShell::default(),
             list_rect: Rect::default(),
             hints: HintRow::new(&[
                 (KeyCode::Enter, "Enter", "Switch"),
@@ -73,10 +74,7 @@ impl WorkspaceSwitcherModal {
     /// moves the selection; a press outside the popup cancels. Modal: every
     /// mouse event is consumed.
     pub fn handle_mouse(&mut self, m: &MouseEvent, tx: &AppTx) -> EventState {
-        if is_press_outside(m, self.popup_rect) {
-            return self.handle_key(KeyEvent::from(KeyCode::Esc), tx);
-        }
-        if let Some(key) = self.hints.hit(m) {
+        if let Some(key) = self.shell.pointer_key(m, &[&self.hints]) {
             return self.handle_key(key, tx);
         }
         match m.kind {
@@ -147,7 +145,7 @@ impl WorkspaceSwitcherModal {
         let height = (self.workspaces.len() as u16 + 5).min(rect.height.saturating_sub(4));
         let width = 50u16.min(rect.width.saturating_sub(4));
         let popup = super::fixed_centered_rect(width, height, rect);
-        self.popup_rect = popup;
+        self.shell.set(popup);
 
         let inner = modal_chrome(
             f,
@@ -202,3 +200,5 @@ impl WorkspaceSwitcherModal {
             .render(f, rows[1], Style::default().fg(gray).bg(bg), theme);
     }
 }
+
+impl_dialog!(WorkspaceSwitcherModal);

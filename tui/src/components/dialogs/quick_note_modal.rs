@@ -153,3 +153,5 @@ impl QuickNoteModal {
         }
     }
 }
+
+impl_dialog!(QuickNoteModal, error);

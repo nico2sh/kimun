@@ -1253,6 +1253,37 @@ impl PropertiesDialog {
     }
 }
 
+impl super::Dialog for PropertiesDialog {
+    fn key(
+        &mut self,
+        key: ratatui::crossterm::event::KeyEvent,
+        tx: &crate::components::events::AppTx,
+    ) -> crate::components::event_state::EventState {
+        self.handle_key(key, tx)
+    }
+
+    fn mouse(
+        &mut self,
+        m: &ratatui::crossterm::event::MouseEvent,
+        tx: &crate::components::events::AppTx,
+    ) -> crate::components::event_state::EventState {
+        self.handle_mouse(m, tx)
+    }
+
+    fn draw(
+        &mut self,
+        f: &mut ratatui::Frame,
+        rect: ratatui::layout::Rect,
+        theme: &crate::settings::themes::Theme,
+    ) {
+        self.render(f, rect, theme)
+    }
+
+    fn set_error(&mut self, msg: String) {
+        self.error = Some(msg);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -3,6 +3,7 @@ pub use delete_dialog::DeleteConfirmDialog;
 pub use file_ops_menu::FileOpsMenuDialog;
 pub use help_dialog::HelpDialog;
 pub use info_dialog::InfoDialog;
+pub use modal_shell::ModalShell;
 pub use move_dialog::MoveDialog;
 pub use pinned_notes_dialog::PinnedNotesDialog;
 pub use properties_dialog::PropertiesDialog;
@@ -18,7 +19,7 @@ use std::sync::Arc;
 
 use kimun_core::NoteVault;
 use ratatui::Frame;
-use ratatui::crossterm::event::KeyCode;
+use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseEvent};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
@@ -60,11 +61,58 @@ pub enum ValidationState {
     Taken,
 }
 
+/// `Dialog` for a dialog whose `handle_key` / `handle_mouse` / `render(.., focused)`
+/// are the plain forwarders; `, error` also routes `set_error` to its `error` field.
+/// Defined ahead of the `mod`s so each dialog file can invoke it.
+macro_rules! impl_dialog {
+    ($ty:ty) => {
+        impl_dialog!(@impl $ty, );
+    };
+    ($ty:ty, error) => {
+        impl_dialog!(@impl $ty, fn set_error(&mut self, msg: String) {
+            self.error = Some(msg);
+        });
+    };
+    (@impl $ty:ty, $($extra:tt)*) => {
+        impl $crate::components::dialogs::Dialog for $ty {
+            fn key(
+                &mut self,
+                key: ratatui::crossterm::event::KeyEvent,
+                tx: &$crate::components::events::AppTx,
+            ) -> $crate::components::event_state::EventState {
+                self.handle_key(key, tx)
+            }
+
+            fn mouse(
+                &mut self,
+                m: &ratatui::crossterm::event::MouseEvent,
+                tx: &$crate::components::events::AppTx,
+            ) -> $crate::components::event_state::EventState {
+                self.handle_mouse(m, tx)
+            }
+
+            fn draw(
+                &mut self,
+                f: &mut ratatui::Frame,
+                rect: ratatui::layout::Rect,
+                theme: &$crate::settings::themes::Theme,
+            ) {
+                #[allow(unused_imports)]
+                use $crate::components::Component as _;
+                self.render(f, rect, theme, true)
+            }
+
+            $($extra)*
+        }
+    };
+}
+
 pub mod create_note_dialog;
 pub mod delete_dialog;
 pub mod file_ops_menu;
 pub mod help_dialog;
 pub mod info_dialog;
+pub mod modal_shell;
 pub mod move_dialog;
 pub mod pinned_notes_dialog;
 pub mod properties_dialog;
@@ -95,24 +143,29 @@ pub enum ActiveDialog {
 }
 
 impl ActiveDialog {
-    pub fn set_error(&mut self, msg: String) {
+    /// The one place that maps a variant to its dialog.
+    fn inner(&mut self) -> &mut dyn Dialog {
         match self {
-            ActiveDialog::Menu(_) => {} // menu has no error state
-            ActiveDialog::Delete(d) => d.error = Some(msg),
-            ActiveDialog::Rename(d) => d.error = Some(msg),
-            ActiveDialog::Move(d) => d.error = Some(msg),
-            ActiveDialog::CreateNote(d) => d.error = Some(msg),
-            ActiveDialog::Help(_) => {}
-            ActiveDialog::QuickNote(d) => d.error = Some(msg),
-            ActiveDialog::WorkspaceSwitcher(_) => {} // no error state
-            ActiveDialog::SaveSearch(_) => {}        // no error state
-            ActiveDialog::Sort(_) => {}              // no error state
-            ActiveDialog::PinnedNotes(_) => {} // no error state: its own failures arrive as PinnedNotesLoaded(Err) and flash
-            ActiveDialog::ThemePicker(_) => {} // no error state
-            ActiveDialog::UpdateAvailable(_) => {} // no error state
-            ActiveDialog::Info(_) => {}        // no error state
-            ActiveDialog::Properties(d) => d.error = Some(msg),
+            ActiveDialog::Menu(d) => d,
+            ActiveDialog::Delete(d) => d,
+            ActiveDialog::Rename(d) => d,
+            ActiveDialog::Move(d) => d,
+            ActiveDialog::CreateNote(d) => d,
+            ActiveDialog::Help(d) => d,
+            ActiveDialog::QuickNote(d) => d,
+            ActiveDialog::WorkspaceSwitcher(d) => d,
+            ActiveDialog::SaveSearch(d) => d,
+            ActiveDialog::Sort(d) => d,
+            ActiveDialog::PinnedNotes(d) => d,
+            ActiveDialog::ThemePicker(d) => d,
+            ActiveDialog::UpdateAvailable(d) => d,
+            ActiveDialog::Info(d) => d,
+            ActiveDialog::Properties(d) => d,
         }
+    }
+
+    pub fn set_error(&mut self, msg: String) {
+        self.inner().set_error(msg);
     }
 
     // Constructors for the dialogs opened by EditorScreen via OverlayHost.
@@ -247,6 +300,18 @@ impl ActiveDialog {
     }
 }
 
+/// What `ActiveDialog` needs from each dialog, so its dispatch is one `inner()`
+/// match instead of one match per method. A modal consumes every mouse event
+/// (a click must never reach the panels behind it); the impls live next to
+/// each dialog.
+pub trait Dialog {
+    fn key(&mut self, key: KeyEvent, tx: &AppTx) -> EventState;
+    fn mouse(&mut self, m: &MouseEvent, tx: &AppTx) -> EventState;
+    fn draw(&mut self, f: &mut Frame, rect: Rect, theme: &Theme);
+    /// Show a failure inside the dialog; most have no error row.
+    fn set_error(&mut self, _msg: String) {}
+}
+
 impl Overlay for ActiveDialog {
     fn kind(&self) -> OverlayKind {
         OverlayKind::Dialog
@@ -356,69 +421,15 @@ impl Overlay for ActiveDialog {
 
 impl Component for ActiveDialog {
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
-        let key = match event {
-            InputEvent::Key(key) => key,
-            // Exhaustive on purpose: a new dialog must decide what the mouse
-            // does in it. Each one consumes every mouse event — it is modal,
-            // and a click must never reach the panels behind it.
-            InputEvent::Mouse(m) => {
-                return match self {
-                    ActiveDialog::Sort(d) => d.handle_mouse(m, tx),
-                    ActiveDialog::Properties(d) => d.handle_mouse(m, tx),
-                    ActiveDialog::Delete(d) => d.handle_mouse(m, tx),
-                    ActiveDialog::Menu(d) => d.handle_mouse(m, tx),
-                    ActiveDialog::Rename(d) => d.handle_mouse(m, tx),
-                    ActiveDialog::Move(d) => d.handle_mouse(m, tx),
-                    ActiveDialog::SaveSearch(d) => d.handle_input(event, tx),
-                    ActiveDialog::CreateNote(d) => d.handle_mouse(m, tx),
-                    ActiveDialog::QuickNote(d) => d.handle_mouse(m, tx),
-                    ActiveDialog::WorkspaceSwitcher(d) => d.handle_mouse(m, tx),
-                    ActiveDialog::UpdateAvailable(d) => d.handle_mouse(m, tx),
-                    ActiveDialog::Info(d) => d.handle_mouse(m, tx),
-                    ActiveDialog::ThemePicker(d) => d.handle_mouse(m, tx),
-                    ActiveDialog::Help(d) => d.handle_mouse(m, tx),
-                    ActiveDialog::PinnedNotes(d) => d.handle_mouse(m, tx),
-                };
-            }
-            InputEvent::Paste(_) => return EventState::NotConsumed,
-        };
-        match self {
-            ActiveDialog::Menu(d) => d.handle_key(*key, tx),
-            ActiveDialog::Delete(d) => d.handle_key(*key, tx),
-            ActiveDialog::Rename(d) => d.handle_key(*key, tx),
-            ActiveDialog::Move(d) => d.handle_key(*key, tx),
-            ActiveDialog::CreateNote(d) => d.handle_key(*key, tx),
-            ActiveDialog::Help(d) => d.handle_key(*key, tx),
-            ActiveDialog::QuickNote(d) => d.handle_key(*key, tx),
-            ActiveDialog::WorkspaceSwitcher(d) => d.handle_key(*key, tx),
-            ActiveDialog::SaveSearch(d) => d.handle_input(event, tx),
-            ActiveDialog::Sort(d) => d.handle_input(event, tx),
-            ActiveDialog::PinnedNotes(d) => d.handle_input(event, tx),
-            ActiveDialog::ThemePicker(d) => d.handle_key(*key, tx),
-            ActiveDialog::UpdateAvailable(d) => d.handle_key(*key, tx),
-            ActiveDialog::Info(d) => d.handle_key(*key, tx),
-            ActiveDialog::Properties(d) => d.handle_key(*key, tx),
+        match event {
+            InputEvent::Key(key) => self.inner().key(*key, tx),
+            InputEvent::Mouse(m) => self.inner().mouse(m, tx),
+            InputEvent::Paste(_) => EventState::NotConsumed,
         }
     }
 
-    fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
-        match self {
-            ActiveDialog::Menu(d) => d.render(f, rect, theme, focused),
-            ActiveDialog::Delete(d) => d.render(f, rect, theme, focused),
-            ActiveDialog::Rename(d) => d.render(f, rect, theme, focused),
-            ActiveDialog::Move(d) => d.render(f, rect, theme, focused),
-            ActiveDialog::CreateNote(d) => d.render(f, rect, theme, focused),
-            ActiveDialog::Help(d) => d.render(f, rect, theme, focused),
-            ActiveDialog::QuickNote(d) => d.render(f, rect, theme, focused),
-            ActiveDialog::WorkspaceSwitcher(d) => d.render(f, rect, theme, focused),
-            ActiveDialog::SaveSearch(d) => d.render(f, rect, theme, focused),
-            ActiveDialog::Sort(d) => d.render(f, rect, theme, focused),
-            ActiveDialog::PinnedNotes(d) => d.render(f, rect, theme, focused),
-            ActiveDialog::ThemePicker(d) => d.render(f, rect, theme, focused),
-            ActiveDialog::UpdateAvailable(d) => d.render(f, rect, theme, focused),
-            ActiveDialog::Info(d) => d.render(f, rect, theme, focused),
-            ActiveDialog::Properties(d) => d.render(f, rect, theme),
-        }
+    fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, _focused: bool) {
+        self.inner().draw(f, rect, theme);
     }
 }
 
@@ -863,6 +874,31 @@ mod tests {
             !closed(&click_text(&mut d, "This cannot")),
             "body text is inert"
         );
+    }
+
+    /// Dialogs holding typed input or confirming a destructive action must
+    /// survive a stray click outside — only the read-only popups (which use
+    /// `ModalShell`) dismiss on it.
+    #[tokio::test]
+    async fn input_and_destructive_dialogs_ignore_outside_press() {
+        let vault = crate::test_support::temp_vault("dlg-outside-press").await;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let path = || kimun_core::nfs::VaultPath::new("a.md");
+        let mut dialogs = vec![
+            ActiveDialog::delete(path(), vault.clone()),
+            ActiveDialog::rename(path(), vault.clone()),
+            ActiveDialog::move_to(path(), vault.clone(), &tx),
+            ActiveDialog::create_note(path(), vault.clone(), None),
+            ActiveDialog::quick_note(vault.clone()),
+            ActiveDialog::properties(path(), vault.clone(), &tx),
+            ActiveDialog::save_search("q".into(), None, SaveSource::QueryPanel, vault.clone(), &tx),
+            sidebar_sort(),
+        ];
+        for d in &mut dialogs {
+            // Render once so a would-be popup rect exists, then press far outside.
+            draw_and_find(d, "Esc");
+            assert!(!closed(&click_at(d, 0, 0)), "outside press must not close");
+        }
     }
 
     #[test]

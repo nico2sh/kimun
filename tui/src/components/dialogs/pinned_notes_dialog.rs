@@ -18,7 +18,8 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::Paragraph;
 
-use crate::components::clickable::{is_press_outside, list_index_at};
+use super::ModalShell;
+use crate::components::clickable::list_index_at;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, OverlayData, PinnedRow};
 use crate::components::hint_row::HintRow;
@@ -48,8 +49,8 @@ pub struct PinnedNotesDialog {
     /// dialog's own reload lands (success or failure — see
     /// `handle_loaded`); no other event may clear it.
     persist_pending: bool,
-    /// Outer popup rect from the last render; a press outside closes.
-    popup_rect: Rect,
+    /// Dismiss-on-outside-press and hint-chip clicks (see [`ModalShell`]).
+    shell: ModalShell,
     /// Where the rows were drawn in the last render.
     body_rect: Rect,
     hints: HintRow,
@@ -65,7 +66,7 @@ impl PinnedNotesDialog {
             selected: 0,
             loaded: false,
             persist_pending: false,
-            popup_rect: Rect::default(),
+            shell: ModalShell::default(),
             body_rect: Rect::default(),
             hints: HintRow::new(&[
                 // `K`/`J` reorder the pins on disk — "Raise"/"Lower", never
@@ -312,10 +313,7 @@ impl PinnedNotesDialog {
     /// wheel moves the selection; footer chips run their key; a press
     /// outside the popup closes it. Modal: every mouse event is consumed.
     pub fn handle_mouse(&mut self, m: &MouseEvent, tx: &AppTx) -> EventState {
-        if is_press_outside(m, self.popup_rect) {
-            return self.handle_key(KeyEvent::from(KeyCode::Esc), tx);
-        }
-        if let Some(key) = self.hints.hit(m) {
+        if let Some(key) = self.shell.pointer_key(m, &[&self.hints]) {
             return self.handle_key(key, tx);
         }
         match m.kind {
@@ -347,7 +345,7 @@ impl crate::components::Component for PinnedNotesDialog {
         // body rows + borders(2) + footer(1)
         let outer_height = BODY_ROWS + 3;
         let popup = super::fixed_centered_rect(OUTER_WIDTH, outer_height, rect);
-        self.popup_rect = popup;
+        self.shell.set(popup);
         let inner = modal_chrome(
             f,
             popup,
@@ -423,6 +421,8 @@ impl crate::components::Component for PinnedNotesDialog {
             .render(f, footer_area, Style::default().fg(gray).bg(bg), theme);
     }
 }
+
+impl_dialog!(PinnedNotesDialog);
 
 #[cfg(test)]
 mod tests {

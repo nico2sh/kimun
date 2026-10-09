@@ -152,6 +152,8 @@ impl Component for DeleteConfirmDialog {
 // Tests
 // ---------------------------------------------------------------------------
 
+impl_dialog!(DeleteConfirmDialog, error);
+
 #[cfg(test)]
 mod tests {
     use super::*;
