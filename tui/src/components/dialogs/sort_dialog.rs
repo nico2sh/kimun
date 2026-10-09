@@ -414,6 +414,8 @@ impl crate::components::Component for SortDialog {
     }
 }
 
+impl_dialog!(SortDialog);
+
 #[cfg(test)]
 mod tests {
     use super::*;

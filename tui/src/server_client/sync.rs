@@ -54,6 +54,14 @@ pub enum ServerUpdate {
 }
 
 impl ServerUpdate {
+    /// One-line description, shared by the footer hint and the dialog.
+    pub fn summary(&self) -> String {
+        match self {
+            ServerUpdate::Newer(v) => format!("server {v} available"),
+            ServerUpdate::Legacy => "server update available".to_string(),
+        }
+    }
+
     /// Derives the notice from a health probe: a server without `version` is
     /// [`Legacy`](ServerUpdate::Legacy); otherwise it is whatever newer release
     /// the server itself reported, if any.

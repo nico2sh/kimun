@@ -1,11 +1,12 @@
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseEvent};
+use ratatui::crossterm::event::{KeyCode, MouseEvent};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::Paragraph;
 
+use super::ModalShell;
 use crate::components::Component;
-use crate::components::clickable::{is_press_outside, key_at};
+use crate::components::clickable::key_at;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, UpdateFlow};
 use crate::components::hint_row::HintRow;
@@ -36,8 +37,8 @@ pub struct UpdateAvailableDialog {
     eligible: bool,
     /// Upgrade command for package-manager channels (e.g. `brew upgrade kimun`).
     upgrade_hint: Option<String>,
-    /// Outer popup rect from the last render; a press outside closes.
-    popup_rect: Rect,
+    /// Dismiss-on-outside-press and hint-chip clicks (see [`ModalShell`]).
+    shell: ModalShell,
     /// Each drawn `[U]`/`[S]` action with its key, from the last render.
     action_rects: Vec<(Rect, KeyCode)>,
     close_hint: HintRow,
@@ -50,7 +51,7 @@ impl UpdateAvailableDialog {
             latest: status.latest.clone(),
             eligible: status.channel.self_update_eligible(),
             upgrade_hint: status.channel.upgrade_hint().map(str::to_string),
-            popup_rect: Rect::default(),
+            shell: ModalShell::default(),
             action_rects: Vec::new(),
             close_hint: HintRow::new(&[(KeyCode::Esc, "Esc", "Close")]),
         }
@@ -59,10 +60,7 @@ impl UpdateAvailableDialog {
     /// Clicking an action runs its key; a press outside the popup closes it.
     /// Modal: every mouse event is consumed.
     pub fn handle_mouse(&mut self, m: &MouseEvent, tx: &AppTx) -> EventState {
-        if is_press_outside(m, self.popup_rect) {
-            return self.handle_key(KeyEvent::from(KeyCode::Esc), tx);
-        }
-        if let Some(key) = self.close_hint.hit(m) {
+        if let Some(key) = self.shell.pointer_key(m, &[&self.close_hint]) {
             return self.handle_key(key, tx);
         }
         if let Some(key) = key_at(&self.action_rects, m) {
@@ -100,7 +98,7 @@ impl UpdateAvailableDialog {
 impl Component for UpdateAvailableDialog {
     fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, _focused: bool) {
         let popup_area = super::fixed_centered_rect(58, 11, rect);
-        self.popup_rect = popup_area;
+        self.shell.set(popup_area);
         self.action_rects.clear();
 
         let inner = modal_chrome(
@@ -236,6 +234,8 @@ fn render_action(
         height: 1,
     }
 }
+
+impl_dialog!(UpdateAvailableDialog);
 
 #[cfg(test)]
 mod tests {

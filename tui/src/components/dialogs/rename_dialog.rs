@@ -311,6 +311,8 @@ impl Component for RenameDialog {
 // Tests
 // ---------------------------------------------------------------------------
 
+impl_dialog!(RenameDialog, error);
+
 #[cfg(test)]
 mod tests {
     use super::*;
