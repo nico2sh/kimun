@@ -1,13 +1,13 @@
 use std::collections::BTreeMap;
 
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseEvent, MouseEventKind};
+use ratatui::crossterm::event::{KeyCode, MouseEvent, MouseEventKind};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::Paragraph;
 
+use super::ModalShell;
 use crate::components::Component;
-use crate::components::clickable::is_press_outside;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent};
 use crate::components::hint_row::HintRow;
@@ -39,8 +39,8 @@ pub struct HelpDialog {
     scroll: usize,
     /// Cached body height from last render, used for PageUp/PageDown page size.
     last_body_height: u16,
-    /// Outer popup rect from the last render; a press outside closes.
-    popup_rect: Rect,
+    /// Dismiss-on-outside-press and hint-chip clicks (see [`ModalShell`]).
+    shell: ModalShell,
     footer: HintRow,
 }
 
@@ -131,7 +131,7 @@ impl HelpDialog {
             title: " Keyboard Shortcuts ",
             scroll: 0,
             last_body_height: 20,
-            popup_rect: Rect::default(),
+            shell: ModalShell::default(),
             footer: footer_hints(),
         }
     }
@@ -219,7 +219,7 @@ impl HelpDialog {
             title: " Cheatsheet — leader keys ",
             scroll: 0,
             last_body_height: 20,
-            popup_rect: Rect::default(),
+            shell: ModalShell::default(),
             footer: footer_hints(),
         }
     }
@@ -276,7 +276,7 @@ impl HelpDialog {
             title: " Search Query Syntax ",
             scroll: 0,
             last_body_height: 20,
-            popup_rect: Rect::default(),
+            shell: ModalShell::default(),
             footer: footer_hints(),
         }
     }
@@ -315,10 +315,7 @@ impl HelpDialog {
     /// The wheel scrolls, `[Esc] Close` and a press outside the popup close
     /// it. Modal: every mouse event is consumed.
     pub fn handle_mouse(&mut self, m: &MouseEvent, tx: &AppTx) -> EventState {
-        if is_press_outside(m, self.popup_rect) {
-            return self.handle_key(KeyEvent::from(KeyCode::Esc), tx);
-        }
-        if let Some(key) = self.footer.hit(m) {
+        if let Some(key) = self.shell.pointer_key(m, &[&self.footer]) {
             return self.handle_key(key, tx);
         }
         match m.kind {
@@ -378,7 +375,7 @@ impl Component for HelpDialog {
         let outer_height = desired_height.min(max_height);
 
         let popup_area = super::fixed_centered_rect(OUTER_WIDTH, outer_height, rect);
-        self.popup_rect = popup_area;
+        self.shell.set(popup_area);
         let inner = modal_chrome(
             f,
             popup_area,
@@ -468,6 +465,8 @@ impl Component for HelpDialog {
         self.footer.render(f, footer_area, hint_style, theme);
     }
 }
+
+impl_dialog!(HelpDialog);
 
 #[cfg(test)]
 mod tests {

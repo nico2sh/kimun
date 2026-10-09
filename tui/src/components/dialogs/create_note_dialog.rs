@@ -149,6 +149,8 @@ impl Component for CreateNoteDialog {
     }
 }
 
+impl_dialog!(CreateNoteDialog, error);
+
 #[cfg(test)]
 mod tests {
     use super::*;
