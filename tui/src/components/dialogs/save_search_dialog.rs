@@ -206,6 +206,33 @@ impl SaveSearchDialog {
     }
 }
 
+impl super::Dialog for SaveSearchDialog {
+    fn key(
+        &mut self,
+        key: ratatui::crossterm::event::KeyEvent,
+        tx: &crate::components::events::AppTx,
+    ) -> crate::components::event_state::EventState {
+        self.handle_input(&InputEvent::Key(key), tx)
+    }
+
+    fn mouse(
+        &mut self,
+        m: &ratatui::crossterm::event::MouseEvent,
+        tx: &crate::components::events::AppTx,
+    ) -> crate::components::event_state::EventState {
+        self.handle_input(&InputEvent::Mouse(*m), tx)
+    }
+
+    fn draw(
+        &mut self,
+        f: &mut ratatui::Frame,
+        rect: ratatui::layout::Rect,
+        theme: &crate::settings::themes::Theme,
+    ) {
+        self.render(f, rect, theme, true)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -500,6 +500,8 @@ impl Component for MoveDialog {
 // Tests
 // ---------------------------------------------------------------------------
 
+impl_dialog!(MoveDialog, error);
+
 #[cfg(test)]
 mod tests {
     use super::*;

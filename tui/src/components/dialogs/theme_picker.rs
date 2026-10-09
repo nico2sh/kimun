@@ -9,7 +9,8 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use crate::components::clickable::{is_press_outside, list_index_at};
+use super::ModalShell;
+use crate::components::clickable::list_index_at;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx};
 use crate::settings::AppSettings;
@@ -24,8 +25,8 @@ pub struct ThemePickerDialog {
     original: usize,
     /// Scroll offset for long lists.
     offset: usize,
-    /// Outer popup rect from the last render; a press outside cancels.
-    popup_rect: Rect,
+    /// Dismiss-on-outside-press and hint-chip clicks (see [`ModalShell`]).
+    shell: ModalShell,
     /// Where the rows were drawn in the last render.
     list_rect: Rect,
 }
@@ -40,7 +41,7 @@ impl ThemePickerDialog {
             selected,
             original: selected,
             offset: 0,
-            popup_rect: Rect::default(),
+            shell: ModalShell::default(),
             list_rect: Rect::default(),
         }
     }
@@ -49,8 +50,8 @@ impl ThemePickerDialog {
     /// wheel steps through themes; a press outside reverts and closes, like
     /// Esc. Modal: every mouse event is consumed.
     pub fn handle_mouse(&mut self, m: &MouseEvent, tx: &AppTx) -> EventState {
-        if is_press_outside(m, self.popup_rect) {
-            return self.handle_key(KeyEvent::from(KeyCode::Esc), tx);
+        if let Some(key) = self.shell.pointer_key(m, &[]) {
+            return self.handle_key(key, tx);
         }
         match m.kind {
             MouseEventKind::ScrollUp => self.handle_key(KeyEvent::from(KeyCode::Up), tx),
@@ -116,7 +117,7 @@ impl ThemePickerDialog {
             .min(rect.height.saturating_sub(4))
             .max(5);
         let area = super::fixed_centered_rect(width, height, rect);
-        self.popup_rect = area;
+        self.shell.set(area);
         let inner = crate::components::panel::modal_chrome(
             f,
             area,
@@ -162,6 +163,8 @@ impl ThemePickerDialog {
         }
     }
 }
+
+impl_dialog!(ThemePickerDialog);
 
 #[cfg(test)]
 mod tests {

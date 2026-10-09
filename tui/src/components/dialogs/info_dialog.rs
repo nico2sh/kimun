@@ -5,8 +5,8 @@ use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Paragraph, Wrap};
 use unicode_width::UnicodeWidthStr;
 
+use super::ModalShell;
 use crate::components::Component;
-use crate::components::clickable::is_press_outside;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx};
 use crate::components::hint_row::HintRow;
@@ -37,8 +37,8 @@ pub struct InfoDialog {
     title: String,
     headline: String,
     body: String,
-    /// Outer popup rect from the last render; a press outside closes.
-    popup_rect: Rect,
+    /// Dismiss-on-outside-press and hint-chip clicks (see [`ModalShell`]).
+    shell: ModalShell,
     close_hint: HintRow,
 }
 
@@ -52,7 +52,7 @@ impl InfoDialog {
             title: format!(" {} ", title.into()),
             headline: headline.into(),
             body: body.into(),
-            popup_rect: Rect::default(),
+            shell: ModalShell::default(),
             close_hint: HintRow::new(&[(KeyCode::Esc, "Esc", "Close")]),
         }
     }
@@ -69,10 +69,7 @@ impl InfoDialog {
     /// Modal: every mouse event is consumed; a press outside (or on the
     /// close hint) closes.
     pub fn handle_mouse(&mut self, m: &MouseEvent, tx: &AppTx) -> EventState {
-        if is_press_outside(m, self.popup_rect) {
-            return self.handle_key(KeyEvent::from(KeyCode::Esc), tx);
-        }
-        if let Some(key) = self.close_hint.hit(m) {
+        if let Some(key) = self.shell.pointer_key(m, &[&self.close_hint]) {
             return self.handle_key(key, tx);
         }
         EventState::Consumed
@@ -91,7 +88,7 @@ impl Component for InfoDialog {
         let body_rows = self.body_rows();
         // border(2) + spacer, headline, spacer, body, spacer, hint
         let popup_area = super::fixed_centered_rect(WIDTH, 2 + 5 + body_rows, rect);
-        self.popup_rect = popup_area;
+        self.shell.set(popup_area);
 
         let inner = modal_chrome(
             f,
@@ -142,6 +139,8 @@ impl Component for InfoDialog {
         );
     }
 }
+
+impl_dialog!(InfoDialog);
 
 #[cfg(test)]
 mod tests {

@@ -1,12 +1,13 @@
 use kimun_core::nfs::VaultPath;
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseEvent};
+use ratatui::crossterm::event::{KeyCode, MouseEvent};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::Paragraph;
 
+use super::ModalShell;
 use crate::components::Component;
-use crate::components::clickable::{is_press_outside, key_at};
+use crate::components::clickable::key_at;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, FileOp};
 use crate::components::hint_row::HintRow;
@@ -34,9 +35,8 @@ pub struct FileOpsMenuDialog {
     pub path: VaultPath,
     /// Pre-computed `"  {path}"` for zero-allocation rendering.
     pub path_display: String,
-    /// The popup's outer rect from the last render; a press outside it
-    /// cancels the menu.
-    popup_rect: Rect,
+    /// Dismiss-on-outside-press and hint-chip clicks (see [`ModalShell`]).
+    shell: ModalShell,
     /// Each action's whole column from the last render, with its key.
     action_rects: Vec<(Rect, KeyCode)>,
     hints: HintRow,
@@ -48,7 +48,7 @@ impl FileOpsMenuDialog {
         Self {
             path,
             path_display,
-            popup_rect: Rect::default(),
+            shell: ModalShell::default(),
             action_rects: Vec::new(),
             hints: HintRow::new(&[(KeyCode::Esc, "Esc", "Cancel")]),
         }
@@ -57,10 +57,7 @@ impl FileOpsMenuDialog {
     /// Clicking an action runs its key; a press outside the menu cancels it.
     /// Modal: every mouse event is consumed.
     pub fn handle_mouse(&mut self, m: &MouseEvent, tx: &AppTx) -> EventState {
-        if is_press_outside(m, self.popup_rect) {
-            return self.handle_key(KeyEvent::from(KeyCode::Esc), tx);
-        }
-        if let Some(key) = self.hints.hit(m) {
+        if let Some(key) = self.shell.pointer_key(m, &[&self.hints]) {
             return self.handle_key(key, tx);
         }
         if let Some(key) = key_at(&self.action_rects, m) {
@@ -111,7 +108,7 @@ impl Component for FileOpsMenuDialog {
         // Border (2) + spacer + path + separator + actions + spacer + hint + spacer = 9 inner rows → 11 total
         // But keep it tight: border(2) + 7 inner rows = 9
         let popup_area = super::fixed_centered_rect(46, 9, rect);
-        self.popup_rect = popup_area;
+        self.shell.set(popup_area);
 
         let inner = modal_chrome(
             f,
@@ -207,6 +204,8 @@ impl Component for FileOpsMenuDialog {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+impl_dialog!(FileOpsMenuDialog);
 
 #[cfg(test)]
 mod tests {
