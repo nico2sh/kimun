@@ -136,7 +136,7 @@ pub enum ActiveDialog {
     SaveSearch(SaveSearchDialog),
     Sort(SortDialog),
     PinnedNotes(PinnedNotesDialog),
-    ThemePicker(ThemePickerDialog),
+    ThemePicker(Box<ThemePickerDialog>),
     UpdateAvailable(UpdateAvailableDialog),
     Info(InfoDialog),
     Properties(PropertiesDialog),
@@ -157,7 +157,7 @@ impl ActiveDialog {
             ActiveDialog::SaveSearch(d) => d,
             ActiveDialog::Sort(d) => d,
             ActiveDialog::PinnedNotes(d) => d,
-            ActiveDialog::ThemePicker(d) => d,
+            ActiveDialog::ThemePicker(d) => d.as_mut(),
             ActiveDialog::UpdateAvailable(d) => d,
             ActiveDialog::Info(d) => d,
             ActiveDialog::Properties(d) => d,
@@ -188,7 +188,7 @@ impl ActiveDialog {
 
     /// The live theme picker (leader `v c`).
     pub fn theme_picker(settings: &crate::settings::AppSettings) -> Self {
-        ActiveDialog::ThemePicker(ThemePickerDialog::new(settings))
+        ActiveDialog::ThemePicker(Box::new(ThemePickerDialog::new(settings)))
     }
 
     /// The update-available dialog.
@@ -743,6 +743,14 @@ mod tests {
             AppEvent::ApplyTheme { persist: true, .. }
         )));
         assert!(closed(&ev), "clicking the previewed theme keeps it");
+    }
+
+    #[test]
+    fn theme_picker_hints_are_not_truncated() {
+        let mut d = ActiveDialog::theme_picker(&crate::settings::AppSettings::default());
+        for hint in ["Filter", "Move", "Apply", "Cancel"] {
+            draw_and_find(&mut d, hint);
+        }
     }
 
     #[test]
