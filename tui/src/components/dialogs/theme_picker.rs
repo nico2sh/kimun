@@ -1,48 +1,101 @@
 //! The **theme picker** (leader `v c`, under "+vault → config"): a small
-//! modal listing every theme; moving the selection previews it live, Enter
-//! persists, Esc reverts to the theme that was active when the picker opened.
+//! modal listing every theme. Typing fuzzy-filters the list, like the command
+//! palette; moving the selection previews the theme live, Enter persists, Esc
+//! reverts to the theme that was active when the picker opened.
+
+use std::sync::Arc;
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseEvent, MouseEventKind};
-use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::Style;
+use ratatui::widgets::{ListItem, Paragraph};
 
 use super::ModalShell;
-use crate::components::clickable::list_index_at;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx};
+use crate::components::hint_row::HintRow;
+use crate::components::rich_row::RichRow;
+use crate::components::search_list::{
+    Filter, KeyReaction, SearchList, SearchMouse, SearchRow, StaticRowSource,
+};
 use crate::settings::AppSettings;
+use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
+
+/// One picker row: a theme's name and its index into the resolved theme list.
+#[derive(Clone)]
+struct ThemeRow {
+    name: String,
+    index: usize,
+    /// The theme active when the picker opened.
+    current: bool,
+}
+
+impl SearchRow for ThemeRow {
+    fn to_list_item(&self, theme: &Theme, _icons: &Icons, _selected: bool) -> ListItem<'static> {
+        let glyph = if self.current { "●" } else { " " };
+        RichRow::new(glyph, self.name.clone())
+            .glyph_style(Style::default().fg(theme.gray.to_ratatui()))
+            .into_list_item(theme)
+    }
+
+    fn match_text(&self) -> Option<&str> {
+        Some(&self.name)
+    }
+
+    fn visual_height(&self) -> u16 {
+        1
+    }
+}
 
 pub struct ThemePickerDialog {
     /// Themes in presentation order, fully resolved once on open — applying
     /// a selection never goes back to disk.
     themes: Vec<Theme>,
-    selected: usize,
+    list: SearchList<ThemeRow>,
     /// Index of the theme to restore when the picker is cancelled.
     original: usize,
-    /// Scroll offset for long lists.
-    offset: usize,
+    /// Index of the theme currently applied as a preview.
+    previewed: usize,
     /// Dismiss-on-outside-press and hint-chip clicks (see [`ModalShell`]).
     shell: ModalShell,
-    /// Where the rows were drawn in the last render.
-    list_rect: Rect,
+    hints: HintRow,
 }
 
 impl ThemePickerDialog {
     pub fn new(settings: &AppSettings) -> Self {
         let themes = settings.theme_list();
         let current = settings.effective_theme_name();
-        let selected = themes.iter().position(|t| t.name == current).unwrap_or(0);
+        let original = themes.iter().position(|t| t.name == current).unwrap_or(0);
+        let rows: Vec<ThemeRow> = themes
+            .iter()
+            .enumerate()
+            .map(|(index, t)| ThemeRow {
+                name: t.name.clone(),
+                index,
+                current: index == original,
+            })
+            .collect();
+        // Static, in-memory rows: built synchronously (the redraw callback is
+        // never fired on this path).
+        let mut list = SearchList::builder(StaticRowSource, Arc::new(|| {}))
+            .filter(Filter::Fuzzy)
+            .build_with_rows(rows);
+        list.select(original);
         Self {
             themes,
-            selected,
-            original: selected,
-            offset: 0,
+            list,
+            original,
+            previewed: original,
             shell: ModalShell::default(),
-            list_rect: Rect::default(),
+            hints: HintRow::new(&[
+                (KeyCode::Null, "type", "Filter"),
+                (KeyCode::Null, "↑↓", "Move"),
+                (KeyCode::Enter, "⏎", "Apply"),
+                (KeyCode::Esc, "Esc", "Cancel"),
+            ])
+            .with_indent(0),
         }
     }
 
@@ -50,24 +103,25 @@ impl ThemePickerDialog {
     /// wheel steps through themes; a press outside reverts and closes, like
     /// Esc. Modal: every mouse event is consumed.
     pub fn handle_mouse(&mut self, m: &MouseEvent, tx: &AppTx) -> EventState {
-        if let Some(key) = self.shell.pointer_key(m, &[]) {
+        if let Some(key) = self.shell.pointer_key(m, &[&self.hints]) {
             return self.handle_key(key, tx);
         }
+        // The wheel steps the selection (previewing each theme) rather than
+        // scrolling the viewport, which would be a no-op on a short list.
         match m.kind {
-            MouseEventKind::ScrollUp => self.handle_key(KeyEvent::from(KeyCode::Up), tx),
-            MouseEventKind::ScrollDown => self.handle_key(KeyEvent::from(KeyCode::Down), tx),
-            _ => {
-                if let Some(idx) = list_index_at(m, self.list_rect, self.offset, self.themes.len())
-                {
-                    if idx == self.selected {
-                        return self.handle_key(KeyEvent::from(KeyCode::Enter), tx);
-                    }
-                    self.selected = idx;
-                    self.apply(idx, false, tx);
-                }
-                EventState::Consumed
+            MouseEventKind::ScrollUp => return self.handle_key(KeyEvent::from(KeyCode::Up), tx),
+            MouseEventKind::ScrollDown => {
+                return self.handle_key(KeyEvent::from(KeyCode::Down), tx);
             }
+            _ => {}
         }
+        match self.list.handle_mouse(m) {
+            SearchMouse::Activated(_) | SearchMouse::DoubleClicked { repeat: false, .. } => {
+                return self.handle_key(KeyEvent::from(KeyCode::Enter), tx);
+            }
+            _ => self.sync_preview(tx),
+        }
+        EventState::Consumed
     }
 
     fn apply(&self, index: usize, persist: bool, tx: &AppTx) {
@@ -80,42 +134,45 @@ impl ThemePickerDialog {
         }
     }
 
+    /// Preview whichever theme the selection landed on, if it changed. With
+    /// nothing selected (the filter matches no theme) fall back to the theme
+    /// the picker opened on, so the screen never shows a theme that isn't
+    /// highlighted.
+    fn sync_preview(&mut self, tx: &AppTx) {
+        let target = self.list.selected_row().map_or(self.original, |r| r.index);
+        if target != self.previewed {
+            self.previewed = target;
+            self.apply(target, false, tx);
+        }
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent, tx: &AppTx) -> EventState {
-        match key.code {
-            KeyCode::Up | KeyCode::Char('k') => {
-                let prev = self.selected;
-                self.selected = self.selected.saturating_sub(1);
-                if self.selected != prev {
-                    self.apply(self.selected, false, tx);
+        match self.list.handle_key(&key) {
+            KeyReaction::Submit => {
+                // Nothing matches the filter: stay open rather than commit a
+                // theme the user can't see selected.
+                if let Some(index) = self.list.selected_row().map(|r| r.index) {
+                    self.apply(index, true, tx);
+                    tx.send(AppEvent::CloseOverlay).ok();
                 }
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                let prev = self.selected;
-                self.selected = (self.selected + 1).min(self.themes.len().saturating_sub(1));
-                if self.selected != prev {
-                    self.apply(self.selected, false, tx);
-                }
-            }
-            KeyCode::Enter => {
-                self.apply(self.selected, true, tx);
-                tx.send(AppEvent::CloseOverlay).ok();
-            }
-            KeyCode::Esc => {
-                if self.selected != self.original {
+            KeyReaction::Cancel => {
+                if self.previewed != self.original {
                     self.apply(self.original, false, tx);
                 }
                 tx.send(AppEvent::CloseOverlay).ok();
             }
-            _ => {}
+            _ => self.sync_preview(tx),
         }
         EventState::Consumed
     }
 
     pub fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
-        let width = 40u16.min(rect.width);
-        let height = (self.themes.len() as u16 + 2)
+        let width = 52u16.min(rect.width);
+        // Border (2) + query row + hint row, plus one row per theme.
+        let height = (self.themes.len() as u16 + 4)
             .min(rect.height.saturating_sub(4))
-            .max(5);
+            .max(7);
         let area = super::fixed_centered_rect(width, height, rect);
         self.shell.set(area);
         let inner = crate::components::panel::modal_chrome(
@@ -129,38 +186,35 @@ impl ThemePickerDialog {
             },
         );
 
-        self.list_rect = inner;
-        // Keep the selection in the visible window.
-        let visible = inner.height as usize;
-        if self.selected < self.offset {
-            self.offset = self.selected;
-        } else if visible > 0 && self.selected >= self.offset + visible {
-            self.offset = self.selected + 1 - visible;
-        }
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Min(0),
+                Constraint::Length(1),
+            ])
+            .split(inner);
 
-        for (row, (i, entry)) in self
-            .themes
-            .iter()
-            .enumerate()
-            .skip(self.offset)
-            .take(visible)
-            .enumerate()
-        {
-            let name = &entry.name;
-            let style = if i == self.selected {
-                Style::default()
-                    .fg(theme.selection_fg.to_ratatui())
-                    .bg(theme.selection_bg.to_ratatui())
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(theme.fg.to_ratatui())
-            };
-            let marker = if i == self.selected { "› " } else { "  " };
-            f.render_widget(
-                Paragraph::new(Line::from(Span::styled(format!("{marker}{name}"), style))),
-                Rect::new(inner.x, inner.y + row as u16, inner.width, 1),
-            );
-        }
+        f.render_widget(
+            Paragraph::new("› ").style(Style::default().fg(theme.yellow.to_ratatui())),
+            rows[0],
+        );
+        let input_rect = Rect {
+            x: rows[0].x + 2,
+            width: rows[0].width.saturating_sub(2),
+            ..rows[0]
+        };
+        self.list.render_query(f, input_rect, theme, true);
+
+        self.list.render(f, rows[1], theme, true);
+        self.list.set_panel_rect(area);
+
+        self.hints.render(
+            f,
+            rows[2],
+            Style::default().fg(theme.gray.to_ratatui()),
+            theme,
+        );
     }
 }
 
@@ -233,5 +287,103 @@ mod tests {
             Some(("Gruvbox Dark".to_string(), false)),
             "Esc must re-apply the original theme"
         );
+    }
+
+    fn type_str(picker: &mut ThemePickerDialog, text: &str, tx: &AppTx) {
+        for c in text.chars() {
+            picker.handle_key(KeyEvent::from(KeyCode::Char(c)), tx);
+        }
+    }
+
+    #[test]
+    fn typing_filters_and_previews_the_match() {
+        let settings = AppSettings::default();
+        let mut picker = ThemePickerDialog::new(&settings);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        type_str(&mut picker, "flexoki lig", &tx);
+        let visible: Vec<_> = picker
+            .list
+            .visible_rows()
+            .iter()
+            .map(|r| r.name.clone())
+            .collect();
+        assert!(
+            visible.contains(&"Flexoki Light".to_string()),
+            "{visible:?}"
+        );
+        assert!(visible.len() < picker.themes.len(), "list must be filtered");
+
+        picker.handle_key(KeyEvent::from(KeyCode::Enter), &tx);
+        let mut last = None;
+        while let Ok(ev) = rx.try_recv() {
+            if let AppEvent::ApplyTheme { theme, persist } = ev {
+                last = Some((theme.name, persist));
+            }
+        }
+        assert_eq!(last, Some(("Flexoki Light".to_string(), true)));
+    }
+
+    #[test]
+    fn no_match_reverts_preview_to_original() {
+        let settings = AppSettings::default();
+        let mut picker = ThemePickerDialog::new(&settings);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        type_str(&mut picker, "flex", &tx);
+        type_str(&mut picker, "zzzz", &tx);
+        let mut last = None;
+        while let Ok(ev) = rx.try_recv() {
+            if let AppEvent::ApplyTheme { theme, persist } = ev {
+                last = Some((theme.name, persist));
+            }
+        }
+        assert_eq!(
+            last,
+            Some((settings.effective_theme_name().to_string(), false))
+        );
+    }
+
+    #[test]
+    fn wheel_steps_the_selection() {
+        use ratatui::crossterm::event::KeyModifiers;
+        let settings = AppSettings::default();
+        let mut picker = ThemePickerDialog::new(&settings);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        // Short filtered list: the viewport can't scroll, the selection must.
+        type_str(&mut picker, "flexoki", &tx);
+        while rx.try_recv().is_ok() {}
+        let wheel = |kind| MouseEvent {
+            kind,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        };
+        let before = picker.list.selected_row().map(|r| r.index);
+        // One direction is blocked by the list end; the other must move.
+        picker.handle_mouse(&wheel(MouseEventKind::ScrollDown), &tx);
+        picker.handle_mouse(&wheel(MouseEventKind::ScrollUp), &tx);
+        picker.handle_mouse(&wheel(MouseEventKind::ScrollUp), &tx);
+        assert_ne!(picker.list.selected_row().map(|r| r.index), before);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AppEvent::ApplyTheme { persist: false, .. })
+        ));
+    }
+
+    #[test]
+    fn enter_with_no_match_stays_open() {
+        let settings = AppSettings::default();
+        let mut picker = ThemePickerDialog::new(&settings);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        type_str(&mut picker, "zzzzqqqq", &tx);
+        picker.handle_key(KeyEvent::from(KeyCode::Enter), &tx);
+        while let Ok(ev) = rx.try_recv() {
+            assert!(!matches!(ev, AppEvent::CloseOverlay), "must not close");
+            if let AppEvent::ApplyTheme { persist, .. } = ev {
+                assert!(!persist, "must not persist anything");
+            }
+        }
     }
 }
