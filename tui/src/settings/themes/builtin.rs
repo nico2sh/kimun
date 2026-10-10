@@ -32,6 +32,9 @@ impl Theme {
             Theme::kanagawa_lotus(),
             Theme::ansi(),
         ]
+        .into_iter()
+        .chain(Theme::extra_builtins())
+        .collect()
     }
 
     pub fn gruvbox_dark() -> Self {
