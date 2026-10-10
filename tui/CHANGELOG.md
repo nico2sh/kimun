@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.7](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.24.6...kimun-notes-v0.24.7) - 2026-10-10
+
+### Added
+
+- additional themes
+- better footer message for server update
+
+### Fixed
+
+- better theme dialog
+
+### Other
+
+- dialog macro
+- info dialog
+
 ## [0.24.6](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.24.5...kimun-notes-v0.24.6) - 2026-10-08
 
 ### Added
