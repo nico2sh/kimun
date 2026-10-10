@@ -5,9 +5,9 @@ weight = 14
 
 # Themes
 
-Kimün ships with 48 built-in themes, and you can write your own as a small TOML file.
+Kimün ships with 67 built-in themes, and you can write your own as a small TOML file.
 
-To pick one, open the theme picker with `Ctrl+B v t` (or `t` in the CFG drawer). Moving the selection restyles the app as you go; Enter saves the choice and Esc reverts it. You can also set the theme in your config:
+To pick one, open the theme picker with `Ctrl+B v t` (or `t` in the CFG drawer). Type to filter the list by name; moving the selection restyles the app as you go; Enter saves the choice and Esc reverts it. You can also set the theme in your config:
 
 ```toml
 theme = "Nord"
@@ -34,7 +34,15 @@ theme = "Nord"
 | Night Owl | Night Owl | Night Owl Light |
 | Nightfox | Nightfox, Carbonfox | Dayfox |
 | Oxocarbon | Oxocarbon Dark | Oxocarbon Light |
-| Others | Zenburn, Cobalt2, Synthwave '84, Everblush | Quiet Light |
+| Flexoki | Flexoki Dark | Flexoki Light |
+| Selenized | Selenized Dark | Selenized Light |
+| Modus | Modus Vivendi | Modus Operandi |
+| Melange | Melange Dark | Melange Light |
+| Tomorrow | Tomorrow Night | Tomorrow |
+| PaperColor | PaperColor Dark | PaperColor Light |
+| Edge | Edge Dark | Edge Light |
+| VS Code | VS Code Dark+ | VS Code Light+ |
+| Others | Zenburn, Cobalt2, Synthwave '84, Everblush, Sonokai, Vesper, Iceberg | Quiet Light |
 | ANSI | *uses your terminal's 16-color palette, light or dark* | |
 
 ### Color depth

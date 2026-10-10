@@ -84,7 +84,7 @@ The open note's headings as an indented tree, filterable. Enter jumps the editor
 
 ### CFG
 
-A configuration overview: active theme, leader key, preferences key, which-key timeout, and config file path. `t` (or Enter) opens the theme picker, a list of every theme with live preview. Moving the selection restyles the app immediately; Enter saves the choice and Esc reverts. `p` opens the full Preferences screen.
+A configuration overview: active theme, leader key, preferences key, which-key timeout, and config file path. `t` (or Enter) opens the theme picker, a list of every theme with live preview. Type to filter the list by name. Moving the selection restyles the app immediately; Enter saves the choice and Esc reverts. `p` opens the full Preferences screen.
 
 ## Telescope Search
 

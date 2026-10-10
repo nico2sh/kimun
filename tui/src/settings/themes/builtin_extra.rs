@@ -92,6 +92,25 @@ impl Theme {
             Theme::oxocarbon_dark(),
             Theme::oxocarbon_light(),
             Theme::quiet_light(),
+            Theme::flexoki_dark(),
+            Theme::flexoki_light(),
+            Theme::selenized_dark(),
+            Theme::selenized_light(),
+            Theme::modus_vivendi(),
+            Theme::modus_operandi(),
+            Theme::sonokai(),
+            Theme::melange_dark(),
+            Theme::melange_light(),
+            Theme::tomorrow_night(),
+            Theme::tomorrow(),
+            Theme::papercolor_dark(),
+            Theme::papercolor_light(),
+            Theme::vesper(),
+            Theme::iceberg(),
+            Theme::edge_dark(),
+            Theme::edge_light(),
+            Theme::vscode_dark_plus(),
+            Theme::vscode_light_plus(),
         ]
     }
 
@@ -388,6 +407,215 @@ impl Theme {
                 "#f5f5f5", "#ffffff", "#e4e6f1", "#ececec", "#c9d0d9", "#333333", "#000000",
                 "#aa3731", "#448c27", "#9a6700", "#4b83cd", "#7a3e9d", "#2d8a82", "#cc6633",
                 "#6f6f6f", "#a0a0a0", "#d4d4d4", "#7a3e9d",
+            ],
+        )
+    }
+
+    pub fn flexoki_dark() -> Self {
+        Self::from_palette(
+            "Flexoki Dark",
+            [
+                "#100f0f", "#080707", "#1c1b1a", "#151413", "#343331", "#cecdc3", "#fffcf0",
+                "#d14d41", "#879a39", "#d0a215", "#4385be", "#8b7ec8", "#3aa99f", "#da702c",
+                "#878580", "#575653", "#282726", "#da702c",
+            ],
+        )
+    }
+
+    pub fn flexoki_light() -> Self {
+        Self::from_palette(
+            "Flexoki Light",
+            [
+                "#fffcf0", "#ffffff", "#f2f0e5", "#f5f2e6", "#e6e4d9", "#100f0f", "#000000",
+                "#af3029", "#66800b", "#ad8301", "#205ea6", "#5e409d", "#24837b", "#bc5215",
+                "#6f6e69", "#8f8d85", "#cecdc3", "#205ea6",
+            ],
+        )
+    }
+
+    pub fn selenized_dark() -> Self {
+        Self::from_palette(
+            "Selenized Dark",
+            [
+                "#103c48", "#0a2f3a", "#184956", "#0f3641", "#2d5b69", "#adbcbc", "#cad8d9",
+                "#fa5750", "#75b938", "#dbb32d", "#4695f7", "#f275be", "#41c7b9", "#ed8649",
+                "#72898f", "#53737d", "#2d5b69", "#4695f7",
+            ],
+        )
+    }
+
+    pub fn selenized_light() -> Self {
+        Self::from_palette(
+            "Selenized Light",
+            [
+                "#fbf3db", "#fffbea", "#ece3cc", "#f5ecd5", "#d5cdb6", "#53676d", "#3a4d53",
+                "#d2212d", "#489100", "#ad8900", "#0072d4", "#ca4898", "#009c8f", "#c25d1e",
+                "#909995", "#8a948f", "#d5cdb6", "#0072d4",
+            ],
+        )
+    }
+
+    pub fn modus_vivendi() -> Self {
+        Self::from_palette(
+            "Modus Vivendi",
+            [
+                "#000000", "#000000", "#1e1e1e", "#100f10", "#2f3849", "#ffffff", "#ffffff",
+                "#ff5f59", "#44bc44", "#d0bc00", "#2fafff", "#feacd0", "#00d3d0", "#fec43f",
+                "#989898", "#646464", "#484848", "#79a8ff",
+            ],
+        )
+    }
+
+    pub fn modus_operandi() -> Self {
+        Self::from_palette(
+            "Modus Operandi",
+            [
+                "#ffffff", "#ffffff", "#f0f0f0", "#f8f8f8", "#dae5ec", "#000000", "#000000",
+                "#a60000", "#006800", "#6f5500", "#0031a9", "#721045", "#005e8b", "#884900",
+                "#595959", "#767676", "#c4c4c4", "#0031a9",
+            ],
+        )
+    }
+
+    pub fn sonokai() -> Self {
+        Self::from_palette(
+            "Sonokai",
+            [
+                "#2c2e34", "#222327", "#33353f", "#292b31", "#3b3e48", "#e2e2e3", "#f0f0f0",
+                "#fc5d7c", "#9ed072", "#e7c664", "#76cce0", "#b39df3", "#7accd7", "#f39660",
+                "#9a9ca3", "#7f8490", "#414550", "#76cce0",
+            ],
+        )
+    }
+
+    pub fn melange_dark() -> Self {
+        Self::from_palette(
+            "Melange Dark",
+            [
+                "#292522", "#1b1816", "#34302c", "#302b28", "#403a36", "#ece1d7", "#f6ebe0",
+                "#d47766", "#85b695", "#ebc06d", "#7f91b2", "#b380b0", "#89b3b6", "#e49b5d",
+                "#c1a78e", "#867462", "#4d453e", "#ebc06d",
+            ],
+        )
+    }
+
+    pub fn melange_light() -> Self {
+        Self::from_palette(
+            "Melange Light",
+            [
+                "#f1f1f1", "#ffffff", "#e9e1db", "#ece7e2", "#d9d3ce", "#54433a", "#2f2620",
+                "#b5465c", "#547f5a", "#a06d00", "#5d7aa6", "#a95fa6", "#4f7f7f", "#bc5c00",
+                "#7d6658", "#a98a78", "#d9d3ce", "#5d7aa6",
+            ],
+        )
+    }
+
+    pub fn tomorrow_night() -> Self {
+        Self::from_palette(
+            "Tomorrow Night",
+            [
+                "#1d1f21", "#151718", "#282a2e", "#222427", "#373b41", "#c5c8c6", "#ffffff",
+                "#cc6666", "#b5bd68", "#f0c674", "#81a2be", "#b294bb", "#8abeb7", "#de935f",
+                "#969896", "#6b7078", "#373b41", "#81a2be",
+            ],
+        )
+    }
+
+    pub fn tomorrow() -> Self {
+        Self::from_palette(
+            "Tomorrow",
+            [
+                "#ffffff", "#fafafa", "#efefef", "#f5f5f5", "#d6d6d6", "#4d4d4c", "#1d1f21",
+                "#c82829", "#718c00", "#c99e00", "#4271ae", "#8959a8", "#3e999f", "#f5871f",
+                "#8e908c", "#868884", "#d6d6d6", "#4271ae",
+            ],
+        )
+    }
+
+    pub fn papercolor_dark() -> Self {
+        Self::from_palette(
+            "PaperColor Dark",
+            [
+                "#1c1c1c", "#121212", "#262626", "#202020", "#444444", "#d0d0d0", "#eeeeee",
+                "#ff5faf", "#afd700", "#d7af5f", "#5fafd7", "#af87d7", "#00afaf", "#ff8700",
+                "#878787", "#585858", "#444444", "#5fafd7",
+            ],
+        )
+    }
+
+    pub fn papercolor_light() -> Self {
+        Self::from_palette(
+            "PaperColor Light",
+            [
+                "#eeeeee", "#ffffff", "#e4e4e4", "#e8e8e8", "#d0d0d0", "#444444", "#121212",
+                "#af0000", "#008700", "#af8700", "#005f87", "#8700af", "#0087af", "#d75f00",
+                "#878787", "#a8a8a8", "#bcbcbc", "#005f87",
+            ],
+        )
+    }
+
+    pub fn vesper() -> Self {
+        Self::from_palette(
+            "Vesper",
+            [
+                "#101010", "#0a0a0a", "#1c1c1c", "#161616", "#2a2a2a", "#e0e0e0", "#ffffff",
+                "#ff8080", "#99ffe4", "#ffc799", "#8fb4d8", "#c9a0e0", "#7fd4c8", "#f2a56e",
+                "#a0a0a0", "#6b6b6b", "#282828", "#ffc799",
+            ],
+        )
+    }
+
+    pub fn iceberg() -> Self {
+        Self::from_palette(
+            "Iceberg",
+            [
+                "#161821", "#0d0f18", "#1e2132", "#1a1c28", "#272c42", "#c6c8d1", "#d2d4de",
+                "#e27878", "#b4be82", "#e9b872", "#84a0c6", "#a093c7", "#89b8c2", "#e2a478",
+                "#6b7089", "#444b71", "#2e3244", "#84a0c6",
+            ],
+        )
+    }
+
+    pub fn edge_dark() -> Self {
+        Self::from_palette(
+            "Edge Dark",
+            [
+                "#2b2d3a", "#202330", "#363944", "#262835", "#3e4249", "#c5cdd9", "#e2e2e3",
+                "#ec7279", "#a0c980", "#deb974", "#6cb6eb", "#d38aea", "#5dbbc1", "#e89a6a",
+                "#9ca3b0", "#758094", "#3e4249", "#6cb6eb",
+            ],
+        )
+    }
+
+    pub fn edge_light() -> Self {
+        Self::from_palette(
+            "Edge Light",
+            [
+                "#fafafa", "#ffffff", "#eef1f4", "#f2f4f7", "#dde2e7", "#4b505b", "#222222",
+                "#d05858", "#608e32", "#be7e05", "#5079be", "#b05ccc", "#3a8b84", "#c4672c",
+                "#6a7284", "#a1a9b4", "#dde2e7", "#5079be",
+            ],
+        )
+    }
+
+    pub fn vscode_dark_plus() -> Self {
+        Self::from_palette(
+            "VS Code Dark+",
+            [
+                "#1e1e1e", "#181818", "#252526", "#212121", "#264f78", "#d4d4d4", "#ffffff",
+                "#f44747", "#6a9955", "#dcdcaa", "#569cd6", "#c586c0", "#4ec9b0", "#ce9178",
+                "#9d9d9d", "#6e7681", "#3c3c3c", "#007acc",
+            ],
+        )
+    }
+
+    pub fn vscode_light_plus() -> Self {
+        Self::from_palette(
+            "VS Code Light+",
+            [
+                "#ffffff", "#f3f3f3", "#f3f3f3", "#f5f5f5", "#add6ff", "#333333", "#000000",
+                "#cd3131", "#008000", "#795e26", "#0070c1", "#af00db", "#267f99", "#b5541c",
+                "#616161", "#a0a0a0", "#cecece", "#005fb8",
             ],
         )
     }
