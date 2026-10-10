@@ -5,7 +5,7 @@ weight = 14
 
 # Themes
 
-Kimün ships with 21 built-in themes, and you can write your own as a small TOML file.
+Kimün ships with 48 built-in themes, and you can write your own as a small TOML file.
 
 To pick one, open the theme picker with `Ctrl+B v t` (or `t` in the CFG drawer). Moving the selection restyles the app as you go; Enter saves the choice and Esc reverts it. You can also set the theme in your config:
 
@@ -18,16 +18,23 @@ theme = "Nord"
 | Family | Dark | Light |
 |---|---|---|
 | Gruvbox | **Gruvbox Dark** *(default)* | Gruvbox Light |
-| Catppuccin | Catppuccin Mocha | Catppuccin Latte |
-| Tokyo Night | Tokyo Night, Tokyo Night Storm | — |
+| Catppuccin | Catppuccin Mocha, Catppuccin Macchiato, Catppuccin Frappé | Catppuccin Latte |
+| Tokyo Night | Tokyo Night, Tokyo Night Storm, Tokyo Night Moon | Tokyo Night Day |
 | Solarized | Solarized Dark | Solarized Light |
 | Dracula | Dracula | Alucard *(Dracula's official light variant)* |
 | One | One Dark | One Light |
 | Everforest | Everforest Dark | Everforest Light |
-| Rosé Pine | Rosé Pine | Rosé Pine Dawn |
-| Kanagawa | Kanagawa Wave | Kanagawa Lotus |
+| Rosé Pine | Rosé Pine, Rosé Pine Moon | Rosé Pine Dawn |
+| Kanagawa | Kanagawa Wave, Kanagawa Dragon | Kanagawa Lotus |
 | Nord | Nord | — |
 | Monokai | Monokai | — |
+| GitHub | GitHub Dark, GitHub Dark Dimmed | GitHub Light |
+| Ayu | Ayu Dark, Ayu Mirage | Ayu Light |
+| Material | Material, Material Palenight, Material Ocean | — |
+| Night Owl | Night Owl | Night Owl Light |
+| Nightfox | Nightfox, Carbonfox | Dayfox |
+| Oxocarbon | Oxocarbon Dark | Oxocarbon Light |
+| Others | Zenburn, Cobalt2, Synthwave '84, Everblush | Quiet Light |
 | ANSI | *uses your terminal's 16-color palette, light or dark* | |
 
 ### Color depth

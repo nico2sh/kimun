@@ -4,6 +4,7 @@ use std::fmt::Display;
 
 /// Built-in theme definitions (`Theme::gruvbox_dark()`, `Theme::nord()`, …).
 mod builtin;
+mod builtin_extra;
 /// Terminal color-depth detection and 256/16-color theme adaptation.
 pub mod color_depth;
 
