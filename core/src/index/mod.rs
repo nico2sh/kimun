@@ -285,8 +285,14 @@ impl NoteIndex {
     /// registered. Paths are normalised to canonical vault-relative form so a
     /// note has one identity regardless of the write path that produced it.
     fn emit(&self, change: NoteChange) {
-        if let Some(observer) = self.observer_ref().as_ref() {
-            observer.on_change(&change);
+        // Clone out so the lock is not held during the callback (an observer may
+        // re-register), and contain a panic: the write has already committed.
+        let observer = self.observer_ref().clone();
+        if let Some(observer) = observer {
+            let call = std::panic::AssertUnwindSafe(|| observer.on_change(&change));
+            if std::panic::catch_unwind(call).is_err() {
+                log::warn!("Index observer panicked in on_change; ignoring");
+            }
         }
     }
 
