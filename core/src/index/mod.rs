@@ -2,7 +2,7 @@ pub(crate) mod search_terms;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::Duration;
 
 use log::{debug, error};
@@ -244,22 +244,32 @@ impl NoteIndex {
         })
     }
 
+    // The slot holds a single `Option` that is only ever assigned whole, so a
+    // poisoned lock still guards valid data: recover instead of panicking.
+    fn observer_ref(&self) -> RwLockReadGuard<'_, Option<Arc<dyn IndexObserver>>> {
+        self.observer.read().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn observer_mut(&self) -> RwLockWriteGuard<'_, Option<Arc<dyn IndexObserver>>> {
+        self.observer.write().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Registers the index observer, replacing any previous one. Shared across
     /// clones of this index.
     pub(crate) fn set_observer(&self, observer: Arc<dyn IndexObserver>) {
-        *self.observer.write().unwrap() = Some(observer);
+        *self.observer_mut() = Some(observer);
     }
 
     /// Removes the registered observer (if any), so it stops receiving events.
     pub(crate) fn clear_observer(&self) {
-        *self.observer.write().unwrap() = None;
+        *self.observer_mut() = None;
     }
 
     /// Removes the observer only if it is the exact one passed in (by identity).
     /// Lets a consumer deregister its own observer on teardown without wiping a
     /// newer one that has since replaced it.
     pub(crate) fn clear_observer_if(&self, observer: &Arc<dyn IndexObserver>) {
-        let mut guard = self.observer.write().unwrap();
+        let mut guard = self.observer_mut();
         if guard.as_ref().is_some_and(|cur| Arc::ptr_eq(cur, observer)) {
             *guard = None;
         }
@@ -268,14 +278,14 @@ impl NoteIndex {
     /// Whether an observer is registered. Lets callers skip building events
     /// (e.g. re-hashing every note in a bulk `apply`) when nobody listens.
     fn has_observer(&self) -> bool {
-        self.observer.read().unwrap().is_some()
+        self.observer_ref().is_some()
     }
 
     /// Hands `change` to the registered observer, if any. A no-op when none is
     /// registered. Paths are normalised to canonical vault-relative form so a
     /// note has one identity regardless of the write path that produced it.
     fn emit(&self, change: NoteChange) {
-        if let Some(observer) = self.observer.read().unwrap().as_ref() {
+        if let Some(observer) = self.observer_ref().as_ref() {
             observer.on_change(&change);
         }
     }
