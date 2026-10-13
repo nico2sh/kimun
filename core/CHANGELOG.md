@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1](https://github.com/nico2sh/kimun/compare/kimun_core-v0.6.0...kimun_core-v0.6.1) - 2026-10-13
+
+### Fixed
+
+- protect from deadlocks
+- changed unwrap() to or_else variants with a poison error
+
 ## [0.6.0](https://github.com/nico2sh/kimun/compare/kimun_core-v0.5.2...kimun_core-v0.6.0) - 2026-10-08
 
 ### Added
