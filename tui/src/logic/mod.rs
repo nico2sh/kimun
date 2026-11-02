@@ -1,6 +1,6 @@
 //! The **Logic layer**: feature state, rules and intents with no UI crate in
 //! sight. `.github/scripts/check-logic-layer.sh` fails CI if anything under this
-//! tree names `ratatui`, `crossterm`, `egui` or `eframe`. See ADR-0049.
+//! tree names `ratatui`, `crossterm`, `egui`, `eframe` or `gpui`. See ADR-0049.
 
 pub mod clipboard;
 pub mod input;

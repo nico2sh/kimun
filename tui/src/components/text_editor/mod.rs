@@ -655,14 +655,6 @@ impl TextEditorComponent {
         }
     }
 
-    /// Refresh the painted selection ([`Editor::sync_highlight`]). Nvim paints
-    /// its own, so this is a no-op there.
-    fn sync_highlight(&mut self) {
-        if let Some(ed) = self.backend.as_editor_mut() {
-            ed.sync_highlight();
-        }
-    }
-
     /// Inserts `text` at the cursor, replacing any active selection. When `text`
     /// is a URL (http/https/ftp/ftps/mailto) and a selection is active, the
     /// selection is wrapped as a markdown link `[selection](url)` instead of
@@ -1041,9 +1033,10 @@ impl TextEditorComponent {
 
     /// Act on what the textarea [`Editor`] queued during this input call
     /// ([`Editor::take_host_requests`]): the find bar and the popup are this
-    /// component's. `ContextMenu` stays queued for the screen's
-    /// [`Self::take_requests`] poll.
-    fn drain_host_requests(&mut self) {
+    /// component's; `OpenPalette` is forwarded to the app as
+    /// `AppMessage::ExecuteLeaderAction(LeaderAction::Palette)`. `ContextMenu`
+    /// stays queued for the screen's [`Self::take_requests`] poll.
+    fn drain_host_requests(&mut self, tx: &AppTx) {
         let Some(ed) = self.backend.as_editor_mut() else {
             return;
         };
@@ -1052,6 +1045,13 @@ impl TextEditorComponent {
                 EditorRequest::OpenSearch => self.open_or_advance_search(),
                 EditorRequest::SearchNext => self.search_repeat(false),
                 EditorRequest::SearchPrev => self.search_repeat(true),
+                // The palette is the app's: reuse its leader-action gateway.
+                EditorRequest::OpenPalette => {
+                    tx.send(crate::logic::message::AppMessage::ExecuteLeaderAction(
+                        crate::keys::leader::LeaderAction::Palette,
+                    ))
+                    .ok();
+                }
                 // The popup is anchored to the cursor, which may now be off
                 // screen: left open, it would take keys the user cannot see.
                 EditorRequest::ViewportScrolled => self.close_autocomplete(),
@@ -1085,10 +1085,6 @@ impl Component for TextEditorComponent {
                 // and the vim engine. The popup, find bar and nvim stages keep
                 // the raw event: they speak crossterm.
                 let input = crate::keys::crossterm_input::key_input(key);
-                // Every key acts at the cursor, so a wheel-scrolled view comes
-                // back to it — even when the key leaves the cursor where it was
-                // (find-next onto the same match, a motion at the buffer edge).
-                self.session_mut().display.follow_cursor();
                 // Cheap popup-open probe first. The snapshot is now a
                 // Cow-borrowed view of the textarea's lines (zero
                 // allocation on the Textarea path — perf #8), so
@@ -1097,6 +1093,12 @@ impl Component for TextEditorComponent {
                 // and `&mut self.autocomplete` coexist via field-disjoint
                 // borrows.
                 let popup_open = self.autocomplete.as_ref().is_some_and(|c| c.is_open());
+                // `Editor::handle_key` re-attaches the view to the cursor for
+                // the keys that reach it. These never do, and acted at the
+                // cursor all the same.
+                if popup_open || self.search.is_some() || self.backend.as_editor().is_none() {
+                    self.session_mut().display.follow_cursor();
+                }
                 if popup_open
                     && let Some(host) = build_editor_host_snapshot(
                         &self.backend,
@@ -1137,7 +1139,7 @@ impl Component for TextEditorComponent {
                     None => ed.ignore_unmapped_key(),
                 };
                 // Vim's `/`, `?`, `n`, `N` act in this same call.
-                self.drain_host_requests();
+                self.drain_host_requests(tx);
                 match path {
                     // The direct path compares the buffer either side of it
                     // using cheap counters instead of cloning the whole
@@ -1203,7 +1205,7 @@ impl Component for TextEditorComponent {
                             };
                             // A wheel scroll that moved the view closes the
                             // popup, before the diff below.
-                            self.drain_host_requests();
+                            self.drain_host_requests(tx);
                             event_state(handled)
                         }
                         None => match pointer {
@@ -1234,10 +1236,10 @@ impl Component for TextEditorComponent {
                 // drag selects (`select_dragged`, in `Editor::handle_pointer`); scroll,
                 // release and right-click leave the mode alone. Insert and
                 // Replace, and the other backends, are untouched either way.
-                if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
-                    self.backend.sync_mouse_selection(false);
+                let left_down = matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left));
+                if let Some(ed) = self.backend.as_editor_mut() {
+                    ed.settle_pointer(left_down);
                 }
-                self.sync_highlight();
                 result
             }
             // Bracketed paste is intercepted by EditorScreen so it can run the
@@ -4628,25 +4630,34 @@ cccccccc"
     }
 
     /// Regression: a bare left click (Down with no Drag) must NOT flip
-    /// vim Normal → Visual.  The textarea's Down arm calls `start_selection()`
-    /// which leaves a collapsed (start==end) selection; the fix at ~line 2124
-    /// uses `.is_some_and(|(s, e)| s != e)` to require a non-empty selection
-    /// before treating it as "real" (mirrors the same guard at ~line 1014).
+    /// vim Normal → Visual. The Down arm calls `start_selection()`, which
+    /// leaves a collapsed (start==end) selection; the mode is reconciled by
+    /// gesture (`settle_pointer(true)` for a left press), not by that shape.
     ///
-    /// We test `sync_mouse_selection` directly (the exact code that was
-    /// broken) rather than routing through `handle_input` → `Editor::handle_pointer`,
-    /// which needs a fully rendered view to resolve screen→logical coordinates.
+    /// Driven through `Editor::handle_pointer` + `Editor::settle_pointer`, the
+    /// exact pair the component's mouse arm runs, on a frame the editor
+    /// prepared itself so screen cells resolve to logical positions.
     #[test]
     fn vim_sync_collapsed_sel_stays_normal() {
+        use crate::logic::input::{Button, Mods, PointerInput, PointerKind};
         let mut editor = make_vim_editor();
         editor.set_text("hello world".to_string());
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
 
         // Sanity: starts in Normal.
         assert_eq!(vim_mode(&editor), EditorMode::Normal);
 
-        // A bare click leaves has_sel == false (collapsed selection filtered
-        // out by the is_some_and guard).  Sync with no selection must keep Normal.
-        editor.backend.sync_mouse_selection(false);
+        // A bare click: Down with no Drag leaves a collapsed selection.
+        let ed = editor.backend.as_editor_mut().expect("textarea backend");
+        ed.prepare_frame(40, 5);
+        let down = PointerInput {
+            kind: PointerKind::Down(Button::Left),
+            col: 3,
+            row: 0,
+            mods: Mods::NONE,
+        };
+        ed.handle_pointer(&down, &tx);
+        ed.settle_pointer(true);
         assert_eq!(
             vim_mode(&editor),
             EditorMode::Normal,
@@ -4657,19 +4668,94 @@ cccccccc"
     /// A drag that creates a real (non-empty) selection DOES enter Visual mode.
     #[test]
     fn vim_sync_real_sel_enters_visual() {
+        use crate::logic::input::{Button, Mods, PointerInput, PointerKind};
         let mut editor = make_vim_editor();
         editor.set_text("hello world".to_string());
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
 
         // Sanity: starts in Normal.
         assert_eq!(vim_mode(&editor), EditorMode::Normal);
 
-        // A drag with start != end yields has_sel == true.
-        editor.backend.sync_mouse_selection(true);
+        let ed = editor.backend.as_editor_mut().expect("textarea backend");
+        ed.prepare_frame(40, 5);
+        let at = |kind, col| PointerInput {
+            kind,
+            col,
+            row: 0,
+            mods: Mods::NONE,
+        };
+        ed.handle_pointer(&at(PointerKind::Down(Button::Left), 0), &tx);
+        ed.settle_pointer(true);
+        ed.handle_pointer(&at(PointerKind::Drag(Button::Left), 5), &tx);
+        ed.settle_pointer(false);
         assert_eq!(
             vim_mode(&editor),
             EditorMode::Visual,
             "real drag selection must enter Visual mode"
         );
+    }
+
+    /// Vim `:` asks for the palette (`EditorRequest::OpenPalette`); the
+    /// component forwards it to the app as the palette leader action.
+    #[test]
+    fn vim_colon_forwards_the_palette_request_to_the_app() {
+        use crate::keys::leader::LeaderAction;
+        use crate::logic::message::AppMessage;
+        let mut editor = make_vim_editor();
+        editor.set_text("hello".to_string());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char(':'), KeyModifiers::NONE)),
+            &tx,
+        );
+        let mut got_palette = false;
+        while let Ok(message) = rx.try_recv() {
+            got_palette |= matches!(
+                message,
+                AppMessage::ExecuteLeaderAction(LeaderAction::Palette)
+            );
+        }
+        assert!(got_palette, "`:` must reach the app as the palette action");
+        assert_eq!(editor.get_text(), "hello");
+    }
+
+    /// A key the find bar takes never reaches `Editor::handle_key`, which is
+    /// what re-attaches a wheel-scrolled view; the component's own guard must
+    /// do it, or the view stays detached while the user types a query.
+    #[test]
+    fn a_find_bar_key_reattaches_a_wheel_scrolled_view() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut editor = make_editor();
+        let long = (0..60)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        editor.set_text(long);
+        let tx = dummy_tx();
+        let theme = Theme::default();
+        let mut t = Terminal::new(TestBackend::new(40, 10)).unwrap();
+        let mut draw = |editor: &mut TextEditorComponent| {
+            t.draw(|f| editor.render(f, f.area(), &theme, true))
+                .unwrap();
+        };
+        draw(&mut editor);
+        assert!(editor.session_mut().display.scroll_by(20));
+        draw(&mut editor);
+        assert_ne!(
+            editor.session().display.click_at_screen(0, 0).0,
+            0,
+            "detached"
+        );
+        editor.open_or_advance_search();
+        draw(&mut editor);
+        // 'q' matches nothing, so the cursor stays on row 0.
+        editor.handle_input(
+            &InputEvent::Key(key(KeyCode::Char('q'), KeyModifiers::NONE)),
+            &tx,
+        );
+        draw(&mut editor);
+        assert_eq!(editor.get_text().lines().count(), 60);
+        assert_eq!(editor.session().display.click_at_screen(0, 0).0, 0);
     }
 
     /// Regression: with the find bar open in vim Normal mode, typed keys must
