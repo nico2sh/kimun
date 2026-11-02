@@ -78,7 +78,7 @@ pub struct MdStyles {
 
 impl MdStyles {
     /// Build from the theme, mirroring the editor's markdown color conventions
-    /// (`text_editor::markdown::span_style`): headings bright+bold, inline/code
+    /// (`text_editor::markdown_style::role_style`): headings bright+bold, inline/code
     /// aqua on a soft background, bold accent+bold, italic secondary+italic,
     /// blockquote secondary. Citations keep the answer's accent marker color.
     pub fn from_theme(theme: &Theme) -> Self {

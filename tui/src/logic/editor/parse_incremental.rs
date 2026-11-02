@@ -66,7 +66,7 @@ pub(super) const CURSOR_HINT_WINDOW: usize = 4;
 /// `ParsedLine`.
 ///
 /// Callers performing an edit that does not satisfy this must not call it:
-/// `MarkdownEditorView::note_bulk_edit` forces the slow path
+/// `EditorDisplay::note_bulk_edit` forces the slow path
 /// for the next update, and every bulk-edit site is expected to use it.
 ///
 /// This used to say distant simultaneous edits "can only happen via
@@ -468,7 +468,7 @@ mod tests {
     /// buffer edited in two distant places, with the cursor on one of them, is
     /// reported as a one-row change. Callers that can produce this shape — a
     /// **replace all**, a whole-buffer `set_text`, a grouped undo of either — must
-    /// call `MarkdownEditorView::note_bulk_edit` instead of relying on this.
+    /// call `EditorDisplay::note_bulk_edit` instead of relying on this.
     #[test]
     fn the_cursor_hint_under_reports_a_two_place_edit() {
         let old: Vec<String> = ["todo", "a", "b", "c", "d", "e", "todo"]

@@ -460,7 +460,7 @@ fn build_lines(
                 for wline in preview_highlight::wrap_line(stripped, wrap_width) {
                     // One scan per wrapped line: the hit probe and the span
                     // styling share it.
-                    let ranges = preview_highlight::match_ranges(&wline, needles);
+                    let ranges = crate::logic::text_match::match_ranges(&wline, needles);
                     if find_hit && first_hit.is_none() && !ranges.is_empty() {
                         first_hit = Some(lines.len());
                     }

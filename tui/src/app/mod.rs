@@ -140,7 +140,7 @@ pub async fn run_tui(config_path: Option<PathBuf>) -> Result<()> {
         tracing::error!("fatal error: {e}");
         return Err(e.into());
     }
-    crate::components::text_editor::widener_metrics::dump_if_enabled();
+    crate::logic::editor::widener_metrics::dump_if_enabled();
     Ok(())
 }
 

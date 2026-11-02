@@ -1,3 +1,4 @@
+use crate::logic::editor::markdown::runs::Role;
 use crate::logic::editor::markdown::{ElementKind, MOD_BOLD, MOD_ITALIC, MOD_STRIKE};
 use crate::settings::themes::Theme;
 use ratatui::style::{Modifier, Style};
@@ -17,60 +18,50 @@ pub(super) fn mask_to_modifier(mask: u8) -> Modifier {
     m
 }
 
-pub(super) fn span_style(kind: Option<ElementKind>, is_sigil_region: bool, theme: &Theme) -> Style {
-    match kind {
-        None => {
-            if is_sigil_region {
-                Style::default().fg(theme.gray.to_ratatui())
-            } else {
-                Style::default().fg(theme.fg.to_ratatui())
-            }
+/// The style a [`Role`] paints with. Single owner of the role -> colour table.
+pub(super) fn role_style(role: Role, theme: &Theme) -> Style {
+    match role {
+        Role::Plain | Role::CodeText => Style::default().fg(theme.fg.to_ratatui()),
+        Role::Sigil | Role::Revealed | Role::Rule | Role::ElementSigil(_) => {
+            Style::default().fg(theme.gray.to_ratatui())
         }
-        Some(ElementKind::Bold) => Style::default()
-            .fg(theme.accent.to_ratatui())
-            .add_modifier(Modifier::BOLD),
-        Some(ElementKind::Italic) => Style::default()
-            .fg(theme.fg_secondary.to_ratatui())
-            .add_modifier(Modifier::ITALIC),
-        Some(ElementKind::Strikethrough) => Style::default()
-            .fg(theme.fg_secondary.to_ratatui())
-            .add_modifier(Modifier::CROSSED_OUT),
-        Some(ElementKind::InlineCode) => Style::default()
-            .fg(theme.aqua.to_ratatui())
-            .bg(theme.bg_soft.to_ratatui()),
-        Some(ElementKind::Link) => Style::default()
-            .fg(theme.accent.to_ratatui())
-            .add_modifier(Modifier::UNDERLINED),
-        Some(ElementKind::Image) => Style::default()
-            .fg(theme.accent.to_ratatui())
-            .add_modifier(Modifier::ITALIC),
-        // H1/H2 bright + bold, H3 yellow + bold.
-        Some(ElementKind::HeadingH1) | Some(ElementKind::HeadingH2) => {
-            if is_sigil_region {
-                Style::default().fg(theme.gray.to_ratatui())
-            } else {
-                Style::default()
-                    .fg(theme.fg_bright.to_ratatui())
-                    .add_modifier(Modifier::BOLD)
-            }
-        }
-        Some(ElementKind::HeadingH3) => {
-            if is_sigil_region {
-                Style::default().fg(theme.gray.to_ratatui())
-            } else {
-                Style::default()
-                    .fg(theme.yellow.to_ratatui())
-                    .add_modifier(Modifier::BOLD)
-            }
-        }
-        Some(ElementKind::Blockquote) => Style::default().fg(theme.fg_secondary.to_ratatui()),
-        // Wikilink targets are blue + underlined.
-        Some(ElementKind::WikiLink) => Style::default()
-            .fg(theme.blue.to_ratatui())
-            .add_modifier(Modifier::UNDERLINED),
-        Some(ElementKind::Label) => Style::default()
-            .fg(theme.color_tag.to_ratatui())
-            .add_modifier(Modifier::BOLD),
+        Role::CodeBoxPad => Style::default(),
+        Role::BlockquoteBar => Style::default().fg(theme.blockquote_bar.to_ratatui()),
+        Role::Element(kind) => match kind {
+            ElementKind::Bold => Style::default()
+                .fg(theme.accent.to_ratatui())
+                .add_modifier(Modifier::BOLD),
+            ElementKind::Italic => Style::default()
+                .fg(theme.fg_secondary.to_ratatui())
+                .add_modifier(Modifier::ITALIC),
+            ElementKind::Strikethrough => Style::default()
+                .fg(theme.fg_secondary.to_ratatui())
+                .add_modifier(Modifier::CROSSED_OUT),
+            ElementKind::InlineCode => Style::default()
+                .fg(theme.aqua.to_ratatui())
+                .bg(theme.bg_soft.to_ratatui()),
+            ElementKind::Link => Style::default()
+                .fg(theme.accent.to_ratatui())
+                .add_modifier(Modifier::UNDERLINED),
+            ElementKind::Image => Style::default()
+                .fg(theme.accent.to_ratatui())
+                .add_modifier(Modifier::ITALIC),
+            // H1/H2 bright + bold, H3 yellow + bold.
+            ElementKind::HeadingH1 | ElementKind::HeadingH2 => Style::default()
+                .fg(theme.fg_bright.to_ratatui())
+                .add_modifier(Modifier::BOLD),
+            ElementKind::HeadingH3 => Style::default()
+                .fg(theme.yellow.to_ratatui())
+                .add_modifier(Modifier::BOLD),
+            ElementKind::Blockquote => Style::default().fg(theme.fg_secondary.to_ratatui()),
+            // Wikilink targets are blue + underlined.
+            ElementKind::WikiLink => Style::default()
+                .fg(theme.blue.to_ratatui())
+                .add_modifier(Modifier::UNDERLINED),
+            ElementKind::Label => Style::default()
+                .fg(theme.color_tag.to_ratatui())
+                .add_modifier(Modifier::BOLD),
+        },
     }
 }
 

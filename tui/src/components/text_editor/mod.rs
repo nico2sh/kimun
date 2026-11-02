@@ -6,15 +6,16 @@ mod markdown_style;
 pub mod nvim_decode;
 pub mod nvim_host;
 pub mod nvim_rpc;
+use crate::keys::crossterm_input::pointer_input;
 use crate::logic::editor::revisions::Revisions;
 use crate::logic::editor::{markdown_edits, typing_run};
+use crate::logic::input::{Button, Key, KeyInput, Mods, PointerInput, PointerKind};
 pub mod view;
-pub mod widener_metrics;
 
 use crate::logic::editor::plain_keys;
 use crate::logic::editor::rope_buffer::CursorMove;
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
+use ratatui::crossterm::event::{MouseButton, MouseEventKind};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use std::num::NonZeroU64;
@@ -93,6 +94,8 @@ use self::find_bar::{BarFocus, SearchStatus};
 use self::nvim_host::NvimHost;
 use self::view::MarkdownEditorView;
 use crate::logic::editor::markdown::ParsedBuffer;
+use crate::logic::editor::overlay::{Overlay, OverlayKind};
+use crate::logic::editor::request::EditorRequest;
 use crate::logic::editor::rope_buffer::RopeBuffer;
 use crate::logic::editor::snapshot::EditorSnapshot;
 use crate::util::single_slot_task::SingleSlotTask;
@@ -152,7 +155,7 @@ use crate::components::text_editor::autocomplete_glue::apply_accept_to_textarea;
 use crate::keys::KeyBindings;
 use crate::logic::message::AppMessage;
 use crate::logic::message::AppTx;
-use crate::logic::message::redraw_callback;
+use crate::logic::message::Notifier;
 use crate::logic::text_action::TextAction;
 use crate::settings::AppSettings;
 use crate::settings::themes::Theme;
@@ -295,11 +298,6 @@ pub struct TextEditorComponent {
     /// backend so `maybe_recover_from_dead_nvim` can spin up the
     /// autocomplete controller after the fallback to Textarea.
     autocomplete_vault: Option<Arc<NoteVault>>,
-    /// Whether the autocomplete controller's redraw callback has been
-    /// bound to the app event bus. Bound lazily on the first
-    /// `handle_input` because `AppTx` is not available at
-    /// construction.
-    autocomplete_redraw_bound: bool,
     /// Background full-parse fallback for large buffers (perf #9).
     /// The view installs a placeholder `ParsedBuffer` and signals
     /// pending; this slot owns the spawned tokio task that runs
@@ -318,9 +316,9 @@ pub struct TextEditorComponent {
     /// way ends the open **undo group**: leaving Insert closes vim's session,
     /// entering it starts a fresh one.
     last_insert_session: bool,
-    /// Set by a right-click with no selection: the host (which owns the note
-    /// path) opens the note's context menu and clears the flag.
-    pub wants_context_menu: bool,
+    /// Asks for the host to act on (a right-click with no selection wants the
+    /// note's context menu); drained by `take_requests`.
+    requests: Vec<EditorRequest>,
     /// Lowercased needles to emphasize in the rendered buffer — set when the
     /// note was opened from a query result ("search match"), and
     /// dropped on the first edit (`revs.needles_stale()`).
@@ -329,10 +327,13 @@ pub struct TextEditorComponent {
     full_parse_rx: tokio::sync::mpsc::UnboundedReceiver<(u64, ParsedBuffer)>,
     layout_tx: tokio::sync::mpsc::UnboundedSender<(u64, crate::ropetext::Layout)>,
     layout_rx: tokio::sync::mpsc::UnboundedReceiver<(u64, crate::ropetext::Layout)>,
-    /// `AppTx` clone bound the first time `handle_input` runs, so the
-    /// spawned full-parse/full-wrap tasks can post `AppMessage::Redraw` on
-    /// completion without waiting for the next user keystroke.
-    redraw_tx: Option<AppTx>,
+    /// The host's wake-up hook (`logic::message::Notifier`). The background
+    /// full-parse/full-layout tasks call it on completion so the host redraws
+    /// without waiting for the next keystroke, and it is installed on the
+    /// autocomplete controller. Set with `set_notifier`, or filled in lazily
+    /// from the first `tx` seen by `handle_input`/`paste_text`/
+    /// `insert_at_cursor` via `ensure_notifier` (a TUI-only convenience).
+    notifier: Option<Notifier>,
 }
 
 impl TextEditorComponent {
@@ -355,17 +356,16 @@ impl TextEditorComponent {
             drag_origin: None,
             autocomplete: None,
             autocomplete_vault: None,
-            autocomplete_redraw_bound: false,
             full_parse_task: SingleSlotTask::empty(),
             layout_task: SingleSlotTask::empty(),
             last_insert_session: false,
-            wants_context_menu: false,
+            requests: Vec::new(),
             search_needles: Vec::new(),
             full_parse_tx,
             full_parse_rx,
             layout_tx,
             layout_rx,
-            redraw_tx: None,
+            notifier: None,
         }
     }
 
@@ -380,6 +380,7 @@ impl TextEditorComponent {
                 std::sync::Arc::new(crate::components::search_list::VaultSuggestions { vault }),
                 AutocompleteMode::Both,
             ));
+            self.install_notifier_on_autocomplete();
         }
     }
 
@@ -401,9 +402,8 @@ impl TextEditorComponent {
             std::sync::Arc::new(crate::components::search_list::VaultSuggestions { vault }),
             AutocompleteMode::Both,
         ));
-        // Fresh controller — `bind_autocomplete_redraw` must rebind
-        // on the next handle_input.
-        self.autocomplete_redraw_bound = false;
+        // Fresh controller — it needs the stored notifier installed.
+        self.install_notifier_on_autocomplete();
     }
 
     /// Build a snapshot view of the editor state for the autocomplete
@@ -780,8 +780,8 @@ impl TextEditorComponent {
     /// Narrower than the editor *column*, which the panel set hit-tests: the
     /// column includes the frame drawn around this component, and `self.rect`
     /// is the interior it was handed at render — minus the find-bar row, which
-    /// `render` already excludes. `handle_mouse` bounds-checks against exactly
-    /// this and returns `NotConsumed` outside it, so a press anywhere else
+    /// `render` already excludes. `handle_input` bounds-checks against exactly
+    /// this and answers `NotConsumed` outside it, so a press anywhere else
     /// leaves the cursor where it was. Callers that read the cursor *after* a
     /// press have to ask, or they read a position the press never set.
     pub fn covers(&self, column: u16, row: u16) -> bool {
@@ -852,14 +852,14 @@ impl TextEditorComponent {
 
     /// Copy selected text to the OS clipboard, flashing the outcome.
     ///
-    /// Routed through the shared [`crate::components::yank`] seam so a clipboard
+    /// Routed through the shared [`crate::logic::clipboard::yank`] seam so a clipboard
     /// failure is reported rather than swallowed, and so "nothing was selected"
     /// is distinguishable from "the copy failed".
     fn copy_selection_to_clipboard(&mut self, tx: &AppTx) {
         // A vim Visual selection copies exactly as the Ctrl-C chord does —
         // one path for both gestures.
         if let Some(text) = self.backend.copy_visual() {
-            crate::components::yank(text, "copied", tx);
+            crate::logic::clipboard::yank(text, "copied", tx);
             return;
         }
         let text = {
@@ -885,7 +885,7 @@ impl TextEditorComponent {
                 }
             }
         };
-        crate::components::yank(text, "copied", tx);
+        crate::logic::clipboard::yank(text, "copied", tx);
     }
 
     /// Paint the selection as the user sees it: under vim's Visual modes the
@@ -908,7 +908,7 @@ impl TextEditorComponent {
     /// selection. Every failure is reported — silence here is what made the
     /// vim-mode paste bug so hard to place.
     fn paste_from_clipboard(&mut self, tx: &AppTx) {
-        let text = match crate::components::with_clipboard(|c| c.get_text()) {
+        let text = match crate::logic::clipboard::with_clipboard(|c| c.get_text()) {
             Ok(t) if !t.is_empty() => t,
             Ok(_) => {
                 tx.send(AppMessage::FlashMessage("clipboard is empty".into()))
@@ -999,7 +999,7 @@ impl TextEditorComponent {
         // The buffer just changed under the popup's feet; reconcile
         // the trigger context so a stale replace_range cannot survive
         // into the next Accept.
-        self.bind_autocomplete_redraw(tx);
+        self.ensure_notifier(tx);
         self.sync_autocomplete();
     }
 
@@ -1025,7 +1025,7 @@ impl TextEditorComponent {
         }
         // See `paste_text` — out-of-band buffer mutation must
         // re-reconcile the popup state.
-        self.bind_autocomplete_redraw(tx);
+        self.ensure_notifier(tx);
         self.sync_autocomplete();
     }
 
@@ -1039,7 +1039,7 @@ impl TextEditorComponent {
     /// Ctrl+V, and "no image on the clipboard" is the ordinary case, not a
     /// failure to report.
     pub fn take_clipboard_image(&mut self) -> Option<ClipboardImage> {
-        let img = crate::components::with_clipboard(|c| c.get_image()).ok()?;
+        let img = crate::logic::clipboard::with_clipboard(|c| c.get_image()).ok()?;
         Some(ClipboardImage {
             width: img.width,
             height: img.height,
@@ -1314,32 +1314,30 @@ impl TextEditorComponent {
         }
     }
 
-    /// Bind the redraw channel up front (e.g. on note open) so the
-    /// background full-parse task can wake the event-driven render loop
-    /// on the FIRST render of a large buffer, before any keystroke has
-    /// run `handle_input`. No-op after the first successful bind.
-    pub fn set_redraw_tx(&mut self, tx: &AppTx) {
-        self.bind_autocomplete_redraw(tx);
+    /// Hand the host's wake-up to the component: the background full-parse
+    /// and full-layout tasks call it when they finish, and the autocomplete
+    /// controller calls it when its query task resolves. Set it up front
+    /// (e.g. on note open) so the FIRST render of a large buffer can wake
+    /// the event-driven render loop.
+    pub fn set_notifier(&mut self, notifier: Notifier) {
+        self.notifier = Some(notifier);
+        self.install_notifier_on_autocomplete();
     }
 
-    /// Bind the autocomplete controller's redraw callback AND the
-    /// editor's background-full-parse redraw signal to the app
-    /// event bus. Called from `handle_input` (the first place where
-    /// the editor has access to `AppTx`). The autocomplete piece is
-    /// a no-op after the first successful bind; the redraw_tx clone
-    /// is set unconditionally so a reset autocomplete controller
-    /// (e.g. after Nvim → Textarea fallback) doesn't lose the
-    /// editor's redraw channel.
-    fn bind_autocomplete_redraw(&mut self, tx: &AppTx) {
-        if self.redraw_tx.is_none() {
-            self.redraw_tx = Some(tx.clone());
+    /// Install the stored notifier on the autocomplete controller, if both
+    /// exist. Called whenever either is (re)created.
+    fn install_notifier_on_autocomplete(&mut self) {
+        if let (Some(n), Some(c)) = (self.notifier.clone(), self.autocomplete.as_mut()) {
+            c.set_redraw_callback(n);
         }
-        if self.autocomplete_redraw_bound {
-            return;
-        }
-        if let Some(c) = self.autocomplete.as_mut() {
-            c.set_redraw_callback(redraw_callback(tx.clone()));
-            self.autocomplete_redraw_bound = true;
+    }
+
+    /// TUI-only convenience preserving the lazy binding: callers that still
+    /// receive an `&AppTx` fill in an unset notifier from it. Disappears
+    /// with the Editor carve.
+    fn ensure_notifier(&mut self, tx: &AppTx) {
+        if self.notifier.is_none() {
+            self.set_notifier(crate::logic::message::redraw_callback(tx.clone()));
         }
     }
 
@@ -1400,11 +1398,7 @@ impl TextEditorComponent {
     }
 
     /// Handle a key event when using the Textarea backend.
-    fn handle_textarea_key(
-        &mut self,
-        key: &ratatui::crossterm::event::KeyEvent,
-        tx: &AppTx,
-    ) -> EventState {
+    fn handle_textarea_key(&mut self, key: KeyInput, tx: &AppTx) -> EventState {
         // No find-bar check here: `handle_input` — this function's one
         // production caller — already routes to the bar before the vim engine,
         // so a second check could never fire. It survived only because tests
@@ -1414,16 +1408,14 @@ impl TextEditorComponent {
         // section below, because a key claimed earlier — Ctrl+Z, a clipboard
         // chord, Tab — returns before ever reaching it, and a run left open
         // across an undo would try to extend a group that was just taken back.
-        let stroke = crate::keys::crossterm_input::key_input(key)
-            .and_then(plain_keys::operation)
-            .and_then(|op| match op {
-                plain_keys::Operation::Insert(c) => Some(typing_run::Stroke::Insert(c)),
-                plain_keys::Operation::InsertNewline => Some(typing_run::Stroke::Insert('\n')),
-                plain_keys::Operation::DeleteBack | plain_keys::Operation::DeleteForward => {
-                    Some(typing_run::Stroke::Delete)
-                }
-                _ => None,
-            });
+        let stroke = plain_keys::operation(key).and_then(|op| match op {
+            plain_keys::Operation::Insert(c) => Some(typing_run::Stroke::Insert(c)),
+            plain_keys::Operation::InsertNewline => Some(typing_run::Stroke::Insert('\n')),
+            plain_keys::Operation::DeleteBack | plain_keys::Operation::DeleteForward => {
+                Some(typing_run::Stroke::Delete)
+            }
+            _ => None,
+        });
         if stroke.is_none()
             && let Some((_, run)) = self.backend.as_textarea_parts_mut()
         {
@@ -1431,17 +1423,17 @@ impl TextEditorComponent {
         }
 
         // System clipboard shortcuts — intercept before passing to textarea.
-        if key.modifiers == KeyModifiers::CONTROL {
-            match key.code {
-                KeyCode::Char('c') => {
+        if key.mods == Mods::CTRL {
+            match key.key {
+                Key::Char('c') => {
                     self.copy_selection_to_clipboard(tx);
                     return EventState::Consumed;
                 }
-                KeyCode::Char('v') => {
+                Key::Char('v') => {
                     self.paste_from_clipboard(tx);
                     return EventState::Consumed;
                 }
-                KeyCode::Char('x') => {
+                Key::Char('x') => {
                     self.copy_selection_to_clipboard(tx);
                     let cut = if let Some(ta) = self.backend.as_textarea_mut() {
                         // `ta.cut()` returns `false` when the selection was
@@ -1468,15 +1460,19 @@ impl TextEditorComponent {
         // textarea borrow below because the **undo group** bookkeeping lives on
         // the component, and `as_textarea_mut` borrows all of `self`. A replace
         // is two history entries and must cost one Ctrl+Z, not two.
-        if key.modifiers & !KeyModifiers::SHIFT == KeyModifiers::CONTROL {
-            match key.code {
-                KeyCode::Char('z') if !key.modifiers.contains(KeyModifiers::SHIFT) => {
+        if (Mods {
+            shift: false,
+            ..key.mods
+        }) == Mods::CTRL
+        {
+            match key.key {
+                Key::Char('z') if !key.mods.shift => {
                     if self.undo_grouped() {
                         self.apply_edit_outcome();
                     }
                     return EventState::Consumed;
                 }
-                KeyCode::Char('y') | KeyCode::Char('Z') => {
+                Key::Char('y') | Key::Char('Z') => {
                     if self.redo_grouped() {
                         self.apply_edit_outcome();
                     }
@@ -1497,20 +1493,18 @@ impl TextEditorComponent {
         // undo stack) — so the revision clock is not
         // bumped on true no-ops.
         // BackTab is what most terminals emit for Shift+Tab.
-        match (key.modifiers, key.code) {
-            (m, KeyCode::Tab)
-                if !m.contains(KeyModifiers::CONTROL) && !m.contains(KeyModifiers::ALT) =>
-            {
-                self.indent_lines(m.contains(KeyModifiers::SHIFT));
+        match key.key {
+            Key::Tab if !key.mods.ctrl && !key.mods.alt => {
+                self.indent_lines(key.mods.shift);
                 return EventState::Consumed;
             }
-            (_, KeyCode::BackTab) => {
+            Key::BackTab => {
                 self.indent_lines(true);
                 return EventState::Consumed;
             }
             _ => {}
         }
-        if key.code == KeyCode::Enter && key.modifiers.is_empty() && self.smart_enter() {
+        if key.key == Key::Enter && key.mods == Mods::NONE && self.smart_enter() {
             return EventState::Consumed;
         }
 
@@ -1520,8 +1514,11 @@ impl TextEditorComponent {
         // chords fall through. The selection lands on the inner text so wraps
         // chain: `[` `[` builds a wikilink — and `handle_input`'s post-key
         // sync legitimately opens the wikilink popup on the chained wrap.
-        if let KeyCode::Char(c) = key.code
-            && (key.modifiers & !KeyModifiers::SHIFT).is_empty()
+        if let Key::Char(c) = key.key
+            && (Mods {
+                shift: false,
+                ..key.mods
+            }) == Mods::NONE
             && let Some((open, close)) = markdown_edits::surround_pair(c)
             && self.wrap_selection(open, close)
         {
@@ -1544,9 +1541,7 @@ impl TextEditorComponent {
         // component's own claims — `Tab` indents rows, `Enter` may continue a
         // list, an opening bracket over a selection wraps it — because those are
         // the same keys and the component's reading of them wins.
-        if let Some(op) =
-            crate::keys::crossterm_input::key_input(key).and_then(plain_keys::operation)
-        {
+        if let Some(op) = plain_keys::operation(key) {
             // ↑/↓ move by *drawn* line, so they need the layout — which lives on
             // the view, not the buffer. Everything else the buffer can answer
             // alone. A run of them keeps its goal cell; anything else ends the run.
@@ -1604,6 +1599,18 @@ impl TextEditorComponent {
         EventState::Consumed
     }
 
+    /// A key with no [`KeyInput`] (`Null`, lock and media keys, any META/HYPER
+    /// chord): nothing in the direct path can act on it, but it is still an
+    /// action, so it ends the open typing run, settles vim's insert-session
+    /// bracket, and is consumed.
+    fn ignore_unmapped_key(&mut self) -> EventState {
+        if let Some((_, run)) = self.backend.as_textarea_parts_mut() {
+            run.end();
+        }
+        self.sync_insert_session();
+        EventState::Consumed
+    }
+
     /// Act on what the autocomplete popup did with a key or a click — one
     /// path, so an accept edits the buffer the same way from either. `None`:
     /// the popup passed, the event is the editor's.
@@ -1622,18 +1629,30 @@ impl TextEditorComponent {
         }
     }
 
-    /// Handle a mouse event (Textarea backend only).
-    fn handle_mouse(
-        &mut self,
-        mouse: &ratatui::crossterm::event::MouseEvent,
-        tx: &AppTx,
-    ) -> EventState {
-        if !self.covers(mouse.column, mouse.row) {
+    /// A pointer event inside the editor that has no [`PointerInput`]
+    /// (horizontal scroll). It is still ours, so it counts
+    /// as an action, but it does nothing: the textarea backend consumes it,
+    /// Nvim leaves it to the terminal.
+    fn ignored_pointer(&mut self) -> EventState {
+        self.interrupt_typing();
+        if !self.backend.is_textarea() {
             return EventState::NotConsumed;
         }
-        // Kept for the screen→layout conversion below, which is only reachable
-        // past the bounds check that `covers` just made.
-        let r = self.rect;
+        let Some(ta) = self.backend.as_textarea_mut() else {
+            unreachable!()
+        };
+        self.selection = ta.selection_range();
+        EventState::Consumed
+    }
+
+    /// Drain what the editor has asked its host to do since the last call.
+    pub fn take_requests(&mut self) -> Vec<EditorRequest> {
+        std::mem::take(&mut self.requests)
+    }
+
+    /// Handle a pointer event (Textarea backend only). The caller has already
+    /// checked that it landed inside the editor; `pointer` is relative to it.
+    fn handle_mouse(&mut self, pointer: &PointerInput, tx: &AppTx) -> EventState {
         // Past the bounds check the event is ours, so it is an action: a click
         // moves the cursor, and even a scroll means attention moved. Placed above
         // the context-menu return below so a right-click counts too.
@@ -1641,10 +1660,10 @@ impl TextEditorComponent {
         // Right-click: with a selection it copies (unchanged behavior);
         // without one it asks the host to open the note's context menu
         // (file & note ops).
-        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Right))
+        if matches!(pointer.kind, PointerKind::Down(Button::Right))
             && self.selection.is_none_or(|(start, end)| start == end)
         {
-            self.wants_context_menu = true;
+            self.requests.push(EditorRequest::ContextMenu);
             return EventState::Consumed;
         }
         // Everything below drives the textarea backend directly; on Nvim the
@@ -1654,7 +1673,7 @@ impl TextEditorComponent {
             return EventState::NotConsumed;
         }
         // Handle right-click clipboard copy in its own scope to avoid borrow conflicts.
-        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Right)) {
+        if matches!(pointer.kind, PointerKind::Down(Button::Right)) {
             self.copy_selection_to_clipboard(tx);
             self.sync_highlight();
             return EventState::Consumed;
@@ -1662,10 +1681,10 @@ impl TextEditorComponent {
         // A drag under vim selects what it covers, rebuilt from where it began.
         // With no press in this editor behind it (one that began elsewhere, or
         // before another note was opened) there is nothing it could select.
-        if matches!(mouse.kind, MouseEventKind::Drag(_)) {
+        if matches!(pointer.kind, PointerKind::Drag(_)) {
             let (lrow, lcol) = self
                 .view
-                .click_at_screen((mouse.row - r.y) as usize, (mouse.column - r.x) as usize);
+                .click_at_screen(pointer.row as usize, pointer.col as usize);
             match self.drag_origin {
                 Some(origin)
                     if self
@@ -1680,34 +1699,34 @@ impl TextEditorComponent {
             }
         }
         // The drag, if any, is over.
-        if matches!(mouse.kind, MouseEventKind::Up(_)) {
+        if matches!(pointer.kind, PointerKind::Up(_)) {
             self.drag_origin = None;
         }
         // Now extract ta for remaining mouse operations.
         let Some(ta) = self.backend.as_textarea_mut() else {
             unreachable!()
         };
-        match mouse.kind {
-            MouseEventKind::Down(_) => {
+        match pointer.kind {
+            PointerKind::Down(_) => {
                 self.view.follow_cursor();
                 ta.cancel_selection();
                 let (lrow, lcol) = self
                     .view
-                    .click_at_screen((mouse.row - r.y) as usize, (mouse.column - r.x) as usize);
+                    .click_at_screen(pointer.row as usize, pointer.col as usize);
                 ta.jump_to(lrow as usize, lcol as usize);
                 ta.start_selection();
                 self.drag_origin = Some(ta.cursor());
             }
-            MouseEventKind::Drag(_) => {
+            PointerKind::Drag(_) => {
                 let (lrow, lcol) = self
                     .view
-                    .click_at_screen((mouse.row - r.y) as usize, (mouse.column - r.x) as usize);
+                    .click_at_screen(pointer.row as usize, pointer.col as usize);
                 ta.jump_to(lrow as usize, lcol as usize);
             }
             // The wheel moves kimün's own viewport, never the cursor — the
             // find bar relies on that to let the user read elsewhere mid-search.
-            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
-                let delta = if mouse.kind == MouseEventKind::ScrollUp {
+            PointerKind::ScrollUp | PointerKind::ScrollDown => {
+                let delta = if pointer.kind == PointerKind::ScrollUp {
                     -WHEEL_SCROLL_ROWS
                 } else {
                     WHEEL_SCROLL_ROWS
@@ -1738,10 +1757,14 @@ impl TextEditorComponent {
 impl Component for TextEditorComponent {
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
         self.maybe_recover_from_dead_nvim();
-        self.bind_autocomplete_redraw(tx);
+        self.ensure_notifier(tx);
 
         match event {
             InputEvent::Key(key) => {
+                // The one crossterm -> neutral conversion for the direct path
+                // and the vim engine. The popup, find bar and nvim stages keep
+                // the raw event: they speak crossterm.
+                let input = crate::keys::crossterm_input::key_input(key);
                 // Every key acts at the cursor, so a wheel-scrolled view comes
                 // back to it — even when the key leaves the cursor where it was
                 // (find-next onto the same match, a motion at the buffer edge).
@@ -1769,8 +1792,8 @@ impl Component for TextEditorComponent {
                 }
                 // Find bar intercepts all keys while active. Must run before the
                 // vim engine, which would otherwise consume keys in Normal mode
-                // (the textarea backend also intercepts inside handle_textarea_key,
-                // but the vim Normal-mode path never reaches that).
+                // (the bar is routed only from here; handle_textarea_key has no
+                // find-bar check of its own).
                 if self.dispatch_to_find_bar(key) {
                     // Here rather than inside `dispatch_bar`: that runs for every
                     // key whether or not a bar is open, so interrupting there
@@ -1784,8 +1807,9 @@ impl Component for TextEditorComponent {
                 // keep working.
                 // A key with no `KeyInput` (e.g. `Null`, media keys) is one vim
                 // can't use: treated as not handled, like a non-vim backend.
-                let vim_outcome = crate::keys::crossterm_input::key_input(key)
-                    .and_then(|input| self.backend.vim_handle_key(&input));
+                let vim_outcome = input
+                    .as_ref()
+                    .and_then(|input| self.backend.vim_handle_key(input));
                 if let Some(outcome) = vim_outcome {
                     use crate::logic::editor::vim::VimKeyOutcome;
                     // Anything the engine consumed is an action rather than a
@@ -1840,11 +1864,11 @@ impl Component for TextEditorComponent {
                                 // left is the I/O and reporting it.
                                 VimHostAction::ClipboardCopy(text) => {
                                     self.selection = None;
-                                    crate::components::yank(text, "copied", tx);
+                                    crate::logic::clipboard::yank(text, "copied", tx);
                                 }
                                 VimHostAction::ClipboardCut(text) => {
                                     self.selection = None;
-                                    crate::components::yank(text, "cut", tx);
+                                    crate::logic::clipboard::yank(text, "cut", tx);
                                 }
                                 // Paste is different: the engine deliberately
                                 // left the range SELECTED rather than cutting
@@ -1878,7 +1902,10 @@ impl Component for TextEditorComponent {
                 //   - both unchanged → no autocomplete work needed
                 let text_rev_before = self.revs.current();
                 let cursor_before = self.textarea_cursor();
-                let result = self.handle_textarea_key(key, tx);
+                let result = match input {
+                    Some(i) => self.handle_textarea_key(i, tx),
+                    None => self.ignore_unmapped_key(),
+                };
                 let cursor_after = self.textarea_cursor();
                 if self.revs.current() != text_rev_before {
                     self.sync_autocomplete();
@@ -1906,7 +1933,14 @@ impl Component for TextEditorComponent {
                 }
                 let text_rev_before = self.revs.current();
                 let cursor_before = self.textarea_cursor();
-                let result = self.handle_mouse(mouse, tx);
+                let result = if self.covers(mouse.column, mouse.row) {
+                    match pointer_input(mouse, (self.rect.x, self.rect.y)) {
+                        Some(pointer) => self.handle_mouse(&pointer, tx),
+                        None => self.ignored_pointer(),
+                    }
+                } else {
+                    EventState::NotConsumed
+                };
                 let cursor_after = self.textarea_cursor();
                 // Mouse clicks typically only move the cursor — refresh
                 // (which may close the popup) but do not auto-open.
@@ -2051,39 +2085,37 @@ impl Component for TextEditorComponent {
 
         // Assemble this frame's **overlays**. The view appends the two kinds it
         // derives from content (tasks, needles) for the visible rows.
-        let mut overlays: Vec<view::Overlay> = Vec::new();
+        let mut overlays: Vec<Overlay> = Vec::new();
         if let Some(((sr, sc), (er, ec))) = selection {
             // A multi-row selection becomes one overlay per row; the middle
-            // rows run to their full width, which `restyle_over_range` clamps.
+            // rows run to their full width, which `mark_overlay` clamps.
             for row in sr..=er {
                 let start = if row == sr { sc } else { 0 };
                 let end = if row == er { ec } else { usize::MAX };
-                overlays.push(view::Overlay::new(
-                    row,
-                    start,
-                    end,
-                    view::OverlayKind::Selection,
-                ));
+                overlays.push(Overlay::new(row, start, end, OverlayKind::Selection));
             }
         }
         overlays.extend(preview_spans.iter().map(|p| {
-            view::Overlay::new(
+            Overlay::new(
                 p.row,
                 p.start,
                 p.end,
                 if p.is_current {
-                    view::OverlayKind::PreviewCurrent
+                    OverlayKind::PreviewCurrent
                 } else {
-                    view::OverlayKind::Preview
+                    OverlayKind::Preview
                 },
             )
         }));
         // Find-bar matches. Skipped while previewing: those columns already
         // carry the preview colour, which is the more important fact.
         if view_lines.is_none() {
-            overlays.extend(overlay.matches.iter().map(|&(row, start, end)| {
-                view::Overlay::new(row, start, end, view::OverlayKind::Match)
-            }));
+            overlays.extend(
+                overlay
+                    .matches
+                    .iter()
+                    .map(|&(row, start, end)| Overlay::new(row, start, end, OverlayKind::Match)),
+            );
         }
         self.view.set_overlays(overlays);
 
@@ -2111,14 +2143,14 @@ impl Component for TextEditorComponent {
                 None => snap.text.clone(),
             };
             let tx = self.full_parse_tx.clone();
-            let redraw = self.redraw_tx.clone();
+            let redraw = self.notifier.clone();
             self.full_parse_task.spawn(async move {
                 let buf = ParsedBuffer::parse(&text);
                 let _ = tx.send((generation, buf));
                 // Wake the render loop so the rich parse lands
                 // without waiting for the next keystroke.
                 if let Some(redraw) = redraw {
-                    let _ = redraw.send(AppMessage::Redraw);
+                    redraw();
                 }
             });
         }
@@ -2128,9 +2160,12 @@ impl Component for TextEditorComponent {
         // `gutter_insets` clones — nothing here needs `view_lines`/`snap`.
         if let Some(job) = self.view.take_pending_full_layout() {
             let tx = self.layout_tx.clone();
-            let redraw = self.redraw_tx.clone();
+            let redraw = self.notifier.clone();
             self.layout_task.spawn(async move {
-                let hints = view::row_hints(&job.rendered_cache, &job.gutter_insets);
+                let hints = crate::logic::editor::display::row_hints(
+                    &job.rendered_cache,
+                    &job.gutter_insets,
+                );
                 let layout = crate::ropetext::Layout::compute(
                     &job.text,
                     job.width,
@@ -2139,7 +2174,7 @@ impl Component for TextEditorComponent {
                 );
                 let _ = tx.send((job.generation, layout));
                 if let Some(redraw) = redraw {
-                    let _ = redraw.send(AppMessage::Redraw);
+                    redraw();
                 }
             });
         }
@@ -2147,7 +2182,7 @@ impl Component for TextEditorComponent {
         // (set via set_cursor_position) wins over the editor's caret call.
         let bar_focused = self.search.is_some() && focused;
         let editor_focused = focused && !bar_focused;
-        use self::view::CursorShape;
+        use crate::logic::editor::display::CursorShape;
         let cursor_shape = match self.backend.modal_is_insert() {
             None => None, // Direct textarea — leave terminal default
             Some(true) => Some(CursorShape::Bar),
@@ -2288,6 +2323,7 @@ mod tests {
     use super::*;
     use crate::keys::KeyBindings;
     use crate::logic::editor::snapshot::EditorMode;
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
     fn make_editor() -> TextEditorComponent {
         TextEditorComponent::new(
@@ -2355,6 +2391,51 @@ mod tests {
             .expect("popup drawn");
         editor.handle_input(&crate::test_support::mouse_down_at(rows.x + 1, rows.y), &tx);
         assert_eq!(editor.get_text(), "#projects");
+    }
+
+    /// A large note parses in the background; when that parse finishes the
+    /// component must wake the host through its notifier.
+    #[tokio::test]
+    async fn a_finished_background_parse_wakes_the_host() {
+        use ratatui::{Terminal, backend::TestBackend};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let woken = std::sync::Arc::new(AtomicUsize::new(0));
+        let mut editor = make_editor();
+        let counter = woken.clone();
+        editor.set_notifier(std::sync::Arc::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }));
+        let text: String = (0..1200)
+            .map(|i| format!("paragraph {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        editor.set_text(text);
+        let theme = Theme::default();
+        let mut t = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        t.draw(|f| editor.render(f, f.area(), &theme, true))
+            .unwrap();
+        for _ in 0..200 {
+            if woken.load(Ordering::SeqCst) > 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(woken.load(Ordering::SeqCst) >= 1, "host was never woken");
+    }
+
+    /// Tests never call `set_notifier`; the first `handle_input` fills it in
+    /// from the `AppTx` it receives (TUI-only lazy binding).
+    #[test]
+    fn an_unset_notifier_is_filled_in_from_the_first_handle_input_tx() {
+        let mut editor = make_editor();
+        assert!(editor.notifier.is_none());
+        editor.handle_input(
+            &InputEvent::Key(ratatui::crossterm::event::KeyEvent::from(
+                ratatui::crossterm::event::KeyCode::Char('a'),
+            )),
+            &dummy_tx(),
+        );
+        assert!(editor.notifier.is_some());
     }
 
     fn get_ta(editor: &mut TextEditorComponent) -> &mut RopeBuffer {
@@ -4565,17 +4646,227 @@ mod tests {
         assert_eq!(editor.get_text(), "todo and todo");
     }
 
+    // ── Direct-path modifier matrix (pins behaviour across the KeyInput move) ─
+
+    /// A mapped key as the direct path receives it.
+    fn ki(code: KeyCode, mods: KeyModifiers) -> KeyInput {
+        crate::keys::crossterm_input::key_input(&ratatui::crossterm::event::KeyEvent::new(
+            code, mods,
+        ))
+        .expect("mapped key")
+    }
+
+    /// One key through the public path.
+    fn send(
+        editor: &mut TextEditorComponent,
+        tx: &AppTx,
+        code: KeyCode,
+        mods: KeyModifiers,
+    ) -> EventState {
+        editor.handle_input(&InputEvent::Key(key(code, mods)), tx)
+    }
+
+    #[test]
+    fn a_key_with_no_key_input_ends_the_typing_run_and_is_consumed() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text(String::new());
+        send(&mut editor, &tx, KeyCode::Char('a'), KeyModifiers::NONE);
+        send(&mut editor, &tx, KeyCode::Char('b'), KeyModifiers::NONE);
+        let state = send(&mut editor, &tx, KeyCode::Null, KeyModifiers::NONE);
+        assert!(matches!(state, EventState::Consumed));
+        send(&mut editor, &tx, KeyCode::Char('c'), KeyModifiers::NONE);
+        assert_eq!(editor.get_text(), "abc");
+        send(&mut editor, &tx, KeyCode::Char('z'), KeyModifiers::CONTROL);
+        assert_eq!(editor.get_text(), "ab", "the Null key ended the run");
+    }
+
+    #[test]
+    fn meta_chord_on_the_direct_path_does_nothing() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("foo".to_string());
+        let state = send(&mut editor, &tx, KeyCode::Char('x'), KeyModifiers::META);
+        assert!(matches!(state, EventState::Consumed));
+        assert_eq!(editor.get_text(), "foo");
+        let state = send(&mut editor, &tx, KeyCode::Enter, KeyModifiers::META);
+        assert!(matches!(state, EventState::Consumed));
+        assert_eq!(editor.get_text(), "foo");
+        select_range(&mut editor, (0, 0), (0, 3));
+        let state = send(&mut editor, &tx, KeyCode::Char('('), KeyModifiers::META);
+        assert!(matches!(state, EventState::Consumed));
+        assert_eq!(editor.get_text(), "foo", "Meta+( must not wrap");
+    }
+
+    /// Deliberate deviation: Meta+Tab indented before the `KeyInput` split
+    /// (the old guard only excluded Ctrl and Alt); a META chord has no
+    /// `KeyInput` now, so the direct path ignores it like every other one.
+    #[test]
+    fn meta_tab_is_now_ignored() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("foo".to_string());
+        let state = send(&mut editor, &tx, KeyCode::Tab, KeyModifiers::META);
+        assert!(matches!(state, EventState::Consumed));
+        assert_eq!(editor.get_text(), "foo");
+    }
+
+    #[test]
+    fn meta_backtab_is_now_ignored() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("- foo".to_string());
+        send(&mut editor, &tx, KeyCode::Tab, KeyModifiers::NONE);
+        let indented = editor.get_text();
+        assert_ne!(indented, "- foo", "Tab indents the list line");
+        for (code, mods) in [
+            (KeyCode::BackTab, KeyModifiers::META),
+            (KeyCode::BackTab, KeyModifiers::SHIFT | KeyModifiers::META),
+            (KeyCode::Tab, KeyModifiers::SHIFT | KeyModifiers::META),
+        ] {
+            let state = send(&mut editor, &tx, code, mods);
+            assert!(matches!(state, EventState::Consumed));
+            assert_eq!(
+                editor.get_text(),
+                indented,
+                "{code:?}+{mods:?} must not dedent"
+            );
+        }
+    }
+
+    #[test]
+    fn clipboard_chords_need_exactly_ctrl() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut editor = make_editor();
+        editor.set_text("foo".to_string());
+        // No selection: a copy that fires says so, one that does not is silent.
+        for mods in [
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        ] {
+            send(&mut editor, &tx, KeyCode::Char('c'), mods);
+            assert!(rx.try_recv().is_err(), "{mods:?}+c must not copy");
+        }
+        send(&mut editor, &tx, KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert!(
+            matches!(rx.try_recv(), Ok(AppMessage::FlashMessage(_))),
+            "Ctrl+c copies"
+        );
+        assert_eq!(editor.get_text(), "foo");
+    }
+
+    #[test]
+    fn undo_redo_modifier_matrix() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text(String::new());
+        send(&mut editor, &tx, KeyCode::Char('a'), KeyModifiers::NONE);
+        send(&mut editor, &tx, KeyCode::Char('b'), KeyModifiers::NONE);
+        assert_eq!(editor.get_text(), "ab");
+
+        send(&mut editor, &tx, KeyCode::Char('z'), KeyModifiers::CONTROL);
+        assert_eq!(editor.get_text(), "", "Ctrl+z undoes");
+        send(
+            &mut editor,
+            &tx,
+            KeyCode::Char('Z'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
+        assert_eq!(editor.get_text(), "ab", "Ctrl+Shift+Z redoes");
+        send(&mut editor, &tx, KeyCode::Char('z'), KeyModifiers::CONTROL);
+        assert_eq!(editor.get_text(), "");
+        send(&mut editor, &tx, KeyCode::Char('y'), KeyModifiers::CONTROL);
+        assert_eq!(editor.get_text(), "ab", "Ctrl+y redoes");
+
+        // A shifted lowercase z is neither undo nor redo.
+        send(
+            &mut editor,
+            &tx,
+            KeyCode::Char('z'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
+        assert_eq!(editor.get_text(), "ab");
+        // Alt+z is not undo.
+        send(&mut editor, &tx, KeyCode::Char('z'), KeyModifiers::ALT);
+        assert_eq!(editor.get_text(), "ab");
+        // Plain z types.
+        send(&mut editor, &tx, KeyCode::Char('z'), KeyModifiers::NONE);
+        assert_eq!(editor.get_text(), "abz");
+    }
+
+    #[test]
+    fn tab_matrix() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("foo".to_string());
+        send(&mut editor, &tx, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(editor.get_text(), "    foo", "Tab indents");
+        send(&mut editor, &tx, KeyCode::BackTab, KeyModifiers::SHIFT);
+        assert_eq!(editor.get_text(), "foo", "BackTab dedents");
+        send(&mut editor, &tx, KeyCode::Tab, KeyModifiers::NONE);
+        send(&mut editor, &tx, KeyCode::Tab, KeyModifiers::SHIFT);
+        assert_eq!(editor.get_text(), "foo", "Tab+Shift dedents");
+
+        for mods in [KeyModifiers::CONTROL, KeyModifiers::ALT] {
+            let state = send(&mut editor, &tx, KeyCode::Tab, mods);
+            assert!(matches!(state, EventState::Consumed));
+            assert_eq!(editor.get_text(), "foo", "{mods:?}+Tab must not indent");
+        }
+    }
+
+    #[test]
+    fn enter_needs_no_modifiers_for_smart_enter() {
+        let mk = || {
+            let mut editor = make_editor();
+            editor.set_text("- foo".to_string());
+            get_ta(&mut editor).move_cursor(CursorMove::End);
+            editor
+        };
+        let tx = dummy_tx();
+        let mut editor = mk();
+        send(&mut editor, &tx, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(editor.get_text(), "- foo\n- ", "Enter continues the list");
+        let mut editor = mk();
+        send(&mut editor, &tx, KeyCode::Enter, KeyModifiers::SHIFT);
+        assert_eq!(
+            editor.get_text(),
+            "- foo\n",
+            "Shift+Enter is a plain newline"
+        );
+    }
+
+    #[test]
+    fn auto_surround_ignores_shift_but_not_ctrl_alt() {
+        let tx = dummy_tx();
+        let selected = || {
+            let mut editor = make_editor();
+            editor.set_text("foo".to_string());
+            select_range(&mut editor, (0, 0), (0, 3));
+            editor
+        };
+        let mut editor = selected();
+        send(&mut editor, &tx, KeyCode::Char('('), KeyModifiers::SHIFT);
+        assert_eq!(editor.get_text(), "(foo)", "Shift+( wraps");
+        let mut editor = selected();
+        send(&mut editor, &tx, KeyCode::Char('('), KeyModifiers::NONE);
+        assert_eq!(editor.get_text(), "(foo)", "( wraps");
+        for mods in [KeyModifiers::CONTROL, KeyModifiers::ALT] {
+            let mut editor = selected();
+            send(&mut editor, &tx, KeyCode::Char('('), mods);
+            assert_ne!(editor.get_text(), "(foo)", "{mods:?}+( must not wrap");
+        }
+    }
+
     // ── Undo grouping ────────────────────────────────────────────────────────
 
     fn type_out(editor: &mut TextEditorComponent, tx: &AppTx, text: &str) {
-        use ratatui::crossterm::event::KeyEvent;
         for c in text.chars() {
             let code = if c == '\n' {
                 KeyCode::Enter
             } else {
                 KeyCode::Char(c)
             };
-            editor.handle_textarea_key(&KeyEvent::new(code, KeyModifiers::NONE), tx);
+            editor.handle_textarea_key(ki(code, KeyModifiers::NONE), tx);
         }
     }
 
@@ -4615,12 +4906,11 @@ mod tests {
 
     #[test]
     fn backspacing_to_fix_a_typo_is_its_own_action() {
-        use ratatui::crossterm::event::KeyEvent;
         let mut editor = make_editor();
         let tx = dummy_tx();
         editor.set_text(String::new());
         type_out(&mut editor, &tx, "helllo");
-        editor.handle_textarea_key(&KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE), &tx);
+        editor.handle_textarea_key(ki(KeyCode::Backspace, KeyModifiers::NONE), &tx);
         assert_eq!(editor.get_text(), "helll");
 
         assert!(get_ta(&mut editor).undo());
@@ -4771,8 +5061,7 @@ mod tests {
     }
 
     fn arrow(editor: &mut TextEditorComponent, tx: &AppTx, code: KeyCode) {
-        use ratatui::crossterm::event::KeyEvent;
-        editor.handle_textarea_key(&KeyEvent::new(code, KeyModifiers::NONE), tx);
+        editor.handle_textarea_key(ki(code, KeyModifiers::NONE), tx);
     }
 
     #[test]
@@ -4940,10 +5229,7 @@ cccccccc"
         lay_out(&mut editor, 6, 10);
 
         get_ta(&mut editor).jump_to(0, 0);
-        editor.handle_textarea_key(
-            &ratatui::crossterm::event::KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT),
-            &tx,
-        );
+        editor.handle_textarea_key(ki(KeyCode::Down, KeyModifiers::SHIFT), &tx);
         assert_eq!(
             get_ta(&mut editor).selection_range(),
             Some(((0, 0), (0, 5)))
@@ -5262,6 +5548,23 @@ cccccccc"
         editor
     }
 
+    /// A selectionless right-click asks the host for the context menu, once;
+    /// with a selection it copies instead and asks for nothing.
+    #[test]
+    fn right_click_without_a_selection_requests_the_context_menu_once() {
+        use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+        let tx = dummy_tx();
+        let mut editor = rendered_vim_editor("hello world");
+        editor.handle_input(&mouse(MouseEventKind::Down(MouseButton::Right), 3), &tx);
+        assert_eq!(editor.take_requests(), [EditorRequest::ContextMenu]);
+        assert_eq!(editor.take_requests(), []);
+
+        let mut editor = rendered_vim_editor("hello world");
+        press(&mut editor, "ve");
+        editor.handle_input(&mouse(MouseEventKind::Down(MouseButton::Right), 1), &tx);
+        assert!(!editor.take_requests().contains(&EditorRequest::ContextMenu));
+    }
+
     /// Right-click in Visual is Ctrl-C: same copy, and the same return to
     /// Normal — for `v` and for `V`, an empty line included.
     #[test]
@@ -5278,6 +5581,65 @@ cccccccc"
                 "after `{keys}` on {text:?}"
             );
             assert_eq!(editor.selection, None);
+        }
+    }
+
+    /// The mouse never looked at META/HYPER: those bits must not change what
+    /// a click does.
+    #[test]
+    fn meta_modified_mouse_events_act_like_unmodified_ones() {
+        use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        let tx = dummy_tx();
+        for modifiers in [KeyModifiers::META, KeyModifiers::HYPER] {
+            let ev = |kind, column| {
+                InputEvent::Mouse(MouseEvent {
+                    kind,
+                    column,
+                    row: 0,
+                    modifiers,
+                })
+            };
+            let mut editor = rendered_vim_editor("hello world");
+            editor.handle_input(&ev(MouseEventKind::Down(MouseButton::Right), 3), &tx);
+            assert_eq!(
+                editor.take_requests(),
+                [EditorRequest::ContextMenu],
+                "right-click {modifiers:?}"
+            );
+
+            let mut editor = rendered_vim_editor("hello world");
+            editor.handle_input(&ev(MouseEventKind::Down(MouseButton::Left), 4), &tx);
+            assert_eq!(editor.textarea_cursor(), Some((0, 4)), "left {modifiers:?}");
+        }
+    }
+
+    /// Pointer events with no `PointerInput` (horizontal scroll) inside the editor are still the editor's: they are consumed as
+    /// an action that changes nothing, and never open the context menu.
+    #[test]
+    fn an_ignored_pointer_event_inside_is_consumed_and_changes_nothing() {
+        use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
+        let tx = dummy_tx();
+        let events = [
+            (MouseEventKind::ScrollLeft, KeyModifiers::NONE),
+            (MouseEventKind::ScrollRight, KeyModifiers::NONE),
+        ];
+        for (kind, modifiers) in events {
+            let mut editor = rendered_vim_editor("hello world");
+            let cursor = editor.textarea_cursor();
+            let ev = InputEvent::Mouse(MouseEvent {
+                kind,
+                column: 3,
+                row: 0,
+                modifiers,
+            });
+            assert_eq!(
+                editor.handle_input(&ev, &tx),
+                EventState::Consumed,
+                "{kind:?} {modifiers:?}"
+            );
+            assert_eq!(editor.textarea_cursor(), cursor, "{kind:?} {modifiers:?}");
+            assert_eq!(editor.selection, None);
+            assert!(editor.take_requests().is_empty(), "{kind:?} {modifiers:?}");
         }
     }
 

@@ -99,7 +99,7 @@ pub struct AutocompleteController {
 /// Fire-and-forget redraw signal owned by the controller and invoked
 /// from the spawned query task. The host wires this to its event loop
 /// (e.g. `tx.send(AppMessage::Redraw)`).
-pub type RedrawCallback = Arc<dyn Fn() + Send + Sync + 'static>;
+pub type RedrawCallback = crate::logic::message::Notifier;
 
 #[derive(Debug)]
 struct QueryResult {

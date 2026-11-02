@@ -400,11 +400,15 @@ impl AppTxExt for AppTx {
     }
 }
 
+/// A host wake-up: components call it from any thread when background work
+/// finishes and the screen should be redrawn.
+pub type Notifier = Arc<dyn Fn() + Send + Sync + 'static>;
+
 /// Build a `Send + Sync` callback that fires `AppMessage::Redraw` on the
 /// app event bus. Used by long-lived components (autocomplete query
 /// task, etc.) that need to wake the render loop from a background
 /// thread but should not be aware of `AppMessage` themselves.
-pub fn redraw_callback(tx: AppTx) -> Arc<dyn Fn() + Send + Sync + 'static> {
+pub fn redraw_callback(tx: AppTx) -> Notifier {
     Arc::new(move || {
         let _ = tx.send(AppMessage::Redraw);
     })
