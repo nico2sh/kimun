@@ -4,6 +4,7 @@
 
 use super::markdown_style::{mask_to_modifier, role_style};
 use crate::logic::editor::display::{CursorShape, EditorDisplay};
+use crate::logic::editor::frame::EditorFrame;
 use crate::logic::editor::markdown::runs::Run;
 use crate::logic::editor::overlay::OverlayKind;
 use crate::logic::editor::snapshot::EditorSnapshot;
@@ -73,9 +74,18 @@ fn run_style(run: &Run, theme: &Theme) -> Style {
 #[derive(Clone)]
 pub struct MarkdownEditorView {
     inner: EditorDisplay,
+    /// Cursor's last on-screen position (col, row), mirrored from the painter
+    /// after each [`Self::render`].
+    pub last_cursor_screen: Option<(u16, u16)>,
+    painter: PainterState,
+}
+
+/// What the painter remembers between frames.
+#[derive(Clone, Default)]
+pub(super) struct PainterState {
     /// Cursor's last on-screen position (col, row), or `None` when the
     /// cursor was scrolled off-screen or the view was unfocused at the
-    /// time of the previous `render`. Used as the anchor for floating
+    /// time of the previous paint. Used as the anchor for floating
     /// overlays like the autocomplete popup, which is drawn after the
     /// editor itself.
     pub last_cursor_screen: Option<(u16, u16)>,
@@ -84,7 +94,65 @@ pub struct MarkdownEditorView {
     /// is global state, so on focus loss we must emit an explicit reset —
     /// otherwise the editor's bar/block shape leaks into every other text
     /// input (search sidebar, dialogs).
-    applied_cursor_style: Option<CursorShape>,
+    pub applied_cursor_style: Option<CursorShape>,
+}
+
+/// Paint an [`EditorFrame`] into `rect`: its rows as styled lines, then the
+/// terminal cursor (position and shape), recording both in `painter`.
+pub(super) fn paint_frame(
+    f: &mut Frame,
+    rect: Rect,
+    theme: &Theme,
+    frame: EditorFrame,
+    cursor_shape: Option<CursorShape>,
+    painter: &mut PainterState,
+) {
+    if rect.height == 0 {
+        return;
+    }
+    let cursor = frame.cursor;
+    let lines: Vec<Line> = frame
+        .rows
+        .into_iter()
+        .map(|row| {
+            Line::from(
+                row.runs
+                    .into_iter()
+                    .map(|r| {
+                        let style = run_style(&r, theme);
+                        Span::styled(r.text, style)
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+
+    f.render_widget(
+        Paragraph::new(Text::from(lines)).style(theme.base_style()),
+        rect,
+    );
+
+    painter.last_cursor_screen = None;
+    let mut desired_style: Option<CursorShape> = None;
+    // The frame is sized by the viewport the last `update` set; a cell
+    // below `rect` (a render rect shorter than the update rect) is not
+    // ours to place the cursor in.
+    if let Some((c, r)) = cursor.filter(|&(_, r)| r < rect.height) {
+        let (cx, cy) = (rect.x + c, rect.y + r);
+        f.set_cursor_position(Position { x: cx, y: cy });
+        painter.last_cursor_screen = Some((cx, cy));
+        desired_style = cursor_shape;
+    }
+    if desired_style != painter.applied_cursor_style {
+        use ratatui::crossterm::cursor::SetCursorStyle;
+        let style = match desired_style {
+            Some(CursorShape::Block) => SetCursorStyle::SteadyBlock,
+            Some(CursorShape::Bar) => SetCursorStyle::SteadyBar,
+            None => SetCursorStyle::DefaultUserShape,
+        };
+        let _ = ratatui::crossterm::execute!(std::io::stdout(), style);
+        painter.applied_cursor_style = desired_style;
+    }
 }
 
 impl Deref for MarkdownEditorView {
@@ -105,7 +173,7 @@ impl MarkdownEditorView {
         Self {
             inner: EditorDisplay::new(),
             last_cursor_screen: None,
-            applied_cursor_style: None,
+            painter: PainterState::default(),
         }
     }
 
@@ -125,48 +193,8 @@ impl MarkdownEditorView {
             return;
         }
         let frame = self.frame(rect.width, focused);
-        let lines: Vec<Line> = frame
-            .rows
-            .into_iter()
-            .map(|row| {
-                Line::from(
-                    row.runs
-                        .into_iter()
-                        .map(|r| {
-                            let style = run_style(&r, theme);
-                            Span::styled(r.text, style)
-                        })
-                        .collect::<Vec<_>>(),
-                )
-            })
-            .collect();
-
-        f.render_widget(
-            Paragraph::new(Text::from(lines)).style(theme.base_style()),
-            rect,
-        );
-
-        self.last_cursor_screen = None;
-        let mut desired_style: Option<CursorShape> = None;
-        // The frame is sized by the viewport the last `update` set; a cell
-        // below `rect` (a render rect shorter than the update rect) is not
-        // ours to place the cursor in.
-        if let Some((c, r)) = frame.cursor.filter(|&(_, r)| r < rect.height) {
-            let (cx, cy) = (rect.x + c, rect.y + r);
-            f.set_cursor_position(Position { x: cx, y: cy });
-            self.last_cursor_screen = Some((cx, cy));
-            desired_style = cursor_shape;
-        }
-        if desired_style != self.applied_cursor_style {
-            use ratatui::crossterm::cursor::SetCursorStyle;
-            let style = match desired_style {
-                Some(CursorShape::Block) => SetCursorStyle::SteadyBlock,
-                Some(CursorShape::Bar) => SetCursorStyle::SteadyBar,
-                None => SetCursorStyle::DefaultUserShape,
-            };
-            let _ = ratatui::crossterm::execute!(std::io::stdout(), style);
-            self.applied_cursor_style = desired_style;
-        }
+        paint_frame(f, rect, theme, frame, cursor_shape, &mut self.painter);
+        self.last_cursor_screen = self.painter.last_cursor_screen;
     }
 }
 

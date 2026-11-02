@@ -2075,7 +2075,7 @@ impl EditorScreen {
     /// exactly that guess: the classifier cannot hit-test the buffer, so it
     /// asks and lets the answer decide.
     fn follow_link_at_cursor(&mut self, tx: &AppTx) -> bool {
-        use crate::components::text_editor::FollowTarget;
+        use crate::logic::editor::claim::FollowTarget;
         // In the attachment view, FollowLink (Ctrl+N) opens the attachment with
         // the OS default program rather than following a link (there is none).
         if self.panels.is_showing_attachment() {
@@ -3018,7 +3018,7 @@ mod tests {
         screen.run_op(EditorOp::FindInBuffer, &tx);
         assert_eq!(
             screen.panels.editor().unwrap().claim(),
-            crate::components::text_editor::EditorClaim::FindBar
+            crate::logic::editor::claim::EditorClaim::FindBar
         );
 
         screen.handle_input(&ctrl_key('b'), &tx);
@@ -4772,7 +4772,7 @@ mod tests {
         screen.run_op(EditorOp::FindInBuffer, &tx);
         assert_eq!(
             screen.panels.editor().map(|e| e.claim()),
-            Some(crate::components::text_editor::EditorClaim::FindBar)
+            Some(crate::logic::editor::claim::EditorClaim::FindBar)
         );
         lay_out(&mut screen);
         let (col, row) = (0..40u16)

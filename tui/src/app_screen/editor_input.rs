@@ -24,10 +24,10 @@ use ratatui::crossterm::event::KeyEvent;
 use crate::components::events::InputEvent;
 use crate::components::overlay::OverlayKind;
 use crate::components::panel::PanelKind;
-use crate::components::text_editor::EditorClaim;
 use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::key_strike::KeyStrike;
 use crate::keys::{KeyBindings, key_event_to_combo};
+use crate::logic::editor::claim::EditorClaim;
 use crate::logic::nav::DrawerView;
 use crate::logic::text_action::TextAction;
 

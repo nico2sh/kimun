@@ -46,6 +46,18 @@
       "sourceType": "github",
       "computedHash": "669a671f855be8773e4c2936e54d4243fbd1d273f87633158544efe3dbc4d825"
     },
+    "gpui-kit": {
+      "source": "longbridge/gpui-kit",
+      "sourceType": "github",
+      "skillPath": "skills/gpui-kit/SKILL.md",
+      "computedHash": "e401812a1269fd2caa07d307867f25c38c974f706f34bd52a8da8465b85ddd75"
+    },
+    "gpui-kit-design-guides": {
+      "source": "longbridge/gpui-kit",
+      "sourceType": "github",
+      "skillPath": "skills/gpui-kit-design-guides/SKILL.md",
+      "computedHash": "cc144ee0cc35978c387e6a13e8bc2cd25bfac45363ad25235d5b9cf09f8fa017"
+    },
     "impeccable": {
       "source": "pbakaus/impeccable",
       "sourceType": "github",

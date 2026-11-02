@@ -49,6 +49,32 @@ pub(crate) fn with_clipboard<T>(
     result
 }
 
+#[cfg(test)]
+thread_local! {
+    /// What a test says the clipboard holds; consulted by [`read_text`] only.
+    static TEST_TEXT: std::cell::RefCell<Option<Result<String, String>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Test seam: make [`read_text`] see `text` instead of the OS clipboard, on
+/// this thread only. The override clears when the guard drops.
+#[cfg(test)]
+pub(crate) fn set_test_clipboard_text(text: Result<String, String>) -> TestClipboardGuard {
+    TEST_TEXT.with(|t| *t.borrow_mut() = Some(text));
+    TestClipboardGuard
+}
+
+/// Clears the [`set_test_clipboard_text`] override on drop.
+#[cfg(test)]
+pub(crate) struct TestClipboardGuard;
+
+#[cfg(test)]
+impl Drop for TestClipboardGuard {
+    fn drop(&mut self) {
+        TEST_TEXT.with(|t| *t.borrow_mut() = None);
+    }
+}
+
 /// Put `text` on the OS clipboard and flash the outcome: `done_msg` on
 /// success, `"clipboard: {e}"` on failure. **The** seam for every OS-clipboard
 /// write in the TUI — list-row yanks, ask answers and sources, and the editor's
@@ -59,6 +85,47 @@ pub fn yank(text: String, done_msg: impl Into<String>, tx: &AppTx) {
         Err(e) => format!("clipboard: {e}"),
     };
     tx.send(AppMessage::FlashMessage(msg)).ok();
+}
+
+/// Read the OS clipboard's text for a paste. An empty clipboard and a failed
+/// read are both reported on `tx` and yield `None` — silence here is what made
+/// the vim-mode paste bug so hard to place.
+pub(crate) fn read_text(tx: &AppTx) -> Option<String> {
+    #[cfg(test)]
+    let read = match TEST_TEXT.with(|t| t.borrow().clone()) {
+        Some(injected) => injected,
+        None => with_clipboard(|c| c.get_text()).map_err(|e| e.to_string()),
+    };
+    #[cfg(not(test))]
+    let read = with_clipboard(|c| c.get_text()).map_err(|e| e.to_string());
+    match read {
+        Ok(t) if !t.is_empty() => Some(t),
+        Ok(_) => {
+            tx.send(AppMessage::FlashMessage("clipboard is empty".into()))
+                .ok();
+            None
+        }
+        Err(e) => {
+            tx.send(AppMessage::FlashMessage(format!("clipboard: {e}")))
+                .ok();
+            None
+        }
+    }
+}
+
+/// Snapshot of the clipboard image, if any: owned RGBA bytes plus dimensions.
+///
+/// Reads go through the same shared handle as writes — not for ownership (only
+/// writes need that) but so there is one connection and one reconnect policy.
+/// No flash: this is a *probe* run ahead of every Ctrl+V, and "no image on the
+/// clipboard" is the ordinary case, not a failure to report.
+pub(crate) fn read_image() -> Option<crate::logic::editor::claim::ClipboardImage> {
+    let img = with_clipboard(|c| c.get_image()).ok()?;
+    Some(crate::logic::editor::claim::ClipboardImage {
+        width: img.width,
+        height: img.height,
+        rgba: img.bytes.into_owned(),
+    })
 }
 
 #[cfg(test)]
