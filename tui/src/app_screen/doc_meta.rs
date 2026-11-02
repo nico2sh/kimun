@@ -13,7 +13,7 @@ use std::time::Duration;
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 
-use crate::components::text_editor::FollowTarget;
+use crate::logic::editor::claim::FollowTarget;
 use crate::logic::message::{AppMessage, AppTx};
 
 pub struct DocMeta {

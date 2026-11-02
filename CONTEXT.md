@@ -61,7 +61,7 @@ The open note's text, its cursor, its selection and its edit history as one valu
 _Avoid_: buffer (collides with ratatui's render buffer), document, model.
 
 **Rope buffer**:
-The editor's buffer: the **edit buffer** plus kimün's editing policy, and the one `&mut` the **vim** engine, the plain key table, the **find bar** and the editor component all take (`RopeBuffer`). Because every mutation on the **plain** and **vim** backends passes through it, the facts that follow from one — did the content change, what range was damaged, which edits belong to one **undo group** — are *derived* there rather than predicted by each caller. It also owns what the engine deliberately refuses: the **find pattern** and its row-wise wrapping search, the yank transport the **unnamed register** fills from, the goal column a vertical motion aims at, the **indent step**, and the `(row, col)` vocabulary every caller speaks. It knows text, not markdown: list continuation, **auto-surround** and emphasis markers are operations *over* it (`markdown_edits`), tested against a bare one.
+The editor's buffer: the **edit buffer** plus kimün's editing policy, and the one `&mut` the **vim** engine, the plain key table, the **find bar** and the **Editor** all take (`RopeBuffer`). Because every mutation on the **plain** and **vim** backends passes through it, the facts that follow from one — did the content change, what range was damaged, which edits belong to one **undo group** — are *derived* there rather than predicted by each caller. It also owns what the engine deliberately refuses: the **find pattern** and its row-wise wrapping search, the yank transport the **unnamed register** fills from, the goal column a vertical motion aims at, the **indent step**, and the `(row, col)` vocabulary every caller speaks. It knows text, not markdown: list continuation, **auto-surround** and emphasis markers are operations *over* it (`markdown_edits`), tested against a bare one.
 _Avoid_: compat shim, textarea shim (the name it grew up under — it owns policy, not a migration), buffer unqualified.
 
 **Editing mode**:
@@ -320,8 +320,16 @@ A mouse or touch gesture in terminal-free form: a kind (down, drag or up of a bu
 _Avoid_: mouse event (crossterm's type), click (names only one kind).
 
 **Editor request**:
-Something the editor asks its host to do because the editor does not own the surface that does it — open the note's context menu, and later open the find bar. Queued by the editor and drained by the host; never a flag the host has to poll and clear.
+Something the editor asks its host to do because the editor does not own the surface that does it — open the note's context menu, open the find bar or step to the next or previous match (vim `/`, `n`, `N`), or note that the viewport scrolled. Queued by the editor and drained by the host; never a flag the host has to poll and clear.
 _Avoid_: callback, intent (collides with the screen-level **Intent**).
+
+**Editor**:
+The **Logic layer**'s plain-or-vim text editor (`Editor`): an **Edit buffer** (through the **Rope buffer**) with its typing and undo grouping, the vim engine when the **Editor backend** selects it, and everything a key, a pointer gesture, a paste or a text action does to them. It reports what it does not own as **Editor requests**; the **TUI**'s find bar, autocomplete popup and nvim engine live around it, not inside it.
+_Avoid_: editor component (the TUI wrapper), widget.
+
+**Editor session**:
+What any editor engine keeps between frames — the open note, the revision clock, search needles, the **Editor display** and its background parse and layout jobs, and the redraw hook — and the one call (`prepare_frame`) that turns a snapshot into a frame's worth of state. Each engine (the **Editor**, and the TUI's nvim engine) keeps its own.
+_Avoid_: editor state (too wide), document, view.
 
 **App message**:
 What a component or background task tells the app (open a note, autosave completed, a file operation, an Ask answer, an update notice): `AppMessage`, carried on the app channel and free of terminal types. The loop's own `AppEvent` wraps it with a terminal **Input source** event, and the **GUI** wraps it with its own input.
