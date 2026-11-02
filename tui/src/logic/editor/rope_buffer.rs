@@ -82,7 +82,7 @@ pub struct EditOutcome {
 /// mutations of one group, and in the view, across the drains between two
 /// frames. Both union ranges recorded against different texts, and both are
 /// wrong in the same way without this.
-pub(super) fn shift_rows(
+pub(crate) fn shift_rows(
     range: std::ops::Range<usize>,
     at: usize,
     delta: isize,

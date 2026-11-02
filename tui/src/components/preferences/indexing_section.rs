@@ -5,7 +5,8 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::components::Component;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, InputEvent};
+use crate::components::events::InputEvent;
+use crate::logic::message::{AppMessage, AppTx};
 use crate::settings::themes::Theme;
 
 use super::{ClickMap, SectionMouse, text_rect};
@@ -84,8 +85,8 @@ impl Component for IndexingSection {
             }
             ratatui::crossterm::event::KeyCode::Enter => {
                 let msg = match self.selected {
-                    IndexAction::Fast => AppEvent::TriggerFastReindex,
-                    IndexAction::Full => AppEvent::TriggerFullReindex,
+                    IndexAction::Fast => AppMessage::TriggerFastReindex,
+                    IndexAction::Full => AppMessage::TriggerFullReindex,
                 };
                 tx.send(msg).ok();
                 EventState::Consumed
@@ -156,7 +157,7 @@ impl Component for IndexingSection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::events::AppEvent;
+    use crate::logic::message::AppMessage;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 
     fn key(code: KeyCode) -> InputEvent {
@@ -217,7 +218,7 @@ mod tests {
         let msg = rx
             .try_recv()
             .expect("Enter should send message after enabling");
-        assert!(matches!(msg, AppEvent::TriggerFastReindex));
+        assert!(matches!(msg, AppMessage::TriggerFastReindex));
     }
 
     #[test]
@@ -244,7 +245,7 @@ mod tests {
         let mut section = IndexingSection::new(true);
         section.handle_input(&key(KeyCode::Enter), &tx);
         let msg = rx.try_recv().expect("message should be sent");
-        assert!(matches!(msg, AppEvent::TriggerFastReindex));
+        assert!(matches!(msg, AppMessage::TriggerFastReindex));
     }
 
     #[test]
@@ -255,7 +256,7 @@ mod tests {
         assert!(rx.try_recv().is_err(), "Right should not send any message");
         section.handle_input(&key(KeyCode::Enter), &tx);
         let msg = rx.try_recv().expect("message should be sent");
-        assert!(matches!(msg, AppEvent::TriggerFullReindex));
+        assert!(matches!(msg, AppMessage::TriggerFullReindex));
     }
 
     #[test]

@@ -93,6 +93,13 @@ jobs:
             exit 1
           fi
 
+      # The Logic layer (ADR-0049) is the code both frontends share. What keeps
+      # it shareable is that it never names a UI crate; the compiler cannot say
+      # so inside one crate, so this step does.
+      - name: Logic layer names no UI crate
+        if: matrix.lint
+        run: bash .github/scripts/check-logic-layer.sh
+
       # Filesystem operations live in `kimun_core::nfs` (vault-scoped) or
       # `kimun_core::system` (host-scoped) — CLAUDE.md states the rule, this
       # step keeps it true. Needs more than a grep: test code is exempt, and

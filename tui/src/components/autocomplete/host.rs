@@ -1,6 +1,6 @@
 use std::num::NonZeroU64;
 
-use crate::components::text_editor::snapshot::EditorSnapshot;
+use crate::logic::editor::snapshot::EditorSnapshot;
 
 /// Read-only view of the input surface (editor or search box) for the
 /// autocomplete controller. The controller derives byte offsets and

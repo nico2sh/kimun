@@ -21,9 +21,10 @@ use ratatui::widgets::Paragraph;
 use super::ModalShell;
 use crate::components::clickable::list_index_at;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, InputEvent, OverlayData, PinnedRow};
+use crate::components::events::InputEvent;
 use crate::components::hint_row::HintRow;
 use crate::components::panel::{ModalSpec, modal_chrome};
+use crate::logic::message::{AppMessage, AppTx, OverlayData, PinnedRow};
 use crate::settings::themes::Theme;
 
 const OUTER_WIDTH: u16 = 60;
@@ -101,9 +102,9 @@ impl PinnedNotesDialog {
                 Ok(paths) => paths,
                 Err(e) => {
                     tracing::warn!("failed to load pinned notes: {e}");
-                    tx.send(AppEvent::OverlayData(OverlayData::PinnedNotesLoaded(Err(
-                        format!("could not read pinned notes: {e}"),
-                    ))))
+                    tx.send(AppMessage::OverlayData(OverlayData::PinnedNotesLoaded(
+                        Err(format!("could not read pinned notes: {e}")),
+                    )))
                     .ok();
                     return;
                 }
@@ -113,7 +114,7 @@ impl PinnedNotesDialog {
                 let missing = !vault.exists(&path).await;
                 rows.push(PinnedRow { path, missing });
             }
-            tx.send(AppEvent::OverlayData(OverlayData::PinnedNotesLoaded(Ok(
+            tx.send(AppMessage::OverlayData(OverlayData::PinnedNotesLoaded(Ok(
                 rows,
             ))))
             .ok();
@@ -131,7 +132,7 @@ impl PinnedNotesDialog {
             Err(msg) => {
                 self.loaded = true;
                 self.persist_pending = false;
-                tx.send(AppEvent::FlashMessage(msg.clone())).ok();
+                tx.send(AppMessage::FlashMessage(msg.clone())).ok();
             }
         }
     }
@@ -157,7 +158,7 @@ impl PinnedNotesDialog {
     /// too would just be a redundant second close.
     fn open_row(&self, index: usize, tx: &AppTx) {
         let Some(row) = self.rows.get(index) else {
-            tx.send(AppEvent::FlashMessage(format!(
+            tx.send(AppMessage::FlashMessage(format!(
                 "no pinned note {}",
                 index + 1
             )))
@@ -165,14 +166,14 @@ impl PinnedNotesDialog {
             return;
         };
         if row.missing {
-            tx.send(AppEvent::FlashMessage(format!(
+            tx.send(AppMessage::FlashMessage(format!(
                 "pinned note not found: {}",
                 row.path
             )))
             .ok();
             return;
         }
-        tx.send(AppEvent::OpenPath {
+        tx.send(AppMessage::OpenPath {
             path: row.path.clone(),
             emphasis: None,
         })
@@ -197,7 +198,7 @@ impl PinnedNotesDialog {
         let tx = tx.clone();
         tokio::spawn(async move {
             if let Err(msg) = op.await {
-                tx.send(AppEvent::FlashMessage(msg)).ok();
+                tx.send(AppMessage::FlashMessage(msg)).ok();
             }
             Self::spawn_load(vault, &tx);
         });
@@ -230,7 +231,7 @@ impl PinnedNotesDialog {
                 Ok(true) => Ok(()),
                 Ok(false) => {
                     flash_tx
-                        .send(AppEvent::FlashMessage(format!(
+                        .send(AppMessage::FlashMessage(format!(
                             "pinned notes changed — could not move {path}"
                         )))
                         .ok();
@@ -262,7 +263,7 @@ impl PinnedNotesDialog {
                 Ok(true) => Ok(()),
                 Ok(false) => {
                     flash_tx
-                        .send(AppEvent::FlashMessage(format!("not pinned: {path}")))
+                        .send(AppMessage::FlashMessage(format!("not pinned: {path}")))
                         .ok();
                     Ok(())
                 }
@@ -300,7 +301,7 @@ impl PinnedNotesDialog {
             KeyCode::Char('K') => self.move_selected(-1, tx),
             KeyCode::Char('d') | KeyCode::Delete => self.unpin_selected(tx),
             KeyCode::Esc => {
-                tx.send(AppEvent::CloseOverlay).ok();
+                tx.send(AppMessage::CloseOverlay).ok();
             }
             _ => {}
         }
@@ -427,7 +428,7 @@ impl_dialog!(PinnedNotesDialog);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::events::AppEvent;
+    use crate::logic::message::AppMessage;
     use kimun_core::nfs::VaultPath;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use tokio::sync::mpsc::unbounded_channel;
@@ -473,15 +474,15 @@ mod tests {
 
     /// Wait for the reload that follows a write; panics on a load failure.
     async fn wait_for_reload(
-        rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppMessage>,
     ) -> Vec<PinnedRow> {
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
                 match rx.recv().await {
-                    Some(AppEvent::OverlayData(OverlayData::PinnedNotesLoaded(Ok(rows)))) => {
+                    Some(AppMessage::OverlayData(OverlayData::PinnedNotesLoaded(Ok(rows)))) => {
                         break rows;
                     }
-                    Some(AppEvent::OverlayData(OverlayData::PinnedNotesLoaded(Err(e)))) => {
+                    Some(AppMessage::OverlayData(OverlayData::PinnedNotesLoaded(Err(e)))) => {
                         panic!("load failed: {e}")
                     }
                     Some(_) => {}
@@ -497,7 +498,7 @@ mod tests {
         rows.iter().map(|r| r.path.clone()).collect()
     }
 
-    fn drain(rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>) -> Vec<AppEvent> {
+    fn drain(rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppMessage>) -> Vec<AppMessage> {
         let mut out = Vec::new();
         while let Ok(e) = rx.try_recv() {
             out.push(e);
@@ -514,12 +515,12 @@ mod tests {
         assert!(
             events.iter().any(|e| matches!(
                 e,
-                AppEvent::OpenPath { path, emphasis: None } if *path == VaultPath::new("b.md")
+                AppMessage::OpenPath { path, emphasis: None } if *path == VaultPath::new("b.md")
             )),
             "expected OpenPath, got {events:?}"
         );
         assert!(
-            !events.iter().any(|e| matches!(e, AppEvent::CloseOverlay)),
+            !events.iter().any(|e| matches!(e, AppMessage::CloseOverlay)),
             "open_row must not emit CloseOverlay; editor's OpenPath handler closes the overlay, got {events:?}"
         );
     }
@@ -530,8 +531,8 @@ mod tests {
         let (tx, mut rx) = unbounded_channel();
         d.handle_key(key(KeyCode::Char('5')), &tx);
         let events = drain(&mut rx);
-        assert!(matches!(&events[0], AppEvent::FlashMessage(m) if m == "no pinned note 5"));
-        assert!(!events.iter().any(|e| matches!(e, AppEvent::CloseOverlay)));
+        assert!(matches!(&events[0], AppMessage::FlashMessage(m) if m == "no pinned note 5"));
+        assert!(!events.iter().any(|e| matches!(e, AppMessage::CloseOverlay)));
     }
 
     #[tokio::test]
@@ -542,14 +543,14 @@ mod tests {
         let events = drain(&mut rx);
         assert!(matches!(
             &events[0],
-            AppEvent::FlashMessage(m) if m == "pinned note not found: gone.md"
+            AppMessage::FlashMessage(m) if m == "pinned note not found: gone.md"
         ));
         assert!(
             !events
                 .iter()
-                .any(|e| matches!(e, AppEvent::OpenPath { .. }))
+                .any(|e| matches!(e, AppMessage::OpenPath { .. }))
         );
-        assert!(!events.iter().any(|e| matches!(e, AppEvent::CloseOverlay)));
+        assert!(!events.iter().any(|e| matches!(e, AppMessage::CloseOverlay)));
     }
 
     #[tokio::test]
@@ -563,14 +564,14 @@ mod tests {
         let events = drain(&mut rx);
         assert!(matches!(
             &events[0],
-            AppEvent::FlashMessage(m) if m == "pinned note not found: gone.md"
+            AppMessage::FlashMessage(m) if m == "pinned note not found: gone.md"
         ));
         assert!(
             !events
                 .iter()
-                .any(|e| matches!(e, AppEvent::OpenPath { .. }))
+                .any(|e| matches!(e, AppMessage::OpenPath { .. }))
         );
-        assert!(!events.iter().any(|e| matches!(e, AppEvent::CloseOverlay)));
+        assert!(!events.iter().any(|e| matches!(e, AppMessage::CloseOverlay)));
     }
 
     #[tokio::test]
@@ -594,7 +595,7 @@ mod tests {
         d.handle_key(key(KeyCode::Esc), &tx);
         let events = drain(&mut rx);
         assert_eq!(events.len(), 1);
-        assert!(matches!(events[0], AppEvent::CloseOverlay));
+        assert!(matches!(events[0], AppMessage::CloseOverlay));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -712,9 +713,9 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
                 match rx.recv().await {
-                    Some(AppEvent::FlashMessage(m)) => flashed = Some(m),
-                    Some(AppEvent::OverlayData(OverlayData::PinnedNotesLoaded(Ok(_)))) => break,
-                    Some(AppEvent::OverlayData(OverlayData::PinnedNotesLoaded(Err(e)))) => {
+                    Some(AppMessage::FlashMessage(m)) => flashed = Some(m),
+                    Some(AppMessage::OverlayData(OverlayData::PinnedNotesLoaded(Ok(_)))) => break,
+                    Some(AppMessage::OverlayData(OverlayData::PinnedNotesLoaded(Err(e)))) => {
                         panic!("unexpected load failure: {e}")
                     }
                     Some(_) => {}
@@ -789,7 +790,7 @@ mod tests {
         assert!(
             drain(&mut rx)
                 .iter()
-                .any(|e| matches!(e, AppEvent::FlashMessage(m) if m == "boom")),
+                .any(|e| matches!(e, AppMessage::FlashMessage(m) if m == "boom")),
         );
     }
 

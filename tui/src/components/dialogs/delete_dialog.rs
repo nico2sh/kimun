@@ -10,9 +10,9 @@ use ratatui::widgets::Paragraph;
 
 use crate::components::Component;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, FileOp, OverlayData};
 use crate::components::hint_row::HintRow;
 use crate::components::panel::{ModalSpec, modal_chrome};
+use crate::logic::message::{AppMessage, AppTx, FileOp, OverlayData};
 use crate::settings::themes::Theme;
 
 pub struct DeleteConfirmDialog {
@@ -50,11 +50,13 @@ impl DeleteConfirmDialog {
                     let result = vault.delete_entry(&path).await;
                     match result {
                         Ok(()) => {
-                            tx_clone.send(AppEvent::FileOp(FileOp::Deleted(path))).ok();
+                            tx_clone
+                                .send(AppMessage::FileOp(FileOp::Deleted(path)))
+                                .ok();
                         }
                         Err(e) => {
                             tx_clone
-                                .send(AppEvent::OverlayData(OverlayData::Error(e.to_string())))
+                                .send(AppMessage::OverlayData(OverlayData::Error(e.to_string())))
                                 .ok();
                         }
                     }
@@ -62,7 +64,7 @@ impl DeleteConfirmDialog {
                 EventState::Consumed
             }
             KeyCode::Esc => {
-                tx.send(AppEvent::CloseOverlay).ok();
+                tx.send(AppMessage::CloseOverlay).ok();
                 EventState::Consumed
             }
             _ => EventState::NotConsumed,
@@ -175,7 +177,7 @@ mod tests {
         // `NoteVault::new` constructor is too strict about the path existing,
         // this test is gated behind `#[ignore]` below and documented
         // accordingly.
-        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+        let (tx, _rx) = mpsc::unbounded_channel::<AppMessage>();
         let path = VaultPath::root();
 
         // We cannot build a NoteVault without a real SQLite DB, so we skip the
@@ -207,18 +209,18 @@ mod tests {
             .await
             .expect("vault creation failed"),
         );
-        let (_tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+        let (_tx, _rx) = mpsc::unbounded_channel::<AppMessage>();
         let dialog = DeleteConfirmDialog::new(VaultPath::root(), vault);
         assert!(dialog.error.is_none());
     }
 
-    /// Verifies that pressing `Esc` sends `AppEvent::CloseOverlay` and returns
+    /// Verifies that pressing `Esc` sends `AppMessage::CloseOverlay` and returns
     /// `EventState::Consumed`, without touching the vault.
     #[test]
     fn esc_sends_close_dialog() {
         use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
 
-        let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
+        let (tx, mut rx) = mpsc::unbounded_channel::<AppMessage>();
         // We never actually call the vault, so we can use a dangling Arc built
         // from a raw pointer.  However, constructing NoteVault without a real
         // DB is not straightforward; instead we create a channel-only test by
@@ -253,8 +255,8 @@ mod tests {
             let state = dialog.handle_key(key, &tx);
 
             assert_eq!(state, EventState::Consumed);
-            let event = rx.try_recv().expect("expected AppEvent::CloseOverlay");
-            assert!(matches!(event, AppEvent::CloseOverlay));
+            let event = rx.try_recv().expect("expected AppMessage::CloseOverlay");
+            assert!(matches!(event, AppMessage::CloseOverlay));
         });
     }
 }

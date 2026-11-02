@@ -5,7 +5,7 @@
 //! app.
 //!
 //! Choices are staged in a local `Draft` and committed only when the user
-//! finishes the summary step (`AppEvent::OnboardingFinished`); Esc discards.
+//! finishes the summary step (`AppMessage::OnboardingFinished`); Esc discards.
 //! Theme and nerd-font selections preview live on the dialog itself.
 
 use async_trait::async_trait;
@@ -18,8 +18,9 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::dir_browser::FileBrowserState;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, InputEvent, ScreenEvent};
+use crate::components::events::InputEvent;
 use crate::components::single_line_input::SingleLineInput;
+use crate::logic::message::{AppMessage, AppTx, ScreenEvent};
 use crate::settings::config_migration::CURRENT_CONFIG_VERSION;
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
@@ -304,7 +305,7 @@ impl AppScreen for OnboardingScreen {
                 let frame = umlaut_frame(started.elapsed());
                 if frame != last {
                     last = frame;
-                    if tx2.send(AppEvent::Redraw).is_err() {
+                    if tx2.send(AppMessage::Redraw).is_err() {
                         break;
                     }
                 }
@@ -323,7 +324,7 @@ impl AppScreen for OnboardingScreen {
             return EventState::NotConsumed;
         };
         if self.handle_overlay_key(key, tx) {
-            tx.send(AppEvent::Redraw).ok();
+            tx.send(AppMessage::Redraw).ok();
             return EventState::Consumed;
         }
         match key.code {
@@ -343,7 +344,7 @@ impl AppScreen for OnboardingScreen {
             }
             _ => self.handle_step_key(key, tx),
         }
-        tx.send(AppEvent::Redraw).ok();
+        tx.send(AppMessage::Redraw).ok();
         EventState::Consumed
     }
 
@@ -390,7 +391,7 @@ impl OnboardingScreen {
         } else if self.dirty() {
             self.overlay = OnbOverlay::ConfirmDiscard;
         } else {
-            tx.send(AppEvent::OpenScreen(ScreenEvent::Start)).ok();
+            tx.send(AppMessage::OpenScreen(ScreenEvent::Start)).ok();
         }
     }
 
@@ -593,7 +594,7 @@ impl OnboardingScreen {
             OnbOverlay::ConfirmQuit => {
                 match key.code {
                     KeyCode::Enter => {
-                        tx.send(AppEvent::Quit).ok();
+                        tx.send(AppMessage::Quit).ok();
                     }
                     KeyCode::Esc => {}
                     _ => self.overlay = OnbOverlay::ConfirmQuit,
@@ -603,7 +604,7 @@ impl OnboardingScreen {
             OnbOverlay::ConfirmDiscard => {
                 match key.code {
                     KeyCode::Enter => {
-                        tx.send(AppEvent::OpenScreen(ScreenEvent::Start)).ok();
+                        tx.send(AppMessage::OpenScreen(ScreenEvent::Start)).ok();
                     }
                     KeyCode::Esc => {}
                     _ => self.overlay = OnbOverlay::ConfirmDiscard,
@@ -1119,7 +1120,7 @@ impl OnboardingScreen {
             tracing::error!("failed to save settings after onboarding: {e}");
         }
         drop(s);
-        tx.send(AppEvent::OnboardingFinished).ok();
+        tx.send(AppMessage::OnboardingFinished).ok();
     }
 
     fn render_summary_step(&mut self, f: &mut Frame, area: Rect) {
@@ -1547,7 +1548,7 @@ mod tests {
         drop(s);
         let mut got_finished = false;
         while let Ok(msg) = rx.try_recv() {
-            if matches!(msg, AppEvent::OnboardingFinished) {
+            if matches!(msg, AppMessage::OnboardingFinished) {
                 got_finished = true;
             }
         }
@@ -1603,7 +1604,7 @@ mod tests {
         screen.handle_input(&key_event(KeyCode::Enter), &tx);
         let mut got_quit = false;
         while let Ok(msg) = rx.try_recv() {
-            if matches!(msg, AppEvent::Quit) {
+            if matches!(msg, AppMessage::Quit) {
                 got_quit = true;
             }
         }
@@ -1617,7 +1618,7 @@ mod tests {
         screen.handle_input(&key_event(KeyCode::Esc), &tx);
         let mut got_start = false;
         while let Ok(msg) = rx.try_recv() {
-            if matches!(msg, AppEvent::OpenScreen(ScreenEvent::Start)) {
+            if matches!(msg, AppMessage::OpenScreen(ScreenEvent::Start)) {
                 got_start = true;
             }
         }
@@ -1636,7 +1637,7 @@ mod tests {
         assert!(!settings.read().unwrap().use_nerd_fonts, "draft discarded");
         let mut got_start = false;
         while let Ok(msg) = rx.try_recv() {
-            if matches!(msg, AppEvent::OpenScreen(ScreenEvent::Start)) {
+            if matches!(msg, AppMessage::OpenScreen(ScreenEvent::Start)) {
                 got_start = true;
             }
         }
@@ -1667,7 +1668,7 @@ mod tests {
         drop(s);
         let mut got_finished = false;
         while let Ok(msg) = rx.try_recv() {
-            if matches!(msg, AppEvent::OnboardingFinished) {
+            if matches!(msg, AppMessage::OnboardingFinished) {
                 got_finished = true;
             }
         }

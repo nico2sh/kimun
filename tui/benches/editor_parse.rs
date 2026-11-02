@@ -8,11 +8,11 @@
 //!   change (G4 trigger).
 
 use criterion::{BatchSize, Criterion, black_box, criterion_group, criterion_main};
-use kimun_notes::components::text_editor::markdown::ParsedBuffer;
-use kimun_notes::components::text_editor::parse_incremental::{
+use kimun_notes::logic::editor::markdown::ParsedBuffer;
+use kimun_notes::logic::editor::parse_incremental::{
     WidenResult, compute_damage_range, widen_to_safe,
 };
-use kimun_notes::components::text_editor::snapshot::EditorSnapshot;
+use kimun_notes::logic::editor::snapshot::EditorSnapshot;
 use kimun_notes::ropetext::{Layout, Metrics, RowHints, Text};
 use std::num::NonZeroU64;
 

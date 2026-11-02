@@ -15,7 +15,7 @@ use crate::components::Component;
 use crate::components::button_row::ButtonRow;
 use crate::components::clickable::{is_press_outside, list_index_at};
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, InputEvent};
+use crate::components::events::InputEvent;
 use crate::components::hint_row::HintRow;
 use crate::components::indexing::{
     IndexingProgressState, fixed_centered_rect, render_indexing_overlay, spawn_running,
@@ -29,6 +29,7 @@ use crate::components::preferences::sorting_section::SortingSection;
 use crate::components::preferences::workspaces_section::{
     Mode as WorkspaceMode, WorkspacesSection,
 };
+use crate::logic::message::{AppMessage, AppTx};
 use crate::settings::AppSettings;
 use crate::settings::SharedSettings;
 use crate::settings::config_migration::CURRENT_CONFIG_VERSION;
@@ -229,8 +230,10 @@ impl PreferencesScreen {
         if current_path != initial_path {
             let Some(workspace) = current_path else {
                 drop(s);
-                tx.send(AppEvent::IndexingDone(Err("No workspace set".to_string())))
-                    .ok();
+                tx.send(AppMessage::IndexingDone(
+                    Err("No workspace set".to_string()),
+                ))
+                .ok();
                 return;
             };
             let workspace_name = s
@@ -248,7 +251,7 @@ impl PreferencesScreen {
                     config = config.with_index(path);
                 }
                 let event = match NoteVault::new(config).await {
-                    Err(e) => AppEvent::IndexingDone(Err(e.to_string())),
+                    Err(e) => AppMessage::IndexingDone(Err(e.to_string())),
                     Ok(vault) => {
                         let result = vault.recreate_index().await;
                         // Throwaway vault with its own pool — closing it does
@@ -256,11 +259,11 @@ impl PreferencesScreen {
                         // keeps a second handle on the cache file open.
                         vault.close().await;
                         match result {
-                            Ok(r) => AppEvent::IndexingDone(Ok(r.duration)),
+                            Ok(r) => AppMessage::IndexingDone(Ok(r.duration)),
                             Err(e @ VaultError::CaseConflict { .. }) => {
-                                AppEvent::VaultConflict(e.to_string())
+                                AppMessage::VaultConflict(e.to_string())
                             }
-                            Err(e) => AppEvent::IndexingDone(Err(e.to_string())),
+                            Err(e) => AppMessage::IndexingDone(Err(e.to_string())),
                         }
                     }
                 };
@@ -270,7 +273,7 @@ impl PreferencesScreen {
         } else {
             s.save_to_disk().ok();
             drop(s);
-            tx.send(AppEvent::PreferencesSaved).ok();
+            tx.send(AppMessage::PreferencesSaved).ok();
         }
     }
 
@@ -645,18 +648,18 @@ impl AppScreen for PreferencesScreen {
                                     config = config.with_index(path);
                                 }
                                 let event = match NoteVault::new(config).await {
-                                    Err(e) => AppEvent::IndexingDone(Err(e.to_string())),
+                                    Err(e) => AppMessage::IndexingDone(Err(e.to_string())),
                                     Ok(vault) => {
                                         let result = vault.recreate_index().await;
                                         // Throwaway vault with its own pool —
                                         // see the reindex task above.
                                         vault.close().await;
                                         match result {
-                                            Ok(r) => AppEvent::IndexingDone(Ok(r.duration)),
+                                            Ok(r) => AppMessage::IndexingDone(Ok(r.duration)),
                                             Err(e @ VaultError::CaseConflict { .. }) => {
-                                                AppEvent::VaultConflict(e.to_string())
+                                                AppMessage::VaultConflict(e.to_string())
                                             }
-                                            Err(e) => AppEvent::IndexingDone(Err(e.to_string())),
+                                            Err(e) => AppMessage::IndexingDone(Err(e.to_string())),
                                         }
                                     }
                                 };
@@ -696,7 +699,7 @@ impl AppScreen for PreferencesScreen {
                             // editor_backend) — roll them back so a later
                             // save_to_disk can't persist discarded choices.
                             *self.settings.write().unwrap() = self.initial_settings.clone();
-                            tx.send(AppEvent::ClosePreferences).ok();
+                            tx.send(AppMessage::ClosePreferences).ok();
                         }
                     }
                     _ => {}
@@ -740,7 +743,7 @@ impl AppScreen for PreferencesScreen {
             KeyCode::Esc => {
                 let changed = *self.settings.read().unwrap() != self.initial_settings;
                 if !changed {
-                    tx.send(AppEvent::ClosePreferences).ok();
+                    tx.send(AppMessage::ClosePreferences).ok();
                 } else {
                     self.overlay = Overlay::ConfirmSave {
                         focused_button: SaveButton::Save,
@@ -960,9 +963,9 @@ impl AppScreen for PreferencesScreen {
         }
     }
 
-    async fn handle_app_message(&mut self, msg: AppEvent, tx: &AppTx) {
+    async fn handle_app_message(&mut self, msg: AppMessage, tx: &AppTx) {
         match msg {
-            AppEvent::OpenFileBrowser => {
+            AppMessage::OpenFileBrowser => {
                 let starting_dir = self
                     .settings
                     .read()
@@ -973,14 +976,16 @@ impl AppScreen for PreferencesScreen {
                     .unwrap_or_else(|| PathBuf::from("/"));
                 self.overlay = Overlay::FileBrowser(FileBrowserState::load(starting_dir));
             }
-            AppEvent::TriggerFastReindex => {
+            AppMessage::TriggerFastReindex => {
                 // Fast reindex starts immediately (no confirmation overlay) — it is a
                 // low-cost incremental operation unlike full reindex.
                 let s = self.settings.read().unwrap();
                 let Some(workspace) = s.resolve_workspace_path() else {
                     drop(s);
-                    tx.send(AppEvent::IndexingDone(Err("No workspace set".to_string())))
-                        .ok();
+                    tx.send(AppMessage::IndexingDone(
+                        Err("No workspace set".to_string()),
+                    ))
+                    .ok();
                     return;
                 };
                 let workspace_name = s
@@ -1005,22 +1010,22 @@ impl AppScreen for PreferencesScreen {
                         result.map_err(|e| e.to_string()).map(|r| r.duration)
                     }
                     .await;
-                    tx2.send(AppEvent::IndexingDone(result)).ok();
+                    tx2.send(AppMessage::IndexingDone(result)).ok();
                 });
                 self.overlay = Overlay::IndexingProgress(spawn_running(handle, tx));
             }
-            AppEvent::TriggerFullReindex => {
+            AppMessage::TriggerFullReindex => {
                 self.overlay = Overlay::ConfirmFullReindex {
                     focused_button: ConfirmButton::Cancel,
                 };
             }
-            AppEvent::IndexingDone(result) => match result {
+            AppMessage::IndexingDone(result) => match result {
                 Ok(duration) => {
                     self.settings.write().unwrap().report_indexed();
                     if self.pending_save_after_index {
                         self.pending_save_after_index = false;
                         self.settings.read().unwrap().save_to_disk().ok();
-                        tx.send(AppEvent::PreferencesSaved).ok();
+                        tx.send(AppMessage::PreferencesSaved).ok();
                     } else {
                         self.overlay =
                             Overlay::IndexingProgress(IndexingProgressState::Done(duration));
@@ -1436,7 +1441,7 @@ mod settings_screen_tests {
         let mut screen = make_screen();
         screen.handle_input(&key(KeyCode::Esc), &tx);
         let msg = rx.try_recv().expect("expected message");
-        assert!(matches!(msg, AppEvent::ClosePreferences));
+        assert!(matches!(msg, AppMessage::ClosePreferences));
     }
 
     #[test]
@@ -1467,7 +1472,7 @@ mod settings_screen_tests {
         };
         screen.handle_input(&key(KeyCode::Enter), &tx);
         let msg = rx.try_recv().expect("expected message");
-        assert!(matches!(msg, AppEvent::ClosePreferences));
+        assert!(matches!(msg, AppMessage::ClosePreferences));
     }
 
     #[test]
@@ -1484,7 +1489,7 @@ mod settings_screen_tests {
         };
         screen.handle_input(&key(KeyCode::Enter), &tx);
         let msg = rx.try_recv().expect("expected message");
-        assert!(matches!(msg, AppEvent::PreferencesSaved));
+        assert!(matches!(msg, AppMessage::PreferencesSaved));
         assert!(rx.try_recv().is_err());
     }
 
@@ -1524,10 +1529,10 @@ mod settings_screen_tests {
             ticker: tokio::spawn(async {}),
         });
         screen
-            .handle_app_message(AppEvent::IndexingDone(Ok(Duration::from_secs(1))), &tx)
+            .handle_app_message(AppMessage::IndexingDone(Ok(Duration::from_secs(1))), &tx)
             .await;
         let msg = rx.try_recv().expect("expected PreferencesSaved");
-        assert!(matches!(msg, AppEvent::PreferencesSaved));
+        assert!(matches!(msg, AppMessage::PreferencesSaved));
         assert!(!screen.pending_save_after_index);
     }
 
@@ -1541,7 +1546,7 @@ mod settings_screen_tests {
             ticker: tokio::spawn(async {}),
         });
         screen
-            .handle_app_message(AppEvent::IndexingDone(Err("disk error".to_string())), &tx)
+            .handle_app_message(AppMessage::IndexingDone(Err("disk error".to_string())), &tx)
             .await;
         assert!(
             rx.try_recv().is_err(),
@@ -1564,7 +1569,7 @@ mod settings_screen_tests {
             ticker: tokio::spawn(async {}),
         });
         screen
-            .handle_app_message(AppEvent::IndexingDone(Ok(Duration::from_secs(2))), &tx)
+            .handle_app_message(AppMessage::IndexingDone(Ok(Duration::from_secs(2))), &tx)
             .await;
         assert!(
             rx.try_recv().is_err(),
@@ -1618,7 +1623,7 @@ mod mouse_tests {
     use std::sync::{Arc, RwLock};
 
     use super::*;
-    use crate::components::events::AppEvent;
+    use crate::logic::message::AppMessage;
     use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
     fn screen() -> PreferencesScreen {
@@ -1632,7 +1637,7 @@ mod mouse_tests {
     }
 
     /// Render, then left-click the first cell of `text` shifted by `dx`.
-    fn click(s: &mut PreferencesScreen, text: &str, dx: u16) -> UnboundedReceiver<AppEvent> {
+    fn click(s: &mut PreferencesScreen, text: &str, dx: u16) -> UnboundedReceiver<AppMessage> {
         let buf = draw(s);
         let (x, y) = crate::test_support::find_text(&buf, text)
             .unwrap_or_else(|| panic!("{text:?} not drawn"));
@@ -1720,9 +1725,9 @@ mod mouse_tests {
         s.section = PreferencesSection::Indexing;
         s.indexing_section = IndexingSection::new(true);
         let mut rx = click(&mut s, "Full Reindex", 0);
-        assert!(matches!(rx.try_recv(), Ok(AppEvent::TriggerFullReindex)));
+        assert!(matches!(rx.try_recv(), Ok(AppMessage::TriggerFullReindex)));
         let mut rx = click(&mut s, "Fast Reindex", 0);
-        assert!(matches!(rx.try_recv(), Ok(AppEvent::TriggerFastReindex)));
+        assert!(matches!(rx.try_recv(), Ok(AppMessage::TriggerFastReindex)));
     }
 
     /// The folder picker: a click selects a folder, clicking it again opens
@@ -1787,7 +1792,7 @@ mod mouse_tests {
     fn footer_esc_and_discard_button() {
         let mut s = screen();
         let mut rx = click(&mut s, "[Esc] Save & Close", 0);
-        assert!(matches!(rx.try_recv(), Ok(AppEvent::ClosePreferences)));
+        assert!(matches!(rx.try_recv(), Ok(AppMessage::ClosePreferences)));
 
         s.section = PreferencesSection::Display;
         click(&mut s, "Use Nerd Fonts", 16);
@@ -1795,7 +1800,7 @@ mod mouse_tests {
         assert!(matches!(s.overlay, Overlay::ConfirmSave { .. }));
         settle_overlay(&mut s);
         let mut rx = click(&mut s, "Discard", 0);
-        assert!(matches!(rx.try_recv(), Ok(AppEvent::ClosePreferences)));
+        assert!(matches!(rx.try_recv(), Ok(AppMessage::ClosePreferences)));
         assert_eq!(*s.settings.read().unwrap(), s.initial_settings);
     }
 

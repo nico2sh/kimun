@@ -53,6 +53,13 @@ git_release_latest = false
 publish = false
 git_only = true
 
+# The native GUI frontend (ADR-0049) is not published anywhere yet: no crates.io
+# release, no binaries attached to a tag. `release = false` keeps release-plz from
+# proposing versions, changelog entries or tags for it until something ships.
+[[package]]
+name = "kimun-gui"
+release = false
+
 # `ropetext` and `kimun_server_client` used to be listed here. Both are now
 # modules inside kimun-notes (`tui/src/ropetext`, `tui/src/server_client`) and
 # have no manifest of their own. crates.io refuses to publish a crate that

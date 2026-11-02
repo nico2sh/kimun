@@ -14,7 +14,7 @@ use super::state::{AutocompleteState, DEFAULT_MAX_VISIBLE_ROWS, Suggestion};
 use super::trigger::{TriggerKind, TriggerOptions, ZoneOracle, detect_trigger_with_oracle};
 use crate::components::search_list::SuggestionSource;
 #[cfg(test)]
-use crate::components::text_editor::snapshot::EditorSnapshot;
+use crate::logic::editor::snapshot::EditorSnapshot;
 use crate::util::single_slot_task::SingleSlotTask;
 
 /// Hard cap on suggestions fetched from core per query. The popup itself
@@ -98,8 +98,8 @@ pub struct AutocompleteController {
 
 /// Fire-and-forget redraw signal owned by the controller and invoked
 /// from the spawned query task. The host wires this to its event loop
-/// (e.g. `tx.send(AppEvent::Redraw)`).
-pub type RedrawCallback = Arc<dyn Fn() + Send + Sync + 'static>;
+/// (e.g. `tx.send(AppMessage::Redraw)`).
+pub type RedrawCallback = crate::logic::message::Notifier;
 
 #[derive(Debug)]
 struct QueryResult {

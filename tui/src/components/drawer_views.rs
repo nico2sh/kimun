@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::num::NonZeroU64;
 use std::sync::Arc;
 
+use crate::logic::nav::{HeadingTarget, LinksTab};
 use async_trait::async_trait;
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
@@ -20,12 +21,13 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{ListItem, Paragraph};
 
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, FileOp, InputEvent};
+use crate::components::events::InputEvent;
 use crate::components::panel::panel_block;
 use crate::components::query_list_panel::{ListPanelSpec, QueryListPanel};
 use crate::components::rich_row::RichRow;
 use crate::components::search_list::{Emit, RowSource, SearchRow, YankTarget};
 use crate::keys::key_combo::KeyCombo;
+use crate::logic::message::{AppMessage, AppTx, FileOp};
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
 
@@ -103,7 +105,7 @@ impl ListPanelSpec for TagsSpec {
     const TITLE: &'static str = "Tags";
 
     fn submit(row: &TagEntry, tx: &AppTx) {
-        tx.send(AppEvent::RunTagQuery(row.label.clone())).ok();
+        tx.send(AppMessage::RunTagQuery(row.label.clone())).ok();
     }
 
     fn hints() -> Vec<(String, String)> {
@@ -151,33 +153,6 @@ impl TagsPanel {
 // ---------------------------------------------------------------------------
 // LINKS
 // ---------------------------------------------------------------------------
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum LinksTab {
-    Backlinks,
-    Outgoing,
-    Unlinked,
-}
-
-impl LinksTab {
-    /// The sub-view order, single source for cycling and the tab bar.
-    pub const ORDER: [LinksTab; 3] = [LinksTab::Backlinks, LinksTab::Outgoing, LinksTab::Unlinked];
-
-    /// The tab `steps` away in [`Self::ORDER`], wrapping.
-    fn cycled(self, steps: isize) -> LinksTab {
-        let n = Self::ORDER.len() as isize;
-        let i = Self::ORDER.iter().position(|t| *t == self).unwrap_or(0) as isize;
-        Self::ORDER[((i + steps).rem_euclid(n)) as usize]
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            LinksTab::Backlinks => "backlinks",
-            LinksTab::Outgoing => "outgoing",
-            LinksTab::Unlinked => "unlinked",
-        }
-    }
-}
 
 #[derive(Clone)]
 pub struct LinkEntry {
@@ -328,11 +303,11 @@ impl ListPanelSpec for LinksSpec {
     const HAS_FILTER: bool = false;
 
     fn submit(row: &LinkEntry, tx: &AppTx) {
-        tx.send(AppEvent::open(row.path.clone())).ok();
+        tx.send(AppMessage::open(row.path.clone())).ok();
     }
 
-    fn context_event(row: &LinkEntry) -> Option<AppEvent> {
-        Some(AppEvent::FileOp(FileOp::ShowMenu(row.path.clone())))
+    fn context_event(row: &LinkEntry) -> Option<AppMessage> {
+        Some(AppMessage::FileOp(FileOp::ShowMenu(row.path.clone())))
     }
 
     fn hints() -> Vec<(String, String)> {
@@ -503,17 +478,6 @@ impl LinksPanel {
 // OUTLINE
 // ---------------------------------------------------------------------------
 
-/// Which heading an OUTLINE row stands for, robust to the buffer moving on
-/// after the row was listed: the `occurrence`-th of the `count` headings
-/// reading `text`, last seen on `line`. See [`OutlinePanel::resolve`].
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct HeadingTarget {
-    pub text: String,
-    pub occurrence: usize,
-    pub count: usize,
-    pub line: usize,
-}
-
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct OutlineEntry {
     /// 1-based nesting depth: how many headings enclose this one, plus one.
@@ -600,7 +564,7 @@ impl ListPanelSpec for OutlineSpec {
     const TITLE: &'static str = "Outline";
 
     fn submit(row: &OutlineEntry, tx: &AppTx) {
-        tx.send(AppEvent::JumpToHeading(row.target.clone())).ok();
+        tx.send(AppMessage::JumpToHeading(row.target.clone())).ok();
     }
 
     fn hints() -> Vec<(String, String)> {
@@ -902,7 +866,7 @@ mod tests {
         OutlineSpec::submit(list.visible_rows()[2], &tx);
         assert!(matches!(
             rx.try_recv(),
-            Ok(AppEvent::JumpToHeading(t)) if t.text == "Notes" && t.occurrence == 1 && t.count == 2 && t.line == 2
+            Ok(AppMessage::JumpToHeading(t)) if t.text == "Notes" && t.occurrence == 1 && t.count == 2 && t.line == 2
         ));
     }
 

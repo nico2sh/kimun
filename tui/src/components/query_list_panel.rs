@@ -15,12 +15,13 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, InputEvent, redraw_callback};
+use crate::components::events::InputEvent;
 use crate::components::panel::panel_block;
 use crate::components::search_list::{
     Filter, KeyReaction, RowSource, SearchList, SearchListBuilder, SearchMouse, SearchRow,
     StaticRowSource,
 };
+use crate::logic::message::{AppMessage, AppTx, redraw_callback};
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
 
@@ -59,7 +60,7 @@ pub trait ListPanelSpec {
 
     /// The event a right-click on a row fires (rows that are real notes
     /// open the file-ops menu). `None` = right-click selects only.
-    fn context_event(_row: &Self::Row) -> Option<AppEvent> {
+    fn context_event(_row: &Self::Row) -> Option<AppMessage> {
         None
     }
 
@@ -454,7 +455,7 @@ mod tests {
         // The flash is the observable outcome: either the copy or a clipboard
         // error, but never silence.
         let flashed = std::iter::from_fn(|| rx.try_recv().ok()).any(|e| {
-            matches!(e, AppEvent::FlashMessage(m)
+            matches!(e, AppMessage::FlashMessage(m)
                 if m == "path copied" || m.starts_with("clipboard: "))
         });
         assert!(flashed, "the yank chord must reach the list and report");

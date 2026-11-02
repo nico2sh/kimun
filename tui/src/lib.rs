@@ -9,6 +9,7 @@ pub mod ask;
 pub mod cli;
 pub mod components;
 pub mod keys;
+pub mod logic;
 pub mod rag;
 // Self-contained modules with no dependency on the rest of kimün. Each was its
 // own workspace crate and is kept extractable: nothing inside them may name

@@ -9,9 +9,9 @@ use super::ModalShell;
 use crate::components::Component;
 use crate::components::clickable::key_at;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, FileOp};
 use crate::components::hint_row::HintRow;
 use crate::components::panel::{ModalSpec, modal_chrome};
+use crate::logic::message::{AppMessage, AppTx, FileOp};
 use crate::settings::themes::Theme;
 
 // ---------------------------------------------------------------------------
@@ -75,22 +75,22 @@ impl FileOpsMenuDialog {
     ) -> EventState {
         match key.code {
             KeyCode::Char('d') | KeyCode::Char('D') => {
-                tx.send(AppEvent::FileOp(FileOp::ShowDelete(self.path.clone())))
+                tx.send(AppMessage::FileOp(FileOp::ShowDelete(self.path.clone())))
                     .ok();
                 EventState::Consumed
             }
             KeyCode::Char('r') | KeyCode::Char('R') => {
-                tx.send(AppEvent::FileOp(FileOp::ShowRename(self.path.clone())))
+                tx.send(AppMessage::FileOp(FileOp::ShowRename(self.path.clone())))
                     .ok();
                 EventState::Consumed
             }
             KeyCode::Char('m') | KeyCode::Char('M') => {
-                tx.send(AppEvent::FileOp(FileOp::ShowMove(self.path.clone())))
+                tx.send(AppMessage::FileOp(FileOp::ShowMove(self.path.clone())))
                     .ok();
                 EventState::Consumed
             }
             KeyCode::Esc => {
-                tx.send(AppEvent::CloseOverlay).ok();
+                tx.send(AppMessage::CloseOverlay).ok();
                 EventState::Consumed
             }
             _ => EventState::Consumed, // swallow unknown keys while menu is open
@@ -218,15 +218,15 @@ mod tests {
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
+            let (tx, mut rx) = mpsc::unbounded_channel::<AppMessage>();
             let mut dialog = FileOpsMenuDialog::new(VaultPath::new("notes/test.md"));
 
             let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
             let state = dialog.handle_key(key, &tx);
 
             assert_eq!(state, EventState::Consumed);
-            let event = rx.try_recv().expect("expected AppEvent::CloseOverlay");
-            assert!(matches!(event, AppEvent::CloseOverlay));
+            let event = rx.try_recv().expect("expected AppMessage::CloseOverlay");
+            assert!(matches!(event, AppMessage::CloseOverlay));
         });
     }
 
@@ -238,7 +238,7 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             let path = VaultPath::new("notes/test.md");
-            let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
+            let (tx, mut rx) = mpsc::unbounded_channel::<AppMessage>();
             let mut dialog = FileOpsMenuDialog::new(path.clone());
 
             let key = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE);
@@ -247,8 +247,8 @@ mod tests {
             assert_eq!(state, EventState::Consumed);
             let event = rx
                 .try_recv()
-                .expect("expected AppEvent::FileOp(FileOp::ShowDelete)");
-            assert!(matches!(event, AppEvent::FileOp(FileOp::ShowDelete(_))));
+                .expect("expected AppMessage::FileOp(FileOp::ShowDelete)");
+            assert!(matches!(event, AppMessage::FileOp(FileOp::ShowDelete(_))));
         });
     }
 
@@ -260,7 +260,7 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             let path = VaultPath::new("notes/test.md");
-            let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
+            let (tx, mut rx) = mpsc::unbounded_channel::<AppMessage>();
             let mut dialog = FileOpsMenuDialog::new(path.clone());
 
             let key = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE);
@@ -269,8 +269,8 @@ mod tests {
             assert_eq!(state, EventState::Consumed);
             let event = rx
                 .try_recv()
-                .expect("expected AppEvent::FileOp(FileOp::ShowRename)");
-            assert!(matches!(event, AppEvent::FileOp(FileOp::ShowRename(_))));
+                .expect("expected AppMessage::FileOp(FileOp::ShowRename)");
+            assert!(matches!(event, AppMessage::FileOp(FileOp::ShowRename(_))));
         });
     }
 
@@ -282,7 +282,7 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             let path = VaultPath::new("notes/test.md");
-            let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
+            let (tx, mut rx) = mpsc::unbounded_channel::<AppMessage>();
             let mut dialog = FileOpsMenuDialog::new(path.clone());
 
             let key = KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE);
@@ -291,8 +291,8 @@ mod tests {
             assert_eq!(state, EventState::Consumed);
             let event = rx
                 .try_recv()
-                .expect("expected AppEvent::FileOp(FileOp::ShowMove)");
-            assert!(matches!(event, AppEvent::FileOp(FileOp::ShowMove(_))));
+                .expect("expected AppMessage::FileOp(FileOp::ShowMove)");
+            assert!(matches!(event, AppMessage::FileOp(FileOp::ShowMove(_))));
         });
     }
 }

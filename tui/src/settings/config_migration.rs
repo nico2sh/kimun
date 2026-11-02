@@ -117,9 +117,10 @@ impl ConfigMigration {
     /// default; an edited one is left alone.
     fn migrate_to_v7(settings: &mut AppSettings) {
         use crate::keys::KeyBindings;
-        use crate::keys::action_shortcuts::{ActionShortcuts, TextAction};
+        use crate::keys::action_shortcuts::ActionShortcuts;
         use crate::keys::key_combo::{KeyCombo, KeyModifiers};
         use crate::keys::key_strike::KeyStrike;
+        use crate::logic::text_action::TextAction;
 
         let ctrl = KeyModifiers::new().and_ctrl();
         let retired = [
@@ -268,9 +269,10 @@ mod tests {
     #[test]
     fn v7_retires_the_formatting_chords() {
         use crate::keys::KeyBindings;
-        use crate::keys::action_shortcuts::{ActionShortcuts, TextAction};
+        use crate::keys::action_shortcuts::ActionShortcuts;
         use crate::keys::key_combo::{KeyCombo, KeyModifiers};
         use crate::keys::key_strike::KeyStrike;
+        use crate::logic::text_action::TextAction;
 
         let ctrl = KeyModifiers::new().and_ctrl();
         let mut settings = AppSettings::default();
@@ -324,9 +326,10 @@ mod tests {
     #[test]
     fn v7_leaves_a_customised_formatting_chord_alone() {
         use crate::keys::KeyBindings;
-        use crate::keys::action_shortcuts::{ActionShortcuts, TextAction};
+        use crate::keys::action_shortcuts::ActionShortcuts;
         use crate::keys::key_combo::{KeyCombo, KeyModifiers};
         use crate::keys::key_strike::KeyStrike;
+        use crate::logic::text_action::TextAction;
 
         let ctrl = KeyModifiers::new().and_ctrl();
         let moved = KeyCombo::new(ctrl.and_alt(), KeyStrike::KeyB);
@@ -353,9 +356,10 @@ mod tests {
     #[test]
     fn v7_keeps_a_hand_written_link_or_header_chord() {
         use crate::keys::KeyBindings;
-        use crate::keys::action_shortcuts::{ActionShortcuts, TextAction};
+        use crate::keys::action_shortcuts::ActionShortcuts;
         use crate::keys::key_combo::{KeyCombo, KeyModifiers};
         use crate::keys::key_strike::KeyStrike;
+        use crate::logic::text_action::TextAction;
 
         let ctrl = KeyModifiers::new().and_ctrl();
         let link = KeyCombo::new(ctrl, KeyStrike::KeyL);

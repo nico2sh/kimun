@@ -12,9 +12,10 @@ use ratatui::layout::Rect;
 use std::time::Instant;
 
 use crate::components::event_state::EventState;
-use crate::components::events::{AppTx, InputEvent, OverlayData};
+use crate::components::events::InputEvent;
 use crate::components::overlay::{Overlay, OverlayKind};
 use crate::components::sortable::SortableList;
+use crate::logic::message::{AppTx, OverlayData};
 use crate::settings::themes::Theme;
 
 pub struct OverlayHost<F> {
@@ -213,7 +214,7 @@ mod tests {
             OverlayKind::Dialog
         }
         fn handle_input(&mut self, _e: &InputEvent, tx: &AppTx) -> EventState {
-            tx.send(crate::components::events::AppEvent::CloseOverlay)
+            tx.send(crate::logic::message::AppMessage::CloseOverlay)
                 .ok();
             EventState::Consumed
         }

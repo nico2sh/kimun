@@ -17,10 +17,11 @@ use kimun_core::{AttachmentContent, AttachmentDetails};
 
 use crate::components::Component;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, InputEvent};
+use crate::components::events::InputEvent;
 use crate::components::hint_row::HintRow;
 use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::ActionShortcuts;
+use crate::logic::message::{AppMessage, AppTx};
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
 
@@ -133,7 +134,7 @@ impl Component for AttachmentView {
         if let InputEvent::Mouse(m) = event
             && self.open_chip.hit(m).is_some()
         {
-            tx.send(AppEvent::OpenAttachmentExternally).ok();
+            tx.send(AppMessage::OpenAttachmentExternally).ok();
             return EventState::Consumed;
         }
         let page = self.viewport_height.saturating_sub(PAGE_OVERLAP).max(1) as i32;
@@ -301,7 +302,7 @@ mod tests {
         v.handle_input(&crate::test_support::mouse_down_at(x, y), &tx);
         assert!(matches!(
             rx.try_recv(),
-            Ok(AppEvent::OpenAttachmentExternally)
+            Ok(AppMessage::OpenAttachmentExternally)
         ));
     }
 

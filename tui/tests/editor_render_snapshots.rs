@@ -26,8 +26,8 @@ use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier};
 
-use kimun_notes::components::text_editor::snapshot::EditorSnapshot;
 use kimun_notes::components::text_editor::view::MarkdownEditorView;
+use kimun_notes::logic::editor::snapshot::EditorSnapshot;
 use kimun_notes::settings::themes::Theme;
 
 /// Render `text` and dump every painted cell.
@@ -489,7 +489,8 @@ fn snap_blockquote_html_wraps_under_the_caret() {
 /// `see [docs](url) here` put the caret seven characters away.
 #[test]
 fn a_click_on_the_revealed_row_lands_where_it_was_clicked() {
-    use kimun_notes::components::text_editor::markdown::{MarkdownSpanner, ParsedBuffer};
+    use kimun_notes::components::text_editor::markdown::MarkdownSpanner;
+    use kimun_notes::logic::editor::markdown::ParsedBuffer;
 
     let line = "see [docs](url) here";
     let buf = ParsedBuffer::parse(&kimun_notes::ropetext::Text::from(line));

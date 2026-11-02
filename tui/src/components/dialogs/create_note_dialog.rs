@@ -10,9 +10,9 @@ use ratatui::widgets::Paragraph;
 
 use crate::components::Component;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, AppTxExt, OverlayData};
 use crate::components::hint_row::HintRow;
 use crate::components::panel::{ModalSpec, modal_chrome};
+use crate::logic::message::{AppMessage, AppTx, AppTxExt, OverlayData};
 use crate::settings::themes::Theme;
 
 pub struct CreateNoteDialog {
@@ -85,7 +85,7 @@ impl CreateNoteDialog {
                         }
                         Err(e) => {
                             tx_clone
-                                .send(AppEvent::OverlayData(OverlayData::Error(e.to_string())))
+                                .send(AppMessage::OverlayData(OverlayData::Error(e.to_string())))
                                 .ok();
                         }
                     }
@@ -93,7 +93,7 @@ impl CreateNoteDialog {
                 EventState::Consumed
             }
             KeyCode::Esc => {
-                tx.send(AppEvent::CloseOverlay).ok();
+                tx.send(AppMessage::CloseOverlay).ok();
                 EventState::Consumed
             }
             _ => EventState::NotConsumed,
@@ -177,7 +177,7 @@ mod tests {
                 .await
                 .expect("vault creation failed"),
         );
-        let (_tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+        let (_tx, _rx) = mpsc::unbounded_channel::<AppMessage>();
         let dialog = CreateNoteDialog::new(VaultPath::root(), vault, None);
         assert!(dialog.error.is_none());
     }
@@ -196,15 +196,15 @@ mod tests {
             let Ok(vault) = vault_result else { return };
             let vault = Arc::new(vault);
 
-            let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
+            let (tx, mut rx) = mpsc::unbounded_channel::<AppMessage>();
             let mut dialog = CreateNoteDialog::new(VaultPath::root(), vault, None);
 
             let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
             let state = dialog.handle_key(key, &tx);
 
             assert_eq!(state, EventState::Consumed);
-            let event = rx.try_recv().expect("expected AppEvent::CloseOverlay");
-            assert!(matches!(event, AppEvent::CloseOverlay));
+            let event = rx.try_recv().expect("expected AppMessage::CloseOverlay");
+            assert!(matches!(event, AppMessage::CloseOverlay));
         });
     }
 
@@ -222,7 +222,7 @@ mod tests {
             let Ok(vault) = vault_result else { return };
             let vault = Arc::new(vault);
 
-            let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+            let (tx, _rx) = mpsc::unbounded_channel::<AppMessage>();
             // _rx intentionally dropped — we only assert the synchronous return value (Consumed).
             // The async task opens the note (and emits EntryCreated when fresh), but
             // vault.load_or_create_note may fail on the empty tempdir, resulting in

@@ -4,10 +4,11 @@ use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
 
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, InputEvent, SaveSource, SavedSearchFlow};
+use crate::components::events::InputEvent;
 use crate::components::hint_row::HintRow;
 use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::components::single_line_input::{InputOutcome, SingleLineInput};
+use crate::logic::message::{AppMessage, AppTx, SaveSource, SavedSearchFlow};
 use crate::settings::themes::Theme;
 
 /// What submitting the dialog will do with the current name field — drives
@@ -43,7 +44,7 @@ pub struct SaveSearchDialog {
     /// editor re-pins by identity rather than by comparing query text.
     source: SaveSource,
     /// Existing saved-search names, loaded asynchronously after open (see
-    /// [`OverlayData::SavedSearchNamesLoaded`](crate::components::events::OverlayData::SavedSearchNamesLoaded)).
+    /// [`OverlayData::SavedSearchNamesLoaded`](crate::logic::message::OverlayData::SavedSearchNamesLoaded)).
     /// `None` until the load lands —
     /// the hint shows [`SaveHint::Pending`] rather than guessing "save new".
     existing: Option<Vec<String>>,
@@ -121,17 +122,17 @@ impl SaveSearchDialog {
         };
         match self.name.handle_key(key) {
             InputOutcome::Submit => {
-                tx.send(AppEvent::SavedSearch(SavedSearchFlow::Confirmed {
+                tx.send(AppMessage::SavedSearch(SavedSearchFlow::Confirmed {
                     name: self.effective_name().to_string(),
                     query: self.query.clone(),
                     source: self.source,
                 }))
                 .ok();
-                tx.send(AppEvent::CloseOverlay).ok();
+                tx.send(AppMessage::CloseOverlay).ok();
                 EventState::Consumed
             }
             InputOutcome::Cancel => {
-                tx.send(AppEvent::CloseOverlay).ok();
+                tx.send(AppMessage::CloseOverlay).ok();
                 EventState::Consumed
             }
             InputOutcome::Changed | InputOutcome::Consumed => EventState::Consumed,
@@ -210,7 +211,7 @@ impl super::Dialog for SaveSearchDialog {
     fn key(
         &mut self,
         key: ratatui::crossterm::event::KeyEvent,
-        tx: &crate::components::events::AppTx,
+        tx: &crate::logic::message::AppTx,
     ) -> crate::components::event_state::EventState {
         self.handle_input(&InputEvent::Key(key), tx)
     }
@@ -218,7 +219,7 @@ impl super::Dialog for SaveSearchDialog {
     fn mouse(
         &mut self,
         m: &ratatui::crossterm::event::MouseEvent,
-        tx: &crate::components::events::AppTx,
+        tx: &crate::logic::message::AppTx,
     ) -> crate::components::event_state::EventState {
         self.handle_input(&InputEvent::Mouse(*m), tx)
     }
@@ -236,7 +237,8 @@ impl super::Dialog for SaveSearchDialog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::events::{AppEvent, InputEvent};
+    use crate::components::events::InputEvent;
+    use crate::logic::message::AppMessage;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use tokio::sync::mpsc::unbounded_channel;
 
@@ -254,11 +256,11 @@ mod tests {
 
     /// Drain the channel and return the `SaveSearchConfirmed` payload, if any.
     fn confirmed(
-        rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppMessage>,
     ) -> Option<(String, String, SaveSource)> {
         let mut found = None;
         while let Ok(e) = rx.try_recv() {
-            if let AppEvent::SavedSearch(SavedSearchFlow::Confirmed {
+            if let AppMessage::SavedSearch(SavedSearchFlow::Confirmed {
                 name,
                 query,
                 source,

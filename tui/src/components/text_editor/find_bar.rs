@@ -17,10 +17,10 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use super::char_col_to_byte;
-use super::find_replace;
-use super::rope_buffer::{CursorMove, RopeBuffer};
 use crate::components::single_line_input::{InputOutcome, SingleLineInput};
+use crate::logic::editor::claim::char_col_to_byte;
+use crate::logic::editor::find_replace;
+use crate::logic::editor::rope_buffer::{CursorMove, RopeBuffer};
 use crate::settings::themes::Theme;
 
 /// What the editor must do after handing the bar a key.

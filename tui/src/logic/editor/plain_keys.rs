@@ -17,9 +17,8 @@
 //! component routes those, ahead of this table, to the buffer's **indent step**
 //! and to `markdown_edits`.
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-
-use super::rope_buffer::{CursorMove, RopeBuffer};
+use crate::logic::editor::rope_buffer::{CursorMove, RopeBuffer};
+use crate::logic::input::{Key, KeyInput, Mods};
 
 /// One editing action, named independently of the key that asked for it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,59 +47,60 @@ pub enum Operation {
 /// `None` is not "do nothing loudly": function keys, modifier-only releases and
 /// IME composition events all land here, and the caller leaves the buffer alone
 /// rather than marking the note dirty for a key that did not edit it.
-pub fn operation(key: KeyEvent) -> Option<Operation> {
-    let extend = key.modifiers.contains(KeyModifiers::SHIFT);
-    let chord = key.modifiers & !KeyModifiers::SHIFT;
+pub fn operation(key: KeyInput) -> Option<Operation> {
+    let extend = key.mods.shift;
+    let chord = Mods {
+        shift: false,
+        ..key.mods
+    };
 
     let motion = |to| Some(Operation::Move { to, extend });
-    match (chord, key.code) {
-        (KeyModifiers::NONE, KeyCode::Left) => motion(CursorMove::Back),
-        (KeyModifiers::NONE, KeyCode::Right) => motion(CursorMove::Forward),
-        (KeyModifiers::NONE, KeyCode::Up) => motion(CursorMove::Up),
-        (KeyModifiers::NONE, KeyCode::Down) => motion(CursorMove::Down),
-        (KeyModifiers::NONE, KeyCode::Home) => motion(CursorMove::Head),
-        (KeyModifiers::NONE, KeyCode::End) => motion(CursorMove::End),
-        (KeyModifiers::NONE, KeyCode::PageUp) => motion(CursorMove::ParagraphBack),
-        (KeyModifiers::NONE, KeyCode::PageDown) => motion(CursorMove::ParagraphForward),
+    match (chord, key.key) {
+        (Mods::NONE, Key::Left) => motion(CursorMove::Back),
+        (Mods::NONE, Key::Right) => motion(CursorMove::Forward),
+        (Mods::NONE, Key::Up) => motion(CursorMove::Up),
+        (Mods::NONE, Key::Down) => motion(CursorMove::Down),
+        (Mods::NONE, Key::Home) => motion(CursorMove::Head),
+        (Mods::NONE, Key::End) => motion(CursorMove::End),
+        (Mods::NONE, Key::PageUp) => motion(CursorMove::ParagraphBack),
+        (Mods::NONE, Key::PageDown) => motion(CursorMove::ParagraphForward),
 
-        (KeyModifiers::CONTROL, KeyCode::Left) => motion(CursorMove::WordBack),
-        (KeyModifiers::CONTROL, KeyCode::Right) => motion(CursorMove::WordForward),
-        (KeyModifiers::CONTROL, KeyCode::Home) => motion(CursorMove::Top),
-        (KeyModifiers::CONTROL, KeyCode::End) => motion(CursorMove::Bottom),
+        (Mods::CTRL, Key::Left) => motion(CursorMove::WordBack),
+        (Mods::CTRL, Key::Right) => motion(CursorMove::WordForward),
+        (Mods::CTRL, Key::Home) => motion(CursorMove::Top),
+        (Mods::CTRL, Key::End) => motion(CursorMove::Bottom),
 
         // macOS conventions. Terminals translate Option+arrow into `Esc b`/`Esc f`
         // by default, which crossterm reports as Alt+b / Alt+f; the shifted
         // variants arrive as the uppercase character with SHIFT still set, which
         // is why `extend` reads the modifier rather than the letter's case.
-        (KeyModifiers::ALT, KeyCode::Left) => motion(CursorMove::WordBack),
-        (KeyModifiers::ALT, KeyCode::Right) => motion(CursorMove::WordForward),
-        (KeyModifiers::ALT, KeyCode::Char('b' | 'B')) => motion(CursorMove::WordBack),
-        (KeyModifiers::ALT, KeyCode::Char('f' | 'F')) => motion(CursorMove::WordForward),
-        (KeyModifiers::SUPER, KeyCode::Left) => motion(CursorMove::Head),
-        (KeyModifiers::SUPER, KeyCode::Right) => motion(CursorMove::End),
-        (KeyModifiers::SUPER, KeyCode::Up) => motion(CursorMove::Top),
-        (KeyModifiers::SUPER, KeyCode::Down) => motion(CursorMove::Bottom),
+        (Mods::ALT, Key::Left) => motion(CursorMove::WordBack),
+        (Mods::ALT, Key::Right) => motion(CursorMove::WordForward),
+        (Mods::ALT, Key::Char('b' | 'B')) => motion(CursorMove::WordBack),
+        (Mods::ALT, Key::Char('f' | 'F')) => motion(CursorMove::WordForward),
+        (Mods::SUPER, Key::Left) => motion(CursorMove::Head),
+        (Mods::SUPER, Key::Right) => motion(CursorMove::End),
+        (Mods::SUPER, Key::Up) => motion(CursorMove::Top),
+        (Mods::SUPER, Key::Down) => motion(CursorMove::Bottom),
 
-        (KeyModifiers::CONTROL, KeyCode::Char('a')) => Some(Operation::SelectAll),
-        (KeyModifiers::CONTROL, KeyCode::Backspace) | (KeyModifiers::ALT, KeyCode::Backspace) => {
+        (Mods::CTRL, Key::Char('a')) => Some(Operation::SelectAll),
+        (Mods::CTRL, Key::Backspace) | (Mods::ALT, Key::Backspace) => {
             Some(Operation::DeleteWordBack)
         }
-        (KeyModifiers::CONTROL, KeyCode::Delete) | (KeyModifiers::ALT, KeyCode::Delete) => {
-            Some(Operation::DeleteWordForward)
-        }
+        (Mods::CTRL, Key::Delete) | (Mods::ALT, Key::Delete) => Some(Operation::DeleteWordForward),
 
         // Text entry. Only an unmodified key types: a chord that reached here is
         // one nothing above claimed, and inserting its character would be worse
         // than ignoring it.
-        (KeyModifiers::NONE, KeyCode::Char(c)) => Some(Operation::Insert(c)),
-        (KeyModifiers::NONE, KeyCode::Enter) => Some(Operation::InsertNewline),
+        (Mods::NONE, Key::Char(c)) => Some(Operation::Insert(c)),
+        (Mods::NONE, Key::Enter) => Some(Operation::InsertNewline),
         // No Tab: the component intercepts it ahead of this table and routes it
         // to `indent_lines`, which indents whole lines by the **indent step**.
         // The operation that used to sit here inserted spaces to the next tab
         // stop computed from the cursor's *char* column — a third statement of
         // the tab-stop rule, on a basis neither the wrap nor the renderer uses.
-        (KeyModifiers::NONE, KeyCode::Backspace) => Some(Operation::DeleteBack),
-        (KeyModifiers::NONE, KeyCode::Delete) => Some(Operation::DeleteForward),
+        (Mods::NONE, Key::Backspace) => Some(Operation::DeleteBack),
+        (Mods::NONE, Key::Delete) => Some(Operation::DeleteForward),
 
         _ => None,
     }
@@ -148,16 +148,12 @@ mod tests {
     use super::*;
     use crate::ropetext::Text;
 
-    fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
-        KeyEvent::new(code, modifiers)
+    fn plain(key: Key) -> Option<Operation> {
+        operation(KeyInput::plain(key))
     }
 
-    fn plain(code: KeyCode) -> Option<Operation> {
-        operation(key(code, KeyModifiers::NONE))
-    }
-
-    fn with(code: KeyCode, modifiers: KeyModifiers) -> Option<Operation> {
-        operation(key(code, modifiers))
+    fn with(key: Key, mods: Mods) -> Option<Operation> {
+        operation(KeyInput::new(key, mods))
     }
 
     // -- the mapping, asserted without a buffer -----------------------------
@@ -165,14 +161,14 @@ mod tests {
     #[test]
     fn arrows_move_without_extending() {
         assert_eq!(
-            plain(KeyCode::Left),
+            plain(Key::Left),
             Some(Operation::Move {
                 to: CursorMove::Back,
                 extend: false
             })
         );
         assert_eq!(
-            plain(KeyCode::Down),
+            plain(Key::Down),
             Some(Operation::Move {
                 to: CursorMove::Down,
                 extend: false
@@ -183,18 +179,25 @@ mod tests {
     #[test]
     fn shift_extends_whatever_it_is_held_with() {
         for (code, to) in [
-            (KeyCode::Left, CursorMove::Back),
-            (KeyCode::Home, CursorMove::Head),
-            (KeyCode::PageDown, CursorMove::ParagraphForward),
+            (Key::Left, CursorMove::Back),
+            (Key::Home, CursorMove::Head),
+            (Key::PageDown, CursorMove::ParagraphForward),
         ] {
             assert_eq!(
-                with(code, KeyModifiers::SHIFT),
+                with(code, Mods::SHIFT),
                 Some(Operation::Move { to, extend: true }),
                 "{code:?}"
             );
         }
         assert_eq!(
-            with(KeyCode::Left, KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+            with(
+                Key::Left,
+                Mods {
+                    ctrl: true,
+                    shift: true,
+                    ..Mods::NONE
+                }
+            ),
             Some(Operation::Move {
                 to: CursorMove::WordBack,
                 extend: true
@@ -206,14 +209,14 @@ mod tests {
     #[test]
     fn control_moves_by_word_and_to_the_ends() {
         assert_eq!(
-            with(KeyCode::Right, KeyModifiers::CONTROL),
+            with(Key::Right, Mods::CTRL),
             Some(Operation::Move {
                 to: CursorMove::WordForward,
                 extend: false
             })
         );
         assert_eq!(
-            with(KeyCode::End, KeyModifiers::CONTROL),
+            with(Key::End, Mods::CTRL),
             Some(Operation::Move {
                 to: CursorMove::Bottom,
                 extend: false
@@ -223,13 +226,13 @@ mod tests {
 
     #[test]
     fn either_modifier_deletes_a_word() {
-        for modifier in [KeyModifiers::CONTROL, KeyModifiers::ALT] {
+        for modifier in [Mods::CTRL, Mods::ALT] {
             assert_eq!(
-                with(KeyCode::Backspace, modifier),
+                with(Key::Backspace, modifier),
                 Some(Operation::DeleteWordBack)
             );
             assert_eq!(
-                with(KeyCode::Delete, modifier),
+                with(Key::Delete, modifier),
                 Some(Operation::DeleteWordForward)
             );
         }
@@ -237,15 +240,15 @@ mod tests {
 
     #[test]
     fn unmodified_keys_type() {
-        assert_eq!(plain(KeyCode::Char('x')), Some(Operation::Insert('x')));
-        assert_eq!(plain(KeyCode::Enter), Some(Operation::InsertNewline));
+        assert_eq!(plain(Key::Char('x')), Some(Operation::Insert('x')));
+        assert_eq!(plain(Key::Enter), Some(Operation::InsertNewline));
         // Tab is claimed by the component ahead of this table, so it is not a
         // typing key here — see the note beside `InsertNewline` in `operation`.
-        assert_eq!(plain(KeyCode::Tab), None);
-        assert_eq!(plain(KeyCode::Backspace), Some(Operation::DeleteBack));
-        assert_eq!(plain(KeyCode::Delete), Some(Operation::DeleteForward));
+        assert_eq!(plain(Key::Tab), None);
+        assert_eq!(plain(Key::Backspace), Some(Operation::DeleteBack));
+        assert_eq!(plain(Key::Delete), Some(Operation::DeleteForward));
         assert_eq!(
-            with(KeyCode::Char('X'), KeyModifiers::SHIFT),
+            with(Key::Char('X'), Mods::SHIFT),
             Some(Operation::Insert('X')),
             "a shifted character is still a character"
         );
@@ -257,21 +260,28 @@ mod tests {
         // one place to look for what a key does — and one place for a collision to
         // be visible rather than decided by which match ran first.
         assert_eq!(
-            with(KeyCode::Left, KeyModifiers::ALT),
+            with(Key::Left, Mods::ALT),
             Some(Operation::Move {
                 to: CursorMove::WordBack,
                 extend: false
             })
         );
         assert_eq!(
-            with(KeyCode::Char('f'), KeyModifiers::ALT),
+            with(Key::Char('f'), Mods::ALT),
             Some(Operation::Move {
                 to: CursorMove::WordForward,
                 extend: false
             })
         );
         assert_eq!(
-            with(KeyCode::Char('B'), KeyModifiers::ALT | KeyModifiers::SHIFT),
+            with(
+                Key::Char('B'),
+                Mods {
+                    alt: true,
+                    shift: true,
+                    ..Mods::NONE
+                }
+            ),
             Some(Operation::Move {
                 to: CursorMove::WordBack,
                 extend: true
@@ -279,7 +289,7 @@ mod tests {
             "the uppercase letter arrives with SHIFT set; the modifier decides"
         );
         assert_eq!(
-            with(KeyCode::Up, KeyModifiers::SUPER),
+            with(Key::Up, Mods::SUPER),
             Some(Operation::Move {
                 to: CursorMove::Top,
                 extend: false
@@ -293,21 +303,28 @@ mod tests {
         // its own input handler, so a key stepped history behind the caller's
         // back. They belong to the component's shortcut layer, which sees the key
         // first — and if it ever stopped, this table must not quietly pick it up.
-        assert_eq!(with(KeyCode::Char('u'), KeyModifiers::CONTROL), None);
-        assert_eq!(with(KeyCode::Char('r'), KeyModifiers::CONTROL), None);
+        assert_eq!(with(Key::Char('u'), Mods::CTRL), None);
+        assert_eq!(with(Key::Char('r'), Mods::CTRL), None);
     }
 
     #[test]
     fn keys_that_mean_nothing_here_mean_nothing() {
-        assert_eq!(plain(KeyCode::F(1)), None);
-        assert_eq!(plain(KeyCode::Null), None);
-        assert_eq!(plain(KeyCode::Esc), None);
-        assert_eq!(with(KeyCode::Char('v'), KeyModifiers::CONTROL), None);
+        assert_eq!(plain(Key::F(1)), None);
+        assert_eq!(plain(Key::Esc), None);
+        assert_eq!(with(Key::Char('v'), Mods::CTRL), None);
         assert_eq!(
-            with(KeyCode::Char('q'), KeyModifiers::ALT),
+            with(Key::Char('q'), Mods::ALT),
             None,
             "an unclaimed chord must not type its character"
         );
+    }
+
+    #[test]
+    fn ctrl_a_selects_all_via_key_input() {
+        assert!(matches!(
+            operation(KeyInput::ctrl('a')),
+            Some(Operation::SelectAll)
+        ));
     }
 
     // -- application ---------------------------------------------------------
