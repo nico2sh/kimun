@@ -292,22 +292,6 @@ impl TextEditorComponent {
         self.install_notifier_on_autocomplete();
     }
 
-    /// Build a snapshot view of the editor state for the autocomplete
-    /// controller. Method form wraps `build_editor_host_snapshot` for
-    /// callers that do not need to split borrows; production hot
-    /// paths (`refresh_autocomplete_if_open`, `sync_autocomplete`)
-    /// inline the free function instead so `&self.backend` and
-    /// `&mut self.autocomplete` can coexist.
-    // Kept as the borrow-splitting-free convenience form; no production caller (hot paths inline the free fn).
-    #[allow(dead_code)]
-    fn autocomplete_host_snapshot(&self) -> Option<EditorHostSnapshot> {
-        build_editor_host_snapshot(
-            &self.backend,
-            self.session().revs.current(),
-            self.painter.last_cursor_screen,
-        )
-    }
-
     /// Pull the latest async query results into the popup state. Called
     /// once per render before drawing the overlay.
     fn poll_autocomplete(&mut self) {
@@ -1393,12 +1377,6 @@ impl Component for TextEditorComponent {
         // Search-match emphasis: paint needle matches and task
         // checkboxes over the rendered viewport. Buffer-level post-pass —
         // viewport-only, so large notes pay nothing beyond the visible rows.
-        // Kept on purpose: `prepare_frame` already made this same check, so
-        // here it is an idempotent no-op.
-        if self.session().revs.needles_stale() {
-            self.session_mut().needles.clear();
-            self.session_mut().revs.disarm_needles();
-        }
 
         // Empty-note tip: dim ghost text in a fresh/empty buffer,
         // gone the instant the first character lands (the buffer stops being

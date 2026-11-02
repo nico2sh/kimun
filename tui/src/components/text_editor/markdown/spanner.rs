@@ -1,15 +1,18 @@
 //! Theme-applying painter over the style-free producer.
 //!
-//! `MarkdownSpanner::render_with` is the theme-applying painter over
-//! [`render_runs`](crate::logic::editor::markdown::runs::render_runs), used by
-//! tests and the four mapping shims (cursor-col, click-col and friends). The
-//! editor itself paints through `view.rs` (`run_style`), which also handles
-//! code boxes and overlays.
+//! `MarkdownSpanner::render_with` is a test-only theme-applying painter over
+//! [`render_runs`](crate::logic::editor::markdown::runs::render_runs). The
+//! editor itself paints through `logic::editor::paint_frame` and the TUI
+//! painter, which also handle code boxes and overlays.
 
+#[cfg(test)]
 use super::super::markdown_style::{mask_to_modifier, role_style};
 use crate::logic::editor::markdown::ParsedLine;
+#[cfg(test)]
 use crate::logic::editor::markdown::runs::render_runs;
+#[cfg(test)]
 use crate::settings::themes::Theme;
+#[cfg(test)]
 use ratatui::text::Span;
 
 #[cfg(test)]
@@ -145,6 +148,7 @@ impl MarkdownSpanner {
 
     // ── `_with` variants: accept pre-parsed `&ParsedLine` ────────────────────
 
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub fn render_with<'a>(
         content: &'a str,

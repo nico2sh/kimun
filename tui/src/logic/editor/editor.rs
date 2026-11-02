@@ -1047,7 +1047,9 @@ impl Editor {
         if matches!(pointer.kind, PointerKind::Down(Button::Right))
             && self.selection.is_none_or(|(start, end)| start == end)
         {
-            self.requests.push(EditorRequest::ContextMenu);
+            if !self.requests.contains(&EditorRequest::ContextMenu) {
+                self.requests.push(EditorRequest::ContextMenu);
+            }
             return Handled::Consumed;
         }
         // Handle right-click clipboard copy in its own scope to avoid borrow conflicts.
