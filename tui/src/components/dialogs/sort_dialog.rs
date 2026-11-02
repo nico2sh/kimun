@@ -5,12 +5,14 @@ use ratatui::style::{Modifier, Style};
 use ratatui::widgets::Paragraph;
 
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, InputEvent, SortTarget};
-use crate::components::file_list::{SortField, SortOrder};
+use crate::components::events::InputEvent;
 use crate::components::hint_row::HintRow;
 use crate::components::key_picker::{KeyPicker, PickerOutcome};
 use crate::components::panel::{ModalSpec, modal_chrome};
-use crate::components::sortable::{SortState, is_blank_property, property_key};
+use crate::components::sortable::{is_blank_property, property_key};
+use crate::logic::message::{AppMessage, AppTx, SortTarget};
+use crate::logic::sort::SortState;
+use crate::logic::sort::{SortField, SortOrder};
 use crate::settings::themes::Theme;
 
 /// The selectable rows, in display order.
@@ -24,7 +26,7 @@ enum Row {
 
 /// Modal that edits one list's [`SortState`]: field / order, plus a "group
 /// directories" toggle for lists that have one. Changes apply live: each
-/// toggle emits `AppEvent::SortChanged` (`persist = false`). `s` (sidebar
+/// toggle emits `AppMessage::SortChanged` (`persist = false`). `s` (sidebar
 /// only) emits the same event with `persist = true` (save as default);
 /// Enter/Esc emit `CloseOverlay`.
 pub struct SortDialog {
@@ -138,7 +140,7 @@ impl SortDialog {
         if is_blank_property(&self.field) {
             return;
         }
-        tx.send(AppEvent::SortChanged {
+        tx.send(AppMessage::SortChanged {
             target: self.target,
             state: SortState {
                 field: self.field.clone(),
@@ -200,11 +202,11 @@ impl SortDialog {
                             self.field = SortField::Property(typed);
                             self.emit(tx, false);
                         } else {
-                            tx.send(AppEvent::CloseOverlay).ok();
+                            tx.send(AppMessage::CloseOverlay).ok();
                         }
                     }
                     PickerOutcome::Cancel => {
-                        tx.send(AppEvent::CloseOverlay).ok();
+                        tx.send(AppMessage::CloseOverlay).ok();
                     }
                     _ => {}
                 }
@@ -225,7 +227,7 @@ impl SortDialog {
                 self.emit(tx, true);
             }
             KeyCode::Enter | KeyCode::Esc => {
-                tx.send(AppEvent::CloseOverlay).ok();
+                tx.send(AppMessage::CloseOverlay).ok();
             }
             _ => {}
         }
@@ -419,9 +421,9 @@ impl_dialog!(SortDialog);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::events::SortTarget;
-    use crate::components::file_list::{SortField, SortOrder};
-    use crate::components::sortable::SortState;
+    use crate::logic::message::SortTarget;
+    use crate::logic::sort::SortState;
+    use crate::logic::sort::{SortField, SortOrder};
     use ratatui::crossterm::event::{KeyCode, KeyEvent};
     use tokio::sync::mpsc::unbounded_channel;
 
@@ -464,7 +466,7 @@ mod tests {
         assert_eq!(d.field, SortField::Title);
         let evt = rx.try_recv().expect("a SortChanged event");
         match evt {
-            AppEvent::SortChanged {
+            AppMessage::SortChanged {
                 target,
                 state,
                 persist,
@@ -487,7 +489,7 @@ mod tests {
         assert!(rx.try_recv().is_err(), "navigation alone emits nothing");
         d.handle_key(key(KeyCode::Char(' ')), &tx);
         assert_eq!(d.order, SortOrder::Descending);
-        assert!(matches!(rx.try_recv(), Ok(AppEvent::SortChanged { .. })));
+        assert!(matches!(rx.try_recv(), Ok(AppMessage::SortChanged { .. })));
     }
 
     #[test]
@@ -506,7 +508,7 @@ mod tests {
         assert!(
             matches!(
                 rx.try_recv(),
-                Ok(AppEvent::SortChanged { persist: true, .. })
+                Ok(AppMessage::SortChanged { persist: true, .. })
             ),
             "s on the sidebar emits a persisting SortChanged"
         );
@@ -523,7 +525,7 @@ mod tests {
             let mut d = sidebar_dialog();
             let (tx, mut rx) = unbounded_channel();
             d.handle_key(key(code), &tx);
-            assert!(matches!(rx.try_recv(), Ok(AppEvent::CloseOverlay)));
+            assert!(matches!(rx.try_recv(), Ok(AppMessage::CloseOverlay)));
         }
     }
 
@@ -571,7 +573,7 @@ mod tests {
         }
         d.handle_key(key(KeyCode::Enter), &tx); // accept "due" from the list
         match rx.try_recv() {
-            Ok(AppEvent::SortChanged { state, .. }) => {
+            Ok(AppMessage::SortChanged { state, .. }) => {
                 assert_eq!(state.field, SortField::Property("due".into()))
             }
             other => panic!("expected SortChanged, got {other:?}"),
@@ -592,7 +594,7 @@ mod tests {
         d.handle_key(key(KeyCode::Up), &tx); // back to Order, list closed
         d.handle_key(key(KeyCode::Char(' ')), &tx);
         match rx.try_recv() {
-            Ok(AppEvent::SortChanged { state, .. }) => {
+            Ok(AppMessage::SortChanged { state, .. }) => {
                 assert_eq!(state.field, SortField::Property("due".into()));
                 assert_eq!(state.order, SortOrder::Descending);
             }
@@ -624,7 +626,7 @@ mod tests {
         let (x, y) = d.row_origin(1).expect("Order row rendered");
         d.handle_mouse(&mouse(x + 2, y), &tx);
         assert_eq!(d.order, SortOrder::Descending);
-        assert!(matches!(rx.try_recv(), Ok(AppEvent::SortChanged { .. })));
+        assert!(matches!(rx.try_recv(), Ok(AppMessage::SortChanged { .. })));
     }
 
     #[test]
@@ -644,7 +646,7 @@ mod tests {
         d.handle_key(key(KeyCode::Down), &tx);
         d.handle_key(key(KeyCode::Down), &tx);
         d.handle_key(key(KeyCode::Enter), &tx);
-        assert!(matches!(rx.try_recv(), Ok(AppEvent::CloseOverlay)));
+        assert!(matches!(rx.try_recv(), Ok(AppMessage::CloseOverlay)));
     }
 
     /// The browser target: property sorts allowed, no group row, no `s`.
@@ -689,9 +691,9 @@ mod tests {
         SortDialog::new(SortTarget::Browser, state(SortField::Name, None), true).unsorted(true)
     }
 
-    fn emitted(rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>) -> SortState {
+    fn emitted(rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppMessage>) -> SortState {
         match rx.try_recv() {
-            Ok(AppEvent::SortChanged { state, .. }) => state,
+            Ok(AppMessage::SortChanged { state, .. }) => state,
             other => panic!("expected SortChanged, got {other:?}"),
         }
     }

@@ -293,6 +293,36 @@ _Avoid_: dialog manager (the superseded name), overlay stack (it is single-slot)
 An async result addressed to the open **Overlay** — a dialog's validation verdict, its loaded directory list, a RAG answer, an operation error. One event family (`OverlayData`) routed *only* to the **OverlayHost**, never to a screen's owned handling; an overlay data event arriving with no (or the wrong) overlay open is stale by definition and dropped. This replaces the old convention of giving the active overlay first crack at every app event.
 _Avoid_: dialog event (the RAG answer overlay is not a dialog), validation result (names one kind).
 
+### GUI
+
+**GUI**:
+The native desktop frontend built on egui, a sibling of the TUI over the same core and the same shared editor and app logic. It has the TUI's layout and functionality (rail, drawer, editor, footer, command palette, leader, overlays); the one deliberate difference is **Preferences**, regrouped for a graphical layout. Reads and writes the same `config.toml` as the TUI.
+_Avoid_: desktop app, egui app, GUI TUI (it is not a terminal emulator hosting the TUI).
+
+**Logic layer**:
+A feature's state, rules and intents, free of any UI crate — it never names ratatui, crossterm or egui, enforced by a CI grep over the whole tree. Takes intents, exposes state; knows nothing of how it is drawn or which key produced the intent. The **TUI** and the **GUI** each wrap it in a **Renderer**.
+_Avoid_: model (collides with the **Edit buffer**'s avoid list), view (collides with **drawer view**), backend (collides with **Editor backend**), core (that is the vault crate).
+
+**Renderer**:
+A frontend's code for one feature: draws the **Logic layer**'s state and turns raw input (crossterm, `egui::Event`) into its intents. One per frontend per feature.
+_Avoid_: view, widget, component (too generic).
+
+**App message**:
+What a component or background task tells the app (open a note, autosave completed, a file operation, an Ask answer, an update notice): `AppMessage`, carried on the app channel and free of terminal types. The loop's own `AppEvent` wraps it with a terminal **Input source** event, and the **GUI** wraps it with its own input.
+_Avoid_: event (ambiguous with input events), command (the **Vim command** and palette actions are different things).
+
+**Edit surface**:
+The **GUI**'s custom editor widget: paints the **edit buffer** with the buffer's own cell-grid layout in a monospace font and feeds key events to the same input interpreters (plain, **vim**) as the TUI. Not egui's `TextEdit`, which has no motion layer and cannot host the vim engine.
+_Avoid_: text box, text area, TextEdit.
+
+**Key input**:
+What the user typed, terminal-neutrally: a character (`$`, `é`) or a named key (Enter, Esc, arrows, F-keys) plus modifiers — the unit the editing engines consume. Distinct from a **key combo**, which names a physical key for the shortcut table.
+_Avoid_: key event (crossterm's type), keystroke.
+
+**Instant-apply preference**:
+A **GUI** Preferences setting that takes effect and is written to `config.toml` the moment it changes — theme, fonts, scale, editor backend, autosave, sorting. Heavy changes (switching a workspace, reindex, the server URL) are explicit actions with confirmation instead. The TUI keeps its explicit Save.
+_Avoid_: auto-save (that is the note **autosave**), live setting.
+
 ### Ask
 
 **Ask workspace**:

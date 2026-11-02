@@ -16,7 +16,8 @@ use ratatui::Frame;
 use kimun_core::nfs::VaultPath;
 
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, InputEvent};
+use crate::components::events::InputEvent;
+use crate::logic::message::{AppMessage, AppTx};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScreenKind {
@@ -37,7 +38,7 @@ pub enum ScreenKind {
 #[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait AppScreen: Send {
-    /// Called once when the screen mounts. Send `AppEvent`s through `tx` to
+    /// Called once when the screen mounts. Send `AppMessage`s through `tx` to
     /// trigger navigation (e.g. `StartScreen` checking whether a vault exists).
     async fn on_enter(&mut self, _tx: &AppTx) {}
 
@@ -50,7 +51,7 @@ pub trait AppScreen: Send {
     /// Handle an application-level event owned by this screen. Events the
     /// screen does not recognize are silently ignored. The default
     /// implementation handles nothing.
-    async fn handle_app_message(&mut self, _msg: AppEvent, _tx: &AppTx) {}
+    async fn handle_app_message(&mut self, _msg: AppMessage, _tx: &AppTx) {}
 
     /// Try to open `path` within this screen (e.g. load a note into the
     /// buffer, or navigate a sidebar). Return `Some(path)` if the screen
@@ -99,7 +100,7 @@ mod tests {
 
     #[tokio::test]
     async fn on_exit_default_is_noop() {
-        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let (tx, _rx) = unbounded_channel::<AppMessage>();
         let mut screen = PreferencesScreen::new(shared_defaults());
         screen.on_exit(&tx).await; // must compile and not panic
     }

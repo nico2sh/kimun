@@ -8,7 +8,7 @@ use ratatui::text::Text;
 use ratatui::widgets::Paragraph;
 use throbber_widgets_tui::{Throbber, ThrobberState};
 
-use crate::components::events::{AppEvent, AppTx};
+use crate::logic::message::{AppMessage, AppTx};
 use crate::settings::themes::Theme;
 
 pub enum IndexingProgressState {
@@ -34,7 +34,7 @@ pub fn spawn_running(work: tokio::task::JoinHandle<()>, tx: &AppTx) -> IndexingP
     let ticker = tokio::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            if tx2.send(AppEvent::Redraw).is_err() {
+            if tx2.send(AppMessage::Redraw).is_err() {
                 break;
             }
         }

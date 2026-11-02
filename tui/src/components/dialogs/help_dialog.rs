@@ -9,11 +9,12 @@ use ratatui::widgets::Paragraph;
 use super::ModalShell;
 use crate::components::Component;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, InputEvent};
+use crate::components::events::InputEvent;
 use crate::components::hint_row::HintRow;
 use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::ShortcutCategory;
+use crate::logic::message::{AppMessage, AppTx};
 use crate::settings::themes::Theme;
 
 // ---------------------------------------------------------------------------
@@ -334,7 +335,7 @@ impl HelpDialog {
     ) -> EventState {
         match key.code {
             KeyCode::Esc => {
-                tx.send(AppEvent::CloseOverlay).ok();
+                tx.send(AppMessage::CloseOverlay).ok();
             }
             KeyCode::Up => self.scroll_up(),
             KeyCode::Down => self.scroll_down(),
@@ -472,8 +473,9 @@ impl_dialog!(HelpDialog);
 mod tests {
     use super::*;
     use crate::keys::KeyBindings;
-    use crate::keys::action_shortcuts::{ActionShortcuts, TextAction};
+    use crate::keys::action_shortcuts::ActionShortcuts;
     use crate::keys::key_strike::KeyStrike;
+    use crate::logic::text_action::TextAction;
 
     fn bindings_with_bold_and_quit() -> KeyBindings {
         let mut kb = KeyBindings::empty();

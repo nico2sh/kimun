@@ -11,42 +11,14 @@ use crate::components::ask_sources::SourcesPanel;
 use crate::components::config_panel::ConfigPanel;
 use crate::components::drawer_views::{LinksPanel, OutlinePanel, TagsPanel};
 use crate::components::event_state::EventState;
-use crate::components::events::{AppTx, InputEvent};
+use crate::components::events::InputEvent;
 use crate::components::query_panel::QueryPanel;
 use crate::components::semantic_search::SemanticPanel;
 use crate::components::sidebar::SidebarComponent;
+use crate::logic::message::AppTx;
+use crate::logic::nav::DrawerView;
 use crate::settings::themes::Theme;
 use kimun_core::NoteVault;
-
-/// The views the activity rail can put in the drawer. Closed set, mirrors
-/// the rail items top to bottom.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum DrawerView {
-    Files,
-    Find,
-    Semantic,
-    Ask,
-    Tags,
-    Links,
-    Outline,
-    Config,
-}
-
-impl DrawerView {
-    /// Status-bar label when the drawer shows this view.
-    pub fn label(&self) -> &'static str {
-        match self {
-            DrawerView::Files => "FILES",
-            DrawerView::Find => "FIND",
-            DrawerView::Semantic => "SEMANTIC",
-            DrawerView::Ask => "ASK",
-            DrawerView::Tags => "TAGS",
-            DrawerView::Links => "LINKS",
-            DrawerView::Outline => "OUTLINE",
-            DrawerView::Config => "CFG",
-        }
-    }
-}
 
 pub use crate::components::config_panel::ConfigInfo;
 
@@ -215,7 +187,7 @@ impl DrawerHost {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::events::AppEvent;
+    use crate::logic::message::AppMessage;
     use crate::settings::AppSettings;
     use crate::test_support::temp_vault;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -300,7 +272,7 @@ mod tests {
         );
         assert!(matches!(
             rx.try_recv(),
-            Ok(AppEvent::ExecuteLeaderAction(
+            Ok(AppMessage::ExecuteLeaderAction(
                 crate::keys::leader::LeaderAction::VaultTheme
             ))
         ));

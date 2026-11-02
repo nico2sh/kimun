@@ -675,6 +675,34 @@ impl AppSettings {
         }
     }
 
+    /// Reads the default config file without touching the disk: no file
+    /// creation, no migration write-back, no `.corrupt` rename. A missing file
+    /// yields in-memory defaults; an unparsable one is an error. For
+    /// frontends that only consume settings (the GUI skeleton, ADR-0049 §6);
+    /// anything that owns the config uses [`Self::load_from_disk`].
+    ///
+    /// **The result is NOT migrated**: neither `ConfigMigration::run` nor
+    /// `merge_missing_default_bindings` is applied, so for an old-format file
+    /// `workspace_config` and `key_bindings` may differ from what the TUI
+    /// sees. Callers must only rely on fields whose meaning did not change
+    /// across config versions (the GUI skeleton reads `theme` only).
+    pub fn load_read_only() -> Result<Self, SettingsError> {
+        Self::load_read_only_from(system::app_dir()?.join(BASE_CONFIG_FILE).into_path_buf())
+    }
+
+    fn load_read_only_from(path: PathBuf) -> Result<Self, SettingsError> {
+        if !path.exists() {
+            return Ok(Self::defaults_for_config_file(path));
+        }
+        let mut toml_str = String::new();
+        File::open(&path)?.read_to_string(&mut toml_str)?;
+        let mut setting = toml::from_str::<AppSettings>(&toml_str)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        setting.config_file = Some(path.clone());
+        setting.resolve_paths(&Self::config_base_dir(&path));
+        Ok(setting)
+    }
+
     pub fn load_from_file(path: PathBuf) -> Result<Self, SettingsError> {
         // A bare filename (`--config kimun.toml`) has an *empty* parent, not
         // no parent. Creating it is a no-op the OS accepts, but canonicalizing
@@ -1587,6 +1615,71 @@ created = "2026-01-01T00:00:00Z"
             cache.path().as_path().starts_with(&config_dir),
             "cache path must sit next to the config file, got {cache}"
         );
+    }
+
+    #[test]
+    fn load_read_only_missing_file_yields_defaults_and_creates_nothing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config_dir = dir.path().canonicalize().unwrap();
+        let path = config_dir.join("config.toml");
+
+        let settings = AppSettings::load_read_only_from(path.clone()).unwrap();
+
+        assert_eq!(settings.theme, AppSettings::default().theme);
+        assert!(!path.exists(), "a read-only load must not create the file");
+        assert_eq!(std::fs::read_dir(&config_dir).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn load_read_only_parses_and_resolves_paths() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config_dir = dir.path().canonicalize().unwrap();
+        let path = config_dir.join("config.toml");
+        let current = config_migration::CURRENT_CONFIG_VERSION;
+        std::fs::write(
+            &path,
+            format!("config_version = {current}\ntheme = \"Nord\"\n"),
+        )
+        .unwrap();
+
+        let settings = AppSettings::load_read_only_from(path).unwrap();
+
+        assert_eq!(settings.theme, "Nord");
+        let cache = settings.index_for("work");
+        assert!(
+            cache.path().as_path().starts_with(&config_dir),
+            "cache path must sit next to the config file, got {cache}"
+        );
+    }
+
+    #[test]
+    fn load_read_only_corrupt_file_errors_and_is_left_untouched() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config_dir = dir.path().canonicalize().unwrap();
+        let path = config_dir.join("config.toml");
+        let body = "not = valid toml [[[";
+        std::fs::write(&path, body).unwrap();
+
+        assert!(AppSettings::load_read_only_from(path.clone()).is_err());
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), body);
+        assert!(!path.with_extension("toml.corrupt").exists());
+        assert_eq!(std::fs::read_dir(&config_dir).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn load_read_only_does_not_migrate_an_old_config_on_disk() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config_dir = dir.path().canonicalize().unwrap();
+        let path = config_dir.join("config.toml");
+        let body = "config_version = 3\ntheme = \"Nord\"\n";
+        std::fs::write(&path, body).unwrap();
+
+        let settings = AppSettings::load_read_only_from(path.clone()).unwrap();
+
+        assert_eq!(settings.theme, "Nord");
+        assert_eq!(settings.config_version, 3, "must not be migrated in memory");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), body);
     }
 
     #[test]

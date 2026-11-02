@@ -11,10 +11,11 @@ use ratatui::widgets::{Block, Paragraph};
 use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::Component;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, FileOp, InputEvent};
+use crate::components::events::InputEvent;
 use crate::components::sidebar::SidebarComponent;
 use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::key_event_to_combo;
+use crate::logic::message::{AppMessage, AppTx, FileOp};
 use crate::settings::SharedSettings;
 use crate::settings::themes::Theme;
 
@@ -82,15 +83,15 @@ impl AppScreen for BrowseScreen {
                 // App-level OpenJournal resolves today's entry and routes it
                 // via OpenPath, switching to the editor (Browse does not open
                 // notes itself).
-                tx.send(AppEvent::OpenJournal).ok();
+                tx.send(AppMessage::OpenJournal).ok();
                 return EventState::Consumed;
             }
         }
         self.sidebar.handle_input(event, tx)
     }
 
-    async fn handle_app_message(&mut self, msg: AppEvent, tx: &AppTx) {
-        if let AppEvent::FileOp(FileOp::Created(path)) = msg {
+    async fn handle_app_message(&mut self, msg: AppMessage, tx: &AppTx) {
+        if let AppMessage::FileOp(FileOp::Created(path)) = msg {
             // A note was created somewhere; rebuild the listing only when we are
             // browsing its directory so the new note shows up.
             let (parent, _) = path.get_parent_path();
@@ -153,7 +154,7 @@ impl AppScreen for BrowseScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::events::AppEvent;
+    use crate::logic::message::AppMessage;
     use crate::settings::AppSettings;
     use crate::test_support::{key_event, temp_vault};
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
@@ -225,7 +226,7 @@ mod tests {
         let state = screen.handle_input(&ctrl_j, &tx);
         assert_eq!(state, EventState::Consumed, "Ctrl+J should be consumed");
         assert!(
-            matches!(rx.try_recv(), Ok(AppEvent::OpenJournal)),
+            matches!(rx.try_recv(), Ok(AppMessage::OpenJournal)),
             "Ctrl+J should request the journal entry"
         );
     }

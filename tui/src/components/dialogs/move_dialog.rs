@@ -15,10 +15,10 @@ use crate::components::Component;
 use crate::components::clickable::list_index_at;
 use crate::components::dialogs::ValidationState;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, FileOp, OverlayData};
 use crate::components::hint_row::HintRow;
 use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::components::single_line_input::{InputOutcome, SingleLineInput};
+use crate::logic::message::{AppMessage, AppTx, FileOp, OverlayData};
 use crate::settings::themes::Theme;
 
 // ---------------------------------------------------------------------------
@@ -117,7 +117,7 @@ impl MoveDialog {
                     .collect();
                 paths.sort();
                 tx_clone
-                    .send(AppEvent::OverlayData(OverlayData::MoveDirectoriesLoaded(
+                    .send(AppMessage::OverlayData(OverlayData::MoveDirectoriesLoaded(
                         paths,
                     )))
                     .ok();
@@ -172,7 +172,9 @@ impl MoveDialog {
 
             let paths = matched_strs.iter().map(VaultPath::new).collect();
             tx_clone
-                .send(AppEvent::OverlayData(OverlayData::MoveFilterResults(paths)))
+                .send(AppMessage::OverlayData(OverlayData::MoveFilterResults(
+                    paths,
+                )))
                 .ok();
         });
 
@@ -213,7 +215,7 @@ impl MoveDialog {
             };
             let exists = vault.exists(&candidate).await;
             tx_clone
-                .send(AppEvent::OverlayData(OverlayData::MoveDestValidation {
+                .send(AppMessage::OverlayData(OverlayData::MoveDestValidation {
                     available: !exists,
                 }))
                 .ok();
@@ -312,12 +314,14 @@ impl MoveDialog {
                         let result = vault.rename_entry(&from, &new_path).await;
                         match result {
                             Ok(()) => {
-                                tx2.send(AppEvent::FileOp(FileOp::Moved { from, to: new_path }))
+                                tx2.send(AppMessage::FileOp(FileOp::Moved { from, to: new_path }))
                                     .ok();
                             }
                             Err(e) => {
-                                tx2.send(AppEvent::OverlayData(OverlayData::Error(e.to_string())))
-                                    .ok();
+                                tx2.send(AppMessage::OverlayData(OverlayData::Error(
+                                    e.to_string(),
+                                )))
+                                .ok();
                             }
                         }
                     });
@@ -325,7 +329,7 @@ impl MoveDialog {
                 EventState::Consumed
             }
             InputOutcome::Cancel => {
-                tx.send(AppEvent::CloseOverlay).ok();
+                tx.send(AppMessage::CloseOverlay).ok();
                 EventState::Consumed
             }
             InputOutcome::Changed => {
@@ -530,7 +534,7 @@ mod tests {
         }
     }
 
-    /// Pressing `Esc` must send `AppEvent::CloseOverlay` and return
+    /// Pressing `Esc` must send `AppMessage::CloseOverlay` and return
     /// `EventState::Consumed`, without requiring a real vault.
     #[test]
     fn esc_sends_close_dialog() {
@@ -549,7 +553,7 @@ mod tests {
             };
 
             let vault = Arc::new(vault);
-            let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
+            let (tx, mut rx) = mpsc::unbounded_channel::<AppMessage>();
             let mut dialog = MoveDialog::new(VaultPath::new("notes/test.md"), vault, &tx);
 
             let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
@@ -560,12 +564,12 @@ mod tests {
             // may have sent events before or after the Esc key was processed.
             let mut found = false;
             while let Ok(event) = rx.try_recv() {
-                if matches!(event, AppEvent::CloseOverlay) {
+                if matches!(event, AppMessage::CloseOverlay) {
                     found = true;
                     break;
                 }
             }
-            assert!(found, "expected AppEvent::CloseOverlay in channel");
+            assert!(found, "expected AppMessage::CloseOverlay in channel");
         });
     }
 
@@ -593,7 +597,7 @@ mod tests {
             .expect("vault creation failed"),
         );
 
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<AppEvent>();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<AppMessage>();
         let path = VaultPath::new("notes/projects/kimun.md");
         let dialog = MoveDialog::new(path, vault, &tx);
 

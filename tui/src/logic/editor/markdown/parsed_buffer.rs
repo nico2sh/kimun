@@ -3,13 +3,13 @@
 //! lazy-depth tracking that gates reset-boundary detection, and the
 //! splice/parse-range machinery used by the incremental editor view.
 
-use super::super::parse_incremental::LineConstructKind;
-use super::super::text_coords::byte_col_to_char_col;
 use super::detect::{detect_image_placeholders, detect_wikilinks};
 use super::{
     Element, ElementKind, PARSER_OPTIONS, ParsedLine, leading_ws_byte_len, list_marker_len,
     tag_to_kind,
 };
+use crate::logic::editor::parse_incremental::LineConstructKind;
+use crate::logic::editor::text_coords::byte_col_to_char_col;
 use pulldown_cmark::{CodeBlockKind, Event, Parser, Tag, TagEnd};
 use std::ops::Range;
 

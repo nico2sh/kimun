@@ -11,9 +11,8 @@
 //! vim Visual selection includes, and what an edit owes it afterwards (the
 //! selection mirror, the typing run, the outcome drain). None of that is here.
 
-use super::markdown;
 use super::rope_buffer::{CursorMove, RopeBuffer};
-use crate::keys::action_shortcuts::TextAction;
+use crate::logic::text_action::TextAction;
 
 /// Auto-surround pair for `c`: typing an opening pair character or a
 /// symmetric one while a selection is active wraps the selection instead of
@@ -106,9 +105,11 @@ pub fn smart_enter(buf: &mut RopeBuffer) -> bool {
             return false;
         }
         // ASCII whitespace, so byte index == char index here.
-        let ws_end = markdown::leading_ws_byte_len(&line);
+        let ws_end = crate::logic::editor::markdown::leading_ws_byte_len(&line);
         let (ws, after_ws) = line.split_at(ws_end);
-        let action = if let Some(marker_len) = markdown::list_marker_len(after_ws) {
+        let action = if let Some(marker_len) =
+            crate::logic::editor::markdown::list_marker_len(after_ws)
+        {
             if after_ws.len() == marker_len {
                 // An empty item: dedent while indented, then clear the marker
                 // once fully unindented.

@@ -1,0 +1,992 @@
+use pulldown_cmark::{HeadingLevel, Options, Tag};
+use unicode_segmentation::UnicodeSegmentation;
+
+mod block_opener;
+pub(crate) mod detect;
+mod parsed_buffer;
+pub(crate) use block_opener::opener_shape;
+pub use parsed_buffer::ParsedBuffer;
+
+/// Shared parser options used by all pulldown-cmark call sites in this module.
+pub(crate) const PARSER_OPTIONS: Options = Options::ENABLE_STRIKETHROUGH;
+
+/// Visual columns per tab stop, for everything that draws a tab: the renderer's
+/// expansion, the **code box** sizing via [`raw_display_width`], and nvim's own
+/// `tabstop` (set from here in `backend.rs`).
+///
+/// Derived, not declared. The **Layout** measures a tab while wrapping and the
+/// renderer measures it while painting; the two must agree to the cell or every
+/// column past a tab is wrong by the difference, so there is one number and it
+/// lives with the engine that wraps. Writing `4` here again would agree only by
+/// luck, and nothing would catch the luck running out.
+pub(crate) const TAB_STOP: usize = crate::ropetext::Metrics::DEFAULT_TAB_WIDTH;
+
+/// Compute the display width of a tab character at the given visual column.
+pub(crate) fn tab_width_at(col: usize) -> usize {
+    TAB_STOP - (col % TAB_STOP)
+}
+
+/// Sum of grapheme-cluster display widths across a string. Used to size
+/// synthetic spans (e.g. image-link placeholders) injected during render.
+pub(crate) fn string_display_width(s: &str) -> usize {
+    s.graphemes(true).map(cluster_display_width).sum()
+}
+
+/// The blockquote bar gutter drawn in place of the hidden `>` markers: one
+/// `│` per nesting level followed by a single space. This is the single source
+/// of the gutter's shape — `render_with` draws this string, while wrap
+/// reservation and click mapping size themselves via [`blockquote_gutter_width`].
+/// The unit test `gutter_width_matches_rendered` locks the two in sync.
+pub(crate) fn blockquote_gutter(depth: u8) -> String {
+    let mut s = "│".repeat(depth as usize);
+    s.push(' ');
+    s
+}
+
+/// Display-column width of [`blockquote_gutter`] for `depth` (`│`×depth + space,
+/// each one column → `depth + 1`). Used by the view to reserve the wrap inset and
+/// to offset click/selection columns.
+pub(crate) fn blockquote_gutter_width(depth: u8) -> usize {
+    depth as usize + 1
+}
+
+/// Display-column width of a raw line with all clusters visible and tabs
+/// expanded to the next tab stop. Mirrors the per-cluster column math in
+/// `spanner::render_with` (tab handling + `cluster_display_width`).
+pub(crate) fn raw_display_width(line: &str) -> usize {
+    let mut col = 0usize;
+    for g in line.graphemes(true) {
+        col += cluster_width_at(g, col);
+    }
+    col
+}
+
+/// Display width a grapheme cluster occupies when rendered at visual column
+/// `col`: a tab advances to the next tab stop, anything else is its intrinsic
+/// width. Single source of the tab-vs-cluster rule shared by `raw_display_width`
+/// and the force-raw render/cursor paths in `spanner`.
+pub(crate) fn cluster_width_at(cluster: &str, col: usize) -> usize {
+    if cluster == "\t" {
+        tab_width_at(col)
+    } else {
+        cluster_display_width(cluster)
+    }
+}
+
+/// Display width of a grapheme cluster.
+///
+/// Measures the whole cluster via [`unicode_width::UnicodeWidthStr`], so emoji presentation
+/// sequences match what terminals draw: a flag (🇪🇸, two regional indicators),
+/// a VS16 sequence (❤️ = U+2764 + U+FE0F), and a keycap (1️⃣) all render as 2
+/// columns even though their first codepoint is narrow. ZWJ sequences (👨‍👩‍👧‍👦)
+/// collapse to a single 2-column glyph and combining marks (e + U+0301)
+/// contribute 0, both of which `width()` already reports correctly.
+///
+/// Genuinely zero-width clusters (ZWSP, soft hyphen, BOM, a lone combining
+/// mark) measure 0 — matching what the terminal draws. The wrap loop's
+/// forward-progress guard in the layout's row wrapping handles a zero-width
+/// start cluster, so no `.max(1)` floor is needed here.
+pub(crate) fn cluster_display_width(cluster: &str) -> usize {
+    use unicode_width::UnicodeWidthStr;
+    cluster.width()
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Element {
+    pub start_char: usize,
+    pub end_char: usize,
+    pub kind: ElementKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ElementKind {
+    Bold,
+    Italic,
+    Strikethrough,
+    InlineCode,
+    Link,
+    HeadingH1,
+    HeadingH2,
+    HeadingH3,
+    Blockquote,
+    WikiLink,
+    Image,
+    Label,
+}
+
+/// A single image-link span on a parsed line, replaced visually with a
+/// placeholder when rendering. `start_char`..`end_char` covers the full
+/// `![alt](url)` source range. `placeholder_width` is precomputed so the
+/// per-render hot path does not re-walk the placeholder graphemes.
+#[derive(Debug, Clone)]
+pub struct ImagePlaceholder {
+    pub start_char: usize,
+    pub end_char: usize,
+    pub placeholder: String,
+    pub placeholder_width: usize,
+}
+
+/// Pre-parsed result for a single logical line.
+/// Build once per frame via `ParsedLine::parse`, then reuse across render, cursor,
+/// wrap-width, and click-mapping calls to avoid redundant pulldown-cmark invocations.
+#[derive(Debug, Clone)]
+pub struct ParsedLine {
+    pub elements: Vec<Element>,
+    /// Per-char visibility: `true` = this char is rendered content (not a markdown sigil).
+    pub content_vis: Vec<bool>,
+    /// Per-char: `true` = this char falls within any element's char range.
+    /// Enables O(1) `in_any_element` without iterating `elements`.
+    elem_vis: Vec<bool>,
+    /// Per-char element index, 1-based (0 = no element). Enables O(1) `elem_at`.
+    /// Stored as `u16`; supports up to 65535 elements per line.
+    elem_index: Vec<u16>,
+    /// Per-char text-modifier mask (`MOD_BOLD` / `MOD_ITALIC` / `MOD_STRIKE`)
+    /// OR-ed from *every* element covering the char, so an inner Link/WikiLink
+    /// nested inside `**…**` / `*…*` still renders bold/italic. `elem_index`
+    /// only tracks the innermost element (for fg/underline), which would
+    /// otherwise drop the outer emphasis modifiers.
+    modifier_mask: Vec<u8>,
+    /// Char offset where the list-item sigil (indent + marker + space) ends on
+    /// this line, or `None` if this line is not the first line of a list item.
+    list_sigil_end: Option<usize>,
+    /// Image-link spans on this line, sorted by `start_char`. Their underlying
+    /// chars are hidden (`content_vis = false`) and replaced visually by
+    /// `placeholder` when rendering.
+    pub image_placeholders: Vec<ImagePlaceholder>,
+    /// Blockquote nesting depth (number of Blockquote elements covering this
+    /// line), or `None` if this line is not part of a blockquote. Derived from
+    /// pulldown's structure so lazy-continuation lines (quote text with no `>`
+    /// prefix) and nested quotes report the correct depth. Set by
+    /// `ParsedBuffer::parse`.
+    blockquote_depth: Option<u8>,
+}
+
+impl ParsedLine {
+    /// Parse a single line in isolation. Internally delegates to
+    /// `ParsedBuffer::parse`; kept for test convenience.
+    ///
+    /// When the line looks like an indented list item (e.g. `    - foo` or
+    /// `\t- foo`), pulldown-cmark treats it as an indented code block rather
+    /// than a list item on its own. To preserve the real-editor behaviour
+    /// (where context from surrounding lines resolves it as a nested list
+    /// item), prepend a synthetic parent list marker before handing the input
+    /// to `ParsedBuffer::parse` and return the result for the original line.
+    pub fn parse(line: &str) -> Self {
+        let owned = line.to_string();
+        if needs_synthetic_list_parent(line) {
+            // "- " opens a list at column 0; the indented `line` that follows
+            // becomes a nested list item with full context.
+            ParsedBuffer::parse_lines(&["- ".to_string(), owned])
+                .lines
+                .pop()
+                .expect("ParsedBuffer::parse returns one row per input line")
+        } else {
+            ParsedBuffer::parse_lines(std::slice::from_ref(&owned))
+                .lines
+                .pop()
+                .expect("ParsedBuffer::parse always returns at least one ParsedLine")
+        }
+    }
+
+    /// Element index at `pos`, or `None`. O(1) via precomputed `elem_index`.
+    pub fn elem_at(&self, pos: usize) -> Option<usize> {
+        self.elem_index.get(pos).and_then(|&tag| {
+            if tag == 0 {
+                None
+            } else {
+                Some((tag as usize) - 1)
+            }
+        })
+    }
+
+    /// Whether `pos` falls inside any tracked element. O(1) via precomputed `elem_vis`.
+    pub fn in_any_element(&self, pos: usize) -> bool {
+        self.elem_vis.get(pos).copied().unwrap_or(false)
+    }
+
+    /// Combined emphasis-modifier mask (`MOD_*`) for the char at `pos`, OR-ed
+    /// across all covering elements. `0` outside any emphasis element.
+    pub(crate) fn modifiers_at(&self, pos: usize) -> u8 {
+        self.modifier_mask.get(pos).copied().unwrap_or(0)
+    }
+
+    /// Returns the char offset of the first *content* char inside a heading element
+    /// (i.e. the end of the "# " / "## " / "### " sigil region), or `None` if this
+    /// line has no heading element.
+    ///
+    /// Defaults to `e.end_char` so that a heading with no content text (e.g. `"#"`) is
+    /// fully treated as sigil — fixes the F-02 bug where `e.start_char` was used.
+    pub fn heading_sigil_end(&self) -> Option<usize> {
+        self.elements
+            .iter()
+            .position(|e| {
+                matches!(
+                    e.kind,
+                    ElementKind::HeadingH1 | ElementKind::HeadingH2 | ElementKind::HeadingH3
+                )
+            })
+            .map(|idx| self.first_content_char(idx))
+    }
+
+    /// Char offset of the first content (non-sigil) char inside element
+    /// `elem_idx`, or its `end_char` when the element is all sigil (e.g. a bare
+    /// `#` / `>`). Shared by `heading_sigil_end` and `blockquote_sigil_end`.
+    ///
+    /// A hidden char (`content_vis == false`) that belongs to a *different*
+    /// element — e.g. the `[` of a `[link](url)` or the `*` of `**bold**`
+    /// immediately after `# ` — also terminates the sigil: its sigils belong to
+    /// the inner element, not the heading/blockquote marker, and are hidden by
+    /// that element's own render path.
+    fn first_content_char(&self, elem_idx: usize) -> usize {
+        let e = &self.elements[elem_idx];
+        for i in e.start_char..e.end_char {
+            if i < self.content_vis.len() && self.content_vis[i] {
+                return i;
+            }
+            if self.elem_at(i).is_some_and(|inner| inner != elem_idx) {
+                return i;
+            }
+        }
+        e.end_char
+    }
+
+    /// Char offset where the list-item sigil ends on this line, or `None` if this
+    /// line is not the first line of a list item.
+    pub fn list_sigil_end(&self) -> Option<usize> {
+        self.list_sigil_end
+    }
+
+    /// Blockquote nesting depth for this line, or `None` if not a blockquote.
+    pub fn blockquote_depth(&self) -> Option<u8> {
+        self.blockquote_depth
+    }
+
+    /// Char offset where the blockquote marker region (`>`/spaces) ends, i.e.
+    /// the first content char. `None` if this line is not part of a blockquote.
+    /// `blockquote_depth` is `Some` iff a Blockquote element exists (both are
+    /// element-derived), so the `find` always matches when this returns a value.
+    pub fn blockquote_sigil_end(&self) -> Option<usize> {
+        self.elements
+            .iter()
+            .position(|e| e.kind == ElementKind::Blockquote)
+            .map(|idx| self.first_content_char(idx))
+    }
+
+    /// Diagnostic helper: compare every field for byte-identity. Used by
+    /// the view's debug-only correctness assertion. Returns Ok(()) when
+    /// all fields match, Err with a human-readable message describing the
+    /// first divergence.
+    #[cfg(debug_assertions)]
+    pub(crate) fn debug_assert_eq_to(&self, other: &Self, row: usize) {
+        assert_eq!(
+            self.content_vis, other.content_vis,
+            "row {row} content_vis diverge"
+        );
+        assert_eq!(self.elem_vis, other.elem_vis, "row {row} elem_vis diverge");
+        assert_eq!(
+            self.elem_index, other.elem_index,
+            "row {row} elem_index diverge"
+        );
+        assert_eq!(
+            self.list_sigil_end, other.list_sigil_end,
+            "row {row} list_sigil_end diverge"
+        );
+        assert_eq!(
+            self.blockquote_depth, other.blockquote_depth,
+            "row {row} blockquote_depth diverge"
+        );
+        assert_eq!(
+            self.elements.len(),
+            other.elements.len(),
+            "row {row} elements.len() diverge"
+        );
+    }
+}
+
+/// Detects whether a line is an indented list item (leading spaces or tab,
+/// followed by `-`/`*`/`+`/digit-dot + space). Used by `ParsedLine::parse`
+/// to decide whether to feed pulldown-cmark a synthetic parent-list context
+/// for single-line degenerate inputs.
+fn needs_synthetic_list_parent(line: &str) -> bool {
+    let trimmed = line.trim_start_matches([' ', '\t']);
+    if trimmed.len() == line.len() {
+        return false; // no leading whitespace → nothing to compensate for
+    }
+    list_marker_len(trimmed).is_some()
+}
+
+/// If the string begins with an unordered list marker (`- `, `* `, `+ `) or an
+/// ordered list marker (digits followed by `. `), returns the marker's length
+/// in bytes (including the trailing space). Otherwise `None`.
+///
+/// Digits are ASCII only, so byte length == char length here.
+/// Byte length of the leading run of ASCII space/tab characters in `line`.
+/// Equal to the char count for that run (whitespace is ASCII).
+pub(crate) fn leading_ws_byte_len(line: &str) -> usize {
+    line.bytes()
+        .take_while(|b| *b == b' ' || *b == b'\t')
+        .count()
+}
+
+/// Maps a pulldown-cmark start `Tag` to its corresponding `ElementKind`, for
+/// the tags whose end events emit a stacked element via the standard
+/// push-on-start / pop-on-end pattern. Tags handled specially (e.g. `Item`,
+/// `Code`) return `None`.
+pub(crate) fn tag_to_kind(tag: &Tag) -> Option<ElementKind> {
+    Some(match tag {
+        Tag::Strong => ElementKind::Bold,
+        Tag::Emphasis => ElementKind::Italic,
+        Tag::Strikethrough => ElementKind::Strikethrough,
+        Tag::Link { .. } => ElementKind::Link,
+        Tag::BlockQuote(_) => ElementKind::Blockquote,
+        Tag::Heading { level, .. } => match level {
+            HeadingLevel::H1 => ElementKind::HeadingH1,
+            HeadingLevel::H2 => ElementKind::HeadingH2,
+            _ => ElementKind::HeadingH3,
+        },
+        _ => return None,
+    })
+}
+
+pub(crate) fn list_marker_len(s: &str) -> Option<usize> {
+    if s.starts_with("- ") || s.starts_with("* ") || s.starts_with("+ ") {
+        return Some(2);
+    }
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i > 0 && i + 1 < bytes.len() && bytes[i] == b'.' && bytes[i + 1] == b' ' {
+        Some(i + 2)
+    } else {
+        None
+    }
+}
+
+/// Per-char emphasis-modifier bits, OR-ed across nested elements.
+pub(crate) const MOD_BOLD: u8 = 1 << 0;
+pub(crate) const MOD_ITALIC: u8 = 1 << 1;
+pub(crate) const MOD_STRIKE: u8 = 1 << 2;
+
+/// Emphasis bit contributed by an element kind, or `0` for non-emphasis kinds.
+fn modifier_bit(kind: ElementKind) -> u8 {
+    match kind {
+        ElementKind::Bold => MOD_BOLD,
+        ElementKind::Italic => MOD_ITALIC,
+        ElementKind::Strikethrough => MOD_STRIKE,
+        _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::logic::editor::parse_incremental::LineConstructKind;
+
+    /// The renderer expands a tab; the **Layout** measures one while wrapping.
+    /// They must land on the same stop, so this pins the derivation rather than
+    /// two constants that happen to match. Both directions, since a caller could
+    /// pass a non-default `Metrics` and only the default is what the renderer
+    /// tracks.
+    #[test]
+    fn the_renderer_measures_a_tab_exactly_as_the_engine_does() {
+        let metrics = crate::ropetext::Metrics::default();
+        assert_eq!(TAB_STOP, metrics.tab_width);
+        for col in 0..(TAB_STOP * 3) {
+            assert_eq!(
+                tab_width_at(col),
+                metrics.width_at("\t", col),
+                "a tab drawn at column {col}"
+            );
+        }
+    }
+
+    #[test]
+    fn cluster_display_width_emoji_presentation_sequences() {
+        // These grapheme clusters render as 2 columns in modern terminals, but
+        // their FIRST codepoint is narrow (width 1). Measuring only the first
+        // codepoint undercounts them — wrap, cursor, and click math then drift.
+        assert_eq!(cluster_display_width("\u{1F1EA}\u{1F1F8}"), 2, "flag 🇪🇸");
+        assert_eq!(
+            cluster_display_width("\u{2764}\u{FE0F}"),
+            2,
+            "heart ❤️ (VS16)"
+        );
+        assert_eq!(cluster_display_width("1\u{FE0F}\u{20E3}"), 2, "keycap 1️⃣");
+        // Sanity: clusters already correct must stay correct.
+        assert_eq!(cluster_display_width("\u{3042}"), 2, "CJK あ");
+        assert_eq!(cluster_display_width("a"), 1, "ascii");
+        assert_eq!(cluster_display_width("e\u{0301}"), 1, "e + combining acute");
+    }
+
+    #[test]
+    fn cluster_display_width_zero_width_clusters_are_zero() {
+        // Genuinely zero-width clusters render as 0 columns in terminals. Counting
+        // them as 1 drifts wrap, cursor, and selection math by one column each.
+        assert_eq!(cluster_display_width("\u{200B}"), 0, "ZWSP");
+        assert_eq!(cluster_display_width("\u{00AD}"), 0, "soft hyphen");
+        assert_eq!(cluster_display_width("\u{200C}"), 0, "ZWNJ");
+        assert_eq!(cluster_display_width("\u{FEFF}"), 0, "BOM");
+        assert_eq!(cluster_display_width("\u{0301}"), 0, "lone combining acute");
+    }
+
+    #[test]
+    fn blockquote_lazy_continuation_carries_depth() {
+        // A line with no leading `>` that lazily continues a blockquote
+        // (CommonMark §5.1) is part of the quote: pulldown spans the
+        // Blockquote element across it, so it must report the quote's depth
+        // and get the bar gutter — not just the quoted text color.
+        let buf = ParsedBuffer::parse_lines(&["> first".to_string(), "second".to_string()]);
+        assert_eq!(buf.lines[0].blockquote_depth(), Some(1));
+        assert_eq!(
+            buf.lines[1].blockquote_depth(),
+            Some(1),
+            "lazy continuation line must carry the blockquote depth"
+        );
+
+        // Nested lazy continuation keeps the full depth.
+        let nested = ParsedBuffer::parse_lines(&[">> a".to_string(), "b".to_string()]);
+        assert_eq!(nested.lines[0].blockquote_depth(), Some(2));
+        assert_eq!(nested.lines[1].blockquote_depth(), Some(2));
+
+        // A blank line ends the quote: the following line is NOT a continuation.
+        let ended =
+            ParsedBuffer::parse_lines(&["> first".to_string(), String::new(), "plain".to_string()]);
+        assert_eq!(ended.lines[0].blockquote_depth(), Some(1));
+        assert_eq!(ended.lines[2].blockquote_depth(), None);
+    }
+
+    #[test]
+    fn indented_code_excludes_trailing_blank_keeps_interior() {
+        use crate::logic::editor::parse_incremental::LineConstructKind::{
+            Blank, IndentedCode, Plain,
+        };
+        let kinds = |lines: &[&str]| {
+            let owned: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+            ParsedBuffer::parse_lines(&owned).kinds
+        };
+        // Trailing blank after indented code is NOT part of the block.
+        assert_eq!(
+            kinds(&["    code", "", "outro"]),
+            vec![IndentedCode, Blank, Plain]
+        );
+        // Interior blank (between indented lines) stays part of the block.
+        assert_eq!(
+            kinds(&["    a", "", "    b"]),
+            vec![IndentedCode, IndentedCode, IndentedCode]
+        );
+        // Multiple trailing blanks all revert to Blank.
+        assert_eq!(
+            kinds(&["    a", "", "", "outro"]),
+            vec![IndentedCode, Blank, Blank, Plain]
+        );
+        // A less-indented content line (no blank before it) ends the block —
+        // it is NOT swallowed into the code block.
+        assert_eq!(
+            kinds(&["    Line 1", "    Line 2", "Line 3"]),
+            vec![IndentedCode, IndentedCode, Plain]
+        );
+        // Interior blanks (any number) between indented chunks stay in-block.
+        assert_eq!(
+            kinds(&["    line 1", "    line 2", "", "", "    line 3"]),
+            vec![
+                IndentedCode,
+                IndentedCode,
+                IndentedCode,
+                IndentedCode,
+                IndentedCode
+            ]
+        );
+    }
+
+    #[test]
+    fn gutter_width_matches_rendered() {
+        // Locks the single-source contract: blockquote_gutter_width must equal
+        // the display width of the actually-rendered blockquote_gutter string.
+        for d in 1u8..=4 {
+            assert_eq!(
+                blockquote_gutter_width(d),
+                string_display_width(&blockquote_gutter(d)),
+                "gutter width/string disagree at depth {d}"
+            );
+        }
+    }
+
+    #[test]
+    fn blockquote_depth_and_sigil_end() {
+        let p = ParsedLine::parse("> hello");
+        assert_eq!(p.blockquote_depth(), Some(1));
+        // sigil region is "> " (2 chars); content starts at index 2.
+        assert_eq!(p.blockquote_sigil_end(), Some(2));
+
+        let p2 = ParsedLine::parse(">> deep");
+        assert_eq!(p2.blockquote_depth(), Some(2));
+
+        let plain = ParsedLine::parse("not a quote");
+        assert_eq!(plain.blockquote_depth(), None);
+        assert_eq!(plain.blockquote_sigil_end(), None);
+    }
+
+    #[test]
+    fn parse_image_emits_image_element_and_placeholder() {
+        let line = "see ![alt](../assets/img.png) here";
+        let parsed = ParsedLine::parse(line);
+        let img = parsed
+            .elements
+            .iter()
+            .find(|e| e.kind == ElementKind::Image)
+            .expect("image element");
+        assert_eq!(line.chars().nth(img.start_char), Some('!'));
+        assert_eq!(line.chars().nth(img.end_char - 1), Some(')'));
+        let ph = parsed
+            .image_placeholders
+            .iter()
+            .find(|p| p.start_char == img.start_char)
+            .expect("placeholder for image");
+        assert_eq!(ph.placeholder, "[img.png]");
+        for pos in img.start_char..img.end_char {
+            assert!(
+                !parsed.content_vis[pos],
+                "char {pos} should be hidden inside image span"
+            );
+        }
+    }
+    #[test]
+    fn parsed_line_heading_sigil_end_empty_heading() {
+        // "#" alone: no content chars, sigil_end should equal e.end_char (1)
+        let p = ParsedLine::parse("#");
+        assert_eq!(p.heading_sigil_end(), Some(1));
+    }
+    #[test]
+    fn parsed_line_heading_sigil_end_with_content() {
+        // "# T": sigil is "# " (2 chars), first content at pos 2
+        let p = ParsedLine::parse("# T");
+        assert_eq!(p.heading_sigil_end(), Some(2));
+    }
+
+    #[test]
+    fn buffer_parse_nested_list_under_parent() {
+        // Canonical nested-list pattern: parent at col 0, child indented 4.
+        let lines = vec![
+            "- parent".to_string(),
+            "    - [child link](url)".to_string(),
+        ];
+        let parsed = ParsedBuffer::parse_lines(&lines).lines;
+        assert_eq!(parsed.len(), 2);
+
+        // Parent line: list sigil at col 2.
+        assert_eq!(parsed[0].list_sigil_end(), Some(2));
+
+        // Child line: pulldown-cmark reports the item marker at col 4.
+        assert_eq!(
+            parsed[1].list_sigil_end(),
+            Some(6),
+            "child's sigil_end should be after '    - ' (6 chars)"
+        );
+
+        // Child line has a Link element.
+        assert!(
+            parsed[1]
+                .elements
+                .iter()
+                .any(|e| e.kind == ElementKind::Link),
+            "nested list item should contain a Link element"
+        );
+    }
+
+    #[test]
+    fn buffer_parse_standalone_2space_list_still_works() {
+        // Regression: 2-space indent works on its own too.
+        let lines = vec!["  - [link](url)".to_string()];
+        let parsed = ParsedBuffer::parse_lines(&lines).lines;
+        assert!(
+            parsed[0]
+                .elements
+                .iter()
+                .any(|e| e.kind == ElementKind::Link)
+        );
+        assert_eq!(parsed[0].list_sigil_end(), Some(4));
+    }
+
+    #[test]
+    fn buffer_parse_top_level_unchanged() {
+        // Ensure nothing about top-level rendering changed.
+        let lines = vec!["- [link](url)".to_string()];
+        let parsed = ParsedBuffer::parse_lines(&lines).lines;
+        assert!(
+            parsed[0]
+                .elements
+                .iter()
+                .any(|e| e.kind == ElementKind::Link)
+        );
+        assert_eq!(parsed[0].list_sigil_end(), Some(2));
+    }
+
+    #[test]
+    fn buffer_parse_empty_lines_preserved() {
+        let lines = vec![
+            "# Title".to_string(),
+            String::new(),
+            "paragraph".to_string(),
+        ];
+        let parsed = ParsedBuffer::parse_lines(&lines).lines;
+        assert_eq!(parsed.len(), 3);
+        assert_eq!(parsed[1].elements.len(), 0);
+        assert_eq!(parsed[1].content_vis.len(), 0);
+    }
+
+    #[test]
+    fn buffer_parse_ordered_nested_list() {
+        let lines = vec!["1. first".to_string(), "    1. nested".to_string()];
+        let parsed = ParsedBuffer::parse_lines(&lines).lines;
+        assert_eq!(parsed[0].list_sigil_end(), Some(3));
+        assert_eq!(parsed[1].list_sigil_end(), Some(7));
+    }
+
+    #[test]
+    fn buffer_parse_setext_h1_spans_two_rows() {
+        // Setext H1: the `=====` line is part of the heading span.
+        // Under the old per-line parser, row 1 rendered as plain text; under the
+        // whole-buffer parser, pulldown emits one HeadingH1 covering both rows and
+        // row 1 has no Text events, so the underline renders in the sigil color.
+        // Pin this behavior — a regression would silently un-style setext headings.
+        let lines = vec!["My Heading".to_string(), "==========".to_string()];
+        let parsed = ParsedBuffer::parse_lines(&lines).lines;
+        assert!(
+            parsed[0]
+                .elements
+                .iter()
+                .any(|e| e.kind == ElementKind::HeadingH1),
+            "setext underline must tag row 0 as HeadingH1"
+        );
+        assert!(
+            parsed[1]
+                .elements
+                .iter()
+                .any(|e| e.kind == ElementKind::HeadingH1),
+            "setext underline must tag row 1 as HeadingH1"
+        );
+        // Row 1 has no Text events — content_vis is all false.
+        assert!(
+            parsed[1].content_vis.iter().all(|v| !v),
+            "setext underline row has no content"
+        );
+    }
+
+    #[test]
+    fn buffer_parse_multiline_blockquote() {
+        // Two blockquote lines in a row — pulldown folds them into one blockquote.
+        // Both rows must carry a Blockquote element so rendering is consistent.
+        let lines = vec!["> first line".to_string(), "> second line".to_string()];
+        let parsed = ParsedBuffer::parse_lines(&lines).lines;
+        assert!(
+            parsed[0]
+                .elements
+                .iter()
+                .any(|e| e.kind == ElementKind::Blockquote),
+            "row 0 must tag as Blockquote"
+        );
+        assert!(
+            parsed[1]
+                .elements
+                .iter()
+                .any(|e| e.kind == ElementKind::Blockquote),
+            "row 1 must tag as Blockquote"
+        );
+    }
+
+    #[test]
+    fn parse_line_emits_label_for_hashtag() {
+        let line = "see #rust later";
+        let parsed = ParsedLine::parse(line);
+        let label = parsed
+            .elements
+            .iter()
+            .find(|e| matches!(e.kind, ElementKind::Label));
+        assert!(
+            label.is_some(),
+            "expected Label element: {:?}",
+            parsed.elements
+        );
+        let l = label.unwrap();
+        let span: String = line
+            .chars()
+            .skip(l.start_char)
+            .take(l.end_char - l.start_char)
+            .collect();
+        assert_eq!(span, "#rust");
+    }
+
+    #[test]
+    fn parse_line_skips_label_inside_inline_code() {
+        let parsed = ParsedLine::parse("use `#foo` here");
+        let has_label = parsed
+            .elements
+            .iter()
+            .any(|e| matches!(e.kind, ElementKind::Label));
+        assert!(!has_label, "should not emit Label inside inline code");
+    }
+
+    // ── New label-parity tests (F2, F3, F4) ──────────────────────────────────
+
+    #[test]
+    fn parse_line_skips_label_inside_markdown_link() {
+        let parsed = ParsedLine::parse("[see docs](#section) and #real");
+        let labels: Vec<_> = parsed
+            .elements
+            .iter()
+            .filter(|e| matches!(e.kind, ElementKind::Label))
+            .collect();
+        assert_eq!(
+            labels.len(),
+            1,
+            "only #real should be a label, not #section in the link"
+        );
+        let l = labels[0];
+        let span: String = "[see docs](#section) and #real"
+            .chars()
+            .skip(l.start_char)
+            .take(l.end_char - l.start_char)
+            .collect();
+        assert_eq!(span, "#real");
+    }
+
+    #[test]
+    fn parse_line_skips_label_inside_link_display_text() {
+        let parsed = ParsedLine::parse("[#todo](notes/project.md)");
+        let has_label = parsed
+            .elements
+            .iter()
+            .any(|e| matches!(e.kind, ElementKind::Label));
+        assert!(
+            !has_label,
+            "hashtag inside link display text should not become Label"
+        );
+    }
+
+    #[test]
+    fn parse_line_skips_label_after_label_char() {
+        let parsed = ParsedLine::parse("foo#bar baz");
+        let has_label = parsed
+            .elements
+            .iter()
+            .any(|e| matches!(e.kind, ElementKind::Label));
+        assert!(
+            !has_label,
+            "word#tag should not emit Label without word boundary"
+        );
+    }
+
+    #[test]
+    fn parse_line_skips_label_for_double_hash() {
+        // `##draft` is Markdown header territory, not a label — pin the
+        // highlighter to the same rule the indexer enforces so a future
+        // core relaxation cannot silently re-color this span.
+        let parsed = ParsedLine::parse("##draft");
+        let has_label = parsed
+            .elements
+            .iter()
+            .any(|e| matches!(e.kind, ElementKind::Label));
+        assert!(!has_label, "##draft should not emit Label");
+    }
+
+    #[test]
+    fn parse_line_skips_label_for_adjacent_hash_run() {
+        // `#tag#more` — adjacent `#` invalidates both halves at the index
+        // level; the highlighter must agree to avoid suggesting tags that
+        // will never appear in the labels table.
+        let parsed = ParsedLine::parse("#tag#more");
+        let labels: Vec<_> = parsed
+            .elements
+            .iter()
+            .filter(|e| matches!(e.kind, ElementKind::Label))
+            .collect();
+        assert!(
+            labels.is_empty(),
+            "#tag#more should not emit Label, got {:?}",
+            labels
+        );
+    }
+
+    #[test]
+    fn parse_buffer_skips_label_inside_fenced_block() {
+        let buffer = vec![
+            "before".to_string(),
+            "```".to_string(),
+            "#inside".to_string(),
+            "```".to_string(),
+            "after #outside".to_string(),
+        ];
+        let lines = ParsedBuffer::parse_lines(&buffer).lines;
+        let inside_labels: Vec<_> = lines[2]
+            .elements
+            .iter()
+            .filter(|e| matches!(e.kind, ElementKind::Label))
+            .collect();
+        assert!(
+            inside_labels.is_empty(),
+            "no Label emitted for hashtags in fenced blocks"
+        );
+
+        let outside_labels: Vec<_> = lines[4]
+            .elements
+            .iter()
+            .filter(|e| matches!(e.kind, ElementKind::Label))
+            .collect();
+        assert_eq!(outside_labels.len(), 1, "#outside still extracted");
+    }
+
+    #[test]
+    fn parse_range_full_equals_parse() {
+        let lines: Vec<String> = vec!["hello".into(), "world".into(), "".into(), "**bold**".into()];
+        let full = ParsedBuffer::parse_lines(&lines);
+        let range_full = ParsedBuffer::parse_range_lines(&lines, 0..lines.len());
+        assert_eq!(full.lines.len(), range_full.lines.len());
+        assert_eq!(full.kinds, range_full.kinds);
+        for (a, b) in full.lines.iter().zip(range_full.lines.iter()) {
+            assert_eq!(a.content_vis, b.content_vis);
+            assert_eq!(a.elements.len(), b.elements.len());
+        }
+    }
+
+    #[test]
+    fn parse_range_paragraph_only_slice() {
+        let lines: Vec<String> = vec![
+            "intro paragraph".into(),
+            "".into(),
+            "middle line".into(),
+            "".into(),
+            "outro".into(),
+        ];
+        let slice = ParsedBuffer::parse_range_lines(&lines, 2..3);
+        assert_eq!(slice.lines.len(), 1);
+        assert_eq!(slice.kinds, vec![LineConstructKind::Plain]);
+    }
+
+    #[test]
+    fn splice_replaces_range() {
+        let mut pb = ParsedBuffer::parse_lines(&["alpha".into(), "beta".into(), "gamma".into()]);
+        let replacement = ParsedBuffer::parse_lines(&["BETA-NEW".into()]);
+        let replacement_kind = replacement.kinds[0];
+        pb.splice(1..2, replacement);
+        assert_eq!(pb.lines.len(), 3);
+        assert_eq!(pb.kinds.len(), 3);
+        assert_eq!(
+            pb.kinds[1], replacement_kind,
+            "replacement landed at the wrong index"
+        );
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "splice")]
+    fn splice_panics_on_length_mismatch_in_debug() {
+        let mut pb = ParsedBuffer::parse_lines(&["a".into(), "b".into()]);
+        let too_short = ParsedBuffer::parse_lines(&["X".into()]);
+        pb.splice(0..2, too_short);
+    }
+
+    // ── V2 lazy_depth tracking ───────────────────────────────────────────────
+
+    /// A blockquote does NOT lazy-extend across blanks (so the depths are
+    /// not `[1, 1, 1, 0]`): per CommonMark §5.1 a blank line ENDS a
+    /// blockquote (see Example 209). Pulldown closes the blockquote
+    /// at the first blank, so lazy_depth drops there. The §5.1 lazy
+    /// "paragraph continuation" is about non-`>`
+    /// lines continuing an OPEN paragraph (still on the same line
+    /// run), not extending the blockquote across blanks.
+    #[test]
+    fn lazy_depth_blockquote_closes_at_first_blank() {
+        let lines: Vec<String> = vec!["> a".into(), "".into(), "".into(), "x".into()];
+        let pb = ParsedBuffer::parse_lines(&lines);
+        assert_eq!(
+            pb.lazy_depth,
+            vec![1, 0, 0, 0],
+            "blockquote closes at first blank per CommonMark §5.1; got {:?}",
+            pb.lazy_depth,
+        );
+    }
+
+    /// IndentedCode lazy-extends across a blank row joining two
+    /// indented chunks (CommonMark §4.4). All three rows must
+    /// report lazy_depth ≥ 1 — including the last content row, so
+    /// the v2 structural guard catches edits anywhere inside the
+    /// block.
+    #[test]
+    fn lazy_depth_indented_code_across_blanks() {
+        let lines: Vec<String> = vec!["    code".into(), "".into(), "    more".into()];
+        let pb = ParsedBuffer::parse_lines(&lines);
+        assert_eq!(
+            pb.lazy_depth,
+            vec![1, 1, 1],
+            "indented code multi-chunk should keep lazy_depth > 0 across the blank \
+             AND through the last content row; got {:?}",
+            pb.lazy_depth,
+        );
+    }
+
+    /// Fenced code blocks are NOT lazy-continuable — their closing
+    /// fence is a hard terminator. lazy_depth must remain 0 on
+    /// every row.
+    #[test]
+    fn lazy_depth_fenced_code_does_not_count() {
+        let lines: Vec<String> = vec!["```".into(), "x".into(), "```".into(), "".into()];
+        let pb = ParsedBuffer::parse_lines(&lines);
+        assert_eq!(
+            pb.lazy_depth,
+            vec![0, 0, 0, 0],
+            "fenced code is not lazy-continuable; got {:?}",
+            pb.lazy_depth,
+        );
+    }
+
+    /// Regression: BlockQuote followed by a trailing blank row must
+    /// drop `lazy_depth` AT the blank row, not past it. The buggy
+    /// past-EOF heuristic in `byte_to_row_col_unclamped` mis-fired
+    /// for End events landing on the START of a trailing empty row
+    /// (binary_search returned `Ok(r)` with `r < lines.len()` and a
+    /// 0-length row), shunting the decrement into the past-array
+    /// sentinel slot and leaving `lazy_depth[r]` elevated. That in
+    /// turn suppressed the legitimate reset boundary at row r and
+    /// forced full rebuilds on every edit adjacent to a trailing
+    /// blank.
+    #[test]
+    fn lazy_depth_blockquote_with_trailing_blank_drops_at_blank() {
+        let lines: Vec<String> = vec!["> a".into(), "".into()];
+        let pb = ParsedBuffer::parse_lines(&lines);
+        assert_eq!(
+            pb.lazy_depth,
+            vec![1, 0],
+            "blockquote must close at the trailing blank; got {:?}",
+            pb.lazy_depth,
+        );
+        assert!(
+            pb.reset_boundaries.contains(&1),
+            "the trailing blank at row 1 must be a reset boundary; got {:?}",
+            pb.reset_boundaries,
+        );
+    }
+
+    /// Boundary detection must skip rows inside a lazy-continuable
+    /// block. Using the IndentedCode multi-chunk fixture (the
+    /// canonical CommonMark §4.4 case) every row has lazy_depth > 0, so no
+    /// interior boundary can land. Only the sentinels remain.
+    ///
+    /// A blockquote fixture would not do here: it does NOT produce
+    /// interior lazy_depth > 0 rows (blanks end the blockquote). The
+    /// IndentedCode multi-chunk fixture is the correct one for
+    /// this invariant.
+    #[test]
+    fn boundaries_skip_rows_inside_lazy_block() {
+        let lines: Vec<String> = vec!["    code".into(), "".into(), "    more".into()];
+        let pb = ParsedBuffer::parse_lines(&lines);
+        assert_eq!(
+            pb.reset_boundaries,
+            vec![0, lines.len()],
+            "no boundary should land on a blank row inside the open indented-code block; \
+             got {:?}",
+            pb.reset_boundaries,
+        );
+    }
+}

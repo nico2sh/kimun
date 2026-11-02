@@ -7,9 +7,9 @@ use ratatui::widgets::{List, ListItem, ListState, Paragraph};
 use super::ModalShell;
 use crate::components::clickable::list_index_at;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx};
 use crate::components::hint_row::HintRow;
 use crate::components::panel::{ModalSpec, modal_chrome};
+use crate::logic::message::{AppMessage, AppTx};
 use crate::settings::AppSettings;
 use crate::settings::themes::Theme;
 
@@ -124,13 +124,13 @@ impl WorkspaceSwitcherModal {
                     && let Some((name, is_current)) = self.workspaces.get(idx)
                     && !is_current
                 {
-                    tx.send(AppEvent::WorkspaceSwitched(name.clone())).ok();
+                    tx.send(AppMessage::WorkspaceSwitched(name.clone())).ok();
                 }
-                tx.send(AppEvent::CloseOverlay).ok();
+                tx.send(AppMessage::CloseOverlay).ok();
                 EventState::Consumed
             }
             KeyCode::Esc => {
-                tx.send(AppEvent::CloseOverlay).ok();
+                tx.send(AppMessage::CloseOverlay).ok();
                 EventState::Consumed
             }
             _ => EventState::NotConsumed,

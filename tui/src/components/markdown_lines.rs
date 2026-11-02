@@ -30,7 +30,7 @@
 //!
 //! - **Block identity is not ours to decide.** [`classify_block_kinds`] hands
 //!   the whole answer to the editor's buffer-aware markdown model
-//!   ([`crate::components::text_editor::markdown::ParsedBuffer`], the real
+//!   ([`crate::logic::editor::markdown::ParsedBuffer`], the real
 //!   pulldown-cmark classifier) and maps each row's result onto a [`LineKind`].
 //!   There is exactly one opinion about what a line *is*, and it is the
 //!   editor's — so answers and the note editor never disagree, and cross-line
@@ -104,7 +104,7 @@ impl MdStyles {
 
 /// Classify the block role of every logical (newline-free) source `line` in
 /// `lines`, in order, by delegating wholesale to the editor's markdown model
-/// ([`ParsedBuffer::parse`](crate::components::text_editor::markdown::ParsedBuffer::parse))
+/// ([`ParsedBuffer::parse`](crate::logic::editor::markdown::ParsedBuffer::parse))
 /// — so there is a single, buffer-aware opinion about
 /// block identity shared with the note editor.
 ///
@@ -118,14 +118,14 @@ impl MdStyles {
 ///   read the heading off each row's per-line `elements`, not the coarse kind;
 /// - a **lazy blockquote continuation** (a bare line folded into a preceding
 ///   `>` quote) reports the quote's depth via
-///   [`ParsedLine::blockquote_depth`](crate::components::text_editor::markdown::ParsedLine::blockquote_depth)
+///   [`ParsedLine::blockquote_depth`](crate::logic::editor::markdown::ParsedLine::blockquote_depth)
 ///   and so styles as `Quote`, matching what the editor renders.
 ///
 /// Code wins over the heading/quote signals: inside a fenced or indented code
 /// block a `>` or `#` is literal, so the coarse code kinds take precedence.
 pub fn classify_block_kinds(lines: &[&str]) -> Vec<LineKind> {
-    use crate::components::text_editor::markdown::{ElementKind, ParsedBuffer};
-    use crate::components::text_editor::parse_incremental::LineConstructKind;
+    use crate::logic::editor::markdown::{ElementKind, ParsedBuffer};
+    use crate::logic::editor::parse_incremental::LineConstructKind;
 
     let owned: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
     let parsed = ParsedBuffer::parse_lines(&owned);

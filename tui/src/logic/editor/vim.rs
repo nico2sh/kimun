@@ -1,11 +1,11 @@
 //! Built-in vim emulation: a modal input interpreter over the **rope buffer**.
 //! Pure over `&mut RopeBuffer` — no component state, no async.
 
-use super::markdown_edits;
-use super::rope_buffer::{CursorMove, RopeBuffer};
-use super::snapshot::EditorMode;
 use super::vim_objects::{self as objects, TextObject};
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crate::logic::editor::markdown_edits;
+use crate::logic::editor::rope_buffer::{CursorMove, RopeBuffer};
+use crate::logic::editor::snapshot::EditorMode;
+use crate::logic::input::{Key, KeyInput, Mods};
 
 /// Screen-level actions the host performs on the engine's behalf.
 ///
@@ -444,7 +444,7 @@ impl VimEngine {
     /// In Visual/VisualLine mode, motions extend the selection; operators
     /// act on the live selection. In Normal mode, motions move the cursor
     /// and the insert-entry keys switch to Insert mode.
-    pub fn handle_key(&mut self, key: &KeyEvent, ta: &mut RopeBuffer) -> VimKeyOutcome {
+    pub fn handle_key(&mut self, key: &KeyInput, ta: &mut RopeBuffer) -> VimKeyOutcome {
         let outcome = match self.mode {
             EditorMode::Insert => self.handle_insert(key, ta),
             EditorMode::Replace => self.handle_replace(key, ta),
@@ -680,7 +680,7 @@ impl VimEngine {
 
     // ── Visual + Visual-line mode handler ────────────────────────────────────
 
-    fn handle_visual(&mut self, key: &KeyEvent, ta: &mut RopeBuffer) -> VimKeyOutcome {
+    fn handle_visual(&mut self, key: &KeyInput, ta: &mut RopeBuffer) -> VimKeyOutcome {
         // One-key continuations consume the next key first, as in Normal mode:
         // the g-command (`gv`, `gJ`), the find target (`vf,` extends through
         // the ','), and the object key after `i`/`a` (`vi(` re-aims the
@@ -689,11 +689,11 @@ impl VimEngine {
         // A Ctrl-chord is never the awaited character (`vf` then Ctrl-C must
         // abandon the find, not search for a literal 'c'). Fall through to the
         // handling below, which routes Ctrl-C/X/V to the clipboard chords.
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let ctrl = key.mods.ctrl;
         match self.awaiting {
             Some(Awaiting::G) if !ctrl => {
                 self.awaiting = None;
-                if let KeyCode::Char(c) = key.code {
+                if let Key::Char(c) = key.key {
                     return self.visual_g_key(c, ta);
                 }
                 self.clear_pending();
@@ -701,7 +701,7 @@ impl VimEngine {
             }
             Some(Awaiting::Find(pf)) if !ctrl => {
                 self.awaiting = None;
-                if let KeyCode::Char(ch) = key.code {
+                if let Key::Char(ch) = key.key {
                     self.last_find = Some((ch, pf.till, pf.forward));
                     let cnt = self.take_count();
                     let motion = Motion::FindChar {
@@ -717,7 +717,7 @@ impl VimEngine {
             }
             Some(Awaiting::ObjectScope { around }) if !ctrl => {
                 self.awaiting = None;
-                if let KeyCode::Char(ch) = key.code
+                if let Key::Char(ch) = key.key
                     && let Some(obj) = objects::object_for_char(ch, around)
                 {
                     Self::select_object_visual(obj, ta);
@@ -731,7 +731,7 @@ impl VimEngine {
         }
 
         // Esc: cancel selection and return to Normal.
-        if key.code == KeyCode::Esc {
+        if key.key == Key::Esc {
             ta.cancel_selection();
             self.mode = EditorMode::Normal;
             self.clear_pending();
@@ -739,13 +739,13 @@ impl VimEngine {
         }
 
         // Arrow keys: extend the selection, taking a count like `hjkl`.
-        let plain = key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT;
-        let KeyCode::Char(c) = key.code else {
-            let motion = match key.code {
-                KeyCode::Left => Motion::Left,
-                KeyCode::Right => Motion::Right,
-                KeyCode::Up => Motion::Up,
-                KeyCode::Down => Motion::Down,
+        let plain = key.mods == Mods::NONE || key.mods == Mods::SHIFT;
+        let Key::Char(c) = key.key else {
+            let motion = match key.key {
+                Key::Left => Motion::Left,
+                Key::Right => Motion::Right,
+                Key::Up => Motion::Up,
+                Key::Down => Motion::Down,
                 _ => return VimKeyOutcome::NoOp,
             };
             let count = self.take_count();
@@ -757,7 +757,7 @@ impl VimEngine {
         // transition happens here rather than behind its back — the host used to
         // never see these keys at all, because the filter below swallowed every
         // Ctrl-modified char.
-        if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(c, 'c' | 'x' | 'v') {
+        if key.mods.ctrl && matches!(c, 'c' | 'x' | 'v') {
             return self.clipboard_chord_visual(c, ta);
         }
 
@@ -1215,8 +1215,8 @@ impl VimEngine {
 
     // ── Insert + Replace mode handlers ───────────────────────────────────────
 
-    fn handle_insert(&mut self, key: &KeyEvent, ta: &mut RopeBuffer) -> VimKeyOutcome {
-        if key.code == KeyCode::Esc {
+    fn handle_insert(&mut self, key: &KeyInput, ta: &mut RopeBuffer) -> VimKeyOutcome {
+        if key.key == Key::Esc {
             return self.exit_to_normal(ta);
         }
         VimKeyOutcome::PassThrough
@@ -1225,22 +1225,22 @@ impl VimEngine {
     /// Replace (overwrite) mode — vim `R`. Keys are handled by the engine,
     /// never passed to the host textarea path: R is raw overwrite, with no
     /// auto-surround / smart-Enter underneath.
-    fn handle_replace(&mut self, key: &KeyEvent, ta: &mut RopeBuffer) -> VimKeyOutcome {
+    fn handle_replace(&mut self, key: &KeyInput, ta: &mut RopeBuffer) -> VimKeyOutcome {
         // A live selection (mouse drag) would make the textarea's delete/
         // insert calls wipe it wholesale on the next keypress — drop it.
         if ta.selection_range().is_some() {
             ta.cancel_selection();
         }
-        let plain = key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT;
-        match key.code {
-            KeyCode::Esc => self.exit_to_normal(ta),
-            KeyCode::Enter => {
+        let plain = key.mods == Mods::NONE || key.mods == Mods::SHIFT;
+        match key.key {
+            Key::Esc => self.exit_to_normal(ta),
+            Key::Enter => {
                 ta.insert_newline();
                 // The newline starts a fresh replace extent.
                 self.replace_stack.clear();
                 VimKeyOutcome::TextMutated
             }
-            KeyCode::Backspace => {
+            Key::Backspace => {
                 // vim's replace stack: Backspace restores what the position
                 // held before it was overwritten; an appended char (None) is
                 // simply removed. Past the extent it's a plain step back.
@@ -1262,13 +1262,13 @@ impl VimEngine {
                 }
                 VimKeyOutcome::CursorOnly
             }
-            KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down => {
+            Key::Left | Key::Right | Key::Up | Key::Down => {
                 // vim allows movement in Replace mode and resets the replace
                 // extent — restart the dot capture and the restore stack.
-                ta.move_cursor(match key.code {
-                    KeyCode::Left => CursorMove::Back,
-                    KeyCode::Right => CursorMove::Forward,
-                    KeyCode::Up => CursorMove::Up,
+                ta.move_cursor(match key.key {
+                    Key::Left => CursorMove::Back,
+                    Key::Right => CursorMove::Forward,
+                    Key::Up => CursorMove::Up,
                     _ => CursorMove::Down,
                 });
                 let here = ta.cursor();
@@ -1278,7 +1278,7 @@ impl VimEngine {
                 self.replace_stack.clear();
                 VimKeyOutcome::CursorOnly
             }
-            KeyCode::Char(c) if plain => {
+            Key::Char(c) if plain => {
                 // Record what this position held (None = appended past EOL)
                 // so Backspace can restore it.
                 let (row, col) = ta.cursor();
@@ -1334,7 +1334,7 @@ impl VimEngine {
 
     // ── Normal mode: keys → parse → Command → execute/apply ───────
 
-    fn handle_normal(&mut self, key: &KeyEvent, ta: &mut RopeBuffer) -> VimKeyOutcome {
+    fn handle_normal(&mut self, key: &KeyInput, ta: &mut RopeBuffer) -> VimKeyOutcome {
         match self.parse_normal(key) {
             Parsed::Pending | Parsed::Nothing => VimKeyOutcome::NoOp,
             Parsed::Cancel => {
@@ -1353,7 +1353,7 @@ impl VimEngine {
 
     /// Parse one Normal-mode key into a `Parsed` value. Pure pending-state
     /// accumulation — never touches the buffer.
-    fn parse_normal(&mut self, key: &KeyEvent) -> Parsed {
+    fn parse_normal(&mut self, key: &KeyInput) -> Parsed {
         // One-key continuations (g-prefix, find target, replace char, object
         // key) consume the next key before anything else.
         if let Some(aw) = self.awaiting.take() {
@@ -1361,13 +1361,13 @@ impl VimEngine {
         }
 
         // Esc cancels any pending sequence (operator, counts).
-        if key.code == KeyCode::Esc {
+        if key.key == Key::Esc {
             self.clear_pending();
             return Parsed::Cancel;
         }
 
         // Ctrl-r → redo (before the plain filter so it isn't stripped).
-        if key.code == KeyCode::Char('r') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        if key.key == Key::Char('r') && key.mods.ctrl {
             return Parsed::Cmd(Command::Redo(self.take_total_count()));
         }
 
@@ -1376,13 +1376,13 @@ impl VimEngine {
         // nothing to copy and cancelling the pending sequence is the useful
         // meaning. Ctrl-V pastes at the cursor. Ctrl-X has no Normal-mode
         // meaning here (vim's decrement is not emulated) and stays unmapped.
-        if key.modifiers.contains(KeyModifiers::CONTROL) {
-            match key.code {
-                KeyCode::Char('c') => {
+        if key.mods.ctrl {
+            match key.key {
+                Key::Char('c') => {
                     self.clear_pending();
                     return Parsed::Cancel;
                 }
-                KeyCode::Char('v') => {
+                Key::Char('v') => {
                     self.clear_pending();
                     return Parsed::Host(VimHostAction::ClipboardPaste);
                 }
@@ -1398,17 +1398,17 @@ impl VimEngine {
         // `nothing_pending`'s check of it here is always true — kept anyway
         // so this reads as the same gate `space_leads`/`pending_hint` use,
         // not a hand-picked subset of it.
-        if key.code == KeyCode::Enter && key.modifiers.is_empty() && self.nothing_pending() {
+        if key.key == Key::Enter && key.mods == Mods::NONE && self.nothing_pending() {
             return Parsed::Cmd(Command::EnterInsert(InsertEntry::SmartEnter));
         }
 
-        let plain = key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT;
-        match key.code {
-            KeyCode::Char(c) if plain => self.parse_normal_char(c),
-            KeyCode::Left => Parsed::Cmd(Command::Move(Motion::Left, 1)),
-            KeyCode::Right => Parsed::Cmd(Command::Move(Motion::Right, 1)),
-            KeyCode::Up => Parsed::Cmd(Command::Move(Motion::Up, 1)),
-            KeyCode::Down => Parsed::Cmd(Command::Move(Motion::Down, 1)),
+        let plain = key.mods == Mods::NONE || key.mods == Mods::SHIFT;
+        match key.key {
+            Key::Char(c) if plain => self.parse_normal_char(c),
+            Key::Left => Parsed::Cmd(Command::Move(Motion::Left, 1)),
+            Key::Right => Parsed::Cmd(Command::Move(Motion::Right, 1)),
+            Key::Up => Parsed::Cmd(Command::Move(Motion::Up, 1)),
+            Key::Down => Parsed::Cmd(Command::Move(Motion::Down, 1)),
             _ => Parsed::Nothing,
         }
     }
@@ -1416,21 +1416,21 @@ impl VimEngine {
     /// Consume the single key a continuation was waiting for. Non-char keys
     /// cancel the whole pending sequence (vim); Esc additionally clears any
     /// stray selection via the `Cancel` path.
-    fn parse_awaiting(&mut self, aw: Awaiting, key: &KeyEvent) -> Parsed {
+    fn parse_awaiting(&mut self, aw: Awaiting, key: &KeyInput) -> Parsed {
         // A Ctrl-chord is never the awaited character — `r` then Ctrl-C must
         // abandon the replace, not overwrite with a literal 'c'. vim's Ctrl-C
         // is Esc, so route it the same way.
-        if key.modifiers.contains(KeyModifiers::CONTROL) {
+        if key.mods.ctrl {
             self.clear_pending();
-            return if key.code == KeyCode::Char('c') {
+            return if key.key == Key::Char('c') {
                 Parsed::Cancel
             } else {
                 Parsed::Nothing
             };
         }
-        let KeyCode::Char(c) = key.code else {
+        let Key::Char(c) = key.key else {
             self.clear_pending();
-            return if key.code == KeyCode::Esc {
+            return if key.key == Key::Esc {
                 Parsed::Cancel
             } else {
                 Parsed::Nothing

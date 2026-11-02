@@ -9,9 +9,10 @@
 //! (cursor-col, click-col → logical char index) used by the editor
 //! to keep the cursor in sync after wrapping.
 
-use super::{
+use super::super::markdown_style::{mask_to_modifier, span_style};
+use crate::logic::editor::markdown::{
     ElementKind, ParsedLine, blockquote_gutter, cluster_display_width, cluster_width_at,
-    mask_to_modifier, span_style, tab_width_at,
+    tab_width_at,
 };
 use crate::settings::themes::Theme;
 use ratatui::style::Style;
@@ -19,7 +20,9 @@ use ratatui::text::Span;
 use unicode_segmentation::UnicodeSegmentation;
 
 #[cfg(test)]
-use super::{Element, PARSER_OPTIONS, detect::detect_wikilinks, tag_to_kind};
+use crate::logic::editor::markdown::{
+    Element, PARSER_OPTIONS, detect::detect_wikilinks, tag_to_kind,
+};
 #[cfg(test)]
 use pulldown_cmark::{Event, Parser, TagEnd};
 

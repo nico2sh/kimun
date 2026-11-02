@@ -1,4 +1,5 @@
-use super::markdown::{MarkdownSpanner, ParsedBuffer, opener_shape};
+use super::markdown::MarkdownSpanner;
+use crate::logic::editor::markdown::{ParsedBuffer, opener_shape};
 use crate::ropetext::{Column, Layout, Metrics, RowHints, Viewport, motion};
 use crate::settings::themes::Theme;
 use ratatui::Frame;
@@ -8,7 +9,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Text};
 use ratatui::widgets::Paragraph;
 
-use super::rope_buffer::RopeBuffer;
+use crate::logic::editor::rope_buffer::RopeBuffer;
 use std::ops::Range;
 
 /// A styled range of logical columns on one row (see CONTEXT.md **Overlay**).
@@ -447,8 +448,9 @@ impl MarkdownEditorView {
             return; // stale
         }
         self.parse_state = ParseState::Real(buf);
-        self.fence_ranges =
-            super::parse_incremental::fence_ranges_from_kinds(&self.parse_state.buf().kinds);
+        self.fence_ranges = crate::logic::editor::parse_incremental::fence_ranges_from_kinds(
+            &self.parse_state.buf().kinds,
+        );
         // Force Gate 2 full rebuild on the next update: the
         // placeholder's all-Plain kinds produced different fence
         // ranges and rendered masks than the real parse will.
@@ -669,7 +671,8 @@ impl MarkdownEditorView {
     pub fn note_damage(&mut self, rows: std::ops::Range<usize>, line_delta: isize) {
         self.reported_damage = Some(match self.reported_damage.take() {
             Some(seen) => {
-                let seen = super::rope_buffer::shift_rows(seen, rows.start, line_delta);
+                let seen =
+                    crate::logic::editor::rope_buffer::shift_rows(seen, rows.start, line_delta);
                 seen.start.min(rows.start)..seen.end.max(rows.end)
             }
             None => rows,
@@ -680,7 +683,7 @@ impl MarkdownEditorView {
         self.bulk_edit_pending = true;
     }
 
-    pub fn update(&mut self, snap: &super::snapshot::EditorSnapshot, rect: Rect) {
+    pub fn update(&mut self, snap: &crate::logic::editor::snapshot::EditorSnapshot, rect: Rect) {
         self.viewport.set_height(rect.height as usize);
         // Snapshot owns the (cursor, lines, content_revision) atomicity
         // — readers below can index `parsed_buffer.lines[cursor.0]`
@@ -793,9 +796,10 @@ impl MarkdownEditorView {
             // before, and re-scanning the whole `kinds` array to confirm
             // that would defeat the point of having taken the fast path.
             if !self.last_parse_was_incremental {
-                self.fence_ranges = super::parse_incremental::fence_ranges_from_kinds(
-                    &self.parse_state.buf().kinds,
-                );
+                self.fence_ranges =
+                    crate::logic::editor::parse_incremental::fence_ranges_from_kinds(
+                        &self.parse_state.buf().kinds,
+                    );
             }
             // Incremental update of `lines_snapshot` mirrors the parse
             // path: on the splice path only the rows in `range` can
@@ -1108,11 +1112,11 @@ impl MarkdownEditorView {
         cursor: (usize, usize),
         reported: Option<std::ops::Range<usize>>,
     ) -> Option<(std::ops::Range<usize>, ParsedBuffer, SplicePath)> {
-        use super::parse_incremental::{
+        use super::widener_metrics::{BailReason, METRICS, SuccessPath};
+        use crate::logic::editor::parse_incremental::{
             LineConstructKind, WidenResult, compute_damage_range, expand_to_reset_boundary,
             widen_to_safe,
         };
-        use super::widener_metrics::{BailReason, METRICS, SuccessPath};
 
         if self.parse_state.buf().lines.is_empty() {
             return None; // First parse — no snapshot to diff against. Uncategorised.
@@ -1646,12 +1650,14 @@ impl MarkdownEditorView {
 
     /// Test accessor: the kinds vector of the current parsed buffer.
     /// Used by the proptest harness to assert incremental = full parse.
-    pub fn parsed_buffer_kinds(&self) -> &[super::parse_incremental::LineConstructKind] {
+    pub fn parsed_buffer_kinds(
+        &self,
+    ) -> &[crate::logic::editor::parse_incremental::LineConstructKind] {
         &self.parse_state.buf().kinds
     }
 
     /// Test accessor: the parsed lines of the current parsed buffer.
-    pub fn parsed_buffer_lines(&self) -> &[super::markdown::ParsedLine] {
+    pub fn parsed_buffer_lines(&self) -> &[crate::logic::editor::markdown::ParsedLine] {
         &self.parse_state.buf().lines
     }
 
@@ -1687,13 +1693,14 @@ impl MarkdownEditorView {
     /// capped at `width`.
     fn rebuild_code_box_width(&mut self, text: &crate::ropetext::Text, width: u16) {
         let mut out = vec![None; text.line_count()];
-        let ranges =
-            super::parse_incremental::code_block_ranges_from_kinds(&self.parse_state.buf().kinds);
+        let ranges = crate::logic::editor::parse_incremental::code_block_ranges_from_kinds(
+            &self.parse_state.buf().kinds,
+        );
         for r in ranges {
             let mut max_w = 0usize;
             for row in r.clone() {
                 if let Some(line) = text.line(row) {
-                    max_w = max_w.max(super::markdown::raw_display_width(&line));
+                    max_w = max_w.max(crate::logic::editor::markdown::raw_display_width(&line));
                 }
             }
             let boxed = (max_w.min(width as usize)) as u16;
@@ -1720,8 +1727,9 @@ impl MarkdownEditorView {
         width: u16,
         damaged: std::ops::Range<usize>,
     ) {
-        let ranges =
-            super::parse_incremental::code_block_ranges_from_kinds(&self.parse_state.buf().kinds);
+        let ranges = crate::logic::editor::parse_incremental::code_block_ranges_from_kinds(
+            &self.parse_state.buf().kinds,
+        );
         for r in ranges {
             if r.start >= damaged.end || r.end <= damaged.start {
                 continue; // no overlap — this block's width can't have changed
@@ -1729,7 +1737,7 @@ impl MarkdownEditorView {
             let mut max_w = 0usize;
             for row in r.clone() {
                 if let Some(line) = text.line(row) {
-                    max_w = max_w.max(super::markdown::raw_display_width(&line));
+                    max_w = max_w.max(crate::logic::editor::markdown::raw_display_width(&line));
                 }
             }
             let boxed = (max_w.min(width as usize)) as u16;
@@ -1755,7 +1763,7 @@ impl MarkdownEditorView {
                     return 0;
                 }
                 match parsed.get(row).and_then(|p| p.blockquote_depth()) {
-                    Some(d) => super::markdown::blockquote_gutter_width(d),
+                    Some(d) => crate::logic::editor::markdown::blockquote_gutter_width(d),
                     None => 0,
                 }
             })
@@ -1775,7 +1783,7 @@ impl MarkdownEditorView {
                 0
             } else {
                 match parsed.get(row).and_then(|p| p.blockquote_depth()) {
-                    Some(d) => super::markdown::blockquote_gutter_width(d),
+                    Some(d) => crate::logic::editor::markdown::blockquote_gutter_width(d),
                     None => 0,
                 }
             };
@@ -1873,12 +1881,12 @@ impl Default for MarkdownEditorView {
 /// If `target_width` exceeds the string's display width, returns `s.len()`.
 ///
 /// Walks whole grapheme clusters (not codepoints) and measures each with
-/// [`super::markdown::cluster_display_width`], so the result never lands mid-cluster (which would
+/// [`crate::logic::editor::markdown::cluster_display_width`], so the result never lands mid-cluster (which would
 /// split an emoji across two styled spans) and stays consistent with the width
 /// model used by wrap and cursor math — an emoji presentation sequence (flag,
 /// VS16 heart, keycap) counts as its full rendered width, not its first codepoint.
 fn byte_offset_for_display_width(s: &str, target_width: usize) -> usize {
-    use super::markdown::cluster_display_width;
+    use crate::logic::editor::markdown::cluster_display_width;
     use unicode_segmentation::UnicodeSegmentation;
     let mut consumed = 0usize;
     for (byte_pos, g) in s.grapheme_indices(true) {
@@ -1909,7 +1917,7 @@ fn restyle_over_range<'a>(
         // Same cluster-based width model as `byte_offset_for_display_width`
         // below, so column accounting and the byte boundaries it computes can
         // never disagree on emoji presentation sequences.
-        let span_width = super::markdown::string_display_width(content);
+        let span_width = crate::logic::editor::markdown::string_display_width(content);
         let span_end = col + span_width;
 
         let overlap_start = sel_cols.start.max(col);
@@ -1976,7 +1984,7 @@ fn apply_code_box<'a>(
         .into_iter()
         .map(|s| {
             for g in s.content.graphemes(true) {
-                width += super::markdown::cluster_width_at(g, width);
+                width += crate::logic::editor::markdown::cluster_width_at(g, width);
             }
             let style = s.style.bg(bg);
             Span::styled(s.content, style)
@@ -2280,7 +2288,7 @@ mod tests {
         } else {
             (cursor.0.min(lines.len() - 1), cursor.1)
         };
-        let snap = super::super::snapshot::EditorSnapshot::borrowed(lines, clamped, rev);
+        let snap = crate::logic::editor::snapshot::EditorSnapshot::borrowed(lines, clamped, rev);
         v.update(&snap, rect);
         let overlays = match selection {
             Some(((sr, sc), (er, ec))) => (sr..=er)
@@ -2554,7 +2562,7 @@ mod tests {
             "more".to_string(),
         ];
         let pb = ParsedBuffer::parse_lines(&lines);
-        let ranges = super::super::parse_incremental::fence_ranges_from_kinds(&pb.kinds);
+        let ranges = crate::logic::editor::parse_incremental::fence_ranges_from_kinds(&pb.kinds);
         let block = ranges.iter().find(|r| r.contains(&2)).cloned();
         assert!(block.is_some());
         let r = block.unwrap();
@@ -2571,7 +2579,7 @@ mod tests {
             "```".to_string(),
         ];
         let pb = ParsedBuffer::parse_lines(&lines);
-        let ranges = super::super::parse_incremental::fence_ranges_from_kinds(&pb.kinds);
+        let ranges = crate::logic::editor::parse_incremental::fence_ranges_from_kinds(&pb.kinds);
         assert!(ranges.iter().find(|r| r.contains(&0)).is_none());
     }
 
@@ -3120,11 +3128,10 @@ mod tests {
         );
         // Placeholder kinds: every row is Plain — no fence detection yet.
         assert!(
-            v.parse_state
-                .buf()
-                .kinds
-                .iter()
-                .all(|k| matches!(k, super::super::parse_incremental::LineConstructKind::Plain)),
+            v.parse_state.buf().kinds.iter().all(|k| matches!(
+                k,
+                crate::logic::editor::parse_incremental::LineConstructKind::Plain
+            )),
             "placeholder must classify every row as Plain"
         );
         assert_eq!(
@@ -3567,7 +3574,7 @@ mod tests {
         ];
         update_view(&mut v, &lines, (4, 0), rect(40), 1, None);
 
-        use crate::components::text_editor::markdown::ElementKind;
+        use crate::logic::editor::markdown::ElementKind;
 
         // Pre-condition: no Label elements in the fence interior.
         for row in 3..5 {
@@ -3698,7 +3705,7 @@ mod tests {
         let fresh = ParsedBuffer::parse_lines(&lines);
         assert_eq!(
             v.fence_ranges,
-            super::super::parse_incremental::fence_ranges_from_kinds(&fresh.kinds),
+            crate::logic::editor::parse_incremental::fence_ranges_from_kinds(&fresh.kinds),
             "fence_ranges must stay correct after a skipped recompute"
         );
     }
@@ -3942,7 +3949,10 @@ mod tests {
         use ratatui::text::Span;
         let theme = crate::settings::themes::Theme::gruvbox_dark();
         let content = "a\u{2764}\u{FE0F}";
-        assert_eq!(super::super::markdown::raw_display_width(content), 3);
+        assert_eq!(
+            crate::logic::editor::markdown::raw_display_width(content),
+            3
+        );
         let out = super::apply_code_box(vec![Span::raw(content)], 3, &theme);
         // No padding span appended — content already 3 cols.
         assert_eq!(out.len(), 1);

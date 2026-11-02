@@ -6,14 +6,14 @@ use std::time::Duration;
 use tokio::process::ChildStdin;
 use tokio_util::compat::Compat;
 
-use super::rope_buffer::RopeBuffer;
+use crate::logic::editor::rope_buffer::RopeBuffer;
 use nvim_rs::{Handler, Neovim, UiAttachOptions, create::tokio::new_child_cmd, error::LoopError};
 
 use super::nvim_decode::{DecodedState, decode};
 use super::nvim_rpc::key_event_to_nvim_string;
-use super::snapshot::{EditorMode, NvimSnapshot};
-use super::vim::VimEngine;
-use crate::components::events::{AppEvent, AppTx};
+use crate::logic::editor::snapshot::{EditorMode, NvimSnapshot};
+use crate::logic::editor::vim::VimEngine;
+use crate::logic::message::{AppMessage, AppTx};
 use crate::settings::EditorBackendSetting;
 
 type NvimWriter = Compat<ChildStdin>;
@@ -90,7 +90,7 @@ pub enum InputInterpreter {
 pub struct TextareaBackend {
     /// Which keystrokes are sharing an undo group. The **plain** backend's
     /// policy; the **vim** engine has its own and leaves this alone.
-    pub typing: super::typing_run::TypingRun,
+    pub typing: crate::logic::editor::typing_run::TypingRun,
     /// The open note's text and its edit history. Mutations go
     /// through `RopeBuffer::edit`.
     pub ta: RopeBuffer,
@@ -101,14 +101,14 @@ impl TextareaBackend {
     pub fn direct(text: crate::ropetext::Text) -> Self {
         Self {
             ta: RopeBuffer::new(text),
-            typing: super::typing_run::TypingRun::default(),
+            typing: crate::logic::editor::typing_run::TypingRun::default(),
             input: InputInterpreter::Direct,
         }
     }
     pub fn vim(text: crate::ropetext::Text) -> Self {
         Self {
             ta: RopeBuffer::new(text),
-            typing: super::typing_run::TypingRun::default(),
+            typing: crate::logic::editor::typing_run::TypingRun::default(),
             input: InputInterpreter::Vim(Box::default()),
         }
     }
@@ -154,7 +154,10 @@ impl BackendState {
     /// The buffer and its typing run together, for the key path that needs both.
     pub fn as_textarea_parts_mut(
         &mut self,
-    ) -> Option<(&mut RopeBuffer, &mut super::typing_run::TypingRun)> {
+    ) -> Option<(
+        &mut RopeBuffer,
+        &mut crate::logic::editor::typing_run::TypingRun,
+    )> {
         match self {
             BackendState::Textarea(tb) => Some((&mut tb.ta, &mut tb.typing)),
             BackendState::Nvim(_) => None,
@@ -352,8 +355,8 @@ impl BackendState {
     /// return the outcome. Returns `None` for Direct / Nvim backends.
     pub fn vim_handle_key(
         &mut self,
-        key: &ratatui::crossterm::event::KeyEvent,
-    ) -> Option<super::vim::VimKeyOutcome> {
+        key: &crate::logic::input::KeyInput,
+    ) -> Option<crate::logic::editor::vim::VimKeyOutcome> {
         match self {
             BackendState::Textarea(TextareaBackend {
                 ta,
@@ -519,7 +522,10 @@ impl NvimBackend {
         // Pin nvim's tabstop to the renderer's TAB_STOP so tab-column math and
         // cursor placement can never desync.
         let _ = nvim
-            .command(&format!("set tabstop={}", super::markdown::TAB_STOP))
+            .command(&format!(
+                "set tabstop={}",
+                crate::logic::editor::markdown::TAB_STOP
+            ))
             .await;
 
         Ok(Self {
@@ -564,7 +570,7 @@ impl NvimBackend {
                         if res.is_err() {
                             // Sender dropped — nvim IO loop ended.
                             is_dead.store(true, Ordering::SeqCst);
-                            tx.send(AppEvent::Redraw).ok();
+                            tx.send(AppMessage::Redraw).ok();
                             break;
                         }
                         // Flush arrived — state is fresh, query immediately.
@@ -583,12 +589,12 @@ impl NvimBackend {
                 match nvim.exec_lua(STATE_QUERY_LUA, vec![]).await {
                     Ok(value) => {
                         apply_lua_state(&snapshot, &in_flight, value);
-                        tx.send(AppEvent::Redraw).ok();
+                        tx.send(AppMessage::Redraw).ok();
                     }
                     Err(e) => {
                         if e.is_channel_closed() {
                             is_dead.store(true, Ordering::SeqCst);
-                            tx.send(AppEvent::Redraw).ok();
+                            tx.send(AppMessage::Redraw).ok();
                             break;
                         }
                         // Non-fatal (e.g. transient Lua error): log and continue.
@@ -714,7 +720,7 @@ impl NvimBackend {
                 Err(e) => {
                     if e.is_channel_closed() {
                         is_dead.store(true, Ordering::SeqCst);
-                        tx.send(AppEvent::Redraw).ok();
+                        tx.send(AppMessage::Redraw).ok();
                     }
                     tracing::debug!("nvim_paste error: {e}");
                 }
@@ -744,7 +750,7 @@ impl NvimBackend {
                 Err(e) => {
                     if e.is_channel_closed() {
                         is_dead.store(true, Ordering::SeqCst);
-                        tx.send(AppEvent::Redraw).ok();
+                        tx.send(AppMessage::Redraw).ok();
                     }
                     tracing::debug!("nvim_input error: {e}");
                 }

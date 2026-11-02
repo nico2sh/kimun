@@ -13,8 +13,8 @@ use std::time::Duration;
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 
-use crate::components::events::{AppEvent, AppTx};
 use crate::components::text_editor::FollowTarget;
+use crate::logic::message::{AppMessage, AppTx};
 
 pub struct DocMeta {
     vault: Arc<NoteVault>,
@@ -79,7 +79,8 @@ impl DocMeta {
                 .await
                 .map(|b| b.len())
                 .unwrap_or_default();
-            tx2.send(AppEvent::BacklinkCountLoaded { path, count }).ok();
+            tx2.send(AppMessage::BacklinkCountLoaded { path, count })
+                .ok();
         });
         self.property_count = None;
         self.refresh_properties(&path_for_props, tx);
@@ -97,7 +98,8 @@ impl DocMeta {
                 .await
                 .map(|p| p.len())
                 .unwrap_or_default();
-            tx2.send(AppEvent::PropertyCountLoaded { path, count }).ok();
+            tx2.send(AppMessage::PropertyCountLoaded { path, count })
+                .ok();
         });
     }
 
@@ -125,7 +127,7 @@ impl DocMeta {
         let tx2 = tx.clone();
         tokio::spawn(async move {
             let status = crate::util::git_status::fetch(root).await;
-            tx2.send(AppEvent::GitStatusLoaded(status)).ok();
+            tx2.send(AppMessage::GitStatusLoaded(status)).ok();
         });
     }
 
@@ -164,7 +166,7 @@ impl DocMeta {
                                 .await
                                 .map(|b| b.len())
                                 .unwrap_or_default();
-                            tx2.send(AppEvent::LinkTargetMeta { target: t2, count })
+                            tx2.send(AppMessage::LinkTargetMeta { target: t2, count })
                                 .ok();
                         });
                     }
@@ -190,22 +192,22 @@ impl DocMeta {
 
     /// Consume the async-result events this module owns; hand anything else
     /// back to the caller. `current_note` drives the staleness guards.
-    pub fn handle(&mut self, event: AppEvent, current_note: &VaultPath) -> Option<AppEvent> {
+    pub fn handle(&mut self, event: AppMessage, current_note: &VaultPath) -> Option<AppMessage> {
         match event {
-            AppEvent::BacklinkCountLoaded { path, count } => {
+            AppMessage::BacklinkCountLoaded { path, count } => {
                 // Ignore stale loads for notes already navigated away from.
                 if path == *current_note {
                     self.backlink_count = Some(count);
                 }
                 None
             }
-            AppEvent::PropertyCountLoaded { path, count } => {
+            AppMessage::PropertyCountLoaded { path, count } => {
                 if path == *current_note {
                     self.property_count = Some(count);
                 }
                 None
             }
-            AppEvent::LinkTargetMeta { target, count } => {
+            AppMessage::LinkTargetMeta { target, count } => {
                 // Only land the count if the cursor is still on that link.
                 if let Some((cached, slot)) = &mut self.link_meta
                     && *cached == target
@@ -214,7 +216,7 @@ impl DocMeta {
                 }
                 None
             }
-            AppEvent::GitStatusLoaded(status) => {
+            AppMessage::GitStatusLoaded(status) => {
                 match (&self.git_status, status) {
                     // No repo (or no git): back off to a slow probe.
                     (None, None) => {
@@ -262,7 +264,7 @@ mod tests {
         let (mut dm, _dir) = meta().await;
         let current = note("/a.md");
         dm.handle(
-            AppEvent::BacklinkCountLoaded {
+            AppMessage::BacklinkCountLoaded {
                 path: note("/old.md"),
                 count: 7,
             },
@@ -270,7 +272,7 @@ mod tests {
         );
         assert_eq!(dm.backlinks(), None, "stale path must not land");
         dm.handle(
-            AppEvent::BacklinkCountLoaded {
+            AppMessage::BacklinkCountLoaded {
                 path: current.clone(),
                 count: 3,
             },
@@ -284,12 +286,12 @@ mod tests {
         let (mut dm, _dir) = meta().await;
         let current = note("/a.md");
         // First None → unavailable: probing backs off.
-        dm.handle(AppEvent::GitStatusLoaded(None), &current);
+        dm.handle(AppMessage::GitStatusLoaded(None), &current);
         assert!(dm.git_unavailable_since.is_some());
         // A value followed by a failure keeps the last value.
         dm.git_unavailable_since = None;
-        dm.handle(AppEvent::GitStatusLoaded(Some("git ✓".into())), &current);
-        dm.handle(AppEvent::GitStatusLoaded(None), &current);
+        dm.handle(AppMessage::GitStatusLoaded(Some("git ✓".into())), &current);
+        dm.handle(AppMessage::GitStatusLoaded(None), &current);
         assert_eq!(dm.git().map(String::as_str), Some("git ✓"));
     }
 
@@ -304,7 +306,7 @@ mod tests {
         assert_eq!(seg.as_deref(), Some("→ b"));
         // A count for a DIFFERENT target is ignored.
         dm.handle(
-            AppEvent::LinkTargetMeta {
+            AppMessage::LinkTargetMeta {
                 target: "other".into(),
                 count: 9,
             },
@@ -317,7 +319,7 @@ mod tests {
         );
         // The matching one lands.
         dm.handle(
-            AppEvent::LinkTargetMeta {
+            AppMessage::LinkTargetMeta {
                 target: "b".into(),
                 count: 2,
             },
@@ -335,8 +337,8 @@ mod tests {
     #[tokio::test]
     async fn unowned_events_are_handed_back() {
         let (mut dm, _dir) = meta().await;
-        let back = dm.handle(AppEvent::Redraw, &note("/a.md"));
-        assert!(matches!(back, Some(AppEvent::Redraw)));
+        let back = dm.handle(AppMessage::Redraw, &note("/a.md"));
+        assert!(matches!(back, Some(AppMessage::Redraw)));
     }
 
     #[tokio::test]
@@ -344,7 +346,7 @@ mod tests {
         let (mut dm, _dir) = meta().await;
         let current = note("/a.md");
         dm.handle(
-            AppEvent::PropertyCountLoaded {
+            AppMessage::PropertyCountLoaded {
                 path: note("/old.md"),
                 count: 4,
             },
@@ -352,7 +354,7 @@ mod tests {
         );
         assert_eq!(dm.properties(), None);
         dm.handle(
-            AppEvent::PropertyCountLoaded {
+            AppMessage::PropertyCountLoaded {
                 path: current.clone(),
                 count: 2,
             },

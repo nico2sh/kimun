@@ -5,7 +5,8 @@ use std::path::PathBuf;
 
 use crate::components::Component;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, InputEvent};
+use crate::components::events::InputEvent;
+use crate::logic::message::{AppMessage, AppTx};
 use crate::settings::themes::Theme;
 
 pub struct VaultSection {
@@ -30,7 +31,7 @@ impl Component for VaultSection {
         match key.code {
             ratatui::crossterm::event::KeyCode::Enter
             | ratatui::crossterm::event::KeyCode::Char('b') => {
-                tx.send(AppEvent::OpenFileBrowser).ok();
+                tx.send(AppMessage::OpenFileBrowser).ok();
                 EventState::Consumed
             }
             _ => EventState::NotConsumed,
@@ -82,7 +83,7 @@ mod tests {
 
     #[test]
     fn enter_sends_open_file_browser() {
-        use crate::components::events::AppEvent;
+        use crate::logic::message::AppMessage;
         use ratatui::crossterm::event::{
             KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers,
         };
@@ -100,12 +101,12 @@ mod tests {
             crate::components::event_state::EventState::Consumed
         ));
         let msg = rx.try_recv().expect("message should be sent");
-        assert!(matches!(msg, AppEvent::OpenFileBrowser));
+        assert!(matches!(msg, AppMessage::OpenFileBrowser));
     }
 
     #[test]
     fn b_key_sends_open_file_browser() {
-        use crate::components::events::AppEvent;
+        use crate::logic::message::AppMessage;
         use ratatui::crossterm::event::{
             KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers,
         };
@@ -123,7 +124,7 @@ mod tests {
             crate::components::event_state::EventState::Consumed
         ));
         let msg = rx.try_recv().expect("message should be sent");
-        assert!(matches!(msg, AppEvent::OpenFileBrowser));
+        assert!(matches!(msg, AppMessage::OpenFileBrowser));
     }
 
     #[test]

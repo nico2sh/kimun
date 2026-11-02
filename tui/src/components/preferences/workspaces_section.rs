@@ -7,8 +7,9 @@ use std::path::PathBuf;
 
 use crate::components::Component;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, InputEvent};
+use crate::components::events::InputEvent;
 use crate::components::single_line_input::{InputOutcome, SingleLineInput};
+use crate::logic::message::{AppMessage, AppTx};
 use crate::settings::AppSettings;
 use crate::settings::themes::Theme;
 
@@ -175,7 +176,7 @@ impl WorkspacesSection {
                     self.list_state.selected().and_then(|i| self.entries.get(i))
                     && !is_current
                 {
-                    tx.send(AppEvent::WorkspaceSwitched(name.clone())).ok();
+                    tx.send(AppMessage::WorkspaceSwitched(name.clone())).ok();
                 }
                 EventState::Consumed
             }
@@ -205,7 +206,7 @@ impl WorkspacesSection {
                 EventState::Consumed
             }
             KeyCode::Char('b') => {
-                tx.send(AppEvent::OpenFileBrowser).ok();
+                tx.send(AppMessage::OpenFileBrowser).ok();
                 EventState::Consumed
             }
             _ => EventState::NotConsumed,
@@ -254,7 +255,7 @@ impl Component for WorkspacesSection {
                 if key.code == KeyCode::Enter {
                     // For Creating: signal OpenFileBrowser so PreferencesScreen can pick up
                     if self.mode == Mode::Creating && !self.input.value().trim().is_empty() {
-                        tx.send(AppEvent::OpenFileBrowser).ok();
+                        tx.send(AppMessage::OpenFileBrowser).ok();
                     }
                     // For both modes the caller inspects mode() + input()
                     return EventState::Consumed;
@@ -485,7 +486,7 @@ mod tests {
         section.list_state.select(Some(1));
         section.handle_input(&key(KeyCode::Enter), &tx);
         let msg = rx.try_recv().expect("should send event");
-        assert!(matches!(msg, AppEvent::WorkspaceSwitched(name) if name == "b"));
+        assert!(matches!(msg, AppMessage::WorkspaceSwitched(name) if name == "b"));
     }
 
     #[test]
@@ -523,7 +524,7 @@ mod tests {
 
         section.handle_input(&key(KeyCode::Enter), &tx);
         let msg = rx.try_recv().expect("should send OpenFileBrowser");
-        assert!(matches!(msg, AppEvent::OpenFileBrowser));
+        assert!(matches!(msg, AppMessage::OpenFileBrowser));
     }
 
     #[test]
@@ -595,7 +596,7 @@ mod tests {
         let mut section = WorkspacesSection::new(&settings);
         section.handle_input(&key(KeyCode::Char('b')), &tx);
         let msg = rx.try_recv().expect("should send event");
-        assert!(matches!(msg, AppEvent::OpenFileBrowser));
+        assert!(matches!(msg, AppMessage::OpenFileBrowser));
     }
 
     #[test]

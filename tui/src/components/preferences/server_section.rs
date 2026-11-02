@@ -5,8 +5,9 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::components::Component;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppTx, InputEvent};
+use crate::components::events::InputEvent;
 use crate::components::single_line_input::{InputOutcome, SingleLineInput};
+use crate::logic::message::AppTx;
 use crate::settings::themes::Theme;
 
 /// Shown grayed out when the field is empty. Mirrors the server's built-in

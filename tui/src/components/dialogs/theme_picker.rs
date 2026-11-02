@@ -13,12 +13,12 @@ use ratatui::widgets::{ListItem, Paragraph};
 
 use super::ModalShell;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx};
 use crate::components::hint_row::HintRow;
 use crate::components::rich_row::RichRow;
 use crate::components::search_list::{
     Filter, KeyReaction, SearchList, SearchMouse, SearchRow, StaticRowSource,
 };
+use crate::logic::message::{AppMessage, AppTx};
 use crate::settings::AppSettings;
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
@@ -126,7 +126,7 @@ impl ThemePickerDialog {
 
     fn apply(&self, index: usize, persist: bool, tx: &AppTx) {
         if let Some(theme) = self.themes.get(index) {
-            tx.send(AppEvent::ApplyTheme {
+            tx.send(AppMessage::ApplyTheme {
                 theme: Box::new(theme.clone()),
                 persist,
             })
@@ -153,14 +153,14 @@ impl ThemePickerDialog {
                 // theme the user can't see selected.
                 if let Some(index) = self.list.selected_row().map(|r| r.index) {
                     self.apply(index, true, tx);
-                    tx.send(AppEvent::CloseOverlay).ok();
+                    tx.send(AppMessage::CloseOverlay).ok();
                 }
             }
             KeyReaction::Cancel => {
                 if self.previewed != self.original {
                     self.apply(self.original, false, tx);
                 }
-                tx.send(AppEvent::CloseOverlay).ok();
+                tx.send(AppMessage::CloseOverlay).ok();
             }
             _ => self.sync_preview(tx),
         }
@@ -246,8 +246,8 @@ mod tests {
         let mut closed = false;
         while let Ok(ev) = rx.try_recv() {
             match ev {
-                AppEvent::ApplyTheme { theme, persist } => applied.push((theme.name, persist)),
-                AppEvent::CloseOverlay => closed = true,
+                AppMessage::ApplyTheme { theme, persist } => applied.push((theme.name, persist)),
+                AppMessage::CloseOverlay => closed = true,
                 _ => {}
             }
         }
@@ -278,7 +278,7 @@ mod tests {
 
         let mut last_applied = None;
         while let Ok(ev) = rx.try_recv() {
-            if let AppEvent::ApplyTheme { theme, persist } = ev {
+            if let AppMessage::ApplyTheme { theme, persist } = ev {
                 last_applied = Some((theme.name, persist));
             }
         }
@@ -317,7 +317,7 @@ mod tests {
         picker.handle_key(KeyEvent::from(KeyCode::Enter), &tx);
         let mut last = None;
         while let Ok(ev) = rx.try_recv() {
-            if let AppEvent::ApplyTheme { theme, persist } = ev {
+            if let AppMessage::ApplyTheme { theme, persist } = ev {
                 last = Some((theme.name, persist));
             }
         }
@@ -334,7 +334,7 @@ mod tests {
         type_str(&mut picker, "zzzz", &tx);
         let mut last = None;
         while let Ok(ev) = rx.try_recv() {
-            if let AppEvent::ApplyTheme { theme, persist } = ev {
+            if let AppMessage::ApplyTheme { theme, persist } = ev {
                 last = Some((theme.name, persist));
             }
         }
@@ -367,7 +367,7 @@ mod tests {
         assert_ne!(picker.list.selected_row().map(|r| r.index), before);
         assert!(matches!(
             rx.try_recv(),
-            Ok(AppEvent::ApplyTheme { persist: false, .. })
+            Ok(AppMessage::ApplyTheme { persist: false, .. })
         ));
     }
 
@@ -380,8 +380,8 @@ mod tests {
         type_str(&mut picker, "zzzzqqqq", &tx);
         picker.handle_key(KeyEvent::from(KeyCode::Enter), &tx);
         while let Ok(ev) = rx.try_recv() {
-            assert!(!matches!(ev, AppEvent::CloseOverlay), "must not close");
-            if let AppEvent::ApplyTheme { persist, .. } = ev {
+            assert!(!matches!(ev, AppMessage::CloseOverlay), "must not close");
+            if let AppMessage::ApplyTheme { persist, .. } = ev {
                 assert!(!persist, "must not persist anything");
             }
         }

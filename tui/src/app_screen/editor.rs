@@ -21,14 +21,11 @@ use crate::components::ask_thread::ThreadPanel;
 use crate::components::attachment_view::AttachmentView;
 use crate::components::autosave_timer::AutosaveTimer;
 use crate::components::dialogs::ActiveDialog;
-use crate::components::drawer::{DrawerHost, DrawerView};
+use crate::components::drawer::DrawerHost;
 use crate::components::drawer_views::{LinksPanel, OutlinePanel, TagsPanel};
 use crate::components::event_state::EventState;
-use crate::components::events::{
-    AppEvent, AppTx, FileOp, InputEvent, OverlayData, SaveSource, SavedSearchFlow, ScreenEvent,
-    SortTarget, UpdateFlow,
-};
-use crate::components::file_list::{FileListEntry, SortField};
+use crate::components::events::InputEvent;
+use crate::components::file_list::FileListEntry;
 use crate::components::footer_bar::{FooterBar, FooterTarget};
 use crate::components::note_browser::file_finder_provider::FileFinderProvider;
 use crate::components::note_browser::search_provider::resolving_search_source;
@@ -38,11 +35,19 @@ use crate::components::panel::PanelKind;
 use crate::components::query_panel::QueryPanel;
 use crate::components::saved_searches_modal::SavedSearchesModal;
 use crate::components::sidebar::SidebarComponent;
-use crate::components::sortable::{SortState, SortableList};
+use crate::components::sortable::SortableList;
 use crate::components::text_editor::TextEditorComponent;
 use crate::keys::KeyBindings;
-use crate::keys::action_shortcuts::{ActionShortcuts, TextAction};
+use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::leader::{LeaderAction, LeaderEngine, LeaderOutcome};
+use crate::logic::message::{
+    AppMessage, AppTx, FileOp, OverlayData, SaveSource, SavedSearchFlow, ScreenEvent, SortTarget,
+    UpdateFlow,
+};
+use crate::logic::nav::DrawerView;
+use crate::logic::sort::SortField;
+use crate::logic::sort::SortState;
+use crate::logic::text_action::TextAction;
 use crate::settings::SharedSettings;
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
@@ -76,7 +81,7 @@ pub struct EditorScreen {
     /// Async document/status state: backlink count, git summary, link
     /// affordance cache, pending emphasis needles (see `doc_meta.rs`).
     doc_meta: crate::app_screen::doc_meta::DocMeta,
-    /// App-global update notice, seeded by `AppEvent::Update(UpdateFlow::Available)`. Drives
+    /// App-global update notice, seeded by `AppMessage::Update(UpdateFlow::Available)`. Drives
     /// the footer indicator; `None` when up to date or the check found nothing.
     update: Option<crate::update::UpdateStatus>,
     /// Latest RAG connection/sync status from the background sync task, shown in
@@ -249,14 +254,14 @@ impl EditorScreen {
                 {
                     Ok(Ok(b)) => b,
                     Ok(Err(e)) => {
-                        tx2.send(AppEvent::OverlayData(OverlayData::Error(format!(
+                        tx2.send(AppMessage::OverlayData(OverlayData::Error(format!(
                             "Image encode failed: {e}"
                         ))))
                         .ok();
                         return;
                     }
                     Err(e) => {
-                        tx2.send(AppEvent::OverlayData(OverlayData::Error(format!(
+                        tx2.send(AppMessage::OverlayData(OverlayData::Error(format!(
                             "Image encode task failed: {e}"
                         ))))
                         .ok();
@@ -265,14 +270,15 @@ impl EditorScreen {
                 };
             match vault.save_attachment(&asset_path, &png_bytes).await {
                 Ok(()) => {
-                    tx2.send(AppEvent::InsertAtCursor(markdown)).ok();
+                    tx2.send(AppMessage::InsertAtCursor(markdown)).ok();
                     // Only on success — the failure branches below already
                     // report, and this path is async, so the chord echo would
                     // otherwise be the last thing the user saw.
-                    tx2.send(AppEvent::FlashMessage("image pasted".into())).ok();
+                    tx2.send(AppMessage::FlashMessage("image pasted".into()))
+                        .ok();
                 }
                 Err(e) => {
-                    tx2.send(AppEvent::OverlayData(OverlayData::Error(format!(
+                    tx2.send(AppMessage::OverlayData(OverlayData::Error(format!(
                         "Image save failed: {e}"
                     ))))
                     .ok();
@@ -367,7 +373,7 @@ impl EditorScreen {
                 self.open_attachment(path, tx).await;
                 return;
             }
-            tx.send(AppEvent::OpenScreen(ScreenEvent::OpenBrowse(
+            tx.send(AppMessage::OpenScreen(ScreenEvent::OpenBrowse(
                 self.vault.clone(),
                 path,
             )))
@@ -409,7 +415,7 @@ impl EditorScreen {
                     }
                     ed.set_redraw_tx(tx);
                 }
-                tx.send(AppEvent::Redraw).ok();
+                tx.send(AppMessage::Redraw).ok();
                 // FIND / LINKS / OUTLINE reflect the open note; keep them in
                 // step. Shared with `on_note_renamed` via the helper.
                 self.reflect_open_note_in_drawers(tx);
@@ -424,7 +430,7 @@ impl EditorScreen {
                 } else {
                     tracing::error!("Failed to read note {}: {e}", self.path);
                     let parent = self.path.get_parent_path().0;
-                    tx.send(AppEvent::OpenScreen(ScreenEvent::OpenBrowse(
+                    tx.send(AppMessage::OpenScreen(ScreenEvent::OpenBrowse(
                         self.vault.clone(),
                         parent,
                     )))
@@ -478,7 +484,7 @@ impl EditorScreen {
                 self.hide_ask_if_shown();
                 self.panels.show_attachment(view);
                 self.panels.sidebar_mut().set_open_note(None);
-                tx.send(AppEvent::Redraw).ok();
+                tx.send(AppMessage::Redraw).ok();
             }
             Err(e) => {
                 self.footer
@@ -563,7 +569,7 @@ impl EditorScreen {
     /// Fire-and-forget autosave used by the periodic timer. The save runs in
     /// a spawned tokio task so the main event loop is never blocked by the
     /// filesystem + SQLite write. Completion is reported back as
-    /// `AppEvent::AutosaveCompleted`, which marks the editor clean iff the
+    /// `AppMessage::AutosaveCompleted`, which marks the editor clean iff the
     /// editor is still at the revision that was written. `is_in_flight()`
     /// on the `SingleSlotTask` slot is the "is a save in flight" signal;
     /// it flips to false on both successful completion AND panic, so a
@@ -590,7 +596,7 @@ impl EditorScreen {
                 Ok((_, content)) => (Some(revision), Some(content.title)),
                 Err(_) => (None, None),
             };
-            let _ = tx.send(AppEvent::AutosaveCompleted {
+            let _ = tx.send(AppMessage::AutosaveCompleted {
                 path,
                 saved_revision,
                 title,
@@ -647,7 +653,7 @@ impl EditorScreen {
             self.autosave.stop();
             self.try_save().await;
             let parent = self.path.get_parent_path().0;
-            tx.send(AppEvent::OpenScreen(ScreenEvent::OpenBrowse(
+            tx.send(AppMessage::OpenScreen(ScreenEvent::OpenBrowse(
                 self.vault.clone(),
                 parent,
             )))
@@ -699,7 +705,7 @@ impl EditorScreen {
                     // parent dir.
                     self.autosave.stop();
                     let parent = to.get_parent_path().0;
-                    tx.send(AppEvent::OpenScreen(ScreenEvent::OpenBrowse(
+                    tx.send(AppMessage::OpenScreen(ScreenEvent::OpenBrowse(
                         self.vault.clone(),
                         parent,
                     )))
@@ -736,11 +742,12 @@ impl EditorScreen {
         match target {
             FooterTarget::Props => {
                 if let Some(path) = self.open_note().cloned() {
-                    tx.send(AppEvent::FileOp(FileOp::ShowProperties(path))).ok();
+                    tx.send(AppMessage::FileOp(FileOp::ShowProperties(path)))
+                        .ok();
                 }
             }
             FooterTarget::Update => {
-                tx.send(AppEvent::Update(UpdateFlow::ShowDialog)).ok();
+                tx.send(AppMessage::Update(UpdateFlow::ShowDialog)).ok();
             }
             FooterTarget::ServerUpdate => {
                 if let Some(update) = self.server_update.clone() {
@@ -749,7 +756,7 @@ impl EditorScreen {
             }
             FooterTarget::Backlinks => {
                 self.execute_leader_action(
-                    LeaderAction::LinksTab(crate::components::drawer_views::LinksTab::Backlinks),
+                    LeaderAction::LinksTab(crate::logic::nav::LinksTab::Backlinks),
                     tx,
                 );
             }
@@ -961,7 +968,7 @@ impl EditorScreen {
                     if let Some(ed) = self.panels.editor_mut() {
                         ed.wants_context_menu = false;
                     }
-                    tx.send(AppEvent::FileOp(FileOp::ShowMenu(self.path.clone())))
+                    tx.send(AppMessage::FileOp(FileOp::ShowMenu(self.path.clone())))
                         .ok();
                 }
                 state
@@ -1000,10 +1007,10 @@ impl EditorScreen {
             EditorOp::FocusLeft => self.focus_left(tx),
             EditorOp::FocusRight => self.focus_right(tx),
             EditorOp::OpenJournal => {
-                tx.send(AppEvent::OpenJournal).ok();
+                tx.send(AppMessage::OpenJournal).ok();
             }
             EditorOp::ShowFileOps => {
-                tx.send(AppEvent::FileOp(FileOp::ShowMenu(self.path.clone())))
+                tx.send(AppMessage::FileOp(FileOp::ShowMenu(self.path.clone())))
                     .ok();
             }
             EditorOp::ToggleQueryPanel => self.toggle_backlinks(tx),
@@ -1127,7 +1134,8 @@ impl EditorScreen {
     fn open_note_or_flash(&self, tx: &AppTx) -> Option<VaultPath> {
         let note = self.open_note().cloned();
         if note.is_none() {
-            tx.send(AppEvent::FlashMessage("no note open".into())).ok();
+            tx.send(AppMessage::FlashMessage("no note open".into()))
+                .ok();
         }
         note
     }
@@ -1162,7 +1170,7 @@ impl EditorScreen {
                     format!("could not update pinned notes: {e}")
                 }
             };
-            tx.send(AppEvent::FlashMessage(msg)).ok();
+            tx.send(AppMessage::FlashMessage(msg)).ok();
         });
     }
 
@@ -1175,7 +1183,7 @@ impl EditorScreen {
             let pins = match vault.list_pinned_notes().await {
                 Ok(pins) => pins,
                 Err(e) => {
-                    tx.send(AppEvent::FlashMessage(format!(
+                    tx.send(AppMessage::FlashMessage(format!(
                         "could not read pinned notes: {e}"
                     )))
                     .ok();
@@ -1183,18 +1191,18 @@ impl EditorScreen {
                 }
             };
             let Some(path) = pins.get(usize::from(n).saturating_sub(1)).cloned() else {
-                tx.send(AppEvent::FlashMessage(format!("no pinned note {n}")))
+                tx.send(AppMessage::FlashMessage(format!("no pinned note {n}")))
                     .ok();
                 return;
             };
             if !vault.exists(&path).await {
-                tx.send(AppEvent::FlashMessage(format!(
+                tx.send(AppMessage::FlashMessage(format!(
                     "pinned note not found: {path}"
                 )))
                 .ok();
                 return;
             }
-            tx.send(AppEvent::OpenPath {
+            tx.send(AppMessage::OpenPath {
                 path,
                 emphasis: None,
             })
@@ -1352,7 +1360,7 @@ impl EditorScreen {
             }
             UpdateFlow::Apply => {
                 let tx2 = tx.clone();
-                tx.send(AppEvent::FlashMessage("Downloading update…".into()))
+                tx.send(AppMessage::FlashMessage("Downloading update…".into()))
                     .ok();
                 tokio::spawn(async move {
                     let result = async {
@@ -1362,12 +1370,12 @@ impl EditorScreen {
                     .await;
                     let msg = match result {
                         Ok(()) => {
-                            tx2.send(AppEvent::Update(UpdateFlow::Applied)).ok();
+                            tx2.send(AppMessage::Update(UpdateFlow::Applied)).ok();
                             "Update installed — restart kimün to apply".to_string()
                         }
                         Err(e) => format!("Update failed: {e}"),
                     };
-                    tx2.send(AppEvent::FlashMessage(msg)).ok();
+                    tx2.send(AppMessage::FlashMessage(msg)).ok();
                 });
             }
         }
@@ -1472,7 +1480,7 @@ impl EditorScreen {
                 tokio::spawn(async move {
                     match vault.save_search(&name, &query).await {
                         Ok(()) => {
-                            tx.send(AppEvent::SavedSearch(SavedSearchFlow::Persisted {
+                            tx.send(AppMessage::SavedSearch(SavedSearchFlow::Persisted {
                                 name,
                                 query,
                                 source,
@@ -1481,8 +1489,10 @@ impl EditorScreen {
                         }
                         Err(e) => {
                             tracing::warn!("failed to save search '{}': {}", name, e);
-                            tx.send(AppEvent::SavedSearch(SavedSearchFlow::SaveFailed { name }))
-                                .ok();
+                            tx.send(AppMessage::SavedSearch(SavedSearchFlow::SaveFailed {
+                                name,
+                            }))
+                            .ok();
                         }
                     }
                 });
@@ -1510,9 +1520,9 @@ impl EditorScreen {
 
     /// The editor-owned singles: everything with exactly one arm and no
     /// family. Family events never reach this match.
-    async fn handle_owned_message(&mut self, msg: AppEvent, tx: &AppTx) {
+    async fn handle_owned_message(&mut self, msg: AppMessage, tx: &AppTx) {
         match msg {
-            AppEvent::RagStatus(status) => {
+            AppMessage::RagStatus(status) => {
                 let ask_was = self.rag_status.llm_available();
                 let sem_was = self.rag_status.search_available();
                 self.rag_status = status;
@@ -1543,15 +1553,15 @@ impl EditorScreen {
                         .await;
                 }
             }
-            AppEvent::ServerUpdate(latest) => self.server_update = latest,
-            AppEvent::Ask(data) => self.ask.handle_data(&mut self.panels, data, tx),
+            AppMessage::ServerUpdate(latest) => self.server_update = latest,
+            AppMessage::Ask(data) => self.ask.handle_data(&mut self.panels, data, tx),
             // Stale completions (for notes we've navigated away from) fall
             // through to the catch-all and are dropped.
-            AppEvent::FlashMessage(msg) => {
+            AppMessage::FlashMessage(msg) => {
                 self.footer.flash(msg, tx);
             }
-            AppEvent::OpenAttachmentExternally => self.open_attachment_externally(tx),
-            AppEvent::OpenQueryHelp => {
+            AppMessage::OpenAttachmentExternally => self.open_attachment_externally(tx),
+            AppMessage::OpenQueryHelp => {
                 // Over the Ctrl+K browser it stacks on top of it; from the
                 // FIND panel it opens on its own.
                 let open = if self.overlays.active_takes_query_syntax() {
@@ -1565,7 +1575,7 @@ impl EditorScreen {
                     self.open_overlay(open, tx);
                 }
             }
-            AppEvent::OpenSortDialog(target) => {
+            AppMessage::OpenSortDialog(target) => {
                 // A panel's chip can only be clicked with no overlay open;
                 // the browser's is on the open browser itself, and its sort
                 // dialog stacks over it (the same recipe as Ctrl+R there).
@@ -1583,7 +1593,7 @@ impl EditorScreen {
                     self.open_overlay(open, tx);
                 }
             }
-            AppEvent::ExecuteLeaderAction(action) => {
+            AppMessage::ExecuteLeaderAction(action) => {
                 if self.overlays.is_open() {
                     // The palette closes itself before sending, so this is
                     // unreachable from it — but never drop an action silently.
@@ -1592,7 +1602,7 @@ impl EditorScreen {
                     self.execute_leader_action(action, tx);
                 }
             }
-            AppEvent::ApplyTheme { theme, persist } => {
+            AppMessage::ApplyTheme { theme, persist } => {
                 // The picker resolved the theme already — no disk re-read,
                 // just adapt to the terminal and swap.
                 {
@@ -1606,16 +1616,16 @@ impl EditorScreen {
                         snapshot.save_to_disk().ok();
                     });
                 }
-                tx.send(AppEvent::Redraw).ok();
+                tx.send(AppMessage::Redraw).ok();
             }
             // Drawer panels can't emit these under an overlay, but guard
             // anyway: never mutate panels while an overlay owns input.
-            AppEvent::RunTagQuery(label) if !self.overlays.is_open() => {
+            AppMessage::RunTagQuery(label) if !self.overlays.is_open() => {
                 // Frontmatter labels may hold spaces: quote them as one term.
                 let term = kimun_core::quote_query_term(&label);
                 self.open_find_with_query(format!("#{term}"), None, tx);
             }
-            AppEvent::JumpToHeading(target) if !self.overlays.is_open() => {
+            AppMessage::JumpToHeading(target) if !self.overlays.is_open() => {
                 // The row may predate edits that moved, renamed or added
                 // headings: bring the OUTLINE up to the buffer, then resolve
                 // the row against it — one parse for both.
@@ -1633,7 +1643,7 @@ impl EditorScreen {
                 }
                 self.focus_editor();
             }
-            AppEvent::OpenDrawerView(view) => {
+            AppMessage::OpenDrawerView(view) => {
                 // The rail hides SEM unless the server is reachable for search,
                 // but the leader path (`drawer.semantic`) can still request it —
                 // gate here so every route gets the same answer.
@@ -1643,12 +1653,12 @@ impl EditorScreen {
                     } else {
                         "Set kimun_server_url in config to use semantic search"
                     };
-                    tx.send(AppEvent::FlashMessage(msg.into())).ok();
+                    tx.send(AppMessage::FlashMessage(msg.into())).ok();
                 }
                 // ASK needs an LLM-configured server (the rail hides its entry
                 // otherwise); gate every route the same way.
                 else if view == DrawerView::Ask && !self.rag_status.llm_available() {
-                    tx.send(AppEvent::FlashMessage(
+                    tx.send(AppMessage::FlashMessage(
                         "Ask needs an LLM-configured server; this one is semantic-search only"
                             .into(),
                     ))
@@ -1664,7 +1674,7 @@ impl EditorScreen {
                     self.open_drawer_view(view, tx);
                 }
             }
-            AppEvent::CloseOverlay => {
+            AppMessage::CloseOverlay => {
                 // Dismiss-to-opener. Guarded by is_open() on purpose: a
                 // selection that wants a specific post-close focus
                 // (OpenPath -> editor, SavedSearchSelected -> Query panel)
@@ -1675,7 +1685,7 @@ impl EditorScreen {
                 // the first close restores it and a second one closes it.
                 self.dismiss_overlay();
             }
-            AppEvent::SortChanged {
+            AppMessage::SortChanged {
                 target,
                 state,
                 persist,
@@ -1686,7 +1696,7 @@ impl EditorScreen {
                 // A property sort is never a default: it applies, unsaved.
                 if persist && target == SortTarget::Sidebar {
                     if matches!(state.field, SortField::Property(_)) {
-                        tx.send(AppEvent::FlashMessage(
+                        tx.send(AppMessage::FlashMessage(
                             "property sort can't be saved as default".into(),
                         ))
                         .ok();
@@ -1695,10 +1705,10 @@ impl EditorScreen {
                     }
                 }
             }
-            AppEvent::Autosave => {
+            AppMessage::Autosave => {
                 self.spawn_autosave(tx);
             }
-            AppEvent::NoteReloadFromDisk(path) => {
+            AppMessage::NoteReloadFromDisk(path) => {
                 // Unsaved typing (made after the write was spawned) wins: the
                 // buffer and the autosave carrying it are kept, and the user
                 // is told the file changed underneath.
@@ -1728,7 +1738,7 @@ impl EditorScreen {
                     self.doc_meta.refresh_properties(&self.path, tx);
                 }
             }
-            AppEvent::AutosaveCompleted {
+            AppMessage::AutosaveCompleted {
                 path,
                 saved_revision,
                 title,
@@ -1764,13 +1774,13 @@ impl EditorScreen {
                 // already cleared and respawned could wipe the fresh
                 // handle.
             }
-            AppEvent::FocusSidebar => {
+            AppMessage::FocusSidebar => {
                 self.focus_sidebar(tx);
             }
-            AppEvent::FollowLink(target) => {
+            AppMessage::FollowLink(target) => {
                 self.follow_link(target, tx).await;
             }
-            AppEvent::FollowLabel(name) => {
+            AppMessage::FollowLabel(name) => {
                 let initial = format!("#{name}");
                 let s = self.settings.read().unwrap();
                 let provider = resolving_search_source(
@@ -1791,7 +1801,7 @@ impl EditorScreen {
                 drop(s);
                 self.present_overlay(Box::new(modal));
             }
-            AppEvent::InsertAtCursor(text) if self.panels.focused() == PanelKind::Editor => {
+            AppMessage::InsertAtCursor(text) if self.panels.focused() == PanelKind::Editor => {
                 if let Some(ed) = self.panels.editor_mut() {
                     ed.insert_at_cursor(&text, tx);
                 }
@@ -2025,7 +2035,7 @@ impl EditorScreen {
         let tx2 = tx.clone();
         tokio::spawn(async move {
             tokio::time::sleep(timeout + std::time::Duration::from_millis(10)).await;
-            let _ = tx2.send(AppEvent::Redraw);
+            let _ = tx2.send(AppMessage::Redraw);
         });
     }
 
@@ -2043,7 +2053,7 @@ impl EditorScreen {
         }
         if !self.panels.is_showing_ask() {
             if !self.rag_status.llm_available() {
-                tx.send(AppEvent::FlashMessage(
+                tx.send(AppMessage::FlashMessage(
                     "Ask needs an LLM-configured server; this one is semantic-search only".into(),
                 ))
                 .ok();
@@ -2075,11 +2085,11 @@ impl EditorScreen {
         };
         match editor.follow_target_at_cursor() {
             Some(FollowTarget::Link(target)) => {
-                tx.send(AppEvent::FollowLink(target)).ok();
+                tx.send(AppMessage::FollowLink(target)).ok();
                 true
             }
             Some(FollowTarget::Label(name)) => {
-                tx.send(AppEvent::FollowLabel(name)).ok();
+                tx.send(AppMessage::FollowLabel(name)).ok();
                 true
             }
             None => false,
@@ -2140,7 +2150,7 @@ impl EditorScreen {
             // intercept in handle_input cancels and re-dispatches them.
             _ => {}
         }
-        tx.send(AppEvent::Redraw).ok();
+        tx.send(AppMessage::Redraw).ok();
         EventState::Consumed
     }
 
@@ -2156,7 +2166,7 @@ impl EditorScreen {
                 } else {
                     // No cached notice — run a forced check and report the result.
                     let tx2 = tx.clone();
-                    tx.send(AppEvent::FlashMessage("Checking for updates…".into()))
+                    tx.send(AppMessage::FlashMessage("Checking for updates…".into()))
                         .ok();
                     tokio::spawn(async move {
                         let Ok(config_dir) = crate::settings::config_dir() else {
@@ -2167,16 +2177,16 @@ impl EditorScreen {
                                 // Manual check: surface the notice AND open the
                                 // dialog the user explicitly asked for (shown even
                                 // if previously skipped — they asked).
-                                tx2.send(AppEvent::Update(UpdateFlow::Available(status)))
+                                tx2.send(AppMessage::Update(UpdateFlow::Available(status)))
                                     .ok();
-                                tx2.send(AppEvent::Update(UpdateFlow::ShowDialog)).ok();
+                                tx2.send(AppMessage::Update(UpdateFlow::ShowDialog)).ok();
                             }
                             Ok(_) => {
-                                tx2.send(AppEvent::FlashMessage("kimün is up to date".into()))
+                                tx2.send(AppMessage::FlashMessage("kimün is up to date".into()))
                                     .ok();
                             }
                             Err(e) => {
-                                tx2.send(AppEvent::FlashMessage(format!(
+                                tx2.send(AppMessage::FlashMessage(format!(
                                     "Update check failed: {e}"
                                 )))
                                 .ok();
@@ -2208,29 +2218,30 @@ impl EditorScreen {
                     .flash("type a name — Enter creates".to_string(), tx);
             }
             LeaderAction::NoteDaily => {
-                tx.send(AppEvent::OpenJournal).ok();
+                tx.send(AppMessage::OpenJournal).ok();
             }
             LeaderAction::NoteFromTemplate => {
                 self.footer.flash("templates — coming soon".to_string(), tx);
             }
             LeaderAction::NoteRename => {
                 if let Some(path) = self.open_note_or_flash(tx) {
-                    tx.send(AppEvent::FileOp(FileOp::ShowRename(path))).ok();
+                    tx.send(AppMessage::FileOp(FileOp::ShowRename(path))).ok();
                 }
             }
             LeaderAction::NoteMove => {
                 if let Some(path) = self.open_note_or_flash(tx) {
-                    tx.send(AppEvent::FileOp(FileOp::ShowMove(path))).ok();
+                    tx.send(AppMessage::FileOp(FileOp::ShowMove(path))).ok();
                 }
             }
             LeaderAction::NoteProperties => {
                 if let Some(path) = self.open_note_or_flash(tx) {
-                    tx.send(AppEvent::FileOp(FileOp::ShowProperties(path))).ok();
+                    tx.send(AppMessage::FileOp(FileOp::ShowProperties(path)))
+                        .ok();
                 }
             }
             LeaderAction::NoteDelete => {
                 if let Some(path) = self.open_note_or_flash(tx) {
-                    tx.send(AppEvent::FileOp(FileOp::ShowDelete(path))).ok();
+                    tx.send(AppMessage::FileOp(FileOp::ShowDelete(path))).ok();
                 }
             }
 
@@ -2275,7 +2286,7 @@ impl EditorScreen {
                         Ok(_) => format!("reindexed in {:.1?}", started.elapsed()),
                         Err(e) => format!("reindex failed: {e}"),
                     };
-                    tx2.send(AppEvent::FlashMessage(msg)).ok();
+                    tx2.send(AppMessage::FlashMessage(msg)).ok();
                 });
             }
             // `v c` opens the config panel (the CFG drawer); `v t` opens the
@@ -2283,11 +2294,11 @@ impl EditorScreen {
             LeaderAction::VaultConfig => self.open_drawer_view(DrawerView::Config, tx),
             LeaderAction::VaultTheme => self.open_overlay(OverlayOpen::ThemePicker, tx),
             LeaderAction::VaultPreferences => {
-                tx.send(AppEvent::OpenScreen(ScreenEvent::OpenPreferences))
+                tx.send(AppMessage::OpenScreen(ScreenEvent::OpenPreferences))
                     .ok();
             }
             LeaderAction::AppOnboarding => {
-                tx.send(AppEvent::OpenScreen(ScreenEvent::OpenOnboarding))
+                tx.send(AppMessage::OpenScreen(ScreenEvent::OpenOnboarding))
                     .ok();
             }
 
@@ -2375,7 +2386,7 @@ impl EditorScreen {
                 self.spawn_autosave(tx);
             }
             LeaderAction::AppQuit => {
-                tx.send(AppEvent::Quit).ok();
+                tx.send(AppMessage::Quit).ok();
             }
 
             // +pinned
@@ -2690,18 +2701,18 @@ impl AppScreen for EditorScreen {
         crate::components::clickable::apply_hover(f.buffer_mut(), self.pointer, &self.theme);
     }
 
-    async fn handle_app_message(&mut self, msg: AppEvent, tx: &AppTx) {
+    async fn handle_app_message(&mut self, msg: AppMessage, tx: &AppTx) {
         match msg {
             // Overlay data belongs to the open overlay alone (see CONTEXT.md):
             // route it there and stop. `NotConsumed` — no overlay open, or not
             // the kind the data was addressed to — means the result is stale;
             // it is dropped here and nothing else ever sees it.
-            AppEvent::OverlayData(data) => {
+            AppMessage::OverlayData(data) => {
                 self.overlays.handle_data(&data, &self.vault, tx);
             }
-            AppEvent::Update(flow) => self.handle_update(flow, tx),
-            AppEvent::FileOp(op) => self.handle_file_op(op, tx).await,
-            AppEvent::SavedSearch(flow) => self.handle_saved_search(flow, tx),
+            AppMessage::Update(flow) => self.handle_update(flow, tx),
+            AppMessage::FileOp(op) => self.handle_file_op(op, tx).await,
+            AppMessage::SavedSearch(flow) => self.handle_saved_search(flow, tx),
             msg => {
                 // Async status results (backlink count, git, link meta) are
                 // DocMeta's; everything else reaches the owned match.
@@ -2785,7 +2796,7 @@ mod tests {
         EditorScreen,
         Arc<NoteVault>,
         AppTx,
-        tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+        tokio::sync::mpsc::UnboundedReceiver<AppMessage>,
         tempfile::TempDir,
     ) {
         let (mut screen, vault, _settings, dir) = test_screen().await;
@@ -2806,7 +2817,7 @@ mod tests {
             .await
             .unwrap();
         screen
-            .handle_app_message(AppEvent::NoteReloadFromDisk(VaultPath::new("n.md")), &tx)
+            .handle_app_message(AppMessage::NoteReloadFromDisk(VaultPath::new("n.md")), &tx)
             .await;
         let ed = screen.panels.editor().unwrap();
         assert_eq!(ed.get_text(), "+++\na = 1\n+++\nbody");
@@ -2818,7 +2829,7 @@ mod tests {
         let (mut screen, vault, tx, _rx, _dir) = screen_on_note().await;
         vault.delete_note(&VaultPath::new("n.md")).await.unwrap();
         screen
-            .handle_app_message(AppEvent::NoteReloadFromDisk(VaultPath::new("n.md")), &tx)
+            .handle_app_message(AppMessage::NoteReloadFromDisk(VaultPath::new("n.md")), &tx)
             .await;
         assert_eq!(
             screen.footer.flash_text(),
@@ -2839,7 +2850,7 @@ mod tests {
             .await
             .unwrap();
         screen
-            .handle_app_message(AppEvent::NoteReloadFromDisk(VaultPath::new("n.md")), &tx)
+            .handle_app_message(AppMessage::NoteReloadFromDisk(VaultPath::new("n.md")), &tx)
             .await;
         let ed = screen.panels.editor().unwrap();
         assert_eq!(ed.get_text(), "xhi", "the typing is kept");
@@ -2859,7 +2870,7 @@ mod tests {
                 .await
                 .expect("the disk count (1) is reported")
                 .expect("open channel");
-            if let AppEvent::PropertyCountLoaded { count: 1, .. } = evt {
+            if let AppMessage::PropertyCountLoaded { count: 1, .. } = evt {
                 break;
             }
         }
@@ -2871,9 +2882,9 @@ mod tests {
     /// waits for (each event is offered to `done` before it is handled).
     async fn pump_until(
         screen: &mut EditorScreen,
-        rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppMessage>,
         tx: &AppTx,
-        mut done: impl FnMut(&AppEvent) -> bool,
+        mut done: impl FnMut(&AppMessage) -> bool,
     ) {
         let mut finished = false;
         while !finished {
@@ -2900,7 +2911,7 @@ mod tests {
         pump_until(&mut screen, &mut rx, &tx, |e| {
             matches!(
                 e,
-                AppEvent::OverlayData(OverlayData::PropertiesLoaded { .. })
+                AppMessage::OverlayData(OverlayData::PropertiesLoaded { .. })
             )
         })
         .await;
@@ -2915,8 +2926,8 @@ mod tests {
         let (mut reloaded, mut written) = (false, false);
         pump_until(&mut screen, &mut rx, &tx, |e| {
             match e {
-                AppEvent::NoteReloadFromDisk(_) => reloaded = true,
-                AppEvent::OverlayData(OverlayData::PropertyWritten { result, .. }) => {
+                AppMessage::NoteReloadFromDisk(_) => reloaded = true,
+                AppMessage::OverlayData(OverlayData::PropertyWritten { result, .. }) => {
                     assert!(result.is_ok(), "{result:?}");
                     written = true;
                 }
@@ -3129,9 +3140,9 @@ mod tests {
 
     /// Drain `rx` until an event matching `pred` arrives, or time out.
     async fn wait_for(
-        rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
-        pred: impl Fn(&AppEvent) -> bool,
-    ) -> AppEvent {
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppMessage>,
+        pred: impl Fn(&AppMessage) -> bool,
+    ) -> AppMessage {
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
                 let e = rx.recv().await.expect("channel open");
@@ -3173,9 +3184,9 @@ mod tests {
         screen.handle_input(&ctrl_key('b'), &tx);
         screen.handle_input(&chr('m'), &tx);
         screen.handle_input(&chr('i'), &tx);
-        let e = wait_for(&mut rx, |e| matches!(e, AppEvent::FlashMessage(_))).await;
+        let e = wait_for(&mut rx, |e| matches!(e, AppMessage::FlashMessage(_))).await;
         assert!(
-            matches!(&e, AppEvent::FlashMessage(m) if m == "pinned as 1 of 9"),
+            matches!(&e, AppMessage::FlashMessage(m) if m == "pinned as 1 of 9"),
             "{e:?}"
         );
         // list_pinned_notes returns canonical, vault-absolute paths.
@@ -3187,9 +3198,9 @@ mod tests {
         screen.handle_input(&ctrl_key('b'), &tx);
         screen.handle_input(&chr('m'), &tx);
         screen.handle_input(&chr('i'), &tx);
-        let e = wait_for(&mut rx, |e| matches!(e, AppEvent::FlashMessage(_))).await;
+        let e = wait_for(&mut rx, |e| matches!(e, AppMessage::FlashMessage(_))).await;
         assert!(
-            matches!(&e, AppEvent::FlashMessage(m) if m == "unpinned"),
+            matches!(&e, AppMessage::FlashMessage(m) if m == "unpinned"),
             "{e:?}"
         );
         assert!(vault.list_pinned_notes().await.unwrap().is_empty());
@@ -3212,9 +3223,9 @@ mod tests {
         screen.handle_input(&ctrl_key('b'), &tx);
         screen.handle_input(&chr('m'), &tx);
         screen.handle_input(&chr('i'), &tx);
-        let e = wait_for(&mut rx, |e| matches!(e, AppEvent::FlashMessage(_))).await;
+        let e = wait_for(&mut rx, |e| matches!(e, AppMessage::FlashMessage(_))).await;
         assert!(
-            matches!(&e, AppEvent::FlashMessage(m) if m == "already 9 pinned — unpin one first"),
+            matches!(&e, AppMessage::FlashMessage(m) if m == "already 9 pinned — unpin one first"),
             "{e:?}"
         );
     }
@@ -3230,9 +3241,9 @@ mod tests {
         screen.handle_input(&ctrl_key('b'), &tx);
         screen.handle_input(&chr('m'), &tx);
         screen.handle_input(&chr('i'), &tx);
-        let e = wait_for(&mut rx, |e| matches!(e, AppEvent::FlashMessage(_))).await;
+        let e = wait_for(&mut rx, |e| matches!(e, AppMessage::FlashMessage(_))).await;
         assert!(
-            matches!(&e, AppEvent::FlashMessage(m) if m == "note not found: gone.md"),
+            matches!(&e, AppMessage::FlashMessage(m) if m == "note not found: gone.md"),
             "{e:?}"
         );
         assert!(vault.list_pinned_notes().await.unwrap().is_empty());
@@ -3253,9 +3264,9 @@ mod tests {
         screen.handle_input(&ctrl_key('b'), &tx);
         screen.handle_input(&chr('m'), &tx);
         screen.handle_input(&chr('c'), &tx);
-        let e = wait_for(&mut rx, |e| matches!(e, AppEvent::FlashMessage(_))).await;
+        let e = wait_for(&mut rx, |e| matches!(e, AppMessage::FlashMessage(_))).await;
         assert!(
-            matches!(&e, AppEvent::FlashMessage(m) if m == "no note open"),
+            matches!(&e, AppMessage::FlashMessage(m) if m == "no note open"),
             "{e:?}"
         );
     }
@@ -3270,9 +3281,9 @@ mod tests {
         screen.handle_input(&ctrl_key('b'), &tx);
         screen.handle_input(&chr('m'), &tx);
         screen.handle_input(&chr('i'), &tx);
-        let e = wait_for(&mut rx, |e| matches!(e, AppEvent::FlashMessage(_))).await;
+        let e = wait_for(&mut rx, |e| matches!(e, AppMessage::FlashMessage(_))).await;
         assert!(
-            matches!(&e, AppEvent::FlashMessage(m) if m == "no note open"),
+            matches!(&e, AppMessage::FlashMessage(m) if m == "no note open"),
             "{e:?}"
         );
     }
@@ -3295,9 +3306,9 @@ mod tests {
         screen.handle_input(&ctrl_key('b'), &tx);
         screen.handle_input(&chr('m'), &tx);
         screen.handle_input(&chr('i'), &tx);
-        let e = wait_for(&mut rx, |e| matches!(e, AppEvent::FlashMessage(_))).await;
+        let e = wait_for(&mut rx, |e| matches!(e, AppMessage::FlashMessage(_))).await;
         assert!(
-            matches!(&e, AppEvent::FlashMessage(m) if m == "no note open"),
+            matches!(&e, AppMessage::FlashMessage(m) if m == "no note open"),
             "{e:?}"
         );
     }
@@ -3306,7 +3317,7 @@ mod tests {
     /// shown: says why nothing moved, and the list empties to match.
     #[tokio::test(flavor = "multi_thread")]
     async fn jumping_from_the_outline_with_an_attachment_shown_flashes() {
-        use crate::components::drawer_views::HeadingTarget;
+        use crate::logic::nav::HeadingTarget;
         let (mut screen, vault, _, _dir) = test_screen().await;
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let note = VaultPath::note_path_from("alpha");
@@ -3322,7 +3333,7 @@ mod tests {
             .try_open_attachment(VaultPath::new("assets/diagram.png"), &tx)
             .await;
 
-        let jump = AppEvent::JumpToHeading(HeadingTarget {
+        let jump = AppMessage::JumpToHeading(HeadingTarget {
             text: "Alpha".to_string(),
             occurrence: 0,
             count: 1,
@@ -3349,9 +3360,9 @@ mod tests {
         screen.handle_input(&ctrl_key('b'), &tx);
         screen.handle_input(&chr('m'), &tx);
         screen.handle_input(&chr('i'), &tx);
-        let e = wait_for(&mut rx, |e| matches!(e, AppEvent::FlashMessage(_))).await;
+        let e = wait_for(&mut rx, |e| matches!(e, AppMessage::FlashMessage(_))).await;
         assert!(
-            matches!(&e, AppEvent::FlashMessage(m) if m == "no note open"),
+            matches!(&e, AppMessage::FlashMessage(m) if m == "no note open"),
             "{e:?}"
         );
     }
@@ -3370,11 +3381,11 @@ mod tests {
 
         screen.handle_input(&ctrl_key('b'), &tx);
         screen.handle_input(&chr('2'), &tx);
-        let e = wait_for(&mut rx, |e| matches!(e, AppEvent::OpenPath { .. })).await;
+        let e = wait_for(&mut rx, |e| matches!(e, AppMessage::OpenPath { .. })).await;
         // list_pinned_notes returns the canonical, vault-absolute form
         // (`/b.md`); is_like compares components only.
         assert!(
-            matches!(&e, AppEvent::OpenPath { path, .. } if path.is_like(&b)),
+            matches!(&e, AppMessage::OpenPath { path, .. } if path.is_like(&b)),
             "{e:?}"
         );
     }
@@ -3386,9 +3397,9 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         screen.handle_input(&ctrl_key('b'), &tx);
         screen.handle_input(&chr('4'), &tx);
-        let e = wait_for(&mut rx, |e| matches!(e, AppEvent::FlashMessage(_))).await;
+        let e = wait_for(&mut rx, |e| matches!(e, AppMessage::FlashMessage(_))).await;
         assert!(
-            matches!(&e, AppEvent::FlashMessage(m) if m == "no pinned note 4"),
+            matches!(&e, AppMessage::FlashMessage(m) if m == "no pinned note 4"),
             "{e:?}"
         );
     }
@@ -3406,10 +3417,10 @@ mod tests {
         std::fs::remove_file(dir.path().join("gone.md")).unwrap();
         screen.handle_input(&ctrl_key('b'), &tx);
         screen.handle_input(&chr('1'), &tx);
-        let e = wait_for(&mut rx, |e| matches!(e, AppEvent::FlashMessage(_))).await;
+        let e = wait_for(&mut rx, |e| matches!(e, AppMessage::FlashMessage(_))).await;
         // The flashed path is the canonical form list_pinned_notes returned.
         assert!(
-            matches!(&e, AppEvent::FlashMessage(m) if m == "pinned note not found: /gone.md"),
+            matches!(&e, AppMessage::FlashMessage(m) if m == "pinned note not found: /gone.md"),
             "{e:?}"
         );
     }
@@ -3479,7 +3490,7 @@ mod tests {
 
         screen
             .handle_app_message(
-                AppEvent::SavedSearch(SavedSearchFlow::Persisted {
+                AppMessage::SavedSearch(SavedSearchFlow::Persisted {
                     name: "urgent-todos".to_string(),
                     query: "#todo and #urgent".to_string(),
                     source: SaveSource::QueryPanel,
@@ -3506,7 +3517,7 @@ mod tests {
         // panel's live query: source identity, not text equality, decides.
         screen
             .handle_app_message(
-                AppEvent::SavedSearch(SavedSearchFlow::Persisted {
+                AppMessage::SavedSearch(SavedSearchFlow::Persisted {
                     name: "inbox".to_string(),
                     query: "#todo".to_string(),
                     source: SaveSource::NoteBrowser,
@@ -3534,7 +3545,7 @@ mod tests {
         // the breadcrumb is a distinct provenance tag, not the query).
         screen
             .handle_app_message(
-                AppEvent::SavedSearch(SavedSearchFlow::Persisted {
+                AppMessage::SavedSearch(SavedSearchFlow::Persisted {
                     name: "#todo".to_string(),
                     query: "#todo".to_string(),
                     source: SaveSource::QueryPanel,
@@ -3557,7 +3568,7 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         screen
             .handle_app_message(
-                AppEvent::SavedSearch(SavedSearchFlow::Confirmed {
+                AppMessage::SavedSearch(SavedSearchFlow::Confirmed {
                     name: "mine".to_string(),
                     query: "#todo".to_string(),
                     source: SaveSource::QueryPanel,
@@ -3570,7 +3581,9 @@ mod tests {
         let event = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
                 match rx.recv().await {
-                    Some(e @ AppEvent::SavedSearch(SavedSearchFlow::Persisted { .. })) => break e,
+                    Some(e @ AppMessage::SavedSearch(SavedSearchFlow::Persisted { .. })) => {
+                        break e;
+                    }
                     Some(_) => continue,
                     None => panic!("channel closed before SavedSearchPersisted"),
                 }
@@ -3579,7 +3592,7 @@ mod tests {
         .await
         .expect("SavedSearchPersisted within timeout");
 
-        let AppEvent::SavedSearch(SavedSearchFlow::Persisted {
+        let AppMessage::SavedSearch(SavedSearchFlow::Persisted {
             name,
             query,
             source,
@@ -3635,14 +3648,16 @@ mod tests {
         // Replay the exact sequence the saved-searches modal emits on select.
         screen
             .handle_app_message(
-                AppEvent::SavedSearch(SavedSearchFlow::Selected {
+                AppMessage::SavedSearch(SavedSearchFlow::Selected {
                     query: "<{note}".to_string(),
                     name: "Backlinks (current note)".to_string(),
                 }),
                 &tx,
             )
             .await;
-        screen.handle_app_message(AppEvent::CloseOverlay, &tx).await;
+        screen
+            .handle_app_message(AppMessage::CloseOverlay, &tx)
+            .await;
 
         assert!(
             screen.panels.focused() == PanelKind::Drawer
@@ -3987,7 +4002,7 @@ mod tests {
         vault.rename_note(&from, &to).await.unwrap();
         screen
             .handle_app_message(
-                AppEvent::FileOp(FileOp::Renamed {
+                AppMessage::FileOp(FileOp::Renamed {
                     from: from.clone(),
                     to: to.clone(),
                 }),
@@ -4023,7 +4038,7 @@ mod tests {
             ed.set_text(text.to_string());
             ed.content_revision()
         };
-        let saved = |path: &VaultPath, rev| AppEvent::AutosaveCompleted {
+        let saved = |path: &VaultPath, rev| AppMessage::AutosaveCompleted {
             path: path.clone(),
             saved_revision: rev,
             title: rev.map(|_| "Alpha".to_string()),
@@ -4055,7 +4070,7 @@ mod tests {
     /// the cursor stays, the footer says why, and the list catches up.
     #[tokio::test(flavor = "multi_thread")]
     async fn jumping_to_a_stale_outline_row_refreshes_the_outline() {
-        use crate::components::drawer_views::HeadingTarget;
+        use crate::logic::nav::HeadingTarget;
         let vault = crate::test_support::temp_vault("editor-outline-stale").await;
         vault.validate_and_init().await.unwrap();
         let path = VaultPath::note_path_from("alpha");
@@ -4077,7 +4092,7 @@ mod tests {
             .editor_mut()
             .unwrap()
             .set_text("# Alpha\n## Bar\n".to_string());
-        let jump = AppEvent::JumpToHeading(HeadingTarget {
+        let jump = AppMessage::JumpToHeading(HeadingTarget {
             text: "Foo".to_string(),
             occurrence: 0,
             count: 1,
@@ -4098,7 +4113,7 @@ mod tests {
         );
 
         // A live row still jumps.
-        let jump = AppEvent::JumpToHeading(HeadingTarget {
+        let jump = AppMessage::JumpToHeading(HeadingTarget {
             text: "Bar".to_string(),
             occurrence: 0,
             count: 1,
@@ -4143,7 +4158,7 @@ mod tests {
 
         screen
             .handle_app_message(
-                AppEvent::AutosaveCompleted {
+                AppMessage::AutosaveCompleted {
                     path: path.clone(),
                     saved_revision: None,
                     title: Some("New First Line".to_string()),
@@ -4197,7 +4212,7 @@ mod tests {
     /// pump (`handle_app_message`, the same entry point the app loop uses —
     /// not the coordinator's `handle_data` called directly) must still land on
     /// the thread: it should route through `handle_owned_message`'s
-    /// `AppEvent::Ask(data)` arm to `AskCoordinator::handle_data` end to end.
+    /// `AppMessage::Ask(data)` arm to `AskCoordinator::handle_data` end to end.
     #[tokio::test]
     async fn ask_answer_ready_reaches_the_thread_via_the_owned_message_path() {
         let (mut screen, _, _, _dir) = test_screen().await;
@@ -4208,7 +4223,7 @@ mod tests {
 
         screen
             .handle_app_message(
-                AppEvent::Ask(crate::components::events::AskData::AnswerReady {
+                AppMessage::Ask(crate::logic::message::AskData::AnswerReady {
                     turn_id: id,
                     result: Ok(("the answer".into(), vec![])),
                 }),
@@ -4316,7 +4331,7 @@ mod tests {
     /// editor-area content moved), so the next `OpenDrawerView(Ask)` — what a
     /// rail click sends — read as "already showing, toggle it closed"
     /// instead of "reopen it", requiring a second click. Drives the real
-    /// `AppEvent::OpenDrawerView` path (not the direct `open_drawer_view`
+    /// `AppMessage::OpenDrawerView` path (not the direct `open_drawer_view`
     /// helper) so this test actually exercises that toggle branch.
     #[tokio::test]
     async fn rail_click_reenters_ask_in_one_click_after_a_note_stashed_it() {
@@ -4336,7 +4351,7 @@ mod tests {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
 
         screen
-            .handle_app_message(AppEvent::OpenDrawerView(DrawerView::Ask), &tx)
+            .handle_app_message(AppMessage::OpenDrawerView(DrawerView::Ask), &tx)
             .await;
         assert!(screen.panels.is_showing_ask());
         screen
@@ -4352,7 +4367,7 @@ mod tests {
 
         // One click — one `OpenDrawerView(Ask)` — must land back on Ask.
         screen
-            .handle_app_message(AppEvent::OpenDrawerView(DrawerView::Ask), &tx)
+            .handle_app_message(AppMessage::OpenDrawerView(DrawerView::Ask), &tx)
             .await;
         assert!(
             screen.panels.is_showing_ask(),
@@ -4442,7 +4457,7 @@ mod tests {
 
         screen.ask.handle_data(
             &mut screen.panels,
-            crate::components::events::AskData::AnswerReady {
+            crate::logic::message::AskData::AnswerReady {
                 turn_id,
                 result: Ok(("the answer".into(), vec![])),
             },
@@ -4480,7 +4495,7 @@ mod tests {
 
         screen
             .handle_owned_message(
-                AppEvent::RagStatus(crate::rag::RagStatus::Online {
+                AppMessage::RagStatus(crate::rag::RagStatus::Online {
                     llm_available: false,
                 }),
                 &tx,
@@ -4488,7 +4503,7 @@ mod tests {
             .await;
         screen
             .handle_owned_message(
-                AppEvent::ServerUpdate(Some(ServerUpdate::Newer("9.9.9".into()))),
+                AppMessage::ServerUpdate(Some(ServerUpdate::Newer("9.9.9".into()))),
                 &tx,
             )
             .await;
@@ -4500,12 +4515,12 @@ mod tests {
         );
 
         screen
-            .handle_owned_message(AppEvent::ServerUpdate(Some(ServerUpdate::Legacy)), &tx)
+            .handle_owned_message(AppMessage::ServerUpdate(Some(ServerUpdate::Legacy)), &tx)
             .await;
         assert!(footer(&mut screen).contains("rag: server update available"));
 
         screen
-            .handle_owned_message(AppEvent::ServerUpdate(None), &tx)
+            .handle_owned_message(AppMessage::ServerUpdate(None), &tx)
             .await;
         let cleared = footer(&mut screen);
         assert!(cleared.contains("rag: online"), "rag status stays");
@@ -4527,7 +4542,7 @@ mod tests {
         // Semantic-only server comes online: SEM appears, ASK stays hidden.
         screen
             .handle_owned_message(
-                AppEvent::RagStatus(crate::rag::RagStatus::Online {
+                AppMessage::RagStatus(crate::rag::RagStatus::Online {
                     llm_available: false,
                 }),
                 &tx,
@@ -4538,14 +4553,14 @@ mod tests {
 
         // Server drops offline: SEM disappears too (not driven by config).
         screen
-            .handle_owned_message(AppEvent::RagStatus(crate::rag::RagStatus::Offline), &tx)
+            .handle_owned_message(AppMessage::RagStatus(crate::rag::RagStatus::Offline), &tx)
             .await;
         assert!(!screen.panels.rail_shows(DrawerView::Semantic));
 
         // LLM-capable server: both SEM and ASK appear.
         screen
             .handle_owned_message(
-                AppEvent::RagStatus(crate::rag::RagStatus::Online {
+                AppMessage::RagStatus(crate::rag::RagStatus::Online {
                     llm_available: true,
                 }),
                 &tx,
@@ -4642,7 +4657,7 @@ mod tests {
         // Land the async property count so the segment renders.
         screen
             .handle_app_message(
-                AppEvent::PropertyCountLoaded {
+                AppMessage::PropertyCountLoaded {
                     path: VaultPath::new("n.md"),
                     count: 0,
                 },
@@ -4658,7 +4673,7 @@ mod tests {
         screen.handle_input(&press_at(col, row), &tx);
         let mut opened = false;
         while let Ok(evt) = rx.try_recv() {
-            opened |= matches!(evt, AppEvent::FileOp(FileOp::ShowProperties(_)));
+            opened |= matches!(evt, AppMessage::FileOp(FileOp::ShowProperties(_)));
         }
         assert!(opened);
     }
@@ -4684,7 +4699,7 @@ mod tests {
         screen.handle_input(&press_at(col, row), &tx);
         let mut shown = false;
         while let Ok(evt) = rx.try_recv() {
-            shown |= matches!(evt, AppEvent::Update(UpdateFlow::ShowDialog));
+            shown |= matches!(evt, AppMessage::Update(UpdateFlow::ShowDialog));
         }
         assert!(shown);
     }
@@ -4695,7 +4710,7 @@ mod tests {
         let (mut screen, _vault, tx, _rx, _dir) = screen_on_note().await;
         screen
             .handle_app_message(
-                AppEvent::RagStatus(crate::rag::RagStatus::Online {
+                AppMessage::RagStatus(crate::rag::RagStatus::Online {
                     llm_available: false,
                 }),
                 &tx,
@@ -4703,7 +4718,7 @@ mod tests {
             .await;
         screen
             .handle_app_message(
-                AppEvent::ServerUpdate(Some(crate::server_client::sync::ServerUpdate::Legacy)),
+                AppMessage::ServerUpdate(Some(crate::server_client::sync::ServerUpdate::Legacy)),
                 &tx,
             )
             .await;
@@ -4722,7 +4737,7 @@ mod tests {
         let (mut screen, _vault, tx, _rx, _dir) = screen_on_note().await;
         screen
             .handle_app_message(
-                AppEvent::BacklinkCountLoaded {
+                AppMessage::BacklinkCountLoaded {
                     path: VaultPath::new("n.md"),
                     count: 2,
                 },
@@ -4745,7 +4760,7 @@ mod tests {
         let (mut screen, _vault, tx, mut rx, _dir) = screen_on_note().await;
         screen
             .handle_app_message(
-                AppEvent::PropertyCountLoaded {
+                AppMessage::PropertyCountLoaded {
                     path: VaultPath::new("n.md"),
                     count: 0,
                 },
@@ -4766,7 +4781,7 @@ mod tests {
         screen.handle_input(&press_at(col, row), &tx);
         let mut opened = false;
         while let Ok(evt) = rx.try_recv() {
-            opened |= matches!(evt, AppEvent::FileOp(FileOp::ShowProperties(_)));
+            opened |= matches!(evt, AppMessage::FileOp(FileOp::ShowProperties(_)));
         }
         assert!(opened);
     }
@@ -4903,7 +4918,7 @@ mod tests {
         let followed = crate::test_support::drain(&mut rx)
             .into_iter()
             .find_map(|ev| match ev {
-                AppEvent::FollowLink(target) => Some(target),
+                AppMessage::FollowLink(target) => Some(target),
                 _ => None,
             })
             .expect("the double-click emitted no FollowLink");
@@ -4929,7 +4944,7 @@ mod tests {
         assert!(
             !crate::test_support::drain(&mut rx)
                 .into_iter()
-                .any(|ev| matches!(ev, AppEvent::FollowLink(_))),
+                .any(|ev| matches!(ev, AppMessage::FollowLink(_))),
             "one click is a cursor placement, not a navigation"
         );
         assert!(
@@ -4948,14 +4963,14 @@ mod tests {
 mod sort_routing_tests {
     use super::*;
     use crate::app_screen::AppScreen;
-    use crate::components::events::SortTarget;
-    use crate::components::file_list::SortOrder;
-    use crate::components::sortable::SortState;
+    use crate::logic::message::SortTarget;
+    use crate::logic::sort::SortOrder;
+    use crate::logic::sort::SortState;
 
     async fn make_editor() -> (
         EditorScreen,
         AppTx,
-        tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+        tokio::sync::mpsc::UnboundedReceiver<AppMessage>,
     ) {
         let vault = crate::test_support::temp_vault("editor-sort").await;
         vault.validate_and_init().await.unwrap();
@@ -4991,13 +5006,13 @@ mod sort_routing_tests {
         screen.handle_input(&crate::test_support::mouse_down_at(col, row), &tx);
         let mut target = None;
         while let Ok(e) = rx.try_recv() {
-            if let AppEvent::OpenSortDialog(t) = e {
+            if let AppMessage::OpenSortDialog(t) = e {
                 target = Some(t);
             }
         }
         assert_eq!(target, Some(SortTarget::Sidebar));
         screen
-            .handle_app_message(AppEvent::OpenSortDialog(SortTarget::Sidebar), &tx)
+            .handle_app_message(AppMessage::OpenSortDialog(SortTarget::Sidebar), &tx)
             .await;
         assert_eq!(screen.overlays.active_kind(), Some(OverlayKind::Dialog));
     }
@@ -5058,7 +5073,7 @@ mod sort_routing_tests {
         let (mut screen, tx, mut rx) = make_editor().await;
         screen.panels.open_drawer_view(DrawerView::Find);
         screen
-            .handle_app_message(AppEvent::RunTagQuery("x".into()), &tx)
+            .handle_app_message(AppMessage::RunTagQuery("x".into()), &tx)
             .await;
         screen
             .panels
@@ -5077,7 +5092,7 @@ mod sort_routing_tests {
         assert!(
             crate::test_support::drain(&mut rx)
                 .into_iter()
-                .any(|e| matches!(e, AppEvent::OpenSortDialog(SortTarget::Query)))
+                .any(|e| matches!(e, AppMessage::OpenSortDialog(SortTarget::Query)))
         );
     }
 
@@ -5124,10 +5139,10 @@ mod sort_routing_tests {
         let sent = events(&mut rx);
         assert!(
             sent.iter()
-                .any(|e| matches!(e, AppEvent::OpenSortDialog(SortTarget::Browser)))
+                .any(|e| matches!(e, AppMessage::OpenSortDialog(SortTarget::Browser)))
         );
         screen
-            .handle_app_message(AppEvent::OpenSortDialog(SortTarget::Browser), &tx)
+            .handle_app_message(AppMessage::OpenSortDialog(SortTarget::Browser), &tx)
             .await;
         assert_eq!(screen.overlays.active_kind(), Some(OverlayKind::Dialog));
         assert_eq!(
@@ -5150,10 +5165,10 @@ mod sort_routing_tests {
         assert!(
             events(&mut rx)
                 .iter()
-                .any(|e| matches!(e, AppEvent::OpenQueryHelp))
+                .any(|e| matches!(e, AppMessage::OpenQueryHelp))
         );
         screen
-            .handle_app_message(AppEvent::OpenQueryHelp, &tx)
+            .handle_app_message(AppMessage::OpenQueryHelp, &tx)
             .await;
         assert_eq!(screen.overlays.active_kind(), Some(OverlayKind::Dialog));
         assert_eq!(
@@ -5193,10 +5208,10 @@ mod sort_routing_tests {
         assert!(
             events(&mut rx)
                 .iter()
-                .any(|e| matches!(e, AppEvent::OpenQueryHelp))
+                .any(|e| matches!(e, AppMessage::OpenQueryHelp))
         );
         screen
-            .handle_app_message(AppEvent::OpenQueryHelp, &tx)
+            .handle_app_message(AppMessage::OpenQueryHelp, &tx)
             .await;
         assert_eq!(screen.overlays.active_kind(), Some(OverlayKind::Dialog));
     }
@@ -5234,7 +5249,7 @@ mod sort_routing_tests {
             "nothing to sort yet"
         );
         screen
-            .handle_app_message(AppEvent::RunTagQuery("x".into()), &tx)
+            .handle_app_message(AppMessage::RunTagQuery("x".into()), &tx)
             .await;
         let (col, row) = find_drawn(&mut screen, "Name ↑").expect("a running query is sortable");
         let (_, query_row) = find_drawn(&mut screen, " Query").expect("query box drawn");
@@ -5244,7 +5259,7 @@ mod sort_routing_tests {
         assert!(
             crate::test_support::drain(&mut rx)
                 .into_iter()
-                .any(|e| matches!(e, AppEvent::OpenSortDialog(SortTarget::Query)))
+                .any(|e| matches!(e, AppMessage::OpenSortDialog(SortTarget::Query)))
         );
     }
 
@@ -5253,7 +5268,7 @@ mod sort_routing_tests {
         let (mut screen, tx, _rx) = make_editor().await;
         screen
             .handle_app_message(
-                AppEvent::SortChanged {
+                AppMessage::SortChanged {
                     target: SortTarget::Sidebar,
                     state: SortState {
                         field: SortField::Title,
@@ -5286,7 +5301,7 @@ mod sort_routing_tests {
 
         screen
             .handle_app_message(
-                AppEvent::SortChanged {
+                AppMessage::SortChanged {
                     target: SortTarget::Sidebar,
                     state: SortState {
                         field: SortField::Title,
@@ -5322,7 +5337,7 @@ mod sort_routing_tests {
         let (mut screen, tx, _rx) = make_editor().await;
         screen
             .handle_app_message(
-                AppEvent::SortChanged {
+                AppMessage::SortChanged {
                     target: SortTarget::Sidebar,
                     state: SortState {
                         field: SortField::Title,
@@ -5379,7 +5394,7 @@ mod sort_routing_tests {
 
         screen
             .handle_app_message(
-                AppEvent::SortChanged {
+                AppMessage::SortChanged {
                     target: SortTarget::Browser,
                     state: SortState {
                         field: SortField::Title,
@@ -5392,7 +5407,9 @@ mod sort_routing_tests {
             )
             .await;
 
-        screen.handle_app_message(AppEvent::CloseOverlay, &tx).await;
+        screen
+            .handle_app_message(AppMessage::CloseOverlay, &tx)
+            .await;
         assert_eq!(
             screen.overlays.active_kind(),
             Some(OverlayKind::NoteBrowser)
@@ -5402,7 +5419,9 @@ mod sort_routing_tests {
         assert_eq!(screen.panels.focused(), focus, "panel focus unchanged");
 
         // A second close dismisses the browser to its opener.
-        screen.handle_app_message(AppEvent::CloseOverlay, &tx).await;
+        screen
+            .handle_app_message(AppMessage::CloseOverlay, &tx)
+            .await;
         assert!(!screen.overlays.is_open());
         assert_eq!(screen.panels.focused(), focus);
     }
@@ -5422,12 +5441,16 @@ mod sort_routing_tests {
             Some(OverlayKind::NoteBrowser),
             "the finder is parked under the dialog"
         );
-        screen.handle_app_message(AppEvent::CloseOverlay, &tx).await;
+        screen
+            .handle_app_message(AppMessage::CloseOverlay, &tx)
+            .await;
         assert_eq!(
             screen.overlays.active_kind(),
             Some(OverlayKind::NoteBrowser)
         );
-        screen.handle_app_message(AppEvent::CloseOverlay, &tx).await;
+        screen
+            .handle_app_message(AppMessage::CloseOverlay, &tx)
+            .await;
         assert!(!screen.overlays.is_open());
         assert_eq!(screen.panels.focused(), focus);
     }
@@ -5462,7 +5485,7 @@ mod sort_routing_tests {
         let (mut screen, tx, mut rx) = make_editor().await;
         screen
             .handle_app_message(
-                AppEvent::SortChanged {
+                AppMessage::SortChanged {
                     target: SortTarget::Sidebar,
                     state: SortState {
                         field: SortField::Property("due".into()),
@@ -5493,7 +5516,7 @@ mod sort_routing_tests {
         );
         let mut flashed = false;
         while let Ok(evt) = rx.try_recv() {
-            if let AppEvent::FlashMessage(msg) = evt {
+            if let AppMessage::FlashMessage(msg) = evt {
                 flashed |= msg.contains("can't be saved");
             }
         }

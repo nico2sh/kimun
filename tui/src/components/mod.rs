@@ -53,7 +53,8 @@ use ratatui::layout::Rect;
 pub const DOUBLE_CLICK: std::time::Duration = std::time::Duration::from_millis(400);
 
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, InputEvent};
+use crate::components::events::InputEvent;
+use crate::logic::message::{AppMessage, AppTx};
 use crate::settings::themes::Theme;
 
 /// The process-wide `arboard::Clipboard`.
@@ -114,7 +115,7 @@ pub fn yank(text: String, done_msg: impl Into<String>, tx: &AppTx) {
         Ok(()) => done_msg.into(),
         Err(e) => format!("clipboard: {e}"),
     };
-    tx.send(AppEvent::FlashMessage(msg)).ok();
+    tx.send(AppMessage::FlashMessage(msg)).ok();
 }
 
 /// Perform a [`crate::components::search_list::KeyReaction::Yank`]: copy the
@@ -128,7 +129,7 @@ pub fn yank_row(target: Option<search_list::YankTarget>, tx: &AppTx) {
     match target {
         Some(t) => yank(t.text, format!("{} copied", t.noun), tx),
         None => {
-            tx.send(AppEvent::FlashMessage("nothing to copy".into()))
+            tx.send(AppMessage::FlashMessage("nothing to copy".into()))
                 .ok();
         }
     }
@@ -160,7 +161,7 @@ pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 }
 
 pub trait Component {
-    /// Handle an event. Send `AppEvent`s through `tx` for app-level effects.
+    /// Handle an event. Send `AppMessage`s through `tx` for app-level effects.
     /// Returns whether this component consumed the event.
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
         let _ = (event, tx);
@@ -189,7 +190,7 @@ mod tests {
         yank("hello".to_string(), "hello copied", &tx);
         let ev = rx.try_recv().expect("yank sends exactly one event");
         match ev {
-            AppEvent::FlashMessage(msg) => {
+            AppMessage::FlashMessage(msg) => {
                 assert!(
                     msg == "hello copied" || msg.starts_with("clipboard: "),
                     "unexpected flash message: {msg}"

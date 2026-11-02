@@ -11,8 +11,8 @@
 //! `in_flight` gate and the `content_gen`/`dirty` bookkeeping — stays in
 //! `backend.rs`, because that is stateful backend bookkeeping, not decoding.
 
-use super::snapshot::EditorMode;
-use super::text_coords::byte_col_to_char_col;
+use crate::logic::editor::snapshot::EditorMode;
+use crate::logic::editor::text_coords::byte_col_to_char_col;
 
 /// One decoded `STATE_QUERY_LUA` response.
 ///
@@ -148,7 +148,7 @@ mod tests {
         Value::Array(items)
     }
 
-    // Per-line byte→char conversion is tested in `super::text_coords`.
+    // Per-line byte→char conversion is tested in `crate::logic::editor::text_coords`.
 
     // --- decode: non-array / malformed ------------------------------------
 

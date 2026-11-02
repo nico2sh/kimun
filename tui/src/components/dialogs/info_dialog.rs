@@ -8,9 +8,9 @@ use unicode_width::UnicodeWidthStr;
 use super::ModalShell;
 use crate::components::Component;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx};
 use crate::components::hint_row::HintRow;
 use crate::components::panel::{ModalSpec, modal_chrome};
+use crate::logic::message::{AppMessage, AppTx};
 use crate::settings::themes::Theme;
 
 /// Popup width, border included.
@@ -77,7 +77,7 @@ impl InfoDialog {
 
     pub fn handle_key(&mut self, key: KeyEvent, tx: &AppTx) -> EventState {
         if key.code == KeyCode::Esc {
-            tx.send(AppEvent::CloseOverlay).ok();
+            tx.send(AppMessage::CloseOverlay).ok();
         }
         EventState::Consumed // swallow other keys while open
     }
@@ -149,7 +149,7 @@ mod tests {
 
     #[test]
     fn esc_closes_and_other_keys_are_swallowed() {
-        let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
+        let (tx, mut rx) = mpsc::unbounded_channel::<AppMessage>();
         let mut d = InfoDialog::new("T", "head", "body");
         assert_eq!(
             d.handle_key(KeyEvent::from(KeyCode::Char('x')), &tx),
@@ -157,7 +157,7 @@ mod tests {
         );
         assert!(rx.try_recv().is_err());
         d.handle_key(KeyEvent::from(KeyCode::Esc), &tx);
-        assert!(matches!(rx.try_recv(), Ok(AppEvent::CloseOverlay)));
+        assert!(matches!(rx.try_recv(), Ok(AppMessage::CloseOverlay)));
     }
 
     #[test]
