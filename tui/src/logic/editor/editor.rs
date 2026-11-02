@@ -13,7 +13,7 @@ use crate::logic::editor::claim::{
 use crate::logic::editor::handled::{Handled, KeyPath};
 use crate::logic::editor::request::EditorRequest;
 use crate::logic::editor::rope_buffer::{CursorMove, RopeBuffer};
-use crate::logic::editor::session::EditorSession;
+use crate::logic::editor::session::{EditorSession, FrameInput};
 use crate::logic::editor::snapshot::EditorSnapshot;
 use crate::logic::editor::textarea::TextareaBackend;
 use crate::logic::editor::{markdown_edits, plain_keys, typing_run};
@@ -139,6 +139,46 @@ impl Editor {
             cursor,
             self.session.revs.current(),
         )
+    }
+
+    /// Prepare this frame for a host that has nothing to add to it: the
+    /// editor's own snapshot and selection, no replace preview, no find
+    /// matches. Hosts that draw those build a [`FrameInput`] and call
+    /// [`EditorSession::prepare_frame`] directly.
+    pub fn prepare_frame(&mut self, width: u16, height: u16) {
+        let input = FrameInput {
+            snapshot: self.view_snapshot(),
+            width,
+            height,
+            selection: self.selection,
+            preview: None,
+            preview_overlays: Vec::new(),
+            matches: Vec::new(),
+        };
+        self.session.prepare_frame(input);
+    }
+
+    /// Whether the vim interpreter is driving this editor.
+    pub fn is_vim(&self) -> bool {
+        self.buf.is_vim()
+    }
+
+    /// The footer modal-mode label (`NORMAL`, `INSERT`, ...). `None` for the
+    /// plain direct-edit editor.
+    pub fn mode_label(&self) -> Option<String> {
+        self.buf.mode_label()
+    }
+
+    /// The in-progress vim command (pending count / operator / find) for the
+    /// footer. `None` when nothing is pending.
+    pub fn pending_input_hint(&self) -> Option<String> {
+        self.buf.pending_input_hint()
+    }
+
+    /// Cursor-shape classifier: `None` = non-modal, `Some(true)` = Insert
+    /// (bar), `Some(false)` = another modal mode (block).
+    pub fn modal_is_insert(&self) -> Option<bool> {
+        self.buf.modal_is_insert()
     }
 
     /// The cursor's (row, col) without materialising a snapshot.
@@ -414,9 +454,32 @@ impl Editor {
         outcome.changed
     }
 
-    /// Undo one *user action*. The **edit buffer** replays history to the
-    /// state the action started from, so nothing here counts entries.
-    pub fn undo_grouped(&mut self) -> bool {
+    /// Undo one *user action*, settled like any edit: the revision is bumped
+    /// (so dirty and autosave see it) and the view is told what to re-parse.
+    /// Reports whether anything was undone.
+    pub fn undo(&mut self) -> bool {
+        if self.undo_grouped() {
+            self.apply_edit_outcome();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Redo one *user action*, settled. Mirror of [`Self::undo`].
+    pub fn redo(&mut self) -> bool {
+        if self.redo_grouped() {
+            self.apply_edit_outcome();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Undo one *user action*, unsettled. The **edit buffer** replays history
+    /// to the state the action started from, so nothing here counts entries.
+    /// Hosts call [`Self::undo`], which also drains the edit outcome.
+    pub(crate) fn undo_grouped(&mut self) -> bool {
         let moved = self.buf.ta.undo();
         if moved {
             self.sync_highlight();
@@ -424,13 +487,24 @@ impl Editor {
         moved
     }
 
-    /// Redo one *user action*. Mirror of [`Self::undo_grouped`].
-    pub fn redo_grouped(&mut self) -> bool {
+    /// Redo one *user action*, unsettled. Mirror of [`Self::undo_grouped`].
+    pub(crate) fn redo_grouped(&mut self) -> bool {
         let moved = self.buf.ta.redo();
         if moved {
             self.sync_highlight();
         }
         moved
+    }
+
+    /// Settle the editor after a pointer event has been handled. A left press
+    /// ends vim's Visual mode (a drag selects through `select_dragged`; scroll,
+    /// release and right-click leave the mode alone), and the painted selection
+    /// is refreshed either way. Pass `left_down` as true for a left press.
+    pub fn settle_pointer(&mut self, left_down: bool) {
+        if left_down {
+            self.buf.sync_mouse_selection(false);
+        }
+        self.sync_highlight();
     }
 
     /// Paint the selection as the user sees it: under vim's Visual modes the
@@ -550,6 +624,46 @@ impl Editor {
         });
         self.buf.sync_mouse_selection(false);
         self.after_edit();
+    }
+
+    /// Text committed by a platform text-input service (an IME, a composed
+    /// character, a press-and-hold accent): replace `range` — chars of one
+    /// `row` — with `text`, or the selection (else nothing) at the cursor when
+    /// `range` is `None`. An empty range inserts at its start; empty `text`
+    /// deletes. Text input acts at the cursor, so a wheel-scrolled view follows
+    /// it back, as a key does. `false`, and nothing touched, when the range is
+    /// not addressable.
+    pub fn commit_text(
+        &mut self,
+        range: Option<(usize, std::ops::Range<usize>)>,
+        text: &str,
+    ) -> bool {
+        if let Some((row, cols)) = range {
+            let ta = &mut self.buf.ta;
+            let placed = if cols.start == cols.end {
+                // Validate before touching anything: a failed jump must leave
+                // the selection (and its painted mirror) as it was.
+                ta.text()
+                    .position(row, crate::ropetext::Column::new(cols.start))
+                    .is_some()
+                    && {
+                        ta.cancel_selection();
+                        ta.jump_to(row, cols.start)
+                    }
+            } else {
+                ta.set_selection((row, cols.start), (row, cols.end))
+            };
+            if !placed {
+                return false;
+            }
+        }
+        self.session.display.follow_cursor();
+        if text.is_empty() {
+            self.take_selection_for_external_paste();
+        } else {
+            self.insert_at_cursor(text);
+        }
+        true
     }
 
     /// Inserts `text` at the cursor, replacing any active selection.
@@ -683,7 +797,7 @@ impl Editor {
     }
 
     /// Drain the requests the host acts on *in the same input call* that
-    /// produced them (find bar, viewport): everything except
+    /// produced them (find bar, palette, viewport): everything except
     /// [`EditorRequest::ContextMenu`], which stays queued for the host's
     /// [`Self::take_requests`] poll after its own panel mouse handling.
     pub fn take_host_requests(&mut self) -> Vec<EditorRequest> {
@@ -709,6 +823,11 @@ impl Editor {
     /// [`EditorRequest`]s the host drains with [`Self::take_host_requests`]
     /// before the input call returns.
     pub fn handle_key(&mut self, key: KeyInput, tx: &AppTx) -> (Handled, KeyPath) {
+        // Every key acts at the cursor, so a wheel-scrolled view comes back to
+        // it — even when the key leaves the cursor where it was (find-next onto
+        // the same match, a motion at the buffer edge). Idempotent, so a host
+        // that also calls it earlier does not double-scroll.
+        self.session.display.follow_cursor();
         // Vim interpreter: Normal/Visual consume the key here; Insert
         // mode returns PassThrough and falls into the direct path below
         // so typing, autocomplete, auto-surround and smart-Enter all
@@ -748,11 +867,7 @@ impl Editor {
                     let mut path = KeyPath::VimOther;
                     match action {
                         VimHostAction::OpenPalette => {
-                            // Reuse the existing palette gateway.
-                            tx.send(AppMessage::ExecuteLeaderAction(
-                                crate::keys::leader::LeaderAction::Palette,
-                            ))
-                            .ok();
+                            self.requests.push(EditorRequest::OpenPalette);
                         }
                         VimHostAction::OpenSearch { forward: _ } => {
                             // `/` and `?` open the host's find bar.
@@ -869,15 +984,11 @@ impl Editor {
         {
             match key.key {
                 Key::Char('z') if !key.mods.shift => {
-                    if self.undo_grouped() {
-                        self.apply_edit_outcome();
-                    }
+                    self.undo();
                     return (Handled::Consumed, false);
                 }
                 Key::Char('y') | Key::Char('Z') => {
-                    if self.redo_grouped() {
-                        self.apply_edit_outcome();
-                    }
+                    self.redo();
                     return (Handled::Consumed, false);
                 }
                 _ => {}
@@ -1009,6 +1120,7 @@ impl Editor {
     /// action, so it ends the open typing run, settles vim's insert-session
     /// bracket, and is consumed.
     pub fn ignore_unmapped_key(&mut self) -> (Handled, KeyPath) {
+        self.session.display.follow_cursor();
         self.buf.typing.end();
         self.sync_insert_session();
         (
@@ -1140,6 +1252,130 @@ mod tests {
     use crate::logic::editor::rope_buffer::CursorMove;
     use crate::logic::editor::snapshot::EditorMode;
 
+    fn long_note_editor(vim: bool) -> Editor {
+        let mut ed = Editor::new(vim);
+        ed.buffer_mut().insert_str(
+            (0..10)
+                .map(|i| format!("line{i}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        ed.buffer_mut().move_cursor(CursorMove::Top);
+        ed.buffer_mut().move_cursor(CursorMove::Head);
+        ed
+    }
+
+    #[test]
+    fn commit_text_replaces_a_row_range_inserts_at_an_empty_one_and_deletes() {
+        let mut ed = Editor::new(false);
+        ed.set_text("first\nxe".into());
+        // Replace "e" (row 1, chars 1..2).
+        assert!(ed.commit_text(Some((1, 1..2)), "é"));
+        assert_eq!(ed.get_text(), "first\nxé");
+        // An empty range inserts at its start, not at the cursor.
+        assert!(ed.commit_text(Some((0, 0..0)), ">"));
+        assert_eq!(ed.get_text(), ">first\nxé");
+        assert_eq!(ed.cursor(), (0, 1));
+        // Empty text deletes the range.
+        assert!(ed.commit_text(Some((0, 0..1)), ""));
+        assert_eq!(ed.get_text(), "first\nxé");
+        // No range: at the cursor.
+        assert!(ed.commit_text(None, "!"));
+        assert_eq!(ed.get_text(), "!first\nxé");
+        // An unaddressable range changes nothing.
+        assert!(!ed.commit_text(Some((9, 0..1)), "z"));
+        assert_eq!(ed.get_text(), "!first\nxé");
+    }
+
+    #[test]
+    fn a_failed_empty_range_commit_leaves_the_selection_alone() {
+        let mut ed = Editor::new(false);
+        ed.set_text("abc\nde".into());
+        assert!(ed.buffer_mut().set_selection((0, 0), (0, 2)));
+        ed.sync_highlight();
+        let rev = ed.revision();
+        assert!(!ed.commit_text(Some((9, 0..0)), "z"));
+        assert_eq!(ed.get_text(), "abc\nde");
+        assert_eq!(ed.revision(), rev);
+        assert_eq!(ed.buffer().selection_range(), Some(((0, 0), (0, 2))));
+        assert_eq!(ed.selection(), Some(((0, 0), (0, 2))));
+    }
+
+    #[test]
+    fn a_no_op_undo_leaves_the_revision_unchanged() {
+        let mut ed = Editor::new(false);
+        ed.set_text("abc".into());
+        let rev = ed.revision();
+        assert!(!ed.undo(), "nothing to undo after a load");
+        assert_eq!(ed.revision(), rev);
+        assert!(!ed.redo());
+        assert_eq!(ed.revision(), rev);
+    }
+
+    #[test]
+    fn commit_text_brings_a_scrolled_view_back_to_the_cursor() {
+        let mut ed = long_note_editor(false);
+        ed.prepare_frame(20, 3);
+        assert!(ed.session_mut().display.scroll_by(6));
+        ed.prepare_frame(20, 3);
+        ed.commit_text(None, "x");
+        ed.prepare_frame(20, 3);
+        assert_eq!(ed.session().display.click_at_screen(0, 0).0, 0);
+    }
+
+    #[test]
+    fn editor_prepare_frame_builds_the_frame_input_itself() {
+        let mut ed = long_note_editor(false);
+        ed.prepare_frame(20, 3);
+        // The display took the editor's own cursor row: screen row 0 is row 0.
+        assert_eq!(ed.session().display.click_at_screen(0, 0).0, 0);
+    }
+
+    #[test]
+    fn handle_key_alone_reattaches_a_wheel_scrolled_view_to_the_cursor() {
+        // A host with no wrapper (the GUI) gets cursor-following from the key.
+        let tx = tx();
+        let mut ed = long_note_editor(false);
+        ed.prepare_frame(20, 3);
+        assert!(ed.session_mut().display.scroll_by(6));
+        ed.prepare_frame(20, 3);
+        assert_eq!(ed.session().display.click_at_screen(0, 0).0, 6, "detached");
+        // Left at the buffer start leaves the cursor exactly where it was.
+        ed.handle_key(KeyInput::plain(Key::Left), &tx);
+        ed.prepare_frame(20, 3);
+        assert_eq!(ed.session().display.click_at_screen(0, 0).0, 0);
+    }
+
+    #[test]
+    fn ignore_unmapped_key_reattaches_the_view_too() {
+        let mut ed = long_note_editor(false);
+        ed.prepare_frame(20, 3);
+        ed.session_mut().display.scroll_by(6);
+        ed.prepare_frame(20, 3);
+        ed.ignore_unmapped_key();
+        ed.prepare_frame(20, 3);
+        assert_eq!(ed.session().display.click_at_screen(0, 0).0, 0);
+    }
+
+    #[test]
+    fn mode_accessors_follow_the_input_interpreter() {
+        let plain = Editor::new(false);
+        assert!(!plain.is_vim());
+        assert_eq!(plain.mode_label(), None);
+        assert_eq!(plain.modal_is_insert(), None);
+        assert_eq!(plain.pending_input_hint(), None);
+
+        let mut vim = Editor::new(true);
+        assert!(vim.is_vim());
+        assert_eq!(vim.mode_label().as_deref(), Some("NORMAL"));
+        assert_eq!(vim.modal_is_insert(), Some(false));
+        vim.handle_key(KeyInput::plain(Key::Char('2')), &tx());
+        assert_eq!(vim.pending_input_hint().as_deref(), Some("2"));
+        vim.handle_key(KeyInput::plain(Key::Esc), &tx());
+        vim.handle_key(KeyInput::plain(Key::Char('i')), &tx());
+        assert_eq!(vim.modal_is_insert(), Some(true));
+    }
+
     #[test]
     fn editor_exposes_buffer_cursor_and_revision_without_a_component() {
         let mut ed = Editor::new(false);
@@ -1168,8 +1404,42 @@ mod tests {
         ed.paste_text("bye");
         assert_eq!(ed.get_text(), "bye world");
         assert_ne!(ed.session().revs.current(), rev, "the paste is a revision");
-        assert!(ed.undo_grouped());
+        assert!(ed.undo());
         assert_eq!(ed.get_text(), "hello world", "one undo restores the text");
+    }
+
+    #[test]
+    fn undo_and_redo_bump_the_revision() {
+        let mut ed = Editor::new(false);
+        ed.buffer_mut().insert_str("hello");
+        ed.after_edit();
+        let r0 = ed.session().revs.current();
+        assert!(ed.undo());
+        let r1 = ed.session().revs.current();
+        assert_ne!(r1, r0, "undo is a revision");
+        assert!(ed.redo());
+        assert_ne!(ed.session().revs.current(), r1, "redo is a revision");
+        assert_eq!(ed.get_text(), "hello");
+        assert!(!ed.redo(), "nothing left to redo");
+    }
+
+    #[test]
+    fn settle_pointer_left_down_leaves_vim_visual() {
+        let mut ed = Editor::new(true);
+        ed.buffer_mut().insert_str("hello world");
+        ed.buf.sync_mouse_selection(true);
+        assert_eq!(ed.mode_label().as_deref(), Some("VISUAL"));
+        ed.settle_pointer(true);
+        assert_eq!(ed.mode_label().as_deref(), Some("NORMAL"));
+    }
+
+    #[test]
+    fn settle_pointer_without_left_down_keeps_visual() {
+        let mut ed = Editor::new(true);
+        ed.buffer_mut().insert_str("hello world");
+        ed.buf.sync_mouse_selection(true);
+        ed.settle_pointer(false);
+        assert_eq!(ed.mode_label().as_deref(), Some("VISUAL"));
     }
 
     #[test]
@@ -1257,6 +1527,20 @@ mod tests {
         assert_eq!(path, KeyPath::VimOther);
         assert_eq!(ed.take_host_requests(), vec![EditorRequest::OpenSearch]);
         assert!(ed.take_requests().is_empty(), "drained once");
+    }
+
+    #[test]
+    fn editor_vim_colon_queues_open_palette_and_sends_no_message() {
+        let mut ed = Editor::new(true);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (handled, path) = ed.handle_key(typed(':'), &tx);
+        assert_eq!(handled, Handled::Consumed);
+        assert_eq!(path, KeyPath::VimOther);
+        assert_eq!(ed.take_host_requests(), vec![EditorRequest::OpenPalette]);
+        assert!(
+            rx.try_recv().is_err(),
+            "the editor no longer messages the app"
+        );
     }
 
     #[test]

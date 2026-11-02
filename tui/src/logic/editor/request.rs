@@ -12,6 +12,8 @@ pub enum EditorRequest {
     SearchNext,
     /// Repeat the last search backward (vim `N`).
     SearchPrev,
+    /// Open the command palette (vim `:`); the host owns the palette.
+    OpenPalette,
     /// The viewport scrolled (mouse wheel): anything anchored to the cursor,
     /// such as a popup, may now be off screen.
     ViewportScrolled,

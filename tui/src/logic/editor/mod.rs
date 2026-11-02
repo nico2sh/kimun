@@ -17,7 +17,7 @@ pub mod overlay;
 pub mod parse_incremental;
 pub mod plain_keys;
 pub mod request;
-pub(crate) mod revisions;
+pub mod revisions;
 pub mod rope_buffer;
 pub mod session;
 pub mod snapshot;

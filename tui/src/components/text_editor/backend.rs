@@ -162,16 +162,6 @@ impl BackendState {
         true
     }
 
-    /// Reconcile the active input interpreter with a host-driven mouse
-    /// selection change. The vim interpreter tracks it modally (a new
-    /// selection enters Visual, a cleared one returns to Normal); the other
-    /// backends have nothing to reconcile.
-    pub fn sync_mouse_selection(&mut self, has_selection: bool) {
-        if let BackendState::Textarea(ed) = self {
-            ed.buf.sync_mouse_selection(has_selection);
-        }
-    }
-
     /// The selection as the user sees it: the Visual range under vim,
     /// otherwise the buffer's own selection. `None` without one, or on nvim.
     pub fn selection_as_shown(&self) -> Option<((usize, usize), (usize, usize))> {
@@ -186,7 +176,7 @@ impl BackendState {
     /// active backend has no pending sequence.
     pub fn pending_input_hint(&self) -> Option<String> {
         match self {
-            BackendState::Textarea(ed) => ed.buf.pending_input_hint(),
+            BackendState::Textarea(ed) => ed.pending_input_hint(),
             BackendState::Nvim(_) => None,
         }
     }
@@ -195,7 +185,7 @@ impl BackendState {
     /// vim interpreter). `None` for the plain Direct textarea.
     pub fn mode_label(&self) -> Option<String> {
         match self {
-            BackendState::Textarea(ed) => ed.buf.mode_label(),
+            BackendState::Textarea(ed) => ed.mode_label(),
             BackendState::Nvim(nvim) => Some(nvim.snapshot().footer_label()),
         }
     }
@@ -206,7 +196,7 @@ impl BackendState {
     /// `Some(false)` = other modal mode (block cursor).
     pub fn modal_is_insert(&self) -> Option<bool> {
         match self {
-            BackendState::Textarea(ed) => ed.buf.modal_is_insert(),
+            BackendState::Textarea(ed) => ed.modal_is_insert(),
             BackendState::Nvim(nvim) => Some(nvim.snapshot().mode == EditorMode::Insert),
         }
     }

@@ -296,15 +296,15 @@ _Avoid_: dialog event (the RAG answer overlay is not a dialog), validation resul
 ### GUI
 
 **GUI**:
-The native desktop frontend built on egui, a sibling of the TUI over the same core and the same shared editor and app logic. It has the TUI's layout and functionality (rail, drawer, editor, footer, command palette, leader, overlays); the one deliberate difference is **Preferences**, regrouped for a graphical layout. Reads and writes the same `config.toml` as the TUI.
-_Avoid_: desktop app, egui app, GUI TUI (it is not a terminal emulator hosting the TUI).
+The native desktop frontend built on GPUI (the `gpui-kit` crate), a sibling of the TUI over the same core and the same shared editor and app logic. It has the TUI's layout and functionality (rail, drawer, editor, footer, command palette, leader, overlays); the one deliberate difference is **Preferences**, regrouped for a graphical layout. Reads and writes the same `config.toml` as the TUI.
+_Avoid_: desktop app, egui app, GPUI app, GUI TUI (it is not a terminal emulator hosting the TUI).
 
 **Logic layer**:
-A feature's state, rules and intents, free of any UI crate — it never names ratatui, crossterm or egui, enforced by a CI grep over the whole tree. Takes intents, exposes state; knows nothing of how it is drawn or which key produced the intent. The **TUI** and the **GUI** each wrap it in a **Renderer**.
+A feature's state, rules and intents, free of any UI crate — it never names ratatui, crossterm, egui or gpui, enforced by a CI grep over the whole tree. Takes intents, exposes state; knows nothing of how it is drawn or which key produced the intent. The **TUI** and the **GUI** each wrap it in a **Renderer**.
 _Avoid_: model (collides with the **Edit buffer**'s avoid list), view (collides with **drawer view**), backend (collides with **Editor backend**), core (that is the vault crate).
 
 **Renderer**:
-A frontend's code for one feature: draws the **Logic layer**'s state and turns raw input (crossterm, `egui::Event`) into its intents. One per frontend per feature.
+A frontend's code for one feature: draws the **Logic layer**'s state and turns raw input (crossterm, GPUI events) into its intents. One per frontend per feature.
 _Avoid_: view, widget, component (too generic).
 
 **Editor display**:
@@ -336,7 +336,7 @@ What a component or background task tells the app (open a note, autosave complet
 _Avoid_: event (ambiguous with input events), command (the **Vim command** and palette actions are different things).
 
 **Edit surface**:
-The **GUI**'s custom editor widget: paints the **edit buffer** with the buffer's own cell-grid layout in a monospace font and feeds key events to the same input interpreters (plain, **vim**) as the TUI. Not egui's `TextEdit`, which has no motion layer and cannot host the vim engine.
+The **GUI**'s custom editor widget: paints the **edit buffer** with the buffer's own cell-grid layout in a monospace font and feeds key events to the same input interpreters (plain, **vim**) as the TUI. Not a toolkit text-edit widget, which has no motion layer and cannot host the vim engine.
 _Avoid_: text box, text area, TextEdit.
 
 **Key input**:
