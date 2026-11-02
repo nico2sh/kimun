@@ -533,14 +533,14 @@ impl ThreadPanel {
     }
 
     /// Copy the selected turn's answer (citation markers stripped) to the OS
-    /// clipboard, reusing the shared [`crate::components::yank`] seam.
+    /// clipboard, reusing the shared [`crate::logic::clipboard::yank`] seam.
     /// Leader `a y`.
     pub(crate) fn copy_selected(&self, tx: &AppTx) {
         let Some(turn) = self.thread.selected() else {
             return;
         };
         let text = citations::strip(&turn.answer);
-        crate::components::yank(text, "answer copied", tx);
+        crate::logic::clipboard::yank(text, "answer copied", tx);
     }
 
     /// Open the create-note dialog pre-filled with the selected turn saved as

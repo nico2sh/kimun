@@ -5,7 +5,7 @@
 //! prints the snapshot to stderr at app exit.
 //!
 //! Categories are exclusive — each call to
-//! `MarkdownEditorView::try_incremental_parse` increments exactly one
+//! `EditorDisplay::try_incremental_parse` increments exactly one
 //! of {`incremental_reset`, `incremental_fallback`,
 //! `full_line_count_change`, `full_kind_guard`, `full_lazy_depth`,
 //! `full_blank_transition`, `full_cap_trip`, `full_verify_failed`,

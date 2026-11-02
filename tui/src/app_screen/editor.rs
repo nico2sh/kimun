@@ -40,6 +40,7 @@ use crate::components::text_editor::TextEditorComponent;
 use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::leader::{LeaderAction, LeaderEngine, LeaderOutcome};
+use crate::logic::editor::request::EditorRequest;
 use crate::logic::message::{
     AppMessage, AppTx, FileOp, OverlayData, SaveSource, SavedSearchFlow, ScreenEvent, SortTarget,
     UpdateFlow,
@@ -413,7 +414,7 @@ impl EditorScreen {
                     if let Some(needles) = emphasis {
                         ed.set_search_needles(needles);
                     }
-                    ed.set_redraw_tx(tx);
+                    ed.set_notifier(crate::logic::message::redraw_callback(tx.clone()));
                 }
                 tx.send(AppMessage::Redraw).ok();
                 // FIND / LINKS / OUTLINE reflect the open note; keep them in
@@ -964,10 +965,11 @@ impl EditorScreen {
                 // A selectionless right-click in the editor asks for the
                 // note's context menu — the screen owns the path, so it
                 // opens it here.
-                if self.panels.editor().is_some_and(|e| e.wants_context_menu) {
-                    if let Some(ed) = self.panels.editor_mut() {
-                        ed.wants_context_menu = false;
-                    }
+                let wants_menu = self
+                    .panels
+                    .editor_mut()
+                    .is_some_and(|e| e.take_requests().contains(&EditorRequest::ContextMenu));
+                if wants_menu {
                     tx.send(AppMessage::FileOp(FileOp::ShowMenu(self.path.clone())))
                         .ok();
                 }
@@ -2326,7 +2328,7 @@ impl EditorScreen {
             LeaderAction::NoteCopyWikilink => {
                 if let Some(path) = self.open_note_or_flash(tx) {
                     let link = format!("[[{}]]", path.get_clean_name());
-                    crate::components::yank(link, "wikilink copied", tx);
+                    crate::logic::clipboard::yank(link, "wikilink copied", tx);
                 }
             }
             LeaderAction::NoteExport => {
@@ -2334,7 +2336,7 @@ impl EditorScreen {
             }
             LeaderAction::NoteYankPath => {
                 if let Some(path) = self.open_note_or_flash(tx) {
-                    crate::components::yank(path.to_string(), "note path copied", tx);
+                    crate::logic::clipboard::yank(path.to_string(), "note path copied", tx);
                 }
             }
 

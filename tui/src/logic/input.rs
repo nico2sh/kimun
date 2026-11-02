@@ -76,3 +76,32 @@ impl KeyInput {
         Self::new(Key::Char(c), Mods::CTRL)
     }
 }
+
+/// A pointer button.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Button {
+    Left,
+    Right,
+    Middle,
+}
+
+/// What a pointer event did: a button press, drag or release, a wheel step, or a bare move.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PointerKind {
+    Down(Button),
+    Drag(Button),
+    Up(Button),
+    ScrollUp,
+    ScrollDown,
+    Moved,
+}
+
+/// A pointer event, in cells relative to the area the widget draws in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PointerInput {
+    pub kind: PointerKind,
+    /// Cell column / row relative to the top-left of the area the widget draws in.
+    pub col: u16,
+    pub row: u16,
+    pub mods: Mods,
+}

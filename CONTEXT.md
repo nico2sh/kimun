@@ -307,6 +307,22 @@ _Avoid_: model (collides with the **Edit buffer**'s avoid list), view (collides 
 A frontend's code for one feature: draws the **Logic layer**'s state and turns raw input (crossterm, `egui::Event`) into its intents. One per frontend per feature.
 _Avoid_: view, widget, component (too generic).
 
+**Editor display**:
+The editor's drawing state in the **Logic layer** (`EditorDisplay`): parse state, wrap layout, viewport and scroll, per-row caches, overlays as data. Given a width and a height it produces an **Editor frame**; it never sees a terminal or a theme.
+_Avoid_: view (collides with **drawer view**), editor view, render state.
+
+**Editor frame**:
+What the editor shows right now, without any styling decision: the visible rows, each a sequence of **runs** (text, a semantic role, bold/italic/strike modifiers, whether it sits in a code box, which overlays cover it), plus the cursor cell relative to the pane. A **Renderer** maps roles to its own colours and paints it.
+_Avoid_: screen buffer, render output, styled lines.
+
+**Pointer input**:
+A mouse or touch gesture in terminal-free form: a kind (down, drag or up of a button; wheel up or down; move), a cell position relative to the area the widget draws in, and modifiers. The pointer counterpart of **Key input**; a **Renderer** converts its own events into it.
+_Avoid_: mouse event (crossterm's type), click (names only one kind).
+
+**Editor request**:
+Something the editor asks its host to do because the editor does not own the surface that does it — open the note's context menu, and later open the find bar. Queued by the editor and drained by the host; never a flag the host has to poll and clear.
+_Avoid_: callback, intent (collides with the screen-level **Intent**).
+
 **App message**:
 What a component or background task tells the app (open a note, autosave completed, a file operation, an Ask answer, an update notice): `AppMessage`, carried on the app channel and free of terminal types. The loop's own `AppEvent` wraps it with a terminal **Input source** event, and the **GUI** wraps it with its own input.
 _Avoid_: event (ambiguous with input events), command (the **Vim command** and palette actions are different things).

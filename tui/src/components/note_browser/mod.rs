@@ -844,17 +844,17 @@ pub(crate) fn format_journal_date(date: NaiveDate) -> String {
 /// The number of highlighted matches in `text`, or `None` when there are no
 /// needles (the preview header shows a count only for queries with text terms).
 /// Counts the same ranges [`highlight_matches`] bolds — via the shared
-/// [`preview_highlight::match_ranges`] — so the header never disagrees with the
+/// [`crate::logic::text_match::match_ranges`] — so the header never disagrees with the
 /// visible highlights (overlapping needles are deduped, folds counted).
 fn count_matches(text: &str, needles: &[String]) -> Option<usize> {
     if needles.is_empty() {
         return None;
     }
-    Some(preview_highlight::match_ranges(text, needles).len())
+    Some(crate::logic::text_match::match_ranges(text, needles).len())
 }
 
 /// The preview text with needle matches emphasized in `yellow`.
-/// Matching is byte-safe via [`preview_highlight::match_ranges`], so non-ASCII
+/// Matching is byte-safe via [`crate::logic::text_match::match_ranges`], so non-ASCII
 /// case folds (e.g. `İ`, `ẞ`) are highlighted too, not dropped.
 fn highlight_matches<'a>(
     text: &'a str,
@@ -873,7 +873,7 @@ fn highlight_matches<'a>(
     );
     let mut lines = Vec::new();
     for line in text.lines() {
-        let ranges = preview_highlight::match_ranges(line, needles);
+        let ranges = crate::logic::text_match::match_ranges(line, needles);
         if ranges.is_empty() {
             lines.push(Line::styled(line, base));
             continue;

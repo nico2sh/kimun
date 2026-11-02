@@ -4,6 +4,8 @@ use unicode_segmentation::UnicodeSegmentation;
 mod block_opener;
 pub(crate) mod detect;
 mod parsed_buffer;
+pub mod reveal;
+pub mod runs;
 pub(crate) use block_opener::opener_shape;
 pub use parsed_buffer::ParsedBuffer;
 
@@ -34,7 +36,7 @@ pub(crate) fn string_display_width(s: &str) -> usize {
 
 /// The blockquote bar gutter drawn in place of the hidden `>` markers: one
 /// `│` per nesting level followed by a single space. This is the single source
-/// of the gutter's shape — `render_with` draws this string, while wrap
+/// of the gutter's shape — `render_runs` draws this string, while wrap
 /// reservation and click mapping size themselves via [`blockquote_gutter_width`].
 /// The unit test `gutter_width_matches_rendered` locks the two in sync.
 pub(crate) fn blockquote_gutter(depth: u8) -> String {
@@ -52,7 +54,7 @@ pub(crate) fn blockquote_gutter_width(depth: u8) -> usize {
 
 /// Display-column width of a raw line with all clusters visible and tabs
 /// expanded to the next tab stop. Mirrors the per-cluster column math in
-/// `spanner::render_with` (tab handling + `cluster_display_width`).
+/// `runs::render_runs` (tab handling + `cluster_display_width`).
 pub(crate) fn raw_display_width(line: &str) -> usize {
     let mut col = 0usize;
     for g in line.graphemes(true) {
@@ -98,7 +100,7 @@ pub struct Element {
     pub kind: ElementKind,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ElementKind {
     Bold,
     Italic,

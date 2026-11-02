@@ -19,7 +19,8 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
 
-use kimun_notes::components::text_editor::view::{MarkdownEditorView, Overlay, OverlayKind};
+use kimun_notes::components::text_editor::view::MarkdownEditorView;
+use kimun_notes::logic::editor::overlay::{Overlay, OverlayKind};
 use kimun_notes::logic::editor::snapshot::EditorSnapshot;
 use kimun_notes::settings::themes::Theme;
 
