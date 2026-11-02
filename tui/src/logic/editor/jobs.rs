@@ -79,6 +79,10 @@ impl BackgroundJobs {
     /// a 5000-row note to a background parse costs a pointer rather than a copy.
     /// `notifier` wakes the host on completion so the rich result lands without
     /// waiting for the next keystroke.
+    ///
+    /// Host requirement: `SingleSlotTask::spawn` is `tokio::spawn`, so this must
+    /// run inside a tokio runtime context. The TUI does (`#[tokio::main]`); a
+    /// native GUI host must enter a runtime before calling (M1).
     pub fn spawn_pending(
         &mut self,
         display: &mut EditorDisplay,

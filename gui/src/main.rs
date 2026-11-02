@@ -19,7 +19,8 @@ impl eframe::App for App {
 fn main() -> eframe::Result {
     // Same file, same theme lookup as the TUI (ADR-0049 §6). The config is
     // never written, migrated or renamed here; the only possible side effect
-    // is `theme_list()` creating an empty config directory.
+    // is `theme_list()` creating an empty config directory. Not `get_theme()`:
+    // that applies `adapt_to_terminal()`, which is a terminal-only concern.
     let settings = AppSettings::load_read_only().unwrap_or_else(|e| {
         eprintln!("kimun-gui: could not read the config ({e}); using the default theme");
         AppSettings::default()
